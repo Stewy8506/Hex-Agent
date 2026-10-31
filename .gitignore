@@ -1,0 +1,58 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Testing & linting caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Autonomous Harness local runtime state, CoW snapshots, SQLite ledger & CAS artifacts
+.harness_data/
+*.db
+*.db-shm
+*.db-wal
+runs/
+
+# Secrets & environment variables
+.env
+.env.*
+!.env.example
+secrets.json
+
+# macOS & Editor metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
+*.swp
+*.swo
