@@ -9,11 +9,26 @@ from __future__ import annotations
 
 import ast
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .cow import IGNORE_DIRS
+
+# Wire directly to vendor/graphify upstream engine if available
+_VENDOR_GRAPHIFY = Path(__file__).resolve().parent.parent.parent / "vendor" / "graphify"
+if _VENDOR_GRAPHIFY.is_dir() and str(_VENDOR_GRAPHIFY) not in sys.path:
+    sys.path.insert(0, str(_VENDOR_GRAPHIFY))
+
+try:
+    import networkx as nx
+    from graphify import affected as upstream_affected
+    UPSTREAM_GRAPHIFY_AVAILABLE = True
+except Exception:
+    UPSTREAM_GRAPHIFY_AVAILABLE = False
+    nx = None
+    upstream_affected = None
 
 
 @dataclass
@@ -58,6 +73,8 @@ class ActiveGraphifyAdapter:
         self.callers_of: dict[str, set[str]] = {}  # symbol_name -> set of caller qualified_names
         self.file_of_qualified: dict[str, str] = {}
         self._file_hashes: dict[str, int] = {}
+        self.upstream_available = UPSTREAM_GRAPHIFY_AVAILABLE
+        self.graph: Any = None
 
     def build_or_refresh(self, workspace_dir: Path | str | None = None) -> dict[str, Any]:
         root = Path(workspace_dir or self.workspace_root).resolve()
@@ -86,10 +103,32 @@ class ActiveGraphifyAdapter:
                 for called in sym.calls | sym.bases:
                     self.callers_of.setdefault(called, set()).add(sym.qualified_name)
 
+        # Build upstream Graphify NetworkX directed graph representation
+        if self.upstream_available and nx is not None:
+            self.graph = nx.DiGraph()
+            for rel, sym_list in self.symbols_by_file.items():
+                self.graph.add_node(rel, kind="file", label=rel)
+                for sym in sym_list:
+                    self.graph.add_node(sym.qualified_name, kind=sym.kind, file=rel, label=sym.name)
+                    self.graph.add_edge(rel, sym.qualified_name, relation="defines")
+                    if sym.name != sym.qualified_name:
+                        self.graph.add_node(sym.name, kind=sym.kind, file=rel, label=sym.name)
+                        self.graph.add_edge(rel, sym.name, relation="defines")
+                        self.graph.add_edge(sym.qualified_name, sym.name, relation="defines")
+                    for called in sym.calls:
+                        self.graph.add_node(called, kind="external", label=called)
+                        self.graph.add_edge(sym.qualified_name, called, relation="calls")
+                        if sym.name != sym.qualified_name:
+                            self.graph.add_edge(sym.name, called, relation="calls")
+                    for base in sym.bases:
+                        self.graph.add_node(base, kind="class", label=base)
+                        self.graph.add_edge(sym.qualified_name, base, relation="inherits")
+
         return {
             "indexed_files": len(py_files),
             "indexed_symbols": sum(len(v) for v in self.symbols_by_file.values()),
             "workspace_root": str(root),
+            "upstream_graphify_active": bool(self.upstream_available and self.graph is not None),
         }
 
     def _index_file(self, rel_path: str, fpath: Path) -> None:
@@ -254,6 +293,38 @@ class ActiveGraphifyAdapter:
         hop1_map: dict[str, dict[str, Any]] = {}
         hop2_map: dict[str, dict[str, Any]] = {}
         impacted_tests: set[str] = set()
+
+        # Interrogate upstream Graphify affected engine if active
+        if self.upstream_available and self.graph is not None and upstream_affected is not None:
+            for sym_name in modified_symbols:
+                try:
+                    hits = upstream_affected.affected_nodes(self.graph, seed=sym_name, depth=2)
+                    for hit in hits:
+                        if hit.via_relation == "defines":
+                            continue
+                        node_id = hit.node_id
+                        node_data = self.graph.nodes.get(node_id, {})
+                        node_file = node_data.get("file") or (node_id if node_id.endswith(".py") else self.file_of_qualified.get(node_id, ""))
+                        if hit.depth == 1:
+                            if node_id not in hop1_map:
+                                hop1_map[node_id] = {
+                                    "qualified_name": node_id,
+                                    "file": node_file,
+                                    "via_symbol": sym_name,
+                                }
+                        elif hit.depth == 2:
+                            if node_id not in hop1_map and node_id not in hop2_map:
+                                hop2_map[node_id] = {
+                                    "qualified_name": node_id,
+                                    "file": node_file,
+                                    "via_hop1": sym_name,
+                                }
+                        if node_file and self._is_test_file(node_file):
+                            impacted_tests.add(node_file)
+                        elif self._is_test_file(node_id):
+                            impacted_tests.add(node_id)
+                except Exception:
+                    pass
 
         for sym_name in modified_symbols:
             for caller_qn in sorted(self.callers_of.get(sym_name, set())):
