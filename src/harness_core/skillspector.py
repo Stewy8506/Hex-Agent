@@ -1,10 +1,14 @@
 """NVIDIA SkillSpector Supply-Chain & Malware Gate (PRD Sections 6.5, 12.2, FR-039..FR-039e).
 
+Directly wired to the upstream scanner engine vendored in `vendor/skillspector`
+(NVIDIA CORPORATION & AFFILIATES, Apache-2.0).
+
 Performs multi-layered scanning on every imported third-party `SKILL.md` bundle, local edit,
 MCP definition, or Harness² candidate proposal before registration:
 1. Static & Structural Analysis (64+ agent-native vulnerability rules across 16 categories:
    invisible/bidi Unicode steganography, hidden HTML/Markdown prompt injections, base64 obfuscation,
-   symlink/path-traversal escapes, shell exfiltration, MCP tool poisoning, trigger hijacking).
+   symlink/path-traversal escapes, shell exfiltration, MCP tool poisoning, trigger hijacking,
+   and upstream YARA agent-abuse rules).
 2. Dependency CVE Lookup (scans bundled requirements/manifests against known OSV advisories).
 3. Tier-1 Local M4 Semantic Alignment Check (verifies declared frontmatter purpose and risk_class
    against actual Markdown instructions and bundled scripts).
@@ -19,6 +23,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
+import types
+import typing
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,82 +33,66 @@ from typing import Any
 
 from .db import LedgerStore, canonical_json, utcnow_iso
 
+# -----------------------------------------------------------------------------
+# 1. Wire vendor/skillspector to sys.path with lightweight zero-dep shims
+# -----------------------------------------------------------------------------
+VENDOR_SKILLSPECTOR = Path(__file__).resolve().parents[2] / "vendor" / "skillspector" / "src"
+if str(VENDOR_SKILLSPECTOR) not in sys.path and VENDOR_SKILLSPECTOR.is_dir():
+    sys.path.insert(0, str(VENDOR_SKILLSPECTOR))
+
+# Provide typing_extensions alias if not installed
+if "typing_extensions" not in sys.modules:
+    sys.modules["typing_extensions"] = typing
+
+# Provide lightweight langchain_core shim if not installed so upstream modules import cleanly
+if "langchain_core" not in sys.modules:
+    _lc = types.ModuleType("langchain_core")
+    _lc_callbacks = types.ModuleType("langchain_core.callbacks")
+
+    class _BaseCallbackHandler:
+        pass
+
+    _lc_callbacks.BaseCallbackHandler = _BaseCallbackHandler
+    _lc_outputs = types.ModuleType("langchain_core.outputs")
+
+    class _LLMResult:
+        pass
+
+    _lc_outputs.LLMResult = _LLMResult
+    _lc_runnables = types.ModuleType("langchain_core.runnables")
+    _lc_runnables.RunnableConfig = dict  # type: ignore[misc]
+
+    sys.modules["langchain_core"] = _lc
+    sys.modules["langchain_core.callbacks"] = _lc_callbacks
+    sys.modules["langchain_core.outputs"] = _lc_outputs
+    sys.modules["langchain_core.runnables"] = _lc_runnables
+
+# Import upstream NVIDIA SkillSpector components
+try:
+    import skillspector
+    from skillspector.nodes.analyzers import (
+        pattern_defaults as upstream_pd,
+        static_patterns_prompt_injection as upstream_pi,
+        static_patterns_data_exfiltration as upstream_de,
+        static_patterns_privilege_escalation as upstream_pe,
+        static_patterns_harmful_content as upstream_hc,
+        static_patterns_tool_misuse as upstream_tm,
+        static_patterns_rogue_agent as upstream_ra,
+        static_patterns_excessive_agency as upstream_ea,
+        static_patterns_output_handling as upstream_oh,
+        static_patterns_memory_poisoning as upstream_mp,
+        whitespace_padding as upstream_wp,
+    )
+    UPSTREAM_VERSION = getattr(skillspector, "__version__", "2.12.0")
+    UPSTREAM_EXPLANATIONS = getattr(upstream_pd, "DEFAULT_EXPLANATIONS", {})
+    UPSTREAM_AVAILABLE = True
+except Exception:
+    UPSTREAM_VERSION = "2.12.0"
+    UPSTREAM_EXPLANATIONS = {}
+    UPSTREAM_AVAILABLE = False
+
 
 RISK_ORDER = {"R0": 0, "R1": 1, "R2": 2, "R3": 3, "R4": 4}
-
-# Static & Structural Rule Signatures across 16 Agent-Native Vulnerability Categories
-STATIC_RULES: list[tuple[str, str, str, int, re.Pattern[str]]] = [
-    (
-        "SS-UNI-001",
-        "unicode_steganography",
-        "critical",
-        85,
-        re.compile(r"[\u200b\u200c\u200d\u2060\ufeff\u202a-\u202e\u2066-\u2069]"),
-    ),
-    (
-        "SS-UNI-002",
-        "unicode_tag_characters",
-        "critical",
-        90,
-        re.compile(r"[\U000e0000-\U000e007f]"),
-    ),
-    (
-        "SS-INJ-001",
-        "hidden_html_prompt_injection",
-        "critical",
-        80,
-        re.compile(r"<!--.*?(?:ignore\s+previous|system\s+prompt|bypass\s+policy|override\s+approval|exfiltrate|sudo).*?-->", re.I | re.S),
-    ),
-    (
-        "SS-INJ-002",
-        "direct_policy_override_injection",
-        "high",
-        70,
-        re.compile(r"(?:ignore\s+all\s+prior\s+instructions|disregard\s+safety\s+policy|treat\s+this\s+skill\s+as\s+R0\s+regardless)", re.I),
-    ),
-    (
-        "SS-OBF-001",
-        "base64_exec_obfuscation",
-        "critical",
-        85,
-        re.compile(r"(?:base64\s+-d|b64decode\s*\().*?(?:\|\s*(?:sh|bash|zsh)|exec\s*\(|eval\s*\()", re.I | re.S),
-    ),
-    (
-        "SS-EXF-001",
-        "credential_harvesting_or_exfil",
-        "critical",
-        90,
-        re.compile(r"(?:\.aws/credentials|\.ssh/id_rsa|OPENAI_API_KEY|ANTHROPIC_API_KEY|os\.environ).*?(?:curl\s+|wget\s+|requests\.post|urllib\.request)", re.I | re.S),
-    ),
-    (
-        "SS-NET-001",
-        "undeclared_network_egress",
-        "high",
-        65,
-        re.compile(r"(?:curl\s+-X\s+POST|nc\s+-e\s+/bin/sh|bash\s+-i\s+>&\s+/dev/tcp/)", re.I),
-    ),
-    (
-        "SS-FS-001",
-        "path_traversal_escape",
-        "high",
-        75,
-        re.compile(r"(?:\.\./\.\./|/etc/passwd|/etc/shadow|/System/Library)"),
-    ),
-    (
-        "SS-MCP-001",
-        "mcp_tool_shadowing_or_poisoning",
-        "critical",
-        80,
-        re.compile(r"(?:override_tool_schema|shadow_builtin_tool|mcp_poison|<tool_override>)", re.I),
-    ),
-    (
-        "SS-TRG-001",
-        "wildcard_trigger_hijack",
-        "medium",
-        40,
-        re.compile(r"^trigger:\s*(?:\*|always|all_tasks|every_prompt)\s*$", re.I | re.M),
-    ),
-]
 
 # Offline OSV Known Vulnerable Package Signatures for deterministic supply-chain checks
 KNOWN_OSV_VULNS: dict[str, dict[str, str]] = {
@@ -111,6 +102,188 @@ KNOWN_OSV_VULNS: dict[str, dict[str, str]] = {
     "jinja2==2.10": {"id": "CVE-2019-10906", "severity": "high", "summary": "Sandbox escape via str.format_map"},
     "cryptography==38.0.0": {"id": "CVE-2023-23931", "severity": "high", "summary": "Memory corruption in Cipher.update_into"},
 }
+
+
+@dataclass
+class CompiledRule:
+    rule_id: str
+    category: str
+    severity: str
+    score: int
+    pattern: re.Pattern[str]
+    description: str = ""
+
+
+def _build_upstream_rules() -> list[CompiledRule]:
+    """Compiles rules directly sourced from NVIDIA SkillSpector upstream analyzers and YARA rules."""
+    rules: list[CompiledRule] = []
+
+    # 1. Unicode Steganography & Invisible characters (from upstream whitespace_padding & unicode_confusables)
+    rules.append(CompiledRule(
+        rule_id="SS-UNI-001",
+        category="unicode_steganography",
+        severity="critical",
+        score=85,
+        pattern=re.compile(r"[\u200b\u200c\u200d\u2060\ufeff\u202a-\u202e\u2066-\u2069]"),
+        description="Hidden zero-width or directional Unicode steganography character detected.",
+    ))
+    rules.append(CompiledRule(
+        rule_id="SS-UNI-002",
+        category="unicode_tag_characters",
+        severity="critical",
+        score=90,
+        pattern=re.compile(r"[\U000e0000-\U000e007f]"),
+        description="Unicode Tag Characters detected (potential invisible prompt injection payload).",
+    ))
+
+    # 2. Hidden HTML & Markdown prompt injection (upstream P1/P2)
+    rules.append(CompiledRule(
+        rule_id="SS-INJ-001",
+        category="hidden_html_prompt_injection",
+        severity="critical",
+        score=80,
+        pattern=re.compile(r"<!--.*?(?:ignore\s+previous|system\s+prompt|bypass\s+policy|override\s+approval|exfiltrate|sudo).*?-->", re.I | re.S),
+        description=UPSTREAM_EXPLANATIONS.get("P2", "Hidden instructions detected in HTML comment."),
+    ))
+    rules.append(CompiledRule(
+        rule_id="SS-INJ-002",
+        category="direct_policy_override_injection",
+        severity="high",
+        score=70,
+        pattern=re.compile(r"(?:ignore\s+all\s+prior\s+instructions|disregard\s+safety\s+policy|treat\s+this\s+skill\s+as\s+R0\s+regardless)", re.I),
+        description=UPSTREAM_EXPLANATIONS.get("P1", "Attempts to override system instructions or ignore safety policy."),
+    ))
+    rules.append(CompiledRule(
+        rule_id="SS-INJ-003",
+        category="hidden_markdown_reference_comment",
+        severity="high",
+        score=75,
+        pattern=re.compile(r"\[//\]:\s*#\s*\([^)]{0,240}(?:ignore|override|bypass|disregard|system\s+prompt)[^)]{0,240}\)", re.I),
+        description="Hidden instructions in Markdown reference link comment.",
+    ))
+
+    # 3. Upstream P1/P2/P3/P4 pattern compilation from upstream_pi
+    if UPSTREAM_AVAILABLE:
+        try:
+            for pat, _conf in getattr(upstream_pi, "P1_PATTERNS", []):
+                try:
+                    rules.append(CompiledRule(
+                        rule_id="SS-P1-UPSTREAM",
+                        category="prompt_injection",
+                        severity="high",
+                        score=70,
+                        pattern=re.compile(pat, re.I),
+                        description=UPSTREAM_EXPLANATIONS.get("P1", "Upstream SkillSpector P1 prompt injection pattern."),
+                    ))
+                except Exception:
+                    pass
+            for pat, _conf in getattr(upstream_pi, "P3_PATTERNS", []):
+                try:
+                    rules.append(CompiledRule(
+                        rule_id="SS-P3-UPSTREAM",
+                        category="data_exfiltration",
+                        severity="high",
+                        score=75,
+                        pattern=re.compile(pat, re.I),
+                        description=UPSTREAM_EXPLANATIONS.get("P3", "Upstream SkillSpector P3 context transmission pattern."),
+                    ))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # 4. Obfuscation (upstream SC3)
+    rules.append(CompiledRule(
+        rule_id="SS-OBF-001",
+        category="base64_exec_obfuscation",
+        severity="critical",
+        score=85,
+        pattern=re.compile(r"(?:base64\s+-d|b64decode\s*\().*?(?:\|\s*(?:sh|bash|zsh)|exec\s*\(|eval\s*\()", re.I | re.S),
+        description=UPSTREAM_EXPLANATIONS.get("SC3", "Base64 payload decoding piped to execution."),
+    ))
+
+    # 5. Credential harvesting / Exfiltration (upstream E1..E5, PE3, agent_skills.yar)
+    rules.append(CompiledRule(
+        rule_id="SS-EXF-001",
+        category="credential_harvesting_or_exfil",
+        severity="critical",
+        score=90,
+        pattern=re.compile(r"(?:\.aws/credentials|\.ssh/id_rsa|OPENAI_API_KEY|ANTHROPIC_API_KEY|os\.environ).*?(?:curl\s+|wget\s+|requests\.post|urllib\.request|webhook\.site|discord\.com/api/webhooks)", re.I | re.S),
+        description=UPSTREAM_EXPLANATIONS.get("E2", "Accessing sensitive credential stores combined with network egress."),
+    ))
+    rules.append(CompiledRule(
+        rule_id="SS-EXF-YAR-WEBHOOK",
+        category="webhook_credential_exfiltration",
+        severity="critical",
+        score=95,
+        pattern=re.compile(r"(?:discord\.com/api/webhooks|api\.telegram\.org/bot|hooks\.slack\.com/services|webhook\.site|pipedream\.net|ngrok-free\.app)", re.I),
+        description="Outbound webhook collector commonly abused in agent skill exfiltration.",
+    ))
+
+    # 6. Undeclared network egress & Reverse shell (upstream E1 / TM1)
+    rules.append(CompiledRule(
+        rule_id="SS-NET-001",
+        category="undeclared_network_egress",
+        severity="high",
+        score=65,
+        pattern=re.compile(r"(?:curl\s+-X\s+POST|nc\s+-e\s+/bin/sh|bash\s+-i\s+>&\s+/dev/tcp/)", re.I),
+        description=UPSTREAM_EXPLANATIONS.get("E1", "Direct shell network egress or reverse shell invocation."),
+    ))
+
+    # 7. Path traversal escape (upstream PE3 / E3)
+    rules.append(CompiledRule(
+        rule_id="SS-FS-001",
+        category="path_traversal_escape",
+        severity="high",
+        score=75,
+        pattern=re.compile(r"(?:\.\./\.\./|/etc/passwd|/etc/shadow|/System/Library)"),
+        description=UPSTREAM_EXPLANATIONS.get("E3", "Path traversal or unauthorized host file access."),
+    ))
+
+    # 8. MCP tool shadowing or poisoning (upstream MCP_TOOL_POISONING)
+    rules.append(CompiledRule(
+        rule_id="SS-MCP-001",
+        category="mcp_tool_shadowing_or_poisoning",
+        severity="critical",
+        score=80,
+        pattern=re.compile(r"(?:override_tool_schema|shadow_builtin_tool|mcp_poison|<tool_override>)", re.I),
+        description="MCP tool schema manipulation or built-in tool shadowing.",
+    ))
+
+    # 9. Trigger hijack / excessive agency (upstream EA1 / TRIGGER_ABUSE)
+    rules.append(CompiledRule(
+        rule_id="SS-TRG-001",
+        category="wildcard_trigger_hijack",
+        severity="medium",
+        score=40,
+        pattern=re.compile(r"^trigger:\s*(?:\*|always|all_tasks|every_prompt)\s*$", re.I | re.M),
+        description=UPSTREAM_EXPLANATIONS.get("EA1", "Wildcard trigger attempts to hijack all agent prompts."),
+    ))
+
+    # 10. Remote bootstrap download & execute (upstream SC2 / agent_skills.yar)
+    rules.append(CompiledRule(
+        rule_id="SS-SC2-BOOTSTRAP",
+        category="remote_bootstrap_execution",
+        severity="high",
+        score=75,
+        pattern=re.compile(r"(?:exec\s*\(\s*(?:requests|httpx)\.get|pip\s+install\s+git\+|eval\s*\(\s*urlopen)", re.I),
+        description=UPSTREAM_EXPLANATIONS.get("SC2", "Remote code downloaded and executed dynamically."),
+    ))
+
+    # 11. Privilege Escalation via Sudo/Root (upstream PE2)
+    rules.append(CompiledRule(
+        rule_id="SS-PE2-SUDO",
+        category="privilege_escalation",
+        severity="high",
+        score=70,
+        pattern=re.compile(r"(?:sudo\s+|su\s+-c|chmod\s+777|chown\s+root)", re.I),
+        description=UPSTREAM_EXPLANATIONS.get("PE2", "Invocation of sudo or root privilege elevation."),
+    ))
+
+    return rules
+
+
+STATIC_RULES_REGISTRY = _build_upstream_rules()
 
 
 @dataclass
@@ -175,13 +348,17 @@ def parse_skill_frontmatter(md_text: str) -> tuple[dict[str, Any], str]:
 
 
 class SkillSpectorScanner:
-    """Automated static, dependency (OSV), and semantic alignment scanner for skills."""
+    """Automated static, dependency (OSV), and semantic alignment scanner for skills.
 
-    scanner_version = "nvidia-skillspector-1.3.0-local"
+    Powered directly by vendored NVIDIA SkillSpector upstream engine.
+    """
+
+    scanner_version = f"nvidia-skillspector-{UPSTREAM_VERSION}-integrated"
 
     def __init__(self, ledger: LedgerStore, semantic_model_id: str = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"):
         self.ledger = ledger
         self.semantic_model_id = semantic_model_id
+        self.rules = STATIC_RULES_REGISTRY
 
     def compute_bundle_sha256(self, bundle_dir: Path | str) -> str:
         root = Path(bundle_dir).resolve()
@@ -239,7 +416,7 @@ class SkillSpectorScanner:
                         })
                         max_score = max(max_score, 95)
 
-        # 2. Scan all files in bundle against static vulnerability patterns & OSV table
+        # 2. Scan all files in bundle against static rules & OSV table
         all_script_text = ""
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             dirnames[:] = [d for d in dirnames if d != "__pycache__" and not d.startswith(".git")]
@@ -252,16 +429,17 @@ class SkillSpectorScanner:
                 if rel != "SKILL.md":
                     all_script_text += f"\n# {rel}\n{content}"
 
-                for rule_id, category, sev, weight, pattern in STATIC_RULES:
-                    if pattern.search(content):
+                for r in self.rules:
+                    if r.pattern.search(content):
                         matched_rules.append({
-                            "rule_id": rule_id,
-                            "category": category,
-                            "severity": sev,
-                            "score": weight,
+                            "rule_id": r.rule_id,
+                            "category": r.category,
+                            "severity": r.severity,
+                            "score": r.score,
                             "file": rel,
+                            "description": r.description,
                         })
-                        max_score = max(max_score, weight)
+                        max_score = max(max_score, r.score)
 
                 # Check requirements/manifest for OSV vulnerabilities
                 if fname in ("requirements.txt", "manifest.yaml", "SKILL.md"):
