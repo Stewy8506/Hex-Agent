@@ -166,12 +166,14 @@ class ExecutionMode(str, Enum):
 
 @dataclass
 class TaskBudget:
+    """Execution constraints and financial/retry ceilings for autonomous task workflows."""
+
     max_steps: int = 20
     max_tool_calls: int = 50
-    max_retries_per_step: int = 2
+    max_retries_per_step: int = 2  # Autonomous repair ceiling before escalation to NEEDS_ATTENTION
     max_speculative_branches: int = 2
     max_wall_seconds: int = 1800
-    max_cost_usd: float = 2.0
+    max_cost_usd: float = 2.0  # Hard cost limit triggering forensic CoW snapshot and NEEDS_ATTENTION
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

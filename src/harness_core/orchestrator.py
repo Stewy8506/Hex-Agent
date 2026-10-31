@@ -643,18 +643,22 @@ class HarnessOrchestrator:
                         })
 
                 if normalized_ops:
-                    self.gateway.execute_code_mode_composition(
-                        task_id=task_id,
-                        attempt_id=attempt_id,
-                        step_id=repair_step_id,
-                        workspace_dir=attempt_ws,
-                        operations=normalized_ops,
-                    )
-                    for op in normalized_ops:
-                        if op.get("tool_id") == "write_file" and "path" in op.get("args", {}):
-                            file_p = str(op["args"]["path"])
-                            if file_p not in modified_files:
-                                modified_files.append(file_p)
+                    try:
+                        self.gateway.execute_code_mode_composition(
+                            task_id=task_id,
+                            attempt_id=attempt_id,
+                            step_id=repair_step_id,
+                            workspace_dir=attempt_ws,
+                            operations=normalized_ops,
+                        )
+                        for op in normalized_ops:
+                            if op.get("tool_id") == "write_file" and "path" in op.get("args", {}):
+                                file_p = str(op["args"]["path"])
+                                if file_p not in modified_files:
+                                    modified_files.append(file_p)
+                    except BudgetExceededError:
+                        budget_exceeded = True
+                        break
 
             # Transition state machine: RUNNING -> VERIFYING
             curr_sha = self.cow.compute_tree_sha(attempt_ws)
