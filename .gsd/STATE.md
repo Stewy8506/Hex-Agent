@@ -62,18 +62,22 @@
    - Hardened `_resolve_confined_path` with strict `Path.relative_to` verification.
    - Authored zero-escape verification test suite in `tests/test_sandbox_isolation.py` (76/76 total repository tests passing).
 
+10. **Phase 03 Planning Complete (Plans 03-01 & 03-02):**
+    - Plan 03-01 (Wave 1, 2 tasks): `MCPClientAdapter`, stdio subprocess transport with JSON-RPC 2.0 framing, HTTP/SSE transport, dynamic tool discovery (`tools/list`), dynamic `R0–R4` risk mapping with heuristic rules and per-server overrides, and mock MCP server test suite in `tests/test_mcp_client.py`.
+    - Plan 03-02 (Wave 2, 3 tasks): `SkillSecurityScanner` MCP manifest pre-validation & SHA-256 pinning, `ToolGateway.register_mcp_server` integration, 0ms call-level journal memoization replay on worker crash, and end-to-end verification test suite in `tests/test_mcp_gateway_journal.py`.
+
 ---
 
 ## 2. Blockers & Dependencies
 
 - None. Full test suite passing cleanly with zero failures (76/76 tests green).
+- Ready to execute Phase 03 Wave 1 (Plan 03-01).
 
 ---
 
 ## 3. Next Actions
 
-- Decompose Phase 03 into atomic plans via `gsd-planner`:
-  - Plan 03-01: MCP Client Adapters (stdio & SSE) & Dynamic Tool Schema Ingestion with R0–R4 Risk Mapping.
-  - Plan 03-02: SkillSpector Pre-Validation of External MCP Manifests & 0ms Call-Level Journal Replay.
+- Execute Plan 03-01 via `gsd-executor`: Implement MCPClientAdapter, stdio/SSE transports, dynamic discovery, and R0-R4 risk mapping.
+- Execute Plan 03-02 via `gsd-executor`: Wire SkillSpector pre-validation, ToolGateway 0ms call journaling, and end-to-end replay verification.
 
 
