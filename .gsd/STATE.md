@@ -42,3 +42,4 @@
   - Implement async PostgreSQL driver pool in `src/harness_core/db.py` using `asyncpg` / `psycopg3`.
   - Configure Alembic migration environment (`alembic init`) and link to `0001_initial_schema.sql`.
   - Add concurrency test for simultaneous lease claims with `SKIP LOCKED`.
+

@@ -54,3 +54,4 @@ Every implementation task must produce empirical verification output before mark
 - **CoW & Durability:** Crash-injection tests proving 0ms call journal replay and clean rollback of dirty trees.
 - **Security & Skills:** Adversarial skill test cases quarantined with 100% recall.
 - **Proof-Carrying Artifacts:** Verifiable JSON manifests with diff SHA-256, tree hashes, test hashes, and signed event hashes.
+
