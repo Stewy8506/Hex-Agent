@@ -2,8 +2,8 @@
 
 **Date:** 2026-10-31  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** In Progress — Phase 03 Complete (Wave 1 & Wave 2 Green), Ready for Phase 04  
-**Active Phase:** Phase 03 — External MCP Server Client & Dynamic Tool Gateway (Complete)  
+**Status:** In Progress — Phase 04 Planned (Wave 1 & Wave 2 Authored, Ready for Execution)  
+**Active Phase:** Phase 04 — Real Apple Silicon MLX Runner & Cloud API Connectors (Planned)  
 
 ---
 
@@ -73,12 +73,15 @@
 ## 2. Blockers & Dependencies
 
 - None. Full test suite passing cleanly with zero failures (92/92 tests green).
-- Phase 03 complete. Ready for Phase 04.
+- Phase 04 plans authored:
+  - `04-01-PLAN.md` (Wave 1: Local MLX Model Provider & Live Log Compression Engine)
+  - `04-02-PLAN.md` (Wave 2: Cloud API Connectors, Per-Task Budget Ceilings, Privacy Gating & Router Integration)
 
 ---
 
 ## 3. Next Actions
 
-- Proceed to Phase 04 (Model Routing & Local LLM Integration): Plan 04-01 authoring.
+- Execute Phase 04 Wave 1: `04-01-PLAN.md` (Implement `ModelProvider` base protocols, `LocalMLXModelProvider`, and `Tier1LogCompressor`).
+
 
 
