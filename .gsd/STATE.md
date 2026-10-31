@@ -33,6 +33,13 @@
    - Authored initial migration `migrations/versions/0001_initial_schema.py` representing all 16 authoritative tables with reverse foreign key downgrades.
    - Verified automated upgrade to head and downgrade to base in `tests/test_alembic_migrations.py` (13/13 test suite passing).
 
+5. **Phase 01 Dual-Driver Engine Complete (Plan 01-02):**
+   - Implemented dual-driver routing (`postgresql://`, `postgres://`, `postgresql+asyncpg://` -> PostgreSQL; otherwise SQLite WAL) in `src/harness_core/db.py`.
+   - Maintained zero-dependency SQLite local profile while integrating `asyncpg` connection pool with configurable limits.
+   - Built query parameter translation (`?` -> `$1, $2, ...`), canonical JSON serialization, and background `_SyncRunner` bridge.
+   - Implemented 27 async methods across `LedgerStore` with full sync parity and verified cryptographic hash chaining.
+   - Authored comprehensive test suite in `tests/test_db_dual_driver.py` (27/27 total repository tests passing).
+
 ---
 
 ## 2. Blockers & Dependencies
@@ -43,7 +50,7 @@
 
 ## 3. Next Actions
 
-- Continue **Phase 01: PostgreSQL Async Engine & Concurrency**:
-  - Implement async PostgreSQL driver pool in `src/harness_core/db.py` using `asyncpg`.
-  - Add concurrency test for simultaneous lease claims with `SKIP LOCKED`.
+- Execute **Phase 01 Plan 03: Concurrent Lease Claims & Concurrency Control**:
+  - Add concurrency test for simultaneous lease claims with `FOR UPDATE` / `SKIP LOCKED`.
+  - Validate high-throughput parallel worker fencing token monotonicity.
 
