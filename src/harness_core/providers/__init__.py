@@ -12,11 +12,21 @@ from .base import (
     ProviderCapabilities,
     ProviderUnavailableError,
 )
+from .cloud_provider import (
+    CloudModelProvider,
+    CloudProviderType,
+    ModelPricing,
+    TaskBudgetTracker,
+    calculate_cost_usd,
+)
 from .mlx_provider import LocalMLXModelProvider, Tier1LogCompressor
 
 __all__ = [
     "BudgetExceededError",
+    "CloudModelProvider",
+    "CloudProviderType",
     "LocalMLXModelProvider",
+    "ModelPricing",
     "ModelProvider",
     "ModelProviderError",
     "ModelResponse",
@@ -24,5 +34,7 @@ __all__ = [
     "PolicyBlockedError",
     "ProviderCapabilities",
     "ProviderUnavailableError",
+    "TaskBudgetTracker",
     "Tier1LogCompressor",
+    "calculate_cost_usd",
 ]
