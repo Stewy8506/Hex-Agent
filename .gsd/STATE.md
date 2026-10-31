@@ -2,8 +2,8 @@
 
 **Date:** 2026-10-31  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** In Progress — Phase 04 Planned (Wave 1 & Wave 2 Authored, Ready for Execution)  
-**Active Phase:** Phase 04 — Real Apple Silicon MLX Runner & Cloud API Connectors (Planned)  
+**Status:** In Progress — Phase 04 Complete, Ready for Phase 05  
+**Active Phase:** Phase 05 — Multi-Turn Autonomous Repair & Dynamic DAG Replanning  
 
 ---
 
@@ -93,7 +93,9 @@
 
 ## 3. Next Actions
 
-- Phase 04 complete. Proceed to Phase 05 planning or milestone review.
+- Begin Phase 05 planning via `gsd-planner`:
+  - Plan 05-01: Multi-turn autonomous repair loop within RUNNING -> VERIFYING cycle.
+  - Plan 05-02: Dynamic DAG replanning and selective subgraph invalidation.
 
 
 
