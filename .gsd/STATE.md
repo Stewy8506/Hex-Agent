@@ -50,16 +50,22 @@
    - Plan 02-01 (Wave 1, 2 tasks): `OverlayFSSnapshotProvider`, `BtrfsSnapshotProvider`, platform detection factory `get_default_snapshot_provider`, and contract test suite `tests/test_cow_providers.py`.
    - Plan 02-02 (Wave 2, 3 tasks): Container sandbox engine (`BubblewrapSandbox`, `DockerPodmanSandbox`, `RestrictedSubprocessSandbox`), `ToolGateway` sandbox integration, and zero-escape test suite `tests/test_sandbox_isolation.py`.
 
+8. **Phase 02 CoW Providers Complete (Plan 02-01):**
+   - Implemented `OverlayFSSnapshotProvider` with lower, upper, work, and merged layer mounts, unshare user namespace/FUSE support, and instant rollback.
+   - Implemented `BtrfsSnapshotProvider` with read-only snapshots and subvolume branching.
+   - Built platform detection factory `get_default_snapshot_provider` and dependency injection in `HarnessOrchestrator`.
+   - Authored contract test suite in `tests/test_cow_providers.py` (58/58 repository tests passing).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full test suite passing cleanly with zero failures.
+- None. Full test suite passing cleanly with zero failures (58/58 tests green).
 
 ---
 
 ## 3. Next Actions
 
-- Begin execution of Phase 02 Plan 02-01 (`.gsd/phases/02-overlayfs-sandbox/02-01-PLAN.md`).
+- Begin execution of Phase 02 Plan 02-02 (`.gsd/phases/02-overlayfs-sandbox/02-02-PLAN.md`).
 
 
