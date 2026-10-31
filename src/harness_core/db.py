@@ -29,6 +29,26 @@ def sha256_hex(text: str | bytes) -> str:
     return hashlib.sha256(text).hexdigest()
 
 
+def compute_event_hash(
+    *,
+    prev_hash: str,
+    task_id: str,
+    seq_no: int,
+    event_type: str,
+    prior_state: str | None,
+    next_state: str | None,
+    reason_code: str,
+    workspace_tree_sha: str | None,
+    payload_str: str,
+    occurred_at: str,
+) -> str:
+    chain_material = (
+        f"{prev_hash}|{task_id}|{seq_no}|{event_type}|{prior_state}|{next_state}|"
+        f"{reason_code}|{workspace_tree_sha}|{payload_str}|{occurred_at}"
+    )
+    return sha256_hex(chain_material)
+
+
 def normalize_query(sql: str, backend_type: str = "sqlite") -> str:
     """Translates parameter placeholders: converts '?' to '$1, $2, ...' for postgres,
     keeping '?' unchanged for sqlite. Ignores '?' inside single-quoted string literals."""
@@ -252,6 +272,8 @@ class LedgerStore:
     # ------------------------------------------------------------------
 
     def submit_task(self, req: TaskSubmitRequest, policy_snapshot_id: str = "pol-v1.3") -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.submit_task_async, req, policy_snapshot_id)
         with self._lock:
             if req.idempotency_key:
                 existing = self.conn.execute(
@@ -320,6 +342,78 @@ class LedgerStore:
             self.conn.commit()
             return self.get_task(task_id)  # type: ignore[return-value]
 
+    async def submit_task_async(self, req: TaskSubmitRequest, policy_snapshot_id: str = "pol-v1.3") -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.submit_task, req, policy_snapshot_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if req.idempotency_key:
+                    existing = await conn.fetchrow(
+                        "SELECT * FROM tasks WHERE idempotency_key = $1", req.idempotency_key
+                    )
+                    if existing:
+                        return self._row_to_dict(existing)  # type: ignore[return-value]
+
+                task_id = f"tsk_{uuid.uuid4().hex[:12]}"
+                now = utcnow_iso()
+                budget = TaskBudget.from_dict(req.budget).to_dict()
+                constraints = dict(req.constraints or {})
+                if req.workspace_root:
+                    constraints["workspace_root"] = req.workspace_root
+                if req.steps:
+                    constraints["requested_steps"] = req.steps
+                if req.skill_id:
+                    constraints["skill_id"] = req.skill_id
+                if req.approval_policy:
+                    constraints["approval_policy"] = req.approval_policy
+
+                mode = req.execution_mode
+                if mode == "auto":
+                    mode = "fast_path" if self._is_fast_path_eligible(req) else "standard"
+
+                await conn.execute(
+                    """
+                    INSERT INTO tasks (
+                        task_id, parent_task_id, project_id, goal, execution_mode,
+                        status, priority, deadline_at, budget_json, constraints_json,
+                        deliverable, policy_snapshot_id, idempotency_key,
+                        active_workspace_tree_sha, version, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 1, $15, $16)
+                    """,
+                    task_id,
+                    req.parent_task_id,
+                    req.project_id or "default",
+                    req.goal,
+                    mode,
+                    TaskState.SUBMITTED.value,
+                    req.priority,
+                    req.deadline_at,
+                    canonical_json(budget),
+                    canonical_json(constraints),
+                    req.deliverable,
+                    policy_snapshot_id,
+                    req.idempotency_key,
+                    None,
+                    now,
+                    now,
+                )
+                await self._append_event_async_conn(
+                    conn=conn,
+                    task_id=task_id,
+                    attempt_id=None,
+                    event_type="TASK_SUBMITTED",
+                    prior_state=None,
+                    next_state=TaskState.SUBMITTED.value,
+                    reason_code="INTAKE_ACCEPTED",
+                    workspace_tree_sha=None,
+                    policy_version=policy_snapshot_id,
+                    payload={"goal": req.goal, "execution_mode": mode, "project_id": req.project_id},
+                    actor="control_api",
+                )
+                row = await conn.fetchrow("SELECT * FROM tasks WHERE task_id = $1", task_id)
+                return self._row_to_dict(row)  # type: ignore[return-value]
+
     def _is_fast_path_eligible(self, req: TaskSubmitRequest) -> bool:
         """FR-001a: Read-only (R0/R1) tasks with <3 estimated steps qualify for Fast-Path."""
         if req.steps:
@@ -347,6 +441,20 @@ class LedgerStore:
         terminal_reason: str | None = None,
     ) -> dict[str, Any]:
         """Authoritative CAS state transition with fencing check and append-only event record."""
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.transition_task_async,
+                task_id,
+                next_state,
+                reason_code=reason_code,
+                actor=actor,
+                attempt_id=attempt_id,
+                workspace_tree_sha=workspace_tree_sha,
+                fencing_token=fencing_token,
+                expected_version=expected_version,
+                payload=payload,
+                terminal_reason=terminal_reason,
+            )
         target = TaskState(next_state) if isinstance(next_state, str) else next_state
         with self._lock:
             row = self.conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
@@ -407,6 +515,107 @@ class LedgerStore:
             self.conn.commit()
             return self.get_task(task_id)  # type: ignore[return-value]
 
+    async def transition_task_async(
+        self,
+        task_id: str,
+        next_state: TaskState | str,
+        *,
+        reason_code: str,
+        actor: str = "orchestrator",
+        attempt_id: str | None = None,
+        workspace_tree_sha: str | None = None,
+        fencing_token: int | None = None,
+        expected_version: int | None = None,
+        payload: dict[str, Any] | None = None,
+        terminal_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Authoritative CAS state transition with fencing check and append-only event record."""
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.transition_task,
+                task_id,
+                next_state,
+                reason_code=reason_code,
+                actor=actor,
+                attempt_id=attempt_id,
+                workspace_tree_sha=workspace_tree_sha,
+                fencing_token=fencing_token,
+                expected_version=expected_version,
+                payload=payload,
+                terminal_reason=terminal_reason,
+            )
+        target = TaskState(next_state) if isinstance(next_state, str) else next_state
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE", task_id)
+                if not row:
+                    raise KeyError(f"Task not found: {task_id}")
+                current = TaskState(row["status"])
+                cur_version = int(row["version"])
+
+                if expected_version is not None and cur_version != expected_version:
+                    raise ConcurrencyFenceError(
+                        f"CAS version mismatch on {task_id}: expected {expected_version}, got {cur_version}"
+                    )
+
+                if fencing_token is not None:
+                    max_tok_row = await conn.fetchrow(
+                        "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = $1",
+                        task_id,
+                    )
+                    max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+                    if fencing_token < max_tok:
+                        raise ConcurrencyFenceError(
+                            f"Stale fencing token {fencing_token} < active token {max_tok} for task {task_id}"
+                        )
+
+                if target != current and target not in VALID_TRANSITIONS.get(current, set()):
+                    raise InvalidTransitionError(
+                        f"Illegal state transition for {task_id}: {current.value} -> {target.value}"
+                    )
+
+                now = utcnow_iso()
+                new_tree_sha = workspace_tree_sha or row["active_workspace_tree_sha"]
+                term_reason = terminal_reason if target.is_terminal else row["terminal_reason"]
+
+                res = await conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = $1, version = version + 1, active_workspace_tree_sha = $2,
+                        terminal_reason = $3, updated_at = $4
+                    WHERE task_id = $5 AND version = $6
+                    """,
+                    target.value,
+                    new_tree_sha,
+                    term_reason,
+                    now,
+                    task_id,
+                    cur_version,
+                )
+                try:
+                    rowcount = int(res.split()[-1])
+                except (ValueError, IndexError):
+                    rowcount = 0
+                if rowcount != 1:
+                    raise ConcurrencyFenceError(f"Concurrent update race detected on task {task_id}")
+
+                await self._append_event_async_conn(
+                    conn=conn,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    event_type=f"STATE_{target.value}",
+                    prior_state=current.value,
+                    next_state=target.value,
+                    reason_code=reason_code,
+                    workspace_tree_sha=new_tree_sha,
+                    policy_version=row["policy_snapshot_id"],
+                    payload=payload or {},
+                    actor=actor,
+                )
+                updated = await conn.fetchrow("SELECT * FROM tasks WHERE task_id = $1", task_id)
+                return self._row_to_dict(updated)  # type: ignore[return-value]
+
     def record_event(
         self,
         task_id: str,
@@ -418,6 +627,17 @@ class LedgerStore:
         workspace_tree_sha: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.record_event_async,
+                task_id,
+                event_type,
+                reason_code=reason_code,
+                actor=actor,
+                attempt_id=attempt_id,
+                workspace_tree_sha=workspace_tree_sha,
+                payload=payload,
+            )
         with self._lock:
             row = self.conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
             if not row:
@@ -436,6 +656,49 @@ class LedgerStore:
             )
             self.conn.commit()
             return ev
+
+    async def record_event_async(
+        self,
+        task_id: str,
+        event_type: str,
+        *,
+        reason_code: str,
+        actor: str = "orchestrator",
+        attempt_id: str | None = None,
+        workspace_tree_sha: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.record_event,
+                task_id,
+                event_type,
+                reason_code=reason_code,
+                actor=actor,
+                attempt_id=attempt_id,
+                workspace_tree_sha=workspace_tree_sha,
+                payload=payload,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("SELECT * FROM tasks WHERE task_id = $1", task_id)
+                if not row:
+                    raise KeyError(f"Task not found: {task_id}")
+                ev = await self._append_event_async_conn(
+                    conn=conn,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    event_type=event_type,
+                    prior_state=row["status"],
+                    next_state=row["status"],
+                    reason_code=reason_code,
+                    workspace_tree_sha=workspace_tree_sha or row["active_workspace_tree_sha"],
+                    policy_version=row["policy_snapshot_id"],
+                    payload=payload or {},
+                    actor=actor,
+                )
+                return ev
 
     def _append_event_locked(
         self,
@@ -462,11 +725,18 @@ class LedgerStore:
         now = utcnow_iso()
         payload_str = canonical_json(payload)
 
-        chain_material = (
-            f"{prev_hash}|{task_id}|{seq_no}|{event_type}|{prior_state}|{next_state}|"
-            f"{reason_code}|{workspace_tree_sha}|{payload_str}|{now}"
+        event_sha = compute_event_hash(
+            prev_hash=prev_hash,
+            task_id=task_id,
+            seq_no=seq_no,
+            event_type=event_type,
+            prior_state=prior_state,
+            next_state=next_state,
+            reason_code=reason_code,
+            workspace_tree_sha=workspace_tree_sha,
+            payload_str=payload_str,
+            occurred_at=now,
         )
-        event_sha = sha256_hex(chain_material)
 
         self.conn.execute(
             """
@@ -512,12 +782,105 @@ class LedgerStore:
             "event_sha256": event_sha,
         }
 
+    async def _append_event_async_conn(
+        self,
+        *,
+        conn: Any,
+        task_id: str,
+        attempt_id: str | None,
+        event_type: str,
+        prior_state: str | None,
+        next_state: str | None,
+        reason_code: str,
+        workspace_tree_sha: str | None,
+        policy_version: str,
+        payload: dict[str, Any],
+        actor: str,
+    ) -> dict[str, Any]:
+        last = await conn.fetchrow(
+            "SELECT sequence_no, event_sha256 FROM task_events WHERE task_id = $1 ORDER BY sequence_no DESC LIMIT 1",
+            task_id,
+        )
+        seq_no = (int(last["sequence_no"]) + 1) if last else 1
+        prev_hash = str(last["event_sha256"]) if last else ("0" * 64)
+        event_id = f"evt_{uuid.uuid4().hex[:12]}"
+        correlation_id = f"cor_{uuid.uuid4().hex[:10]}"
+        now = utcnow_iso()
+        payload_str = canonical_json(payload)
+
+        event_sha = compute_event_hash(
+            prev_hash=prev_hash,
+            task_id=task_id,
+            seq_no=seq_no,
+            event_type=event_type,
+            prior_state=prior_state,
+            next_state=next_state,
+            reason_code=reason_code,
+            workspace_tree_sha=workspace_tree_sha,
+            payload_str=payload_str,
+            occurred_at=now,
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO task_events (
+                event_id, task_id, attempt_id, sequence_no, event_type,
+                prior_state, next_state, reason_code, workspace_tree_sha,
+                policy_version, payload_json, actor, occurred_at,
+                correlation_id, event_sha256
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            """,
+            event_id,
+            task_id,
+            attempt_id,
+            seq_no,
+            event_type,
+            prior_state,
+            next_state,
+            reason_code,
+            workspace_tree_sha,
+            policy_version,
+            payload_str,
+            actor,
+            now,
+            correlation_id,
+            event_sha,
+        )
+        return {
+            "event_id": event_id,
+            "task_id": task_id,
+            "attempt_id": attempt_id,
+            "sequence_no": seq_no,
+            "event_type": event_type,
+            "prior_state": prior_state,
+            "next_state": next_state,
+            "reason_code": reason_code,
+            "workspace_tree_sha": workspace_tree_sha,
+            "payload": payload,
+            "actor": actor,
+            "occurred_at": now,
+            "correlation_id": correlation_id,
+            "event_sha256": event_sha,
+        }
+
     def get_task(self, task_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_task_async, task_id)
         with self._lock:
             row = self.conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
             return self._row_to_dict(row)
 
+    async def get_task_async(self, task_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_task, task_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM tasks WHERE task_id = $1", task_id)
+            return self._row_to_dict(row)
+
     def list_tasks(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_tasks_async, status, limit)
         with self._lock:
             if status:
                 rows = self.conn.execute(
@@ -530,12 +893,42 @@ class LedgerStore:
                 ).fetchall()
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
+    async def list_tasks_async(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_tasks, status, limit)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            if status:
+                rows = await conn.fetch(
+                    "SELECT * FROM tasks WHERE status = $1 ORDER BY created_at DESC LIMIT $2",
+                    status,
+                    limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT * FROM tasks ORDER BY created_at DESC LIMIT $1", limit
+                )
+            return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
     def list_events(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_events_async, task_id)
         with self._lock:
             rows = self.conn.execute(
                 "SELECT * FROM task_events WHERE task_id = ? ORDER BY sequence_no ASC",
                 (task_id,),
             ).fetchall()
+            return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    async def list_events_async(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_events, task_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM task_events WHERE task_id = $1 ORDER BY sequence_no ASC",
+                task_id,
+            )
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
     # ------------------------------------------------------------------
@@ -551,6 +944,16 @@ class LedgerStore:
         local_llm_models: list[str] | None = None,
         trust_level: str = "trusted_local",
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.register_worker_async,
+                worker_id,
+                machine_class=machine_class,
+                cow_backend=cow_backend,
+                capabilities=capabilities,
+                local_llm_models=local_llm_models,
+                trust_level=trust_level,
+            )
         with self._lock:
             now = utcnow_iso()
             self.conn.execute(
@@ -582,9 +985,67 @@ class LedgerStore:
             row = self.conn.execute("SELECT * FROM workers WHERE worker_id = ?", (worker_id,)).fetchone()
             return self._row_to_dict(row)  # type: ignore[return-value]
 
+    async def register_worker_async(
+        self,
+        worker_id: str,
+        machine_class: str = "m4_air",
+        cow_backend: str = "apfs_clone",
+        capabilities: dict[str, Any] | None = None,
+        local_llm_models: list[str] | None = None,
+        trust_level: str = "trusted_local",
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.register_worker,
+                worker_id,
+                machine_class=machine_class,
+                cow_backend=cow_backend,
+                capabilities=capabilities,
+                local_llm_models=local_llm_models,
+                trust_level=trust_level,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            now = utcnow_iso()
+            await conn.execute(
+                """
+                INSERT INTO workers (
+                    worker_id, machine_class, capabilities_json, cow_backend,
+                    local_llm_models_json, trust_level, health, last_heartbeat_at, registered_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, 'HEALTHY', $7, $8)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    machine_class=excluded.machine_class,
+                    capabilities_json=excluded.capabilities_json,
+                    cow_backend=excluded.cow_backend,
+                    local_llm_models_json=excluded.local_llm_models_json,
+                    health='HEALTHY',
+                    last_heartbeat_at=excluded.last_heartbeat_at
+                """,
+                worker_id,
+                machine_class,
+                canonical_json(capabilities or {}),
+                cow_backend,
+                canonical_json(local_llm_models or []),
+                trust_level,
+                now,
+                now,
+            )
+            row = await conn.fetchrow("SELECT * FROM workers WHERE worker_id = $1", worker_id)
+            return self._row_to_dict(row)  # type: ignore[return-value]
+
     def list_workers(self) -> list[dict[str, Any]]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_workers_async)
         with self._lock:
             rows = self.conn.execute("SELECT * FROM workers ORDER BY registered_at ASC").fetchall()
+            return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    async def list_workers_async(self) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_workers)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM workers ORDER BY registered_at ASC")
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
     def acquire_lease_and_attempt(
@@ -600,6 +1061,18 @@ class LedgerStore:
         ttl_seconds: int = 300,
     ) -> dict[str, Any]:
         """Monotonically increments fencing_token per task and creates lease + attempt."""
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.acquire_lease_and_attempt_async,
+                task_id,
+                worker_id,
+                base_tree_sha=base_tree_sha,
+                workspace_path=workspace_path,
+                parent_attempt_id=parent_attempt_id,
+                branch_label=branch_label,
+                retry_index=retry_index,
+                ttl_seconds=ttl_seconds,
+            )
         with self._lock:
             max_tok_row = self.conn.execute(
                 "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = ?",
@@ -665,6 +1138,102 @@ class LedgerStore:
                 "expires_at": expires,
             }
 
+    async def acquire_lease_and_attempt_async(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        base_tree_sha: str | None = None,
+        workspace_path: str | None = None,
+        parent_attempt_id: str | None = None,
+        branch_label: str | None = None,
+        retry_index: int = 0,
+        ttl_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """Monotonically increments fencing_token per task and creates lease + attempt."""
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.acquire_lease_and_attempt,
+                task_id,
+                worker_id,
+                base_tree_sha=base_tree_sha,
+                workspace_path=workspace_path,
+                parent_attempt_id=parent_attempt_id,
+                branch_label=branch_label,
+                retry_index=retry_index,
+                ttl_seconds=ttl_seconds,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.fetchrow("SELECT task_id FROM tasks WHERE task_id = $1 FOR UPDATE", task_id)
+                max_tok_row = await conn.fetchrow(
+                    "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = $1",
+                    task_id,
+                )
+                next_token = (int(max_tok_row["max_tok"]) if max_tok_row else 0) + 1
+                now_dt = datetime.now(timezone.utc)
+                now = now_dt.isoformat()
+                expires = (now_dt + timedelta(seconds=ttl_seconds)).isoformat()
+
+                if parent_attempt_id is None:
+                    await conn.execute(
+                        "UPDATE leases SET released_at = $1 WHERE task_id = $2 AND released_at IS NULL",
+                        now,
+                        task_id,
+                    )
+
+                attempt_id = f"att_{uuid.uuid4().hex[:12]}"
+                lease_id = f"lse_{uuid.uuid4().hex[:12]}"
+
+                await conn.execute(
+                    """
+                    INSERT INTO attempts (
+                        attempt_id, task_id, parent_attempt_id, branch_label, worker_id,
+                        lease_id, fencing_token, base_tree_sha, head_tree_sha,
+                        workspace_path, status, started_at, retry_index
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'RUNNING', $11, $12)
+                    """,
+                    attempt_id,
+                    task_id,
+                    parent_attempt_id,
+                    branch_label,
+                    worker_id,
+                    lease_id,
+                    next_token,
+                    base_tree_sha,
+                    base_tree_sha,
+                    workspace_path,
+                    now,
+                    retry_index,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO leases (
+                        lease_id, task_id, attempt_id, worker_id,
+                        fencing_token, expires_at, renewed_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    lease_id,
+                    task_id,
+                    attempt_id,
+                    worker_id,
+                    next_token,
+                    expires,
+                    now,
+                )
+                return {
+                    "attempt_id": attempt_id,
+                    "lease_id": lease_id,
+                    "task_id": task_id,
+                    "worker_id": worker_id,
+                    "fencing_token": next_token,
+                    "base_tree_sha": base_tree_sha,
+                    "workspace_path": workspace_path,
+                    "branch_label": branch_label,
+                    "expires_at": expires,
+                }
+
     def update_attempt(
         self,
         attempt_id: str,
@@ -674,6 +1243,15 @@ class LedgerStore:
         workspace_path: str | None = None,
         failure_class: str | None = None,
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.update_attempt_async,
+                attempt_id,
+                status=status,
+                head_tree_sha=head_tree_sha,
+                workspace_path=workspace_path,
+                failure_class=failure_class,
+            )
         with self._lock:
             row = self.conn.execute("SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
             if not row:
@@ -695,11 +1273,67 @@ class LedgerStore:
             updated = self.conn.execute("SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
             return self._row_to_dict(updated)  # type: ignore[return-value]
 
+    async def update_attempt_async(
+        self,
+        attempt_id: str,
+        *,
+        status: str | None = None,
+        head_tree_sha: str | None = None,
+        workspace_path: str | None = None,
+        failure_class: str | None = None,
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.update_attempt,
+                attempt_id,
+                status=status,
+                head_tree_sha=head_tree_sha,
+                workspace_path=workspace_path,
+                failure_class=failure_class,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM attempts WHERE attempt_id = $1", attempt_id)
+            if not row:
+                raise KeyError(f"Attempt not found: {attempt_id}")
+            new_status = status or row["status"]
+            new_head = head_tree_sha or row["head_tree_sha"]
+            new_ws = workspace_path or row["workspace_path"]
+            new_fail = failure_class if failure_class is not None else row["failure_class"]
+            ended = utcnow_iso() if new_status in ("SUCCEEDED", "FAILED", "CANCELED", "DISCARDED") else row["ended_at"]
+            await conn.execute(
+                """
+                UPDATE attempts
+                SET status = $1, head_tree_sha = $2, workspace_path = $3, failure_class = $4, ended_at = $5
+                WHERE attempt_id = $6
+                """,
+                new_status,
+                new_head,
+                new_ws,
+                new_fail,
+                ended,
+                attempt_id,
+            )
+            updated = await conn.fetchrow("SELECT * FROM attempts WHERE attempt_id = $1", attempt_id)
+            return self._row_to_dict(updated)  # type: ignore[return-value]
+
     def list_attempts(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_attempts_async, task_id)
         with self._lock:
             rows = self.conn.execute(
                 "SELECT * FROM attempts WHERE task_id = ? ORDER BY started_at ASC", (task_id,)
             ).fetchall()
+            return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    async def list_attempts_async(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_attempts, task_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM attempts WHERE task_id = $1 ORDER BY started_at ASC", task_id
+            )
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
     # ------------------------------------------------------------------
@@ -715,6 +1349,15 @@ class LedgerStore:
         created_by: str = "orchestrator",
         rationale: str = "Initial DAG plan",
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.save_plan_async,
+                task_id,
+                dag_nodes,
+                blast_radius_checks=blast_radius_checks,
+                created_by=created_by,
+                rationale=rationale,
+            )
         with self._lock:
             last = self.conn.execute(
                 "SELECT MAX(revision) AS max_rev FROM plans WHERE task_id = ?", (task_id,)
@@ -746,7 +1389,61 @@ class LedgerStore:
             self.conn.commit()
             return self.get_latest_plan(task_id)  # type: ignore[return-value]
 
+    async def save_plan_async(
+        self,
+        task_id: str,
+        dag_nodes: list[dict[str, Any]],
+        *,
+        blast_radius_checks: list[str] | None = None,
+        created_by: str = "orchestrator",
+        rationale: str = "Initial DAG plan",
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.save_plan,
+                task_id,
+                dag_nodes,
+                blast_radius_checks=blast_radius_checks,
+                created_by=created_by,
+                rationale=rationale,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                last = await conn.fetchrow(
+                    "SELECT MAX(revision) AS max_rev FROM plans WHERE task_id = $1", task_id
+                )
+                prev_rev = int(last["max_rev"]) if (last and last["max_rev"] is not None) else None
+                rev = (prev_rev + 1) if prev_rev is not None else 1
+                plan_id = f"pln_{uuid.uuid4().hex[:12]}"
+                now = utcnow_iso()
+
+                await conn.execute(
+                    """
+                    INSERT INTO plans (
+                        plan_id, task_id, revision, dag_json, blast_radius_checks_json,
+                        created_by, rationale, created_at, supersedes_revision
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    """,
+                    plan_id,
+                    task_id,
+                    rev,
+                    canonical_json(dag_nodes),
+                    canonical_json(blast_radius_checks or []),
+                    created_by,
+                    rationale,
+                    now,
+                    prev_rev,
+                )
+                row = await conn.fetchrow(
+                    "SELECT * FROM plans WHERE task_id = $1 ORDER BY revision DESC LIMIT 1",
+                    task_id,
+                )
+                return self._row_to_dict(row)  # type: ignore[return-value]
+
     def get_latest_plan(self, task_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_latest_plan_async, task_id)
         with self._lock:
             row = self.conn.execute(
                 "SELECT * FROM plans WHERE task_id = ? ORDER BY revision DESC LIMIT 1",
@@ -754,8 +1451,21 @@ class LedgerStore:
             ).fetchone()
             return self._row_to_dict(row)
 
+    async def get_latest_plan_async(self, task_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_latest_plan, task_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM plans WHERE task_id = $1 ORDER BY revision DESC LIMIT 1",
+                task_id,
+            )
+            return self._row_to_dict(row)
+
     def append_blast_radius_checks(self, task_id: str, checks: list[str], warning_summary: str) -> dict[str, Any] | None:
         """FR-036a: Dynamically append impacted downstream tests/typechecks to active plan."""
+        if self.backend_type == "postgres":
+            return self._run_sync(self.append_blast_radius_checks_async, task_id, checks, warning_summary)
         with self._lock:
             plan = self.get_latest_plan(task_id)
             if not plan:
@@ -783,6 +1493,48 @@ class LedgerStore:
             self.conn.commit()
             return self.get_latest_plan(task_id)
 
+    async def append_blast_radius_checks_async(self, task_id: str, checks: list[str], warning_summary: str) -> dict[str, Any] | None:
+        """FR-036a: Dynamically append impacted downstream tests/typechecks to active plan."""
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.append_blast_radius_checks, task_id, checks, warning_summary)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT * FROM plans WHERE task_id = $1 ORDER BY revision DESC LIMIT 1",
+                    task_id,
+                )
+                plan = self._row_to_dict(row)
+                if not plan:
+                    return None
+                existing = list(plan.get("blast_radius_checks") or [])
+                for c in checks:
+                    if c not in existing:
+                        existing.append(c)
+                await conn.execute(
+                    "UPDATE plans SET blast_radius_checks_json = $1 WHERE plan_id = $2",
+                    canonical_json(existing),
+                    plan["plan_id"],
+                )
+                await self._append_event_async_conn(
+                    conn=conn,
+                    task_id=task_id,
+                    attempt_id=None,
+                    event_type="AST_BLAST_RADIUS_INTERCEPTED",
+                    prior_state=None,
+                    next_state=None,
+                    reason_code="DOWNSTREAM_CALLERS_DETECTED",
+                    workspace_tree_sha=None,
+                    policy_version="pol-v1.3",
+                    payload={"warning": warning_summary, "pinned_checks": existing},
+                    actor="graphify_interceptor",
+                )
+                updated = await conn.fetchrow(
+                    "SELECT * FROM plans WHERE task_id = $1 ORDER BY revision DESC LIMIT 1",
+                    task_id,
+                )
+                return self._row_to_dict(updated)
+
     def create_checkpoint(
         self,
         task_id: str,
@@ -794,6 +1546,18 @@ class LedgerStore:
         snapshot_path: str,
         artifact_uri: str | None = None,
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.create_checkpoint_async,
+                task_id,
+                attempt_id,
+                plan_revision,
+                completed_steps,
+                pending_steps,
+                workspace_tree_sha,
+                snapshot_path,
+                artifact_uri=artifact_uri,
+            )
         with self._lock:
             checkpoint_id = f"chk_{uuid.uuid4().hex[:12]}"
             now = utcnow_iso()
@@ -833,12 +1597,86 @@ class LedgerStore:
             ).fetchone()
             return self._row_to_dict(row)  # type: ignore[return-value]
 
+    async def create_checkpoint_async(
+        self,
+        task_id: str,
+        attempt_id: str,
+        plan_revision: int,
+        completed_steps: list[str],
+        pending_steps: list[str],
+        workspace_tree_sha: str,
+        snapshot_path: str,
+        artifact_uri: str | None = None,
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.create_checkpoint,
+                task_id,
+                attempt_id,
+                plan_revision,
+                completed_steps,
+                pending_steps,
+                workspace_tree_sha,
+                snapshot_path,
+                artifact_uri=artifact_uri,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                checkpoint_id = f"chk_{uuid.uuid4().hex[:12]}"
+                now = utcnow_iso()
+                digest = sha256_hex(
+                    f"{task_id}|{attempt_id}|{plan_revision}|{canonical_json(completed_steps)}|"
+                    f"{canonical_json(pending_steps)}|{workspace_tree_sha}|{snapshot_path}"
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO checkpoints (
+                        checkpoint_id, task_id, attempt_id, plan_revision,
+                        completed_steps_json, pending_steps_json, workspace_tree_sha,
+                        snapshot_path, artifact_uri, sha256, schema_version, created_at, validity
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '1.0', $11, 'VALID')
+                    """,
+                    checkpoint_id,
+                    task_id,
+                    attempt_id,
+                    plan_revision,
+                    canonical_json(completed_steps),
+                    canonical_json(pending_steps),
+                    workspace_tree_sha,
+                    snapshot_path,
+                    artifact_uri,
+                    digest,
+                    now,
+                )
+                await conn.execute(
+                    "UPDATE tasks SET active_workspace_tree_sha = $1, updated_at = $2 WHERE task_id = $3",
+                    workspace_tree_sha,
+                    now,
+                    task_id,
+                )
+                row = await conn.fetchrow("SELECT * FROM checkpoints WHERE checkpoint_id = $1", checkpoint_id)
+                return self._row_to_dict(row)  # type: ignore[return-value]
+
     def get_latest_checkpoint(self, task_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_latest_checkpoint_async, task_id)
         with self._lock:
             row = self.conn.execute(
                 "SELECT * FROM checkpoints WHERE task_id = ? AND validity = 'VALID' ORDER BY created_at DESC LIMIT 1",
                 (task_id,),
             ).fetchone()
+            return self._row_to_dict(row)
+
+    async def get_latest_checkpoint_async(self, task_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_latest_checkpoint, task_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM checkpoints WHERE task_id = $1 AND validity = 'VALID' ORDER BY created_at DESC LIMIT 1",
+                task_id,
+            )
             return self._row_to_dict(row)
 
     # ------------------------------------------------------------------
@@ -853,6 +1691,15 @@ class LedgerStore:
         canonical_args_hash: str,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.find_sealed_tool_call_async,
+                task_id,
+                step_id,
+                tool_id,
+                canonical_args_hash,
+                idempotency_key,
+            )
         with self._lock:
             row = self.conn.execute(
                 """
@@ -864,6 +1711,41 @@ class LedgerStore:
                 """,
                 (task_id, step_id, tool_id, canonical_args_hash, idempotency_key),
             ).fetchone()
+            return self._row_to_dict(row)
+
+    async def find_sealed_tool_call_async(
+        self,
+        task_id: str,
+        step_id: str,
+        tool_id: str,
+        canonical_args_hash: str,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.find_sealed_tool_call,
+                task_id,
+                step_id,
+                tool_id,
+                canonical_args_hash,
+                idempotency_key,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM tool_calls
+                WHERE task_id = $1 AND step_id = $2 AND tool_id = $3
+                  AND (canonical_args_hash = $4 OR idempotency_key = $5)
+                  AND status = 'SEALED'
+                ORDER BY started_at ASC LIMIT 1
+                """,
+                task_id,
+                step_id,
+                tool_id,
+                canonical_args_hash,
+                idempotency_key,
+            )
             return self._row_to_dict(row)
 
     def begin_tool_call(
@@ -881,6 +1763,21 @@ class LedgerStore:
         idempotency_key: str,
         replayed_from_call_id: str | None = None,
     ) -> str:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.begin_tool_call_async,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                step_id=step_id,
+                sequence_in_step=sequence_in_step,
+                tool_id=tool_id,
+                risk_class=risk_class,
+                canonical_args_hash=canonical_args_hash,
+                arguments_redacted=arguments_redacted,
+                policy_decision=policy_decision,
+                idempotency_key=idempotency_key,
+                replayed_from_call_id=replayed_from_call_id,
+            )
         with self._lock:
             call_id = f"cal_{uuid.uuid4().hex[:12]}"
             now = utcnow_iso()
@@ -912,6 +1809,65 @@ class LedgerStore:
             self.conn.commit()
             return call_id
 
+    async def begin_tool_call_async(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        step_id: str,
+        sequence_in_step: int,
+        tool_id: str,
+        risk_class: str,
+        canonical_args_hash: str,
+        arguments_redacted: dict[str, Any],
+        policy_decision: str,
+        idempotency_key: str,
+        replayed_from_call_id: str | None = None,
+    ) -> str:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.begin_tool_call,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                step_id=step_id,
+                sequence_in_step=sequence_in_step,
+                tool_id=tool_id,
+                risk_class=risk_class,
+                canonical_args_hash=canonical_args_hash,
+                arguments_redacted=arguments_redacted,
+                policy_decision=policy_decision,
+                idempotency_key=idempotency_key,
+                replayed_from_call_id=replayed_from_call_id,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            call_id = f"cal_{uuid.uuid4().hex[:12]}"
+            now = utcnow_iso()
+            await conn.execute(
+                """
+                INSERT INTO tool_calls (
+                    call_id, task_id, attempt_id, step_id, sequence_in_step,
+                    tool_id, risk_class, canonical_args_hash, arguments_redacted_json,
+                    replayed_from_call_id, policy_decision, idempotency_key,
+                    started_at, status
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'PENDING')
+                """,
+                call_id,
+                task_id,
+                attempt_id,
+                step_id,
+                sequence_in_step,
+                tool_id,
+                risk_class,
+                canonical_args_hash,
+                canonical_json(arguments_redacted),
+                replayed_from_call_id,
+                policy_decision,
+                idempotency_key,
+                now,
+            )
+            return call_id
+
     def seal_tool_call(
         self,
         call_id: str,
@@ -920,6 +1876,14 @@ class LedgerStore:
         status: str = "SEALED",
         result_ref: str | None = None,
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.seal_tool_call_async,
+                call_id,
+                result,
+                status=status,
+                result_ref=result_ref,
+            )
         with self._lock:
             now = utcnow_iso()
             self.conn.execute(
@@ -934,11 +1898,57 @@ class LedgerStore:
             row = self.conn.execute("SELECT * FROM tool_calls WHERE call_id = ?", (call_id,)).fetchone()
             return self._row_to_dict(row)  # type: ignore[return-value]
 
+    async def seal_tool_call_async(
+        self,
+        call_id: str,
+        result: dict[str, Any],
+        *,
+        status: str = "SEALED",
+        result_ref: str | None = None,
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.seal_tool_call,
+                call_id,
+                result,
+                status=status,
+                result_ref=result_ref,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            now = utcnow_iso()
+            await conn.execute(
+                """
+                UPDATE tool_calls
+                SET result_json = $1, result_ref = $2, ended_at = $3, status = $4
+                WHERE call_id = $5
+                """,
+                canonical_json(result),
+                result_ref,
+                now,
+                status,
+                call_id,
+            )
+            row = await conn.fetchrow("SELECT * FROM tool_calls WHERE call_id = $1", call_id)
+            return self._row_to_dict(row)  # type: ignore[return-value]
+
     def list_tool_calls(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_tool_calls_async, task_id)
         with self._lock:
             rows = self.conn.execute(
                 "SELECT * FROM tool_calls WHERE task_id = ? ORDER BY started_at ASC", (task_id,)
             ).fetchall()
+            return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    async def list_tool_calls_async(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_tool_calls, task_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM tool_calls WHERE task_id = $1 ORDER BY started_at ASC", task_id
+            )
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
     # ------------------------------------------------------------------
@@ -956,6 +1966,17 @@ class LedgerStore:
         blast_radius_summary: str,
         requested_by: str = "worker",
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.create_approval_async,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                step_id=step_id,
+                action_type=action_type,
+                action_params=action_params,
+                blast_radius_summary=blast_radius_summary,
+                requested_by=requested_by,
+            )
         with self._lock:
             approval_id = f"apr_{uuid.uuid4().hex[:12]}"
             now = utcnow_iso()
@@ -987,6 +2008,55 @@ class LedgerStore:
             ).fetchone()
             return self._row_to_dict(row)  # type: ignore[return-value]
 
+    async def create_approval_async(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str | None,
+        step_id: str | None,
+        action_type: str,
+        action_params: dict[str, Any],
+        blast_radius_summary: str,
+        requested_by: str = "worker",
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.create_approval,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                step_id=step_id,
+                action_type=action_type,
+                action_params=action_params,
+                blast_radius_summary=blast_radius_summary,
+                requested_by=requested_by,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            approval_id = f"apr_{uuid.uuid4().hex[:12]}"
+            now = utcnow_iso()
+            action_hash = sha256_hex(f"{task_id}|{action_type}|{canonical_json(action_params)}")
+            await conn.execute(
+                """
+                INSERT INTO approvals (
+                    approval_id, task_id, attempt_id, step_id, action_type,
+                    action_hash, action_params_json, blast_radius_summary,
+                    requested_by, decision, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PENDING', $10)
+                """,
+                approval_id,
+                task_id,
+                attempt_id,
+                step_id,
+                action_type,
+                action_hash,
+                canonical_json(action_params),
+                blast_radius_summary,
+                requested_by,
+                now,
+            )
+            row = await conn.fetchrow("SELECT * FROM approvals WHERE approval_id = $1", approval_id)
+            return self._row_to_dict(row)  # type: ignore[return-value]
+
     def decide_approval(
         self,
         approval_id: str,
@@ -994,6 +2064,14 @@ class LedgerStore:
         decided_by: str = "owner",
         comment: str = "",
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.decide_approval_async,
+                approval_id,
+                decision,
+                decided_by=decided_by,
+                comment=comment,
+            )
         norm = decision.upper()
         if norm not in ("APPROVED", "REJECTED"):
             raise ValueError("Decision must be APPROVED or REJECTED")
@@ -1030,7 +2108,62 @@ class LedgerStore:
             ).fetchone()
             return self._row_to_dict(updated)  # type: ignore[return-value]
 
+    async def decide_approval_async(
+        self,
+        approval_id: str,
+        decision: str,
+        decided_by: str = "owner",
+        comment: str = "",
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.decide_approval,
+                approval_id,
+                decision,
+                decided_by=decided_by,
+                comment=comment,
+            )
+        norm = decision.upper()
+        if norm not in ("APPROVED", "REJECTED"):
+            raise ValueError("Decision must be APPROVED or REJECTED")
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("SELECT * FROM approvals WHERE approval_id = $1", approval_id)
+                if not row:
+                    raise KeyError(f"Approval not found: {approval_id}")
+                now = utcnow_iso()
+                await conn.execute(
+                    """
+                    UPDATE approvals
+                    SET decision = $1, decided_by = $2, decided_at = $3, comment = $4
+                    WHERE approval_id = $5
+                    """,
+                    norm,
+                    decided_by,
+                    now,
+                    comment,
+                    approval_id,
+                )
+                await self._append_event_async_conn(
+                    conn=conn,
+                    task_id=row["task_id"],
+                    attempt_id=row["attempt_id"],
+                    event_type=f"APPROVAL_{norm}",
+                    prior_state=None,
+                    next_state=None,
+                    reason_code=f"OWNER_{norm}",
+                    workspace_tree_sha=None,
+                    policy_version="pol-v1.3",
+                    payload={"approval_id": approval_id, "decision": norm, "comment": comment},
+                    actor=decided_by,
+                )
+                updated = await conn.fetchrow("SELECT * FROM approvals WHERE approval_id = $1", approval_id)
+                return self._row_to_dict(updated)  # type: ignore[return-value]
+
     def list_approvals(self, task_id: str | None = None, decision: str | None = None) -> list[dict[str, Any]]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_approvals_async, task_id=task_id, decision=decision)
         with self._lock:
             query = "SELECT * FROM approvals WHERE 1=1"
             params: list[Any] = []
@@ -1042,6 +2175,23 @@ class LedgerStore:
                 params.append(decision.upper())
             query += " ORDER BY created_at DESC"
             rows = self.conn.execute(query, tuple(params)).fetchall()
+            return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    async def list_approvals_async(self, task_id: str | None = None, decision: str | None = None) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_approvals, task_id=task_id, decision=decision)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            query = "SELECT * FROM approvals WHERE 1=1"
+            params: list[Any] = []
+            if task_id:
+                params.append(task_id)
+                query += f" AND task_id = ${len(params)}"
+            if decision:
+                params.append(decision.upper())
+                query += f" AND decision = ${len(params)}"
+            query += " ORDER BY created_at DESC"
+            rows = await conn.fetch(query, *params)
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
     # ------------------------------------------------------------------
@@ -1059,6 +2209,17 @@ class LedgerStore:
         media_type: str = "application/json",
         sensitivity: str = "internal",
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.record_artifact_async,
+                task_id=task_id,
+                kind=kind,
+                uri=uri,
+                sha256=sha256,
+                size_bytes=size_bytes,
+                media_type=media_type,
+                sensitivity=sensitivity,
+            )
         with self._lock:
             artifact_id = f"art_{uuid.uuid4().hex[:12]}"
             now = utcnow_iso()
@@ -1077,11 +2238,69 @@ class LedgerStore:
             ).fetchone()
             return self._row_to_dict(row)  # type: ignore[return-value]
 
+    async def record_artifact_async(
+        self,
+        *,
+        task_id: str,
+        kind: str,
+        uri: str,
+        sha256: str,
+        size_bytes: int,
+        media_type: str = "application/json",
+        sensitivity: str = "internal",
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.record_artifact,
+                task_id=task_id,
+                kind=kind,
+                uri=uri,
+                sha256=sha256,
+                size_bytes=size_bytes,
+                media_type=media_type,
+                sensitivity=sensitivity,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            artifact_id = f"art_{uuid.uuid4().hex[:12]}"
+            now = utcnow_iso()
+            await conn.execute(
+                """
+                INSERT INTO artifacts (
+                    artifact_id, task_id, kind, uri, sha256, size_bytes,
+                    media_type, sensitivity, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                """,
+                artifact_id,
+                task_id,
+                kind,
+                uri,
+                sha256,
+                size_bytes,
+                media_type,
+                sensitivity,
+                now,
+            )
+            row = await conn.fetchrow("SELECT * FROM artifacts WHERE artifact_id = $1", artifact_id)
+            return self._row_to_dict(row)  # type: ignore[return-value]
+
     def list_artifacts(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_artifacts_async, task_id)
         with self._lock:
             rows = self.conn.execute(
                 "SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at ASC", (task_id,)
             ).fetchall()
+            return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    async def list_artifacts_async(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_artifacts, task_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM artifacts WHERE task_id = $1 ORDER BY created_at ASC", task_id
+            )
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
     def save_proof_bundle(
@@ -1096,6 +2315,18 @@ class LedgerStore:
         ast_impact: dict[str, Any],
         verification_results: dict[str, Any],
     ) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.save_proof_bundle_async,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                git_diff_sha=git_diff_sha,
+                git_diff_text=git_diff_text,
+                workspace_tree_sha=workspace_tree_sha,
+                runtime_digest=runtime_digest,
+                ast_impact=ast_impact,
+                verification_results=verification_results,
+            )
         with self._lock:
             proof_id = f"prf_{uuid.uuid4().hex[:12]}"
             now = utcnow_iso()
@@ -1136,10 +2367,86 @@ class LedgerStore:
             ).fetchone()
             return self._row_to_dict(row)  # type: ignore[return-value]
 
+    async def save_proof_bundle_async(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        git_diff_sha: str,
+        git_diff_text: str,
+        workspace_tree_sha: str,
+        runtime_digest: str,
+        ast_impact: dict[str, Any],
+        verification_results: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.save_proof_bundle,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                git_diff_sha=git_diff_sha,
+                git_diff_text=git_diff_text,
+                workspace_tree_sha=workspace_tree_sha,
+                runtime_digest=runtime_digest,
+                ast_impact=ast_impact,
+                verification_results=verification_results,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            proof_id = f"prf_{uuid.uuid4().hex[:12]}"
+            now = utcnow_iso()
+            rows = await conn.fetch(
+                "SELECT * FROM task_events WHERE task_id = $1 ORDER BY sequence_no ASC", task_id
+            )
+            events = [self._row_to_dict(r) for r in rows if r is not None]
+            tip_event_sha = events[-1]["event_sha256"] if events else ("0" * 64)
+            signature_material = (
+                f"{task_id}|{attempt_id}|{git_diff_sha}|{workspace_tree_sha}|"
+                f"{runtime_digest}|{canonical_json(ast_impact)}|"
+                f"{canonical_json(verification_results)}|{tip_event_sha}"
+            )
+            ledger_signature = f"ed25519-hmac-sha256:{sha256_hex(signature_material)}"
+
+            await conn.execute(
+                """
+                INSERT INTO proof_bundles (
+                    proof_id, task_id, attempt_id, git_diff_sha, git_diff_text,
+                    workspace_tree_sha, runtime_digest, ast_impact_json,
+                    verification_results_json, ledger_signature, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                """,
+                proof_id,
+                task_id,
+                attempt_id,
+                git_diff_sha,
+                git_diff_text,
+                workspace_tree_sha,
+                runtime_digest,
+                canonical_json(ast_impact),
+                canonical_json(verification_results),
+                ledger_signature,
+                now,
+            )
+            row = await conn.fetchrow("SELECT * FROM proof_bundles WHERE proof_id = $1", proof_id)
+            return self._row_to_dict(row)  # type: ignore[return-value]
+
     def get_proof_bundle(self, task_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_proof_bundle_async, task_id)
         with self._lock:
             row = self.conn.execute(
                 "SELECT * FROM proof_bundles WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
                 (task_id,),
             ).fetchone()
+            return self._row_to_dict(row)
+
+    async def get_proof_bundle_async(self, task_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_proof_bundle, task_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM proof_bundles WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1",
+                task_id,
+            )
             return self._row_to_dict(row)
