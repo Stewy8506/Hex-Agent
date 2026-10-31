@@ -7,7 +7,6 @@ import sys
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -80,6 +79,8 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations(connectable_config: dict) -> None:
     """Run migrations online using an async engine connection."""
+    from sqlalchemy.ext.asyncio import async_engine_from_config
+
     connectable = async_engine_from_config(
         connectable_config,
         prefix="sqlalchemy.",
@@ -98,28 +99,47 @@ def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section, {}) or {}
     configuration["sqlalchemy.url"] = url
 
-    if "+asyncpg" in url or "+aiosqlite" in url:
+    is_async = "+asyncpg" in url or "+aiosqlite" in url
+    if is_async:
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
+            # Check if greenlet is available for SQLAlchemy asyncio extension
+            import greenlet  # noqa: F401
+            from sqlalchemy.ext.asyncio import async_engine_from_config  # noqa: F401
+            has_async = True
+        except ImportError:
+            has_async = False
 
-        if loop and loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                executor.submit(asyncio.run, run_async_migrations(configuration)).result()
+        if has_async:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    executor.submit(asyncio.run, run_async_migrations(configuration)).result()
+            else:
+                asyncio.run(run_async_migrations(configuration))
+            return
         else:
-            asyncio.run(run_async_migrations(configuration))
-    else:
-        connectable = engine_from_config(
-            configuration,
-            prefix="sqlalchemy.",
-            poolclass=pool.NullPool,
-        )
+            # Fallback to sync driver if async requires greenlet which is not installed
+            if url.startswith("postgresql+asyncpg://"):
+                url = url.replace("postgresql+asyncpg://", "postgresql://", 1)
+                configuration["sqlalchemy.url"] = url
+            elif url.startswith("sqlite+aiosqlite://"):
+                url = url.replace("sqlite+aiosqlite://", "sqlite://", 1)
+                configuration["sqlalchemy.url"] = url
 
-        with connectable.connect() as connection:
-            do_run_migrations(connection)
+    connectable = engine_from_config(
+        configuration,
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
 
-        connectable.dispose()
+    with connectable.connect() as connection:
+        do_run_migrations(connection)
+
+    connectable.dispose()
 
 
 if context.is_offline_mode():
