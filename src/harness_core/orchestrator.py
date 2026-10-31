@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from .cow import APFSAndPortableCoWProvider
+from .cow import APFSAndPortableCoWProvider, WorkspaceSnapshotProvider, get_default_snapshot_provider
 from .db import LedgerStore
 from .gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
 from .graphify import ActiveGraphifyAdapter
@@ -29,14 +29,19 @@ from .skillspector import SkillSpectorScanner
 class HarnessOrchestrator:
     """End-to-end orchestrator wiring Ledger, CoW, Gateway, Graphify, SkillSpector, and Proof services."""
 
-    def __init__(self, data_dir: Path | str, default_workspace: Path | str | None = None):
+    def __init__(
+        self,
+        data_dir: Path | str,
+        default_workspace: Path | str | None = None,
+        cow: WorkspaceSnapshotProvider | None = None,
+    ):
         self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.default_workspace = Path(default_workspace or self.data_dir / "default_project").resolve()
         self.default_workspace.mkdir(parents=True, exist_ok=True)
 
         self.ledger = LedgerStore(self.data_dir / "ledger.db")
-        self.cow = APFSAndPortableCoWProvider(self.data_dir / "cow_snapshots")
+        self.cow = cow or get_default_snapshot_provider(self.data_dir / "cow_snapshots")
         self.workspaces_root = self.data_dir / "active_workspaces"
         self.workspaces_root.mkdir(parents=True, exist_ok=True)
 
