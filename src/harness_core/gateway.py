@@ -28,7 +28,7 @@ from .skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
 
 
 SECRET_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"(sk-[A-Za-z0-9]{16,})"),
+    re.compile(r"(sk-[A-Za-z0-9\-_]{14,})"),
     re.compile(r"(ghp_[A-Za-z0-9]{20,})"),
     re.compile(r"(AIza[0-9A-Za-z\-_]{25,})"),
     re.compile(r"((?:api_key|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{8,}['\"]?)", re.I),
