@@ -2,8 +2,8 @@
 
 **Date:** 2026-10-31  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** In Progress — Baseline Implemented, Ready for Phase 01  
-**Active Phase:** Phase 01 — PostgreSQL Async Engine & Alembic Migrations  
+**Status:** In Progress — Phase 01 Complete, Ready for Phase 02  
+**Active Phase:** Phase 02 — Linux OverlayFS Provider & Container Sandbox Isolation  
 
 ---
 
@@ -40,6 +40,12 @@
    - Implemented 27 async methods across `LedgerStore` with full sync parity and verified cryptographic hash chaining.
    - Authored comprehensive test suite in `tests/test_db_dual_driver.py` (27/27 total repository tests passing).
 
+6. **Phase 01 Concurrent Lease Claims & Concurrency Control Complete (Plan 01-03):**
+   - Implemented `claim_next_task` and `claim_next_task_async` in `src/harness_core/db.py` using `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1` (Postgres) and atomic `BEGIN IMMEDIATE` (SQLite).
+   - Monotonic fencing token increments and atomic CAS transitions to `RUNNING` with `STATE_RUNNING` (`QUEUE_CLAIMED`) hash-chained task events.
+   - Hardened `begin_tool_call` and `seal_tool_call` against stale fencing tokens, raising `ConcurrencyFenceError`.
+   - Built comprehensive multi-worker concurrency stress test suite in `tests/test_postgres_concurrency.py` (35/35 repository tests passing).
+
 ---
 
 ## 2. Blockers & Dependencies
@@ -50,7 +56,6 @@
 
 ## 3. Next Actions
 
-- Execute **Phase 01 Plan 03: Concurrent Lease Claims & Concurrency Control**:
-  - Add concurrency test for simultaneous lease claims with `FOR UPDATE` / `SKIP LOCKED`.
-  - Validate high-throughput parallel worker fencing token monotonicity.
+- Phase 01 complete! Proceed to Phase 02 (CoW Isolation & Workspace Snapshots).
+
 
