@@ -2,8 +2,8 @@
 
 **Date:** 2026-10-31  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** In Progress — Phase 01 Complete, Phase 02 Plans Ready for Execution  
-**Active Phase:** Phase 02 — Linux OverlayFS Provider & Container Sandbox Isolation  
+**Status:** Complete — Phase 01 & Phase 02 Complete  
+**Active Phase:** Phase 02 — Linux OverlayFS Provider & Container Sandbox Isolation (Complete)  
 
 ---
 
@@ -56,16 +56,22 @@
    - Built platform detection factory `get_default_snapshot_provider` and dependency injection in `HarnessOrchestrator`.
    - Authored contract test suite in `tests/test_cow_providers.py` (58/58 repository tests passing).
 
+9. **Phase 02 Sandbox Isolation & ToolGateway Complete (Plan 02-02):**
+   - Implemented `BubblewrapSandbox`, `DockerPodmanSandbox`, `RestrictedSubprocessSandbox`, and `get_default_sandbox` in `src/harness_core/sandbox.py`.
+   - Wired sandbox containment and secret redaction into `ToolGateway._tool_run_tests` and `HarnessOrchestrator`.
+   - Hardened `_resolve_confined_path` with strict `Path.relative_to` verification.
+   - Authored zero-escape verification test suite in `tests/test_sandbox_isolation.py` (76/76 total repository tests passing).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full test suite passing cleanly with zero failures (58/58 tests green).
+- None. Full test suite passing cleanly with zero failures (76/76 tests green).
 
 ---
 
 ## 3. Next Actions
 
-- Begin execution of Phase 02 Plan 02-02 (`.gsd/phases/02-overlayfs-sandbox/02-02-PLAN.md`).
+- Phase 02 is complete. Proceed to Phase 03 planning or verification as directed.
 
 
