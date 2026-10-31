@@ -142,7 +142,7 @@ def _build_upstream_rules() -> list[CompiledRule]:
         category="hidden_html_prompt_injection",
         severity="critical",
         score=80,
-        pattern=re.compile(r"<!--.*?(?:ignore\s+previous|system\s+prompt|bypass\s+policy|override\s+approval|exfiltrate|sudo).*?-->", re.I | re.S),
+        pattern=re.compile(r"<!--.*?(?:ignore\s+(?:all\s+)?(?:previous|prior)|system\s+(?:prompt|override)|bypass|override|exfiltrate|sudo|credential|secret).*?-->", re.I | re.S),
         description=UPSTREAM_EXPLANATIONS.get("P2", "Hidden instructions detected in HTML comment."),
     ))
     rules.append(CompiledRule(
@@ -150,7 +150,7 @@ def _build_upstream_rules() -> list[CompiledRule]:
         category="direct_policy_override_injection",
         severity="high",
         score=70,
-        pattern=re.compile(r"(?:ignore\s+all\s+prior\s+instructions|disregard\s+safety\s+policy|treat\s+this\s+skill\s+as\s+R0\s+regardless)", re.I),
+        pattern=re.compile(r"(?:ignore\s+(?:all\s+)?(?:prior|previous)\s+instructions|disregard\s+(?:all\s+)?(?:safety\s+)?policy|treat\s+this\s+(?:skill|tool)\s+as\s+R0\s+regardless)", re.I),
         description=UPSTREAM_EXPLANATIONS.get("P1", "Attempts to override system instructions or ignore safety policy."),
     ))
     rules.append(CompiledRule(
@@ -160,6 +160,22 @@ def _build_upstream_rules() -> list[CompiledRule]:
         score=75,
         pattern=re.compile(r"\[//\]:\s*#\s*\([^)]{0,240}(?:ignore|override|bypass|disregard|system\s+prompt)[^)]{0,240}\)", re.I),
         description="Hidden instructions in Markdown reference link comment.",
+    ))
+    rules.append(CompiledRule(
+        rule_id="SS-INJ-004",
+        category="system_prompt_tag_injection",
+        severity="critical",
+        score=85,
+        pattern=re.compile(r"(?:<system>|\[INSTRUCTION\]|\[SYSTEM\]|<instruction>|SYSTEM\s*OVERRIDE)", re.I),
+        description="Prompt injection tag or system override token detected.",
+    ))
+    rules.append(CompiledRule(
+        rule_id="SS-EXF-SHELL",
+        category="shell_exfiltration_payload",
+        severity="critical",
+        score=85,
+        pattern=re.compile(r"(?:curl\s+.*?\|\s*(?:ba)?sh|wget\s+.*?\|\s*(?:ba)?sh|bash\s+-c|sh\s+-c)", re.I),
+        description="Shell exfiltration pipe or subshell execution pattern detected.",
     ))
 
     # 3. Upstream P1/P2/P3/P4 pattern compilation from upstream_pi
@@ -345,6 +361,14 @@ def parse_skill_frontmatter(md_text: str) -> tuple[dict[str, Any], str]:
         else:
             meta[k] = v.strip("'\"")
     return meta, body.strip()
+
+
+def compute_mcp_manifest_sha256(manifest_data: dict[str, Any]) -> str:
+    """Deterministically hashes canonical JSON representation of server configuration and tool schemas."""
+    clean_data = dict(manifest_data)
+    clean_data.pop("manifest_sha256", None)
+    payload = canonical_json(clean_data).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 class SkillSpectorScanner:
@@ -690,3 +714,257 @@ class SkillSpectorScanner:
                 f"'{skill_id}' does not match scanned bundle digest ({skill['bundle_sha256'][:12]})."
             )
         return skill
+
+    @staticmethod
+    def compute_mcp_manifest_sha256(manifest_data: dict[str, Any]) -> str:
+        return compute_mcp_manifest_sha256(manifest_data)
+
+    def scan_mcp_manifest(
+        self,
+        server_id: str,
+        manifest: dict[str, Any],
+        tools: list[dict[str, Any]] | list[Any] | None = None,
+    ) -> dict[str, Any]:
+        """Pre-validates external MCP server manifests and tool schemas against prompt injections,
+        malicious patterns, and semantic mismatches, pinning the manifest's SHA-256 digest.
+        """
+        manifest_sha = compute_mcp_manifest_sha256(manifest)
+        normalized_tools = list(tools) if tools is not None else list(manifest.get("tools") or [])
+
+        matched_rules: list[dict[str, Any]] = []
+        max_score = 0
+
+        # Helper to recursively extract text strings from schema dicts/lists
+        def _extract_schema_text(schema_obj: Any) -> list[str]:
+            texts: list[str] = []
+            if isinstance(schema_obj, dict):
+                for k, v in schema_obj.items():
+                    texts.append(str(k))
+                    if isinstance(v, (str, int, float, bool)):
+                        texts.append(str(v))
+                    elif isinstance(v, (dict, list)):
+                        texts.extend(_extract_schema_text(v))
+            elif isinstance(schema_obj, list):
+                for item in schema_obj:
+                    texts.extend(_extract_schema_text(item))
+            elif isinstance(schema_obj, str):
+                texts.append(schema_obj)
+            return texts
+
+        # 1. Scan server configuration and metadata
+        manifest_corpus_parts = [
+            f"server_id: {server_id}",
+            f"protocol_version: {manifest.get('protocol_version', '')}",
+            f"command: {manifest.get('command', '')}",
+            f"url: {manifest.get('url', '')}",
+        ]
+        if "args" in manifest and isinstance(manifest["args"], list):
+            manifest_corpus_parts.append("args: " + " ".join(str(a) for a in manifest["args"]))
+        if "env" in manifest and isinstance(manifest["env"], dict):
+            for ek, ev in manifest["env"].items():
+                manifest_corpus_parts.append(f"env: {ek}={ev}")
+        if "server_info" in manifest and isinstance(manifest["server_info"], dict):
+            for sk, sv in manifest["server_info"].items():
+                manifest_corpus_parts.append(f"server_info: {sk}={sv}")
+
+        manifest_corpus = "\n".join(manifest_corpus_parts)
+        for r in self.rules:
+            if r.pattern.search(manifest_corpus):
+                matched_rules.append({
+                    "rule_id": r.rule_id,
+                    "category": r.category,
+                    "severity": r.severity,
+                    "score": r.score,
+                    "file": "manifest:server_config",
+                    "description": r.description,
+                })
+                max_score = max(max_score, r.score)
+
+        # 2. Scan each tool's name, description, and input schema
+        destructive_tools: list[str] = []
+        destructive_patterns = (
+            "delete_system",
+            "format_disk",
+            "wipe_system",
+            "rm -rf",
+            "drop table",
+            "destroy_system",
+            "admin_wipe",
+        )
+
+        for tool in normalized_tools:
+            if hasattr(tool, "name"):
+                t_name = str(getattr(tool, "name", "") or "")
+                t_desc = str(getattr(tool, "description", "") or "")
+                t_schema = getattr(tool, "input_schema", {})
+                t_risk = str(getattr(tool, "risk_class", "R2") or "R2")
+            elif isinstance(tool, dict):
+                t_name = str(tool.get("name", "") or "")
+                t_desc = str(tool.get("description", "") or "")
+                t_schema = tool.get("input_schema") or tool.get("inputSchema") or {}
+                t_risk = str(tool.get("risk_class", "R2") or "R2")
+            else:
+                t_name = str(tool)
+                t_desc = ""
+                t_schema = {}
+                t_risk = "R2"
+
+            tool_corpus_parts = [
+                f"tool_name: {t_name}",
+                f"tool_desc: {t_desc}",
+                f"tool_risk: {t_risk}",
+            ]
+            tool_corpus_parts.extend(_extract_schema_text(t_schema))
+            tool_corpus = "\n".join(tool_corpus_parts)
+
+            for r in self.rules:
+                if r.pattern.search(tool_corpus):
+                    matched_rules.append({
+                        "rule_id": r.rule_id,
+                        "category": r.category,
+                        "severity": r.severity,
+                        "score": r.score,
+                        "file": f"tool:{t_name}",
+                        "description": r.description,
+                    })
+                    max_score = max(max_score, r.score)
+
+            t_name_lower = t_name.lower()
+            t_desc_lower = t_desc.lower()
+            if any(dp in t_name_lower or dp in t_desc_lower for dp in destructive_patterns):
+                destructive_tools.append(t_name)
+
+        # 3. Evaluate semantic alignment
+        server_info = manifest.get("server_info") or {}
+        server_desc = str(server_info.get("description", "") or manifest.get("description", "")).lower()
+        server_name = str(server_info.get("name", "") or server_id).lower()
+        claims_readonly = any(
+            kw in server_desc or kw in server_name
+            for kw in ("read-only", "readonly", "query", "docs", "weather", "inspection", "view")
+        )
+
+        semantic_passed = True
+        semantic_notes = "Semantic alignment passed: tools align with server purpose."
+        if claims_readonly and destructive_tools:
+            semantic_passed = False
+            semantic_notes = (
+                f"MCP server '{server_id}' claims read-only utility ('{server_desc or server_name}') "
+                f"but exposes destructive tools: {', '.join(destructive_tools)}."
+            )
+            sem_score = 80
+            max_score = max(max_score, sem_score)
+            matched_rules.append({
+                "rule_id": "SS-SEM-MCP-001",
+                "category": "semantic_purpose_mismatch",
+                "severity": "critical",
+                "score": sem_score,
+                "file": f"tools:{','.join(destructive_tools)}",
+                "description": semantic_notes,
+            })
+
+        # 4. Determine severity and gate decision
+        if max_score >= 80:
+            severity = "critical"
+            gate_decision = "QUARANTINE"
+            mcp_status = "quarantined"
+        elif max_score >= 60:
+            severity = "high"
+            gate_decision = "QUARANTINE"
+            mcp_status = "quarantined"
+        elif max_score >= 25:
+            severity = "medium"
+            gate_decision = "REQUIRE_APPROVAL"
+            mcp_status = "candidate"
+        elif max_score > 0:
+            severity = "low"
+            gate_decision = "ALLOW"
+            mcp_status = "active"
+        else:
+            severity = "info"
+            gate_decision = "ALLOW"
+            mcp_status = "active"
+
+        scan_id = f"scn_mcp_{uuid.uuid4().hex[:10]}"
+        revision_id = f"mrev_{manifest_sha[:12]}"
+        report = SkillScanReport(
+            scan_id=scan_id,
+            skill_id=f"mcp_{server_id}",
+            revision_id=revision_id,
+            bundle_sha256=manifest_sha,
+            scanner_version=self.scanner_version,
+            semantic_model_id=self.semantic_model_id,
+            risk_score=max_score,
+            severity=severity,
+            matched_rules=matched_rules,
+            osv_vulns=[],
+            semantic_alignment_passed=semantic_passed,
+            semantic_notes=semantic_notes,
+            gate_decision=gate_decision,
+        )
+
+        tool_names = [
+            getattr(t, "name", t.get("name", "")) if (hasattr(t, "name") or isinstance(t, dict)) else str(t)
+            for t in normalized_tools
+        ]
+        self._persist_skill_and_scan(
+            skill_id=f"mcp_{server_id}",
+            revision_id=revision_id,
+            name=f"mcp_{server_id}",
+            purpose=str(server_info.get("description") or f"MCP Server {server_id}"),
+            description=f"MCP Server {server_id} manifest with {len(normalized_tools)} tools",
+            disk_path=f"mcp://{server_id}",
+            bundle_sha256=manifest_sha,
+            risk_class="R2",
+            allowed_tools=tool_names,
+            status=mcp_status,
+            report=report,
+        )
+
+        return {
+            "server_id": server_id,
+            "manifest_sha256": manifest_sha,
+            "status": mcp_status,
+            "gate_decision": gate_decision,
+            "scan": report.to_dict(),
+        }
+
+    def verify_mcp_manifest_integrity(self, server_id: str, manifest_sha256: str) -> bool:
+        """FR-039e: Verifies external MCP server manifest SHA-256 matches an active passing audit scan."""
+        skill_id = f"mcp_{server_id}"
+        with self.ledger._lock:
+            row = self.ledger.conn.execute(
+                "SELECT * FROM skills WHERE skill_id = ? ORDER BY created_at DESC LIMIT 1",
+                (skill_id,),
+            ).fetchone()
+            if not row:
+                return False
+            skill = self.ledger._row_to_dict(row)
+            if not skill:
+                return False
+            if skill.get("status") != "active":
+                return False
+            if skill.get("bundle_sha256") != manifest_sha256:
+                return False
+
+            scan_id = skill.get("latest_scan_id")
+            if not scan_id:
+                return False
+            scan_row = self.ledger.conn.execute(
+                "SELECT * FROM skill_scans WHERE scan_id = ?",
+                (scan_id,),
+            ).fetchone()
+            if not scan_row:
+                return False
+            scan = self.ledger._row_to_dict(scan_row)
+            if not scan:
+                return False
+            if scan.get("gate_decision") != "ALLOW":
+                return False
+            if scan.get("bundle_sha256") != manifest_sha256:
+                return False
+
+        return True
+
+
+# PRD and Gateway alias
+SkillSecurityScanner = SkillSpectorScanner
