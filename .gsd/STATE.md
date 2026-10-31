@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-31  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** In Progress — Phase 02 Complete, Ready for Phase 03  
+**Status:** In Progress — Phase 03 Wave 1 Complete, Ready for Phase 03 Wave 2 (Plan 03-02)  
 **Active Phase:** Phase 03 — External MCP Server Client & Dynamic Tool Gateway  
 
 ---
@@ -46,38 +46,34 @@
    - Hardened `begin_tool_call` and `seal_tool_call` against stale fencing tokens, raising `ConcurrencyFenceError`.
    - Built comprehensive multi-worker concurrency stress test suite in `tests/test_postgres_concurrency.py` (35/35 repository tests passing).
 
-7. **Phase 02 Planning Complete (Plans 02-01 & 02-02):**
-   - Plan 02-01 (Wave 1, 2 tasks): `OverlayFSSnapshotProvider`, `BtrfsSnapshotProvider`, platform detection factory `get_default_snapshot_provider`, and contract test suite `tests/test_cow_providers.py`.
-   - Plan 02-02 (Wave 2, 3 tasks): Container sandbox engine (`BubblewrapSandbox`, `DockerPodmanSandbox`, `RestrictedSubprocessSandbox`), `ToolGateway` sandbox integration, and zero-escape test suite `tests/test_sandbox_isolation.py`.
-
-8. **Phase 02 CoW Providers Complete (Plan 02-01):**
+7. **Phase 02 CoW Providers Complete (Plan 02-01):**
    - Implemented `OverlayFSSnapshotProvider` with lower, upper, work, and merged layer mounts, unshare user namespace/FUSE support, and instant rollback.
    - Implemented `BtrfsSnapshotProvider` with read-only snapshots and subvolume branching.
    - Built platform detection factory `get_default_snapshot_provider` and dependency injection in `HarnessOrchestrator`.
    - Authored contract test suite in `tests/test_cow_providers.py` (58/58 repository tests passing).
 
-9. **Phase 02 Sandbox Isolation & ToolGateway Complete (Plan 02-02):**
+8. **Phase 02 Sandbox Isolation & ToolGateway Complete (Plan 02-02):**
    - Implemented `BubblewrapSandbox`, `DockerPodmanSandbox`, `RestrictedSubprocessSandbox`, and `get_default_sandbox` in `src/harness_core/sandbox.py`.
    - Wired sandbox containment and secret redaction into `ToolGateway._tool_run_tests` and `HarnessOrchestrator`.
    - Hardened `_resolve_confined_path` with strict `Path.relative_to` verification.
    - Authored zero-escape verification test suite in `tests/test_sandbox_isolation.py` (76/76 total repository tests passing).
 
-10. **Phase 03 Planning Complete (Plans 03-01 & 03-02):**
-    - Plan 03-01 (Wave 1, 2 tasks): `MCPClientAdapter`, stdio subprocess transport with JSON-RPC 2.0 framing, HTTP/SSE transport, dynamic tool discovery (`tools/list`), dynamic `R0–R4` risk mapping with heuristic rules and per-server overrides, and mock MCP server test suite in `tests/test_mcp_client.py`.
-    - Plan 03-02 (Wave 2, 3 tasks): `SkillSecurityScanner` MCP manifest pre-validation & SHA-256 pinning, `ToolGateway.register_mcp_server` integration, 0ms call-level journal memoization replay on worker crash, and end-to-end verification test suite in `tests/test_mcp_gateway_journal.py`.
+9. **Phase 03 MCP Client Adapters & Dynamic Tool Discovery Complete (Plan 03-01):**
+   - Implemented `MCPClientAdapter`, `StdioMCPTransport`, `HttpSSEMCPTransport`, and dynamic `R0–R4` risk mapping with heuristic rules and per-server overrides in `src/harness_core/mcp_client.py`.
+   - Built thread-safe JSON-RPC 2.0 message demuxing, stdout reader thread, rolling stderr diagnostics, and timeout enforcement.
+   - Authored mock MCP server and unit test suite in `tests/test_mcp_client.py` verifying handshake, discovery, tool execution, timeouts, and clean process teardown (82/82 repository tests passing).
 
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full test suite passing cleanly with zero failures (76/76 tests green).
-- Ready to execute Phase 03 Wave 1 (Plan 03-01).
+- None. Full test suite passing cleanly with zero failures (82/82 tests green).
+- Ready to execute Phase 03 Wave 2 (Plan 03-02).
 
 ---
 
 ## 3. Next Actions
 
-- Execute Plan 03-01 via `gsd-executor`: Implement MCPClientAdapter, stdio/SSE transports, dynamic discovery, and R0-R4 risk mapping.
-- Execute Plan 03-02 via `gsd-executor`: Wire SkillSpector pre-validation, ToolGateway 0ms call journaling, and end-to-end replay verification.
+- Execute Plan 03-02 via `gsd-executor`: Wire SkillSecurityScanner manifest pre-validation & SHA-256 pinning, ToolGateway 0ms call journaling, and end-to-end replay verification.
 
 
