@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .db import LedgerStore, canonical_json, utcnow_iso
 from .gateway import redact_secrets
+from .models import TaskBudget
+from .providers.base import ModelProvider, ModelResponse, PolicyBlockedError
+from .providers.cloud_provider import CloudModelProvider
+from .providers.mlx_provider import LocalMLXModelProvider
 
 
 @dataclass
@@ -30,6 +34,12 @@ class RouteDecision:
     compressed_tokens_estimated: int
     token_savings_pct: float
     compressed_context: str
+    latency_ms: float = 0.0
+    cost_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    compression_ratio: float = 0.0
+    provider_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +51,12 @@ class RouteDecision:
             "compressed_tokens_estimated": self.compressed_tokens_estimated,
             "token_savings_pct": self.token_savings_pct,
             "compressed_context": self.compressed_context,
+            "latency_ms": round(self.latency_ms, 2),
+            "cost_usd": self.cost_usd,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "compression_ratio": self.compression_ratio,
+            "provider_metadata": self.provider_metadata,
         }
 
 
@@ -49,11 +65,15 @@ class TwoTierModelRouter:
 
     def __init__(
         self,
+        local_provider: ModelProvider | None = None,
+        cloud_provider: ModelProvider | None = None,
         local_model_id: str = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
         cloud_model_id: str = "gemini-3.5-pro",
     ):
-        self.local_model_id = local_model_id
-        self.cloud_model_id = cloud_model_id
+        self.local_provider = local_provider or LocalMLXModelProvider(model_id=local_model_id)
+        self.cloud_provider = cloud_provider or CloudModelProvider(model_id=cloud_model_id)
+        self.local_model_id = getattr(self.local_provider, "model_id", local_model_id)
+        self.cloud_model_id = getattr(self.cloud_provider, "model_id", cloud_model_id)
 
     def compress_verbose_log(self, raw_log: str, max_chars: int = 1600) -> dict[str, Any]:
         """FR-045a: Tier-1 M4 local log compressor.
@@ -61,6 +81,21 @@ class TwoTierModelRouter:
         Strips repetitive pass/info noise from raw test/build logs while preserving exact
         file paths, line numbers, traceback frames, and assertion errors.
         """
+        if hasattr(self.local_provider, "compress_log"):
+            comp = self.local_provider.compress_log(raw_log, max_chars=max_chars)
+            text = comp.get("compressed_text", "")
+            if "[Tier-1 M4 Compressed Failure Digest]" in text:
+                text = text.replace(
+                    "[Tier-1 M4 Compressed Failure Digest]",
+                    "[Tier-1 M4 Local Compressed Failure Digest]",
+                )
+            elif not text.startswith("[Tier-1 M4 Local Compressed Failure Digest]"):
+                text = f"[Tier-1 M4 Local Compressed Failure Digest]\n{text}"
+            res = dict(comp)
+            res["compressed_text"] = text
+            res.setdefault("compressor_model", self.local_model_id)
+            return res
+
         redacted = str(redact_secrets(raw_log))
         raw_tokens = max(1, len(redacted) // 4)
 
@@ -174,6 +209,64 @@ class TwoTierModelRouter:
             token_savings_pct=comp["token_savings_pct"],
             compressed_context=comp["compressed_text"],
         )
+
+    def execute_routed_request(
+        self,
+        *,
+        prompt: str,
+        task_class: str,
+        risk_class: str = "R1",
+        data_classification: str = "internal",
+        budget: TaskBudget | None = None,
+        cloud_available: bool = True,
+        **kwargs: Any,
+    ) -> tuple[RouteDecision, ModelResponse]:
+        """Routes prompt to appropriate tier, executes model call, and records telemetry."""
+        decision = self.route_request(
+            task_class=task_class,
+            risk_class=risk_class,
+            data_classification=data_classification,
+            raw_context=prompt,
+            cloud_available=cloud_available,
+        )
+
+        effective_prompt = decision.compressed_context if decision.compressed_context else prompt
+
+        if decision.tier == "tier1_local_m4":
+            response = self.local_provider.generate(
+                prompt=effective_prompt,
+                data_classification=data_classification,
+                budget=budget,
+                **kwargs,
+            )
+            decision.cost_usd = 0.0
+            decision.latency_ms = response.latency_ms
+            decision.input_tokens = response.usage.input_tokens
+            decision.output_tokens = response.usage.output_tokens
+
+        elif decision.tier == "tier2_cloud_reasoner":
+            if data_classification in ("sensitive", "secret"):
+                raise PolicyBlockedError(
+                    f"Cloud egress forbidden for data classification '{data_classification}'. "
+                    "Data must remain within 100% local boundary."
+                )
+            response = self.cloud_provider.generate(
+                prompt=effective_prompt,
+                data_classification=data_classification,
+                budget=budget,
+                **kwargs,
+            )
+            decision.latency_ms = response.latency_ms
+            decision.cost_usd = response.usage.cost_usd
+            decision.input_tokens = response.usage.input_tokens
+            decision.output_tokens = response.usage.output_tokens
+        else:
+            raise ValueError(f"Unknown routing tier: {decision.tier}")
+
+        decision.compression_ratio = round(decision.token_savings_pct / 100.0, 4)
+        decision.provider_metadata = dict(response.raw)
+
+        return decision, response
 
 
 class GovernedMemoryService:

@@ -55,9 +55,13 @@ class FailureRecord:
         lines = [
             f"FAILED: {name}",
             f"LOCATION: {loc}",
+        ]
+        if self.file_path and self.line_number:
+            lines.append(f'SOURCE: File "{self.file_path}", line {self.line_number}')
+        lines.extend([
             f"FRAME: {frm}",
             f"ASSERTION: {ass}",
-        ]
+        ])
         if self.diff:
             diff_text = " | ".join(d.strip() for d in self.diff if d.strip())
             if diff_text:
@@ -164,7 +168,7 @@ class Tier1LogCompressor:
                 continue
             if re.match(r'^={3,}\s*(?:test session starts|\d+ passed).*={3,}$', stripped):
                 continue
-            if any(stripped.startswith(prefix) for prefix in ("rootdir:", "configfile:", "plugins:", "collecting ...", "collected ")):
+            if any(stripped.startswith(prefix) for prefix in ("rootdir:", "configfile:", "plugins:", "collecting ...", "collected ", "INFO ", "DEBUG ", "WARNING ")):
                 continue
 
             # Failure marker 1: FAILED file:line: test_name
