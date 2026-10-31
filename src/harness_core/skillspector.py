@@ -903,7 +903,7 @@ class SkillSpectorScanner:
         )
 
         tool_names = [
-            getattr(t, "name", t.get("name", "")) if (hasattr(t, "name") or isinstance(t, dict)) else str(t)
+            t.name if hasattr(t, "name") else (t.get("name", "") if isinstance(t, dict) else str(t))
             for t in normalized_tools
         ]
         self._persist_skill_and_scan(
