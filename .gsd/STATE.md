@@ -2,8 +2,8 @@
 
 **Date:** 2026-10-31  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** Complete — Phase 01 & Phase 02 Complete  
-**Active Phase:** Phase 02 — Linux OverlayFS Provider & Container Sandbox Isolation (Complete)  
+**Status:** In Progress — Phase 02 Complete, Ready for Phase 03  
+**Active Phase:** Phase 03 — External MCP Server Client & Dynamic Tool Gateway  
 
 ---
 
@@ -72,6 +72,8 @@
 
 ## 3. Next Actions
 
-- Phase 02 is complete. Proceed to Phase 03 planning or verification as directed.
+- Decompose Phase 03 into atomic plans via `gsd-planner`:
+  - Plan 03-01: MCP Client Adapters (stdio & SSE) & Dynamic Tool Schema Ingestion with R0–R4 Risk Mapping.
+  - Plan 03-02: SkillSpector Pre-Validation of External MCP Manifests & 0ms Call-Level Journal Replay.
 
 
