@@ -397,6 +397,24 @@ class StdioMCPTransport(MCPTransport):
                 except OSError:
                     pass
 
+        # Close stdout and stderr pipes
+        if self.process.stdout and not self.process.stdout.closed:
+            try:
+                self.process.stdout.close()
+            except (OSError, BrokenPipeError):
+                pass
+        if self.process.stderr and not self.process.stderr.closed:
+            try:
+                self.process.stderr.close()
+            except (OSError, BrokenPipeError):
+                pass
+
+        # Join reader threads
+        if self._stdout_thread.is_alive():
+            self._stdout_thread.join(timeout=0.5)
+        if self._stderr_thread.is_alive():
+            self._stderr_thread.join(timeout=0.5)
+
 
 class HttpSSEMCPTransport(MCPTransport):
     """
