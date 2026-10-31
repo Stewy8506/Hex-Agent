@@ -6,6 +6,7 @@ or PostgreSQL 16+ connection strings, maintaining cryptographic hash chains on t
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -28,6 +29,45 @@ def sha256_hex(text: str | bytes) -> str:
     return hashlib.sha256(text).hexdigest()
 
 
+def normalize_query(sql: str, backend_type: str = "sqlite") -> str:
+    """Translates parameter placeholders: converts '?' to '$1, $2, ...' for postgres,
+    keeping '?' unchanged for sqlite. Ignores '?' inside single-quoted string literals."""
+    if backend_type != "postgres":
+        return sql
+    out: list[str] = []
+    param_idx = 1
+    in_string = False
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            if in_string and i + 1 < n and sql[i + 1] == "'":
+                out.append("''")
+                i += 2
+                continue
+            in_string = not in_string
+            out.append(ch)
+            i += 1
+        elif ch == "?" and not in_string:
+            out.append(f"${param_idx}")
+            param_idx += 1
+            i += 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def normalize_param(val: Any) -> Any:
+    """Normalizes query parameter for persistence across SQLite and PostgreSQL."""
+    if isinstance(val, (dict, list)):
+        return canonical_json(val)
+    if hasattr(val, "value") and not isinstance(val, (int, float, str, bytes, bool)):
+        return val.value
+    return val
+
+
 class ConcurrencyFenceError(RuntimeError):
     """Raised when a stale worker fencing token or version mismatch attempts a commit."""
 
@@ -36,18 +76,147 @@ class InvalidTransitionError(ValueError):
     """Raised when a state transition violates the PRD Section 9 state machine."""
 
 
+class _SyncRunner:
+    """Dedicated background event-loop runner for synchronous execution of asyncpg operations."""
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True, name="ledger-sync-bridge")
+        self._thread.start()
+
+    def run(self, coro: Any) -> Any:
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
+
+    def close(self) -> None:
+        if self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=2.0)
+
+
 class LedgerStore:
     """Thread-safe transactional Task Ledger & Call Journal."""
 
-    def __init__(self, db_path: Path | str, schema_sql_path: Path | str | None = None):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        db_path: Path | str,
+        schema_sql_path: Path | str | None = None,
+        min_size: int = 2,
+        max_size: int = 20,
+        command_timeout: float = 30.0,
+    ):
+        db_str = str(db_path).strip()
+        self.min_size = min_size
+        self.max_size = max_size
+        self.command_timeout = command_timeout
+        self.schema_sql_path = schema_sql_path
         self._lock = threading.RLock()
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30.0)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL;")
-        self.conn.execute("PRAGMA foreign_keys=ON;")
-        self._init_schema(schema_sql_path)
+        self._sync_runner: _SyncRunner | None = None
+        self._pool: Any = None
+        self._pool_loop: Any = None
+
+        if (
+            db_str.startswith("postgresql://")
+            or db_str.startswith("postgres://")
+            or db_str.startswith("postgresql+asyncpg://")
+        ):
+            self.backend_type = "postgres"
+            self.db_url = db_str
+            if db_str.startswith("postgresql+asyncpg://"):
+                self.dsn = "postgresql://" + db_str[len("postgresql+asyncpg://"):]
+            elif db_str.startswith("postgres://"):
+                self.dsn = "postgresql://" + db_str[len("postgres://"):]
+            else:
+                self.dsn = db_str
+            self.db_path = None
+            try:
+                import asyncpg  # type: ignore[import-not-found]
+            except ImportError as exc:
+                raise ImportError(
+                    "PostgreSQL support requires 'asyncpg'. Install with: pip install .[postgres]"
+                ) from exc
+            self.conn = None
+        else:
+            self.backend_type = "sqlite"
+            self.db_url = db_str
+            self.dsn = db_str
+            if db_str.startswith("sqlite:///"):
+                clean_path = db_str[len("sqlite:///"):]
+                self.db_path = Path(clean_path)
+            elif db_str == ":memory:":
+                self.db_path = Path(":memory:")
+            else:
+                self.db_path = Path(db_path)
+            if str(self.db_path) != ":memory:" and self.db_path.parent:
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=command_timeout)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA journal_mode=WAL;")
+            self.conn.execute("PRAGMA foreign_keys=ON;")
+            self._init_schema(schema_sql_path)
+
+    def normalize_query(self, sql: str) -> str:
+        return normalize_query(sql, self.backend_type)
+
+    def normalize_params(self, params: tuple[Any, ...] | list[Any]) -> tuple[Any, ...]:
+        return tuple(normalize_param(p) for p in params)
+
+    async def get_pool(self) -> Any:
+        """Returns or lazily initializes the asyncpg connection pool."""
+        if self.backend_type != "postgres":
+            return None
+        import asyncpg
+
+        loop = asyncio.get_running_loop()
+        if self._pool is None or self._pool_loop != loop:
+            self._pool = await asyncpg.create_pool(
+                self.dsn,
+                min_size=self.min_size,
+                max_size=self.max_size,
+                command_timeout=self.command_timeout,
+            )
+            self._pool_loop = loop
+        return self._pool
+
+    async def init_pool(self) -> Any:
+        """Explicitly initializes the asyncpg connection pool."""
+        return await self.get_pool()
+
+    async def close_async(self) -> None:
+        """Asynchronously closes the connection pool if open."""
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
+            self._pool_loop = None
+
+    def _get_sync_runner(self) -> _SyncRunner:
+        with self._lock:
+            if self._sync_runner is None:
+                self._sync_runner = _SyncRunner()
+            return self._sync_runner
+
+    def _run_sync(self, coro_func: Any, *args: Any, **kwargs: Any) -> Any:
+        runner = self._get_sync_runner()
+        return runner.run(coro_func(*args, **kwargs))
+
+    def close(self) -> None:
+        """Synchronously closes database connections / pools."""
+        with self._lock:
+            if self._sync_runner is not None:
+                self._sync_runner.close()
+                self._sync_runner = None
+            if self.backend_type == "postgres":
+                if self._pool is not None:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        if loop.is_running() and self._pool_loop == loop:
+                            loop.create_task(self._pool.close())
+                    except RuntimeError:
+                        asyncio.run(self.close_async())
+            elif self.backend_type == "sqlite":
+                if self.conn is not None:
+                    self.conn.close()
+                    self.conn = None
 
     def _init_schema(self, schema_sql_path: Path | str | None) -> None:
         if schema_sql_path is None:
@@ -57,19 +226,25 @@ class LedgerStore:
         if schema_sql_path and Path(schema_sql_path).is_file():
             sql = Path(schema_sql_path).read_text(encoding="utf-8")
             with self._lock:
-                self.conn.executescript(sql)
-                self.conn.commit()
+                if self.conn is not None:
+                    self.conn.executescript(sql)
+                    self.conn.commit()
 
-    def _row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _row_to_dict(self, row: Any) -> dict[str, Any] | None:
         if row is None:
             return None
         d = dict(row)
         for k in list(d.keys()):
-            if k.endswith("_json") and isinstance(d[k], str):
-                try:
-                    d[k[:-5]] = json.loads(d[k])
-                except json.JSONDecodeError:
-                    d[k[:-5]] = d[k]
+            if k.endswith("_json"):
+                base_key = k[:-5]
+                val = d[k]
+                if isinstance(val, str):
+                    try:
+                        d[base_key] = json.loads(val)
+                    except json.JSONDecodeError:
+                        d[base_key] = val
+                elif isinstance(val, (dict, list)):
+                    d[base_key] = val
         return d
 
     # ------------------------------------------------------------------
