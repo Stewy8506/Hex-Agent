@@ -12,7 +12,7 @@ from .base import (
     ProviderCapabilities,
     ProviderUnavailableError,
 )
-from .mlx_provider import LocalMLXModelProvider
+from .mlx_provider import LocalMLXModelProvider, Tier1LogCompressor
 
 __all__ = [
     "BudgetExceededError",
@@ -24,4 +24,5 @@ __all__ = [
     "PolicyBlockedError",
     "ProviderCapabilities",
     "ProviderUnavailableError",
+    "Tier1LogCompressor",
 ]
