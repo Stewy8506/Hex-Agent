@@ -93,9 +93,10 @@
 
 ## 3. Next Actions
 
-- Begin Phase 05 planning via `gsd-planner`:
-  - Plan 05-01: Multi-turn autonomous repair loop within RUNNING -> VERIFYING cycle.
-  - Plan 05-02: Dynamic DAG replanning and selective subgraph invalidation.
+- Phase 05 Plans Authored:
+  - Plan 05-01: Multi-Turn Autonomous Repair Loop & Retry Escalation (`.gsd/phases/05-autonomous-repair-dag/05-01-PLAN.md`) [Wave 1, 3 tasks]
+  - Plan 05-02: Dynamic DAG Replanning & Autonomous Repair Benchmark (`.gsd/phases/05-autonomous-repair-dag/05-02-PLAN.md`) [Wave 2, 3 tasks]
+- Execute Plan 05-01 via `gsd-executor`.
 
 
 
