@@ -74,19 +74,26 @@
     - Implemented `Tier1LogCompressor` in `src/harness_core/providers/mlx_provider.py` with secret redaction, multi-pattern trace and assertion extraction, local AST source context inspection, and >70% token reduction (91.03% verified).
     - Authored unit and contract test suite in `tests/test_model_providers.py` (107/107 total repository tests passing).
 
+12. **Phase 04 Cloud API Connectors, Per-Task Budget Ceilings, Privacy Gating & Router Integration Complete (Plan 04-02):**
+    - Implemented `CloudModelProvider` in `src/harness_core/providers/cloud_provider.py` supporting Anthropic Claude, OpenAI, and Google Gemini.
+    - Implemented `TaskBudgetTracker` with hard ceilings for task USD cost, output tokens, and request counts, raising `BudgetExceededError`.
+    - Enforced strict privacy gating blocking `sensitive` and `secret` classifications from cloud egress, raising `PolicyBlockedError`.
+    - Integrated outbound secret scrubbing with `redact_secrets` before serialization.
+    - Enhanced `TwoTierModelRouter` and `RouteDecision` in `src/harness_core/router.py` to record latency, cost, tokens, and compression ratio.
+    - Authored live 500-line pytest compression and privacy benchmark in `tests/test_two_tier_compression_benchmark.py` and cloud tests in `tests/test_model_providers.py` (121/121 total repository tests passing).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full test suite passing cleanly with zero failures (107/107 tests green).
-- Phase 04 Wave 1 (`04-01-PLAN.md`) complete.
-- Phase 04 Wave 2 plan authored and ready: `04-02-PLAN.md`.
+- None. Full test suite passing cleanly with zero failures (121/121 tests green).
+- Phase 04 Complete (both Plan 04-01 and Plan 04-02 verified and committed).
 
 ---
 
 ## 3. Next Actions
 
-- Execute Phase 04 Wave 2: `04-02-PLAN.md` (Cloud API Connectors, Per-Task Budget Ceilings, Privacy Gating & Router Integration).
+- Phase 04 complete. Proceed to Phase 05 planning or milestone review.
 
 
 
