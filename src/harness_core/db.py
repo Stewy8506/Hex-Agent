@@ -117,6 +117,22 @@ class _SyncRunner:
 class LedgerStore:
     """Thread-safe transactional Task Ledger & Call Journal."""
 
+    CLAIM_TASK_POSTGRES_SQL = (
+        "SELECT task_id, priority, version, active_workspace_tree_sha, policy_snapshot_id "
+        "FROM tasks "
+        "WHERE status = 'QUEUED' "
+        "ORDER BY priority DESC, created_at ASC "
+        "FOR UPDATE SKIP LOCKED "
+        "LIMIT 1"
+    )
+    CLAIM_TASK_SQLITE_SQL = (
+        "SELECT task_id, priority, version, active_workspace_tree_sha, policy_snapshot_id "
+        "FROM tasks "
+        "WHERE status = 'QUEUED' "
+        "ORDER BY priority DESC, created_at ASC "
+        "LIMIT 1"
+    )
+
     def __init__(
         self,
         db_path: Path | str,
@@ -174,6 +190,14 @@ class LedgerStore:
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA foreign_keys=ON;")
             self._init_schema(schema_sql_path)
+            with self._lock:
+                try:
+                    self.conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks (status, priority DESC, created_at ASC);"
+                    )
+                    self.conn.commit()
+                except Exception:
+                    pass
 
     def normalize_query(self, sql: str) -> str:
         return normalize_query(sql, self.backend_type)
@@ -196,6 +220,13 @@ class LedgerStore:
                 command_timeout=self.command_timeout,
             )
             self._pool_loop = loop
+            try:
+                async with self._pool.acquire() as conn:
+                    await conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks (status, priority DESC, created_at ASC);"
+                    )
+            except Exception:
+                pass
         return self._pool
 
     async def init_pool(self) -> Any:
@@ -1234,6 +1265,256 @@ class LedgerStore:
                     "expires_at": expires,
                 }
 
+    def claim_next_task(
+        self,
+        worker_id: str = "worker-default",
+        *,
+        base_tree_sha: str | None = None,
+        workspace_path: str | None = None,
+        ttl_seconds: int = 300,
+    ) -> dict[str, Any] | None:
+        """Atomically claim the highest priority QUEUED task using SKIP LOCKED (PG) or BEGIN IMMEDIATE (SQLite)."""
+        if self.backend_type == "postgres":
+            return self._run_sync(
+                self.claim_next_task_async,
+                worker_id,
+                base_tree_sha=base_tree_sha,
+                workspace_path=workspace_path,
+                ttl_seconds=ttl_seconds,
+            )
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                row = self.conn.execute(self.CLAIM_TASK_SQLITE_SQL).fetchone()
+                if not row:
+                    self.conn.commit()
+                    return None
+
+                task_id = row["task_id"]
+                cur_version = int(row["version"])
+                policy_id = row["policy_snapshot_id"]
+                active_sha = row["active_workspace_tree_sha"]
+
+                max_tok_row = self.conn.execute(
+                    "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                next_token = (int(max_tok_row["max_tok"]) if max_tok_row else 0) + 1
+                now_dt = datetime.now(timezone.utc)
+                now = now_dt.isoformat()
+                expires = (now_dt + timedelta(seconds=ttl_seconds)).isoformat()
+
+                # Expire any prior unreleased leases for this task
+                self.conn.execute(
+                    "UPDATE leases SET released_at = ? WHERE task_id = ? AND released_at IS NULL",
+                    (now, task_id),
+                )
+
+                attempt_id = f"att_{uuid.uuid4().hex[:12]}"
+                lease_id = f"lse_{uuid.uuid4().hex[:12]}"
+
+                self.conn.execute(
+                    """
+                    INSERT INTO attempts (
+                        attempt_id, task_id, parent_attempt_id, branch_label, worker_id,
+                        lease_id, fencing_token, base_tree_sha, head_tree_sha,
+                        workspace_path, status, started_at, retry_index
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?)
+                    """,
+                    (
+                        attempt_id,
+                        task_id,
+                        None,
+                        None,
+                        worker_id,
+                        lease_id,
+                        next_token,
+                        base_tree_sha,
+                        base_tree_sha,
+                        workspace_path,
+                        now,
+                        0,
+                    ),
+                )
+
+                self.conn.execute(
+                    """
+                    INSERT INTO leases (
+                        lease_id, task_id, attempt_id, worker_id,
+                        fencing_token, expires_at, renewed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (lease_id, task_id, attempt_id, worker_id, next_token, expires, now),
+                )
+
+                new_tree_sha = base_tree_sha or active_sha
+                cursor = self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'RUNNING', version = version + 1, active_workspace_tree_sha = ?, updated_at = ?
+                    WHERE task_id = ? AND version = ?
+                    """,
+                    (new_tree_sha, now, task_id, cur_version),
+                )
+                if cursor.rowcount != 1:
+                    raise ConcurrencyFenceError(f"Concurrent update race detected on task {task_id}")
+
+                self._append_event_locked(
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    event_type="STATE_RUNNING",
+                    prior_state="QUEUED",
+                    next_state="RUNNING",
+                    reason_code="QUEUE_CLAIMED",
+                    workspace_tree_sha=new_tree_sha,
+                    policy_version=policy_id,
+                    payload={"worker_id": worker_id, "fencing_token": next_token, "lease_id": lease_id},
+                    actor=worker_id,
+                )
+
+                self.conn.commit()
+                claimed_task = self.get_task(task_id) or {}
+                claimed_task["attempt_id"] = attempt_id
+                claimed_task["lease_id"] = lease_id
+                claimed_task["fencing_token"] = next_token
+                claimed_task["worker_id"] = worker_id
+                claimed_task["expires_at"] = expires
+                return claimed_task
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    async def claim_next_task_async(
+        self,
+        worker_id: str = "worker-default",
+        *,
+        base_tree_sha: str | None = None,
+        workspace_path: str | None = None,
+        ttl_seconds: int = 300,
+    ) -> dict[str, Any] | None:
+        """Atomically claim the highest priority QUEUED task using SELECT ... FOR UPDATE SKIP LOCKED."""
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(
+                self.claim_next_task,
+                worker_id,
+                base_tree_sha=base_tree_sha,
+                workspace_path=workspace_path,
+                ttl_seconds=ttl_seconds,
+            )
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(self.CLAIM_TASK_POSTGRES_SQL)
+                if not row:
+                    return None
+
+                task_id = row["task_id"]
+                cur_version = int(row["version"])
+                policy_id = row["policy_snapshot_id"]
+                active_sha = row["active_workspace_tree_sha"]
+
+                max_tok_row = await conn.fetchrow(
+                    "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = $1",
+                    task_id,
+                )
+                next_token = (int(max_tok_row["max_tok"]) if max_tok_row else 0) + 1
+                now_dt = datetime.now(timezone.utc)
+                now = now_dt.isoformat()
+                expires = (now_dt + timedelta(seconds=ttl_seconds)).isoformat()
+
+                await conn.execute(
+                    "UPDATE leases SET released_at = $1 WHERE task_id = $2 AND released_at IS NULL",
+                    now,
+                    task_id,
+                )
+
+                attempt_id = f"att_{uuid.uuid4().hex[:12]}"
+                lease_id = f"lse_{uuid.uuid4().hex[:12]}"
+
+                await conn.execute(
+                    """
+                    INSERT INTO attempts (
+                        attempt_id, task_id, parent_attempt_id, branch_label, worker_id,
+                        lease_id, fencing_token, base_tree_sha, head_tree_sha,
+                        workspace_path, status, started_at, retry_index
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'RUNNING', $11, $12)
+                    """,
+                    attempt_id,
+                    task_id,
+                    None,
+                    None,
+                    worker_id,
+                    lease_id,
+                    next_token,
+                    base_tree_sha,
+                    base_tree_sha,
+                    workspace_path,
+                    now,
+                    0,
+                )
+
+                await conn.execute(
+                    """
+                    INSERT INTO leases (
+                        lease_id, task_id, attempt_id, worker_id,
+                        fencing_token, expires_at, renewed_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    lease_id,
+                    task_id,
+                    attempt_id,
+                    worker_id,
+                    next_token,
+                    expires,
+                    now,
+                )
+
+                new_tree_sha = base_tree_sha or active_sha
+                res = await conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'RUNNING', version = version + 1, active_workspace_tree_sha = $1, updated_at = $2
+                    WHERE task_id = $3 AND version = $4
+                    """,
+                    new_tree_sha,
+                    now,
+                    task_id,
+                    cur_version,
+                )
+                try:
+                    rowcount = int(res.split()[-1])
+                except (ValueError, IndexError):
+                    rowcount = 0
+                if rowcount != 1:
+                    raise ConcurrencyFenceError(f"Concurrent update race detected on task {task_id}")
+
+                await self._append_event_async_conn(
+                    conn=conn,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    event_type="STATE_RUNNING",
+                    prior_state="QUEUED",
+                    next_state="RUNNING",
+                    reason_code="QUEUE_CLAIMED",
+                    workspace_tree_sha=new_tree_sha,
+                    policy_version=policy_id,
+                    payload={"worker_id": worker_id, "fencing_token": next_token, "lease_id": lease_id},
+                    actor=worker_id,
+                )
+
+                updated = await conn.fetchrow("SELECT * FROM tasks WHERE task_id = $1", task_id)
+                claimed_task = self._row_to_dict(updated) or {}
+                claimed_task["attempt_id"] = attempt_id
+                claimed_task["lease_id"] = lease_id
+                claimed_task["fencing_token"] = next_token
+                claimed_task["worker_id"] = worker_id
+                claimed_task["expires_at"] = expires
+                return claimed_task
+
     def update_attempt(
         self,
         attempt_id: str,
@@ -1762,6 +2043,7 @@ class LedgerStore:
         policy_decision: str,
         idempotency_key: str,
         replayed_from_call_id: str | None = None,
+        fencing_token: int | None = None,
     ) -> str:
         if self.backend_type == "postgres":
             return self._run_sync(
@@ -1777,8 +2059,19 @@ class LedgerStore:
                 policy_decision=policy_decision,
                 idempotency_key=idempotency_key,
                 replayed_from_call_id=replayed_from_call_id,
+                fencing_token=fencing_token,
             )
         with self._lock:
+            if fencing_token is not None:
+                max_tok_row = self.conn.execute(
+                    "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+                if fencing_token < max_tok:
+                    raise ConcurrencyFenceError(
+                        f"Stale fencing token {fencing_token} < active token {max_tok} for task {task_id}"
+                    )
             call_id = f"cal_{uuid.uuid4().hex[:12]}"
             now = utcnow_iso()
             self.conn.execute(
@@ -1823,6 +2116,7 @@ class LedgerStore:
         policy_decision: str,
         idempotency_key: str,
         replayed_from_call_id: str | None = None,
+        fencing_token: int | None = None,
     ) -> str:
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(
@@ -1838,9 +2132,20 @@ class LedgerStore:
                 policy_decision=policy_decision,
                 idempotency_key=idempotency_key,
                 replayed_from_call_id=replayed_from_call_id,
+                fencing_token=fencing_token,
             )
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            if fencing_token is not None:
+                max_tok_row = await conn.fetchrow(
+                    "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = $1",
+                    task_id,
+                )
+                max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+                if fencing_token < max_tok:
+                    raise ConcurrencyFenceError(
+                        f"Stale fencing token {fencing_token} < active token {max_tok} for task {task_id}"
+                    )
             call_id = f"cal_{uuid.uuid4().hex[:12]}"
             now = utcnow_iso()
             await conn.execute(
@@ -1875,6 +2180,7 @@ class LedgerStore:
         *,
         status: str = "SEALED",
         result_ref: str | None = None,
+        fencing_token: int | None = None,
     ) -> dict[str, Any]:
         if self.backend_type == "postgres":
             return self._run_sync(
@@ -1883,8 +2189,22 @@ class LedgerStore:
                 result,
                 status=status,
                 result_ref=result_ref,
+                fencing_token=fencing_token,
             )
         with self._lock:
+            if fencing_token is not None:
+                tc_row = self.conn.execute("SELECT task_id FROM tool_calls WHERE call_id = ?", (call_id,)).fetchone()
+                if tc_row:
+                    t_id = tc_row["task_id"]
+                    max_tok_row = self.conn.execute(
+                        "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = ?",
+                        (t_id,),
+                    ).fetchone()
+                    max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+                    if fencing_token < max_tok:
+                        raise ConcurrencyFenceError(
+                            f"Stale fencing token {fencing_token} < active token {max_tok} for task {t_id}"
+                        )
             now = utcnow_iso()
             self.conn.execute(
                 """
@@ -1905,6 +2225,7 @@ class LedgerStore:
         *,
         status: str = "SEALED",
         result_ref: str | None = None,
+        fencing_token: int | None = None,
     ) -> dict[str, Any]:
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(
@@ -1913,9 +2234,23 @@ class LedgerStore:
                 result,
                 status=status,
                 result_ref=result_ref,
+                fencing_token=fencing_token,
             )
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            if fencing_token is not None:
+                tc_row = await conn.fetchrow("SELECT task_id FROM tool_calls WHERE call_id = $1", call_id)
+                if tc_row:
+                    t_id = tc_row["task_id"]
+                    max_tok_row = await conn.fetchrow(
+                        "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = $1",
+                        t_id,
+                    )
+                    max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+                    if fencing_token < max_tok:
+                        raise ConcurrencyFenceError(
+                            f"Stale fencing token {fencing_token} < active token {max_tok} for task {t_id}"
+                        )
             now = utcnow_iso()
             await conn.execute(
                 """
