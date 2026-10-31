@@ -1149,6 +1149,16 @@ class LedgerStore:
             )
             self.conn.execute(
                 """
+                INSERT INTO workers (
+                    worker_id, machine_class, capabilities_json, cow_backend,
+                    local_llm_models_json, trust_level, health, last_heartbeat_at, registered_at
+                ) VALUES (?, 'worker', '{}', 'apfs_clone', '[]', 'trusted_local', 'HEALTHY', ?, ?)
+                ON CONFLICT(worker_id) DO UPDATE SET last_heartbeat_at=excluded.last_heartbeat_at
+                """,
+                (worker_id, now, now),
+            )
+            self.conn.execute(
+                """
                 INSERT INTO leases (
                     lease_id, task_id, attempt_id, worker_id,
                     fencing_token, expires_at, renewed_at
@@ -1237,6 +1247,18 @@ class LedgerStore:
                     workspace_path,
                     now,
                     retry_index,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO workers (
+                        worker_id, machine_class, capabilities_json, cow_backend,
+                        local_llm_models_json, trust_level, health, last_heartbeat_at, registered_at
+                    ) VALUES ($1, 'worker', '{}', 'apfs_clone', '[]', 'trusted_local', 'HEALTHY', $2, $3)
+                    ON CONFLICT(worker_id) DO UPDATE SET last_heartbeat_at=excluded.last_heartbeat_at
+                    """,
+                    worker_id,
+                    now,
+                    now,
                 )
                 await conn.execute(
                     """
@@ -1339,6 +1361,17 @@ class LedgerStore:
                         now,
                         0,
                     ),
+                )
+
+                self.conn.execute(
+                    """
+                    INSERT INTO workers (
+                        worker_id, machine_class, capabilities_json, cow_backend,
+                        local_llm_models_json, trust_level, health, last_heartbeat_at, registered_at
+                    ) VALUES (?, 'worker', '{}', 'apfs_clone', '[]', 'trusted_local', 'HEALTHY', ?, ?)
+                    ON CONFLICT(worker_id) DO UPDATE SET last_heartbeat_at=excluded.last_heartbeat_at
+                    """,
+                    (worker_id, now, now),
                 )
 
                 self.conn.execute(
@@ -1455,6 +1488,19 @@ class LedgerStore:
                     workspace_path,
                     now,
                     0,
+                )
+
+                await conn.execute(
+                    """
+                    INSERT INTO workers (
+                        worker_id, machine_class, capabilities_json, cow_backend,
+                        local_llm_models_json, trust_level, health, last_heartbeat_at, registered_at
+                    ) VALUES ($1, 'worker', '{}', 'apfs_clone', '[]', 'trusted_local', 'HEALTHY', $2, $3)
+                    ON CONFLICT(worker_id) DO UPDATE SET last_heartbeat_at=excluded.last_heartbeat_at
+                    """,
+                    worker_id,
+                    now,
+                    now,
                 )
 
                 await conn.execute(
