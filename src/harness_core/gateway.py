@@ -21,8 +21,10 @@ from typing import Any, Callable
 
 from .db import LedgerStore, canonical_json, sha256_hex
 from .graphify import ActiveGraphifyAdapter
+from .mcp_client import MCPClientAdapter, MCPToolDefinition
 from .models import PolicyDecisionType, RiskClass
 from .sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
+from .skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
 
 
 SECRET_PATTERNS: list[re.Pattern[str]] = [
@@ -83,10 +85,70 @@ class ToolGateway:
         self.graphify = graphify
         self.sandbox = sandbox or get_default_sandbox()
         self.tools: dict[str, ToolSpec] = {}
+        self.mcp_servers: dict[str, dict[str, Any]] = {}
         self._register_builtin_tools()
 
     def register_tool(self, spec: ToolSpec) -> None:
         self.tools[spec.tool_id] = spec
+
+    def register_mcp_server(
+        self,
+        adapter: MCPClientAdapter,
+        scanner: SkillSecurityScanner | None = None,
+        enforce_scan: bool = True,
+    ) -> list[str]:
+        """Dynamically validates and registers tools exposed by an external MCP server adapter."""
+        tools = adapter.discover_tools()
+        manifest_data = adapter.get_manifest_data()
+
+        if enforce_scan:
+            sec_scanner = scanner or SkillSecurityScanner(self.ledger)
+            scan_res = sec_scanner.scan_mcp_manifest(adapter.server_id, manifest_data, tools)
+            if scan_res.get("gate_decision") != "ALLOW" or scan_res.get("status") == "quarantined":
+                matched = scan_res.get("scan", {}).get("matched_rules", [])
+                raise PolicyBlockedError(
+                    f"MCP server '{adapter.server_id}' rejected by SkillSpector: {matched}"
+                )
+            manifest_sha256 = scan_res.get("manifest_sha256", "")
+        else:
+            manifest_sha256 = manifest_data.get("manifest_sha256") or compute_mcp_manifest_sha256(manifest_data)
+
+        self.mcp_servers[adapter.server_id] = {
+            "adapter": adapter,
+            "manifest_sha256": manifest_sha256,
+        }
+
+        registered_ids: list[str] = []
+
+        def _make_handler(client: MCPClientAdapter, target_tool: str):
+            def handler(ws_path: Path, args: dict[str, Any]) -> dict[str, Any]:
+                return client.call_tool(target_tool, args)
+            return handler
+
+        for tool in tools:
+            namespaced_id = f"{adapter.server_id}__{tool.name}"
+            risk_cls = tool.risk_class if isinstance(tool.risk_class, RiskClass) else RiskClass(str(tool.risk_class))
+
+            spec = ToolSpec(
+                tool_id=namespaced_id,
+                description=tool.description,
+                risk_class=risk_cls,
+                handler=_make_handler(adapter, tool.name),
+            )
+            self.register_tool(spec)
+            registered_ids.append(namespaced_id)
+
+            if tool.name not in self.tools:
+                alias_spec = ToolSpec(
+                    tool_id=tool.name,
+                    description=tool.description,
+                    risk_class=risk_cls,
+                    handler=_make_handler(adapter, tool.name),
+                )
+                self.register_tool(alias_spec)
+                registered_ids.append(tool.name)
+
+        return registered_ids
 
     def _register_builtin_tools(self) -> None:
         self.register_tool(
@@ -293,9 +355,12 @@ class ToolGateway:
             self.ledger.seal_tool_call(call_id, err_payload, status="FAILED")
             raise
 
+        duration_ms = round((time.perf_counter() - t0) * 1000, 3)
         sanitized_result = redact_secrets(raw_result)
         sanitized_result["_replayed"] = False
         sanitized_result["_call_id"] = call_id
+        sanitized_result["_duration_ms"] = duration_ms
+        sanitized_result["_result_sha256"] = sha256_hex(canonical_json(sanitized_result))
 
         # 4. Active Graphify Blast-Radius Hook on R2 file modification (FR-036a)
         if spec.tool_id == "write_file" and self.graphify is not None and "path" in args:
