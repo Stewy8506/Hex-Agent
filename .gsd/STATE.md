@@ -2,8 +2,8 @@
 
 **Date:** 2026-10-31  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** In Progress — Phase 03 Wave 1 Complete, Ready for Phase 03 Wave 2 (Plan 03-02)  
-**Active Phase:** Phase 03 — External MCP Server Client & Dynamic Tool Gateway  
+**Status:** In Progress — Phase 03 Complete (Wave 1 & Wave 2 Green), Ready for Phase 04  
+**Active Phase:** Phase 03 — External MCP Server Client & Dynamic Tool Gateway (Complete)  
 
 ---
 
@@ -63,17 +63,22 @@
    - Built thread-safe JSON-RPC 2.0 message demuxing, stdout reader thread, rolling stderr diagnostics, and timeout enforcement.
    - Authored mock MCP server and unit test suite in `tests/test_mcp_client.py` verifying handshake, discovery, tool execution, timeouts, and clean process teardown (82/82 repository tests passing).
 
+10. **Phase 03 SkillSpector Manifest Validation & 0ms Call Journaling Complete (Plan 03-02):**
+    - Enhanced `SkillSecurityScanner` in `src/harness_core/skillspector.py` with `scan_mcp_manifest`, SHA-256 manifest pinning, and injection/semantic quarantine rules.
+    - Integrated `register_mcp_server` into `ToolGateway` in `src/harness_core/gateway.py` with R0–R4 default-deny policy, secret redaction, and 0ms call-level journal memoization.
+    - Authored end-to-end integration test suite in `tests/test_mcp_gateway_journal.py` verifying prompt-injection defense, 0ms replay (< 15 ms, 0 subprocess calls), approval interrupts, and R0–R4 policy enforcement (92/92 repository tests passing).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full test suite passing cleanly with zero failures (82/82 tests green).
-- Ready to execute Phase 03 Wave 2 (Plan 03-02).
+- None. Full test suite passing cleanly with zero failures (92/92 tests green).
+- Phase 03 complete. Ready for Phase 04.
 
 ---
 
 ## 3. Next Actions
 
-- Execute Plan 03-02 via `gsd-executor`: Wire SkillSecurityScanner manifest pre-validation & SHA-256 pinning, ToolGateway 0ms call journaling, and end-to-end replay verification.
+- Proceed to Phase 04 (Model Routing & Local LLM Integration): Plan 04-01 authoring.
 
 
