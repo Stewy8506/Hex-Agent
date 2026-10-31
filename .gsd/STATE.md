@@ -28,18 +28,22 @@
 3. **Empirical Verification:**
    - Complete 10/10 acceptance test suite passing in `tests/test_harness_stages.py` covering all 5 stages.
 
+4. **Phase 01 Migrations Baseline Complete (Plan 01-01):**
+   - Configured Alembic migration infrastructure (`alembic.ini`, `migrations/env.py`, `migrations/script.py.mako`).
+   - Authored initial migration `migrations/versions/0001_initial_schema.py` representing all 16 authoritative tables with reverse foreign key downgrades.
+   - Verified automated upgrade to head and downgrade to base in `tests/test_alembic_migrations.py` (13/13 test suite passing).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Python test suite is passing cleanly with zero failures.
+- None. Full test suite passing cleanly with zero failures.
 
 ---
 
 ## 3. Next Actions
 
-- Begin **Phase 01: PostgreSQL Async Engine & Alembic Migrations**:
-  - Implement async PostgreSQL driver pool in `src/harness_core/db.py` using `asyncpg` / `psycopg3`.
-  - Configure Alembic migration environment (`alembic init`) and link to `0001_initial_schema.sql`.
+- Continue **Phase 01: PostgreSQL Async Engine & Concurrency**:
+  - Implement async PostgreSQL driver pool in `src/harness_core/db.py` using `asyncpg`.
   - Add concurrency test for simultaneous lease claims with `SKIP LOCKED`.
 
