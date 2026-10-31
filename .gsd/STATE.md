@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-31  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** In Progress — Phase 01 Complete, Ready for Phase 02  
+**Status:** In Progress — Phase 01 Complete, Phase 02 Plans Ready for Execution  
 **Active Phase:** Phase 02 — Linux OverlayFS Provider & Container Sandbox Isolation  
 
 ---
@@ -46,6 +46,10 @@
    - Hardened `begin_tool_call` and `seal_tool_call` against stale fencing tokens, raising `ConcurrencyFenceError`.
    - Built comprehensive multi-worker concurrency stress test suite in `tests/test_postgres_concurrency.py` (35/35 repository tests passing).
 
+7. **Phase 02 Planning Complete (Plans 02-01 & 02-02):**
+   - Plan 02-01 (Wave 1, 2 tasks): `OverlayFSSnapshotProvider`, `BtrfsSnapshotProvider`, platform detection factory `get_default_snapshot_provider`, and contract test suite `tests/test_cow_providers.py`.
+   - Plan 02-02 (Wave 2, 3 tasks): Container sandbox engine (`BubblewrapSandbox`, `DockerPodmanSandbox`, `RestrictedSubprocessSandbox`), `ToolGateway` sandbox integration, and zero-escape test suite `tests/test_sandbox_isolation.py`.
+
 ---
 
 ## 2. Blockers & Dependencies
@@ -56,6 +60,6 @@
 
 ## 3. Next Actions
 
-- Phase 01 complete! Proceed to Phase 02 (CoW Isolation & Workspace Snapshots).
+- Begin execution of Phase 02 Plan 02-01 (`.gsd/phases/02-overlayfs-sandbox/02-01-PLAN.md`).
 
 
