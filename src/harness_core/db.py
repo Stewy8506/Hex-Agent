@@ -517,7 +517,7 @@ class LedgerStore:
 
             now = utcnow_iso()
             new_tree_sha = workspace_tree_sha or row["active_workspace_tree_sha"]
-            term_reason = terminal_reason if target.is_terminal else row["terminal_reason"]
+            term_reason = terminal_reason if (target.is_terminal or terminal_reason is not None) else row["terminal_reason"]
 
             cursor = self.conn.execute(
                 """
@@ -608,7 +608,7 @@ class LedgerStore:
 
                 now = utcnow_iso()
                 new_tree_sha = workspace_tree_sha or row["active_workspace_tree_sha"]
-                term_reason = terminal_reason if target.is_terminal else row["terminal_reason"]
+                term_reason = terminal_reason if (target.is_terminal or terminal_reason is not None) else row["terminal_reason"]
 
                 res = await conn.execute(
                     """
