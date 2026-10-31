@@ -177,9 +177,11 @@ class TaskBudget:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> TaskBudget:
+    def from_dict(cls, data: dict[str, Any] | TaskBudget | None) -> TaskBudget:
         if not data:
             return cls()
+        if isinstance(data, cls):
+            return data
         valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         return cls(**valid)
 

@@ -12,16 +12,19 @@ Coordinates:
 
 from __future__ import annotations
 
+import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .cow import APFSAndPortableCoWProvider, WorkspaceSnapshotProvider, get_default_snapshot_provider
 from .db import LedgerStore
 from .gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
 from .graphify import ActiveGraphifyAdapter
-from .models import PlanNode, TaskState, TaskSubmitRequest
+from .models import PlanNode, TaskBudget, TaskState, TaskSubmitRequest
 from .proof import Harness2ControlledAdapter, VerificationAndProofService
+from .providers.base import BudgetExceededError
 from .router import GovernedMemoryService, TwoTierModelRouter
 from .sandbox import ExecutionSandbox, get_default_sandbox
 from .skillspector import SkillSpectorScanner
@@ -36,11 +39,13 @@ class HarnessOrchestrator:
         default_workspace: Path | str | None = None,
         cow: WorkspaceSnapshotProvider | None = None,
         sandbox: ExecutionSandbox | None = None,
+        repair_patch_generator: Callable[..., list[dict[str, Any]]] | None = None,
     ):
         self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.default_workspace = Path(default_workspace or self.data_dir / "default_project").resolve()
         self.default_workspace.mkdir(parents=True, exist_ok=True)
+        self.repair_patch_generator = repair_patch_generator
 
         self.ledger = LedgerStore(self.data_dir / "ledger.db")
         self.cow = cow or get_default_snapshot_provider(self.data_dir / "cow_snapshots")
@@ -219,6 +224,127 @@ class HarnessOrchestrator:
             workspace_tree_sha=base_tree_sha,
             fencing_token=fencing_token,
         )
+
+    def generate_repair_patch(
+        self,
+        task_id: str,
+        attempt_ws: Path,
+        failure_digest: str,
+        blast_report: Any,
+        modified_files: list[str],
+    ) -> list[dict[str, Any]]:
+        """Generates concrete repair patch operations using model router or injected generator."""
+        if self.repair_patch_generator is not None:
+            try:
+                return self.repair_patch_generator(
+                    task_id=task_id,
+                    attempt_ws=attempt_ws,
+                    failure_digest=failure_digest,
+                    blast_report=blast_report,
+                    modified_files=modified_files,
+                )
+            except TypeError:
+                try:
+                    return self.repair_patch_generator(
+                        task_id, attempt_ws, failure_digest, blast_report, modified_files
+                    )
+                except TypeError:
+                    return self.repair_patch_generator(failure_digest)
+
+        # Formulate repair prompt with failure context, blast radius, and failing code
+        blast_dict = blast_report.to_dict() if hasattr(blast_report, "to_dict") else {}
+        impacted_symbols = blast_dict.get("modified_symbols", []) + blast_dict.get("hop1_dependents", [])
+        blast_warning = blast_dict.get("warning_message", "No AST blast warnings")
+
+        # Read context for modified or failing files
+        target_files = list(modified_files)
+        for match in re.findall(r"([\w./\-]+\.py)", failure_digest):
+            clean_p = match.strip("'\"")
+            if clean_p not in target_files:
+                target_files.append(clean_p)
+
+        file_contexts: list[str] = []
+        for file_rel in target_files:
+            file_path = attempt_ws / file_rel
+            if file_path.is_file():
+                try:
+                    file_contexts.append(f"--- File: {file_rel} ---\n{file_path.read_text(encoding='utf-8')}")
+                except Exception:
+                    pass
+
+        code_context_str = "\n\n".join(file_contexts) if file_contexts else "No existing code files found."
+
+        prompt = (
+            "You are an autonomous software repair agent.\n"
+            "A verification test failed during execution. Fix the failing code.\n\n"
+            f"[Failure Digest]\n{failure_digest}\n\n"
+            f"[AST Blast Radius Report]\nWarning: {blast_warning}\nImpacted Symbols: {impacted_symbols}\n\n"
+            f"[Source Code Context]\n{code_context_str}\n\n"
+            "Instructions:\n"
+            "Provide the repair patch as a JSON list of file write operations:\n"
+            "```json\n"
+            '[\n  {"tool_id": "write_file", "args": {"path": "<relative_path>", "content": "<file_content>"}}\n]\n'
+            "```\n"
+            "Provide only valid code in the content."
+        )
+
+        task = self.ledger.get_task(task_id) or {}
+        budget_dict = task.get("budget") or {}
+        task_budget = TaskBudget.from_dict(budget_dict)
+
+        decision, model_response = self.router.execute_routed_request(
+            prompt=prompt,
+            task_class="repair",
+            risk_class="R2",
+            budget=task_budget,
+        )
+
+        response_text = model_response.text.strip()
+        return self._parse_patch_operations(response_text, target_files)
+
+    def _parse_patch_operations(self, text: str, fallback_files: list[str]) -> list[dict[str, Any]]:
+        """Parses model response into concrete write_file tool operations."""
+        json_matches = re.findall(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
+        candidates = json_matches if json_matches else [text]
+
+        for cand in candidates:
+            cand = cand.strip()
+            start_bracket = cand.find("[")
+            end_bracket = cand.rfind("]")
+            if start_bracket != -1 and end_bracket > start_bracket:
+                cand_sub = cand[start_bracket : end_bracket + 1]
+                try:
+                    parsed = json.loads(cand_sub)
+                    if isinstance(parsed, list) and parsed:
+                        ops = []
+                        for item in parsed:
+                            if isinstance(item, dict):
+                                if "tool_id" in item and "args" in item:
+                                    ops.append(item)
+                                elif "path" in item:
+                                    ops.append({
+                                        "tool_id": item.get("tool_id", "write_file"),
+                                        "args": {
+                                            "path": item["path"],
+                                            "content": item.get("content", ""),
+                                        },
+                                    })
+                        if ops:
+                            return ops
+                except json.JSONDecodeError:
+                    pass
+
+        py_matches = re.findall(r"```(?:python)?\s*(.*?)\s*```", text, re.DOTALL)
+        if py_matches and fallback_files:
+            return [{
+                "tool_id": "write_file",
+                "args": {
+                    "path": fallback_files[0],
+                    "content": py_matches[0],
+                },
+            }]
+
+        return []
 
     def _execute_standard_dag(self, task: dict[str, Any], source_ws: Path, worker_id: str) -> dict[str, Any]:
         task_id = task["task_id"]
@@ -435,27 +561,180 @@ class HarnessOrchestrator:
             run_tests=True,
         )
 
+        repair_attempt = 0
+        task_budget = TaskBudget.from_dict(task.get("budget"))
+        constraints = task.get("constraints") or {}
+        max_repair_retries = int(
+            constraints.get("max_repair_attempts")
+            or task_budget.max_retries_per_step
+            or 2
+        )
+        budget_exceeded = False
+
+        while not ver_outcome["passed"] and repair_attempt < max_repair_retries:
+            # Check budget limits
+            tracker = getattr(self.router.cloud_provider, "budget_tracker", None)
+            if tracker is not None:
+                tracker.sync_with_task_budget(task_budget)
+                if tracker.total_cost_usd >= tracker.max_cost_usd:
+                    budget_exceeded = True
+                    break
+            if task_budget.max_cost_usd is not None and task_budget.max_cost_usd <= 0.0001:
+                budget_exceeded = True
+                break
+
+            repair_attempt += 1
+
+            raw_output = (
+                ver_outcome.get("verification_results", {}).get("test_output_excerpt", "")
+            )
+            comp_result = self.router.compress_verbose_log(raw_output)
+            failure_digest = comp_result.get("compressed_text", raw_output)
+
+            blast_report = self.graphify.compute_blast_radius(attempt_ws, modified_files)
+
+            # Transition state machine: VERIFYING -> RUNNING
+            curr_sha = self.cow.compute_tree_sha(attempt_ws)
+            self.ledger.transition_task(
+                task_id,
+                TaskState.RUNNING,
+                reason_code="AUTONOMOUS_REPAIR_ATTEMPT",
+                attempt_id=attempt_id,
+                workspace_tree_sha=curr_sha,
+                fencing_token=fencing_token,
+                payload={
+                    "repair_attempt": repair_attempt,
+                    "max_retries": max_repair_retries,
+                    "failure_digest": failure_digest[:500],
+                },
+            )
+
+            try:
+                patch_ops = self.generate_repair_patch(
+                    task_id=task_id,
+                    attempt_ws=attempt_ws,
+                    failure_digest=failure_digest,
+                    blast_report=blast_report,
+                    modified_files=modified_files,
+                )
+            except BudgetExceededError:
+                budget_exceeded = True
+                break
+
+            # Apply repair patch operations to attempt_ws
+            if patch_ops:
+                repair_step_id = f"repair_{repair_attempt}"
+                normalized_ops: list[dict[str, Any]] = []
+                for op in patch_ops:
+                    if "tool_id" in op and "args" in op:
+                        normalized_ops.append(op)
+                    elif "path" in op:
+                        normalized_ops.append({
+                            "tool_id": op.get("tool_id", "write_file"),
+                            "args": {
+                                "path": op["path"],
+                                "content": op.get("content", ""),
+                            },
+                        })
+                    elif "tool" in op:
+                        normalized_ops.append({
+                            "tool_id": op["tool"],
+                            "args": op.get("args", {}),
+                        })
+
+                if normalized_ops:
+                    self.gateway.execute_code_mode_composition(
+                        task_id=task_id,
+                        attempt_id=attempt_id,
+                        step_id=repair_step_id,
+                        workspace_dir=attempt_ws,
+                        operations=normalized_ops,
+                    )
+                    for op in normalized_ops:
+                        if op.get("tool_id") == "write_file" and "path" in op.get("args", {}):
+                            file_p = str(op["args"]["path"])
+                            if file_p not in modified_files:
+                                modified_files.append(file_p)
+
+            # Transition state machine: RUNNING -> VERIFYING
+            curr_sha = self.cow.compute_tree_sha(attempt_ws)
+            self.ledger.transition_task(
+                task_id,
+                TaskState.VERIFYING,
+                reason_code="REPAIR_VERIFICATION_ATTEMPT",
+                attempt_id=attempt_id,
+                workspace_tree_sha=curr_sha,
+                fencing_token=fencing_token,
+                payload={"repair_attempt": repair_attempt},
+            )
+
+            # Re-execute verification
+            ver_outcome = self.proof_service.run_verification_and_build_proof(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                base_snapshot_path=base_snap_path,
+                workspace_dir=attempt_ws,
+                modified_files=modified_files,
+                run_tests=True,
+            )
+
         if not ver_outcome["passed"]:
+            forensic_snap = self.cow.create_snapshot(
+                attempt_ws, label=f"{task_id}_repair_exhausted_att{repair_attempt}"
+            )
+            forensic_sha = forensic_snap.workspace_tree_sha
+            forensic_path = str(forensic_snap.snapshot_path)
+
+            pending_steps = [
+                n.get("step_id", "")
+                for n in dag_nodes
+                if n.get("step_id", "") not in completed_step_ids
+            ]
+            self.ledger.create_checkpoint(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                plan_revision=plan["revision"],
+                completed_steps=sorted(completed_step_ids),
+                pending_steps=pending_steps,
+                workspace_tree_sha=forensic_sha,
+                snapshot_path=forensic_path,
+            )
+
+            if budget_exceeded:
+                failure_class = "BUDGET_EXCEEDED"
+                reason_code = "BUDGET_EXHAUSTED"
+            else:
+                failure_class = "REPAIR_RETRIES_EXHAUSTED"
+                reason_code = "REPAIR_RETRIES_EXHAUSTED"
+
             self.ledger.update_attempt(
                 attempt_id,
                 status="FAILED",
-                head_tree_sha=head_sha,
-                failure_class="VERIFICATION_FAILED",
+                head_tree_sha=forensic_sha,
+                failure_class=failure_class,
             )
             return self.ledger.transition_task(
                 task_id,
                 TaskState.NEEDS_ATTENTION,
-                reason_code="VERIFICATION_CHECKS_FAILED",
+                reason_code=reason_code,
                 attempt_id=attempt_id,
-                workspace_tree_sha=head_sha,
+                workspace_tree_sha=forensic_sha,
                 fencing_token=fencing_token,
-                payload={"verification": ver_outcome["verification_results"]},
+                terminal_reason=f"Autonomous repair failed after {repair_attempt} attempt(s): {failure_class}",
+                payload={
+                    "repair_attempts": repair_attempt,
+                    "max_retries": max_repair_retries,
+                    "forensic_snapshot_path": forensic_path,
+                    "verification_results": ver_outcome["verification_results"],
+                    "modified_files": modified_files,
+                },
             )
 
         # Sync verified workspace back to source_ws if R2 modifications succeeded
         if modified_files:
             self.cow.clone_to_workspace(attempt_ws, source_ws)
 
+        head_sha = self.cow.compute_tree_sha(attempt_ws)
         self.ledger.update_attempt(attempt_id, status="SUCCEEDED", head_tree_sha=head_sha)
         # Record episodic memory summary (FR-032)
         self.memory.write_memory(
@@ -473,7 +752,10 @@ class HarnessOrchestrator:
             attempt_id=attempt_id,
             workspace_tree_sha=head_sha,
             fencing_token=fencing_token,
-            payload={"proof_id": ver_outcome["proof"]["proof_id"]},
+            payload={
+                "proof_id": ver_outcome["proof"]["proof_id"],
+                "repair_attempts": repair_attempt,
+            },
         )
 
     # ------------------------------------------------------------------
