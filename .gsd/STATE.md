@@ -68,20 +68,25 @@
     - Integrated `register_mcp_server` into `ToolGateway` in `src/harness_core/gateway.py` with R0–R4 default-deny policy, secret redaction, and 0ms call-level journal memoization.
     - Authored end-to-end integration test suite in `tests/test_mcp_gateway_journal.py` verifying prompt-injection defense, 0ms replay (< 15 ms, 0 subprocess calls), approval interrupts, and R0–R4 policy enforcement (92/92 repository tests passing).
 
+11. **Phase 04 Local MLX Model Provider & Log Compression Engine Complete (Plan 04-01):**
+    - Implemented `ModelProvider` base protocol, `ModelUsage`, `ModelResponse`, and `ProviderCapabilities` in `src/harness_core/providers/base.py`.
+    - Implemented `LocalMLXModelProvider` in `src/harness_core/providers/mlx_provider.py` with Darwin ARM64 discovery, unified memory detection, lazy `mlx_lm` loading, and pure-Python zero-dependency fallback generation.
+    - Implemented `Tier1LogCompressor` in `src/harness_core/providers/mlx_provider.py` with secret redaction, multi-pattern trace and assertion extraction, local AST source context inspection, and >70% token reduction (91.03% verified).
+    - Authored unit and contract test suite in `tests/test_model_providers.py` (107/107 total repository tests passing).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full test suite passing cleanly with zero failures (92/92 tests green).
-- Phase 04 plans authored:
-  - `04-01-PLAN.md` (Wave 1: Local MLX Model Provider & Live Log Compression Engine)
-  - `04-02-PLAN.md` (Wave 2: Cloud API Connectors, Per-Task Budget Ceilings, Privacy Gating & Router Integration)
+- None. Full test suite passing cleanly with zero failures (107/107 tests green).
+- Phase 04 Wave 1 (`04-01-PLAN.md`) complete.
+- Phase 04 Wave 2 plan authored and ready: `04-02-PLAN.md`.
 
 ---
 
 ## 3. Next Actions
 
-- Execute Phase 04 Wave 1: `04-01-PLAN.md` (Implement `ModelProvider` base protocols, `LocalMLXModelProvider`, and `Tier1LogCompressor`).
+- Execute Phase 04 Wave 2: `04-02-PLAN.md` (Cloud API Connectors, Per-Task Budget Ceilings, Privacy Gating & Router Integration).
 
 
 
