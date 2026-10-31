@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import platform
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
+from harness_core.models import TaskBudget
 from harness_core.providers.base import (
     BudgetExceededError,
     ModelProvider,
@@ -16,6 +18,13 @@ from harness_core.providers.base import (
     PolicyBlockedError,
     ProviderCapabilities,
     ProviderUnavailableError,
+)
+from harness_core.providers.cloud_provider import (
+    CloudModelProvider,
+    CloudProviderType,
+    ModelPricing,
+    TaskBudgetTracker,
+    calculate_cost_usd,
 )
 from harness_core.providers.mlx_provider import (
     LocalMLXModelProvider,
@@ -246,5 +255,262 @@ class TestTier1LogCompressor(unittest.TestCase):
         self.assertTrue(res["engine"].startswith("tier1_mlx"))
 
 
+class TestTaskBudgetTracker(unittest.TestCase):
+    """Test task budget tracking, limit enforcement, and pricing calculators."""
+
+    def test_pricing_calculation(self) -> None:
+        # Claude 3.5 Sonnet ($3.00 input, $15.00 output per 1M)
+        cost_claude = calculate_cost_usd("claude-3-5-sonnet-20241022", 1000, 1000)
+        self.assertAlmostEqual(cost_claude, 0.018, places=5)
+
+        # GPT-4o ($2.50 input, $10.00 output per 1M)
+        cost_gpt4o = calculate_cost_usd("gpt-4o", 10000, 1000)
+        self.assertAlmostEqual(cost_gpt4o, 0.035, places=5)
+
+        # Gemini 1.5 Pro ($1.25 input, $5.00 output per 1M)
+        cost_gemini15 = calculate_cost_usd("gemini-1.5-pro", 10000, 1000)
+        self.assertAlmostEqual(cost_gemini15, 0.0175, places=5)
+
+        # Gemini 3.5 Pro ($1.50 input, $6.00 output per 1M)
+        cost_gemini35 = calculate_cost_usd("gemini-3.5-pro", 10000, 1000)
+        self.assertAlmostEqual(cost_gemini35, 0.021, places=5)
+
+    def test_budget_tracker_request_limit(self) -> None:
+        tracker = TaskBudgetTracker(max_requests=2)
+        tracker.check_budget_before_call()
+        tracker.record_usage(10, 10, 0.001)  # request 1
+        tracker.check_budget_before_call()
+        tracker.record_usage(10, 10, 0.001)  # request 2
+
+        with self.assertRaises(BudgetExceededError) as ctx:
+            tracker.check_budget_before_call()
+        self.assertIn("request count limit exceeded", str(ctx.exception))
+
+    def test_budget_tracker_cost_ceiling(self) -> None:
+        tracker = TaskBudgetTracker(max_cost_usd=0.05)
+        tracker.record_usage(100, 100, 0.03)
+
+        with self.assertRaises(BudgetExceededError) as ctx:
+            tracker.record_usage(100, 100, 0.03)
+        self.assertIn("cost ceiling exceeded", str(ctx.exception))
+
+    def test_budget_tracker_output_token_limit(self) -> None:
+        tracker = TaskBudgetTracker(max_output_tokens=100)
+        tracker.record_usage(50, 60, 0.001)
+
+        with self.assertRaises(BudgetExceededError) as ctx:
+            tracker.record_usage(50, 50, 0.001)
+        self.assertIn("output token limit exceeded", str(ctx.exception))
+
+
+class TestCloudModelProvider(unittest.TestCase):
+    """Test CloudModelProvider dispatch, privacy gating, and outbound secret redaction."""
+
+    def test_anthropic_payload_dispatch(self) -> None:
+        captured_req: dict[str, Any] = {}
+
+        def mock_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            captured_req["url"] = url
+            captured_req["headers"] = headers
+            captured_req["payload"] = json.loads(body.decode("utf-8"))
+            resp = {
+                "content": [{"type": "text", "text": "Anthropic Claude synthesis"}],
+                "usage": {"input_tokens": 120, "output_tokens": 45},
+                "stop_reason": "end_turn",
+            }
+            return 200, json.dumps(resp).encode("utf-8")
+
+        provider = CloudModelProvider(
+            provider_type=CloudProviderType.ANTHROPIC,
+            model_id="claude-3-5-sonnet-20241022",
+            api_key="sk-ant-test-key",
+            http_transport=mock_transport,
+        )
+
+        resp = provider.generate(
+            prompt="Analyze architectural trade-offs",
+            system_prompt="You are a principal engineer.",
+            max_tokens=256,
+        )
+
+        self.assertEqual(captured_req["url"], "https://api.anthropic.com/v1/messages")
+        self.assertEqual(captured_req["headers"]["x-api-key"], "sk-ant-test-key")
+        self.assertEqual(captured_req["headers"]["anthropic-version"], "2023-06-01")
+        self.assertEqual(captured_req["payload"]["model"], "claude-3-5-sonnet-20241022")
+        self.assertEqual(captured_req["payload"]["system"], "You are a principal engineer.")
+        self.assertEqual(captured_req["payload"]["messages"][0]["content"], "Analyze architectural trade-offs")
+        self.assertEqual(resp.text, "Anthropic Claude synthesis")
+        self.assertEqual(resp.usage.input_tokens, 120)
+        self.assertEqual(resp.usage.output_tokens, 45)
+        self.assertGreater(resp.usage.cost_usd, 0.0)
+
+    def test_openai_payload_dispatch(self) -> None:
+        captured_req: dict[str, Any] = {}
+
+        def mock_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            captured_req["url"] = url
+            captured_req["headers"] = headers
+            captured_req["payload"] = json.loads(body.decode("utf-8"))
+            resp = {
+                "choices": [{
+                    "message": {"role": "assistant", "content": "OpenAI GPT-4o synthesis"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 80, "completion_tokens": 30},
+            }
+            return 200, json.dumps(resp).encode("utf-8")
+
+        provider = CloudModelProvider(
+            provider_type=CloudProviderType.OPENAI,
+            model_id="gpt-4o",
+            api_key="sk-openai-test-key",
+            http_transport=mock_transport,
+        )
+
+        resp = provider.generate(
+            prompt="Optimize SQL query execution plan",
+            system_prompt="You are a database tuning expert.",
+            max_tokens=512,
+        )
+
+        self.assertEqual(captured_req["url"], "https://api.openai.com/v1/chat/completions")
+        self.assertEqual(captured_req["headers"]["Authorization"], "Bearer sk-openai-test-key")
+        self.assertEqual(captured_req["payload"]["model"], "gpt-4o")
+        self.assertEqual(captured_req["payload"]["messages"][0]["role"], "system")
+        self.assertEqual(captured_req["payload"]["messages"][1]["content"], "Optimize SQL query execution plan")
+        self.assertEqual(resp.text, "OpenAI GPT-4o synthesis")
+        self.assertEqual(resp.usage.input_tokens, 80)
+        self.assertEqual(resp.usage.output_tokens, 30)
+
+    def test_gemini_payload_dispatch(self) -> None:
+        captured_req: dict[str, Any] = {}
+
+        def mock_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            captured_req["url"] = url
+            captured_req["headers"] = headers
+            captured_req["payload"] = json.loads(body.decode("utf-8"))
+            resp = {
+                "candidates": [{
+                    "content": {
+                        "parts": [{"text": "Google Gemini 3.5 Pro reasoning"}],
+                        "role": "model",
+                    },
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 90,
+                    "candidatesTokenCount": 40,
+                },
+            }
+            return 200, json.dumps(resp).encode("utf-8")
+
+        provider = CloudModelProvider(
+            provider_type=CloudProviderType.GEMINI,
+            model_id="gemini-3.5-pro",
+            api_key="test-gemini-key",
+            http_transport=mock_transport,
+        )
+
+        resp = provider.generate(
+            prompt="Explain lock contention in Postgres",
+            system_prompt="Be concise.",
+            max_tokens=300,
+        )
+
+        self.assertIn("gemini-3.5-pro:generateContent", captured_req["url"])
+        self.assertIn("key=test-gemini-key", captured_req["url"])
+        self.assertEqual(
+            captured_req["payload"]["contents"][0]["parts"][0]["text"],
+            "Explain lock contention in Postgres",
+        )
+        self.assertEqual(resp.text, "Google Gemini 3.5 Pro reasoning")
+        self.assertEqual(resp.usage.input_tokens, 90)
+        self.assertEqual(resp.usage.output_tokens, 40)
+
+    def test_privacy_gating_blocks_sensitive_and_secret(self) -> None:
+        transport_called = False
+
+        def mock_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            nonlocal transport_called
+            transport_called = True
+            return 200, b"{}"
+
+        provider = CloudModelProvider(http_transport=mock_transport)
+
+        with self.assertRaises(PolicyBlockedError) as ctx_sens:
+            provider.generate("Internal customer transaction records", data_classification="sensitive")
+        self.assertIn("Cloud egress forbidden for data classification 'sensitive'", str(ctx_sens.exception))
+
+        with self.assertRaises(PolicyBlockedError) as ctx_sec:
+            provider.generate("Root CA private keys", data_classification="secret")
+        self.assertIn("Cloud egress forbidden for data classification 'secret'", str(ctx_sec.exception))
+
+        self.assertFalse(transport_called, "Zero network requests must be initiated for sensitive/secret classifications")
+
+    def test_outbound_secret_redaction(self) -> None:
+        captured_payloads: list[dict[str, Any]] = []
+
+        def mock_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            payload = json.loads(body.decode("utf-8"))
+            captured_payloads.append(payload)
+            resp = {
+                "candidates": [{
+                    "content": {"parts": [{"text": "Sanitized response"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5},
+            }
+            return 200, json.dumps(resp).encode("utf-8")
+
+        provider = CloudModelProvider(
+            provider_type=CloudProviderType.GEMINI,
+            api_key="safe-mock-key",
+            http_transport=mock_transport,
+        )
+
+        raw_prompt = "Failed with token sk-ant-api03-1234567890abcdef12345 and password = 'SuperSecretPassword!'"
+        raw_system = "Admin session with Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.token.signature"
+
+        provider.generate(
+            prompt=raw_prompt,
+            system_prompt=raw_system,
+            data_classification="internal",
+        )
+
+        self.assertEqual(len(captured_payloads), 1)
+        raw_body_text = json.dumps(captured_payloads[0])
+        self.assertNotIn("sk-ant-api03-1234567890abcdef12345", raw_body_text)
+        self.assertNotIn("SuperSecretPassword!", raw_body_text)
+        self.assertIn("[REDACTED_SECRET]", raw_body_text)
+
+    def test_budget_ceiling_enforcement_in_generate(self) -> None:
+        def mock_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            resp = {
+                "candidates": [{
+                    "content": {"parts": [{"text": "Simulated response"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {"promptTokenCount": 10000, "candidatesTokenCount": 5000},
+            }
+            return 200, json.dumps(resp).encode("utf-8")
+
+        tracker = TaskBudgetTracker(max_cost_usd=0.05)
+        provider = CloudModelProvider(
+            provider_type=CloudProviderType.GEMINI,
+            budget_tracker=tracker,
+            http_transport=mock_transport,
+        )
+
+        # 1st call: 10k in, 5k out on gemini-3.5-pro = (10000*1.5 + 5000*6.0)/1M = 0.045 USD
+        resp1 = provider.generate("First query")
+        self.assertAlmostEqual(resp1.usage.cost_usd, 0.045, places=5)
+
+        # 2nd call: adding another 0.045 breaches 0.05 USD ceiling
+        with self.assertRaises(BudgetExceededError) as ctx:
+            provider.generate("Second query")
+        self.assertIn("cost ceiling exceeded", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
+
