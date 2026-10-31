@@ -22,6 +22,7 @@ from typing import Any, Callable
 from .db import LedgerStore, canonical_json, sha256_hex
 from .graphify import ActiveGraphifyAdapter
 from .models import PolicyDecisionType, RiskClass
+from .sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
 
 
 SECRET_PATTERNS: list[re.Pattern[str]] = [
@@ -76,9 +77,11 @@ class ToolGateway:
         self,
         ledger: LedgerStore,
         graphify: ActiveGraphifyAdapter | None = None,
+        sandbox: ExecutionSandbox | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
+        self.sandbox = sandbox or get_default_sandbox()
         self.tools: dict[str, ToolSpec] = {}
         self._register_builtin_tools()
 
@@ -344,11 +347,14 @@ class ToolGateway:
     # ------------------------------------------------------------------
 
     def _resolve_confined_path(self, workspace_dir: Path, rel_path: str) -> Path:
-        norm = rel_path.strip().lstrip("/")
-        if ".." in Path(norm).parts:
+        norm = str(rel_path).strip().lstrip("/")
+        ws_resolved = workspace_dir.resolve()
+        if ".." in Path(norm).parts or ".." in norm:
             raise PolicyBlockedError(f"Path escapes CoW workspace boundary: {rel_path}")
         full = (workspace_dir / norm).resolve()
-        if not str(full).startswith(str(workspace_dir.resolve())):
+        try:
+            full.relative_to(ws_resolved)
+        except ValueError:
             raise PolicyBlockedError(f"Symlink/path escape outside CoW workspace: {rel_path}")
         return full
 
@@ -404,21 +410,31 @@ class ToolGateway:
         else:
             cmd.extend(["discover", "-s", ".", "-p", "test_*.py"])
 
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": str(workspace_dir)}
-        res = subprocess.run(
-            cmd,
-            cwd=str(workspace_dir),
+        env = {"PYTHONPATH": str(workspace_dir)}
+        timeout = float(args.get("timeout", 30.0))
+
+        result = self.sandbox.execute(
+            cmd=cmd,
+            cwd=workspace_dir,
             env=env,
-            capture_output=True,
-            text=True,
-            timeout=int(args.get("timeout", 30)),
+            timeout=timeout,
         )
-        combined_out = (res.stdout + "\n" + res.stderr).strip()
+
+        if result.violation_detected:
+            raise PolicyBlockedError(result.violation_reason or "Sandbox security violation detected")
+
+        combined_out = (result.stdout + "\n" + result.stderr).strip()
+        redacted_out = str(redact_secrets(combined_out))[:16_000]
+        is_ok = (result.exit_code == 0) and not result.timed_out and not result.violation_detected
+
         return {
-            "ok": res.returncode == 0,
-            "exit_code": res.returncode,
-            "output": combined_out[:16_000],
-            "output_sha256": sha256_hex(combined_out),
+            "ok": is_ok,
+            "exit_code": result.exit_code,
+            "timed_out": result.timed_out,
+            "violation_detected": result.violation_detected,
+            "sandbox_backend": result.sandbox_backend,
+            "output": redacted_out,
+            "output_sha256": sha256_hex(redacted_out),
         }
 
     def _tool_git_push_remote(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:

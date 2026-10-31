@@ -23,6 +23,7 @@ from .graphify import ActiveGraphifyAdapter
 from .models import PlanNode, TaskState, TaskSubmitRequest
 from .proof import Harness2ControlledAdapter, VerificationAndProofService
 from .router import GovernedMemoryService, TwoTierModelRouter
+from .sandbox import ExecutionSandbox, get_default_sandbox
 from .skillspector import SkillSpectorScanner
 
 
@@ -34,6 +35,7 @@ class HarnessOrchestrator:
         data_dir: Path | str,
         default_workspace: Path | str | None = None,
         cow: WorkspaceSnapshotProvider | None = None,
+        sandbox: ExecutionSandbox | None = None,
     ):
         self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -45,8 +47,9 @@ class HarnessOrchestrator:
         self.workspaces_root = self.data_dir / "active_workspaces"
         self.workspaces_root.mkdir(parents=True, exist_ok=True)
 
+        self.sandbox = sandbox or get_default_sandbox(self.workspaces_root)
         self.graphify = ActiveGraphifyAdapter(self.default_workspace)
-        self.gateway = ToolGateway(self.ledger, self.graphify)
+        self.gateway = ToolGateway(self.ledger, self.graphify, sandbox=self.sandbox)
         self.scanner = SkillSpectorScanner(self.ledger)
         self.router = TwoTierModelRouter()
         self.memory = GovernedMemoryService(self.ledger)
@@ -69,7 +72,12 @@ class HarnessOrchestrator:
             worker_id=self.default_worker_id,
             machine_class="m4_air",
             cow_backend=self.cow.backend_name,
-            capabilities={"apfs_clone": True, "mlx": True, "sandbox": True},
+            capabilities={
+                "apfs_clone": True,
+                "mlx": True,
+                "sandbox": True,
+                "sandbox_backend": self.sandbox.backend_name,
+            },
             local_llm_models=[self.router.local_model_id],
             trust_level="trusted_local",
         )
