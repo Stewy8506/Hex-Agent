@@ -48,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     p_up = sub.add_parser("up", help="Start local web control surface and /v1/* HTTP API")
     p_up.add_argument("--host", default="127.0.0.1")
     p_up.add_argument("--port", type=int, default=8420)
+    p_up.add_argument("--drain-timeout", type=float, default=5.0, help="Graceful shutdown drain timeout in seconds")
+    p_up.add_argument("--asgi", action="store_true", help="Run via ASGI uvicorn server if installed")
 
     p_sub = sub.add_parser("submit", help="Submit and execute a task")
     p_sub.add_argument("goal", help="Task goal description")
@@ -102,7 +104,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "up":
         seed_default_skills(orch, repo_root)
-        run_http_server(orch, host=args.host, port=args.port)
+        if args.asgi:
+            try:
+                import uvicorn
+                from .asgi import get_asgi_app
+
+                asgi_app = get_asgi_app(orchestrator=orch)
+                uvicorn.run(asgi_app, host=args.host, port=args.port)
+                return 0
+            except ImportError:
+                print("uvicorn not installed; falling back to built-in HTTP server with GracefulServerRunner")
+        run_http_server(orch, host=args.host, port=args.port, drain_timeout=args.drain_timeout)
         return 0
 
     if args.cmd == "submit":

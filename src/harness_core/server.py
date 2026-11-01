@@ -13,7 +13,11 @@ import html
 import json
 import logging
 import re
+import signal
+import threading
+import time
 import uuid
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +38,8 @@ class HarnessAPIApp:
     def __init__(self, orchestrator: HarnessOrchestrator, auth_token: str | None = None):
         self.orch = orchestrator
         self.auth_token = auth_token
+        self.start_time = time.time()
+        self.is_draining = False
 
     def handle_request(
         self,
@@ -75,6 +81,91 @@ class HarnessAPIApp:
             # Dashboard root
             if method == "GET" and route == "/":
                 return (HTTPStatus.OK, DASHBOARD_HTML, "text/html; charset=utf-8")
+
+            # Liveness probe: GET /livez
+            if method == "GET" and route == "/livez":
+                uptime = round(time.time() - self.start_time, 2)
+                return (
+                    HTTPStatus.OK,
+                    {"status": "alive", "uptime_seconds": uptime, "version": "1.0.0"},
+                    "application/json",
+                )
+
+            # Readiness probe: GET /healthz
+            if method == "GET" and route == "/healthz":
+                if self.is_draining:
+                    return (
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"status": "draining", "error": "Server is shutting down and draining tasks"},
+                        "application/json",
+                    )
+
+                components: dict[str, Any] = {}
+                db_ok = True
+                cow_ok = True
+
+                # 1. database check
+                try:
+                    self.orch.ledger.list_workers()
+                    components["database"] = "ok"
+                except Exception as exc:
+                    db_ok = False
+                    components["database"] = {"status": "error", "error": str(exc)}
+
+                # 2. cow_storage check
+                try:
+                    if not self.orch.data_dir.is_dir():
+                        raise RuntimeError(f"Storage path {self.orch.data_dir} is not a directory")
+                    canary = self.orch.data_dir / ".health_canary"
+                    canary.write_text("healthz_probe")
+                    try:
+                        canary.unlink()
+                    except Exception:
+                        pass
+                    components["cow_storage"] = "ok"
+                except Exception as exc:
+                    cow_ok = False
+                    components["cow_storage"] = {"status": "error", "error": str(exc)}
+
+                # 3. workers check
+                try:
+                    workers = self.orch.ledger.list_workers()
+                    now = time.time()
+                    healthy = 0
+                    for w in workers:
+                        hb_raw = w.get("last_heartbeat_at")
+                        hb_ts = None
+                        if isinstance(hb_raw, (int, float)):
+                            hb_ts = float(hb_raw)
+                        elif isinstance(hb_raw, str):
+                            try:
+                                hb_ts = datetime.fromisoformat(hb_raw).timestamp()
+                            except Exception:
+                                hb_ts = None
+                        elif hasattr(hb_raw, "timestamp"):
+                            hb_ts = hb_raw.timestamp()
+                        if hb_ts is not None and (now - hb_ts) <= 300:
+                            healthy += 1
+                    components["workers"] = {
+                        "status": "ok",
+                        "total": len(workers),
+                        "healthy": healthy,
+                    }
+                except Exception as exc:
+                    components["workers"] = {"status": "error", "error": str(exc)}
+
+                if db_ok and cow_ok:
+                    return (
+                        HTTPStatus.OK,
+                        {"status": "healthy", "components": components},
+                        "application/json",
+                    )
+                else:
+                    return (
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"status": "unhealthy", "components": components},
+                        "application/json",
+                    )
 
             # 1. POST /v1/tasks
             if method == "POST" and route == "/v1/tasks":
@@ -530,11 +621,85 @@ class HarnessAPIApp:
             return (HTTPStatus.BAD_REQUEST, {"error": f"{type(exc).__name__}: {exc}"}, "application/json")
 
 
+class GracefulServerRunner:
+    """Manages HTTP server lifecycle, signal interception (SIGINT, SIGTERM), traffic shedding, and graceful draining."""
+
+    def __init__(
+        self,
+        server: ThreadingHTTPServer,
+        app: HarnessAPIApp,
+        drain_timeout: float = 5.0,
+    ):
+        self.server = server
+        self.app = app
+        self.drain_timeout = max(0.0, float(drain_timeout))
+        self.is_running = False
+        self._stop_event = threading.Event()
+        self._orig_handlers: dict[int, Any] = {}
+
+    def _on_signal(self, signum: int, frame: Any) -> None:
+        logger.info("GracefulServerRunner: Caught signal %s. Initiating graceful drain...", signum)
+        self.initiate_drain()
+
+    def initiate_drain(self) -> None:
+        """Mark server as draining so /healthz immediately returns 503, wait drain timeout, and shut down."""
+        if self.app.is_draining and self._stop_event.is_set():
+            return
+        self.app.is_draining = True
+        logger.info("Server draining activated. /healthz returning 503. Draining for %.1fs...", self.drain_timeout)
+        self._stop_event.set()
+
+    def run(self) -> None:
+        """Run the server loop until a termination signal is received or stop() is called."""
+        self.is_running = True
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                self._orig_handlers[sig] = signal.signal(sig, self._on_signal)
+            except (ValueError, AttributeError):
+                pass
+
+        server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            while not self._stop_event.is_set():
+                self._stop_event.wait(timeout=0.2)
+        except KeyboardInterrupt:
+            self.initiate_drain()
+
+        if self.drain_timeout > 0:
+            time.sleep(self.drain_timeout)
+
+        try:
+            self.server.shutdown()
+        except Exception:
+            pass
+        server_thread.join(timeout=2.0)
+        try:
+            self.server.server_close()
+        except Exception:
+            pass
+        self.is_running = False
+
+        for sig, handler in self._orig_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except Exception:
+                pass
+        logger.info("Server shutdown complete.")
+
+    def stop(self) -> None:
+        """Programmatic trigger to drain and stop the server."""
+        self.initiate_drain()
+
+
 def run_http_server(
     orchestrator: HarnessOrchestrator,
     host: str = "127.0.0.1",
     port: int = 8420,
     auth_token: str | None = None,
+    drain_timeout: float = 5.0,
 ) -> None:
     app = HarnessAPIApp(orchestrator, auth_token=auth_token)
 
@@ -595,7 +760,5 @@ def run_http_server(
 
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"⚡ Autonomous AI Harness Control Surface listening on http://{host}:{port}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        server.server_close()
+    runner = GracefulServerRunner(server, app, drain_timeout=drain_timeout)
+    runner.run()
