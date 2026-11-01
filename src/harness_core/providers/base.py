@@ -15,6 +15,7 @@ class ModelUsage:
     output_tokens: int = 0
     total_tokens: int = 0
     cost_usd: float = 0.0
+    cached_input_tokens: int = 0
 
     def __post_init__(self) -> None:
         if self.total_tokens == 0 and (self.input_tokens > 0 or self.output_tokens > 0):
@@ -30,6 +31,7 @@ class ModelUsage:
             output_tokens=self.output_tokens + other.output_tokens,
             total_tokens=self.total_tokens + other.total_tokens,
             cost_usd=round(self.cost_usd + other.cost_usd, 6),
+            cached_input_tokens=self.cached_input_tokens + other.cached_input_tokens,
         )
 
 

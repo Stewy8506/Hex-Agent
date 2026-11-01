@@ -1,5 +1,6 @@
 """Governed Cloud Frontier Model Provider with multi-backend dispatch,
 
+prompt prefix caching (stable -> context -> volatile), optional cloud log compression,
 per-task budget tracking, and strict privacy gating.
 """
 
@@ -60,10 +61,18 @@ class ModelPricing:
         return cls.DEFAULT_RATES
 
 
-def calculate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> float:
-    """Calculate total USD cost for a model call given input and output token counts."""
+def calculate_cost_usd(
+    model_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+) -> float:
+    """Calculate total USD cost for a model call given input, cached input (90% discount), and output token counts."""
     input_rate, output_rate = ModelPricing.get_rates(model_id)
-    cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000.0
+    cached = max(0, min(int(cached_input_tokens), int(input_tokens)))
+    uncached = max(0, int(input_tokens) - cached)
+    effective_input_cost = uncached * input_rate + cached * (input_rate * 0.10)
+    cost = (effective_input_cost + int(output_tokens) * output_rate) / 1_000_000.0
     return round(cost, 6)
 
 
@@ -74,6 +83,7 @@ class TaskBudgetTracker:
     total_cost_usd: float = 0.0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    total_cached_input_tokens: int = 0
     request_count: int = 0
     max_cost_usd: float = 2.0
     max_output_tokens: int = 65536
@@ -90,11 +100,18 @@ class TaskBudgetTracker:
                 f"Task cost ceiling exceeded: ${self.total_cost_usd:.4f} >= ${self.max_cost_usd:.2f}"
             )
 
-    def record_usage(self, input_tokens: int, output_tokens: int, cost_usd: float) -> None:
+    def record_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: float,
+        cached_input_tokens: int = 0,
+    ) -> None:
         """Record token consumption and cost; enforce hard budget ceilings."""
         self.request_count += 1
         self.total_input_tokens += int(input_tokens)
         self.total_output_tokens += int(output_tokens)
+        self.total_cached_input_tokens += int(cached_input_tokens)
         self.total_cost_usd = round(self.total_cost_usd + float(cost_usd), 6)
 
         if self.total_cost_usd > self.max_cost_usd:
@@ -118,6 +135,7 @@ class TaskBudgetTracker:
 class CloudModelProvider(ModelProvider):
     """Governed Cloud Frontier Model Provider with multi-backend dispatch,
 
+    prompt prefix caching (stable -> context -> volatile), optional cloud log compression,
     per-task budget tracking, and strict privacy gating.
     """
 
@@ -131,6 +149,7 @@ class CloudModelProvider(ModelProvider):
         api_key: str | None = None,
         budget_tracker: TaskBudgetTracker | None = None,
         http_transport: Callable[[str, dict[str, str], bytes], tuple[int, bytes]] | None = None,
+        enable_prompt_caching: bool = False,
     ) -> None:
         if isinstance(provider_type, CloudProviderType):
             self.provider_type = provider_type
@@ -150,6 +169,7 @@ class CloudModelProvider(ModelProvider):
         self.api_key = api_key or self._resolve_env_api_key()
         self.budget_tracker = budget_tracker or TaskBudgetTracker()
         self.http_transport = http_transport
+        self.enable_prompt_caching = enable_prompt_caching
 
     def _resolve_env_api_key(self) -> str | None:
         if self.provider_type == CloudProviderType.ANTHROPIC:
@@ -177,6 +197,8 @@ class CloudModelProvider(ModelProvider):
         prompt: str,
         *,
         system_prompt: str | None = None,
+        cacheable_prefix: str | None = None,
+        enable_prompt_caching: bool | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.0,
         stop_sequences: list[str] | None = None,
@@ -184,7 +206,7 @@ class CloudModelProvider(ModelProvider):
         budget: Any = None,
         **kwargs: Any,
     ) -> ModelResponse:
-        """Generate response from frontier cloud provider with privacy and budget enforcement."""
+        """Generate response from frontier cloud provider with privacy, prefix caching, and budget enforcement."""
         # Privacy Gate: Sensitive / secret data classification is strictly blocked from cloud egress
         if data_classification in ("sensitive", "secret"):
             raise PolicyBlockedError(
@@ -200,11 +222,19 @@ class CloudModelProvider(ModelProvider):
         # Sanitize prompts with secret redaction before any payload dispatch
         clean_prompt = str(redact_secrets(prompt))
         clean_system_prompt = str(redact_secrets(system_prompt)) if system_prompt else None
+        clean_prefix = str(redact_secrets(cacheable_prefix)) if cacheable_prefix else None
+        use_caching = (
+            enable_prompt_caching
+            if enable_prompt_caching is not None
+            else (self.enable_prompt_caching or clean_prefix is not None)
+        )
 
-        # Build backend request
+        # Build backend request with stable -> context -> volatile ordering
         url, headers, req_body_bytes = self._build_request(
             clean_prompt,
             system_prompt=clean_system_prompt,
+            cacheable_prefix=clean_prefix,
+            enable_prompt_caching=use_caching,
             max_tokens=max_tokens,
             temperature=temperature,
             stop_sequences=stop_sequences,
@@ -227,17 +257,28 @@ class CloudModelProvider(ModelProvider):
                 f"Failed to parse JSON response from '{self.provider_type.value}': {e}"
             ) from e
 
-        text, in_tokens, out_tokens, finish_reason = self._parse_response(data, clean_prompt)
-        cost_usd = calculate_cost_usd(self.model_id, in_tokens, out_tokens)
+        text, in_tokens, out_tokens, cached_tokens, finish_reason = self._parse_response(data, clean_prompt)
+        cost_usd = calculate_cost_usd(
+            self.model_id,
+            in_tokens,
+            out_tokens,
+            cached_input_tokens=cached_tokens,
+        )
 
         # Record usage and check post-call ceilings
-        self.budget_tracker.record_usage(in_tokens, out_tokens, cost_usd)
+        self.budget_tracker.record_usage(
+            in_tokens,
+            out_tokens,
+            cost_usd,
+            cached_input_tokens=cached_tokens,
+        )
 
         usage = ModelUsage(
             input_tokens=in_tokens,
             output_tokens=out_tokens,
             total_tokens=in_tokens + out_tokens,
             cost_usd=cost_usd,
+            cached_input_tokens=cached_tokens,
         )
 
         return ModelResponse(
@@ -249,6 +290,62 @@ class CloudModelProvider(ModelProvider):
             finish_reason=finish_reason,
             raw=data,
         )
+
+    def compress_log(
+        self,
+        raw_log: str,
+        max_chars: int = 2400,
+        data_classification: str = "internal",
+        budget: Any = None,
+    ) -> dict[str, Any]:
+        """Compress verbose test/build logs using this CloudModelProvider (with deterministic pre-filter)."""
+        if data_classification in ("sensitive", "secret"):
+            raise PolicyBlockedError(
+                f"Cloud log compression forbidden for data classification '{data_classification}'."
+            )
+
+        from .mlx_provider import Tier1LogCompressor
+
+        local_pre = Tier1LogCompressor(mlx_available=False).compress(raw_log, max_chars=max_chars)
+        sanitized = str(redact_secrets(raw_log))
+        raw_tokens = max(1, len(sanitized) // 4)
+
+        if not sanitized.strip() or not self.is_available():
+            local_pre["engine"] = f"cloud_{self.provider_type.value}_fallback"
+            return local_pre
+
+        system_prompt = (
+            "Distill the test/build failure log into a concise failure digest preserving exact "
+            "failing file paths, line numbers, traceback frames, and assertion errors."
+        )
+        resp = self.generate(
+            prompt=local_pre["compressed_text"],
+            system_prompt=system_prompt,
+            enable_prompt_caching=True,
+            max_tokens=512,
+            temperature=0.0,
+            data_classification=data_classification,
+            budget=budget,
+        )
+        combined = (
+            f"[Tier-1 Cloud ({self.model_id}) Compressed Failure Digest]\n"
+            f"{local_pre['compressed_text']}\n{resp.text.strip()}"
+        )
+        if len(combined) > max_chars:
+            combined = combined[: max_chars - 35] + "\n...[truncated by cloud compressor]"
+        comp_tokens = max(1, len(combined) // 4)
+        savings_pct = round(max(0.0, (1.0 - (comp_tokens / raw_tokens)) * 100.0), 2)
+        return {
+            "compressed_text": combined,
+            "raw_tokens": raw_tokens,
+            "compressed_tokens": comp_tokens,
+            "token_savings_pct": savings_pct,
+            "failing_files": local_pre["failing_files"],
+            "failing_assertions": local_pre["failing_assertions"],
+            "engine": f"cloud_{self.provider_type.value}",
+            "compressor_model": self.model_id,
+            "cost_usd": resp.usage.cost_usd,
+        }
 
     def _execute_http(self, url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
         if self.http_transport is not None:
@@ -275,6 +372,8 @@ class CloudModelProvider(ModelProvider):
         clean_prompt: str,
         *,
         system_prompt: str | None,
+        cacheable_prefix: str | None = None,
+        enable_prompt_caching: bool = False,
         max_tokens: int,
         temperature: float,
         stop_sequences: list[str] | None,
@@ -286,14 +385,41 @@ class CloudModelProvider(ModelProvider):
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             }
+            if enable_prompt_caching:
+                headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+
+            if enable_prompt_caching and cacheable_prefix:
+                user_content: Any = [
+                    {
+                        "type": "text",
+                        "text": cacheable_prefix,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {
+                        "type": "text",
+                        "text": clean_prompt,
+                    },
+                ]
+            else:
+                user_content = clean_prompt
+
             payload: dict[str, Any] = {
                 "model": self.model_id,
-                "messages": [{"role": "user", "content": clean_prompt}],
+                "messages": [{"role": "user", "content": user_content}],
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
             if system_prompt:
-                payload["system"] = system_prompt
+                if enable_prompt_caching:
+                    payload["system"] = [
+                        {
+                            "type": "text",
+                            "text": system_prompt,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
+                else:
+                    payload["system"] = system_prompt
             if stop_sequences:
                 payload["stop_sequences"] = stop_sequences
             return url, headers, json.dumps(payload).encode("utf-8")
@@ -304,9 +430,12 @@ class CloudModelProvider(ModelProvider):
                 "Authorization": f"Bearer {self.api_key or 'mock-key'}",
                 "content-type": "application/json",
             }
+            # Order strictly as stable (system) -> context (cacheable_prefix) -> volatile (prompt)
             messages: list[dict[str, str]] = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
+            if cacheable_prefix:
+                messages.append({"role": "user", "content": cacheable_prefix})
             messages.append({"role": "user", "content": clean_prompt})
             payload = {
                 "model": self.model_id,
@@ -322,8 +451,12 @@ class CloudModelProvider(ModelProvider):
             api_key = self.api_key or "mock-key"
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_id}:generateContent?key={api_key}"
             headers = {"content-type": "application/json"}
+            parts: list[dict[str, str]] = []
+            if cacheable_prefix:
+                parts.append({"text": cacheable_prefix})
+            parts.append({"text": clean_prompt})
             payload = {
-                "contents": [{"role": "user", "parts": [{"text": clean_prompt}]}],
+                "contents": [{"role": "user", "parts": parts}],
                 "generationConfig": {
                     "maxOutputTokens": max_tokens,
                     "temperature": temperature,
@@ -339,10 +472,11 @@ class CloudModelProvider(ModelProvider):
 
     def _parse_response(
         self, data: dict[str, Any], prompt: str
-    ) -> tuple[str, int, int, str]:
+    ) -> tuple[str, int, int, int, str]:
         text = ""
         in_tokens = 0
         out_tokens = 0
+        cached_tokens = 0
         finish_reason = "stop"
 
         if self.provider_type == CloudProviderType.ANTHROPIC:
@@ -355,8 +489,12 @@ class CloudModelProvider(ModelProvider):
             elif "text" in data:
                 text = str(data["text"])
             usage_dict = data.get("usage", {})
-            in_tokens = usage_dict.get("input_tokens", 0)
-            out_tokens = usage_dict.get("output_tokens", 0)
+            raw_in = int(usage_dict.get("input_tokens", 0))
+            cache_read = int(usage_dict.get("cache_read_input_tokens", 0))
+            cache_create = int(usage_dict.get("cache_creation_input_tokens", 0))
+            cached_tokens = cache_read
+            in_tokens = raw_in + cache_read + cache_create
+            out_tokens = int(usage_dict.get("output_tokens", 0))
             finish_reason = data.get("stop_reason") or "stop"
 
         elif self.provider_type == CloudProviderType.OPENAI:
@@ -371,8 +509,11 @@ class CloudModelProvider(ModelProvider):
             elif "text" in data:
                 text = str(data["text"])
             usage_dict = data.get("usage", {})
-            in_tokens = usage_dict.get("prompt_tokens", 0)
-            out_tokens = usage_dict.get("completion_tokens", 0)
+            in_tokens = int(usage_dict.get("prompt_tokens", 0))
+            out_tokens = int(usage_dict.get("completion_tokens", 0))
+            details = usage_dict.get("prompt_tokens_details") or {}
+            if isinstance(details, dict):
+                cached_tokens = int(details.get("cached_tokens", 0))
 
         elif self.provider_type == CloudProviderType.GEMINI:
             candidates = data.get("candidates", [])
@@ -387,8 +528,9 @@ class CloudModelProvider(ModelProvider):
             elif "text" in data:
                 text = str(data["text"])
             usage_meta = data.get("usageMetadata", {})
-            in_tokens = usage_meta.get("promptTokenCount", 0)
-            out_tokens = usage_meta.get("candidatesTokenCount", 0)
+            in_tokens = int(usage_meta.get("promptTokenCount", 0))
+            out_tokens = int(usage_meta.get("candidatesTokenCount", 0))
+            cached_tokens = int(usage_meta.get("cachedContentTokenCount", 0))
 
         # Fallback heuristic token count if provider didn't return usage
         if in_tokens <= 0:
@@ -396,4 +538,4 @@ class CloudModelProvider(ModelProvider):
         if out_tokens <= 0:
             out_tokens = max(1, len(text) // 4)
 
-        return text, in_tokens, out_tokens, finish_reason
+        return text, in_tokens, out_tokens, cached_tokens, finish_reason

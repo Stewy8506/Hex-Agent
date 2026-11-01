@@ -5,12 +5,15 @@ Validates:
 2. Outbound credential scrubbing replacing live API keys with [REDACTED_SECRET].
 3. Strict privacy gating ensuring sensitive data remains on Tier-1 M4 MLX with $0 cost.
 4. Governed cloud execution on Tier-2 with full telemetry recording.
+5. Anthropic/OpenAI/Gemini prompt prefix caching (stable -> context -> volatile) and 90% cached input discount.
+6. Configurable local vs. cloud log compressor mode with automatic privacy fallback.
 """
 
 from __future__ import annotations
 
 import json
 import unittest
+from typing import Any
 
 from harness_core.models import TaskBudget
 from harness_core.providers.base import PolicyBlockedError
@@ -162,7 +165,7 @@ def generate_500_line_pytest_trace() -> str:
 class TestTwoTierCompressionBenchmark(unittest.TestCase):
     """Benchmark test suite verifying compression ratio, assertion preservation,
 
-    credential redaction, and two-tier routing telemetry.
+    credential redaction, two-tier routing telemetry, prefix caching, and cloud compression mode.
     """
 
     def setUp(self) -> None:
@@ -334,6 +337,84 @@ class TestTwoTierCompressionBenchmark(unittest.TestCase):
         # 5. Direct attempt to force sensitive data through cloud raises PolicyBlockedError
         with self.assertRaises(PolicyBlockedError):
             cloud_provider.generate(self.raw_trace, data_classification="sensitive")
+
+    def test_anthropic_prompt_prefix_caching_and_discount(self) -> None:
+        """Verify Anthropic cache_control ephemeral breakpoints and 90% cached input token discount."""
+        captured_req: dict[str, Any] = {}
+
+        def mock_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            captured_req["headers"] = headers
+            captured_req["payload"] = json.loads(body.decode("utf-8"))
+            resp = {
+                "content": [{"type": "text", "text": "Cached repair patch"}],
+                "usage": {
+                    "input_tokens": 200,
+                    "cache_read_input_tokens": 1800,
+                    "output_tokens": 100,
+                },
+                "stop_reason": "end_turn",
+            }
+            return 200, json.dumps(resp).encode("utf-8")
+
+        provider = CloudModelProvider(
+            provider_type=CloudProviderType.ANTHROPIC,
+            model_id="claude-3-5-sonnet-20241022",
+            api_key="sk-ant-cache-key",
+            http_transport=mock_transport,
+            enable_prompt_caching=True,
+        )
+
+        resp = provider.generate(
+            prompt="Volatile failure digest: AssertionError at line 42",
+            system_prompt="Stable repair instructions",
+            cacheable_prefix="Stable AST blast radius + source code context",
+        )
+
+        self.assertEqual(captured_req["headers"].get("anthropic-beta"), "prompt-caching-2024-07-31")
+        sys_block = captured_req["payload"]["system"][0]
+        self.assertEqual(sys_block["cache_control"], {"type": "ephemeral"})
+        user_blocks = captured_req["payload"]["messages"][0]["content"]
+        self.assertEqual(user_blocks[0]["cache_control"], {"type": "ephemeral"})
+        self.assertEqual(resp.usage.input_tokens, 2000)
+        self.assertEqual(resp.usage.cached_input_tokens, 1800)
+        # Uncached 2000 input + 100 output would be (2000*3 + 100*15)/1M = 0.0075
+        # With 1800 cached at 90% discount: (200*3 + 1800*0.3 + 100*15)/1M = 0.00264
+        self.assertAlmostEqual(resp.usage.cost_usd, 0.00264, places=6)
+
+    def test_cloud_compressor_mode_and_privacy_fallback(self) -> None:
+        """Verify router supports optional cloud log compression and enforces local fallback on sensitive logs."""
+        def mock_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            resp = {
+                "candidates": [{
+                    "content": {"parts": [{"text": "Cloud distilled summary: test_tax.py:42 AssertionError"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {"promptTokenCount": 60, "candidatesTokenCount": 20},
+            }
+            return 200, json.dumps(resp).encode("utf-8")
+
+        cloud_comp = CloudModelProvider(
+            provider_type=CloudProviderType.GEMINI,
+            model_id="gemini-2.0-flash",
+            api_key="mock-flash-key",
+            http_transport=mock_transport,
+        )
+        router = TwoTierModelRouter(
+            cloud_provider=cloud_comp,
+            compressor_mode="cloud",
+            compressor_provider=cloud_comp,
+        )
+
+        # 1. Internal log uses cloud compressor mode
+        cloud_res = router.compress_verbose_log(self.raw_trace, data_classification="internal")
+        self.assertEqual(cloud_res["compressor_mode"], "cloud")
+        self.assertEqual(cloud_res["engine"], "cloud_gemini")
+        self.assertIn("test_tax.py", cloud_res["compressed_text"])
+
+        # 2. Sensitive log automatically overrides to 100% local compressor mode
+        sens_res = router.compress_verbose_log(self.raw_trace, data_classification="sensitive")
+        self.assertEqual(sens_res["compressor_mode"], "local")
+        self.assertTrue(sens_res["engine"].startswith("tier1_mlx"))
 
 
 if __name__ == "__main__":

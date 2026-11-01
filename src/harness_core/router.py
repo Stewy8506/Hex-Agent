@@ -61,7 +61,13 @@ class RouteDecision:
 
 
 class TwoTierModelRouter:
-    """Routes between Tier-1 Local M4 MLX Gatekeeper/Compressor and Tier-2 Heavy Reasoner."""
+    """Routes between Tier-1 Local M4 MLX Gatekeeper/Compressor and Tier-2 Heavy Reasoner.
+
+    Supports configurable log compression mode (`compressor_mode`):
+    - `'local'` (default): 100% local M4 MLX / deterministic compression at $0 marginal cost.
+    - `'cloud'`: Uses `compressor_provider` (or `cloud_provider`) for cloud LLM log compression,
+      automatically falling back to `'local'` when `data_classification` is `'sensitive'` or `'secret'`.
+    """
 
     def __init__(
         self,
@@ -69,18 +75,51 @@ class TwoTierModelRouter:
         cloud_provider: ModelProvider | None = None,
         local_model_id: str = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
         cloud_model_id: str = "gemini-3.5-pro",
+        compressor_mode: str | None = None,
+        compressor_provider: ModelProvider | None = None,
     ):
+        import os
+
         self.local_provider = local_provider or LocalMLXModelProvider(model_id=local_model_id)
         self.cloud_provider = cloud_provider or CloudModelProvider(model_id=cloud_model_id)
+        self.compressor_provider = compressor_provider or self.cloud_provider
+        self.compressor_mode = (
+            compressor_mode or os.getenv("HARNESS_COMPRESSOR_MODE") or "local"
+        ).strip().lower()
         self.local_model_id = getattr(self.local_provider, "model_id", local_model_id)
         self.cloud_model_id = getattr(self.cloud_provider, "model_id", cloud_model_id)
 
-    def compress_verbose_log(self, raw_log: str, max_chars: int = 1600) -> dict[str, Any]:
-        """FR-045a: Tier-1 M4 local log compressor.
+    def compress_verbose_log(
+        self,
+        raw_log: str,
+        max_chars: int = 1600,
+        *,
+        mode: str | None = None,
+        data_classification: str = "internal",
+        budget: TaskBudget | None = None,
+    ) -> dict[str, Any]:
+        """FR-045a: Configurable Local M4 or Cloud log compressor.
 
         Strips repetitive pass/info noise from raw test/build logs while preserving exact
         file paths, line numbers, traceback frames, and assertion errors.
         """
+        effective_mode = (mode or self.compressor_mode or "local").strip().lower()
+        # Privacy guardrail: sensitive/secret logs NEVER leave the local boundary
+        if data_classification in ("sensitive", "secret"):
+            effective_mode = "local"
+
+        if effective_mode == "cloud" and hasattr(self.compressor_provider, "compress_log"):
+            comp = self.compressor_provider.compress_log(
+                raw_log,
+                max_chars=max_chars,
+                data_classification=data_classification,
+                budget=budget,
+            )
+            res = dict(comp)
+            res.setdefault("compressor_model", getattr(self.compressor_provider, "model_id", self.cloud_model_id))
+            res["compressor_mode"] = "cloud"
+            return res
+
         if hasattr(self.local_provider, "compress_log"):
             comp = self.local_provider.compress_log(raw_log, max_chars=max_chars)
             text = comp.get("compressed_text", "")
@@ -94,6 +133,7 @@ class TwoTierModelRouter:
             res = dict(comp)
             res["compressed_text"] = text
             res.setdefault("compressor_model", self.local_model_id)
+            res["compressor_mode"] = "local"
             return res
 
         redacted = str(redact_secrets(raw_log))
@@ -142,6 +182,7 @@ class TwoTierModelRouter:
             "compressed_tokens": comp_tokens,
             "token_savings_pct": savings_pct,
             "compressor_model": self.local_model_id,
+            "compressor_mode": "local",
         }
 
     def route_request(
@@ -154,12 +195,16 @@ class TwoTierModelRouter:
         cloud_available: bool = True,
     ) -> RouteDecision:
         """FR-045..FR-047: Selects local M4 vs. cloud tier based on privacy, risk, and availability."""
-        comp = self.compress_verbose_log(raw_context) if len(raw_context) > 1200 else {
-            "compressed_text": str(redact_secrets(raw_context)),
-            "raw_tokens": max(1, len(raw_context) // 4),
-            "compressed_tokens": max(1, len(raw_context) // 4),
-            "token_savings_pct": 0.0,
-        }
+        comp = (
+            self.compress_verbose_log(raw_context, data_classification=data_classification)
+            if len(raw_context) > 1200
+            else {
+                "compressed_text": str(redact_secrets(raw_context)),
+                "raw_tokens": max(1, len(raw_context) // 4),
+                "compressed_tokens": max(1, len(raw_context) // 4),
+                "token_savings_pct": 0.0,
+            }
+        )
 
         # Sensitive/secret data never leaves local M4/Desktop boundary (FR-047 / Section 12.2)
         if data_classification in ("sensitive", "secret"):

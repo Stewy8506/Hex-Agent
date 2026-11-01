@@ -307,12 +307,10 @@ class HarnessOrchestrator:
 
         code_context_str = "\n\n".join(file_contexts) if file_contexts else "No existing code files found."
 
-        prompt = (
+        # Ordered stable -> context -> volatile tiers for prompt prefix caching
+        stable_system_prompt = (
             "You are an autonomous software repair agent.\n"
-            "A verification test failed during execution. Fix the failing code.\n\n"
-            f"[Failure Digest]\n{failure_digest}\n\n"
-            f"[AST Blast Radius Report]\nWarning: {blast_warning}\nImpacted Symbols: {impacted_symbols}\n\n"
-            f"[Source Code Context]\n{code_context_str}\n\n"
+            "A verification test failed during execution. Fix the failing code.\n"
             "Instructions:\n"
             "Provide the repair patch as a JSON list of file write operations:\n"
             "```json\n"
@@ -320,13 +318,21 @@ class HarnessOrchestrator:
             "```\n"
             "Provide only valid code in the content."
         )
+        cacheable_context_prefix = (
+            f"[AST Blast Radius Report]\nWarning: {blast_warning}\nImpacted Symbols: {impacted_symbols}\n\n"
+            f"[Source Code Context]\n{code_context_str}"
+        )
+        volatile_failure_prompt = f"[Failure Digest]\n{failure_digest}"
 
         task = self.ledger.get_task(task_id) or {}
         budget_dict = task.get("budget") or {}
         task_budget = TaskBudget.from_dict(budget_dict)
 
         decision, model_response = self.router.execute_routed_request(
-            prompt=prompt,
+            prompt=volatile_failure_prompt,
+            system_prompt=stable_system_prompt,
+            cacheable_prefix=cacheable_context_prefix,
+            enable_prompt_caching=True,
             task_class="repair",
             risk_class="R2",
             budget=task_budget,
