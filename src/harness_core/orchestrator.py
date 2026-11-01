@@ -92,6 +92,9 @@ class HarnessOrchestrator:
     # Task Submission & Execution Entrypoints
     # ------------------------------------------------------------------
 
+    def submit_task(self, req: TaskSubmitRequest, auto_execute: bool = False) -> dict[str, Any]:
+        return self.submit_and_run(req, auto_execute=auto_execute)
+
     def submit_and_run(self, req: TaskSubmitRequest, auto_execute: bool = True) -> dict[str, Any]:
         task = self.ledger.submit_task(req)
         if task["status"] != TaskState.SUBMITTED.value:
