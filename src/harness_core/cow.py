@@ -10,6 +10,7 @@ Provides zero-copy, millisecond snapshots, branching, instant rollback, and Merk
 from __future__ import annotations
 
 import atexit
+import difflib
 import hashlib
 import os
 import platform
@@ -44,6 +45,7 @@ class WorkspaceSnapshotProvider(Protocol):
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str: ...
     def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str: ...
     def discard_snapshot(self, snapshot_path: Path | str) -> None: ...
+    def compute_workspace_diff(self, base_dir: Path | str, target_dir: Path | str) -> str: ...
 
 
 def compute_tree_sha(directory: Path | str) -> str:
@@ -164,6 +166,58 @@ def import_delta_archive(archive_path: Path | str, target_dir: Path | str) -> st
                 os.symlink(link_target, dest_path)
 
     return compute_tree_sha(target)
+
+
+def compute_workspace_diff(base_dir: Path | str, target_dir: Path | str) -> str:
+    """Compute unified diff across all text files between base_dir and target_dir."""
+    base_path = Path(base_dir).resolve()
+    target_path = Path(target_dir).resolve()
+
+    if not base_path.exists() or not target_path.exists():
+        return ""
+
+    all_rel_paths: set[str] = set()
+    for root_p in (base_path, target_path):
+        for dirpath, dirnames, filenames in os.walk(root_p):
+            dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
+            rel_dir = Path(dirpath).relative_to(root_p)
+            for fname in filenames:
+                if fname.startswith(".DS_Store"):
+                    continue
+                rel_file = str(rel_dir / fname) if str(rel_dir) != "." else fname
+                all_rel_paths.add(rel_file)
+
+    diff_chunks: list[str] = []
+    for rel in sorted(all_rel_paths):
+        file_a = base_path / rel
+        file_b = target_path / rel
+
+        lines_a: list[str] = []
+        lines_b: list[str] = []
+
+        if file_a.is_file():
+            try:
+                lines_a = file_a.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+            except Exception:
+                pass
+        if file_b.is_file():
+            try:
+                lines_b = file_b.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+            except Exception:
+                pass
+
+        if lines_a != lines_b:
+            chunk = list(
+                difflib.unified_diff(
+                    lines_a,
+                    lines_b,
+                    fromfile=f"a/{rel}",
+                    tofile=f"b/{rel}",
+                )
+            )
+            diff_chunks.extend(chunk)
+
+    return "".join(diff_chunks)
 
 
 def _cow_copy_tree(src: Path, dst: Path, apfs_supported: bool = False) -> None:
@@ -318,6 +372,9 @@ class APFSAndPortableCoWProvider:
         snap = Path(snapshot_path).resolve()
         if snap.is_dir() and str(snap).startswith(str(self.snapshots_root)):
             shutil.rmtree(snap, ignore_errors=True)
+
+    def compute_workspace_diff(self, base_dir: Path | str, target_dir: Path | str) -> str:
+        return compute_workspace_diff(base_dir, target_dir)
 
 
 class OverlayFSSnapshotProvider:
@@ -584,6 +641,9 @@ class OverlayFSSnapshotProvider:
         if snap.is_dir() and str(snap).startswith(str(self.snapshots_root)):
             shutil.rmtree(snap, ignore_errors=True)
 
+    def compute_workspace_diff(self, base_dir: Path | str, target_dir: Path | str) -> str:
+        return compute_workspace_diff(base_dir, target_dir)
+
     def _cleanup_all_mounts(self) -> None:
         for ws_str in list(self._active_mounts.keys()):
             try:
@@ -719,6 +779,9 @@ class BtrfsSnapshotProvider:
             subprocess.run(del_cmd, capture_output=True)
         if snap.is_dir() and str(snap).startswith(str(self.snapshots_root)):
             shutil.rmtree(snap, ignore_errors=True)
+
+    def compute_workspace_diff(self, base_dir: Path | str, target_dir: Path | str) -> str:
+        return compute_workspace_diff(base_dir, target_dir)
 
 
 def get_default_snapshot_provider(root_dir: Path | str | None = None) -> WorkspaceSnapshotProvider:

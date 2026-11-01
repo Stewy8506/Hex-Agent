@@ -1151,6 +1151,47 @@ class LedgerStore:
             row = await conn.fetchrow("SELECT * FROM workers WHERE worker_id = $1", worker_id)
             return self._row_to_dict(row)  # type: ignore[return-value]
 
+    def list_skills(self) -> list[dict[str, Any]]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_skills_async)
+        with self._lock:
+            rows = self.conn.execute("SELECT * FROM skills ORDER BY name ASC").fetchall()
+            results = []
+            for r in rows:
+                if r is None:
+                    continue
+                d = self._row_to_dict(r)
+                if d and d.get("latest_scan_id"):
+                    scan_row = self.conn.execute(
+                        "SELECT * FROM skill_scans WHERE scan_id = ?",
+                        (d["latest_scan_id"],),
+                    ).fetchone()
+                    if scan_row:
+                        d["scan"] = self._row_to_dict(scan_row)
+                results.append(d)
+            return results
+
+    async def list_skills_async(self) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_skills)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM skills ORDER BY name ASC")
+            results = []
+            for r in rows:
+                if r is None:
+                    continue
+                d = self._row_to_dict(r)
+                if d and d.get("latest_scan_id"):
+                    scan_row = await conn.fetchrow(
+                        "SELECT * FROM skill_scans WHERE scan_id = $1",
+                        d["latest_scan_id"],
+                    )
+                    if scan_row:
+                        d["scan"] = self._row_to_dict(scan_row)
+                results.append(d)
+            return results
+
     def acquire_lease_and_attempt(
         self,
         task_id: str,

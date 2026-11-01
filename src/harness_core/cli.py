@@ -88,6 +88,13 @@ def main(argv: list[str] | None = None) -> int:
     p_wrk.add_argument("--token", default=None, help="Worker authentication token")
     p_wrk.add_argument("--once", action="store_true", help="Execute at most one claimed task and exit")
 
+    p_chat = sub.add_parser("chat", help="Start interactive TUI pair-programming console")
+    p_chat.add_argument("--project", default="default", help="Project ID")
+    p_chat.add_argument("--workspace", default=None, help="Workspace path (defaults to repository root)")
+    p_chat.add_argument("--model", default=None, help="Model routing profile override (hybrid, local, cloud)")
+    p_chat.add_argument("--no-stream", action="store_true", help="Disable live token streaming")
+    p_chat.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -103,6 +110,18 @@ def main(argv: list[str] | None = None) -> int:
 
     repo_root = Path(__file__).resolve().parents[2]
     orch = HarnessOrchestrator(args.data_dir, default_workspace=repo_root)
+
+    if args.cmd == "chat":
+        from .tui import HexConsole
+
+        console = HexConsole(
+            orch,
+            project_id=args.project,
+            workspace_root=args.workspace,
+            stream=not args.no_stream,
+            model_profile=args.model,
+        )
+        return console.start()
 
     if args.cmd == "init":
         scanned = seed_default_skills(orch, repo_root)
