@@ -72,6 +72,16 @@ def main(argv: list[str] | None = None) -> int:
     p_up.add_argument("--drain-timeout", type=float, default=5.0, help="Graceful shutdown drain timeout in seconds")
     p_up.add_argument("--asgi", action="store_true", help="Run via ASGI uvicorn server if installed")
 
+    p_run = sub.add_parser("run", aliases=["exec"], help="Run and execute a task with optional auto-branching and pull request creation")
+    p_run.add_argument("goal", help="Task goal description")
+    p_run.add_argument("--project", default="default")
+    p_run.add_argument("--mode", choices=["auto", "fast_path", "standard"], default="auto")
+    p_run.add_argument("--workspace", default=None)
+    p_run.add_argument("--branch", nargs="?", const=True, default=None, help="Custom branch name or flag to auto-branch (hex/task-<id>-<slug>)")
+    p_run.add_argument("--pr", action="store_true", help="Automatically create GitHub Pull Request on success")
+    p_run.add_argument("--base-branch", default="main", help="Base branch for Pull Request (default: main)")
+    p_run.add_argument("--dry-run", action="store_true", help="Dry-run mode: do not create real git commits or remote PRs")
+
     p_sub = sub.add_parser("submit", help="Submit and execute a task")
     p_sub.add_argument("goal", help="Task goal description")
     p_sub.add_argument("--project", default="default")
@@ -191,6 +201,105 @@ def main(argv: list[str] | None = None) -> int:
             except ImportError:
                 print("uvicorn not installed; falling back to built-in HTTP server with GracefulServerRunner")
         run_http_server(orch, host=args.host, port=args.port, drain_timeout=args.drain_timeout)
+        return 0
+
+    if args.cmd in ("run", "exec"):
+        from .git_autopilot import GitAutopilot, GitAutopilotConfig
+
+        ws_root = Path(args.workspace).resolve() if getattr(args, "workspace", None) else repo_root
+        req = TaskSubmitRequest(
+            goal=args.goal,
+            project_id=args.project,
+            execution_mode=args.mode,
+            workspace_root=str(ws_root),
+        )
+
+        needs_git = bool(getattr(args, "pr", False) or getattr(args, "branch", None))
+        autopilot: GitAutopilot | None = None
+        task_branch: str | None = None
+
+        if needs_git:
+            cfg = GitAutopilotConfig.from_env()
+            if getattr(args, "dry_run", False):
+                cfg.dry_run = True
+            if getattr(args, "base_branch", None):
+                cfg.default_base_branch = args.base_branch
+            autopilot = GitAutopilot(workspace_root=ws_root, config=cfg)
+            if isinstance(args.branch, str) and args.branch.strip():
+                task_branch = args.branch.strip()
+
+        task = orch.submit_and_run(req, auto_execute=True)
+        task_id = task.get("task_id", "")
+        task_status = task.get("status") or task.get("state")
+        is_success = task_status in ("SUCCEEDED", "COMPLETED")
+        proof = orch.ledger.get_proof_bundle(task_id) if task_id else None
+
+        if not is_success:
+            err_msg = task.get("error_message") or f"Task execution finished in non-success state: {task_status}"
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "task": task,
+                        "proof": proof,
+                        "error": err_msg,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+            return 1
+
+        if needs_git and autopilot:
+            if not task_branch:
+                task_branch = autopilot.create_task_branch(
+                    task_id=task_id,
+                    goal=args.goal,
+                    base_branch=getattr(args, "base_branch", None),
+                )
+            elif not autopilot.config.dry_run and (ws_root / ".git").is_dir():
+                subprocess.run(
+                    ["git", "checkout", "-B", task_branch],
+                    cwd=ws_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            commit_sha = autopilot.commit_task_changes(
+                task_id=task_id,
+                scope=args.project,
+                description=args.goal,
+            )
+
+            result_payload: dict[str, Any] = {
+                "status": "completed",
+                "task": task,
+                "proof": proof,
+                "branch": task_branch,
+                "commit": commit_sha,
+            }
+
+            if getattr(args, "pr", False):
+                ast_impact = proof.get("ast_impact") if proof else None
+                summary = autopilot.generate_pr_summary(
+                    task_id=task_id,
+                    goal=args.goal,
+                    proof_bundle=proof,
+                    ast_impact=ast_impact,
+                )
+                pr_res = autopilot.create_pull_request(
+                    branch=task_branch,
+                    title=f"feat({args.project}): {args.goal}",
+                    body=summary,
+                    base=getattr(args, "base_branch", None),
+                )
+                result_payload["pull_request"] = pr_res
+
+            print(json.dumps(result_payload, indent=2, default=str))
+            return 0
+
+        print(json.dumps({"task": task, "proof": proof}, indent=2, default=str))
         return 0
 
     if args.cmd == "submit":
