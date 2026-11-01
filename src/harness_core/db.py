@@ -1693,6 +1693,10 @@ class LedgerStore:
             rev = (prev_rev + 1) if prev_rev is not None else 1
             plan_id = f"pln_{uuid.uuid4().hex[:12]}"
             now = utcnow_iso()
+            serialized_nodes = [
+                n.to_dict() if hasattr(n, "to_dict") else dict(n)
+                for n in dag_nodes
+            ]
 
             self.conn.execute(
                 """
@@ -1705,7 +1709,7 @@ class LedgerStore:
                     plan_id,
                     task_id,
                     rev,
-                    canonical_json(dag_nodes),
+                    canonical_json(serialized_nodes),
                     canonical_json(blast_radius_checks or []),
                     created_by,
                     rationale,
@@ -1744,6 +1748,10 @@ class LedgerStore:
                 rev = (prev_rev + 1) if prev_rev is not None else 1
                 plan_id = f"pln_{uuid.uuid4().hex[:12]}"
                 now = utcnow_iso()
+                serialized_nodes = [
+                    n.to_dict() if hasattr(n, "to_dict") else dict(n)
+                    for n in dag_nodes
+                ]
 
                 await conn.execute(
                     """
@@ -1755,7 +1763,7 @@ class LedgerStore:
                     plan_id,
                     task_id,
                     rev,
-                    canonical_json(dag_nodes),
+                    canonical_json(serialized_nodes),
                     canonical_json(blast_radius_checks or []),
                     created_by,
                     rationale,
@@ -1788,6 +1796,49 @@ class LedgerStore:
                 task_id,
             )
             return self._row_to_dict(row)
+
+    def get_plan_revision(self, task_id: str, revision: int) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_plan_revision_async, task_id, revision)
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM plans WHERE task_id = ? AND revision = ?",
+                (task_id, revision),
+            ).fetchone()
+            return self._row_to_dict(row)
+
+    async def get_plan_revision_async(self, task_id: str, revision: int) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_plan_revision, task_id, revision)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM plans WHERE task_id = $1 AND revision = $2",
+                task_id,
+                revision,
+            )
+            return self._row_to_dict(row)
+
+    def list_plans(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_plans_async, task_id)
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM plans WHERE task_id = ? ORDER BY revision ASC",
+                (task_id,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    async def list_plans_async(self, task_id: str) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_plans, task_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM plans WHERE task_id = $1 ORDER BY revision ASC",
+                task_id,
+            )
+            return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
     def append_blast_radius_checks(self, task_id: str, checks: list[str], warning_summary: str) -> dict[str, Any] | None:
         """FR-036a: Dynamically append impacted downstream tests/typechecks to active plan."""

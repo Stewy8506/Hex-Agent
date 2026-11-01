@@ -12,6 +12,7 @@ Coordinates:
 
 from __future__ import annotations
 
+import collections
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -346,6 +347,153 @@ class HarnessOrchestrator:
 
         return []
 
+    def replan_dag(
+        self,
+        task_id: str,
+        current_plan: dict[str, Any],
+        mutated_step_id: str,
+        actual_modified_files: list[str],
+        attempt_ws: Path | str,
+        *,
+        completed_step_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """Dynamically replans active DAG and selectively invalidates downstream dependent steps (FR-012b).
+
+        1. Analyzes downstream reachability from mutated_step_id and file overlaps.
+        2. Selectively invalidates downstream steps while preserving independent completed steps.
+        3. Pins newly impacted tests discovered by Active Graphify to blast_radius_checks.
+        4. Saves monotonically incremented plan revision and logs hash-chained PLAN_REVISED event.
+        """
+        attempt_ws_path = Path(attempt_ws)
+        raw_dag = current_plan.get("dag") or current_plan.get("steps") or []
+        dag_nodes: list[dict[str, Any]] = [
+            n.to_dict() if hasattr(n, "to_dict") else dict(n)
+            for n in raw_dag
+        ]
+
+        # 1. Construct directed child adjacency graph: parent_step -> list of dependent_steps
+        children_map: dict[str, list[str]] = collections.defaultdict(list)
+        for node in dag_nodes:
+            sid = node.get("step_id")
+            for dep in node.get("depends_on") or []:
+                children_map[dep].append(sid)
+
+        # 2. Downstream reachability traversal (BFS) from mutated_step_id
+        downstream_ids: set[str] = set()
+        queue: collections.deque[str] = collections.deque(children_map.get(mutated_step_id, []))
+        while queue:
+            curr = queue.popleft()
+            if curr not in downstream_ids:
+                downstream_ids.add(curr)
+                for child in children_map.get(curr, []):
+                    if child not in downstream_ids:
+                        queue.append(child)
+
+        # 3. Dynamic Blast-Radius Test Pinning via Active Graphify
+        impacted_tests: list[str] = []
+        if attempt_ws_path.is_dir() and actual_modified_files:
+            try:
+                blast_report = self.graphify.compute_blast_radius(attempt_ws_path, actual_modified_files)
+                impacted_tests = list(blast_report.impacted_tests or [])
+            except Exception:
+                pass
+
+        # Check if any step's input files, targets, or side effects overlap with actual_modified_files or impacted_tests
+        norm_modified = {p.replace("\\", "/").lstrip("./") for p in actual_modified_files}
+        norm_tests = {p.replace("\\", "/").lstrip("./") for p in impacted_tests}
+
+        directly_affected: set[str] = set()
+        for node in dag_nodes:
+            sid = node.get("step_id")
+            if not sid or sid == mutated_step_id:
+                continue
+            step_files: set[str] = set()
+            args = node.get("args") or {}
+            for k in ("path", "target", "file", "filename"):
+                if k in args and isinstance(args[k], str):
+                    step_files.add(args[k].replace("\\", "/").lstrip("./"))
+            for k in ("targets", "inputs", "files", "side_effects"):
+                val = args.get(k) or node.get(k)
+                if isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, str):
+                            step_files.add(item.replace("\\", "/").lstrip("./"))
+            if (step_files & norm_modified) or (step_files & norm_tests):
+                directly_affected.add(sid)
+
+        for aff_id in directly_affected:
+            if aff_id not in downstream_ids:
+                downstream_ids.add(aff_id)
+                q: collections.deque[str] = collections.deque(children_map.get(aff_id, []))
+                while q:
+                    curr = q.popleft()
+                    if curr not in downstream_ids:
+                        downstream_ids.add(curr)
+                        for child in children_map.get(curr, []):
+                            if child not in downstream_ids:
+                                q.append(child)
+
+        # 4. Selective Invalidation:
+        # Mark downstream steps as INVALIDATED and remove from completed_step_ids;
+        # Preserve independent completed steps as COMPLETED.
+        if completed_step_ids is None:
+            completed_set = {
+                n.get("step_id") for n in dag_nodes if n.get("status") == "COMPLETED"
+            }
+            completed_set.add(mutated_step_id)
+        else:
+            completed_set = completed_step_ids
+            completed_set.add(mutated_step_id)
+
+        for node in dag_nodes:
+            sid = node.get("step_id")
+            if sid in downstream_ids:
+                node["status"] = "INVALIDATED"
+                completed_set.discard(sid)
+            elif sid in completed_set or sid == mutated_step_id or node.get("status") == "COMPLETED":
+                node["status"] = "COMPLETED"
+                completed_set.add(sid)
+            else:
+                node["status"] = node.get("status", "PENDING")
+
+        preserved_ids = sorted(completed_set - downstream_ids)
+
+        # 5. Merge blast radius test checks
+        existing_checks = list(current_plan.get("blast_radius_checks") or [])
+        combined_checks = sorted(set(existing_checks) | set(impacted_tests))
+
+        # 6. Save monotonic plan revision
+        new_plan = self.ledger.save_plan(
+            task_id,
+            dag_nodes,
+            blast_radius_checks=combined_checks,
+            rationale=f"Dynamic replan triggered by step {mutated_step_id}",
+        )
+
+        # 7. Record hash-chained PLAN_REVISED task event
+        tree_sha = None
+        if attempt_ws_path.is_dir():
+            try:
+                tree_sha = self.cow.compute_tree_sha(attempt_ws_path)
+            except Exception:
+                pass
+
+        self.ledger.record_event(
+            task_id,
+            event_type="PLAN_REVISED",
+            reason_code="SELECTIVE_SUBGRAPH_INVALIDATION",
+            workspace_tree_sha=tree_sha,
+            payload={
+                "mutated_step_id": mutated_step_id,
+                "invalidated_step_ids": sorted(downstream_ids),
+                "preserved_step_ids": sorted(preserved_ids),
+                "pinned_blast_radius_tests": combined_checks,
+                "new_revision": new_plan["revision"],
+            },
+        )
+
+        return new_plan
+
     def _execute_standard_dag(self, task: dict[str, Any], source_ws: Path, worker_id: str) -> dict[str, Any]:
         task_id = task["task_id"]
         constraints = task.get("constraints") or {}
@@ -423,14 +571,39 @@ class HarnessOrchestrator:
             )
 
         dag_nodes: list[dict[str, Any]] = list(plan.get("dag") or [])
+        for n in dag_nodes:
+            if n.get("status") == "COMPLETED":
+                completed_step_ids.add(n.get("step_id"))
+            elif n.get("status") == "INVALIDATED":
+                completed_step_ids.discard(n.get("step_id"))
+
         modified_files: list[str] = []
+        replan_count = 0
+        max_replans = 20
 
         try:
-            for idx, node in enumerate(dag_nodes, start=1):
-                step_id = node.get("step_id", f"step_{idx}")
-                if step_id in completed_step_ids and not node.get("has_unsealed_calls"):
-                    continue
+            while True:
+                # Find the next runnable node: not yet completed, with all depends_on completed
+                runnable_node = None
+                for n in dag_nodes:
+                    sid = n.get("step_id")
+                    if sid in completed_step_ids and not n.get("has_unsealed_calls"):
+                        continue
+                    deps = n.get("depends_on") or []
+                    if all(d in completed_step_ids for d in deps):
+                        runnable_node = n
+                        break
 
+                if runnable_node is None:
+                    pending = [n for n in dag_nodes if n.get("step_id") not in completed_step_ids]
+                    if not pending:
+                        break  # All nodes executed successfully
+                    runnable_node = pending[0]
+
+                node = runnable_node
+                step_id = node.get("step_id")
+
+                step_modified_files: list[str] = []
                 if "code_mode_ops" in node:
                     self.gateway.execute_code_mode_composition(
                         task_id=task_id,
@@ -441,7 +614,10 @@ class HarnessOrchestrator:
                     )
                     for op in node["code_mode_ops"]:
                         if op.get("tool_id") == "write_file" and "path" in op.get("args", {}):
-                            modified_files.append(str(op["args"]["path"]))
+                            p = str(op["args"]["path"])
+                            step_modified_files.append(p)
+                            if p not in modified_files:
+                                modified_files.append(p)
                 else:
                     tool_id = node["tool_id"]
                     args = node.get("args", {})
@@ -455,13 +631,62 @@ class HarnessOrchestrator:
                         workspace_dir=attempt_ws,
                     )
                     if tool_id == "write_file" and "path" in args:
-                        modified_files.append(str(args["path"]))
+                        p = str(args["path"])
+                        step_modified_files.append(p)
+                        if p not in modified_files:
+                            modified_files.append(p)
+
+                if "actual_modified_files" in node:
+                    for f in node["actual_modified_files"]:
+                        p = str(f)
+                        if p not in step_modified_files:
+                            step_modified_files.append(p)
+                        if p not in modified_files:
+                            modified_files.append(p)
 
                 if node.get("simulate_crash_after_step"):
                     raise RuntimeError(f"Injected worker crash after step '{step_id}'")
 
                 # Seal step checkpoint and CoW snapshot after each completed step
                 completed_step_ids.add(step_id)
+                node["status"] = "COMPLETED"
+
+                # Check for unexpected side-effects
+                declared = {
+                    p.replace("\\", "/").lstrip("./")
+                    for p in (node.get("side_effects") or [])
+                }
+                actual = {
+                    p.replace("\\", "/").lstrip("./")
+                    for p in step_modified_files
+                }
+                unexpected_side_effects = bool(actual - declared)
+                explicit_replan = bool(node.get("trigger_replan") or node.get("args", {}).get("trigger_replan"))
+
+                # Check if Active Graphify discovers new downstream tests/callers not yet pinned
+                blast_new_callers = False
+                if step_modified_files and attempt_ws.is_dir():
+                    try:
+                        b_rep = self.graphify.compute_blast_radius(attempt_ws, step_modified_files)
+                        existing_pins = set(plan.get("blast_radius_checks") or [])
+                        if set(b_rep.impacted_tests) - existing_pins:
+                            blast_new_callers = True
+                    except Exception:
+                        pass
+
+                if unexpected_side_effects or explicit_replan or blast_new_callers:
+                    if replan_count < max_replans:
+                        replan_count += 1
+                        plan = self.replan_dag(
+                            task_id=task_id,
+                            current_plan=plan,
+                            mutated_step_id=step_id,
+                            actual_modified_files=list(step_modified_files),
+                            attempt_ws=attempt_ws,
+                            completed_step_ids=completed_step_ids,
+                        )
+                        dag_nodes = list(plan.get("dag") or [])
+
                 pending_ids = [n.get("step_id", "") for n in dag_nodes if n.get("step_id", "") not in completed_step_ids]
                 step_snap = self.cow.create_snapshot(attempt_ws, label=f"{task_id}_{step_id}")
                 self.ledger.create_checkpoint(
