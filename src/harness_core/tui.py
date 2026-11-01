@@ -296,26 +296,24 @@ HERMES_STYLE_BANNER_COMPACT: tuple[str, ...] = (
     "╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ",
 )
 
-# Braille / Stipple Caduceus & Hex-Shield Emblem (matching Hermes left-pane artwork)
+# Geometric 3D Isometric Hex-Core & Circuit Emblem (purpose-built for HEX)
 EMBLEM_ART: tuple[str, ...] = (
-    "          ⣀⣤⣶⣾⣿⣿⣷⣶⣤⣀          ",
-    "    ⢀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⡀    ",
-    " ⢀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀ ",
-    " ⠻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟ ",
-    "    ⠙⠻⢿⣿⣿⡿⠋⠁  ⠈⠙⢿⣿⣿⡿⠟⠋    ",
-    "        ⣠⣾⣿      ⣿⣷⣄        ",
-    "       ⣿⣿⣿      ⣿⣿⣿       ",
-    "       ⠹⣿⣿⣄  ⢀⣼⣿⣿⠏       ",
-    "         ⠙⢿⣿⣿⣾⣿⣿⠟         ",
-    "        ⣠⣾⣿⣿⠿⢿⣿⣿⣷⣄        ",
-    "       ⣿⣿⣿⠋    ⠙⣿⣿⣿       ",
-    "       ⠹⣿⣿⣄  ⢀⣼⣿⣿⠏       ",
-    "         ⠙⢿⣿⣿⣾⣿⣿⠟         ",
-    "          ⣠⣿⣿⠿⣿⣿⣄          ",
-    "         ⣿⣿⣿  ⣿⣿⣿         ",
-    "         ⠻⣿⣿⣤⣤⣿⣿⠟         ",
-    "           ⠙⠻⣿⣿⠟⠋           ",
-    "             ⠈⠁             ",
+    "            ▄▄▀▀▀▀▀▀▄▄            ",
+    "         ▄▀▀  ▄▄▄▄▄▄  ▀▀▄         ",
+    "      ▄▀▀  ▄▀▀      ▀▀▄  ▀▀▄      ",
+    "    ▄▀   ▄▀    ▄▄▄▄    ▀▄   ▀▄    ",
+    "   ▐▌   ▐▌   ▄▀    ▀▄   ▐▌   ▐▌   ",
+    "   ▐▌   ▐▌  ▐▌  ██  ▐▌  ▐▌   ▐▌   ",
+    "   ▐▌   ▐▌  ▐▌ ████ ▐▌  ▐▌   ▐▌   ",
+    "   ▐▌   ▐▌   ▀▄ ▀▀ ▄▀   ▐▌   ▐▌   ",
+    "    ▀▄   ▀▄    ▀▀▀▀    ▄▀   ▄▀    ",
+    "      ▀▄▄  ▀▄▄      ▄▄▀  ▄▄▀      ",
+    "        ▐▌ ▀▀▄▄▀▀▀▀▄▄▀▀ ▐▌        ",
+    "        ▐▌     ▀▀▀▀     ▐▌        ",
+    "         ▀▄▄          ▄▄▀         ",
+    "           ▀▀▄▄    ▄▄▀▀           ",
+    "              ▀▀▀▀▀▀              ",
+    "          ───═══╬═══───           ",
 )
 
 TOOL_CATEGORY_MAP: dict[str, str] = {
@@ -802,6 +800,7 @@ def render_status_bar(
     compressor_mode: str = "local",
     cow_backend: str = "apfs_clone",
     tokens_in: int = 0,
+    max_context_tokens: int = 32768,
     compression_ratio: float = 0.0,
     cost_usd: float = 0.0,
     max_cost_usd: float = 2.0,
@@ -810,30 +809,47 @@ def render_status_bar(
     width: int = 108,
     enable_color: bool = True,
 ) -> str:
-    """Render the persistent bottom status bar with context window, compression ratio, and budget gauge."""
+    """Render the persistent bottom status bar with context window fill gauge (`[██░░░░░░░░] XX%`)."""
     skin = SKIN_REGISTRY.get(skin_name.lower(), SKIN_REGISTRY["amber"])
 
     def _c(txt: str, fg: tuple[int, int, int] | None = None, bg: tuple[int, int, int] | None = None, bold: bool = False) -> str:
         return colorize_rgb(txt, fg=fg, bg=bg, bold=bold, enabled=enable_color)
 
-    limit = max(0.01, max_cost_usd)
-    ratio = min(1.0, max(0.0, cost_usd / limit))
-    filled = int(round(ratio * 10))
+    ctx_max = max(1, max_context_tokens)
+    ctx_ratio = min(1.0, max(0.0, tokens_in / ctx_max))
+    filled = int(round(ctx_ratio * 10))
     bar_str = ("█" * filled) + ("░" * (10 - filled))
-    pct_str = f"{int(ratio * 100)}%" if cost_usd > 0 else "--"
 
-    if tokens_in > 0 or compression_ratio > 0:
-        sav_pct = int(round(compression_ratio * 100))
-        ctx_str = f"ctx {tokens_in:,}t ({sav_pct}% saved)"
+    if tokens_in > 0:
+        pct_val = max(1, int(round(ctx_ratio * 100))) if ctx_ratio > 0 else 0
+        pct_str = f"{pct_val}%"
+        if tokens_in >= 1000:
+            tok_fmt = f"{tokens_in / 1000:.1f}k/{ctx_max // 1000}k"
+        else:
+            tok_fmt = f"{tokens_in}/{ctx_max // 1000}k"
+        if compression_ratio > 0:
+            sav_pct = int(round(compression_ratio * 100))
+            ctx_str = f"ctx {tok_fmt} ({sav_pct}% saved)"
+        else:
+            ctx_str = f"ctx {tok_fmt}"
     else:
+        pct_str = "--"
         ctx_str = "ctx --"
+
+    # Color-code context gauge: normal < 60%, warn 60-85%, danger > 85%
+    if ctx_ratio >= 0.85:
+        gauge_fg = skin.danger_rgb
+    elif ctx_ratio >= 0.60:
+        gauge_fg = skin.warn_rgb
+    else:
+        gauge_fg = skin.accent_rgb
 
     parts = [
         _c(f" {skin.prompt_symbol} {model_id} ", fg=skin.heading_rgb, bg=skin.status_bg_rgb, bold=True),
-        _c(f" comp:{compressor_mode} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
-        _c(f" cow:{cow_backend} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
         _c(f" {ctx_str} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
-        _c(f" [{bar_str}] {pct_str} ", fg=skin.accent_rgb, bg=skin.status_bg_rgb),
+        _c(f" [{bar_str}] {pct_str} ", fg=gauge_fg, bg=skin.status_bg_rgb, bold=True),
+        _c(f" comp:{compressor_mode} · cow:{cow_backend} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
+        _c(f" ${cost_usd:.3f} ", fg=skin.muted_rgb, bg=skin.status_bg_rgb),
         _c(f" {elapsed_seconds}s ", fg=skin.muted_rgb, bg=skin.status_bg_rgb),
     ]
     sep = _c("│", fg=skin.border_rgb, bg=skin.status_bg_rgb)

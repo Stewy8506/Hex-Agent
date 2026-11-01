@@ -4,11 +4,13 @@ Commands:
 - `hex onboard`: Run interactive onboarding wizard for hardware discovery, model profile, and configuration.
 - `hex init`: Initialize local database, CoW snapshot store, and seed default repo skills.
 - `hex up`: Start the local web control surface & HTTP API on 127.0.0.1:8420.
+- `hex run` / `hex exec <goal>`: Run task with automated Git branching, commits, and GitHub Pull Requests.
 - `hex submit <goal>`: Submit and execute a task (`--fast-path` or `--standard`).
 - `hex status [task_id]`: Inspect task state, call journal, and Proof-Carrying Artifact bundle.
 - `hex scan-skill <dir>`: Run NVIDIA SkillSpector static + OSV + semantic scan on a SKILL.md bundle.
 - `hex harness2-demo`: Run a live Propose-Probe-Compose cycle through the gated `vendor/harness2` adapter.
 - `hex worker`: Start standalone distributed worker daemon.
+- `hex chat` / `hex tui`: Start interactive TUI pair-programming console with Hermes-style splash & skin engine.
 """
 
 from __future__ import annotations
@@ -16,8 +18,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from .models import TaskSubmitRequest
 from .orchestrator import HarnessOrchestrator
@@ -131,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(__file__).resolve().parents[2]
     orch = HarnessOrchestrator(args.data_dir, default_workspace=repo_root)
 
-    if args.cmd == "chat":
+    if args.cmd in ("chat", "tui"):
         from .tui import HexConsole
 
         console = HexConsole(
@@ -140,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
             workspace_root=args.workspace,
             stream=not args.no_stream,
             model_profile=args.model,
+            skin_name=getattr(args, "skin", "amber"),
+            quiet=getattr(args, "quiet", False),
         )
         return console.start()
 

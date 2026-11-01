@@ -5,9 +5,11 @@ Validates:
 2. Active Graphify AST blast-radius tree renderer with hierarchical branches and risk badges.
 3. Streaming token renderer with progressive chunks and code block syntax detection.
 4. Session banner generation with model profile and backend indicators.
-5. HexConsole REPL prompt loop, history, and all 10 slash command handlers.
-6. Natural language prompt submission and Proof-Carrying Artifact display.
-7. CLI `hex chat` subcommand invocation and argument parsing.
+5. Hermes-grade 24-bit TrueColor Retro-Block Banner, Two-Column Capability Splash Card,
+   Data-Driven Skin Engine (`SKIN_REGISTRY`), and Persistent Status Bar (`render_status_bar`).
+6. HexConsole REPL prompt loop, history, and all 20+ slash command handlers.
+7. Natural language prompt submission, `┊` activity feed, and Proof-Carrying Artifact display.
+8. CLI `hex chat` / `hex tui` subcommand invocation and argument parsing (`--skin`, `-Q`).
 """
 
 from __future__ import annotations
@@ -29,11 +31,14 @@ from harness_core.tui import (
     ANSI_GREEN,
     ANSI_RED,
     ANSI_YELLOW,
+    SKIN_REGISTRY,
     HexConsole,
     StreamingTokenRenderer,
     render_blast_radius_tree,
+    render_hermes_splash,
     render_session_banner,
     render_side_by_side_diff,
+    render_status_bar,
     render_unified_diff,
     strip_ansi,
 )
@@ -174,8 +179,8 @@ class TestStreamingTokenRenderer(unittest.TestCase):
         self.assertEqual(renderer.flush(), "token1 token2")
 
 
-class TestSessionBanner(unittest.TestCase):
-    """Verifies session header banner formatting and parameters."""
+class TestSessionBannerAndHermesSplash(unittest.TestCase):
+    """Verifies session header banner, Hermes two-column splash card, skins, and status bar."""
 
     def test_session_banner_contents_and_borders(self):
         banner = render_session_banner(
@@ -196,6 +201,43 @@ class TestSessionBanner(unittest.TestCase):
         for line in banner.splitlines():
             stripped = strip_ansi(line)
             self.assertEqual(len(stripped), 78)
+
+    def test_hermes_splash_two_column_box_and_skins(self):
+        for skin_name in SKIN_REGISTRY:
+            splash = render_hermes_splash(
+                skin_name=skin_name,
+                model_id="gemini-3.5-pro",
+                compressor_mode="local",
+                width=110,
+            )
+            plain = strip_ansi(splash)
+            self.assertIn("HEX Autonomous AI Workbench v1.3.0", plain)
+            self.assertIn("Available Tools", plain)
+            self.assertIn("Available Skills", plain)
+            self.assertIn("query_graphify", plain)
+            self.assertIn("nvidia-skillspector-static", plain)
+            self.assertIn("Welcome to HEX Autonomous AI Workbench!", plain)
+
+    def test_persistent_status_bar_rendering(self):
+        bar = render_status_bar(
+            model_id="claude-3-5-sonnet",
+            compressor_mode="local",
+            cow_backend="apfs_clone",
+            tokens_in=6554,
+            max_context_tokens=32768,
+            compression_ratio=0.76,
+            cost_usd=0.04,
+            max_cost_usd=2.00,
+            elapsed_seconds=18,
+            skin_name="amber",
+        )
+        plain = strip_ansi(bar)
+        self.assertIn("claude-3-5-sonnet", plain)
+        self.assertIn("comp:local", plain)
+        self.assertIn("cow:apfs_clone", plain)
+        self.assertIn("ctx 6.6k/32k (76% saved)", plain)
+        self.assertIn("[██░░░░░░░░] 20%", plain)
+        self.assertIn("18s", plain)
 
 
 class TestHexConsoleSlashCommands(unittest.TestCase):
@@ -221,16 +263,13 @@ class TestHexConsoleSlashCommands(unittest.TestCase):
             should_exit = self.console.handle_slash_command("/help")
         self.assertFalse(should_exit)
         text = out.getvalue()
-        self.assertIn("/help", text)
-        self.assertIn("/status", text)
-        self.assertIn("/diff", text)
-        self.assertIn("/rollback", text)
-        self.assertIn("/fork", text)
-        self.assertIn("/skills", text)
-        self.assertIn("/model", text)
-        self.assertIn("/budget", text)
-        self.assertIn("/clear", text)
-        self.assertIn("/quit", text)
+        for cmd in (
+            "/help", "/status", "/diff", "/sbs", "/blast", "/proof",
+            "/rollback", "/fork", "/skills", "/scan", "/model",
+            "/compressor", "/budget", "/memory", "/remember",
+            "/workers", "/harness2", "/skin", "/banner", "/clear", "/quit",
+        ):
+            self.assertIn(cmd, text)
 
     def test_handle_slash_command_status(self):
         out = StringIO()
@@ -284,6 +323,27 @@ class TestHexConsoleSlashCommands(unittest.TestCase):
             self.console.handle_slash_command("/model local_mlx")
         self.assertEqual(self.console.model_profile, "local_mlx")
         self.assertIn("Model profile updated to: local_mlx", out_switch.getvalue())
+
+    def test_handle_slash_command_skin_and_compressor(self):
+        out = StringIO()
+        with patch("sys.stdout", out):
+            self.console.handle_slash_command("/skin cyberpunk")
+            self.console.handle_slash_command("/compressor cloud")
+        self.assertEqual(self.console.skin_name, "cyberpunk")
+        self.assertEqual(self.orch.router.compressor_mode, "cloud")
+        self.assertIn("Skin updated to: cyberpunk", out.getvalue())
+        self.assertIn("Compressor mode updated to: cloud", out.getvalue())
+
+    def test_handle_slash_command_memory_and_workers(self):
+        out = StringIO()
+        with patch("sys.stdout", out):
+            self.console.handle_slash_command("/remember architecture: CoW uses APFS on macOS")
+            self.console.handle_slash_command("/memory APFS")
+            self.console.handle_slash_command("/workers")
+        text = out.getvalue()
+        self.assertIn("Stored governed project memory", text)
+        self.assertIn("Governed Memories (1)", text)
+        self.assertIn("Registered Distributed Workers", text)
 
     def test_handle_slash_command_budget(self):
         self.console.session_tokens_in = 1200
@@ -349,7 +409,7 @@ class TestHexConsoleSlashCommands(unittest.TestCase):
 
 
 class TestCLIChatSubcommand(unittest.TestCase):
-    """Verifies CLI argument parsing and `hex chat` execution."""
+    """Verifies CLI argument parsing and `hex chat` / `hex tui` execution."""
 
     def test_cli_chat_subcommand_arguments(self):
         old_stdin = sys.stdin
@@ -362,6 +422,7 @@ class TestCLIChatSubcommand(unittest.TestCase):
                     "--data-dir", ":memory:",
                     "--project", "test_p",
                     "--model", "hybrid",
+                    "--skin", "cyberpunk",
                     "--no-stream",
                 ])
             self.assertEqual(res, 0)
