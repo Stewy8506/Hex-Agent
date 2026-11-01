@@ -57,7 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     p_onb.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode using hardware defaults")
     p_onb.add_argument("--defaults", dest="defaults_only", action="store_true", help="Accept all hardware auto-detected defaults")
 
-    sub.add_parser("init", help="Initialize ledger schema, CoW workspace store, and scan built-in skills")
+    p_init = sub.add_parser("init", help="Initialize project configuration, ledger schema, and seed built-in skills")
+    p_init.add_argument("--workspace", default=None, help="Path to project repository root (defaults to current working directory)")
+    p_init.add_argument("--force", action="store_true", help="Overwrite existing .hex/config.yaml")
 
     p_up = sub.add_parser("up", help="Start local web control surface and /v1/* HTTP API")
     p_up.add_argument("--host", default="127.0.0.1")
@@ -124,11 +126,16 @@ def main(argv: list[str] | None = None) -> int:
         return console.start()
 
     if args.cmd == "init":
+        from .onboard import init_project
+
+        workspace_root = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd().resolve()
+        proj_meta = init_project(workspace_root, force=getattr(args, "force", False))
         scanned = seed_default_skills(orch, repo_root)
         print(
             json.dumps(
                 {
                     "status": "initialized",
+                    "project": proj_meta,
                     "data_dir": str(orch.data_dir),
                     "cow_backend": orch.cow.backend_name,
                     "workers": orch.ledger.list_workers(),
