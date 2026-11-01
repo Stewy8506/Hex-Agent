@@ -1,12 +1,19 @@
 """Interactive Terminal UI (TUI) Engine for HEX Autonomous AI Workbench (PRD Section 8, Pillar 2).
 
 Provides:
-- Rich / ANSI terminal compatibility with zero-dependency ANSI fallbacks.
-- Unified and side-by-side colorized diff visualizers for CoW patches.
-- Active Graphify AST blast-radius tree rendering with risk classification badges.
-- Streaming token renderer with Markdown code-fence detection and syntax highlighting.
-- Session banner and status headers.
-- `HexConsole`: Interactive pair-programming REPL with slash command dispatch.
+- Rich / 24-bit TrueColor ANSI terminal compatibility with zero-dependency ANSI fallbacks.
+- Hermes/OpenCode-grade Retro-Block Gradient Banner + Framed Two-Column Capability Splash Card
+  (Braille Caduceus/Hex emblem + model/workspace/session info on left; categorized Available Tools
+  & Available Skills with NVIDIA SkillSpector badges on right).
+- Data-Driven Skin / Theme Engine (`SKIN_REGISTRY`: `amber`, `cyberpunk`, `matrix`, `nord`, `mono`).
+- Persistent bottom status bar (`render_status_bar`) with active model, context compression ratio,
+  visual budget progress bar (`[████░░░░░░]`), 0ms replay counter, and elapsed session timer.
+- Animated `ActivitySpinner` and `┊` vertical tool-call activity feed (`render_activity_feed`).
+- Unified (`render_unified_diff`) and side-by-side (`render_side_by_side_diff`) colorized diff visualizers.
+- Active Graphify AST blast-radius tree rendering (`render_blast_radius_tree`) with risk badges.
+- Streaming token renderer (`StreamingTokenRenderer`) with Markdown & code-fence highlighting.
+- `HexConsole`: Interactive pair-programming REPL with `readline` tab-completion, 20+ slash commands,
+  and interactive keyboard approval gate (`[y/n/d/s/q]`).
 """
 
 from __future__ import annotations
@@ -15,7 +22,13 @@ import difflib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import threading
+import time
+import uuid
+from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, TextIO
@@ -26,11 +39,11 @@ from .gateway import ApprovalRequiredInterrupt, redact_secrets
 try:
     import rich
     from rich.console import Console as RichConsole
+    from rich.markdown import Markdown as RichMarkdown
     from rich.panel import Panel as RichPanel
     from rich.syntax import Syntax as RichSyntax
     from rich.table import Table as RichTable
     from rich.tree import Tree as RichTree
-    from rich.markdown import Markdown as RichMarkdown
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
@@ -40,6 +53,7 @@ except ImportError:
 ANSI_RESET = "\033[0m"
 ANSI_BOLD = "\033[1m"
 ANSI_DIM = "\033[2m"
+ANSI_ITALIC = "\033[3m"
 ANSI_RED = "\033[31m"
 ANSI_GREEN = "\033[32m"
 ANSI_YELLOW = "\033[33m"
@@ -51,16 +65,276 @@ ANSI_WHITE = "\033[37m"
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
+def fg_rgb(r: int, g: int, b: int) -> str:
+    """Return 24-bit TrueColor foreground ANSI escape sequence."""
+    return f"\033[38;2;{r};{g};{b}m"
+
+
+def bg_rgb(r: int, g: int, b: int) -> str:
+    """Return 24-bit TrueColor background ANSI escape sequence."""
+    return f"\033[48;2;{r};{g};{b}m"
+
+
+def colorize_rgb(
+    text: str,
+    fg: tuple[int, int, int] | None = None,
+    bg: tuple[int, int, int] | None = None,
+    bold: bool = False,
+    dim: bool = False,
+    enabled: bool = True,
+) -> str:
+    if not enabled:
+        return text
+    codes: list[str] = []
+    if bold:
+        codes.append(ANSI_BOLD)
+    if dim:
+        codes.append(ANSI_DIM)
+    if fg is not None:
+        codes.append(fg_rgb(*fg))
+    if bg is not None:
+        codes.append(bg_rgb(*bg))
+    if not codes:
+        return text
+    return f"{''.join(codes)}{text}{ANSI_RESET}"
+
+
 def strip_ansi(text: str) -> str:
     """Strip ANSI escape sequences from text for accurate column width calculations."""
     return ANSI_ESCAPE_RE.sub("", text)
 
 
-def _pad_visible(content: str, width: int) -> str:
-    """Pad content with trailing spaces to match visible character width."""
+def _pad_visible(content: str, width: int, align: str = "left") -> str:
+    """Pad content with spaces to match visible character width."""
     vis_len = len(strip_ansi(content))
     pad = max(0, width - vis_len)
+    if align == "right":
+        return (" " * pad) + content
+    if align == "center":
+        left = pad // 2
+        right = pad - left
+        return (" " * left) + content + (" " * right)
     return content + (" " * pad)
+
+
+def _truncate_visible(text: str, max_width: int, ellipsis: str = "...") -> str:
+    plain = strip_ansi(text)
+    if len(plain) <= max_width:
+        return text
+    if max_width <= len(ellipsis):
+        return plain[:max_width]
+    return plain[: max_width - len(ellipsis)] + ellipsis
+
+
+# ==============================================================================
+# Data-Driven Skin / Theme Engine (`SKIN_REGISTRY`)
+# ==============================================================================
+
+
+@dataclass(frozen=True)
+class TUISkin:
+    name: str
+    description: str
+    banner_gradient: tuple[tuple[int, int, int], ...]
+    border_rgb: tuple[int, int, int]
+    heading_rgb: tuple[int, int, int]
+    accent_rgb: tuple[int, int, int]
+    category_rgb: tuple[int, int, int]
+    text_rgb: tuple[int, int, int]
+    muted_rgb: tuple[int, int, int]
+    success_rgb: tuple[int, int, int]
+    warn_rgb: tuple[int, int, int]
+    danger_rgb: tuple[int, int, int]
+    status_bg_rgb: tuple[int, int, int]
+    spinner_faces: tuple[str, ...] = ("✦", "✧", "✶", "✷", "✸", "✹", "✸", "✷", "✶", "✧")
+    spinner_verbs: tuple[str, ...] = ("Reasoning", "Inspecting AST", "Verifying CoW", "Scanning", "Synthesizing")
+    prompt_symbol: str = "⚕"
+
+
+SKIN_REGISTRY: dict[str, TUISkin] = {
+    "amber": TUISkin(
+        name="amber",
+        description="Hermes-style warm gold, amber, and burnished bronze gradient",
+        banner_gradient=(
+            (255, 215, 0),    # Bright gold
+            (245, 185, 15),   # Warm yellow-gold
+            (235, 150, 20),   # Rich amber
+            (217, 119, 24),   # Deep orange-amber
+            (194, 89, 22),    # Burnished copper
+            (168, 68, 20),    # Bronze shadow
+        ),
+        border_rgb=(180, 118, 42),
+        heading_rgb=(250, 204, 21),
+        accent_rgb=(245, 158, 11),
+        category_rgb=(186, 135, 58),
+        text_rgb=(243, 244, 246),
+        muted_rgb=(138, 129, 115),
+        success_rgb=(52, 211, 153),
+        warn_rgb=(251, 191, 36),
+        danger_rgb=(248, 113, 113),
+        status_bg_rgb=(28, 25, 23),
+        prompt_symbol="⚕",
+    ),
+    "cyberpunk": TUISkin(
+        name="cyberpunk",
+        description="High-contrast neon cyan, electric magenta, and violet grid",
+        banner_gradient=(
+            (0, 245, 255),
+            (35, 205, 255),
+            (95, 155, 255),
+            (160, 105, 255),
+            (220, 65, 255),
+            (255, 40, 180),
+        ),
+        border_rgb=(0, 195, 215),
+        heading_rgb=(0, 245, 255),
+        accent_rgb=(244, 114, 182),
+        category_rgb=(56, 189, 248),
+        text_rgb=(241, 245, 249),
+        muted_rgb=(100, 116, 139),
+        success_rgb=(16, 185, 129),
+        warn_rgb=(250, 204, 21),
+        danger_rgb=(244, 63, 94),
+        status_bg_rgb=(15, 23, 42),
+        spinner_faces=("⚡", "◈", "◇", "◆", "◈", "⚡"),
+        prompt_symbol="⚡",
+    ),
+    "matrix": TUISkin(
+        name="matrix",
+        description="Terminal phosphor emerald and deep jade monochrome",
+        banner_gradient=(
+            (167, 243, 208),
+            (110, 231, 183),
+            (52, 211, 153),
+            (16, 185, 129),
+            (5, 150, 105),
+            (4, 120, 87),
+        ),
+        border_rgb=(16, 185, 129),
+        heading_rgb=(110, 231, 183),
+        accent_rgb=(52, 211, 153),
+        category_rgb=(5, 150, 105),
+        text_rgb=(209, 250, 229),
+        muted_rgb=(75, 135, 105),
+        success_rgb=(52, 211, 153),
+        warn_rgb=(250, 204, 21),
+        danger_rgb=(248, 113, 113),
+        status_bg_rgb=(6, 28, 20),
+        spinner_faces=("◢", "◣", "◤", "◥"),
+        prompt_symbol="⌘",
+    ),
+    "nord": TUISkin(
+        name="nord",
+        description="Arctic frost blue, glacier cyan, and polar slate",
+        banner_gradient=(
+            (143, 188, 187),
+            (136, 192, 208),
+            (129, 161, 193),
+            (94, 129, 172),
+            (76, 86, 106),
+            (67, 76, 94),
+        ),
+        border_rgb=(129, 161, 193),
+        heading_rgb=(136, 192, 208),
+        accent_rgb=(163, 190, 140),
+        category_rgb=(129, 161, 193),
+        text_rgb=(236, 239, 244),
+        muted_rgb=(125, 138, 161),
+        success_rgb=(163, 190, 140),
+        warn_rgb=(235, 203, 139),
+        danger_rgb=(191, 97, 106),
+        status_bg_rgb=(46, 52, 64),
+        spinner_faces=("❄", "❅", "❆", "❅"),
+        prompt_symbol="❄",
+    ),
+    "mono": TUISkin(
+        name="mono",
+        description="Clean high-contrast grayscale for minimal or CI terminals",
+        banner_gradient=(
+            (255, 255, 255),
+            (230, 230, 230),
+            (200, 200, 200),
+            (170, 170, 170),
+            (140, 140, 140),
+            (110, 110, 110),
+        ),
+        border_rgb=(140, 140, 140),
+        heading_rgb=(255, 255, 255),
+        accent_rgb=(220, 220, 220),
+        category_rgb=(180, 180, 180),
+        text_rgb=(240, 240, 240),
+        muted_rgb=(130, 130, 130),
+        success_rgb=(200, 200, 200),
+        warn_rgb=(180, 180, 180),
+        danger_rgb=(255, 255, 255),
+        status_bg_rgb=(30, 30, 30),
+        spinner_faces=("-", "\\", "|", "/"),
+        prompt_symbol=">",
+    ),
+}
+
+
+# ==============================================================================
+# Retro-Block Title Banner & Braille Caduceus/Hex Emblem
+# ==============================================================================
+
+HERMES_STYLE_BANNER_FULL: tuple[str, ...] = (
+    "██╗  ██╗ █████╗ ██████╗ ███╗   ██╗███████╗███████╗███████╗      █████╗  ██████╗ ███████╗███╗   ██╗████████╗",
+    "██║  ██║██╔══██╗██╔══██╗████╗  ██║██╔════╝██╔════╝██╔════╝     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝",
+    "███████║███████║██████╔╝██╔██╗ ██║█████╗  ███████╗███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ",
+    "██╔══██║██╔══██║██╔══██╗██║╚██╗██║██╔══╝  ╚════██║╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ",
+    "██║  ██║██║  ██║██║  ██║██║ ╚████║███████╗███████║███████║     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ",
+    "╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝╚══════╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ",
+)
+
+HERMES_STYLE_BANNER_COMPACT: tuple[str, ...] = (
+    "██╗  ██╗███████╗██╗  ██╗    █████╗  ██████╗ ███████╗███╗   ██╗████████╗",
+    "██║  ██║██╔════╝╚██╗██╔╝   ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝",
+    "███████║█████╗   ╚███╔╝    ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ",
+    "██╔══██║██╔══╝   ██╔██╗    ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ",
+    "██║  ██║███████╗██╔╝ ██╗   ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ",
+    "╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ",
+)
+
+# Braille / Stipple Caduceus & Hex-Shield Emblem (matching Hermes left-pane artwork)
+EMBLEM_ART: tuple[str, ...] = (
+    "          ⣀⣤⣶⣾⣿⣿⣷⣶⣤⣀          ",
+    "    ⢀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⡀    ",
+    " ⢀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀ ",
+    " ⠻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟ ",
+    "    ⠙⠻⢿⣿⣿⡿⠋⠁  ⠈⠙⢿⣿⣿⡿⠟⠋    ",
+    "        ⣠⣾⣿      ⣿⣷⣄        ",
+    "       ⣿⣿⣿      ⣿⣿⣿       ",
+    "       ⠹⣿⣿⣄  ⢀⣼⣿⣿⠏       ",
+    "         ⠙⢿⣿⣿⣾⣿⣿⠟         ",
+    "        ⣠⣾⣿⣿⠿⢿⣿⣿⣷⣄        ",
+    "       ⣿⣿⣿⠋    ⠙⣿⣿⣿       ",
+    "       ⠹⣿⣿⣄  ⢀⣼⣿⣿⠏       ",
+    "         ⠙⢿⣿⣿⣾⣿⣿⠟         ",
+    "          ⣠⣿⣿⠿⣿⣿⣄          ",
+    "         ⣿⣿⣿  ⣿⣿⣿         ",
+    "         ⠻⣿⣿⣤⣤⣿⣿⠟         ",
+    "           ⠙⠻⣿⣿⠟⠋           ",
+    "             ⠈⠁             ",
+)
+
+TOOL_CATEGORY_MAP: dict[str, str] = {
+    "read_file": "file",
+    "write_file": "file",
+    "list_files": "file",
+    "query_graphify": "ast_graph",
+    "run_tests": "verification",
+    "git_push_remote": "git_ops",
+    "modify_system_policy": "policy_guard",
+}
+
+BUILTIN_SKILL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("architecture", ("active-graphify-blast-radius", "cow-snapshot-branching", "0ms-journal-replay")),
+    ("autonomous-repair", ("multi-turn-repair-loop", "speculative-tree-of-work", "dynamic-dag-replan")),
+    ("security-gates", ("nvidia-skillspector-static", "osv-cve-scanner", "m4-semantic-alignment")),
+    ("model-routing", ("tier1-m4-mlx-compressor", "tier2-cloud-prefix-cache", "privacy-local-pinning")),
+    ("distributed-ops", ("cas-fencing-leases", "cow-delta-tar-sync", "telegram-discord-webhooks")),
+)
 
 
 # ==============================================================================
@@ -186,14 +460,18 @@ def render_blast_radius_tree(blast_radius_data: dict[str, Any]) -> str:
     direct = (
         blast_radius_data.get("direct_callers")
         or blast_radius_data.get("1_hop_callers")
-        or []
+        or [d.get("qualified_name", str(d)) if isinstance(d, dict) else str(d) for d in (blast_radius_data.get("hop1_dependents") or [])]
     )
     transitive = (
         blast_radius_data.get("transitive_callers")
         or blast_radius_data.get("2_hop_callers")
+        or [d.get("qualified_name", str(d)) if isinstance(d, dict) else str(d) for d in (blast_radius_data.get("hop2_dependents") or [])]
+    )
+    pinned = (
+        blast_radius_data.get("pinned_tests")
+        or blast_radius_data.get("impacted_tests")
         or []
     )
-    pinned = blast_radius_data.get("pinned_tests") or []
 
     sections = [
         ("📁 Modified Files / Symbols", modified),
@@ -226,7 +504,7 @@ def render_blast_radius_tree(blast_radius_data: dict[str, Any]) -> str:
 
 
 # ==============================================================================
-# Streaming Token Renderer
+# Streaming Token Renderer & Animated Spinner
 # ==============================================================================
 
 
@@ -272,8 +550,64 @@ class StreamingTokenRenderer:
         return "".join(self._tokens)
 
 
+class ActivitySpinner:
+    """Animated terminal activity spinner with skin-customizable faces and verbs."""
+
+    def __init__(self, skin: TUISkin | None = None, out: TextIO = sys.stdout, enabled: bool = True) -> None:
+        self.skin = skin or SKIN_REGISTRY["amber"]
+        self.out = out
+        self.enabled = enabled and hasattr(out, "isatty") and out.isatty()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._label: str = "Working"
+        self._start_ts: float = 0.0
+
+    def start(self, label: str = "Executing task") -> None:
+        self._label = label
+        self._start_ts = time.perf_counter()
+        if not self.enabled:
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._spin_loop, daemon=True)
+        self._thread.start()
+
+    def _spin_loop(self) -> None:
+        idx = 0
+        faces = self.skin.spinner_faces
+        verbs = self.skin.spinner_verbs
+        while not self._stop_event.is_set():
+            elapsed = time.perf_counter() - self._start_ts
+            face = faces[idx % len(faces)]
+            verb = verbs[(idx // 4) % len(verbs)]
+            line = (
+                f"\r  {colorize_rgb(face, fg=self.skin.heading_rgb, bold=True)} "
+                f"{colorize_rgb(verb + '...', fg=self.skin.accent_rgb, bold=True)} "
+                f"{colorize_rgb(self._label, fg=self.skin.text_rgb)} "
+                f"{colorize_rgb(f'({elapsed:.1f}s)', fg=self.skin.muted_rgb)}   "
+            )
+            try:
+                self.out.write(line)
+                self.out.flush()
+            except Exception:
+                break
+            idx += 1
+            self._stop_event.wait(0.08)
+
+    def stop(self) -> None:
+        if not self.enabled:
+            return
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+        try:
+            self.out.write("\r" + (" " * 96) + "\r")
+            self.out.flush()
+        except Exception:
+            pass
+
+
 # ==============================================================================
-# Session Banner
+# Session Banners (Compact 78-col + Hermes-Style Full Two-Column Splash)
 # ==============================================================================
 
 
@@ -284,7 +618,7 @@ def render_session_banner(
     cow_backend: str = "apfs",
     width: int = 78,
 ) -> str:
-    """Render the HEX pair-programming session header banner."""
+    """Render the compact 78-column HEX pair-programming session header banner."""
     title = "HEX Autonomous AI Workbench — Interactive Terminal Console"
     line1 = f"Model: {model_id}  │  Compressor: {compressor_mode}"
     line2 = f"Sandbox: {sandbox_backend}  │  CoW Store: {cow_backend}"
@@ -310,6 +644,203 @@ def render_session_banner(
     return "\n".join(out)
 
 
+def render_hermes_splash(
+    orchestrator: Any = None,
+    *,
+    skin_name: str = "amber",
+    model_id: str = "gemini-3.5-pro",
+    compressor_mode: str = "local",
+    workspace_root: Path | str | None = None,
+    session_id: str | None = None,
+    width: int = 108,
+    enable_color: bool = True,
+) -> str:
+    """Render the full Hermes/OpenCode-style retro-block gradient banner and two-column framed splash card."""
+    skin = SKIN_REGISTRY.get(skin_name.lower(), SKIN_REGISTRY["amber"])
+    total_w = max(80, width)
+    inner_w = total_w - 2
+    left_w = max(32, min(38, inner_w // 3))
+    right_w = inner_w - left_w - 3
+
+    def _c(txt: str, fg: tuple[int, int, int] | None = None, bg: tuple[int, int, int] | None = None, bold: bool = False) -> str:
+        return colorize_rgb(txt, fg=fg, bg=bg, bold=bold, enabled=enable_color)
+
+    # 1. Retro-block gradient title art
+    art_lines = HERMES_STYLE_BANNER_FULL if total_w >= 108 else HERMES_STYLE_BANNER_COMPACT
+    grad = skin.banner_gradient
+    banner_rows = [
+        _c(line, fg=grad[min(idx, len(grad) - 1)], bold=True)
+        for idx, line in enumerate(art_lines)
+    ]
+
+    # 2. Top border with version + upstream git commit SHA
+    ws_path = Path(workspace_root or (getattr(orchestrator, "default_workspace", None) or Path.cwd())).resolve()
+    git_sha = "local-cow"
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            cwd=str(ws_path),
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            git_sha = res.stdout.strip()
+    except Exception:
+        pass
+
+    title_plain = f" HEX Autonomous AI Workbench v1.3.0 · upstream {git_sha} "
+    dash_total = max(2, inner_w - len(title_plain))
+    left_d = dash_total // 2
+    right_d = dash_total - left_d
+    top_border = (
+        _c("┌" + ("─" * left_d), fg=skin.border_rgb)
+        + _c(title_plain, fg=skin.heading_rgb, bold=True)
+        + _c(("─" * right_d) + "┐", fg=skin.border_rgb)
+    )
+    sub_underline = (
+        _c("│", fg=skin.border_rgb)
+        + (" " * left_d)
+        + _c("╌" * len(title_plain), fg=skin.muted_rgb)
+        + (" " * right_d)
+        + _c("│", fg=skin.border_rgb)
+    )
+
+    # 3. Left column: Stipple Caduceus/Hex Emblem + Model + Workspace + Session ID
+    left_lines: list[str] = [""]
+    for idx, eline in enumerate(EMBLEM_ART):
+        rgb = grad[min(idx // 3, len(grad) - 1)]
+        left_lines.append(_c(_pad_visible(eline.strip(), left_w, align="center"), fg=rgb, bold=True))
+    left_lines.append("")
+
+    mdl_line = f"{_c(model_id, fg=skin.heading_rgb, bold=True)}{_c(' · ', fg=skin.muted_rgb)}{_c(f'M4 MLX ({compressor_mode})', fg=skin.category_rgb)}"
+    left_lines.append(_pad_visible(mdl_line, left_w, align="center"))
+
+    home_str = str(Path.home())
+    ws_disp = str(ws_path)
+    if ws_disp.startswith(home_str):
+        ws_disp = "~" + ws_disp[len(home_str):]
+    ws_disp = _truncate_visible(ws_disp, left_w - 2)
+    left_lines.append(_pad_visible(_c(ws_disp, fg=skin.category_rgb), left_w, align="center"))
+
+    sess = session_id or f"Session: {time.strftime('%Y%m%d_%H%M%S')}"
+    left_lines.append(_pad_visible(_c(_truncate_visible(sess, left_w - 2), fg=skin.muted_rgb), left_w, align="center"))
+
+    # 4. Right column: Categorized Available Tools & Available Skills
+    right_lines: list[str] = [_c("Available Tools", fg=skin.heading_rgb, bold=True)]
+    tools_dict = getattr(getattr(orchestrator, "gateway", None), "tools", {}) or {}
+    grouped_tools: dict[str, list[str]] = {}
+    if tools_dict:
+        for tid in sorted(tools_dict.keys()):
+            cat = f"mcp:{tid.split('__', 1)[0]}" if "__" in tid else TOOL_CATEGORY_MAP.get(tid, "general")
+            grouped_tools.setdefault(cat, []).append(tid)
+    else:
+        grouped_tools = {
+            "file": ["list_files", "read_file", "write_file"],
+            "ast_graph": ["query_graphify"],
+            "verification": ["run_tests"],
+            "git_ops": ["git_push_remote"],
+            "policy_guard": ["modify_system_policy"],
+        }
+
+    for cat, tnames in grouped_tools.items():
+        prefix = _c(f"{cat}: ", fg=skin.category_rgb)
+        avail = max(12, right_w - len(strip_ansi(prefix)) - 1)
+        right_lines.append(f"{prefix}{_c(_truncate_visible(', '.join(tnames), avail), fg=skin.text_rgb)}")
+    right_lines.append(_c("(0ms Call-Level Journal & R0-R4 Default-Deny Policy active)", fg=skin.muted_rgb))
+    right_lines.append("")
+
+    right_lines.append(_c("Available Skills", fg=skin.heading_rgb, bold=True))
+    db_skills: list[str] = []
+    if orchestrator is not None and hasattr(orchestrator, "ledger"):
+        try:
+            with orchestrator.ledger._lock:
+                if orchestrator.ledger.conn is not None:
+                    rows = orchestrator.ledger.conn.execute(
+                        "SELECT name, status FROM skills ORDER BY created_at DESC"
+                    ).fetchall()
+                    db_skills = [f"{r['name']} ({r['status']})" for r in rows]
+        except Exception:
+            db_skills = []
+
+    if db_skills:
+        prefix = _c("registered: ", fg=skin.category_rgb)
+        avail = max(12, right_w - len(strip_ansi(prefix)) - 1)
+        right_lines.append(f"{prefix}{_c(_truncate_visible(', '.join(db_skills), avail), fg=skin.text_rgb)}")
+
+    for g_name, g_items in BUILTIN_SKILL_GROUPS:
+        prefix = _c(f"{g_name}: ", fg=skin.category_rgb)
+        avail = max(12, right_w - len(strip_ansi(prefix)) - 1)
+        right_lines.append(f"{prefix}{_c(_truncate_visible(', '.join(g_items), avail), fg=skin.text_rgb)}")
+
+    right_lines.append("")
+    total_t = sum(len(v) for v in grouped_tools.values())
+    total_s = len(db_skills) + sum(len(g[1]) for g in BUILTIN_SKILL_GROUPS)
+    right_lines.append(_c(f"{total_t} tools · {total_s} skills · /help for commands", fg=skin.category_rgb))
+
+    # 5. Assemble Two-Column Box
+    max_rows = max(len(left_lines), len(right_lines))
+    vert = _c("│", fg=skin.border_rgb)
+    box_rows = [top_border, sub_underline]
+    for i in range(max_rows):
+        l_cell = _pad_visible(left_lines[i] if i < len(left_lines) else "", left_w)
+        r_cell = _pad_visible(right_lines[i] if i < len(right_lines) else "", right_w)
+        box_rows.append(f"{vert} {l_cell}  {r_cell}{vert}")
+    box_rows.append(_c("└" + ("─" * inner_w) + "┘", fg=skin.border_rgb))
+
+    welcome_lines = [
+        _c("Welcome to HEX Autonomous AI Workbench! Type your message or /help for commands.", fg=skin.text_rgb, bold=True),
+        _c("✦ Tip: hex chat -Q enables quiet mode for programmatic use — suppresses banner and spinner.", fg=skin.category_rgb),
+    ]
+
+    return "\n".join(banner_rows + [""] + box_rows + [""] + welcome_lines)
+
+
+def render_status_bar(
+    *,
+    model_id: str = "gemini-3.5-pro",
+    compressor_mode: str = "local",
+    cow_backend: str = "apfs_clone",
+    tokens_in: int = 0,
+    compression_ratio: float = 0.0,
+    cost_usd: float = 0.0,
+    max_cost_usd: float = 2.0,
+    elapsed_seconds: int = 0,
+    skin_name: str = "amber",
+    width: int = 108,
+    enable_color: bool = True,
+) -> str:
+    """Render the persistent bottom status bar with context window, compression ratio, and budget gauge."""
+    skin = SKIN_REGISTRY.get(skin_name.lower(), SKIN_REGISTRY["amber"])
+
+    def _c(txt: str, fg: tuple[int, int, int] | None = None, bg: tuple[int, int, int] | None = None, bold: bool = False) -> str:
+        return colorize_rgb(txt, fg=fg, bg=bg, bold=bold, enabled=enable_color)
+
+    limit = max(0.01, max_cost_usd)
+    ratio = min(1.0, max(0.0, cost_usd / limit))
+    filled = int(round(ratio * 10))
+    bar_str = ("█" * filled) + ("░" * (10 - filled))
+    pct_str = f"{int(ratio * 100)}%" if cost_usd > 0 else "--"
+
+    if tokens_in > 0 or compression_ratio > 0:
+        sav_pct = int(round(compression_ratio * 100))
+        ctx_str = f"ctx {tokens_in:,}t ({sav_pct}% saved)"
+    else:
+        ctx_str = "ctx --"
+
+    parts = [
+        _c(f" {skin.prompt_symbol} {model_id} ", fg=skin.heading_rgb, bg=skin.status_bg_rgb, bold=True),
+        _c(f" comp:{compressor_mode} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
+        _c(f" cow:{cow_backend} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
+        _c(f" {ctx_str} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
+        _c(f" [{bar_str}] {pct_str} ", fg=skin.accent_rgb, bg=skin.status_bg_rgb),
+        _c(f" {elapsed_seconds}s ", fg=skin.muted_rgb, bg=skin.status_bg_rgb),
+    ]
+    sep = _c("│", fg=skin.border_rgb, bg=skin.status_bg_rgb)
+    rule = _c("─" * max(76, width), fg=skin.border_rgb)
+    return f"{sep.join(parts)}\n{rule}"
+
+
 # ==============================================================================
 # HexConsole Interactive REPL
 # ==============================================================================
@@ -325,6 +856,8 @@ class HexConsole:
         workspace_root: Path | str | None = None,
         stream: bool = True,
         model_profile: str | None = None,
+        skin_name: str = "amber",
+        quiet: bool = False,
     ):
         self.orchestrator = orchestrator
         self.project_id = project_id
@@ -336,8 +869,12 @@ class HexConsole:
             self.workspace_root = Path.cwd().resolve()
         self.stream = stream
         self.model_profile = model_profile
+        self.skin_name = skin_name.lower() if skin_name.lower() in SKIN_REGISTRY else "amber"
+        self.quiet = quiet
         self.active_task_id: str | None = None
         self.history: list[str] = []
+        self.session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        self.session_start = time.time()
 
         # Session token & budget telemetry
         self.session_tokens_in: int = 0
@@ -346,14 +883,93 @@ class HexConsole:
         self.session_compression_ratio: float = 0.0
         self.session_cost_usd: float = 0.0
 
-    def start(self, input_fn: Callable[[str], str] | None = None) -> int:
-        """Start interactive REPL prompt loop. Returns exit code 0 on termination."""
+    @property
+    def skin(self) -> TUISkin:
+        return SKIN_REGISTRY.get(self.skin_name, SKIN_REGISTRY["amber"])
+
+    def _setup_readline(self) -> None:
+        try:
+            import readline
+
+            slash_cmds = [
+                "/help", "/status", "/diff", "/sbs", "/rollback", "/fork",
+                "/skills", "/scan", "/model", "/compressor", "/budget",
+                "/blast", "/proof", "/memory", "/remember", "/workers",
+                "/harness2", "/skin", "/banner", "/clear", "/quit", "/exit",
+            ]
+            skin_cmds = [f"/skin {s}" for s in SKIN_REGISTRY]
+            comp_cmds = ["/compressor local", "/compressor cloud"]
+            candidates = sorted(set(slash_cmds + skin_cmds + comp_cmds))
+
+            def completer(text: str, state: int) -> str | None:
+                buf = readline.get_line_buffer().lstrip()
+                if buf.startswith("/"):
+                    matches = [c + " " for c in candidates if c.startswith(buf)]
+                    if state < len(matches):
+                        return matches[state].split()[-1] if " " in buf else matches[state]
+                return None
+
+            readline.set_completer_delims(" \t\n")
+            readline.set_completer(completer)
+            if "libedit" in getattr(readline, "__doc__", ""):
+                readline.parse_and_bind("bind ^I rl_complete")
+            else:
+                readline.parse_and_bind("tab: complete")
+        except Exception:
+            pass
+
+    def render_welcome_splash(self) -> str:
+        """Render both the Hermes-grade full splash card and session banner."""
         cow_backend = getattr(getattr(self.orchestrator, "cow", None), "backend_name", "apfs")
-        banner = render_session_banner(
-            model_id=self.model_profile or "claude-3-5-sonnet",
+        sandbox_backend = getattr(getattr(self.orchestrator, "sandbox", None), "backend_name", "bwrap")
+        comp_mode = getattr(getattr(self.orchestrator, "router", None), "compressor_mode", "local")
+        active_model = (
+            self.model_profile
+            or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", None)
+            or "claude-3-5-sonnet"
+        )
+        splash = render_hermes_splash(
+            self.orchestrator,
+            skin_name=self.skin_name,
+            model_id=active_model,
+            compressor_mode=comp_mode,
+            workspace_root=self.workspace_root,
+            session_id=f"Session: {self.session_id}",
+        )
+        compact = render_session_banner(
+            model_id=active_model,
+            compressor_mode=f"M4 MLX ({comp_mode})",
+            sandbox_backend=sandbox_backend,
             cow_backend=cow_backend,
         )
-        print(banner)
+        status_bar = self.get_status_bar()
+        return f"{splash}\n\n{compact}\n{status_bar}"
+
+    def get_status_bar(self) -> str:
+        cow_backend = getattr(getattr(self.orchestrator, "cow", None), "backend_name", "apfs")
+        comp_mode = getattr(getattr(self.orchestrator, "router", None), "compressor_mode", "local")
+        active_model = (
+            self.model_profile
+            or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", None)
+            or "claude-3-5-sonnet"
+        )
+        elapsed = int(max(0.0, time.time() - self.session_start))
+        return render_status_bar(
+            model_id=active_model,
+            compressor_mode=comp_mode,
+            cow_backend=cow_backend,
+            tokens_in=self.session_tokens_in,
+            compression_ratio=self.session_compression_ratio,
+            cost_usd=self.session_cost_usd,
+            elapsed_seconds=elapsed,
+            skin_name=self.skin_name,
+        )
+
+    def start(self, input_fn: Callable[[str], str] | None = None) -> int:
+        """Start interactive REPL prompt loop. Returns exit code 0 on termination."""
+        self._setup_readline()
+        if not self.quiet:
+            print(self.render_welcome_splash())
 
         if input_fn is not None:
             read_line = input_fn
@@ -391,22 +1007,44 @@ class HexConsole:
         if cmd in ("/quit", "/exit"):
             print(f"{ANSI_DIM}Exiting HEX console.{ANSI_RESET}")
             return True
-        elif cmd == "/help":
+        elif cmd in ("/help", "/h", "/?"):
             self._cmd_help()
-        elif cmd == "/status":
+        elif cmd in ("/status", "/tasks"):
             self._cmd_status()
         elif cmd == "/diff":
             self._cmd_diff()
+        elif cmd == "/sbs":
+            self._cmd_sbs(arg)
         elif cmd == "/rollback":
             self._cmd_rollback()
         elif cmd == "/fork":
             self._cmd_fork()
         elif cmd == "/skills":
             self._cmd_skills()
+        elif cmd in ("/scan", "/scan-skill"):
+            self._cmd_scan(arg)
         elif cmd == "/model":
             self._cmd_model(arg)
+        elif cmd in ("/compressor", "/comp"):
+            self._cmd_compressor(arg)
         elif cmd == "/budget":
             self._cmd_budget()
+        elif cmd in ("/blast", "/graph", "/ast"):
+            self._cmd_blast(arg)
+        elif cmd == "/proof":
+            self._cmd_proof(arg)
+        elif cmd in ("/memory", "/mem"):
+            self._cmd_memory(arg)
+        elif cmd == "/remember":
+            self._cmd_remember(arg)
+        elif cmd == "/workers":
+            self._cmd_workers()
+        elif cmd in ("/harness2", "/h2"):
+            self._cmd_harness2()
+        elif cmd in ("/skin", "/theme"):
+            self._cmd_skin(arg)
+        elif cmd in ("/banner", "/splash"):
+            print(self.render_welcome_splash())
         elif cmd == "/clear":
             self._cmd_clear()
         else:
@@ -418,23 +1056,35 @@ class HexConsole:
             ("/help", "Show table of all available slash commands"),
             ("/status", "Display active/recent tasks, proof bundle, and worker state"),
             ("/diff", "Inspect uncommitted changes in active workspace via unified diff"),
+            ("/sbs <file>", "Render two-column side-by-side diff for a modified workspace file"),
+            ("/blast [sym|file]", "Render Active Graphify AST blast-radius tree and pinned tests"),
+            ("/proof [task_id]", "Display cryptographic Proof-Carrying Artifact bundle & diff"),
             ("/rollback", "Roll back workspace changes or cancel active task"),
             ("/fork", "Fork active task into speculative attempt branches"),
             ("/skills", "List registered skills, risk scores, and gate decisions"),
+            ("/scan <dir>", "Scan and register a SKILL.md bundle via NVIDIA SkillSpector"),
             ("/model [name]", "Inspect or switch active model routing profile"),
+            ("/compressor [mode]", "Switch Tier-1 log compressor between 'local' (M4 MLX) and 'cloud'"),
             ("/budget", "Display session token usage, compression ratio, and cost"),
+            ("/memory [query]", "Search governed project, personal, and episodic memories"),
+            ("/remember <k>: <v>", "Record a governed project memory with provenance"),
+            ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
+            ("/harness2", "Run a gated Google Research Harness² Propose-Probe-Compose probe"),
+            ("/skin [name]", "Switch TUI theme (amber, cyberpunk, matrix, nord, mono)"),
+            ("/banner", "Re-render the Hermes-style startup splash screen and status bar"),
             ("/clear", "Clear the terminal screen"),
             ("/quit, /exit", "Exit interactive console session"),
         ]
         print(f"\n{ANSI_BOLD}{ANSI_CYAN}Available HEX Slash Commands:{ANSI_RESET}")
         for c, desc in commands:
-            print(f"  {ANSI_BOLD}{c:<16}{ANSI_RESET} - {desc}")
+            print(f"  {ANSI_BOLD}{c:<18}{ANSI_RESET} - {desc}")
         print()
 
     def _cmd_status(self) -> None:
         print(f"\n{ANSI_BOLD}{ANSI_CYAN}HEX Console Session Status:{ANSI_RESET}")
         print(f"  Project ID:     {self.project_id}")
         print(f"  Workspace Root: {self.workspace_root}")
+        print(f"  Skin / Theme:   {self.skin.name} ({self.skin.description})")
         print(f"  Streaming:      {'Enabled' if self.stream else 'Disabled'}")
         print(f"  Active Task ID: {self.active_task_id or '(none)'}")
 
@@ -447,7 +1097,7 @@ class HexConsole:
         print(f"  Active Workers: {len(workers)}")
         for w in workers[:3]:
             wid = w.get("worker_id", "unknown")
-            status = w.get("status", "unknown")
+            status = w.get("status") or w.get("health", "unknown")
             mclass = w.get("machine_class", "worker")
             print(f"    • {wid} [{mclass}] ({status})")
 
@@ -459,7 +1109,8 @@ class HexConsole:
                 print(f"  Active Task:    [{state}] {goal}")
             proof = self.orchestrator.ledger.get_proof_bundle(self.active_task_id)
             if proof:
-                verified = proof.get("verified", False)
+                ver_res = proof.get("verification_results") or {}
+                verified = proof.get("verified", ver_res.get("passed", False))
                 v_str = f"{ANSI_GREEN}VERIFIED{ANSI_RESET}" if verified else f"{ANSI_YELLOW}UNVERIFIED{ANSI_RESET}"
                 sha = str(proof.get("workspace_tree_sha", ""))[:12]
                 print(f"  Proof Bundle:   {v_str} (Merkle Tree: {sha}...)")
@@ -493,6 +1144,25 @@ class HexConsole:
         else:
             print(render_unified_diff(diff_text, title=f"Task {self.active_task_id} Workspace Diff"))
 
+    def _cmd_sbs(self, arg: str = "") -> None:
+        rel = arg.strip()
+        if not rel:
+            print(f"{ANSI_YELLOW}Usage: /sbs <relative_file_path>{ANSI_RESET}")
+            return
+        cur_file = (self.workspace_root / rel).resolve()
+        if not cur_file.is_file():
+            print(f"{ANSI_RED}File not found in workspace: {rel}{ANSI_RESET}")
+            return
+        new_text = cur_file.read_text(encoding="utf-8", errors="replace")
+        old_text = new_text
+        if self.active_task_id and hasattr(self.orchestrator, "ledger"):
+            chk = self.orchestrator.ledger.get_latest_checkpoint(self.active_task_id)
+            if chk and chk.get("snapshot_path"):
+                snap_file = Path(chk["snapshot_path"]) / rel
+                if snap_file.is_file():
+                    old_text = snap_file.read_text(encoding="utf-8", errors="replace")
+        print(render_side_by_side_diff(old_text, new_text, filename=rel))
+
     def _cmd_rollback(self) -> None:
         if not self.active_task_id:
             print(f"{ANSI_DIM}No active task to roll back.{ANSI_RESET}")
@@ -517,7 +1187,7 @@ class HexConsole:
                     self.active_task_id,
                     branch_strategies=[{"name": "speculative_branch_a"}, {"name": "speculative_branch_b"}],
                 )
-                winner = res.get("winner_branch_id") or res.get("status") or "completed"
+                winner = res.get("winner_branch_id") or res.get("winning_branch") or res.get("status") or "completed"
                 print(f"{ANSI_GREEN}Speculative branches evaluated successfully. Promoted: {winner}{ANSI_RESET}")
             else:
                 print(f"{ANSI_RED}Orchestrator does not support fork_speculative_branches.{ANSI_RESET}")
@@ -526,11 +1196,21 @@ class HexConsole:
 
     def _cmd_skills(self) -> None:
         skills = []
-        if hasattr(self.orchestrator, "ledger") and hasattr(self.orchestrator.ledger, "list_skills"):
-            try:
-                skills = self.orchestrator.ledger.list_skills()
-            except Exception:
-                pass
+        if hasattr(self.orchestrator, "ledger"):
+            if hasattr(self.orchestrator.ledger, "list_skills"):
+                try:
+                    skills = self.orchestrator.ledger.list_skills()
+                except Exception:
+                    pass
+            elif getattr(self.orchestrator.ledger, "conn", None) is not None:
+                try:
+                    with self.orchestrator.ledger._lock:
+                        rows = self.orchestrator.ledger.conn.execute(
+                            "SELECT * FROM skills ORDER BY created_at DESC"
+                        ).fetchall()
+                        skills = [self.orchestrator.ledger._row_to_dict(r) for r in rows if r]
+                except Exception:
+                    pass
         if not skills:
             print(f"{ANSI_DIM}No registered skills found.{ANSI_RESET}")
             return
@@ -546,12 +1226,32 @@ class HexConsole:
             print(f"  • {ANSI_BOLD}{sid:<24}{ANSI_RESET} {badge}  Gate: {gate:<16} Status: {status} ({quarantine})")
         print()
 
+    def _cmd_scan(self, arg: str = "") -> None:
+        path_str = arg.strip()
+        if not path_str:
+            print(f"{ANSI_YELLOW}Usage: /scan <skill_bundle_directory>{ANSI_RESET}")
+            return
+        try:
+            res = self.orchestrator.scanner.scan_and_register_skill(Path(path_str))
+            scan = res.get("scan") or {}
+            gate = scan.get("gate_decision", "UNKNOWN")
+            score = scan.get("risk_score", 0)
+            col = ANSI_GREEN if gate == "ALLOW" else (ANSI_RED if gate == "QUARANTINE" else ANSI_YELLOW)
+            print(
+                f"{col}{ANSI_BOLD}SkillSpector Scan Complete:{ANSI_RESET} {res.get('name')} ({res.get('skill_id')}) "
+                f"→ Gate: {col}{gate}{ANSI_RESET} (Score: {score}/100)"
+            )
+        except Exception as exc:
+            print(f"{ANSI_RED}Skill scan failed: {exc}{ANSI_RESET}")
+
     def _cmd_model(self, arg: str = "") -> None:
         arg = arg.strip()
         if arg:
             self.model_profile = arg
-            if hasattr(self.orchestrator, "router") and hasattr(self.orchestrator.router, "profile"):
+            if hasattr(self.orchestrator, "router"):
                 self.orchestrator.router.profile = arg
+                if arg not in ("hybrid", "local", "cloud"):
+                    self.orchestrator.router.cloud_model_id = arg
             print(f"{ANSI_GREEN}Model profile updated to: {arg}{ANSI_RESET}")
         else:
             current = self.model_profile or "hybrid (Two-Tier MLX Local + Cloud)"
@@ -561,11 +1261,22 @@ class HexConsole:
                 r = self.orchestrator.router
                 print(f"  Tier-1 Local:     {getattr(r, 'local_model_id', 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit')}")
                 print(f"  Tier-2 Cloud:     {getattr(r, 'cloud_model_id', 'claude-3-5-sonnet')}")
+                print(f"  Compressor Mode:  {getattr(r, 'compressor_mode', 'local')}")
                 if hasattr(r, "budget_tracker"):
                     bt = r.budget_tracker
                     max_usd = getattr(bt, "max_usd_per_task", 1.0)
                     print(f"  Task Ceiling:     ${max_usd:.2f} USD")
             print()
+
+    def _cmd_compressor(self, arg: str = "") -> None:
+        mode = arg.strip().lower()
+        if mode not in ("local", "cloud"):
+            cur = getattr(getattr(self.orchestrator, "router", None), "compressor_mode", "local")
+            print(f"{ANSI_CYAN}Current compressor mode:{ANSI_RESET} {cur} (Usage: /compressor <local|cloud>)")
+            return
+        if hasattr(self.orchestrator, "router"):
+            self.orchestrator.router.compressor_mode = mode
+        print(f"{ANSI_GREEN}Compressor mode updated to: {mode} (sensitive/secret logs remain auto-pinned to local){ANSI_RESET}")
 
     def _cmd_budget(self) -> None:
         print(f"\n{ANSI_BOLD}{ANSI_CYAN}Session Budget & Token Telemetry:{ANSI_RESET}")
@@ -580,6 +1291,118 @@ class HexConsole:
             spent = getattr(bt, "total_usd_spent", 0.0)
             print(f"  Lifetime Spend:    ${spent:.4f} USD")
         print()
+
+    def _cmd_blast(self, arg: str = "") -> None:
+        target = arg.strip()
+        if not hasattr(self.orchestrator, "graphify") or self.orchestrator.graphify is None:
+            print(f"{ANSI_YELLOW}Graphify adapter not initialized.{ANSI_RESET}")
+            return
+        self.orchestrator.graphify.build_or_refresh(self.workspace_root)
+        if not target or target.endswith(".py"):
+            files = [target] if target else list(self.orchestrator.graphify.symbols_by_file.keys())[:2]
+            br = self.orchestrator.graphify.compute_blast_radius(self.workspace_root, files)
+            data = br.to_dict()
+            data["risk_class"] = "R2" if files else "R0"
+            print(render_blast_radius_tree(data))
+        else:
+            q = self.orchestrator.graphify.query_symbol(target)
+            data = {
+                "modified_files": [f"{d['file']}:{d['qualified_name']}" for d in q.get("definitions", [])] or [target],
+                "direct_callers": [c["qualified_name"] for c in q.get("hop1_callers", [])],
+                "transitive_callers": [c["qualified_name"] for c in q.get("hop2_callers", [])],
+                "pinned_tests": [],
+                "risk_class": "R1",
+            }
+            print(render_blast_radius_tree(data))
+
+    def _cmd_proof(self, arg: str = "") -> None:
+        tid = arg.strip() or self.active_task_id
+        if not tid and hasattr(self.orchestrator, "ledger"):
+            tasks = self.orchestrator.ledger.list_tasks(limit=1)
+            if tasks:
+                tid = tasks[0]["task_id"]
+        if not tid:
+            print(f"{ANSI_DIM}No task available for proof inspection.{ANSI_RESET}")
+            return
+        proof = self.orchestrator.ledger.get_proof_bundle(tid)
+        if not proof:
+            print(f"{ANSI_YELLOW}No Proof-Carrying Artifact bundle found for task {tid}.{ANSI_RESET}")
+            return
+        print(f"\n{ANSI_BOLD}{ANSI_CYAN}Proof-Carrying Artifact Bundle ({proof['proof_id']}):{ANSI_RESET}")
+        print(f"  Task ID:          {proof['task_id']}")
+        print(f"  Workspace SHA:    {proof['workspace_tree_sha']}")
+        print(f"  Git Diff SHA:     {proof['git_diff_sha']}")
+        print(f"  Ledger Signature: {ANSI_GREEN}{proof['ledger_signature']}{ANSI_RESET}")
+        diff_txt = proof.get("git_diff_text", "")
+        if diff_txt:
+            print(render_unified_diff(diff_txt, title=f"Proof Diff ({tid})"))
+
+    def _cmd_memory(self, arg: str = "") -> None:
+        if not hasattr(self.orchestrator, "memory"):
+            print(f"{ANSI_DIM}Memory service unavailable.{ANSI_RESET}")
+            return
+        mems = self.orchestrator.memory.retrieve_memories(
+            project_id=self.project_id,
+            query=arg.strip(),
+            include_personal=True,
+            include_episodic=True,
+        )
+        if not mems:
+            print(f"{ANSI_DIM}No matching governed memories found.{ANSI_RESET}")
+            return
+        print(f"\n{ANSI_BOLD}{ANSI_CYAN}Governed Memories ({len(mems)}):{ANSI_RESET}")
+        for m in mems:
+            print(f"  • [{m['scope']}] {ANSI_BOLD}{m['subject']}{ANSI_RESET}: {m['content']} (conf={m['confidence']})")
+        print()
+
+    def _cmd_remember(self, arg: str = "") -> None:
+        if ":" not in arg:
+            print(f"{ANSI_YELLOW}Usage: /remember <subject>: <content>{ANSI_RESET}")
+            return
+        subj, content = arg.split(":", 1)
+        mem = self.orchestrator.memory.write_memory(
+            scope="project",
+            project_id=self.project_id,
+            subject=subj.strip(),
+            content=content.strip(),
+        )
+        print(f"{ANSI_GREEN}✓ Stored governed project memory {mem['memory_id']} ('{mem['subject']}').{ANSI_RESET}")
+
+    def _cmd_workers(self) -> None:
+        workers = self.orchestrator.ledger.list_workers() if hasattr(self.orchestrator, "ledger") else []
+        print(f"\n{ANSI_BOLD}{ANSI_CYAN}Registered Distributed Workers ({len(workers)}):{ANSI_RESET}")
+        for w in workers:
+            print(
+                f"  • {ANSI_BOLD}{w['worker_id']}{ANSI_RESET} [{w['machine_class']}] "
+                f"CoW={w['cow_backend']} Health={w.get('health', 'HEALTHY')} Heartbeat={w.get('last_heartbeat_at')}"
+            )
+        print()
+
+    def _cmd_harness2(self) -> None:
+        if not hasattr(self.orchestrator, "harness2_adapter"):
+            print(f"{ANSI_YELLOW}Harness² adapter not available.{ANSI_RESET}")
+            return
+        res = self.orchestrator.harness2_adapter.propose_and_evaluate_candidate(
+            parent_revision_id=None,
+            base_tree={"systemprompt.md": "# Base Agent Instructions\nUse read_file.\n"},
+            candidate_tree={"systemprompt.md": "# Refined Agent Instructions\nUse read_file and query_graphify.\n"},
+            run_demo_probe=True,
+        )
+        print(
+            f"{ANSI_GREEN}✓ Harness² Propose-Probe-Compose complete:{ANSI_RESET} "
+            f"Revision {res['revision_id']} ({res['status']}) · Eval {res['evaluation_id']}"
+        )
+
+    def _cmd_skin(self, arg: str = "") -> None:
+        name = arg.strip().lower()
+        if not name:
+            print(f"{ANSI_CYAN}Available skins:{ANSI_RESET} {', '.join(SKIN_REGISTRY.keys())} (Active: {self.skin_name})")
+            return
+        if name not in SKIN_REGISTRY:
+            print(f"{ANSI_RED}Unknown skin '{name}'. Choose from: {', '.join(SKIN_REGISTRY.keys())}{ANSI_RESET}")
+            return
+        self.skin_name = name
+        print(f"{ANSI_GREEN}Skin updated to: {name} ({self.skin.description}){ANSI_RESET}")
 
     def _cmd_clear(self) -> None:
         if os.name == "nt":
@@ -719,7 +1542,6 @@ class HexConsole:
                 if shell_runner is not None:
                     shell_runner(attempt_ws)
                 else:
-                    import subprocess
                     sub_shell = os.environ.get("SHELL", "/bin/sh")
                     subprocess.run([sub_shell], cwd=attempt_ws)
                 print(f"{ANSI_DIM}Returned from subshell.{ANSI_RESET}")
@@ -738,6 +1560,32 @@ class HexConsole:
             else:
                 print(f"{ANSI_YELLOW}Invalid choice: '{choice}'. Enter [y] Approve, [n] Reject, [d] Full Diff, [s] Sandbox Shell, or [q] Abort.{ANSI_RESET}")
 
+    def render_activity_feed(self, task_id: str) -> str:
+        """Render Hermes-style `┊` vertical activity feed for tool calls and AST blast-radius checks."""
+        if not hasattr(self.orchestrator, "ledger"):
+            return ""
+        calls = self.orchestrator.ledger.list_tool_calls(task_id)
+        lines: list[str] = []
+        for c in calls:
+            tool_id = c.get("tool_id", "tool")
+            risk = c.get("risk_class", "R1")
+            status = c.get("status", "SEALED")
+            res = c.get("result") or {}
+            is_replay = bool(c.get("replayed_from_call_id") or (isinstance(res, dict) and res.get("_replayed")))
+            if is_replay:
+                badge = f"{ANSI_BOLD}{ANSI_YELLOW}[0ms JOURNAL REPLAY]{ANSI_RESET}"
+            elif status == "SEALED":
+                dur = res.get("_duration_ms", 0.0) if isinstance(res, dict) else 0.0
+                badge = f"{ANSI_GREEN}[SEALED {dur:.1f}ms]{ANSI_RESET}"
+            else:
+                badge = f"{ANSI_CYAN}[{status}]{ANSI_RESET}"
+            lines.append(f"  {ANSI_CYAN}┊{ANSI_RESET} ⚙ {ANSI_BOLD}{tool_id}{ANSI_RESET} ({risk}) → {badge}")
+            if isinstance(res, dict) and "ast_blast_radius" in res:
+                warn_msg = res["ast_blast_radius"].get("warning_message", "")
+                if warn_msg:
+                    lines.append(f"  {ANSI_CYAN}┊{ANSI_RESET}   ↳ {ANSI_YELLOW}{warn_msg}{ANSI_RESET}")
+        return "\n".join(lines)
+
     def handle_user_prompt(self, prompt: str) -> None:
         """Submit natural language coding prompt to orchestrator."""
         from .models import TaskSubmitRequest
@@ -749,13 +1597,18 @@ class HexConsole:
             workspace_root=str(self.workspace_root) if self.workspace_root else None,
         )
 
+        spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
+        spinner.start(f"Executing: {_truncate_visible(prompt, 44)}")
         try:
             task = self.orchestrator.submit_and_run(req, auto_execute=True)
         except ApprovalRequiredInterrupt as apr_int:
+            spinner.stop()
             apr_res = self.handle_approval_prompt(apr_int)
             task = apr_res.get("task") if isinstance(apr_res, dict) else None
             if not task:
                 return
+        finally:
+            spinner.stop()
 
         self.active_task_id = task.get("task_id") if task else None
         tid = self.active_task_id
@@ -778,11 +1631,17 @@ class HexConsole:
             renderer.feed(f"{ANSI_DIM}Executing task {tid}...{ANSI_RESET}\n")
             renderer.flush()
 
+        if tid:
+            feed = self.render_activity_feed(tid)
+            if feed:
+                print(feed)
+
         if status in ("COMPLETED", "SUCCEEDED"):
             print(f"{ANSI_GREEN}✔ Task {tid} completed successfully!{ANSI_RESET}")
             proof = self.orchestrator.ledger.get_proof_bundle(tid)
             if proof:
-                verified = proof.get("verified", False)
+                ver_res = proof.get("verification_results") or {}
+                verified = proof.get("verified", ver_res.get("passed", False))
                 v_badge = f"{ANSI_GREEN}[VERIFIED]{ANSI_RESET}" if verified else f"{ANSI_YELLOW}[UNVERIFIED]{ANSI_RESET}"
                 sha = str(proof.get("workspace_tree_sha", ""))[:12]
                 print(f"  Proof-Carrying Artifact: {v_badge} Merkle SHA: {sha}...")
@@ -792,3 +1651,7 @@ class HexConsole:
             print(f"{ANSI_YELLOW}⚠ Task {tid} requires operator attention: {task.get('terminal_reason')}{ANSI_RESET}")
         else:
             print(f"Task {tid} status: {status}")
+
+
+# Alias for backward & forward compatibility
+HarnessTUI = HexConsole

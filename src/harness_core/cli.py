@@ -91,10 +91,12 @@ def main(argv: list[str] | None = None) -> int:
     p_wrk.add_argument("--token", default=None, help="Worker authentication token")
     p_wrk.add_argument("--once", action="store_true", help="Execute at most one claimed task and exit")
 
-    p_chat = sub.add_parser("chat", help="Start interactive TUI pair-programming console")
+    p_chat = sub.add_parser("chat", aliases=["tui"], help="Start interactive TUI pair-programming console")
     p_chat.add_argument("--project", default="default", help="Project ID")
     p_chat.add_argument("--workspace", default=None, help="Workspace path (defaults to repository root)")
     p_chat.add_argument("--model", default=None, help="Model routing profile override (hybrid, local, cloud)")
+    p_chat.add_argument("--skin", default="amber", choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
+    p_chat.add_argument("-Q", "--quiet", action="store_true", help="Quiet mode: suppress startup banner and spinner")
     p_chat.add_argument("--no-stream", action="store_true", help="Disable live token streaming")
     p_chat.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 

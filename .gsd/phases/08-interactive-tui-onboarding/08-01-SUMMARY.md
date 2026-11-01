@@ -166,3 +166,4 @@ OK
 - `eaf3bf5`: `feat(phase-08): implement core TUI rendering engine and diff visualizers`
 - `d252ebc`: `feat(phase-08): implement HexConsole interactive REPL and wire hex chat CLI`
 - `2db7f06`: `feat(phase-08): author unit and integration tests for TUI and slash commands`
+
