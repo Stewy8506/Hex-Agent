@@ -12,12 +12,15 @@ Provides:
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import re
 import sys
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, TextIO
+
+from .gateway import ApprovalRequiredInterrupt, redact_secrets
 
 # Optional rich imports for enhanced terminal aesthetics
 try:
@@ -585,6 +588,156 @@ class HexConsole:
             sys.stdout.write("\033[H\033[2J")
             sys.stdout.flush()
 
+    def handle_approval_prompt(
+        self,
+        apr_interrupt: ApprovalRequiredInterrupt,
+        prompt_fn: Callable[[str], str] | None = None,
+        shell_runner: Callable[[str | Path], Any] | None = None,
+    ) -> dict[str, Any]:
+        """Intercept privileged actions and prompt operator for interactive approval.
+
+        Options:
+        - [y] Approve: records APPROVED decision in ledger and resumes task execution.
+        - [n] Reject: prompts for optional comment, records REJECTED decision.
+        - [d] Full Diff: renders unified diff between base checkpoint and attempt workspace.
+        - [s] Sandbox Shell: spawns subshell inside isolated CoW attempt directory.
+        - [q] Abort: cancels task via cancel_task and rolls back uncommitted workspace.
+        """
+        approval = apr_interrupt.approval_record
+        approval_id = approval.get("approval_id", "unknown")
+        task_id = approval.get("task_id", "")
+        step_id = approval.get("step_id", "")
+        action_type = approval.get("action_type", "unknown")
+        risk_class = approval.get("risk_class", "R3")
+        blast_radius = approval.get("blast_radius_summary") or "(none)"
+        action_params = approval.get("action_params") or {}
+        redacted_params = redact_secrets(action_params)
+
+        badge = RISK_BADGES.get(risk_class[:2], f"[{risk_class}]")
+
+        print()
+        print(f"{ANSI_BOLD}{ANSI_MAGENTA}🚨 Approval Required: {action_type} ({risk_class}){ANSI_RESET}")
+        print("─" * 70)
+        print(f"  {ANSI_BOLD}Approval ID:{ANSI_RESET}   {approval_id}")
+        print(f"  {ANSI_BOLD}Task ID:{ANSI_RESET}       {task_id}")
+        print(f"  {ANSI_BOLD}Step ID:{ANSI_RESET}       {step_id}")
+        print(f"  {ANSI_BOLD}Risk Class:{ANSI_RESET}    {badge}")
+        print(f"  {ANSI_BOLD}Blast Radius:{ANSI_RESET}  {blast_radius}")
+        param_str = json.dumps(redacted_params, indent=2) if redacted_params else "{}"
+        if "\n" in param_str:
+            print(f"  {ANSI_BOLD}Parameters:{ANSI_RESET}")
+            for pline in param_str.splitlines():
+                print(f"    {ANSI_DIM}{pline}{ANSI_RESET}")
+        else:
+            print(f"  {ANSI_BOLD}Parameters:{ANSI_RESET}    {ANSI_DIM}{param_str}{ANSI_RESET}")
+        print("─" * 70)
+        print(f"  {ANSI_BOLD}Options:{ANSI_RESET} [y] Approve   [n] Reject   [d] Full Diff   [s] Sandbox Shell   [q] Abort")
+        print()
+
+        reader = prompt_fn if prompt_fn is not None else input
+
+        while True:
+            try:
+                choice = reader("approval [y/n/d/s/q]> ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n{ANSI_YELLOW}Approval input closed/interrupted; aborting task safely.{ANSI_RESET}")
+                if hasattr(self.orchestrator, "cancel_task"):
+                    try:
+                        self.orchestrator.cancel_task(task_id, actor="owner")
+                    except Exception:
+                        pass
+                return {
+                    "decision": "ABORTED",
+                    "approval_id": approval_id,
+                    "task_id": task_id,
+                }
+
+            if not choice:
+                continue
+
+            if choice in ("y", "approve"):
+                res = self.orchestrator.ledger.decide_approval(
+                    approval_id, "APPROVED", decided_by="owner"
+                )
+                print(f"{ANSI_GREEN}✓ Approval recorded. Resuming task execution...{ANSI_RESET}")
+                if hasattr(self.orchestrator, "resume_task"):
+                    try:
+                        task_res = self.orchestrator.resume_task(task_id)
+                        res["task"] = task_res
+                    except ApprovalRequiredInterrupt as next_apr:
+                        return self.handle_approval_prompt(next_apr, prompt_fn=prompt_fn, shell_runner=shell_runner)
+                    except Exception as exc:
+                        print(f"{ANSI_RED}Resume task failed: {exc}{ANSI_RESET}")
+                return res
+
+            elif choice in ("n", "reject"):
+                try:
+                    comment = reader("Rejection comment (optional): ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    comment = ""
+                res = self.orchestrator.ledger.decide_approval(
+                    approval_id, "REJECTED", decided_by="owner", comment=comment
+                )
+                print(f"{ANSI_RED}✗ Action rejected by operator.{ANSI_RESET}")
+                return res
+
+            elif choice in ("d", "diff"):
+                diff_text = ""
+                attempt_ws = None
+                base_snap_path = None
+                if hasattr(self.orchestrator, "ledger"):
+                    attempts = self.orchestrator.ledger.list_attempts(task_id)
+                    chk = self.orchestrator.ledger.get_latest_checkpoint(task_id)
+                    if attempts:
+                        attempt_ws = attempts[-1].get("workspace_path")
+                    if chk:
+                        base_snap_path = chk.get("snapshot_path")
+
+                if attempt_ws and base_snap_path and Path(attempt_ws).is_dir() and Path(base_snap_path).is_dir():
+                    if hasattr(self.orchestrator, "cow") and hasattr(self.orchestrator.cow, "compute_workspace_diff"):
+                        diff_text = self.orchestrator.cow.compute_workspace_diff(base_snap_path, attempt_ws)
+                    else:
+                        from .cow import compute_workspace_diff
+                        diff_text = compute_workspace_diff(base_snap_path, attempt_ws)
+
+                if not diff_text or not diff_text.strip():
+                    print(f"{ANSI_DIM}--- Proposed Changes: (no changes) ---{ANSI_RESET}")
+                else:
+                    print(render_unified_diff(diff_text, title=f"Approval Workspace Diff ({approval_id})"))
+                print(f"\n{ANSI_BOLD}Options:{ANSI_RESET} [y] Approve   [n] Reject   [d] Full Diff   [s] Sandbox Shell   [q] Abort\n")
+
+            elif choice in ("s", "shell"):
+                attempt_ws = None
+                if hasattr(self.orchestrator, "ledger"):
+                    attempts = self.orchestrator.ledger.list_attempts(task_id)
+                    if attempts:
+                        attempt_ws = attempts[-1].get("workspace_path")
+                if not attempt_ws or not Path(attempt_ws).is_dir():
+                    attempt_ws = str(self.workspace_root)
+
+                print(f"{ANSI_YELLOW}Entering isolated CoW attempt subshell at {attempt_ws} (Type 'exit' to return)...{ANSI_RESET}")
+                if shell_runner is not None:
+                    shell_runner(attempt_ws)
+                else:
+                    import subprocess
+                    sub_shell = os.environ.get("SHELL", "/bin/sh")
+                    subprocess.run([sub_shell], cwd=attempt_ws)
+                print(f"{ANSI_DIM}Returned from subshell.{ANSI_RESET}")
+                print(f"\n{ANSI_BOLD}Options:{ANSI_RESET} [y] Approve   [n] Reject   [d] Full Diff   [s] Sandbox Shell   [q] Abort\n")
+
+            elif choice in ("q", "abort"):
+                if hasattr(self.orchestrator, "cancel_task"):
+                    self.orchestrator.cancel_task(task_id, actor="owner")
+                print(f"{ANSI_YELLOW}Task aborted by operator; uncommitted CoW changes rolled back.{ANSI_RESET}")
+                return {
+                    "decision": "ABORTED",
+                    "approval_id": approval_id,
+                    "task_id": task_id,
+                }
+
+            else:
+                print(f"{ANSI_YELLOW}Invalid choice: '{choice}'. Enter [y] Approve, [n] Reject, [d] Full Diff, [s] Sandbox Shell, or [q] Abort.{ANSI_RESET}")
+
     def handle_user_prompt(self, prompt: str) -> None:
         """Submit natural language coding prompt to orchestrator."""
         from .models import TaskSubmitRequest
@@ -596,10 +749,29 @@ class HexConsole:
             workspace_root=str(self.workspace_root) if self.workspace_root else None,
         )
 
-        task = self.orchestrator.submit_and_run(req, auto_execute=True)
-        self.active_task_id = task.get("task_id")
+        try:
+            task = self.orchestrator.submit_and_run(req, auto_execute=True)
+        except ApprovalRequiredInterrupt as apr_int:
+            apr_res = self.handle_approval_prompt(apr_int)
+            task = apr_res.get("task") if isinstance(apr_res, dict) else None
+            if not task:
+                return
+
+        self.active_task_id = task.get("task_id") if task else None
         tid = self.active_task_id
-        status = task.get("status")
+        status = task.get("status") if task else None
+
+        if status == "WAITING_APPROVAL":
+            if hasattr(self.orchestrator, "ledger") and hasattr(self.orchestrator.ledger, "list_approvals"):
+                try:
+                    approvals = self.orchestrator.ledger.list_approvals(task_id=tid, decision="PENDING")
+                    if approvals:
+                        apr_res = self.handle_approval_prompt(ApprovalRequiredInterrupt(approvals[-1]))
+                        if isinstance(apr_res, dict) and apr_res.get("task"):
+                            task = apr_res["task"]
+                            status = task.get("status")
+                except Exception:
+                    pass
 
         if self.stream:
             renderer = StreamingTokenRenderer(output_stream=sys.stdout)

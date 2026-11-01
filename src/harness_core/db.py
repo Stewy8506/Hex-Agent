@@ -2804,6 +2804,8 @@ class LedgerStore:
         action_params: dict[str, Any],
         blast_radius_summary: str,
         requested_by: str = "worker",
+        risk_class: str | None = None,
+        **extra: Any,
     ) -> dict[str, Any]:
         if self.backend_type == "postgres":
             return self._run_sync(
@@ -2815,6 +2817,8 @@ class LedgerStore:
                 action_params=action_params,
                 blast_radius_summary=blast_radius_summary,
                 requested_by=requested_by,
+                risk_class=risk_class,
+                **extra,
             )
         with self._lock:
             approval_id = f"apr_{uuid.uuid4().hex[:12]}"
@@ -2845,7 +2849,13 @@ class LedgerStore:
             row = self.conn.execute(
                 "SELECT * FROM approvals WHERE approval_id = ?", (approval_id,)
             ).fetchone()
-            return self._row_to_dict(row)  # type: ignore[return-value]
+            d = self._row_to_dict(row)  # type: ignore[return-value]
+            if d is not None:
+                if risk_class:
+                    d["risk_class"] = risk_class
+                elif "risk_class" in extra:
+                    d["risk_class"] = extra["risk_class"]
+            return d
 
     async def create_approval_async(
         self,
@@ -2857,6 +2867,8 @@ class LedgerStore:
         action_params: dict[str, Any],
         blast_radius_summary: str,
         requested_by: str = "worker",
+        risk_class: str | None = None,
+        **extra: Any,
     ) -> dict[str, Any]:
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(
@@ -2868,6 +2880,8 @@ class LedgerStore:
                 action_params=action_params,
                 blast_radius_summary=blast_radius_summary,
                 requested_by=requested_by,
+                risk_class=risk_class,
+                **extra,
             )
         pool = await self.get_pool()
         async with pool.acquire() as conn:
@@ -2894,7 +2908,30 @@ class LedgerStore:
                 now,
             )
             row = await conn.fetchrow("SELECT * FROM approvals WHERE approval_id = $1", approval_id)
-            return self._row_to_dict(row)  # type: ignore[return-value]
+            d = self._row_to_dict(row)  # type: ignore[return-value]
+            if d is not None:
+                if risk_class:
+                    d["risk_class"] = risk_class
+                elif "risk_class" in extra:
+                    d["risk_class"] = extra["risk_class"]
+            return d
+
+    def get_approval(self, approval_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_approval_async, approval_id)
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM approvals WHERE approval_id = ?", (approval_id,)
+            ).fetchone()
+            return self._row_to_dict(row)
+
+    async def get_approval_async(self, approval_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_approval, approval_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM approvals WHERE approval_id = $1", approval_id)
+            return self._row_to_dict(row)
 
     def decide_approval(
         self,
