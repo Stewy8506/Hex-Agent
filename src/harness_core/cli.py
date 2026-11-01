@@ -63,6 +63,15 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("harness2-demo", help="Run a gated Harness2 Propose-Probe-Compose refinement verification")
 
+    p_wrk = sub.add_parser("worker", help="Start standalone distributed worker daemon")
+    p_wrk.add_argument("--worker-id", default=None, help="Worker ID (defaults to hostname-hash)")
+    p_wrk.add_argument("--machine-class", choices=["auto", "m4_air", "desktop_gpu", "server"], default="auto")
+    p_wrk.add_argument("--poll-interval", type=float, default=2.0, help="Task queue poll interval in seconds")
+    p_wrk.add_argument("--lease-ttl", type=int, default=300, help="Lease TTL in seconds")
+    p_wrk.add_argument("--server-url", default=None, help="Control plane HTTP URL. If omitted, uses local direct ledger")
+    p_wrk.add_argument("--token", default=None, help="Worker authentication token")
+    p_wrk.add_argument("--once", action="store_true", help="Execute at most one claimed task and exit")
+
     args = parser.parse_args(argv)
     repo_root = Path(__file__).resolve().parents[2]
     orch = HarnessOrchestrator(args.data_dir, default_workspace=repo_root)
@@ -138,6 +147,25 @@ def main(argv: list[str] | None = None) -> int:
             run_demo_probe=True,
         )
         print(json.dumps(res, indent=2, default=str))
+        return 0
+
+    if args.cmd == "worker":
+        from .worker_daemon import DirectLedgerWorkerClient, RestWorkerClient, WorkerDaemon
+
+        if args.server_url:
+            client = RestWorkerClient(args.server_url, token=args.token)
+        else:
+            client = DirectLedgerWorkerClient(orch)
+
+        daemon = WorkerDaemon(
+            client=client,
+            worker_id=args.worker_id,
+            machine_class=args.machine_class,
+            poll_interval=args.poll_interval,
+            lease_ttl=args.lease_ttl,
+            orchestrator=orch,
+        )
+        daemon.run(once=args.once)
         return 0
 
     return 0

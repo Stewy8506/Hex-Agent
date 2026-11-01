@@ -620,8 +620,10 @@ class BtrfsSnapshotProvider:
             shutil.rmtree(snap, ignore_errors=True)
 
 
-def get_default_snapshot_provider(root_dir: Path | str) -> WorkspaceSnapshotProvider:
+def get_default_snapshot_provider(root_dir: Path | str | None = None) -> WorkspaceSnapshotProvider:
     """Auto-detects host platform and returns the optimal CoW WorkspaceSnapshotProvider."""
+    if root_dir is None:
+        root_dir = Path.home() / ".autonomous_harness" / "cow_snapshots"
     root = Path(root_dir).resolve()
     current_os = platform.system()
 
