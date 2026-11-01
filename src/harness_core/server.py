@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
+import logging
 import re
 import uuid
 from http import HTTPStatus
@@ -22,6 +24,8 @@ from .dashboard import DASHBOARD_HTML
 from .db import ConcurrencyFenceError
 from .models import TaskSubmitRequest
 from .orchestrator import HarnessOrchestrator
+
+logger = logging.getLogger(__name__)
 
 
 class HarnessAPIApp:
@@ -56,11 +60,14 @@ class HarnessAPIApp:
                     if k.lower() == "authorization" and v.startswith("Bearer "):
                         token = v[7:].strip()
                         break
+                if not token and "token" in query:
+                    token = query["token"][0]
                 if token != self.auth_token:
                     is_worker_or_mutating = (
-                        route in ("/v1/workers/register", "/v1/workers/heartbeat", "/v1/tasks/claim")
-                        or route.startswith("/v1/leases")
-                        or method in ("POST", "PUT", "DELETE")
+                        (route in ("/v1/workers/register", "/v1/workers/heartbeat", "/v1/tasks/claim")
+                         or route.startswith("/v1/leases")
+                         or method in ("POST", "PUT", "DELETE"))
+                        and not re.fullmatch(r"/v1/approvals/([^/:]+):decide", route)
                     )
                     if is_worker_or_mutating:
                         return (HTTPStatus.UNAUTHORIZED, {"error": "Unauthorized worker token"}, "application/json")
@@ -161,13 +168,180 @@ class HarnessAPIApp:
                 return (HTTPStatus.OK, {"approvals": self.orch.ledger.list_approvals()}, "application/json")
 
             m_apr = re.fullmatch(r"/v1/approvals/([^/:]+):decide", route)
-            if method == "POST" and m_apr:
+            if method in ("GET", "POST") and m_apr:
                 apr_id = m_apr.group(1)
-                decision = str(body.get("decision", "APPROVED"))
-                comment = str(body.get("comment", ""))
-                decided = self.orch.ledger.decide_approval(apr_id, decision, comment=comment)
-                if decided["decision"] == "APPROVED" and body.get("auto_resume", True):
-                    self.orch.resume_task(decided["task_id"])
+                raw_decision = body.get("decision") or query.get("decision", [None])[0] or "APPROVED"
+                dec_str = str(raw_decision).strip().lower()
+                if dec_str in ("approve", "approved", "allow", "yes"):
+                    norm_decision = "APPROVED"
+                elif dec_str in ("reject", "rejected", "deny", "denied", "no"):
+                    norm_decision = "REJECTED"
+                else:
+                    norm_decision = str(raw_decision).strip().upper()
+
+                raw_comment = body.get("comment") or query.get("comment", [None])[0] or ""
+                comment = str(raw_comment).strip()
+
+                if "auto_resume" in body:
+                    auto_resume_val = body["auto_resume"]
+                elif "auto_resume" in query:
+                    auto_resume_val = query["auto_resume"][0]
+                else:
+                    auto_resume_val = True
+                auto_resume = str(auto_resume_val).lower() in ("true", "1", "yes")
+
+                decided = self.orch.ledger.decide_approval(apr_id, norm_decision, comment=comment)
+
+                task_resumed = False
+                if decided.get("decision") == "APPROVED" and auto_resume:
+                    try:
+                        self.orch.resume_task(decided["task_id"])
+                        task_resumed = True
+                    except Exception as resume_err:
+                        logger.warning("Auto-resume failed for task %s: %s", decided.get("task_id"), resume_err)
+
+                if getattr(self.orch, "webhook_notifier", None):
+                    try:
+                        self.orch.webhook_notifier.send_decision_broadcast(decided, norm_decision, comment=comment)
+                    except Exception as bcast_err:
+                        logger.warning("Failed to broadcast decision: %s", bcast_err)
+
+                accept_header = headers.get("Accept", "") or headers.get("accept", "")
+                wants_html = ("text/html" in accept_header) or (method == "GET" and "application/json" not in accept_header)
+
+                if wants_html:
+                    badge_class = "badge-approved" if norm_decision == "APPROVED" else "badge-rejected"
+                    lead_text = (
+                        "The requested privileged action has been authorized and task resumption initiated."
+                        if norm_decision == "APPROVED"
+                        else "The requested privileged action has been denied and task execution halted."
+                    )
+                    comment_html = (
+                        f'<div class="row"><span class="label">Comment</span><span class="value">{html.escape(comment)}</span></div>'
+                        if comment
+                        else ""
+                    )
+                    html_page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness Authorization - {norm_decision}</title>
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      box-sizing: border-box;
+    }}
+    .card {{
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      max-width: 520px;
+      width: 100%;
+      padding: 32px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }}
+    .badge {{
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-weight: 700;
+      font-size: 0.875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 16px;
+    }}
+    .badge-approved {{
+      background: #065f46;
+      color: #34d399;
+      border: 1px solid #059669;
+    }}
+    .badge-rejected {{
+      background: #7f1d1d;
+      color: #f87171;
+      border: 1px solid #dc2626;
+    }}
+    h1 {{
+      font-size: 1.5rem;
+      margin: 0 0 12px 0;
+      font-weight: 600;
+    }}
+    p.lead {{
+      color: #94a3b8;
+      font-size: 0.95rem;
+      margin: 0 0 24px 0;
+      line-height: 1.5;
+    }}
+    .details {{
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+      font-size: 0.875rem;
+    }}
+    .row {{
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid #1e293b;
+    }}
+    .row:last-child {{
+      border-bottom: none;
+    }}
+    .label {{
+      color: #64748b;
+    }}
+    .value {{
+      font-family: monospace;
+      color: #e2e8f0;
+      font-weight: 500;
+    }}
+    .btn {{
+      display: block;
+      width: 100%;
+      text-align: center;
+      background: #3b82f6;
+      color: #ffffff;
+      padding: 12px 0;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: background 0.15s ease;
+      box-sizing: border-box;
+    }}
+    .btn:hover {{
+      background: #2563eb;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge {badge_class}">{norm_decision}</div>
+    <h1>Approval {norm_decision}</h1>
+    <p class="lead">{lead_text}</p>
+    <div class="details">
+      <div class="row"><span class="label">Approval ID</span><span class="value">{html.escape(apr_id)}</span></div>
+      <div class="row"><span class="label">Task ID</span><span class="value">{html.escape(str(decided.get('task_id', '')))}</span></div>
+      <div class="row"><span class="label">Resumed</span><span class="value">{'Yes' if task_resumed else 'No'}</span></div>
+      <div class="row"><span class="label">Timestamp</span><span class="value">{html.escape(str(decided.get('decided_at', '')))}</span></div>
+      {comment_html}
+    </div>
+    <a href="/" class="btn">Return to Control Surface</a>
+  </div>
+</body>
+</html>"""
+                    return (HTTPStatus.OK, html_page, "text/html; charset=utf-8")
+
                 return (HTTPStatus.OK, decided, "application/json")
 
             # Workers: GET /v1/workers, POST /v1/workers/register, POST /v1/workers/heartbeat

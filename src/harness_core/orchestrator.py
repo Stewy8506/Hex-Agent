@@ -17,6 +17,7 @@ import json
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,6 +31,7 @@ from .providers.base import BudgetExceededError
 from .router import GovernedMemoryService, TwoTierModelRouter
 from .sandbox import ExecutionSandbox, get_default_sandbox
 from .skillspector import SkillSpectorScanner
+from .webhooks import WebhookConfig, WebhookNotifier
 
 
 class HarnessOrchestrator:
@@ -42,12 +44,21 @@ class HarnessOrchestrator:
         cow: WorkspaceSnapshotProvider | None = None,
         sandbox: ExecutionSandbox | None = None,
         repair_patch_generator: Callable[..., list[dict[str, Any]]] | None = None,
+        webhook_notifier: WebhookNotifier | None = None,
     ):
-        self.data_dir = Path(data_dir).resolve()
+        if str(data_dir) == ":memory:":
+            self._temp_mem_dir = tempfile.TemporaryDirectory(prefix="harness_mem_")
+            self.data_dir = Path(self._temp_mem_dir.name).resolve()
+        else:
+            self._temp_mem_dir = None
+            self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.default_workspace = Path(default_workspace or self.data_dir / "default_project").resolve()
         self.default_workspace.mkdir(parents=True, exist_ok=True)
         self.repair_patch_generator = repair_patch_generator
+        self.webhook_notifier = (
+            webhook_notifier if webhook_notifier is not None else WebhookNotifier(WebhookConfig.from_env())
+        )
 
         self.ledger = LedgerStore(self.data_dir / "ledger.db")
         self.cow = cow or get_default_snapshot_provider(self.data_dir / "cow_snapshots")
@@ -56,7 +67,12 @@ class HarnessOrchestrator:
 
         self.sandbox = sandbox or get_default_sandbox(self.workspaces_root)
         self.graphify = ActiveGraphifyAdapter(self.default_workspace)
-        self.gateway = ToolGateway(self.ledger, self.graphify, sandbox=self.sandbox)
+        self.gateway = ToolGateway(
+            self.ledger,
+            self.graphify,
+            sandbox=self.sandbox,
+            notifier=self.webhook_notifier,
+        )
         self.scanner = SkillSpectorScanner(self.ledger)
         self.router = TwoTierModelRouter()
         self.memory = GovernedMemoryService(self.ledger)

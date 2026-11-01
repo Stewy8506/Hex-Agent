@@ -10,6 +10,7 @@ Implements PRD Sections 6.2 (FR-015), 6.6 (FR-040..FR-044), and 12.1–12.2:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -17,7 +18,12 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from .webhooks import WebhookNotifier
+
+logger = logging.getLogger(__name__)
 
 from .db import LedgerStore, canonical_json, sha256_hex
 from .graphify import ActiveGraphifyAdapter
@@ -80,10 +86,12 @@ class ToolGateway:
         ledger: LedgerStore,
         graphify: ActiveGraphifyAdapter | None = None,
         sandbox: ExecutionSandbox | None = None,
+        notifier: WebhookNotifier | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
         self.sandbox = sandbox or get_default_sandbox()
+        self.notifier = notifier
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
         self._register_builtin_tools()
@@ -296,6 +304,12 @@ class ToolGateway:
                 action_params=redacted_args,
                 blast_radius_summary=f"R3 external/privileged tool '{tool_id}' requested with args {canonical_json(redacted_args)}",
             )
+            approval["risk_class"] = spec.risk_class.value
+            if self.notifier is not None:
+                try:
+                    self.notifier.send_approval_request(approval)
+                except Exception as exc:
+                    logger.warning("Failed to dispatch approval webhook: %s", exc)
             raise ApprovalRequiredInterrupt(approval)
 
         # 2. Check Gateway Call-Level Journal for a previously SEALED call (0ms deterministic replay)
