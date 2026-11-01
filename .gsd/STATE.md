@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-01  
 **Current Milestone:** M2 (Production Hardening & Deployment)  
-**Status:** In Progress — Phase 07 Plan 01 Complete (167/167 tests green)  
+**Status:** In Progress — Phase 07 Plan 02 Complete (179/179 tests green)  
 **Active Phase:** Phase 07 (Production Packaging & Developer Experience)  
 
 ---
@@ -122,18 +122,27 @@
     - Integrated outbound approval notifications into `ToolGateway` upon `PolicyDecisionType.REQUIRE_APPROVAL` and decision broadcasts upon completion.
     - Authored unit and integration test suite in `tests/test_webhooks.py` (167/167 repository tests passing with zero regressions).
 
+18. **Phase 07 Production ASGI Server, Health Checks & Operator Runbook Complete (Plan 07-02):**
+    - Added process uptime tracking (`start_time`) and `is_draining` state flag to `HarnessAPIApp`.
+    - Implemented standard container probes: `/livez` liveness check (200 OK with uptime and version) and `/healthz` multi-component readiness check (database, CoW storage canary, worker heartbeats).
+    - Added immediate load-shedding behavior: returns HTTP 503 Service Unavailable when draining or degraded while `/livez` remains 200 OK.
+    - Implemented production `HarnessASGIAdapter` in `src/harness_core/asgi.py` implementing the complete ASGI 3.0 specification for deployment via `uvicorn` and FastAPI runtimes, supporting HTTP requests and lifespan startup/shutdown events.
+    - Built `GracefulServerRunner` in `src/harness_core/server.py` intercepting `SIGINT`/`SIGTERM` to initiate graceful draining before terminating server threads without socket deadlocks.
+    - Authored comprehensive 280+ line `docs/RUNBOOK.md` detailing architecture topology, DR backup/restore, SkillSpector quarantine forensics, task cancellation, `ConcurrencyFenceError` recovery, Alembic rollbacks, and systemd deployment.
+    - Authored unit and integration test suite in `tests/test_production_server.py` (179/179 repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (167/167 tests green).
-- Plan 07-01 complete. Ready for Plan 07-02.
+- None. Full repository test suite passing cleanly with zero failures (179/179 tests green).
+- Phase 07 complete. Ready for Phase 07 / Milestone verification or next roadmap milestone.
 
 ---
 
 ## 3. Next Actions
 
-- Execute Plan 07-02 (e.g. systemd / launchd daemons, distribution packaging, or next Phase 07 deliverable).
+- Phase 07 verification and final acceptance checks.
 
 
 
