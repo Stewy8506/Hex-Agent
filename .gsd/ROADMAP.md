@@ -29,7 +29,7 @@
 
 ```
 [x] Phase 08: Interactive Terminal UI (`hex chat`) & Onboarding Polish (Pillars 1 & 2)
-[ ] Phase 09: Bidirectional Multi-Platform Chat Gateways (Telegram & Discord Bots) (Pillar 3)
+[x] Phase 09: Bidirectional Multi-Platform Chat Gateways (Telegram & Discord Bots) (Pillar 3)
 [ ] Phase 10: Git & GitHub Autopilot (Auto-PRs, Conventional Commits & Webhook Bot) (Pillar 4)
 [ ] Phase 11: Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills (Pillar 5)
 ```

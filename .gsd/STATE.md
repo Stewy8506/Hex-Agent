@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-01  
 **Current Milestone:** M3 (The Finished Product Layer: Pillars 1–5)  
-**Status:** In Progress — Plan 09-01 Complete (242/242 tests green); Plan 09-02 Next  
-**Active Phase:** Phase 09: Bidirectional Multi-Platform Chat Gateways (Telegram & Discord Bots) (Pillar 3)  
+**Status:** In Progress — Phase 09 Complete (263/263 tests green); Phase 10 Next  
+**Active Phase:** Phase 10: Git & GitHub Autopilot (Auto-PRs, Conventional Commits & Webhook Bot) (Pillar 4)  
 
 ---
 
@@ -158,18 +158,26 @@
     - Implemented interactive inline keyboard callback engine (`approve:<id>`, `reject:<id>`, `diff:<id>`, `cancel:<id>`) with in-place message edits, callback query answering, ledger recording, and automatic task resumption / CoW workspace rollback.
     - Authored unit and integration test suite in `tests/test_telegram_gateway.py` (242/242 repository tests passing with zero regressions).
 
+22. **Phase 09 Discord Bidirectional Bot Gateway & Supervisor Complete (Plan 09-02):**
+    - Implemented `DiscordConfig` and `DiscordBotGateway` in `src/harness_core/gateways/discord_bot.py` supporting `PING/PONG`, slash commands (`/task`, `/status`, `/diff`, `/cancel`, `/help`), and interactive button callbacks (`hex:approve`, `hex:reject`, `hex:diff`, `hex:cancel`) with in-place Type 7 message updates.
+    - Implemented `GatewayManager` in `src/harness_core/gateways/manager.py` coordinating Telegram and Discord lifecycles with graceful signal handling (`SIGINT`/`SIGTERM`).
+    - Wired `hex gateway start` and `hex gateway status` CLI subcommands in `src/harness_core/cli.py`.
+    - Authored unit and integration test suite in `tests/test_discord_and_gateway_manager.py` (263/263 repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (242/242 tests green).
-- Plan 09-01 complete. Ready for Plan 09-02 (Discord Bidirectional Bot Gateway).
+- None. Full repository test suite passing cleanly with zero failures (263/263 tests green).
+- Phase 09 complete. Ready for Phase 10: Git & GitHub Autopilot (Auto-PRs, Conventional Commits & Webhook Bot).
 
 ---
 
 ## 3. Next Actions
 
-- Execute Plan 09-02: Discord Bidirectional Bot Gateway & Interactive Components.
+- Plan Phase 10: Git & GitHub Autopilot (Pillar 4) via `gsd-planner`.
+- Execute Plan 10-01 (Git Autopilot Engine & Automated PR Generator).
+- Execute Plan 10-02 (GitHub Action & Issue Webhook Bot).
 
 
 
