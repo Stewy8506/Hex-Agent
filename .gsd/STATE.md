@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-01  
 **Current Milestone:** M3 (The Finished Product Layer: Pillars 1–5)  
-**Status:** Complete — Phase 08 Complete (225/225 tests green)  
-**Active Phase:** Phase 08 Complete; Ready for Milestone 3 Acceptance Audit  
+**Status:** In Progress — Phase 08 Complete (225/225 tests green); Phase 09 Active  
+**Active Phase:** Phase 09: Bidirectional Multi-Platform Chat Gateways (Telegram & Discord Bots) (Pillar 3)  
 
 ---
 
