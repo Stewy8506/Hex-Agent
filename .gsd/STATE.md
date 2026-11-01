@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-01  
 **Current Milestone:** M3 (The Finished Product Layer: Pillars 1–5)  
-**Status:** In Progress — Phase 08 Complete (225/225 tests green); Phase 09 Active  
+**Status:** In Progress — Plan 09-01 Complete (242/242 tests green); Plan 09-02 Next  
 **Active Phase:** Phase 09: Bidirectional Multi-Platform Chat Gateways (Telegram & Discord Bots) (Pillar 3)  
 
 ---
@@ -150,18 +150,27 @@
     - Added `create_approval(risk_class=...)` and `get_approval` to `LedgerStore` in `src/harness_core/db.py`.
     - Authored comprehensive test suite in `tests/test_tui_approvals_and_init.py` (225/225 total repository tests green with zero regressions).
 
+21. **Phase 09 Telegram Bidirectional Bot Gateway Complete (Plan 09-01):**
+    - Built `src/harness_core/gateways/__init__.py` and `TelegramConfig` supporting environment variable configuration.
+    - Implemented `TelegramTransport` protocol with production `HttpTelegramTransport` and in-memory `MockTelegramTransport`.
+    - Enforced strict operator whitelist access control (`allowed_user_ids`, `allowed_chat_ids`) with security audit logging and update drop.
+    - Implemented conversational task delegation and slash command dispatch (`/start`, `/help`, `/task <goal>`, `/status [id]`, `/diff [id]`, `/cancel [id]`) in `TelegramBotGateway`.
+    - Implemented interactive inline keyboard callback engine (`approve:<id>`, `reject:<id>`, `diff:<id>`, `cancel:<id>`) with in-place message edits, callback query answering, ledger recording, and automatic task resumption / CoW workspace rollback.
+    - Authored unit and integration test suite in `tests/test_telegram_gateway.py` (242/242 repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (225/225 tests green).
-- Phase 08 complete. Ready for Phase 08 verification and milestone audit.
+- None. Full repository test suite passing cleanly with zero failures (242/242 tests green).
+- Plan 09-01 complete. Ready for Plan 09-02 (Discord Bidirectional Bot Gateway).
 
 ---
 
 ## 3. Next Actions
 
-- Phase 08 verification and Milestone 3 acceptance audit.
+- Execute Plan 09-02: Discord Bidirectional Bot Gateway & Interactive Components.
+
 
 
 
