@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 320" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090b10"/>
+      <stop offset="50%" stop-color="#10141f"/>
+      <stop offset="100%" stop-color="#090b10"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FFD700"/>
+      <stop offset="50%" stop-color="#FFA500"/>
+      <stop offset="100%" stop-color="#FF6B00"/>
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F5D4"/>
+      <stop offset="100%" stop-color="#00BBF9"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <pattern id="hexGrid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 20 0 L 40 11.5 L 40 34.5 L 20 46 L 0 34.5 L 0 11.5 Z" fill="none" stroke="#1e2638" stroke-width="0.7" opacity="0.45"/>
+    </pattern>
+    <style>
+      .pulse-ring {
+        animation: pulseRing 4s ease-in-out infinite;
+        transform-origin: 185px 155px;
+      }
+      .core-spin {
+        animation: floatCore 5s ease-in-out infinite;
+      }
+      .data-flow-1 {
+        stroke-dasharray: 8 12;
+        animation: dashFlow 2.5s linear infinite;
+      }
+      .data-flow-2 {
+        stroke-dasharray: 6 14;
+        animation: dashFlowReverse 3.2s linear infinite;
+      }
+      .status-dot {
+        animation: blinkDot 2s ease-in-out infinite;
+      }
+      .scanline {
+        animation: scanMove 6s linear infinite;
+      }
+      @keyframes pulseRing {
+        0%, 100% { transform: scale(0.96); opacity: 0.35; }
+        50% { transform: scale(1.06); opacity: 0.85; }
+      }
+      @keyframes floatCore {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-5px); }
+      }
+      @keyframes dashFlow {
+        to { stroke-dashoffset: -40; }
+      }
+      @keyframes dashFlowReverse {
+        to { stroke-dashoffset: 40; }
+      }
+      @keyframes blinkDot {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+      }
+      @keyframes scanMove {
+        0% { transform: translateY(-320px); }
+        100% { transform: translateY(320px); }
+      }
+      .title-text { font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace; font-weight: 800; }
+      .mono-text { font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace; }
+      .sans-text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, sans-serif; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1000" height="320" rx="16" fill="url(#bgGrad)" stroke="#2a354d" stroke-width="1.5"/>
+  <rect width="1000" height="320" rx="16" fill="url(#hexGrid)"/>
+
+  <!-- Subtle animated scanline -->
+  <rect class="scanline" x="0" y="0" width="1000" height="60" fill="url(#goldGrad)" opacity="0.025"/>
+
+  <!-- Decorative Circuit Lines Connecting Core to Content -->
+  <g fill="none" stroke-width="1.5">
+    <path d="M 285 110 L 335 110 L 355 90 L 420 90" stroke="#28334a"/>
+    <path class="data-flow-1" d="M 285 110 L 335 110 L 355 90 L 420 90" stroke="url(#goldGrad)"/>
+
+    <path d="M 295 155 L 390 155" stroke="#28334a"/>
+    <path class="data-flow-2" d="M 295 155 L 390 155" stroke="url(#cyanGrad)"/>
+
+    <path d="M 285 200 L 335 200 L 355 220 L 430 220" stroke="#28334a"/>
+    <path class="data-flow-1" d="M 285 200 L 335 200 L 355 220 L 430 220" stroke="url(#goldGrad)"/>
+  </g>
+
+  <!-- Left Side: Animated 3D Isometric Hex-Core Emblem -->
+  <g class="pulse-ring">
+    <polygon points="185,42 282,98 282,212 185,268 88,212 88,98" fill="none" stroke="url(#goldGrad)" stroke-width="1.2" opacity="0.4" filter="url(#softGlow)"/>
+    <polygon points="185,55 270,104 270,206 185,255 100,206 100,104" fill="none" stroke="#00F5D4" stroke-width="0.9" stroke-dasharray="6 4" opacity="0.5"/>
+  </g>
+
+  <g class="core-spin">
+    <!-- Outer Hexagon Frame -->
+    <polygon points="185,64 264,109 264,201 185,246 106,201 106,109" fill="#0d121d" stroke="url(#goldGrad)" stroke-width="2.5" filter="url(#glow)"/>
+    <!-- Isometric Cube Faces -->
+    <!-- Top Face -->
+    <polygon points="185,84 244,118 185,152 126,118" fill="#ffb703" fill-opacity="0.18" stroke="#FFD700" stroke-width="1.8"/>
+    <!-- Left Face -->
+    <polygon points="126,118 185,152 185,222 126,188" fill="#fb8500" fill-opacity="0.14" stroke="#FFA500" stroke-width="1.8"/>
+    <!-- Right Face -->
+    <polygon points="244,118 244,188 185,222 185,152" fill="#00f5d4" fill-opacity="0.12" stroke="#00F5D4" stroke-width="1.8"/>
+
+    <!-- Inner Glowing Lattice Core -->
+    <polygon points="185,112 218,131 218,169 185,188 152,169 152,131" fill="#121929" stroke="#00F5D4" stroke-width="1.5"/>
+    <circle cx="185" cy="150" r="10" fill="url(#goldGrad)" filter="url(#glow)"/>
+    <circle class="status-dot" cx="185" cy="150" r="4.5" fill="#ffffff"/>
+
+    <!-- Corner Orbit Nodes -->
+    <circle cx="185" cy="64" r="4" fill="#FFD700"/>
+    <circle cx="264" cy="109" r="4" fill="#FFA500"/>
+    <circle cx="264" cy="201" r="4" fill="#00F5D4"/>
+    <circle cx="185" cy="246" r="4" fill="#FFD700"/>
+    <circle cx="106" cy="201" r="4" fill="#00F5D4"/>
+    <circle cx="106" cy="109" r="4" fill="#FFA500"/>
+  </g>
+
+  <!-- Right Side: Typography & Live Capability Pills -->
+  <g transform="translate(365, 0)">
+    <!-- Top Release Pill -->
+    <rect x="0" y="38" width="295" height="24" rx="12" fill="#172033" stroke="#334366" stroke-width="1"/>
+    <circle class="status-dot" cx="14" cy="50" r="4" fill="#00F5D4"/>
+    <text x="26" y="54" class="mono-text" font-size="11" fill="#9fb0d6" letter-spacing="0.8">v0.1.0 · VERIFIED AUTONOMOUS HARNESS</text>
+
+    <!-- Main HEX Wordmark -->
+    <text x="0" y="122" class="title-text" font-size="68" fill="url(#goldGrad)" letter-spacing="3" filter="url(#glow)">HEX</text>
+    <text x="165" y="102" class="mono-text" font-size="22" font-weight="700" fill="#f0f4fc">Autonomous AI Workbench</text>
+    <text x="165" y="125" class="mono-text" font-size="13.5" fill="#00F5D4">CoW Sandboxes · 0ms Replay · AST Blast-Radius · M4 MLX + Cloud</text>
+
+    <!-- Subtitle Description -->
+    <text x="0" y="162" class="sans-text" font-size="14.5" fill="#b4c0d9">
+      A local-first, proof-carrying software engineering &amp; operations engine combining
+    </text>
+    <text x="0" y="183" class="sans-text" font-size="14.5" fill="#b4c0d9">
+      deterministic kernel sandboxing, supply-chain security, and two-tier token economics.
+    </text>
+
+    <!-- Capability Pills Row 1 -->
+    <g transform="translate(0, 206)">
+      <rect x="0" y="0" width="172" height="28" rx="6" fill="#141c2e" stroke="#ffb703" stroke-width="1" stroke-opacity="0.6"/>
+      <text x="12" y="18" class="mono-text" font-size="11.5" fill="#ffd166">⚡ 0ms Journal Replay</text>
+
+      <rect x="184" y="0" width="196" height="28" rx="6" fill="#141c2e" stroke="#00f5d4" stroke-width="1" stroke-opacity="0.6"/>
+      <text x="196" y="18" class="mono-text" font-size="11.5" fill="#00f5d4">🕸️ Active Graphify AST</text>
+
+      <rect x="392" y="0" width="205" height="28" rx="6" fill="#141c2e" stroke="#ff6b00" stroke-width="1" stroke-opacity="0.6"/>
+      <text x="404" y="18" class="mono-text" font-size="11.5" fill="#ff9e44">🛡️ NVIDIA SkillSpector</text>
+    </g>
+
+    <!-- Capability Pills Row 2 -->
+    <g transform="translate(0, 244)">
+      <rect x="0" y="0" width="212" height="28" rx="6" fill="#141c2e" stroke="#3b82f6" stroke-width="1" stroke-opacity="0.6"/>
+      <text x="12" y="18" class="mono-text" font-size="11.5" fill="#7dd3fc">🧠 M4 MLX + 90% Cache</text>
+
+      <rect x="224" y="0" width="184" height="28" rx="6" fill="#141c2e" stroke="#a855f7" stroke-width="1" stroke-opacity="0.6"/>
+      <text x="236" y="18" class="mono-text" font-size="11.5" fill="#d8b4fe">💾 APFS / OverlayFS CoW</text>
+
+      <rect x="420" y="0" width="177" height="28" rx="6" fill="#141c2e" stroke="#10b981" stroke-width="1" stroke-opacity="0.6"/>
+      <text x="432" y="18" class="mono-text" font-size="11.5" fill="#6ee7b7">🔬 Harness² Proof Loop</text>
+    </g>
+  </g>
+</svg>
