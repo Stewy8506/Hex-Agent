@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -146,7 +147,6 @@ class GitHubActionRunner:
         sorted_names = sorted(self.config.bot_names, key=len, reverse=True)
 
         for name in sorted_names:
-            # Pattern matching bot name as standalone token or followed by colon/comma
             escaped = re.escape(name)
             pattern = re.compile(
                 rf"(?:^|\s){escaped}(?:[:;,])?(?:\s+(.*)|\s*$)",
@@ -344,3 +344,291 @@ class GitHubActionRunner:
             )
 
         return None
+
+    def format_ack_comment(self, trigger: TriggerMatch) -> str:
+        """Format markdown acknowledgement comment."""
+        body = (
+            f"🤖 **HEX Autopilot Activated**\n\n"
+            f"Task acknowledged from @{trigger.author}. Running verification inside isolated CoW workspace...\n\n"
+            f"- **Command:** `{trigger.command}`\n"
+            f"- **Instruction:** {trigger.instruction}\n"
+        )
+        return redact_secrets(body)
+
+    def format_completion_comment(
+        self,
+        trigger: TriggerMatch,
+        task: dict[str, Any],
+        proof_bundle: dict[str, Any] | None,
+        ast_impact: dict[str, Any] | None,
+        branch: str | None = None,
+        commit_sha: str | None = None,
+    ) -> str:
+        """Format a rich Markdown completion comment with AST impact and Proof bundle."""
+        task_id = task.get("task_id", "N/A")
+        proof = proof_bundle or {}
+
+        # Resolve AST impact structure
+        impact = ast_impact
+        if impact is None:
+            raw_ast = proof.get("ast_impact") or proof.get("ast_impact_json")
+            if isinstance(raw_ast, str):
+                try:
+                    impact = json.loads(raw_ast)
+                except Exception:
+                    impact = {}
+            elif isinstance(raw_ast, dict):
+                impact = raw_ast
+            else:
+                impact = {}
+
+        # Resolve verification results
+        raw_verif = proof.get("verification_results") or proof.get("verification_results_json")
+        if isinstance(raw_verif, str):
+            try:
+                verif = json.loads(raw_verif)
+            except Exception:
+                verif = {}
+        elif isinstance(raw_verif, dict):
+            verif = raw_verif
+        else:
+            verif = {}
+
+        # Build AST impact table rows
+        ast_rows: list[str] = []
+        mod_symbols = impact.get("modified_symbols") or []
+        mod_files = impact.get("modified_files") or []
+        hop1 = impact.get("hop1_dependents") or []
+        impacted_tests = impact.get("impacted_tests") or []
+
+        if mod_symbols:
+            callers_str = ", ".join(f"`{c}`" for c in hop1[:4]) if hop1 else "None"
+            for sym in mod_symbols:
+                ast_rows.append(f"| `{sym}` | Modified Symbol | {callers_str} | R1 |")
+
+        if mod_files and not mod_symbols:
+            for f in mod_files:
+                ast_rows.append(f"| `{f}` | Modified File | Direct | R0 |")
+
+        if impacted_tests:
+            for t in impacted_tests:
+                ast_rows.append(f"| `{t}` | Impacted Test | Pinned Verification | R0 |")
+
+        if not ast_rows:
+            warning = impact.get("warning_message") or "Non-AST task; zero AST blast radius."
+            ast_rows.append(f"| None | {warning} | None | R0 |")
+
+        ast_table = "\n".join(ast_rows)
+
+        # Build Proof metrics
+        passed = verif.get("passed", True)
+        status_badge = "✅ Passed" if passed else "❌ Failed"
+        diff_sha = proof.get("git_diff_sha", "N/A")
+        tree_sha = proof.get("workspace_tree_sha", "N/A")
+        exit_code = verif.get("exit_code", 0)
+        pinned = verif.get("pinned_blast_radius_targets") or impacted_tests or []
+        pinned_str = ", ".join(f"`{p}`" for p in pinned) if pinned else "None (journal validated)"
+        runtime_digest = proof.get("runtime_digest", "N/A")
+        sig = proof.get("ledger_signature", "N/A")
+        sig_excerpt = f"`{sig[:28]}...`" if len(sig) > 30 else f"`{sig}`"
+
+        git_section = ""
+        if branch or commit_sha:
+            git_section = f"""
+### 🌿 Git Autopilot Commit
+| Property | Value |
+| :--- | :--- |
+| **Branch** | `{branch or 'N/A'}` |
+| **Commit SHA** | `{commit_sha or 'N/A'}` |
+| **Task ID** | `{task_id}` |
+"""
+
+        body = f"""## 🤖 HEX Task Succeeded
+
+### 🎯 Instruction
+> {trigger.instruction}
+
+### 🔍 Active Graphify AST Impact Matrix
+| Symbol / File | Impact Kind | Affected Callers / Tests | Risk Class |
+| :--- | :--- | :--- | :--- |
+{ast_table}
+
+### 🛡️ Proof-Carrying Artifact Verification
+| Metric | Verification Value |
+| :--- | :--- |
+| **Verification Status** | {status_badge} |
+| **Diff SHA-256** | `{diff_sha}` |
+| **Merkle Tree SHA-256** | `{tree_sha}` |
+| **Verification Exit Code** | `{exit_code}` |
+| **Pinned Verification Targets** | {pinned_str} |
+| **Runtime Digest** | `{runtime_digest}` |
+| **Ledger Signature** | {sig_excerpt} |
+{git_section}
+---
+*Automated execution verified by HEX Autonomous AI Workbench*
+"""
+        return redact_secrets(body)
+
+    def format_failure_comment(
+        self,
+        trigger: TriggerMatch,
+        task: dict[str, Any] | None,
+        error_message: str,
+    ) -> str:
+        """Format markdown failure comment."""
+        task_id = task.get("task_id", "N/A") if task else "N/A"
+        body = (
+            f"## ❌ HEX Task Execution Failed\n\n"
+            f"### 🎯 Instruction\n"
+            f"> {trigger.instruction}\n\n"
+            f"### ⚠️ Error Details\n"
+            f"Task `{task_id}` failed during isolated CoW workspace verification:\n\n"
+            f"```\n{error_message}\n```\n\n"
+            f"---\n*HEX Autonomous AI Workbench*"
+        )
+        return redact_secrets(body)
+
+    def execute_action(
+        self,
+        orchestrator: HarnessOrchestrator,
+        event_name: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute task for matched bot trigger inside isolated CoW workspace."""
+        trigger = self.detect_trigger(event_name, payload)
+        if trigger is None:
+            return {
+                "status": "skipped",
+                "reason": "No bot trigger detected in event payload",
+            }
+
+        target_issue = trigger.issue_number or trigger.pr_number
+
+        # 1. Post acknowledgement comment if target issue/PR is known
+        if target_issue is not None and self.transport is not None:
+            ack_body = self.format_ack_comment(trigger)
+            try:
+                self.transport.post_issue_comment(
+                    repo_slug=self.config.repository or None,
+                    issue_number=target_issue,
+                    body=redact_secrets(ack_body),
+                )
+            except Exception as e:
+                logger.warning("Failed to post GitHub acknowledgement comment: %s", e)
+
+        # 2. Determine workspace root and prepare autopilot
+        ws_root = (
+            Path(self.autopilot.workspace_root)
+            if self.autopilot
+            else (
+                Path(orchestrator.default_workspace)
+                if orchestrator.default_workspace
+                else Path.cwd()
+            )
+        ).resolve()
+
+        if self.autopilot is None:
+            auto_cfg = GitAutopilotConfig(
+                repo_slug=self.config.repository or None,
+                github_token=self.config.token,
+                dry_run=self.config.dry_run,
+            )
+            self.autopilot = GitAutopilot(
+                workspace_root=ws_root,
+                config=auto_cfg,
+                transport=self.transport,
+            )
+
+        # 3. Submit and execute task via HarnessOrchestrator
+        from .models import TaskSubmitRequest
+
+        project_id = self.config.repository or "gh-action"
+        req = TaskSubmitRequest(
+            goal=trigger.instruction,
+            project_id=project_id,
+            workspace_root=str(ws_root),
+        )
+
+        task = orchestrator.submit_and_run(req, auto_execute=True)
+        task_id = task.get("task_id", "")
+        task_status = task.get("status") or task.get("state")
+        is_success = task_status in ("SUCCEEDED", "COMPLETED")
+        proof = orchestrator.ledger.get_proof_bundle(task_id) if task_id else None
+
+        # 4. Handle Failure
+        if not is_success:
+            err_msg = task.get("error_message") or f"Task execution failed with status: {task_status}"
+            fail_body = self.format_failure_comment(trigger, task, err_msg)
+            if target_issue is not None and self.transport is not None:
+                try:
+                    self.transport.post_issue_comment(
+                        repo_slug=self.config.repository or None,
+                        issue_number=target_issue,
+                        body=redact_secrets(fail_body),
+                    )
+                except Exception as e:
+                    logger.warning("Failed to post GitHub failure comment: %s", e)
+
+            return {
+                "status": "failed",
+                "task_id": task_id,
+                "error": err_msg,
+                "trigger": trigger,
+                "task": task,
+                "proof": proof,
+            }
+
+        # 5. Handle Success: commit changes and create branch if git repo
+        branch_name = trigger.branch
+        commit_sha: str | None = None
+        has_git = (ws_root / ".git").is_dir() or self.config.dry_run
+
+        if has_git and self.autopilot:
+            if not branch_name:
+                branch_name = self.autopilot.create_task_branch(
+                    task_id=task_id,
+                    goal=trigger.instruction,
+                )
+            elif not self.autopilot.config.dry_run and (ws_root / ".git").is_dir():
+                subprocess.run(
+                    ["git", "checkout", "-B", branch_name],
+                    cwd=ws_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            commit_sha = self.autopilot.commit_task_changes(
+                task_id=task_id,
+                scope="gh-action",
+                description=trigger.instruction,
+            )
+
+        ast_impact = proof.get("ast_impact") if proof else None
+        completion_body = self.format_completion_comment(
+            trigger=trigger,
+            task=task,
+            proof_bundle=proof,
+            ast_impact=ast_impact,
+            branch=branch_name,
+            commit_sha=commit_sha,
+        )
+
+        if target_issue is not None and self.transport is not None:
+            try:
+                self.transport.post_issue_comment(
+                    repo_slug=self.config.repository or None,
+                    issue_number=target_issue,
+                    body=redact_secrets(completion_body),
+                )
+            except Exception as e:
+                logger.warning("Failed to post GitHub completion comment: %s", e)
+
+        return {
+            "status": "completed",
+            "task_id": task_id,
+            "proof": proof,
+            "trigger": trigger,
+            "branch": branch_name,
+            "commit": commit_sha,
+        }

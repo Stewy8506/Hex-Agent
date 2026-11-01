@@ -129,6 +129,13 @@ def main(argv: list[str] | None = None) -> int:
     p_gw_status = p_gw_sub.add_parser("status", help="Inspect gateway health and status")
     p_gw_status.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
+    p_gha = sub.add_parser("gh-action", help="Run GitHub Actions autonomous bot responder on event payload")
+    p_gha.add_argument("--event-path", default=None, help="Path to GitHub event JSON file (defaults to GITHUB_EVENT_PATH env var)")
+    p_gha.add_argument("--event-name", default=None, help="GitHub event name (defaults to GITHUB_EVENT_NAME env var)")
+    p_gha.add_argument("--dry-run", action="store_true", help="Dry-run mode: do not create real git commits or remote comments")
+    p_gha.add_argument("--workspace", default=None, help="Path to repository workspace")
+    p_gha.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -396,6 +403,59 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             mgr.start(daemon=False, poll_interval=args.poll_interval)
             return 0
+
+    if args.cmd == "gh-action":
+        from .github_action import GitHubActionConfig, GitHubActionRunner
+
+        event_path = getattr(args, "event_path", None) or os.environ.get("GITHUB_EVENT_PATH")
+        event_name = getattr(args, "event_name", None) or os.environ.get("GITHUB_EVENT_NAME") or ""
+        ws_root = Path(args.workspace).resolve() if getattr(args, "workspace", None) else repo_root
+
+        payload_raw: dict[str, Any] | str = {}
+        if event_path and Path(event_path).is_file():
+            try:
+                payload_raw = Path(event_path).read_text(encoding="utf-8")
+            except Exception as e:
+                print(json.dumps({"status": "error", "error": f"Failed to read event path: {e}"}))
+                return 1
+        elif not sys.stdin.isatty():
+            try:
+                stdin_data = sys.stdin.read().strip()
+                if stdin_data:
+                    payload_raw = stdin_data
+            except Exception:
+                pass
+
+        cfg = GitHubActionConfig.from_env()
+        if getattr(args, "dry_run", False):
+            cfg.dry_run = True
+        if event_name:
+            cfg.event_name = event_name
+        if event_path:
+            cfg.event_path = str(event_path)
+
+        runner = GitHubActionRunner(config=cfg)
+        payload = runner.parse_event_payload(payload_raw)
+
+        if not event_name:
+            if "comment" in payload and "issue" in payload:
+                event_name = "issue_comment"
+            elif "pull_request" in payload:
+                event_name = "pull_request"
+            elif "issue" in payload:
+                event_name = "issues"
+            elif "inputs" in payload:
+                event_name = "workflow_dispatch"
+
+        res = runner.execute_action(orch, event_name=event_name, payload=payload)
+        serializable_res = dict(res)
+        if "trigger" in serializable_res and hasattr(serializable_res["trigger"], "__dict__"):
+            serializable_res["trigger"] = serializable_res["trigger"].__dict__
+
+        print(json.dumps(serializable_res, indent=2, default=str))
+        if res.get("status") == "failed":
+            return 1
+        return 0
 
     return 0
 
