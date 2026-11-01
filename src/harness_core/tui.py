@@ -287,7 +287,7 @@ def render_session_banner(
     line2 = f"Sandbox: {sandbox_backend}  │  CoW Store: {cow_backend}"
     hint = "Type /help for slash commands, or enter a natural language prompt."
 
-    inner_w = width - 4
+    inner_w = width - 2
     t_pad = _pad_visible(f"  {ANSI_YELLOW}⚡ {ANSI_BOLD}{title}{ANSI_RESET}", inner_w)
     l1_pad = _pad_visible(f"  {ANSI_WHITE}{line1}{ANSI_RESET}", inner_w)
     l2_pad = _pad_visible(f"  {ANSI_WHITE}{line2}{ANSI_RESET}", inner_w)
