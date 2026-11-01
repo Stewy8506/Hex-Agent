@@ -46,15 +46,14 @@ class HarnessAPIApp:
         try:
             # Check authentication if auth_token is configured
             if self.auth_token is not None:
-                token = (
-                    headers.get("X-Worker-Token")
-                    or headers.get("x-worker-token")
-                    or ""
-                )
-                if not token:
-                    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
-                    if auth_header.startswith("Bearer "):
-                        token = auth_header[7:].strip()
+                token = ""
+                for k, v in headers.items():
+                    if k.lower() == "x-worker-token":
+                        token = v
+                        break
+                    if k.lower() == "authorization" and v.startswith("Bearer "):
+                        token = v[7:].strip()
+                        break
                 if token != self.auth_token:
                     is_worker_or_mutating = (
                         route in ("/v1/workers/register", "/v1/workers/heartbeat", "/v1/tasks/claim")

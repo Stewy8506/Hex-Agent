@@ -388,7 +388,7 @@ class WorkerDaemon:
                         fencing_token=self.current_fencing_token,
                         ttl_seconds=self.lease_ttl,
                     )
-            except ConcurrencyFenceError as exc:
+            except (ConcurrencyFenceError, KeyError) as exc:
                 self.fenced = True
                 logger.warning(
                     "Worker %s was fenced out on lease %s (token %s): %s",
@@ -435,7 +435,11 @@ class WorkerDaemon:
         """Executes a claimed task using local orchestrator or delegated client."""
         task_id = task["task_id"]
         if self.orchestrator is not None:
-            return self.orchestrator.execute_task(task_id, worker_id=self.worker_id)
+            return self.orchestrator.execute_task(
+                task_id,
+                worker_id=self.worker_id,
+                lease_info=task if "attempt_id" in task else None,
+            )
         return self.client.execute_task(task_id, worker_id=self.worker_id)
 
     def stop(self) -> None:

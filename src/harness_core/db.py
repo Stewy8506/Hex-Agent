@@ -1757,17 +1757,15 @@ class LedgerStore:
             row = self.conn.execute("SELECT * FROM leases WHERE lease_id = ?", (lease_id,)).fetchone()
             if not row:
                 raise KeyError(f"Lease not found: {lease_id}")
-            if row["released_at"] is not None:
-                raise KeyError(f"Active lease not found or already released: {lease_id}")
             task_id = row["task_id"]
             max_tok_row = self.conn.execute(
                 "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = ?",
                 (task_id,),
             ).fetchone()
             max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
-            if int(row["fencing_token"]) != fencing_token or fencing_token < max_tok:
+            if int(row["fencing_token"]) != fencing_token or fencing_token < max_tok or row["released_at"] is not None:
                 raise ConcurrencyFenceError(
-                    f"Stale or mismatched fencing token {fencing_token} (lease token: {row['fencing_token']}, max: {max_tok}) for task {task_id}"
+                    f"Stale or mismatched fencing token {fencing_token} (lease token: {row['fencing_token']}, max: {max_tok}, released: {row['released_at'] is not None}) for task {task_id}"
                 )
             now_dt = datetime.now(timezone.utc)
             now = now_dt.isoformat()
@@ -1797,17 +1795,15 @@ class LedgerStore:
                 row = await conn.fetchrow("SELECT * FROM leases WHERE lease_id = $1", lease_id)
                 if not row:
                     raise KeyError(f"Lease not found: {lease_id}")
-                if row["released_at"] is not None:
-                    raise KeyError(f"Active lease not found or already released: {lease_id}")
                 task_id = row["task_id"]
                 max_tok_row = await conn.fetchrow(
                     "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = $1",
                     task_id,
                 )
                 max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
-                if int(row["fencing_token"]) != fencing_token or fencing_token < max_tok:
+                if int(row["fencing_token"]) != fencing_token or fencing_token < max_tok or row["released_at"] is not None:
                     raise ConcurrencyFenceError(
-                        f"Stale or mismatched fencing token {fencing_token} (lease token: {row['fencing_token']}, max: {max_tok}) for task {task_id}"
+                        f"Stale or mismatched fencing token {fencing_token} (lease token: {row['fencing_token']}, max: {max_tok}, released: {row['released_at'] is not None}) for task {task_id}"
                     )
                 now_dt = datetime.now(timezone.utc)
                 now = now_dt.isoformat()

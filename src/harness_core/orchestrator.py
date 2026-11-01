@@ -139,7 +139,12 @@ class HarnessOrchestrator:
             return self.execute_task(task_id)
         return self.ledger.get_task(task_id)  # type: ignore[return-value]
 
-    def execute_task(self, task_id: str, worker_id: str | None = None) -> dict[str, Any]:
+    def execute_task(
+        self,
+        task_id: str,
+        worker_id: str | None = None,
+        lease_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         task = self.ledger.get_task(task_id)
         if not task:
             raise KeyError(f"Task not found: {task_id}")
@@ -151,19 +156,26 @@ class HarnessOrchestrator:
 
         # Fast-Path Express Lane (FR-001a): bypasses DAG planning ceremony for R0/R1 tasks
         if task["execution_mode"] == "fast_path":
-            return self._execute_fast_path(task, source_ws, wrk)
+            return self._execute_fast_path(task, source_ws, wrk, lease_info=lease_info)
 
-        return self._execute_standard_dag(task, source_ws, wrk)
+        return self._execute_standard_dag(task, source_ws, wrk, lease_info=lease_info)
 
-    def _execute_fast_path(self, task: dict[str, Any], source_ws: Path, worker_id: str) -> dict[str, Any]:
+    def _execute_fast_path(
+        self,
+        task: dict[str, Any],
+        source_ws: Path,
+        worker_id: str,
+        lease_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         task_id = task["task_id"]
         base_tree_sha = self.cow.compute_tree_sha(source_ws)
-        lease_info = self.ledger.acquire_lease_and_attempt(
-            task_id,
-            worker_id,
-            base_tree_sha=base_tree_sha,
-            workspace_path=str(source_ws),
-        )
+        if lease_info is None:
+            lease_info = self.ledger.acquire_lease_and_attempt(
+                task_id,
+                worker_id,
+                base_tree_sha=base_tree_sha,
+                workspace_path=str(source_ws),
+            )
         attempt_id = lease_info["attempt_id"]
         fencing_token = lease_info["fencing_token"]
 
@@ -497,7 +509,13 @@ class HarnessOrchestrator:
 
         return new_plan
 
-    def _execute_standard_dag(self, task: dict[str, Any], source_ws: Path, worker_id: str) -> dict[str, Any]:
+    def _execute_standard_dag(
+        self,
+        task: dict[str, Any],
+        source_ws: Path,
+        worker_id: str,
+        lease_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         task_id = task["task_id"]
         constraints = task.get("constraints") or {}
 
@@ -552,12 +570,13 @@ class HarnessOrchestrator:
         attempt_ws = self.workspaces_root / f"ws_{task_id}_{len(self.ledger.list_attempts(task_id)) + 1}"
         self.cow.clone_to_workspace(base_snap_path, attempt_ws)
 
-        lease_info = self.ledger.acquire_lease_and_attempt(
-            task_id,
-            worker_id,
-            base_tree_sha=base_tree_sha,
-            workspace_path=str(attempt_ws),
-        )
+        if lease_info is None:
+            lease_info = self.ledger.acquire_lease_and_attempt(
+                task_id,
+                worker_id,
+                base_tree_sha=base_tree_sha,
+                workspace_path=str(attempt_ws),
+            )
         attempt_id = lease_info["attempt_id"]
         fencing_token = lease_info["fencing_token"]
 
