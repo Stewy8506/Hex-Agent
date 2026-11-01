@@ -97,20 +97,29 @@
     - Enhanced `LedgerStore` in `src/harness_core/db.py` with `PlanNode` serialization, `get_plan_revision`, and `list_plans`.
     - Authored comprehensive test suite in `tests/test_dag_replanning.py` (132/132 total repository tests passing with zero failures).
 
+15. **Phase 06 Planning Complete:**
+    - Plan 06-01: WorkerDaemon Architecture, Heartbeat Loop, Server API & CLI `harness worker` (Wave 1, 3 tasks).
+    - Plan 06-02: Cross-Machine CoW Delta Archive Sync, Lease Expiry Handover & Fencing Verification (Wave 2, 3 tasks).
+
 ---
 
 ## 2. Blockers & Dependencies
 
 - None. Full test suite passing cleanly with zero failures (132/132 tests green).
-- Phase 05 Plan 01 and Plan 02 Complete (verified and committed).
+- Phase 06 plans authored and validated under `.gsd/phases/06-distributed-worker-sync/`.
 
 ---
 
 ## 3. Next Actions
 
-- Begin Phase 06 planning via `gsd-planner`:
-  - Plan 06-01: `harness worker` standalone daemon with authenticated mTLS / Tailscale transport and heartbeat lease management.
-  - Plan 06-02: Cross-machine CoW delta archive sync, lease migration, and safe handover on worker disconnect.
+- Execute Phase 06 Plan 01 (`06-01-PLAN.md`):
+  - Task 1: Lease Renewal, Worker Heartbeat & REST API Worker Endpoints.
+  - Task 2: WorkerDaemon Architecture and `harness worker` CLI Command.
+  - Task 3: Unit & Integration Test Suite in `tests/test_worker_daemon.py`.
+- Execute Phase 06 Plan 02 (`06-02-PLAN.md`):
+  - Task 1: Cross-Machine CoW Delta Archive Export/Import & CAS Artifact Transfer.
+  - Task 2: Lease Expiry Handover, 0ms Journal Replay & Monotonic Fencing Defense.
+  - Task 3: Comprehensive Test Suite in `tests/test_cross_machine_cow_sync.py`.
 
 
 
