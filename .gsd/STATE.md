@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-01  
 **Current Milestone:** M3 (The Finished Product Layer: Pillars 1–5)  
-**Status:** In Progress — Rebranded to HEX; Phase 08 Ready for Planning (186/186 tests green)  
-**Active Phase:** Phase 08: Interactive Terminal UI (`hex chat`) & Onboarding Polish  
+**Status:** Complete — Phase 08 Complete (225/225 tests green)  
+**Active Phase:** Phase 08 Complete; Ready for Milestone 3 Acceptance Audit  
 
 ---
 
@@ -131,18 +131,37 @@
     - Authored comprehensive 280+ line `docs/RUNBOOK.md` detailing architecture topology, DR backup/restore, SkillSpector quarantine forensics, task cancellation, `ConcurrencyFenceError` recovery, Alembic rollbacks, and systemd deployment.
     - Authored unit and integration test suite in `tests/test_production_server.py` (179/179 repository tests passing with zero regressions).
 
+19. **Phase 08 Interactive TUI Engine & Slash Commands Complete (Plan 08-01):**
+    - Implemented unified diff visualizer with colorized chunk/file headers, additions, and deletions in `src/harness_core/tui.py`.
+    - Implemented two-column side-by-side diff visualizer with vertical divider line.
+    - Implemented Active Graphify AST blast-radius tree renderer displaying hierarchical impact matrices with R0-R4 risk classification badges.
+    - Built progressive `StreamingTokenRenderer` with live syntax highlighting and code block detection.
+    - Implemented `HexConsole` pair-programming console managing session state, prompt loop (`hex> `), command history, active task tracking, and token/cost telemetry.
+    - Built 10 interactive slash command handlers (`/help`, `/status`, `/diff`, `/rollback`, `/fork`, `/skills`, `/model`, `/budget`, `/clear`, `/quit`).
+    - Wired `hex chat` subcommand into `src/harness_core/cli.py`.
+    - Authored comprehensive test suite in `tests/test_tui.py` (210/210 repository tests passing with zero regressions).
+
+20. **Phase 08 One-Key Keyboard Approvals, Sandbox Shell & hex init Polish Complete (Plan 08-02):**
+    - Implemented `handle_approval_prompt` in `HexConsole` intercepting `ApprovalRequiredInterrupt` for privileged R3/R4 operations.
+    - Built interactive one-key prompt loop: `[y] Approve`, `[n] Reject`, `[d] Full Diff`, `[s] Sandbox Shell`, `[q] Abort` with auto-resumption and clean rollback.
+    - Implemented `detect_project_stack` in `src/harness_core/onboard.py` auto-discovering Python, Node/TS, Rust, and Go repository environments.
+    - Implemented `init_project` scaffolding project-scoped `.hex/config.yaml` and `.hex/.gitignore` with `--force` preservation.
+    - Enhanced `hex init` in `src/harness_core/cli.py` with `--workspace`, `--force`, and `--data-dir` support.
+    - Added `create_approval(risk_class=...)` and `get_approval` to `LedgerStore` in `src/harness_core/db.py`.
+    - Authored comprehensive test suite in `tests/test_tui_approvals_and_init.py` (225/225 total repository tests green with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (179/179 tests green).
-- Phase 07 complete. Ready for Phase 07 / Milestone verification or next roadmap milestone.
+- None. Full repository test suite passing cleanly with zero failures (225/225 tests green).
+- Phase 08 complete. Ready for Phase 08 verification and milestone audit.
 
 ---
 
 ## 3. Next Actions
 
-- Phase 07 verification and final acceptance checks.
+- Phase 08 verification and Milestone 3 acceptance audit.
 
 
 
