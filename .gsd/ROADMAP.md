@@ -11,7 +11,7 @@
 
 ---
 
-## Phases to Finished Product [100% COMPLETE]
+## Milestone M1 & M2: Core Engine & Durability [100% COMPLETE]
 
 ```
 [x] Phase 01: PostgreSQL Async Engine & Alembic Migrations
@@ -22,6 +22,56 @@
 [x] Phase 06: Distributed Worker Daemon & Cross-Machine CoW Sync
 [x] Phase 07: Production Packaging, Approval Webhooks & Operator Runbooks
 ```
+
+---
+
+## Milestone M3: The Finished Product Layer (The 5 Product Pillars)
+
+```
+[ ] Phase 08: Interactive Terminal UI (`hex chat`) & Onboarding Polish (Pillars 1 & 2)
+[ ] Phase 09: Bidirectional Multi-Platform Chat Gateways (Telegram & Discord Bots) (Pillar 3)
+[ ] Phase 10: Git & GitHub Autopilot (Auto-PRs, Conventional Commits & Webhook Bot) (Pillar 4)
+[ ] Phase 11: Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills (Pillar 5)
+```
+
+---
+
+### Phase 08: Interactive Terminal UI (`hex chat`) & Onboarding Polish (Pillars 1 & 2)
+- **Goal:** Provide an interactive terminal pair-programming console (`hex chat`) with live streaming markdown, syntax-highlighted side-by-side diffs, one-key keyboard approvals (`[y] Approve`, `[n] Reject`, `[d] Diff`, `[s] Sandbox`), in-chat slash commands (`/status`, `/diff`, `/rollback`, `/fork`, `/skills`, `/model`, `/budget`), and complete `hex onboard` / `hex init` packaging.
+- **Must-haves:**
+  - `hex chat` console REPL backed by `rich` and `prompt_toolkit`.
+  - Progressive streaming token output with code syntax highlighting.
+  - Interactive unified & side-by-side diff renderer for proposed CoW patches.
+  - One-key approval prompts on `ApprovalRequiredInterrupt`.
+  - Slash command handlers in chat session.
+  - `hex init` generating project-scoped `.hex/config.yaml`.
+- **Verification:** Interactive and automated tests proving TUI streaming, diff rendering, keyboard approval resume, and `hex init` project creation.
+
+### Phase 09: Bidirectional Multi-Platform Chat Gateways (Telegram & Discord Bots) (Pillar 3)
+- **Goal:** Transform one-way outbound approval webhooks into full bidirectional conversational bots on Telegram and Discord, allowing operators to command tasks, query live status, and decide gated approvals from mobile chat.
+- **Must-haves:**
+  - `hex gateway start` daemon running Telegram long-polling/webhook listener and Discord gateway.
+  - Conversational task delegation (e.g. DM `"Fix issue #42"` $\to$ starts CoW task).
+  - Mobile approval cards with inline interactive buttons (`[Approve]`, `[Reject]`, `[View Diff]`, `[Cancel]`).
+  - Strict user/chat ID whitelist pairing and audit logging.
+- **Verification:** Unit and integration tests with mocked Telegram/Discord API transports simulating full conversation: task creation, progress stream, button click approval, and completion broadcast.
+
+### Phase 10: Git & GitHub Autopilot (Auto-PRs, Conventional Commits & Webhook Bot) (Pillar 4)
+- **Goal:** Enable HEX to operate natively in Git and GitHub workflows: auto-branching, atomic conventional commits, opening pull requests via GitHub CLI (`gh pr create`) with Proof-Carrying Artifact summaries, and running as a GitHub Action / webhook responder.
+- **Must-haves:**
+  - `hex run "<goal>" --pr` auto-branching (`hex/task-<id>-<slug>`), running CoW verification, committing, and opening a PR.
+  - Formatted PR description containing executive summary, Active Graphify AST impact matrix, and test proof hashes.
+  - GitHub Action / issue comment responder triggered by `@hex-bot fix ...`.
+- **Verification:** Tests verifying branch naming, commit formatting, GitHub API/CLI command generation, and PR markdown body compilation.
+
+### Phase 11: Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills (Pillar 5)
+- **Goal:** Enable 24/7 autonomous background operation via native cron scheduler (`hex schedule`), systemd/launchd daemon installation (`hex daemon install`), and a Hermes-style learning loop synthesizing verified solutions into reusable skills gated by NVIDIA SkillSpector.
+- **Must-haves:**
+  - `hex schedule add <cron> --goal <goal>` cron scheduler running tasks in isolated CoW sandboxes.
+  - `hex daemon install` generating `LaunchAgent` plist (macOS) and `systemd` service unit (Linux).
+  - Hermes-style self-synthesizing skill creator extracting reusable patterns from successful executions.
+  - Automated NVIDIA SkillSpector security gate verifying synthesized skills before registration.
+- **Verification:** Tests proving cron triggers, daemon unit generation, skill synthesis, and SkillSpector quarantine verification of untrusted or malformed synthesized skills.
 
 ---
 

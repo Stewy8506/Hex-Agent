@@ -1,9 +1,9 @@
-# Current Project State: Custom Autonomous AI Harness
+# Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-01  
-**Current Milestone:** M2 (Production Hardening & Packaging)  
-**Status:** Complete — All Roadmap Phases (01–07) Complete (179/179 tests green)  
-**Active Phase:** Phase 07 Complete — Finished Product Verified  
+**Current Milestone:** M3 (The Finished Product Layer: Pillars 1–5)  
+**Status:** In Progress — Rebranded to HEX; Phase 08 Ready for Planning (186/186 tests green)  
+**Active Phase:** Phase 08: Interactive Terminal UI (`hex chat`) & Onboarding Polish  
 
 ---
 
