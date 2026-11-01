@@ -35,8 +35,10 @@ env/
 .coverage
 htmlcov/
 
-# Autonomous Harness local runtime state, CoW snapshots, SQLite ledger & CAS artifacts
+# Autonomous Harness / HEX local runtime state, CoW snapshots, SQLite ledger & CAS artifacts
 .harness_data/
+.hex/
+.hex_data/
 *.db
 *.db-shm
 *.db-wal

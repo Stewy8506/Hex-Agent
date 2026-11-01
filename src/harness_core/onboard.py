@@ -115,7 +115,11 @@ def run_onboard_wizard(
 ) -> dict[str, Any]:
     """Execute the interactive or automated onboarding sequence for HEX."""
     cfg_dir = config_dir or (Path.home() / ".hex")
-    cfg_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        cfg_dir = Path(".hex").resolve()
+        cfg_dir.mkdir(parents=True, exist_ok=True)
     credentials_file = cfg_dir / "credentials.env"
     config_file = cfg_dir / "config.yaml"
 
