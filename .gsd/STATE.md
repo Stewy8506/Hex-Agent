@@ -2,8 +2,8 @@
 
 **Date:** 2026-10-31  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** In Progress — Phase 04 Complete, Ready for Phase 05  
-**Active Phase:** Phase 05 — Multi-Turn Autonomous Repair & Dynamic DAG Replanning  
+**Status:** In Progress — Phase 05 Complete, Ready for Phase 06  
+**Active Phase:** Phase 06 — Distributed Worker Daemon & Cross-Machine CoW Sync  
 
 ---
 
@@ -108,7 +108,9 @@
 
 ## 3. Next Actions
 
-- Phase 05 Complete. Proceed to next roadmap milestone/phase.
+- Begin Phase 06 planning via `gsd-planner`:
+  - Plan 06-01: `harness worker` standalone daemon with authenticated mTLS / Tailscale transport and heartbeat lease management.
+  - Plan 06-02: Cross-machine CoW delta archive sync, lease migration, and safe handover on worker disconnect.
 
 
 
