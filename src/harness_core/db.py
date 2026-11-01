@@ -1983,9 +1983,15 @@ class LedgerStore:
             row = self.conn.execute("SELECT * FROM leases WHERE lease_id = ?", (lease_id,)).fetchone()
             if not row:
                 raise KeyError(f"Lease not found: {lease_id}")
-            if fencing_token is not None and int(row["fencing_token"]) != fencing_token:
+            task_id = row["task_id"]
+            max_tok_row = self.conn.execute(
+                "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+            if fencing_token is not None and (int(row["fencing_token"]) != fencing_token or fencing_token < max_tok):
                 raise ConcurrencyFenceError(
-                    f"Fencing token mismatch on release: provided {fencing_token}, lease has {row['fencing_token']}"
+                    f"Fencing token mismatch or stale on release: provided {fencing_token}, max {max_tok}, lease has {row['fencing_token']}"
                 )
             now = utcnow_iso()
             self.conn.execute(
@@ -2004,9 +2010,15 @@ class LedgerStore:
             row = await conn.fetchrow("SELECT * FROM leases WHERE lease_id = $1", lease_id)
             if not row:
                 raise KeyError(f"Lease not found: {lease_id}")
-            if fencing_token is not None and int(row["fencing_token"]) != fencing_token:
+            task_id = row["task_id"]
+            max_tok_row = await conn.fetchrow(
+                "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = $1",
+                task_id,
+            )
+            max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+            if fencing_token is not None and (int(row["fencing_token"]) != fencing_token or fencing_token < max_tok):
                 raise ConcurrencyFenceError(
-                    f"Fencing token mismatch on release: provided {fencing_token}, lease has {row['fencing_token']}"
+                    f"Fencing token mismatch or stale on release: provided {fencing_token}, max {max_tok}, lease has {row['fencing_token']}"
                 )
             now = utcnow_iso()
             await conn.execute(

@@ -75,6 +75,16 @@ def compute_tree_sha(directory: Path | str) -> str:
     return hasher.hexdigest()
 
 
+def export_delta_archive(snapshot_path: Path | str, archive_dest: Path | str) -> str:
+    """Exports a CoW snapshot directory to a deterministic tar.gz CAS bundle for remote worker handoff."""
+    snap = Path(snapshot_path).resolve()
+    dest = Path(archive_dest).resolve()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(dest, "w:gz") as tar:
+        tar.add(snap, arcname="workspace")
+    return hashlib.sha256(dest.read_bytes()).hexdigest()
+
+
 def import_delta_archive(archive_path: Path | str, target_dir: Path | str) -> str:
     """Safely extracts a CoW delta archive (.tar.gz) into target_dir with tar-slip defense and returns tree SHA.
 
@@ -739,6 +749,7 @@ __all__ = [
     "SnapshotMetadata",
     "WorkspaceSnapshotProvider",
     "compute_tree_sha",
+    "export_delta_archive",
     "import_delta_archive",
     "APFSAndPortableCoWProvider",
     "ApfsSnapshotProvider",
