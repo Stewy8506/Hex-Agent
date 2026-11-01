@@ -98,6 +98,21 @@ def main(argv: list[str] | None = None) -> int:
     p_chat.add_argument("--no-stream", action="store_true", help="Disable live token streaming")
     p_chat.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
+    p_gw = sub.add_parser("gateway", help="Manage bidirectional chat gateways (Telegram & Discord)")
+    p_gw_sub = p_gw.add_subparsers(dest="gateway_cmd", required=True)
+
+    p_gw_start = p_gw_sub.add_parser("start", help="Start bidirectional chat gateway daemon")
+    p_gw_start.add_argument("--telegram", action="store_true", help="Explicitly enable Telegram gateway (default: enabled if token is set in env)")
+    p_gw_start.add_argument("--discord", action="store_true", help="Explicitly enable Discord gateway (default: enabled if token is set in env)")
+    p_gw_start.add_argument("--poll-interval", type=float, default=1.0, help="Polling interval in seconds")
+    p_gw_start.add_argument("--project", default="default", help="Project ID")
+    p_gw_start.add_argument("--workspace", default=None, help="Workspace path (defaults to repo root)")
+    p_gw_start.add_argument("--once", action="store_true", help="Poll once and exit immediately")
+    p_gw_start.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
+
+    p_gw_status = p_gw_sub.add_parser("status", help="Inspect gateway health and status")
+    p_gw_status.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -232,6 +247,38 @@ def main(argv: list[str] | None = None) -> int:
         )
         daemon.run(once=args.once)
         return 0
+
+    if args.cmd == "gateway":
+        from .gateways import (
+            DiscordBotGateway,
+            DiscordConfig,
+            GatewayManager,
+            TelegramBotGateway,
+            TelegramConfig,
+        )
+
+        tg_cfg = TelegramConfig.from_env()
+        dc_cfg = DiscordConfig.from_env()
+
+        enable_tg = bool(getattr(args, "telegram", False) or tg_cfg.bot_token)
+        enable_dc = bool(getattr(args, "discord", False) or dc_cfg.bot_token)
+
+        tg_gw = TelegramBotGateway(orch, tg_cfg) if enable_tg else None
+        dc_gw = DiscordBotGateway(orch, dc_cfg) if enable_dc else None
+
+        mgr = GatewayManager(orch, telegram_gateway=tg_gw, discord_gateway=dc_gw)
+
+        if args.gateway_cmd == "status":
+            print(json.dumps(mgr.get_status(), indent=2))
+            return 0
+
+        if args.gateway_cmd == "start":
+            if getattr(args, "once", False):
+                counts = mgr.poll_once()
+                print(json.dumps({"status": "polled_once", "updates": counts, "manager": mgr.get_status()}, indent=2))
+                return 0
+            mgr.start(daemon=False, poll_interval=args.poll_interval)
+            return 0
 
     return 0
 

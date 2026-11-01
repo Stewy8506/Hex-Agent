@@ -10,6 +10,7 @@ from .discord_bot import (
     HttpDiscordTransport,
     MockDiscordTransport,
 )
+from .manager import GatewayManager
 from .telegram_bot import TelegramBotGateway, TelegramConfig, MockTelegramTransport
 
 __all__ = [
@@ -20,4 +21,6 @@ __all__ = [
     "DiscordConfig",
     "HttpDiscordTransport",
     "MockDiscordTransport",
+    "GatewayManager",
 ]
+
