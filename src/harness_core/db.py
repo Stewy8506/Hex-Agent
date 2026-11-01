@@ -474,7 +474,7 @@ class LedgerStore:
         task_id: str,
         next_state: TaskState | str,
         *,
-        reason_code: str,
+        reason_code: str = "STATE_TRANSITION",
         actor: str = "orchestrator",
         attempt_id: str | None = None,
         workspace_tree_sha: str | None = None,
@@ -563,7 +563,7 @@ class LedgerStore:
         task_id: str,
         next_state: TaskState | str,
         *,
-        reason_code: str,
+        reason_code: str = "STATE_TRANSITION",
         actor: str = "orchestrator",
         attempt_id: str | None = None,
         workspace_tree_sha: str | None = None,
@@ -1359,6 +1359,123 @@ class LedgerStore:
                     "expires_at": expires,
                 }
 
+    def reap_expired_leases(self, now: str | None = None) -> list[str]:
+        """Finds all tasks in RUNNING/VERIFYING with expired unreleased leases, releases them, and transitions tasks back to QUEUED."""
+        if self.backend_type == "postgres":
+            return self._run_sync(self.reap_expired_leases_async, now)
+        with self._lock:
+            now_str = now or utcnow_iso()
+            rows = self.conn.execute(
+                """
+                SELECT DISTINCT t.task_id, t.version, t.active_workspace_tree_sha, t.policy_snapshot_id, t.status
+                FROM tasks t
+                JOIN leases l ON t.task_id = l.task_id
+                WHERE t.status IN ('RUNNING', 'VERIFYING')
+                  AND l.released_at IS NULL
+                  AND l.expires_at < ?
+                """,
+                (now_str,),
+            ).fetchall()
+
+            reaped_task_ids: list[str] = []
+            for r in rows:
+                tid = r["task_id"]
+                ver = int(r["version"])
+                prior_st = r["status"]
+                tree_sha = r["active_workspace_tree_sha"]
+                policy_id = r["policy_snapshot_id"]
+
+                # Release expired lease(s)
+                self.conn.execute(
+                    "UPDATE leases SET released_at = ? WHERE task_id = ? AND released_at IS NULL AND expires_at < ?",
+                    (now_str, tid, now_str),
+                )
+                cursor = self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'QUEUED', version = version + 1, updated_at = ?
+                    WHERE task_id = ? AND version = ?
+                    """,
+                    (now_str, tid, ver),
+                )
+                if cursor.rowcount == 1:
+                    reaped_task_ids.append(tid)
+                    self._append_event_locked(
+                        task_id=tid,
+                        attempt_id=None,
+                        event_type="STATE_QUEUED",
+                        prior_state=prior_st,
+                        next_state="QUEUED",
+                        reason_code="LEASE_EXPIRED",
+                        workspace_tree_sha=tree_sha,
+                        policy_version=policy_id,
+                        payload={"expired_at": now_str},
+                        actor="system",
+                    )
+            self.conn.commit()
+            return reaped_task_ids
+
+    async def reap_expired_leases_async(self, now: str | None = None) -> list[str]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.reap_expired_leases, now)
+        pool = await self.get_pool()
+        now_str = now or utcnow_iso()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if not hasattr(conn, "fetch"):
+                    return []
+                rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT t.task_id, t.version, t.active_workspace_tree_sha, t.policy_snapshot_id, t.status
+                    FROM tasks t
+                    JOIN leases l ON t.task_id = l.task_id
+                    WHERE t.status IN ('RUNNING', 'VERIFYING')
+                      AND l.released_at IS NULL
+                      AND l.expires_at < $1
+                    FOR UPDATE OF t
+                    """,
+                    now_str,
+                )
+                reaped_task_ids: list[str] = []
+                for r in rows:
+                    tid = r["task_id"]
+                    ver = int(r["version"])
+                    prior_st = r["status"]
+                    tree_sha = r["active_workspace_tree_sha"]
+                    policy_id = r["policy_snapshot_id"]
+
+                    await conn.execute(
+                        "UPDATE leases SET released_at = $1 WHERE task_id = $2 AND released_at IS NULL AND expires_at < $1",
+                        now_str,
+                        tid,
+                    )
+                    res = await conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'QUEUED', version = version + 1, updated_at = $1
+                        WHERE task_id = $2 AND version = $3
+                        """,
+                        now_str,
+                        tid,
+                        ver,
+                    )
+                    if res == "UPDATE 1":
+                        reaped_task_ids.append(tid)
+                        await self._append_event_async_conn(
+                            conn=conn,
+                            task_id=tid,
+                            attempt_id=None,
+                            event_type="STATE_QUEUED",
+                            prior_state=prior_st,
+                            next_state="QUEUED",
+                            reason_code="LEASE_EXPIRED",
+                            workspace_tree_sha=tree_sha,
+                            policy_version=policy_id,
+                            payload={"expired_at": now_str},
+                            actor="system",
+                        )
+                return reaped_task_ids
+
     def claim_next_task(
         self,
         worker_id: str = "worker-default",
@@ -1376,6 +1493,7 @@ class LedgerStore:
                 workspace_path=workspace_path,
                 ttl_seconds=ttl_seconds,
             )
+        self.reap_expired_leases()
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
@@ -1397,7 +1515,8 @@ class LedgerStore:
                     "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = ?",
                     (task_id,),
                 ).fetchone()
-                next_token = (int(max_tok_row["max_tok"]) if max_tok_row else 0) + 1
+                max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+                next_token = max_tok + 1
                 now_dt = datetime.now(timezone.utc)
                 now = now_dt.isoformat()
                 expires = (now_dt + timedelta(seconds=ttl_seconds)).isoformat()
@@ -1468,6 +1587,20 @@ class LedgerStore:
                 if cursor.rowcount != 1:
                     raise ConcurrencyFenceError(f"Concurrent update race detected on task {task_id}")
 
+                if max_tok > 0:
+                    self._append_event_locked(
+                        task_id=task_id,
+                        attempt_id=attempt_id,
+                        event_type="LEASE_TAKEOVER",
+                        prior_state="QUEUED",
+                        next_state="RUNNING",
+                        reason_code="LEASE_TAKEOVER",
+                        workspace_tree_sha=new_tree_sha,
+                        policy_version=policy_id,
+                        payload={"prior_fencing_token": max_tok, "new_fencing_token": next_token, "worker_id": worker_id, "lease_id": lease_id},
+                        actor=worker_id,
+                    )
+
                 self._append_event_locked(
                     task_id=task_id,
                     attempt_id=attempt_id,
@@ -1510,6 +1643,7 @@ class LedgerStore:
                 workspace_path=workspace_path,
                 ttl_seconds=ttl_seconds,
             )
+        await self.reap_expired_leases_async()
         pool = await self.get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1526,7 +1660,8 @@ class LedgerStore:
                     "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = $1",
                     task_id,
                 )
-                next_token = (int(max_tok_row["max_tok"]) if max_tok_row else 0) + 1
+                max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+                next_token = max_tok + 1
                 now_dt = datetime.now(timezone.utc)
                 now = now_dt.isoformat()
                 expires = (now_dt + timedelta(seconds=ttl_seconds)).isoformat()
@@ -1609,6 +1744,21 @@ class LedgerStore:
                     rowcount = 0
                 if rowcount != 1:
                     raise ConcurrencyFenceError(f"Concurrent update race detected on task {task_id}")
+
+                if max_tok > 0:
+                    await self._append_event_async_conn(
+                        conn=conn,
+                        task_id=task_id,
+                        attempt_id=attempt_id,
+                        event_type="LEASE_TAKEOVER",
+                        prior_state="QUEUED",
+                        next_state="RUNNING",
+                        reason_code="LEASE_TAKEOVER",
+                        workspace_tree_sha=new_tree_sha,
+                        policy_version=policy_id,
+                        payload={"prior_fencing_token": max_tok, "new_fencing_token": next_token, "worker_id": worker_id, "lease_id": lease_id},
+                        actor=worker_id,
+                    )
 
                 await self._append_event_async_conn(
                     conn=conn,
@@ -2938,6 +3088,25 @@ class LedgerStore:
                 "SELECT * FROM artifacts WHERE task_id = $1 ORDER BY created_at ASC", task_id
             )
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_artifact_async, artifact_id)
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)
+            ).fetchone()
+            return self._row_to_dict(row)
+
+    async def get_artifact_async(self, artifact_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_artifact, artifact_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM artifacts WHERE artifact_id = $1", artifact_id
+            )
+            return self._row_to_dict(row)
 
     def save_proof_bundle(
         self,

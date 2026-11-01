@@ -80,6 +80,7 @@ VALID_TRANSITIONS: dict[TaskState, set[TaskState]] = {
         TaskState.EXPIRED,
     },
     TaskState.RUNNING: {
+        TaskState.QUEUED,  # Lease expiration handover
         TaskState.VERIFYING,
         TaskState.SPECULATING,
         TaskState.WAITING_APPROVAL,
@@ -99,6 +100,7 @@ VALID_TRANSITIONS: dict[TaskState, set[TaskState]] = {
         TaskState.FAILED,
     },
     TaskState.VERIFYING: {
+        TaskState.QUEUED,  # Lease expiration handover
         TaskState.SUCCEEDED,
         TaskState.RUNNING,  # Bounded repair on DAG subgraph
         TaskState.WAITING_APPROVAL,

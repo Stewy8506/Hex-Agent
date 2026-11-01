@@ -456,6 +456,9 @@ class TestSkipLockedQueryStructure(unittest.TestCase):
                     return {"sequence_no": last_evt["sequence_no"], "event_sha256": last_evt["event_sha256"]}
                 return None
 
+            async def fetch(self, query: str, *args: Any):
+                return []
+
             async def execute(self, query: str, *args: Any):
                 if "UPDATE leases SET released_at = $1" in query:
                     return "UPDATE 1"
