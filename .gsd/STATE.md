@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-01  
 **Current Milestone:** M3 (The Finished Product Layer: Pillars 1–5)  
-**Status:** In Progress — Phase 09 Complete (263/263 tests green); Phase 10 Next  
-**Active Phase:** Phase 10: Git & GitHub Autopilot (Auto-PRs, Conventional Commits & Webhook Bot) (Pillar 4)  
+**Status:** In Progress — Phase 10 Complete (305/305 tests green); Phase 11 Next  
+**Active Phase:** Phase 11: Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills (Pillar 5)  
 
 ---
 
@@ -164,20 +164,27 @@
     - Wired `hex gateway start` and `hex gateway status` CLI subcommands in `src/harness_core/cli.py`.
     - Authored unit and integration test suite in `tests/test_discord_and_gateway_manager.py` (263/263 repository tests passing with zero regressions).
 
+23. **Phase 10 Git & GitHub Autopilot Integration Complete (Plans 10-01 & 10-02):**
+    - Implemented `GitAutopilotConfig` and `GitAutopilot` in `src/harness_core/git_autopilot.py` with automated feature branching (`hex/task-<id>-<slug>`), atomic conventional commit formatting (`type(scope): description`), rich Markdown Pull Request body generation featuring the Active Graphify AST impact matrix and Proof-Carrying Artifact verification tables, and pluggable GitHub transports (`SubprocessGitHubTransport` and `MockGitHubTransport`).
+    - Wired `--pr`, `--branch`, `--base-branch`, and `--dry-run` into `hex run` and `hex exec` in `src/harness_core/cli.py`.
+    - Implemented `GitHubActionConfig`, `TriggerMatch`, and `GitHubActionRunner` in `src/harness_core/github_action.py` supporting `issue_comment`, `pull_request`, `issues`, and `workflow_dispatch` payloads, bot mention detection (`@hex-bot fix ...`, `/hex fix ...`), and automatic proof-carrying response comments.
+    - Added `hex gh-action` CLI subcommand supporting file/stdin event input and dry-run execution.
+    - Authored unit and integration test suites in `tests/test_git_autopilot.py` (17 tests) and `tests/test_github_action_mode.py` (21 tests) (305/305 total repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (263/263 tests green).
-- Phase 09 complete. Ready for Phase 10: Git & GitHub Autopilot (Auto-PRs, Conventional Commits & Webhook Bot).
+- None. Full repository test suite passing cleanly with zero failures (305/305 tests green).
+- Phase 10 complete. Ready for Phase 11: Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills.
 
 ---
 
 ## 3. Next Actions
 
-- Plan Phase 10: Git & GitHub Autopilot (Pillar 4) via `gsd-planner`.
-- Execute Plan 10-01 (Git Autopilot Engine & Automated PR Generator).
-- Execute Plan 10-02 (GitHub Action & Issue Webhook Bot).
+- Plan Phase 11: Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills (Pillar 5) via `gsd-planner`.
+- Execute Plan 11-01 (Native Cron Scheduler & Daemon Installer).
+- Execute Plan 11-02 (Hermes-Style Learning Loop & Skill Synthesizer with NVIDIA SkillSpector).
 
 
 
