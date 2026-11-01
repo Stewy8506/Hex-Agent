@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     p_init = sub.add_parser("init", help="Initialize project configuration, ledger schema, and seed built-in skills")
     p_init.add_argument("--workspace", default=None, help="Path to project repository root (defaults to current working directory)")
     p_init.add_argument("--force", action="store_true", help="Overwrite existing .hex/config.yaml")
+    p_init.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
     p_up = sub.add_parser("up", help="Start local web control surface and /v1/* HTTP API")
     p_up.add_argument("--host", default="127.0.0.1")
