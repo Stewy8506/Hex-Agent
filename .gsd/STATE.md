@@ -97,25 +97,25 @@
     - Enhanced `LedgerStore` in `src/harness_core/db.py` with `PlanNode` serialization, `get_plan_revision`, and `list_plans`.
     - Authored comprehensive test suite in `tests/test_dag_replanning.py` (132/132 total repository tests passing with zero failures).
 
-15. **Phase 06 Planning Complete:**
-    - Plan 06-01: WorkerDaemon Architecture, Heartbeat Loop, Server API & CLI `harness worker` (Wave 1, 3 tasks).
-    - Plan 06-02: Cross-Machine CoW Delta Archive Sync, Lease Expiry Handover & Fencing Verification (Wave 2, 3 tasks).
+15. **Phase 06 Distributed Worker Daemon & Heartbeat Loop Complete (Plan 06-01):**
+    - Implemented atomic `renew_lease`, `release_lease`, and `heartbeat_worker` in `src/harness_core/db.py` with CAS fencing validation and monotonic lease extensions.
+    - Added REST endpoints in `src/harness_core/server.py` (`POST /v1/workers/register`, `POST /v1/workers/heartbeat`, `POST /v1/tasks/claim`, `POST /v1/leases/{id}:renew`, `POST /v1/leases/{id}:release`) with case-insensitive `X-Worker-Token` auth and HTTP 409 Conflict mapping.
+    - Implemented `WorkerDaemon` architecture in `src/harness_core/worker_daemon.py` with machine profiling (M4 Air, GPU, Server), CoW backend discovery, periodic heartbeat loop, task polling with `--once` support, and signal handling (`SIGINT`/`SIGTERM`).
+    - Implemented dual client transports: `DirectLedgerWorkerClient` and `RestWorkerClient`.
+    - Added `harness worker` CLI command in `src/harness_core/cli.py`.
+    - Authored comprehensive test suite in `tests/test_worker_daemon.py` (140/140 total repository tests passing with zero failures).
 
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full test suite passing cleanly with zero failures (132/132 tests green).
-- Phase 06 plans authored and validated under `.gsd/phases/06-distributed-worker-sync/`.
+- None. Full test suite passing cleanly with zero failures (140/140 tests green).
+- Phase 06 Plan 01 complete; ready for Phase 06 Plan 02.
 
 ---
 
 ## 3. Next Actions
 
-- Execute Phase 06 Plan 01 (`06-01-PLAN.md`):
-  - Task 1: Lease Renewal, Worker Heartbeat & REST API Worker Endpoints.
-  - Task 2: WorkerDaemon Architecture and `harness worker` CLI Command.
-  - Task 3: Unit & Integration Test Suite in `tests/test_worker_daemon.py`.
 - Execute Phase 06 Plan 02 (`06-02-PLAN.md`):
   - Task 1: Cross-Machine CoW Delta Archive Export/Import & CAS Artifact Transfer.
   - Task 2: Lease Expiry Handover, 0ms Journal Replay & Monotonic Fencing Defense.
