@@ -84,7 +84,7 @@ class TestWebhookFormattersAndScrubbing(unittest.TestCase):
         text = payload["text"]
 
         # Assert header and fields present
-        self.assertIn("🚨 *Harness Approval Request (R3)*", text)
+        self.assertIn("🚨 *HEX Approval Request (R3)*", text)
         self.assertIn("tsk_xyz789", text)
         self.assertIn("step_deploy", text)
         self.assertIn("git_push", text)
@@ -347,7 +347,7 @@ class TestEndToEndApprovalWorkflow(unittest.TestCase):
         tg_payload = next(p for p in self.notifier.sent_payloads if p["target"] == "telegram")
         dc_payload = next(p for p in self.notifier.sent_payloads if p["target"] == "discord")
 
-        self.assertIn("🚨 *Harness Approval Request (R3)*", tg_payload["payload"]["text"])
+        self.assertIn("🚨 *HEX Approval Request (R3)*", tg_payload["payload"]["text"])
         self.assertIn("git_push_remote", tg_payload["payload"]["text"])
         self.assertIn("release/v1.0", tg_payload["payload"]["text"])
 

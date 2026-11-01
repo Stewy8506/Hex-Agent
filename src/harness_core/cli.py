@@ -1,18 +1,21 @@
-"""CLI Entrypoint (`harness`) for Owner Workflows and Debugging (PRD Sections 5, 8.1, 15).
+"""CLI Entrypoint (`hex`) for Owner Workflows and Debugging (PRD Sections 5, 8.1, 15).
 
 Commands:
-- `harness init`: Initialize local database, CoW snapshot store, and seed default repo skills.
-- `harness up`: Start the local web control surface & HTTP API on 127.0.0.1:8420.
-- `harness submit <goal>`: Submit and execute a task (`--fast-path` or `--standard`).
-- `harness status [task_id]`: Inspect task state, call journal, and Proof-Carrying Artifact bundle.
-- `harness scan-skill <dir>`: Run NVIDIA SkillSpector static + OSV + semantic scan on a SKILL.md bundle.
-- `harness harness2-demo`: Run a live Propose-Probe-Compose cycle through the gated `vendor/harness2` adapter.
+- `hex onboard`: Run interactive onboarding wizard for hardware discovery, model profile, and configuration.
+- `hex init`: Initialize local database, CoW snapshot store, and seed default repo skills.
+- `hex up`: Start the local web control surface & HTTP API on 127.0.0.1:8420.
+- `hex submit <goal>`: Submit and execute a task (`--fast-path` or `--standard`).
+- `hex status [task_id]`: Inspect task state, call journal, and Proof-Carrying Artifact bundle.
+- `hex scan-skill <dir>`: Run NVIDIA SkillSpector static + OSV + semantic scan on a SKILL.md bundle.
+- `hex harness2-demo`: Run a live Propose-Probe-Compose cycle through the gated `vendor/harness2` adapter.
+- `hex worker`: Start standalone distributed worker daemon.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,7 +24,7 @@ from .orchestrator import HarnessOrchestrator
 from .server import run_http_server
 
 
-DEFAULT_DATA_DIR = Path.home() / ".autonomous_harness"
+DEFAULT_DATA_DIR = Path.home() / ".hex" / "data"
 
 
 def seed_default_skills(orch: HarnessOrchestrator, repo_root: Path) -> list[dict]:
@@ -35,13 +38,24 @@ def seed_default_skills(orch: HarnessOrchestrator, repo_root: Path) -> list[dict
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="harness", description="Custom Autonomous AI Harness CLI")
+    default_dir = os.environ.get("HEX_DATA_DIR") or os.environ.get("HARNESS_DATA_DIR")
+    if not default_dir:
+        repo_data = Path(__file__).resolve().parents[2] / ".hex_data"
+        legacy_data = Path(__file__).resolve().parents[2] / ".harness_data"
+        default_dir = str(repo_data if repo_data.exists() or not legacy_data.exists() else legacy_data)
+
+    parser = argparse.ArgumentParser(prog="hex", description="HEX: Autonomous AI Workbench CLI")
     parser.add_argument(
         "--data-dir",
-        default=str(Path(__file__).resolve().parents[2] / ".harness_data"),
-        help="Path to local harness ledger and CoW storage directory",
+        default=default_dir,
+        help="Path to local HEX ledger and CoW storage directory",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_onb = sub.add_parser("onboard", help="Run interactive onboarding wizard for hardware & configuration")
+    p_onb.add_argument("--config-dir", default=None, help="Custom configuration directory (defaults to ~/.hex)")
+    p_onb.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode using hardware defaults")
+    p_onb.add_argument("--defaults", dest="defaults_only", action="store_true", help="Accept all hardware auto-detected defaults")
 
     sub.add_parser("init", help="Initialize ledger schema, CoW workspace store, and scan built-in skills")
 
@@ -75,6 +89,18 @@ def main(argv: list[str] | None = None) -> int:
     p_wrk.add_argument("--once", action="store_true", help="Execute at most one claimed task and exit")
 
     args = parser.parse_args(argv)
+
+    if args.cmd == "onboard":
+        from .onboard import run_onboard_wizard
+
+        cfg_dir = Path(args.config_dir) if args.config_dir else None
+        run_onboard_wizard(
+            config_dir=cfg_dir,
+            non_interactive=args.non_interactive,
+            defaults_only=args.defaults_only,
+        )
+        return 0
+
     repo_root = Path(__file__).resolve().parents[2]
     orch = HarnessOrchestrator(args.data_dir, default_workspace=repo_root)
 

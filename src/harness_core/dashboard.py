@@ -17,7 +17,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Autonomous AI Harness — Local Control Surface</title>
+  <title>HEX — Autonomous AI Workbench</title>
   <style>
     :root {
       --bg: #0b0f19;
@@ -135,7 +135,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <body>
   <header>
     <h1>
-      <span>⚡ Custom Autonomous AI Harness</span>
+      <span>⚡ HEX Autonomous AI Workbench</span>
       <span class="badge badge-green">v1.3 CoW + Call Journal</span>
       <span class="badge badge-purple">NVIDIA SkillSpector Gate</span>
       <span class="badge badge-blue">Harness² Adapter</span>

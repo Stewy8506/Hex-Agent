@@ -31,16 +31,21 @@ class WebhookConfig:
     @classmethod
     def from_env(cls) -> WebhookConfig:
         return cls(
-            telegram_bot_token=os.getenv("HARNESS_TELEGRAM_BOT_TOKEN"),
-            telegram_chat_id=os.getenv("HARNESS_TELEGRAM_CHAT_ID"),
-            discord_webhook_url=os.getenv("HARNESS_DISCORD_WEBHOOK_URL"),
+            telegram_bot_token=os.getenv("HEX_TELEGRAM_BOT_TOKEN") or os.getenv("HARNESS_TELEGRAM_BOT_TOKEN"),
+            telegram_chat_id=os.getenv("HEX_TELEGRAM_CHAT_ID") or os.getenv("HARNESS_TELEGRAM_CHAT_ID"),
+            discord_webhook_url=os.getenv("HEX_DISCORD_WEBHOOK_URL") or os.getenv("HARNESS_DISCORD_WEBHOOK_URL"),
             public_base_url=(
-                os.getenv("HARNESS_PUBLIC_BASE_URL")
+                os.getenv("HEX_PUBLIC_BASE_URL")
+                or os.getenv("HEX_BASE_URL")
+                or os.getenv("HARNESS_PUBLIC_BASE_URL")
                 or os.getenv("HARNESS_BASE_URL")
                 or "http://127.0.0.1:8420"
             ),
-            dry_run=os.getenv("HARNESS_WEBHOOK_DRY_RUN", "").lower() in ("1", "true", "yes"),
-            timeout=float(os.getenv("HARNESS_WEBHOOK_TIMEOUT", "5.0")),
+            dry_run=(
+                os.getenv("HEX_WEBHOOK_DRY_RUN", "").lower() in ("1", "true", "yes")
+                or os.getenv("HARNESS_WEBHOOK_DRY_RUN", "").lower() in ("1", "true", "yes")
+            ),
+            timeout=float(os.getenv("HEX_WEBHOOK_TIMEOUT") or os.getenv("HARNESS_WEBHOOK_TIMEOUT", "5.0")),
         )
 
 
@@ -98,7 +103,7 @@ def format_telegram_approval(approval_record: dict[str, Any], base_url: str) -> 
         params_str = params_str[:997] + "..."
 
     text = (
-        f"🚨 *Harness Approval Request ({data['risk_level']})*\n\n"
+        f"🚨 *HEX Approval Request ({data['risk_level']})*\n\n"
         f"*Task ID:* `{data['task_id']}`\n"
         f"*Step ID:* `{data['step_id'] or 'N/A'}`\n"
         f"*Tool Name:* `{data['action_type']}`\n"
@@ -218,7 +223,7 @@ class WebhookNotifier:
             data=data,
             headers={
                 "Content-Type": "application/json",
-                "User-Agent": "Harness-WebhookNotifier/1.0",
+                "User-Agent": "HEX-WebhookNotifier/1.0",
             },
             method="POST",
         )

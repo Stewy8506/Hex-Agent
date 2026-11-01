@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "autonomous-harness"
+name = "hex-ai"
 version = "0.1.0"
-description = "Custom Autonomous AI Harness with CoW durability, Call-Level Journaling, Active Graphify, SkillSpector gate, and Harness2 integration"
+description = "HEX: Autonomous AI Workbench with CoW durability, Call-Level Journaling, Active Graphify, SkillSpector gate, and Two-Tier model routing"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.12"
@@ -17,6 +17,7 @@ postgres = ["asyncpg>=0.29.0", "sqlalchemy[asyncio]>=2.0.30", "alembic>=1.13.0"]
 mlx = ["mlx-lm>=0.18.0"]
 
 [project.scripts]
+hex = "harness_core.cli:main"
 harness = "harness_core.cli:main"
 
 [tool.setuptools.packages.find]

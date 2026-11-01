@@ -317,7 +317,7 @@ class HarnessAPIApp:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Harness Authorization - {norm_decision}</title>
+  <title>HEX Authorization - {norm_decision}</title>
   <style>
     body {{
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -759,6 +759,6 @@ def run_http_server(
             return
 
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"⚡ Autonomous AI Harness Control Surface listening on http://{host}:{port}")
+    print(f"⚡ HEX Autonomous AI Workbench listening on http://{host}:{port}")
     runner = GracefulServerRunner(server, app, drain_timeout=drain_timeout)
     runner.run()
