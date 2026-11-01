@@ -302,7 +302,13 @@ class LedgerStore:
     # Task Intake & State Machine (FR-001..FR-006, FR-010..FR-013)
     # ------------------------------------------------------------------
 
-    def submit_task(self, req: TaskSubmitRequest, policy_snapshot_id: str = "pol-v1.3") -> dict[str, Any]:
+    def submit_task(self, req: TaskSubmitRequest | dict[str, Any], policy_snapshot_id: str = "pol-v1.3") -> dict[str, Any]:
+        is_dict_input = isinstance(req, dict)
+        if is_dict_input:
+            initial_status = req.get("status", TaskState.QUEUED.value)
+            req = TaskSubmitRequest(**{k: v for k, v in req.items() if k != "status"})
+        else:
+            initial_status = TaskState.SUBMITTED.value
         if self.backend_type == "postgres":
             return self._run_sync(self.submit_task_async, req, policy_snapshot_id)
         with self._lock:
@@ -345,7 +351,7 @@ class LedgerStore:
                     req.project_id or "default",
                     req.goal,
                     mode,
-                    TaskState.SUBMITTED.value,
+                    initial_status,
                     req.priority,
                     req.deadline_at,
                     canonical_json(budget),
@@ -363,7 +369,7 @@ class LedgerStore:
                 attempt_id=None,
                 event_type="TASK_SUBMITTED",
                 prior_state=None,
-                next_state=TaskState.SUBMITTED.value,
+                next_state=initial_status,
                 reason_code="INTAKE_ACCEPTED",
                 workspace_tree_sha=None,
                 policy_version=policy_snapshot_id,
@@ -373,7 +379,13 @@ class LedgerStore:
             self.conn.commit()
             return self.get_task(task_id)  # type: ignore[return-value]
 
-    async def submit_task_async(self, req: TaskSubmitRequest, policy_snapshot_id: str = "pol-v1.3") -> dict[str, Any]:
+    async def submit_task_async(self, req: TaskSubmitRequest | dict[str, Any], policy_snapshot_id: str = "pol-v1.3") -> dict[str, Any]:
+        is_dict_input = isinstance(req, dict)
+        if is_dict_input:
+            initial_status = req.get("status", TaskState.QUEUED.value)
+            req = TaskSubmitRequest(**{k: v for k, v in req.items() if k != "status"})
+        else:
+            initial_status = TaskState.SUBMITTED.value
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(self.submit_task, req, policy_snapshot_id)
         pool = await self.get_pool()
@@ -417,7 +429,7 @@ class LedgerStore:
                     req.project_id or "default",
                     req.goal,
                     mode,
-                    TaskState.SUBMITTED.value,
+                    initial_status,
                     req.priority,
                     req.deadline_at,
                     canonical_json(budget),
@@ -435,7 +447,7 @@ class LedgerStore:
                     attempt_id=None,
                     event_type="TASK_SUBMITTED",
                     prior_state=None,
-                    next_state=TaskState.SUBMITTED.value,
+                    next_state=initial_status,
                     reason_code="INTAKE_ACCEPTED",
                     workspace_tree_sha=None,
                     policy_version=policy_snapshot_id,
@@ -1079,6 +1091,66 @@ class LedgerStore:
             rows = await conn.fetch("SELECT * FROM workers ORDER BY registered_at ASC")
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
+    def get_worker(self, worker_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_worker_async, worker_id)
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM workers WHERE worker_id = ?", (worker_id,)).fetchone()
+            return self._row_to_dict(row)
+
+    async def get_worker_async(self, worker_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_worker, worker_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM workers WHERE worker_id = $1", worker_id)
+            return self._row_to_dict(row)
+
+    def heartbeat_worker(self, worker_id: str, health: str = "HEALTHY") -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.heartbeat_worker_async, worker_id, health=health)
+        with self._lock:
+            now = utcnow_iso()
+            self.conn.execute(
+                """
+                INSERT INTO workers (
+                    worker_id, machine_class, capabilities_json, cow_backend,
+                    local_llm_models_json, trust_level, health, last_heartbeat_at, registered_at
+                ) VALUES (?, 'worker', '{}', 'apfs_clone', '[]', 'trusted_local', ?, ?, ?)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    health=excluded.health,
+                    last_heartbeat_at=excluded.last_heartbeat_at
+                """,
+                (worker_id, health, now, now),
+            )
+            self.conn.commit()
+            row = self.conn.execute("SELECT * FROM workers WHERE worker_id = ?", (worker_id,)).fetchone()
+            return self._row_to_dict(row)  # type: ignore[return-value]
+
+    async def heartbeat_worker_async(self, worker_id: str, health: str = "HEALTHY") -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.heartbeat_worker, worker_id, health=health)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            now = utcnow_iso()
+            await conn.execute(
+                """
+                INSERT INTO workers (
+                    worker_id, machine_class, capabilities_json, cow_backend,
+                    local_llm_models_json, trust_level, health, last_heartbeat_at, registered_at
+                ) VALUES ($1, 'worker', '{}', 'apfs_clone', '[]', 'trusted_local', $2, $3, $4)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    health=excluded.health,
+                    last_heartbeat_at=excluded.last_heartbeat_at
+                """,
+                worker_id,
+                health,
+                now,
+                now,
+            )
+            row = await conn.fetchrow("SELECT * FROM workers WHERE worker_id = $1", worker_id)
+            return self._row_to_dict(row)  # type: ignore[return-value]
+
     def acquire_lease_and_attempt(
         self,
         task_id: str,
@@ -1662,6 +1734,142 @@ class LedgerStore:
                 "SELECT * FROM attempts WHERE task_id = $1 ORDER BY started_at ASC", task_id
             )
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    def get_lease(self, lease_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_lease_async, lease_id)
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM leases WHERE lease_id = ?", (lease_id,)).fetchone()
+            return self._row_to_dict(row)
+
+    async def get_lease_async(self, lease_id: str) -> dict[str, Any] | None:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_lease, lease_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM leases WHERE lease_id = $1", lease_id)
+            return self._row_to_dict(row)
+
+    def renew_lease(self, lease_id: str, fencing_token: int, ttl_seconds: int = 300) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.renew_lease_async, lease_id, fencing_token, ttl_seconds=ttl_seconds)
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM leases WHERE lease_id = ?", (lease_id,)).fetchone()
+            if not row:
+                raise KeyError(f"Lease not found: {lease_id}")
+            if row["released_at"] is not None:
+                raise KeyError(f"Active lease not found or already released: {lease_id}")
+            task_id = row["task_id"]
+            max_tok_row = self.conn.execute(
+                "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+            if int(row["fencing_token"]) != fencing_token or fencing_token < max_tok:
+                raise ConcurrencyFenceError(
+                    f"Stale or mismatched fencing token {fencing_token} (lease token: {row['fencing_token']}, max: {max_tok}) for task {task_id}"
+                )
+            now_dt = datetime.now(timezone.utc)
+            now = now_dt.isoformat()
+            cur_exp_dt = datetime.fromisoformat(str(row["expires_at"]))
+            target_exp = now_dt + timedelta(seconds=ttl_seconds)
+            expires_dt = target_exp if target_exp > cur_exp_dt else (cur_exp_dt + timedelta(seconds=1))
+            expires = expires_dt.isoformat()
+            self.conn.execute(
+                "UPDATE leases SET expires_at = ?, renewed_at = ? WHERE lease_id = ? AND released_at IS NULL",
+                (expires, now, lease_id),
+            )
+            worker_id = row["worker_id"]
+            self.conn.execute(
+                "UPDATE workers SET last_heartbeat_at = ? WHERE worker_id = ?",
+                (now, worker_id),
+            )
+            self.conn.commit()
+            updated = self.conn.execute("SELECT * FROM leases WHERE lease_id = ?", (lease_id,)).fetchone()
+            return self._row_to_dict(updated)  # type: ignore[return-value]
+
+    async def renew_lease_async(self, lease_id: str, fencing_token: int, ttl_seconds: int = 300) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.renew_lease, lease_id, fencing_token, ttl_seconds=ttl_seconds)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("SELECT * FROM leases WHERE lease_id = $1", lease_id)
+                if not row:
+                    raise KeyError(f"Lease not found: {lease_id}")
+                if row["released_at"] is not None:
+                    raise KeyError(f"Active lease not found or already released: {lease_id}")
+                task_id = row["task_id"]
+                max_tok_row = await conn.fetchrow(
+                    "SELECT COALESCE(MAX(fencing_token), 0) AS max_tok FROM leases WHERE task_id = $1",
+                    task_id,
+                )
+                max_tok = int(max_tok_row["max_tok"]) if max_tok_row else 0
+                if int(row["fencing_token"]) != fencing_token or fencing_token < max_tok:
+                    raise ConcurrencyFenceError(
+                        f"Stale or mismatched fencing token {fencing_token} (lease token: {row['fencing_token']}, max: {max_tok}) for task {task_id}"
+                    )
+                now_dt = datetime.now(timezone.utc)
+                now = now_dt.isoformat()
+                cur_exp_dt = datetime.fromisoformat(str(row["expires_at"]))
+                target_exp = now_dt + timedelta(seconds=ttl_seconds)
+                expires_dt = target_exp if target_exp > cur_exp_dt else (cur_exp_dt + timedelta(seconds=1))
+                expires = expires_dt.isoformat()
+                await conn.execute(
+                    "UPDATE leases SET expires_at = $1, renewed_at = $2 WHERE lease_id = $3 AND released_at IS NULL",
+                    expires,
+                    now,
+                    lease_id,
+                )
+                worker_id = row["worker_id"]
+                await conn.execute(
+                    "UPDATE workers SET last_heartbeat_at = $1 WHERE worker_id = $2",
+                    now,
+                    worker_id,
+                )
+                updated = await conn.fetchrow("SELECT * FROM leases WHERE lease_id = $1", lease_id)
+                return self._row_to_dict(updated)  # type: ignore[return-value]
+
+    def release_lease(self, lease_id: str, fencing_token: int | None = None) -> dict[str, Any]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.release_lease_async, lease_id, fencing_token=fencing_token)
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM leases WHERE lease_id = ?", (lease_id,)).fetchone()
+            if not row:
+                raise KeyError(f"Lease not found: {lease_id}")
+            if fencing_token is not None and int(row["fencing_token"]) != fencing_token:
+                raise ConcurrencyFenceError(
+                    f"Fencing token mismatch on release: provided {fencing_token}, lease has {row['fencing_token']}"
+                )
+            now = utcnow_iso()
+            self.conn.execute(
+                "UPDATE leases SET released_at = ? WHERE lease_id = ? AND released_at IS NULL",
+                (now, lease_id),
+            )
+            self.conn.commit()
+            updated = self.conn.execute("SELECT * FROM leases WHERE lease_id = ?", (lease_id,)).fetchone()
+            return self._row_to_dict(updated)  # type: ignore[return-value]
+
+    async def release_lease_async(self, lease_id: str, fencing_token: int | None = None) -> dict[str, Any]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.release_lease, lease_id, fencing_token=fencing_token)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM leases WHERE lease_id = $1", lease_id)
+            if not row:
+                raise KeyError(f"Lease not found: {lease_id}")
+            if fencing_token is not None and int(row["fencing_token"]) != fencing_token:
+                raise ConcurrencyFenceError(
+                    f"Fencing token mismatch on release: provided {fencing_token}, lease has {row['fencing_token']}"
+                )
+            now = utcnow_iso()
+            await conn.execute(
+                "UPDATE leases SET released_at = $1 WHERE lease_id = $2 AND released_at IS NULL",
+                now,
+                lease_id,
+            )
+            updated = await conn.fetchrow("SELECT * FROM leases WHERE lease_id = $1", lease_id)
+            return self._row_to_dict(updated)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
     # Plans & Checkpoints (FR-012, FR-020, FR-021)

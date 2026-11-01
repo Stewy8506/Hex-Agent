@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .dashboard import DASHBOARD_HTML
+from .db import ConcurrencyFenceError
 from .models import TaskSubmitRequest
 from .orchestrator import HarnessOrchestrator
 
@@ -23,8 +25,9 @@ from .orchestrator import HarnessOrchestrator
 class HarnessAPIApp:
     """Pure routing logic for all `/v1/*` endpoints so both HTTP server and tests can call it directly."""
 
-    def __init__(self, orchestrator: HarnessOrchestrator):
+    def __init__(self, orchestrator: HarnessOrchestrator, auth_token: str | None = None):
         self.orch = orchestrator
+        self.auth_token = auth_token
 
     def handle_request(
         self,
@@ -41,6 +44,26 @@ class HarnessAPIApp:
         headers = headers or {}
 
         try:
+            # Check authentication if auth_token is configured
+            if self.auth_token is not None:
+                token = (
+                    headers.get("X-Worker-Token")
+                    or headers.get("x-worker-token")
+                    or ""
+                )
+                if not token:
+                    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+                    if auth_header.startswith("Bearer "):
+                        token = auth_header[7:].strip()
+                if token != self.auth_token:
+                    is_worker_or_mutating = (
+                        route in ("/v1/workers/register", "/v1/workers/heartbeat", "/v1/tasks/claim")
+                        or route.startswith("/v1/leases")
+                        or method in ("POST", "PUT", "DELETE")
+                    )
+                    if is_worker_or_mutating:
+                        return (HTTPStatus.UNAUTHORIZED, {"error": "Unauthorized worker token"}, "application/json")
+
             # Dashboard root
             if method == "GET" and route == "/":
                 return (HTTPStatus.OK, DASHBOARD_HTML, "text/html; charset=utf-8")
@@ -66,6 +89,15 @@ class HarnessAPIApp:
                 auto_exec = bool(body.get("auto_execute", True))
                 task = self.orch.submit_and_run(req, auto_execute=auto_exec)
                 return (HTTPStatus.CREATED, task, "application/json")
+
+            # Claim task: POST /v1/tasks/claim
+            if method == "POST" and route == "/v1/tasks/claim":
+                worker_id = str(body.get("worker_id", "worker-default"))
+                ttl_seconds = int(body.get("ttl_seconds", 300))
+                claimed = self.orch.ledger.claim_next_task(worker_id=worker_id, ttl_seconds=ttl_seconds)
+                if claimed:
+                    return (HTTPStatus.OK, claimed, "application/json")
+                return (HTTPStatus.OK, {"task": None}, "application/json")
 
             # GET /v1/tasks
             if method == "GET" and route == "/v1/tasks":
@@ -137,9 +169,57 @@ class HarnessAPIApp:
                     self.orch.resume_task(decided["task_id"])
                 return (HTTPStatus.OK, decided, "application/json")
 
-            # Workers: GET /v1/workers
+            # Workers: GET /v1/workers, POST /v1/workers/register, POST /v1/workers/heartbeat
             if method == "GET" and route == "/v1/workers":
                 return (HTTPStatus.OK, {"workers": self.orch.ledger.list_workers()}, "application/json")
+
+            if method == "POST" and route == "/v1/workers/register":
+                worker_id = str(body.get("worker_id") or f"worker-{uuid.uuid4().hex[:8]}")
+                machine_class = str(body.get("machine_class", "m4_air"))
+                cow_backend = str(body.get("cow_backend", "apfs_clone"))
+                capabilities = body.get("capabilities") or {}
+                local_llm_models = body.get("local_llm_models") or []
+                trust_level = str(body.get("trust_level", "trusted_local"))
+                res = self.orch.ledger.register_worker(
+                    worker_id=worker_id,
+                    machine_class=machine_class,
+                    cow_backend=cow_backend,
+                    capabilities=capabilities,
+                    local_llm_models=local_llm_models,
+                    trust_level=trust_level,
+                )
+                return (HTTPStatus.OK, res, "application/json")
+
+            if method == "POST" and route == "/v1/workers/heartbeat":
+                worker_id = str(body.get("worker_id", ""))
+                if not worker_id:
+                    return (HTTPStatus.BAD_REQUEST, {"error": "Missing worker_id"}, "application/json")
+                health = str(body.get("health", "HEALTHY"))
+                res = self.orch.ledger.heartbeat_worker(worker_id=worker_id, health=health)
+                return (HTTPStatus.OK, res, "application/json")
+
+            # Leases: POST /v1/leases/{lease_id}:renew & POST /v1/leases/{lease_id}:release
+            m_lease_renew = re.fullmatch(r"/v1/leases/([^/:]+):renew", route)
+            if method == "POST" and m_lease_renew:
+                lease_id = m_lease_renew.group(1)
+                fencing_token = int(body.get("fencing_token", 0))
+                ttl_seconds = int(body.get("ttl_seconds", 300))
+                res = self.orch.ledger.renew_lease(
+                    lease_id=lease_id,
+                    fencing_token=fencing_token,
+                    ttl_seconds=ttl_seconds,
+                )
+                return (HTTPStatus.OK, res, "application/json")
+
+            m_lease_release = re.fullmatch(r"/v1/leases/([^/:]+):release", route)
+            if method == "POST" and m_lease_release:
+                lease_id = m_lease_release.group(1)
+                fencing_token = int(body["fencing_token"]) if "fencing_token" in body and body["fencing_token"] is not None else None
+                res = self.orch.ledger.release_lease(
+                    lease_id=lease_id,
+                    fencing_token=fencing_token,
+                )
+                return (HTTPStatus.OK, res, "application/json")
 
             # Skills & SkillSpector: GET /v1/skills, POST /v1/skills:import, GET /v1/skills/{skill_id}/scans|revisions
             if method == "GET" and route == "/v1/skills":
@@ -192,6 +272,8 @@ class HarnessAPIApp:
 
             return (HTTPStatus.NOT_FOUND, {"error": f"Unknown endpoint: {method} {route}"}, "application/json")
 
+        except ConcurrencyFenceError as exc:
+            return (HTTPStatus.CONFLICT, {"error": "ConcurrencyFenceError", "detail": str(exc)}, "application/json")
         except KeyError as exc:
             return (HTTPStatus.NOT_FOUND, {"error": str(exc)}, "application/json")
         except PermissionError as exc:
@@ -200,8 +282,13 @@ class HarnessAPIApp:
             return (HTTPStatus.BAD_REQUEST, {"error": f"{type(exc).__name__}: {exc}"}, "application/json")
 
 
-def run_http_server(orchestrator: HarnessOrchestrator, host: str = "127.0.0.1", port: int = 8420) -> None:
-    app = HarnessAPIApp(orchestrator)
+def run_http_server(
+    orchestrator: HarnessOrchestrator,
+    host: str = "127.0.0.1",
+    port: int = 8420,
+    auth_token: str | None = None,
+) -> None:
+    app = HarnessAPIApp(orchestrator, auth_token=auth_token)
 
     class Handler(BaseHTTPRequestHandler):
         def _dispatch(self, method: str) -> None:
