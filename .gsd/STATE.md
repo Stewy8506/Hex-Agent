@@ -89,18 +89,26 @@
     - Hardened `LedgerStore.transition_task` and `transition_task_async` to preserve `terminal_reason` on interrupts.
     - Authored comprehensive test suite in `tests/test_autonomous_repair.py` covering happy path repairs, retry exhaustion, compound repairs, and budget escalation (127/127 total repository tests passing).
 
+14. **Phase 05 Dynamic DAG Replanning & Selective Subgraph Invalidation Complete (Plan 05-02):**
+    - Implemented `replan_dag` in `src/harness_core/orchestrator.py` with directed reachability analysis, unexpected side-effects detection (`actual - declared`), and dynamic DAG dependency resolver.
+    - Built selective subgraph invalidation: marks only transitive downstream steps as `INVALIDATED` for re-execution while preserving independent completed steps as `COMPLETED`.
+    - Integrated dynamic blast-radius test pinning via Active Graphify into `blast_radius_checks`.
+    - Maintained monotonic plan revision increments (`revision`, `supersedes_revision`) and cryptographically hash-chained `PLAN_REVISED` task events.
+    - Enhanced `LedgerStore` in `src/harness_core/db.py` with `PlanNode` serialization, `get_plan_revision`, and `list_plans`.
+    - Authored comprehensive test suite in `tests/test_dag_replanning.py` (132/132 total repository tests passing with zero failures).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full test suite passing cleanly with zero failures (127/127 tests green).
-- Phase 05 Plan 01 Complete (verified and committed).
+- None. Full test suite passing cleanly with zero failures (132/132 tests green).
+- Phase 05 Plan 01 and Plan 02 Complete (verified and committed).
 
 ---
 
 ## 3. Next Actions
 
-- Execute Phase 05 Plan 02: Dynamic DAG Replanning & Autonomous Repair Benchmark (`.gsd/phases/05-autonomous-repair-dag/05-02-PLAN.md`) [Wave 2, 3 tasks].
+- Phase 05 Complete. Proceed to next roadmap milestone/phase.
 
 
 
