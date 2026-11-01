@@ -15,12 +15,13 @@ from __future__ import annotations
 import collections
 import json
 import re
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
 from .cow import APFSAndPortableCoWProvider, WorkspaceSnapshotProvider, get_default_snapshot_provider
-from .db import LedgerStore
+from .db import LedgerStore, utcnow_iso
 from .gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
 from .graphify import ActiveGraphifyAdapter
 from .models import PlanNode, TaskBudget, TaskState, TaskSubmitRequest
@@ -509,6 +510,82 @@ class HarnessOrchestrator:
 
         return new_plan
 
+    def export_workspace_delta(self, task_id: str, attempt_ws: Path | str) -> dict[str, Any]:
+        """Exports workspace delta into a deterministic CAS tar.gz archive and records artifact in ledger."""
+        ws_path = Path(attempt_ws).resolve()
+        tree_sha = self.cow.compute_tree_sha(ws_path)
+        cas_dir = self.data_dir / "cas"
+        cas_dir.mkdir(parents=True, exist_ok=True)
+        tmp_archive = cas_dir / f"tmp_{uuid.uuid4().hex}.tar.gz"
+        archive_sha = self.cow.export_delta_archive(ws_path, tmp_archive)
+        dest_archive = cas_dir / f"{archive_sha}.tar.gz"
+        if dest_archive.exists():
+            tmp_archive.unlink(missing_ok=True)
+        else:
+            tmp_archive.rename(dest_archive)
+
+        artifact = self.ledger.record_artifact(
+            task_id=task_id,
+            kind="cow_delta_archive",
+            uri=str(dest_archive),
+            sha256=archive_sha,
+            size_bytes=dest_archive.stat().st_size,
+            media_type="application/gzip",
+            sensitivity="internal",
+        )
+        now = utcnow_iso()
+        with self.ledger._lock:
+            if self.ledger.backend_type == "postgres":
+                self.ledger._run_sync(
+                    self.ledger._execute_pg,
+                    "UPDATE tasks SET active_workspace_tree_sha = $1, updated_at = $2 WHERE task_id = $3",
+                    tree_sha,
+                    now,
+                    task_id,
+                )
+            else:
+                self.ledger.conn.execute(
+                    "UPDATE tasks SET active_workspace_tree_sha = ?, updated_at = ? WHERE task_id = ?",
+                    (tree_sha, now, task_id),
+                )
+                self.ledger.conn.commit()
+
+        return {
+            "artifact": artifact,
+            "artifact_id": artifact["artifact_id"],
+            "archive_path": str(dest_archive),
+            "archive_sha": archive_sha,
+            "workspace_tree_sha": tree_sha,
+        }
+
+    def reconstruct_workspace_from_delta(self, task_id: str, target_ws: Path | str) -> str:
+        """Reconstructs workspace directory from the latest CAS delta archive and verifies Merkle tree SHA."""
+        target_path = Path(target_ws).resolve()
+        task = self.ledger.get_task(task_id)
+        if not task:
+            raise KeyError(f"Task not found: {task_id}")
+
+        artifacts = [a for a in self.ledger.list_artifacts(task_id) if a.get("kind") == "cow_delta_archive"]
+        if not artifacts:
+            chk = self.ledger.get_latest_checkpoint(task_id)
+            if chk and chk.get("artifact_uri") and Path(chk["artifact_uri"]).is_file():
+                archive_path = Path(chk["artifact_uri"]).resolve()
+            else:
+                raise FileNotFoundError(f"No CoW delta archive artifact found for task {task_id}")
+        else:
+            archive_path = Path(artifacts[-1]["uri"]).resolve()
+
+        if not archive_path.is_file():
+            raise FileNotFoundError(f"CoW delta archive file missing on disk: {archive_path}")
+
+        reconstructed_sha = self.cow.import_delta_archive(archive_path, target_path)
+        expected_sha = task.get("active_workspace_tree_sha")
+        if expected_sha and reconstructed_sha != expected_sha:
+            raise ValueError(
+                f"Tree SHA mismatch during workspace reconstruction: expected {expected_sha}, got {reconstructed_sha}"
+            )
+        return reconstructed_sha
+
     def _execute_standard_dag(
         self,
         task: dict[str, Any],
@@ -519,17 +596,35 @@ class HarnessOrchestrator:
         task_id = task["task_id"]
         constraints = task.get("constraints") or {}
 
-        # Check if resuming from an existing valid checkpoint & CoW snapshot (FR-013)
+        attempt_ws = self.workspaces_root / f"ws_{task_id}_{len(self.ledger.list_attempts(task_id)) + 1}"
         latest_chk = self.ledger.get_latest_checkpoint(task_id)
-        if latest_chk and Path(latest_chk["snapshot_path"]).is_dir():
+        delta_artifacts = [a for a in self.ledger.list_artifacts(task_id) if a.get("kind") == "cow_delta_archive"]
+
+        # Check if resuming from an existing CAS delta archive or valid local checkpoint (FR-012/FR-013)
+        if delta_artifacts and Path(delta_artifacts[-1]["uri"]).is_file():
+            latest_delta = delta_artifacts[-1]
+            archive_path = Path(latest_delta["uri"]).resolve()
+            reconstructed_tree_sha = self.cow.import_delta_archive(archive_path, attempt_ws)
+            expected_sha = task.get("active_workspace_tree_sha") or (latest_chk.get("workspace_tree_sha") if latest_chk else None)
+            if expected_sha and reconstructed_tree_sha != expected_sha:
+                raise ValueError(
+                    f"Tree SHA mismatch during workspace reconstruction: expected {expected_sha}, got {reconstructed_tree_sha}"
+                )
+            base_tree_sha = reconstructed_tree_sha
+            base_snap = self.cow.create_snapshot(attempt_ws, label=f"reconstructed_{task_id}")
+            base_snap_path = base_snap.snapshot_path
+            completed_step_ids = set(latest_chk.get("completed_steps") or []) if latest_chk else set()
+        elif latest_chk and Path(latest_chk["snapshot_path"]).is_dir():
             base_snap_path = Path(latest_chk["snapshot_path"])
             base_tree_sha = latest_chk["workspace_tree_sha"]
             completed_step_ids = set(latest_chk.get("completed_steps") or [])
+            self.cow.clone_to_workspace(base_snap_path, attempt_ws)
         else:
             base_snap = self.cow.create_snapshot(source_ws, label=f"base_{task_id}")
             base_snap_path = base_snap.snapshot_path
             base_tree_sha = base_snap.workspace_tree_sha
             completed_step_ids = set()
+            self.cow.clone_to_workspace(base_snap_path, attempt_ws)
 
         # Create or reuse Plan DAG
         plan = self.ledger.get_latest_plan(task_id)
@@ -565,10 +660,6 @@ class HarnessOrchestrator:
                 reason_code="DAG_READY",
                 workspace_tree_sha=base_tree_sha,
             )
-
-        # Clone CoW snapshot into an isolated attempt working directory
-        attempt_ws = self.workspaces_root / f"ws_{task_id}_{len(self.ledger.list_attempts(task_id)) + 1}"
-        self.cow.clone_to_workspace(base_snap_path, attempt_ws)
 
         if lease_info is None:
             lease_info = self.ledger.acquire_lease_and_attempt(
@@ -633,6 +724,7 @@ class HarnessOrchestrator:
                         step_id=step_id,
                         workspace_dir=attempt_ws,
                         operations=node["code_mode_ops"],
+                        fencing_token=fencing_token,
                     )
                     for op in node["code_mode_ops"]:
                         if op.get("tool_id") == "write_file" and "path" in op.get("args", {}):
@@ -651,6 +743,7 @@ class HarnessOrchestrator:
                         tool_id=tool_id,
                         args=args,
                         workspace_dir=attempt_ws,
+                        fencing_token=fencing_token,
                     )
                     if tool_id == "write_file" and "path" in args:
                         p = str(args["path"])
@@ -711,6 +804,7 @@ class HarnessOrchestrator:
 
                 pending_ids = [n.get("step_id", "") for n in dag_nodes if n.get("step_id", "") not in completed_step_ids]
                 step_snap = self.cow.create_snapshot(attempt_ws, label=f"{task_id}_{step_id}")
+                delta_info = self.export_workspace_delta(task_id, attempt_ws)
                 self.ledger.create_checkpoint(
                     task_id=task_id,
                     attempt_id=attempt_id,
@@ -719,11 +813,13 @@ class HarnessOrchestrator:
                     pending_steps=pending_ids,
                     workspace_tree_sha=step_snap.workspace_tree_sha,
                     snapshot_path=str(step_snap.snapshot_path),
+                    artifact_uri=delta_info.get("archive_path"),
                 )
 
         except ApprovalRequiredInterrupt as apr_int:
             # Seal CoW checkpoint and pause in WAITING_APPROVAL
             chk_snap = self.cow.create_snapshot(attempt_ws, label=f"{task_id}_wait_approval")
+            delta_info = self.export_workspace_delta(task_id, attempt_ws)
             self.ledger.create_checkpoint(
                 task_id=task_id,
                 attempt_id=attempt_id,
@@ -732,6 +828,7 @@ class HarnessOrchestrator:
                 pending_steps=[n.get("step_id", "") for n in dag_nodes if n.get("step_id", "") not in completed_step_ids],
                 workspace_tree_sha=chk_snap.workspace_tree_sha,
                 snapshot_path=str(chk_snap.snapshot_path),
+                artifact_uri=delta_info.get("archive_path"),
             )
             self.ledger.update_attempt(
                 attempt_id,
@@ -941,6 +1038,7 @@ class HarnessOrchestrator:
                 for n in dag_nodes
                 if n.get("step_id", "") not in completed_step_ids
             ]
+            delta_info = self.export_workspace_delta(task_id, attempt_ws)
             self.ledger.create_checkpoint(
                 task_id=task_id,
                 attempt_id=attempt_id,
@@ -949,6 +1047,7 @@ class HarnessOrchestrator:
                 pending_steps=pending_steps,
                 workspace_tree_sha=forensic_sha,
                 snapshot_path=forensic_path,
+                artifact_uri=delta_info.get("archive_path"),
             )
 
             if budget_exceeded:

@@ -253,6 +253,7 @@ class ToolGateway:
         args: dict[str, Any],
         workspace_dir: Path | str,
         idempotency_key: str | None = None,
+        fencing_token: int | None = None,
     ) -> dict[str, Any]:
         """Executes a tool through the gateway or replays a sealed call in 0 ms."""
         if tool_id not in self.tools:
@@ -281,8 +282,9 @@ class ToolGateway:
                 arguments_redacted=redacted_args,
                 policy_decision=f"DENY:{reason}",
                 idempotency_key=idem_key,
+                fencing_token=fencing_token,
             )
-            self.ledger.seal_tool_call(call_id, {"error": reason}, status="DENIED")
+            self.ledger.seal_tool_call(call_id, {"error": reason}, status="DENIED", fencing_token=fencing_token)
             raise PolicyBlockedError(reason)
 
         if decision == PolicyDecisionType.REQUIRE_APPROVAL:
@@ -318,12 +320,13 @@ class ToolGateway:
                 policy_decision=f"ALLOW_REPLAY:{reason}",
                 idempotency_key=f"{idem_key}:replay:{attempt_id}",
                 replayed_from_call_id=prior["call_id"],
+                fencing_token=fencing_token,
             )
             replayed_result = dict(prior["result"])
             replayed_result["_replayed"] = True
             replayed_result["_replayed_from_call_id"] = prior["call_id"]
             replayed_result["_replay_latency_ms"] = round((time.perf_counter() - t0) * 1000, 3)
-            self.ledger.seal_tool_call(replay_call_id, replayed_result, status="SEALED")
+            self.ledger.seal_tool_call(replay_call_id, replayed_result, status="SEALED", fencing_token=fencing_token)
             return replayed_result
 
         # 3. Record PENDING journal entry before executing external/workspace side effect
@@ -338,6 +341,7 @@ class ToolGateway:
             arguments_redacted=redacted_args,
             policy_decision=f"ALLOW:{reason}",
             idempotency_key=idem_key,
+            fencing_token=fencing_token,
         )
 
         ws_path = Path(workspace_dir).resolve()
@@ -352,7 +356,7 @@ class ToolGateway:
             raw_result = spec.handler(ws_path, args)
         except Exception as exc:
             err_payload = {"ok": False, "error": redact_secrets(str(exc))}
-            self.ledger.seal_tool_call(call_id, err_payload, status="FAILED")
+            self.ledger.seal_tool_call(call_id, err_payload, status="FAILED", fencing_token=fencing_token)
             raise
 
         duration_ms = round((time.perf_counter() - t0) * 1000, 3)
@@ -373,7 +377,7 @@ class ToolGateway:
                         task_id, br.impacted_tests, br.warning_message
                     )
 
-        self.ledger.seal_tool_call(call_id, sanitized_result, status="SEALED")
+        self.ledger.seal_tool_call(call_id, sanitized_result, status="SEALED", fencing_token=fencing_token)
         return sanitized_result
 
     def execute_code_mode_composition(
@@ -384,6 +388,7 @@ class ToolGateway:
         step_id: str,
         workspace_dir: Path | str,
         operations: list[dict[str, Any]],
+        fencing_token: int | None = None,
     ) -> list[dict[str, Any]]:
         """FR-042..FR-044: Executes a multi-call Code Mode composition through the memoizing gateway.
 
@@ -401,6 +406,7 @@ class ToolGateway:
                 args=op.get("args", {}),
                 workspace_dir=workspace_dir,
                 idempotency_key=op.get("idempotency_key"),
+                fencing_token=fencing_token,
             )
             results.append(res)
             if op.get("simulate_crash_after"):

@@ -9,10 +9,13 @@ transport adapters:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
 import os
 import platform
+import shutil
 import signal
 import socket
 import subprocess
@@ -21,6 +24,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from .cow import get_default_snapshot_provider
@@ -134,9 +138,16 @@ class WorkerClient(Protocol):
         next_state: TaskState | str,
         reason_code: str = "WORKER_UPDATE",
         payload: dict[str, Any] | None = None,
+        fencing_token: int | None = None,
     ) -> dict[str, Any]: ...
 
     def execute_task(self, task_id: str, worker_id: str | None = None) -> dict[str, Any]: ...
+
+    def list_artifacts(self, task_id: str) -> list[dict[str, Any]]: ...
+
+    def download_artifact(self, artifact_id: str, dest_path: Path | str) -> Path: ...
+
+    def upload_delta_artifact(self, task_id: str, archive_path: Path | str) -> dict[str, Any]: ...
 
 
 class DirectLedgerWorkerClient:
@@ -189,14 +200,54 @@ class DirectLedgerWorkerClient:
         next_state: TaskState | str,
         reason_code: str = "WORKER_UPDATE",
         payload: dict[str, Any] | None = None,
+        fencing_token: int | None = None,
     ) -> dict[str, Any]:
         state = next_state if isinstance(next_state, TaskState) else TaskState(next_state)
-        return self.ledger.transition_task(task_id=task_id, next_state=state, reason_code=reason_code, payload=payload)
+        return self.ledger.transition_task(
+            task_id=task_id,
+            next_state=state,
+            reason_code=reason_code,
+            payload=payload,
+            fencing_token=fencing_token,
+        )
 
     def execute_task(self, task_id: str, worker_id: str | None = None) -> dict[str, Any]:
         if self.orch is not None:
             return self.orch.execute_task(task_id, worker_id=worker_id)
         return self.transition_task(task_id, TaskState.SUCCEEDED, reason_code="WORKER_DIRECT_EXECUTION")
+
+    def list_artifacts(self, task_id: str) -> list[dict[str, Any]]:
+        return self.ledger.list_artifacts(task_id)
+
+    def download_artifact(self, artifact_id: str, dest_path: Path | str) -> Path:
+        art = self.ledger.get_artifact(artifact_id)
+        if not art:
+            raise KeyError(f"Artifact not found: {artifact_id}")
+        src = Path(art["uri"]).resolve()
+        dst = Path(dest_path).resolve()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src != dst:
+            shutil.copy2(src, dst)
+        return dst
+
+    def upload_delta_artifact(self, task_id: str, archive_path: Path | str) -> dict[str, Any]:
+        p = Path(archive_path).resolve()
+        data = p.read_bytes()
+        sha = hashlib.sha256(data).hexdigest()
+        cas_dir = (self.orch.data_dir if self.orch else p.parent) / "cas"
+        cas_dir.mkdir(parents=True, exist_ok=True)
+        dest = cas_dir / f"{sha}.tar.gz"
+        if p != dest:
+            shutil.copy2(p, dest)
+        return self.ledger.record_artifact(
+            task_id=task_id,
+            kind="cow_delta_archive",
+            uri=str(dest),
+            sha256=sha,
+            size_bytes=len(data),
+            media_type="application/gzip",
+            sensitivity="internal",
+        )
 
 
 class RestWorkerClient:
@@ -306,6 +357,7 @@ class RestWorkerClient:
         next_state: TaskState | str,
         reason_code: str = "WORKER_UPDATE",
         payload: dict[str, Any] | None = None,
+        fencing_token: int | None = None,
     ) -> dict[str, Any]:
         state_str = next_state.value if isinstance(next_state, TaskState) else str(next_state)
         # Check if pause/resume/cancel endpoint
@@ -317,11 +369,53 @@ class RestWorkerClient:
 
         if action:
             return self._request("POST", f"/v1/tasks/{task_id}:{action}", payload or {})
-        return self._request("GET", f"/v1/tasks/{task_id}")
+
+        req_body: dict[str, Any] = {
+            "next_state": state_str,
+            "reason_code": reason_code,
+            "payload": payload or {},
+        }
+        if fencing_token is not None:
+            req_body["fencing_token"] = fencing_token
+        return self._request("POST", f"/v1/tasks/{task_id}:transition", req_body)
 
     def execute_task(self, task_id: str, worker_id: str | None = None) -> dict[str, Any]:
         # For remote REST workers, check task status
         return self.get_task(task_id) or {}
+
+    def list_artifacts(self, task_id: str) -> list[dict[str, Any]]:
+        res = self._request("GET", f"/v1/tasks/{task_id}/artifacts")
+        return res.get("artifacts") or []
+
+    def download_artifact(self, artifact_id: str, dest_path: Path | str) -> Path:
+        url = f"{self.server_url}/v1/artifacts/{artifact_id}/file"
+        headers: dict[str, str] = {}
+        if self.token:
+            headers["X-Worker-Token"] = self.token
+            headers["Authorization"] = f"Bearer {self.token}"
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        dst = Path(dest_path).resolve()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                dst.write_bytes(resp.read())
+            return dst
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8")
+            if exc.code == 409:
+                raise ConcurrencyFenceError(f"ConcurrencyFenceError: {err_body}")
+            if exc.code == 404:
+                raise KeyError(f"HTTP 404 Not Found: {err_body}")
+            raise RuntimeError(f"HTTP {exc.code} Error: {err_body}")
+
+    def upload_delta_artifact(self, task_id: str, archive_path: Path | str) -> dict[str, Any]:
+        p = Path(archive_path).resolve()
+        data = p.read_bytes()
+        payload = {
+            "task_id": task_id,
+            "payload_base64": base64.b64encode(data).decode("utf-8"),
+        }
+        return self._request("POST", "/v1/artifacts/delta", payload)
 
 
 class WorkerDaemon:

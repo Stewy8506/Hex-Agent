@@ -7,6 +7,8 @@ so it runs out-of-the-box with zero external package installation required.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 import uuid
@@ -269,6 +271,79 @@ class HarnessAPIApp:
                         "application/json",
                     )
 
+            # Task State Transitions: POST /v1/tasks/{task_id}:transition
+            m_task_trans = re.fullmatch(r"/v1/tasks/([^/:]+):transition", route)
+            if method == "POST" and m_task_trans:
+                task_id = m_task_trans.group(1)
+                next_state = str(body.get("next_state", "SUCCEEDED"))
+                fencing_token = body.get("fencing_token")
+                if fencing_token is not None:
+                    fencing_token = int(fencing_token)
+                reason_code = str(body.get("reason_code", "WORKER_UPDATE"))
+                actor = str(body.get("actor", "worker"))
+                res = self.orch.ledger.transition_task(
+                    task_id=task_id,
+                    next_state=next_state,
+                    fencing_token=fencing_token,
+                    reason_code=reason_code,
+                    actor=actor,
+                    payload=body.get("payload"),
+                )
+                return (HTTPStatus.OK, res, "application/json")
+
+            # Artifacts: POST /v1/artifacts/delta & GET /v1/artifacts/{artifact_id}/file
+            if method == "POST" and route == "/v1/artifacts/delta":
+                task_id = "default"
+                content: bytes | None = None
+                if isinstance(body, bytes):
+                    content = body
+                    task_id = str(query.get("task_id", [None])[0] or headers.get("x-task-id") or headers.get("X-Task-Id") or "default")
+                elif isinstance(body, dict):
+                    task_id = str(body.get("task_id") or query.get("task_id", [None])[0] or headers.get("x-task-id") or headers.get("X-Task-Id") or "default")
+                    if "file_path" in body and body["file_path"]:
+                        fpath = Path(body["file_path"]).resolve()
+                        if not fpath.is_file():
+                            return (HTTPStatus.BAD_REQUEST, {"error": f"Delta archive file not found: {fpath}"}, "application/json")
+                        content = fpath.read_bytes()
+                    elif "payload_base64" in body and body["payload_base64"]:
+                        content = base64.b64decode(body["payload_base64"])
+                    elif "data_base64" in body and body["data_base64"]:
+                        content = base64.b64decode(body["data_base64"])
+                    elif "content" in body and isinstance(body["content"], (bytes, str)):
+                        content = body["content"].encode("utf-8") if isinstance(body["content"], str) else body["content"]
+
+                if not content:
+                    return (HTTPStatus.BAD_REQUEST, {"error": "Missing or empty delta archive payload"}, "application/json")
+
+                sha = hashlib.sha256(content).hexdigest()
+                cas_dir = self.orch.data_dir / "cas"
+                cas_dir.mkdir(parents=True, exist_ok=True)
+                dest_file = cas_dir / f"{sha}.tar.gz"
+                if not dest_file.exists():
+                    dest_file.write_bytes(content)
+
+                art = self.orch.ledger.record_artifact(
+                    task_id=task_id,
+                    kind="cow_delta_archive",
+                    uri=str(dest_file),
+                    sha256=sha,
+                    size_bytes=len(content),
+                    media_type="application/gzip",
+                    sensitivity="internal",
+                )
+                return (HTTPStatus.CREATED, art, "application/json")
+
+            m_art_file = re.fullmatch(r"/v1/artifacts/([^/:]+)/file", route)
+            if method == "GET" and m_art_file:
+                artifact_id = m_art_file.group(1)
+                art = self.orch.ledger.get_artifact(artifact_id)
+                if not art:
+                    return (HTTPStatus.NOT_FOUND, {"error": f"Artifact not found: {artifact_id}"}, "application/json")
+                fpath = Path(art["uri"]).resolve()
+                if not fpath.is_file():
+                    return (HTTPStatus.NOT_FOUND, {"error": f"Artifact file missing on disk: {fpath}"}, "application/json")
+                return (HTTPStatus.OK, fpath.read_bytes(), "application/gzip")
+
             return (HTTPStatus.NOT_FOUND, {"error": f"Unknown endpoint: {method} {route}"}, "application/json")
 
         except ConcurrencyFenceError as exc:
@@ -292,13 +367,23 @@ def run_http_server(
     class Handler(BaseHTTPRequestHandler):
         def _dispatch(self, method: str) -> None:
             length = int(self.headers.get("Content-Length", "0"))
-            raw_body = self.rfile.read(length).decode("utf-8") if length > 0 else ""
-            body: dict[str, Any] = {}
-            if raw_body.strip():
-                try:
-                    body = json.loads(raw_body)
-                except json.JSONDecodeError:
-                    body = {}
+            content_type = self.headers.get("Content-Type", "")
+            raw = self.rfile.read(length) if length > 0 else b""
+            body: dict[str, Any] | bytes = {}
+            if "application/json" in content_type:
+                if raw:
+                    try:
+                        body = json.loads(raw.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        body = {}
+            elif "gzip" in content_type or "octet-stream" in content_type or "/v1/artifacts/delta" in self.path:
+                body = raw
+            else:
+                if raw:
+                    try:
+                        body = json.loads(raw.decode("utf-8"))
+                    except Exception:
+                        body = raw
             hdrs = {k: v for k, v in self.headers.items()}
 
             # Optional SSE mode on GET /v1/tasks/{task_id}/events?stream=true
@@ -312,11 +397,15 @@ def run_http_server(
                 self.wfile.write(f"event: task_events\ndata: {data_str}\n\n".encode("utf-8"))
                 return
 
-            status, payload, content_type = app.handle_request(method, self.path, body, hdrs)
+            status, payload, res_type = app.handle_request(method, self.path, body, hdrs)
             self.send_response(status)
-            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Type", res_type)
+            if res_type == "application/gzip":
+                self.send_header("Content-Disposition", 'attachment; filename="artifact.tar.gz"')
             self.end_headers()
-            if isinstance(payload, str):
+            if isinstance(payload, bytes):
+                self.wfile.write(payload)
+            elif isinstance(payload, str):
                 self.wfile.write(payload.encode("utf-8"))
             else:
                 self.wfile.write(json.dumps(payload, indent=2, default=str).encode("utf-8"))

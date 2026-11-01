@@ -42,6 +42,7 @@ class WorkspaceSnapshotProvider(Protocol):
     def clone_to_workspace(self, snapshot_path: Path | str, target_dir: Path | str) -> str: ...
     def rollback_workspace(self, workspace_dir: Path | str, snapshot_path: Path | str) -> str: ...
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str: ...
+    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str: ...
     def discard_snapshot(self, snapshot_path: Path | str) -> None: ...
 
 
@@ -72,6 +73,87 @@ def compute_tree_sha(directory: Path | str) -> str:
             content_sha = hashlib.sha256(fpath.read_bytes()).hexdigest()
             hasher.update(f"F:{rel_path}:{content_sha}\n".encode("utf-8"))
     return hasher.hexdigest()
+
+
+def import_delta_archive(archive_path: Path | str, target_dir: Path | str) -> str:
+    """Safely extracts a CoW delta archive (.tar.gz) into target_dir with tar-slip defense and returns tree SHA.
+
+    Validates that no archive member escapes target_dir (preventing path traversal).
+    If members are wrapped in a root 'workspace' directory, contents are unpacked directly into target_dir.
+    """
+    archive = Path(archive_path).resolve()
+    if not archive.is_file():
+        raise FileNotFoundError(f"Delta archive not found: {archive}")
+
+    target = Path(target_dir).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+
+    # Clean existing non-ignored files in target directory to ensure deterministic state
+    for item in target.iterdir():
+        if item.name not in IGNORE_DIRS and not item.name.startswith(".DS_Store"):
+            if item.is_dir() and not item.is_symlink():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+
+    with tarfile.open(archive, "r:gz") as tar:
+        members = tar.getmembers()
+        non_empty = [m for m in members if m.name.strip("/")]
+        has_workspace_prefix = bool(
+            non_empty
+            and all(
+                m.name.lstrip("/").replace("\\", "/") == "workspace"
+                or m.name.lstrip("/").replace("\\", "/").startswith("workspace/")
+                for m in non_empty
+            )
+        )
+
+        for member in members:
+            raw_name = member.name.lstrip("/").replace("\\", "/")
+            if has_workspace_prefix:
+                if raw_name == "workspace":
+                    continue
+                rel_part = raw_name[len("workspace/") :].lstrip("/")
+            else:
+                rel_part = raw_name
+
+            if not rel_part:
+                continue
+
+            # Tar-slip traversal validation: disallow '..' path segments
+            if ".." in Path(rel_part).parts:
+                raise ValueError(f"Tar-slip directory traversal detected in archive member: '{member.name}'")
+
+            dest_path = (target / rel_part).resolve()
+            try:
+                dest_path.relative_to(target)
+            except ValueError:
+                raise ValueError(
+                    f"Tar-slip vulnerability detected: member '{member.name}' resolves to '{dest_path}' outside target '{target}'"
+                )
+
+            if member.isdir():
+                dest_path.mkdir(parents=True, exist_ok=True)
+            elif member.isreg():
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                extracted_f = tar.extractfile(member)
+                if extracted_f is not None:
+                    dest_path.write_bytes(extracted_f.read())
+            elif member.issym():
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                link_target = member.linkname
+                if link_target.startswith("/"):
+                    raise ValueError(f"Absolute symlink target forbidden in delta archive: '{link_target}'")
+                resolved_link = (dest_path.parent / link_target).resolve()
+                try:
+                    resolved_link.relative_to(target)
+                except ValueError:
+                    raise ValueError(f"Symlink target escapes workspace root: '{link_target}'")
+                if dest_path.exists() or dest_path.is_symlink():
+                    dest_path.unlink()
+                os.symlink(link_target, dest_path)
+
+    return compute_tree_sha(target)
 
 
 def _cow_copy_tree(src: Path, dst: Path, apfs_supported: bool = False) -> None:
@@ -218,6 +300,9 @@ class APFSAndPortableCoWProvider:
         with tarfile.open(dest, "w:gz") as tar:
             tar.add(snap, arcname="workspace")
         return hashlib.sha256(dest.read_bytes()).hexdigest()
+
+    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str:
+        return import_delta_archive(archive_path, target_dir)
 
     def discard_snapshot(self, snapshot_path: Path | str) -> None:
         snap = Path(snapshot_path).resolve()
@@ -475,6 +560,9 @@ class OverlayFSSnapshotProvider:
             tar.add(snap, arcname="workspace")
         return hashlib.sha256(dest.read_bytes()).hexdigest()
 
+    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str:
+        return import_delta_archive(archive_path, target_dir)
+
     def discard_snapshot(self, snapshot_path: Path | str) -> None:
         snap = Path(snapshot_path).resolve()
         for ws_str, info in list(self._active_mounts.items()):
@@ -610,6 +698,9 @@ class BtrfsSnapshotProvider:
             tar.add(snap, arcname="workspace")
         return hashlib.sha256(dest.read_bytes()).hexdigest()
 
+    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str:
+        return import_delta_archive(archive_path, target_dir)
+
     def discard_snapshot(self, snapshot_path: Path | str) -> None:
         snap = Path(snapshot_path).resolve()
         del_cmd = ["btrfs", "subvolume", "delete", str(snap)]
@@ -640,12 +731,17 @@ def get_default_snapshot_provider(root_dir: Path | str | None = None) -> Workspa
     return APFSAndPortableCoWProvider(root)
 
 
+ApfsSnapshotProvider = APFSAndPortableCoWProvider
+
+
 __all__ = [
     "IGNORE_DIRS",
     "SnapshotMetadata",
     "WorkspaceSnapshotProvider",
     "compute_tree_sha",
+    "import_delta_archive",
     "APFSAndPortableCoWProvider",
+    "ApfsSnapshotProvider",
     "OverlayFSSnapshotProvider",
     "BtrfsSnapshotProvider",
     "get_default_snapshot_provider",
