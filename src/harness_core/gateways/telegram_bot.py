@@ -532,10 +532,12 @@ class TelegramBotGateway:
             self.transport.call_api("sendMessage", {"chat_id": chat_id, "text": card})
             return {"ok": False, "reason": "no_orchestrator", "text": card}
 
+        steps = message.get("steps")
         req = TaskSubmitRequest(
             goal=goal,
             project_id="telegram",
             workspace_root=str(self.orchestrator.default_workspace),
+            steps=steps,
         )
         task = self.orchestrator.submit_and_run(req)
         task_id = task.get("task_id", "unknown")
@@ -551,6 +553,14 @@ class TelegramBotGateway:
             "text": card,
             "parse_mode": "Markdown",
         })
+
+        if status == "WAITING_APPROVAL":
+            approvals = self.orchestrator.ledger.list_approvals(
+                task_id=task_id, decision="PENDING"
+            )
+            if approvals:
+                self.send_approval_request(approvals[0], chat_id=chat_id)
+
         return {
             "ok": True,
             "action": "task_submitted",
@@ -670,6 +680,22 @@ class TelegramBotGateway:
             if task_id:
                 try:
                     self.orchestrator.resume_task(task_id)
+                    resumed_task = self.orchestrator.ledger.get_task(task_id)
+                    if (
+                        resumed_task
+                        and resumed_task.get("status") == "SUCCEEDED"
+                        and chat_id is not None
+                    ):
+                        comp_card = (
+                            f"🏁 *Task Completed Successfully: `{task_id}`*\n\n"
+                            f"*Status:* `SUCCEEDED`\n"
+                            f"*Goal:* {resumed_task.get('goal', '')}"
+                        )
+                        self.transport.call_api("sendMessage", {
+                            "chat_id": chat_id,
+                            "text": comp_card,
+                            "parse_mode": "Markdown",
+                        })
                 except Exception as exc:
                     logger.error("Failed resuming task %s on approval: %s", task_id, exc)
 
