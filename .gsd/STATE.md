@@ -1,9 +1,9 @@
 # Current Project State: Custom Autonomous AI Harness
 
-**Date:** 2026-10-31  
+**Date:** 2026-11-01  
 **Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** In Progress — Phase 05 Complete, Ready for Phase 06  
-**Active Phase:** Phase 06 — Distributed Worker Daemon & Cross-Machine CoW Sync  
+**Status:** Complete — Milestone M1 (Phases 01–06 Complete, 152/152 tests green)  
+**Active Phase:** Phase 06 Complete  
 
 ---
 
@@ -105,21 +105,28 @@
     - Added `harness worker` CLI command in `src/harness_core/cli.py`.
     - Authored comprehensive test suite in `tests/test_worker_daemon.py` (140/140 total repository tests passing with zero failures).
 
+16. **Phase 06 Cross-Machine CoW Delta Sync, Lease Handover & Fencing Defense Complete (Plan 06-02):**
+    - Implemented `import_delta_archive` and `export_delta_archive` across all snapshot providers in `src/harness_core/cow.py` with tar-slip traversal protection and Merkle tree SHA verification.
+    - Added CAS artifact transfer endpoints in `src/harness_core/server.py` (`POST /v1/artifacts/delta`, `GET /v1/artifacts/{id}/file`) and methods in `src/harness_core/worker_daemon.py`.
+    - Implemented `reap_expired_leases` in `src/harness_core/db.py` for automated re-queuing of abandoned tasks upon lease expiration.
+    - Implemented lease handover with strictly monotonic fencing token increments (1 -> 2) and `LEASE_TAKEOVER` task events.
+    - Integrated remote workspace reconstruction from CAS delta archives in `src/harness_core/orchestrator.py` with tree SHA validation.
+    - Enforced monotonic fencing token defense rejecting stale workers on `begin_tool_call`, `seal_tool_call`, `transition_task`, and `renew_lease` (`ConcurrencyFenceError` / HTTP 409 Conflict).
+    - Replayed previously executed tool calls in 0ms (< 15ms) via `ToolGateway` memoization from call journal.
+    - Authored comprehensive test suite in `tests/test_cross_machine_cow_sync.py` (152/152 total repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full test suite passing cleanly with zero failures (140/140 tests green).
-- Phase 06 Plan 01 complete; ready for Phase 06 Plan 02.
+- None. Full repository test suite passing cleanly with zero failures (152/152 tests green).
+- Phase 06 complete across both plans (06-01 and 06-02). Milestone M1 complete.
 
 ---
 
 ## 3. Next Actions
 
-- Execute Phase 06 Plan 02 (`06-02-PLAN.md`):
-  - Task 1: Cross-Machine CoW Delta Archive Export/Import & CAS Artifact Transfer.
-  - Task 2: Lease Expiry Handover, 0ms Journal Replay & Monotonic Fencing Defense.
-  - Task 3: Comprehensive Test Suite in `tests/test_cross_machine_cow_sync.py`.
+- Milestone audit and review, or proceed to next milestone in roadmap.
 
 
 
