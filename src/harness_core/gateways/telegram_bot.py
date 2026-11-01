@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 
+from harness_core.cow import compute_workspace_diff
+from harness_core.gateway import redact_secrets
+from harness_core.models import TaskSubmitRequest
+from harness_core.webhooks import _extract_approval_fields
+
 logger = logging.getLogger("harness_core.gateways.telegram_bot")
 
 
@@ -206,7 +211,6 @@ class MockTelegramTransport:
         if method == "getUpdates":
             offset = (payload or {}).get("offset", 0)
             eligible = [u for u in self.updates_queue if u.get("update_id", 0) >= offset]
-            # Drain returned updates from queue
             remaining = [u for u in self.updates_queue if u.get("update_id", 0) < offset]
             self.updates_queue = remaining
             return {"ok": True, "result": eligible}
@@ -328,20 +332,455 @@ class TelegramBotGateway:
             return self.handle_callback_query(update["callback_query"])
         return None
 
+    def _compute_task_diff(self, task_id: str) -> str:
+        """Compute workspace unified diff between base checkpoint and attempt workspace."""
+        if not self.orchestrator:
+            return ""
+        chk = self.orchestrator.ledger.get_latest_checkpoint(task_id)
+        attempts = self.orchestrator.ledger.list_attempts(task_id)
+        if not attempts:
+            return ""
+        attempt_ws = attempts[-1].get("workspace_path")
+        if not attempt_ws or not Path(attempt_ws).is_dir():
+            attempt_ws = str(self.orchestrator.default_workspace)
+
+        base_dir: str | None = None
+        if chk and chk.get("snapshot_path") and Path(chk["snapshot_path"]).is_dir():
+            base_dir = chk["snapshot_path"]
+        else:
+            base_dir = str(self.orchestrator.default_workspace)
+
+        if str(base_dir) == str(attempt_ws):
+            return ""
+        return compute_workspace_diff(base_dir, attempt_ws)
+
     def handle_message(self, message: dict[str, Any]) -> dict[str, Any]:
-        """Placeholder for message handling (implemented in Task 2)."""
+        """Dispatch conversational messages and slash commands."""
         user_id = (message.get("from") or {}).get("id")
         chat_id = (message.get("chat") or {}).get("id")
+        text = str(message.get("text") or "").strip()
+
         ok, reason = self.check_access(user_id, chat_id)
         if not ok:
-            return {"ok": False, "reason": reason}
-        return {"ok": True, "text": "Received"}
+            refusal_text = "⛔ Unauthorized operator. Access denied."
+            if chat_id is not None:
+                self.transport.call_api("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": refusal_text,
+                })
+            return {"ok": False, "reason": reason, "text": refusal_text}
+
+        if not text:
+            return {"ok": False, "reason": "empty_text"}
+
+        # Route /start and /help
+        if text in ("/start", "/help") or text.startswith(("/start ", "/help ")):
+            help_text = (
+                "🤖 *HEX Autonomous AI Workbench*\n\n"
+                "Available commands:\n"
+                "• `/task <goal>` — Submit a new autonomous task\n"
+                "• `/status [id]` — Check status of recent tasks or specific task\n"
+                "• `/diff [id]` — View CoW workspace unified diff\n"
+                "• `/cancel [id]` — Cancel task & roll back workspace\n"
+                "• `/help` — Display this command reference\n\n"
+                "_Or simply type any message to delegate a task immediately._"
+            )
+            self.transport.call_api("sendMessage", {
+                "chat_id": chat_id,
+                "text": help_text,
+                "parse_mode": "Markdown",
+            })
+            return {"ok": True, "action": "help", "text": help_text}
+
+        # Route /status [id]
+        if text == "/status" or text.startswith("/status "):
+            arg = text[len("/status"):].strip()
+            if arg:
+                if not self.orchestrator:
+                    card = f"❌ Orchestrator not connected."
+                    self.transport.call_api("sendMessage", {"chat_id": chat_id, "text": card})
+                    return {"ok": False, "reason": "no_orchestrator", "text": card}
+
+                task = self.orchestrator.ledger.get_task(arg)
+                if not task:
+                    card = f"❌ *Task Not Found:* `{arg}`"
+                else:
+                    attempts = self.orchestrator.ledger.list_attempts(arg)
+                    step = attempts[-1].get("active_step_id", "N/A") if attempts else "N/A"
+                    reason = task.get("terminal_reason") or "None"
+                    created = task.get("created_at") or "N/A"
+                    updated = task.get("updated_at") or "N/A"
+                    card = (
+                        f"📋 *Task Status: `{arg}`*\n\n"
+                        f"*Status:* `{task['status']}`\n"
+                        f"*Goal:* {task.get('goal', '')}\n"
+                        f"*Step:* `{step}`\n"
+                        f"*Reason:* {reason}\n"
+                        f"*Created:* `{created}`\n"
+                        f"*Updated:* `{updated}`"
+                    )
+                self.transport.call_api("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": card,
+                    "parse_mode": "Markdown",
+                })
+                return {"ok": True, "action": "status", "text": card, "task": task}
+            else:
+                if not self.orchestrator:
+                    card = "❌ Orchestrator not connected."
+                    self.transport.call_api("sendMessage", {"chat_id": chat_id, "text": card})
+                    return {"ok": False, "reason": "no_orchestrator", "text": card}
+
+                tasks = self.orchestrator.ledger.list_tasks(limit=5)
+                if not tasks:
+                    card = "📋 *No recent tasks found.*"
+                else:
+                    lines = ["📋 *Recent Tasks:*\n"]
+                    for t in tasks:
+                        tid = t.get("task_id", "")
+                        st = t.get("status", "")
+                        gl = t.get("goal", "")
+                        if len(gl) > 40:
+                            gl = gl[:37] + "..."
+                        lines.append(f"• `{tid}`: *{st}* — {gl}")
+                    card = "\n".join(lines)
+                self.transport.call_api("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": card,
+                    "parse_mode": "Markdown",
+                })
+                return {"ok": True, "action": "status_list", "text": card, "tasks": tasks}
+
+        # Route /diff [id]
+        if text == "/diff" or text.startswith("/diff "):
+            arg = text[len("/diff"):].strip()
+            if not arg:
+                if not self.orchestrator:
+                    card = "❌ Orchestrator not connected."
+                    self.transport.call_api("sendMessage", {"chat_id": chat_id, "text": card})
+                    return {"ok": False, "reason": "no_orchestrator", "text": card}
+                recent = self.orchestrator.ledger.list_tasks(limit=1)
+                if recent:
+                    arg = recent[0]["task_id"]
+                else:
+                    card = "⚠️ No task ID provided and no recent tasks found."
+                    self.transport.call_api("sendMessage", {"chat_id": chat_id, "text": card})
+                    return {"ok": False, "reason": "no_task", "text": card}
+
+            diff_text = self._compute_task_diff(arg)
+            if not diff_text or not diff_text.strip():
+                card = f"ℹ️ *No workspace diff found for task* `{arg}`."
+            else:
+                if len(diff_text) > 3500:
+                    diff_text = diff_text[:3450] + "\n... [truncated]"
+                card = f"🔍 *Workspace Diff for Task `{arg}`:*\n```diff\n{diff_text}\n```"
+
+            self.transport.call_api("sendMessage", {
+                "chat_id": chat_id,
+                "text": card,
+                "parse_mode": "Markdown",
+            })
+            return {"ok": True, "action": "diff", "text": card, "task_id": arg}
+
+        # Route /cancel [id]
+        if text == "/cancel" or text.startswith("/cancel "):
+            arg = text[len("/cancel"):].strip()
+            if not arg:
+                card = "⚠️ Please specify a task ID to cancel, e.g.: `/cancel <task_id>`"
+                self.transport.call_api("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": card,
+                    "parse_mode": "Markdown",
+                })
+                return {"ok": False, "reason": "missing_task_id", "text": card}
+
+            if not self.orchestrator:
+                card = "❌ Orchestrator not connected."
+                self.transport.call_api("sendMessage", {"chat_id": chat_id, "text": card})
+                return {"ok": False, "reason": "no_orchestrator", "text": card}
+
+            try:
+                self.orchestrator.cancel_task(arg, actor=f"tg:{user_id}")
+                card = f"⏹ *Task Canceled:* `{arg}`\nWorkspace uncommitted changes rolled back."
+            except Exception as exc:
+                card = f"❌ *Failed to cancel task `{arg}`:* {exc}"
+
+            self.transport.call_api("sendMessage", {
+                "chat_id": chat_id,
+                "text": card,
+                "parse_mode": "Markdown",
+            })
+            return {"ok": True, "action": "cancel", "text": card, "task_id": arg}
+
+        # Route /task <goal> or direct conversational text prompt
+        goal = ""
+        if text.startswith("/task"):
+            goal = text[len("/task"):].strip()
+            if not goal:
+                card = "⚠️ Please specify a task goal, e.g.: `/task Fix memory leak in worker`"
+                self.transport.call_api("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": card,
+                    "parse_mode": "Markdown",
+                })
+                return {"ok": False, "reason": "empty_goal", "text": card}
+        else:
+            goal = text
+
+        if not self.orchestrator:
+            card = "❌ Orchestrator not connected."
+            self.transport.call_api("sendMessage", {"chat_id": chat_id, "text": card})
+            return {"ok": False, "reason": "no_orchestrator", "text": card}
+
+        req = TaskSubmitRequest(
+            goal=goal,
+            project_id="telegram",
+            workspace_root=str(self.orchestrator.default_workspace),
+        )
+        task = self.orchestrator.submit_and_run(req)
+        task_id = task.get("task_id", "unknown")
+        status = task.get("status", "SUBMITTED")
+
+        card = (
+            f"🚀 *Task Submitted: `{task_id}`*\n\n"
+            f"*Status:* `{status}`\n"
+            f"*Goal:* {goal}"
+        )
+        self.transport.call_api("sendMessage", {
+            "chat_id": chat_id,
+            "text": card,
+            "parse_mode": "Markdown",
+        })
+        return {
+            "ok": True,
+            "action": "task_submitted",
+            "task_id": task_id,
+            "task": task,
+            "text": card,
+        }
+
+    def send_approval_request(
+        self,
+        approval_record: dict[str, Any],
+        chat_id: str | int | None = None,
+    ) -> dict[str, Any]:
+        """Format approval request and send interactive inline keyboard card."""
+        target_chat_id = chat_id
+        if target_chat_id is None:
+            if self.config.allowed_chat_ids:
+                target_chat_id = next(iter(self.config.allowed_chat_ids))
+            elif self.config.allowed_user_ids:
+                target_chat_id = next(iter(self.config.allowed_user_ids))
+            else:
+                logger.error("No chat_id available to send approval request")
+                return {"ok": False, "description": "No destination chat_id configured"}
+
+        data = _extract_approval_fields(approval_record)
+        approval_id = data["approval_id"]
+        task_id = data["task_id"]
+        step_id = data["step_id"] or "N/A"
+        action_type = data["action_type"]
+        risk_level = data["risk_level"]
+        scrubbed_summary = data["scrubbed_summary"]
+
+        try:
+            params_str = json.dumps(data["scrubbed_params"], indent=2, sort_keys=True)
+        except Exception:
+            params_str = str(data["scrubbed_params"])
+        if len(params_str) > 1000:
+            params_str = params_str[:997] + "..."
+
+        text = (
+            f"🚨 *HEX Approval Request ({risk_level})*\n\n"
+            f"*Task ID:* `{task_id}`\n"
+            f"*Step ID:* `{step_id}`\n"
+            f"*Tool Name:* `{action_type}`\n"
+            f"*Risk Class:* `{risk_level}`\n"
+            f"*Blast Radius:* {scrubbed_summary}\n\n"
+            f"*Parameters:*\n```json\n{params_str}\n```\n\n"
+            f"⚠️ *Privileged operation requires operator authorization.*"
+        )
+
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Approve", "callback_data": f"approve:{approval_id}"},
+                    {"text": "❌ Reject", "callback_data": f"reject:{approval_id}"},
+                ],
+                [
+                    {"text": "🔍 View Diff", "callback_data": f"diff:{approval_id}"},
+                    {"text": "⏹ Cancel Task", "callback_data": f"cancel:{approval_id}"},
+                ],
+            ]
+        }
+
+        payload = {
+            "chat_id": target_chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "reply_markup": reply_markup,
+        }
+        return self.transport.call_api("sendMessage", payload)
 
     def handle_callback_query(self, callback_query: dict[str, Any]) -> dict[str, Any]:
-        """Placeholder for callback handling (implemented in Task 2)."""
+        """Handle interactive inline keyboard callbacks."""
         user_id = (callback_query.get("from") or {}).get("id")
-        chat_id = ((callback_query.get("message") or {}).get("chat") or {}).get("id")
+        callback_id = str(callback_query.get("id") or "cb_mock")
+        data = str(callback_query.get("data") or "")
+        msg = callback_query.get("message") or {}
+        chat_id = (msg.get("chat") or {}).get("id")
+        message_id = msg.get("message_id")
+
         ok, reason = self.check_access(user_id, chat_id)
         if not ok:
-            return {"ok": False, "reason": reason}
-        return {"ok": True, "action": "acknowledged"}
+            self.transport.call_api("answerCallbackQuery", {
+                "callback_query_id": callback_id,
+                "text": "⛔ Unauthorized operator",
+                "show_alert": True,
+            })
+            return {"ok": False, "reason": "unauthorized"}
+
+        action, _, target_id = data.partition(":")
+        target_id = target_id.strip()
+
+        if action == "approve":
+            if not self.orchestrator:
+                self.transport.call_api("answerCallbackQuery", {
+                    "callback_query_id": callback_id,
+                    "text": "Orchestrator not connected",
+                    "show_alert": True,
+                })
+                return {"ok": False, "reason": "no_orchestrator"}
+
+            rec = self.orchestrator.ledger.get_approval(target_id)
+            if not rec:
+                self.transport.call_api("answerCallbackQuery", {
+                    "callback_query_id": callback_id,
+                    "text": f"Approval {target_id} not found",
+                    "show_alert": True,
+                })
+                return {"ok": False, "reason": "not_found"}
+
+            self.orchestrator.ledger.decide_approval(
+                target_id,
+                "APPROVED",
+                decided_by=f"tg:{user_id}",
+            )
+            task_id = rec.get("task_id")
+            if task_id:
+                try:
+                    self.orchestrator.resume_task(task_id)
+                except Exception as exc:
+                    logger.error("Failed resuming task %s on approval: %s", task_id, exc)
+
+            orig_text = msg.get("text", "")
+            new_text = f"{orig_text}\n\n✅ *APPROVED by @{user_id}* — Task execution resumed."
+            self.transport.call_api("editMessageText", {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": new_text,
+                "parse_mode": "Markdown",
+                "reply_markup": {"inline_keyboard": []},
+            })
+            self.transport.call_api("answerCallbackQuery", {
+                "callback_query_id": callback_id,
+                "text": "Approval recorded! Task resumed.",
+            })
+            return {"ok": True, "action": "approve", "approval_id": target_id}
+
+        elif action == "reject":
+            if not self.orchestrator:
+                self.transport.call_api("answerCallbackQuery", {
+                    "callback_query_id": callback_id,
+                    "text": "Orchestrator not connected",
+                    "show_alert": True,
+                })
+                return {"ok": False, "reason": "no_orchestrator"}
+
+            self.orchestrator.ledger.decide_approval(
+                target_id,
+                "REJECTED",
+                decided_by=f"tg:{user_id}",
+            )
+            orig_text = msg.get("text", "")
+            new_text = f"{orig_text}\n\n❌ *REJECTED by @{user_id}* — Action rejected."
+            self.transport.call_api("editMessageText", {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": new_text,
+                "parse_mode": "Markdown",
+                "reply_markup": {"inline_keyboard": []},
+            })
+            self.transport.call_api("answerCallbackQuery", {
+                "callback_query_id": callback_id,
+                "text": "Action rejected.",
+            })
+            return {"ok": True, "action": "reject", "approval_id": target_id}
+
+        elif action == "diff":
+            if not self.orchestrator:
+                self.transport.call_api("answerCallbackQuery", {
+                    "callback_query_id": callback_id,
+                    "text": "Orchestrator not connected",
+                    "show_alert": True,
+                })
+                return {"ok": False, "reason": "no_orchestrator"}
+
+            rec = self.orchestrator.ledger.get_approval(target_id)
+            task_id = rec.get("task_id") if rec else target_id
+            diff_text = self._compute_task_diff(task_id)
+            if not diff_text or not diff_text.strip():
+                diff_preview = f"🔍 *Workspace Diff for Task `{task_id}`:*\n_No uncommitted changes._"
+            else:
+                if len(diff_text) > 3500:
+                    diff_text = diff_text[:3450] + "\n... [truncated]"
+                diff_preview = f"🔍 *Workspace Diff for Task `{task_id}`:*\n```diff\n{diff_text}\n```"
+
+            self.transport.call_api("sendMessage", {
+                "chat_id": chat_id,
+                "text": diff_preview,
+                "parse_mode": "Markdown",
+            })
+            self.transport.call_api("answerCallbackQuery", {
+                "callback_query_id": callback_id,
+                "text": "Displaying workspace diff.",
+            })
+            return {"ok": True, "action": "diff", "target_id": target_id}
+
+        elif action == "cancel":
+            if not self.orchestrator:
+                self.transport.call_api("answerCallbackQuery", {
+                    "callback_query_id": callback_id,
+                    "text": "Orchestrator not connected",
+                    "show_alert": True,
+                })
+                return {"ok": False, "reason": "no_orchestrator"}
+
+            rec = self.orchestrator.ledger.get_approval(target_id)
+            task_id = rec.get("task_id") if rec else target_id
+            try:
+                self.orchestrator.cancel_task(task_id, actor=f"tg:{user_id}")
+            except Exception as exc:
+                logger.error("Failed canceling task %s on callback: %s", task_id, exc)
+
+            orig_text = msg.get("text", "")
+            new_text = f"{orig_text}\n\n⏹ *CANCELED by @{user_id}* — Workspace rolled back."
+            self.transport.call_api("editMessageText", {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": new_text,
+                "parse_mode": "Markdown",
+                "reply_markup": {"inline_keyboard": []},
+            })
+            self.transport.call_api("answerCallbackQuery", {
+                "callback_query_id": callback_id,
+                "text": "Task canceled.",
+            })
+            return {"ok": True, "action": "cancel", "target_id": target_id}
+
+        # Unknown action
+        self.transport.call_api("answerCallbackQuery", {
+            "callback_query_id": callback_id,
+            "text": f"Unknown action: {action}",
+        })
+        return {"ok": False, "reason": f"unknown_action:{action}"}
