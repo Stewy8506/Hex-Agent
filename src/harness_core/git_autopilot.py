@@ -379,6 +379,10 @@ class GitAutopilot:
         cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
         if max_length and len(cleaned) > max_length:
             cleaned = cleaned[:max_length].rstrip("-")
+            if "-" in cleaned:
+                last_hyphen = cleaned.rfind("-")
+                if last_hyphen > 0:
+                    cleaned = cleaned[:last_hyphen]
         return cleaned or "task"
 
     def create_task_branch(
@@ -434,7 +438,10 @@ class GitAutopilot:
         )
 
         if self.config.dry_run:
-            clean_prefix = re.sub(r"[^a-zA-Z0-9]", "", task_id)
+            clean_id = task_id
+            if clean_id.lower().startswith("task_") or clean_id.lower().startswith("task-"):
+                clean_id = clean_id[5:]
+            clean_prefix = re.sub(r"[^a-zA-Z0-9]", "", clean_id).lower()
             return f"mock-sha-{clean_prefix[:8] if clean_prefix else '00000000'}"
 
         if files:
