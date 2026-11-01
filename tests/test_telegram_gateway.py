@@ -32,6 +32,7 @@ from harness_core.orchestrator import HarnessOrchestrator
 
 class TestTelegramConfigAndWhitelisting(unittest.TestCase):
     def setUp(self) -> None:
+        logging.getLogger("harness_core.gateways.telegram_bot").disabled = False
         self.tmp_dir = tempfile.mkdtemp(prefix="tg_test_")
         self.orch = HarnessOrchestrator(
             ":memory:",
