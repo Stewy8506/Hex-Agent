@@ -1,9 +1,9 @@
 # Current Project State: Custom Autonomous AI Harness
 
 **Date:** 2026-11-01  
-**Current Milestone:** M1 (Durable CoW Workbench & Core Foundation)  
-**Status:** Complete — Milestone M1 (Phases 01–06 Complete, 152/152 tests green)  
-**Active Phase:** Phase 06 Complete  
+**Current Milestone:** M2 (Production Hardening & Deployment)  
+**Status:** In Progress — Phase 07 Plan 01 Complete (167/167 tests green)  
+**Active Phase:** Phase 07 (Production Packaging & Developer Experience)  
 
 ---
 
@@ -115,18 +115,25 @@
     - Replayed previously executed tool calls in 0ms (< 15ms) via `ToolGateway` memoization from call journal.
     - Authored comprehensive test suite in `tests/test_cross_machine_cow_sync.py` (152/152 total repository tests passing with zero regressions).
 
+17. **Phase 07 Remote Approval Webhooks & Interactive Decision Endpoints Complete (Plan 07-01):**
+    - Implemented `WebhookConfig` and `WebhookNotifier` in `src/harness_core/webhooks.py` supporting Telegram Bot API and Discord Webhooks with dry-run mocking and resilient HTTP dispatch.
+    - Added Telegram and Discord approval formatters featuring secret scrubbing, risk color codes (R3 orange, R4 red), parameter length truncation, inline buttons, and direct action URLs.
+    - Enhanced `/v1/approvals/{approval_id}:decide` in `src/harness_core/server.py` supporting `GET` and `POST` methods with query params, normalization, automatic task resumption (`resume_task`), and styled HTML / JSON content negotiation.
+    - Integrated outbound approval notifications into `ToolGateway` upon `PolicyDecisionType.REQUIRE_APPROVAL` and decision broadcasts upon completion.
+    - Authored unit and integration test suite in `tests/test_webhooks.py` (167/167 repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (152/152 tests green).
-- Phase 06 complete across both plans (06-01 and 06-02). Milestone M1 complete.
+- None. Full repository test suite passing cleanly with zero failures (167/167 tests green).
+- Plan 07-01 complete. Ready for Plan 07-02.
 
 ---
 
 ## 3. Next Actions
 
-- Milestone audit and review, or proceed to next milestone in roadmap.
+- Execute Plan 07-02 (e.g. systemd / launchd daemons, distribution packaging, or next Phase 07 deliverable).
 
 
 
