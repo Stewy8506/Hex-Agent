@@ -171,6 +171,20 @@ def main(argv: list[str] | None = None) -> int:
 
     p_dmn_stat = p_dmn_sub.add_parser("status", help="Inspect daemon service file and active state")
 
+    p_skl = sub.add_parser("skill", help="Manage and self-synthesize skills via NVIDIA SkillSpector")
+    p_skl_sub = p_skl.add_subparsers(dest="skill_cmd", required=True)
+
+    p_skl_synth = p_skl_sub.add_parser("synthesize", help="Synthesize a new SKILL.md bundle from a completed task")
+    p_skl_synth.add_argument("--task", required=True, help="Task ID to synthesize skill from")
+    p_skl_synth.add_argument("--name", default=None, help="Custom skill name")
+    p_skl_synth.add_argument("--output-dir", default=None, help="Custom output directory for the skill")
+    p_skl_synth.add_argument("--dry-run", action="store_true", help="Simulate synthesis and scan without saving to disk")
+
+    p_skl_list = p_skl_sub.add_parser("list", help="List all built-in, custom, and quarantined skills with status badges")
+
+    p_skl_scan = p_skl_sub.add_parser("scan", help="Scan a skill bundle directory or SKILL.md file via SkillSpector")
+    p_skl_scan.add_argument("path", help="Path to skill bundle directory or file")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -585,6 +599,50 @@ def main(argv: list[str] | None = None) -> int:
         if args.daemon_cmd == "status":
             stat = installer.get_daemon_status()
             print(json.dumps(stat, indent=2))
+            return 0
+
+    if args.cmd == "skill":
+        from .skill_synthesizer import SkillSynthesizer
+
+        synthesizer = SkillSynthesizer(
+            ledger=orch.ledger,
+            scanner=orch.scanner,
+            custom_skills_dir=getattr(args, "output_dir", None),
+        )
+
+        if args.skill_cmd == "synthesize":
+            try:
+                skill = synthesizer.synthesize_skill(
+                    task_id=args.task,
+                    skill_name=args.name,
+                    dry_run=args.dry_run,
+                )
+                output = {
+                    "name": skill.name,
+                    "status": skill.status,
+                    "gate_decision": skill.scan_report.get("gate_decision"),
+                    "risk_class": skill.risk_class,
+                    "disk_path": skill.disk_path,
+                    "quarantine_reason": skill.quarantine_reason,
+                    "scan_report": skill.scan_report,
+                }
+                print(json.dumps(output, indent=2))
+                return 0
+            except Exception as e:
+                print(json.dumps({"status": "error", "error": str(e)}), file=sys.stderr)
+                return 1
+
+        if args.skill_cmd == "list":
+            skills_data = synthesizer.list_skills()
+            print(json.dumps(skills_data, indent=2))
+            return 0
+
+        if args.skill_cmd == "scan":
+            scan_path = Path(args.path).resolve()
+            if scan_path.is_file():
+                scan_path = scan_path.parent
+            res = orch.scanner.scan_and_register_skill(scan_path)
+            print(json.dumps(res, indent=2, default=str))
             return 0
 
     return 0

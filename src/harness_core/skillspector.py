@@ -400,8 +400,10 @@ class SkillSpectorScanner:
                     h.update(b"\n")
         return h.hexdigest()
 
-    def scan_and_register_skill(self, bundle_dir: Path | str) -> dict[str, Any]:
+    def scan_bundle(self, bundle_dir: Path | str) -> SkillScanReport:
         root = Path(bundle_dir).resolve()
+        if root.is_file():
+            root = root.parent
         skill_md_path = root / "SKILL.md"
         if not skill_md_path.is_file():
             raise FileNotFoundError(f"Missing SKILL.md in skill bundle: {root}")
@@ -502,26 +504,21 @@ class SkillSpectorScanner:
         if max_score >= 80:
             severity = "critical"
             gate_decision = "QUARANTINE"
-            skill_status = "quarantined"
         elif max_score >= 60:
             severity = "high"
             gate_decision = "QUARANTINE"
-            skill_status = "quarantined"
         elif max_score >= 25:
             severity = "medium"
             gate_decision = "REQUIRE_APPROVAL"
-            skill_status = "candidate"
         elif max_score > 0:
             severity = "low"
             gate_decision = "ALLOW"
-            skill_status = "active"
         else:
             severity = "info"
             gate_decision = "ALLOW"
-            skill_status = "active"
 
         scan_id = f"scn_{uuid.uuid4().hex[:12]}"
-        report = SkillScanReport(
+        return SkillScanReport(
             scan_id=scan_id,
             skill_id=skill_id,
             revision_id=revision_id,
@@ -537,6 +534,34 @@ class SkillSpectorScanner:
             gate_decision=gate_decision,
         )
 
+    def scan_and_register_skill(self, bundle_dir: Path | str) -> dict[str, Any]:
+        root = Path(bundle_dir).resolve()
+        if root.is_file():
+            root = root.parent
+        skill_md_path = root / "SKILL.md"
+        if not skill_md_path.is_file():
+            raise FileNotFoundError(f"Missing SKILL.md in skill bundle: {root}")
+
+        report = self.scan_bundle(root)
+        md_text = skill_md_path.read_text(encoding="utf-8", errors="replace")
+        fm, _ = parse_skill_frontmatter(md_text)
+
+        name = str(fm.get("name") or root.name)
+        skill_id = report.skill_id
+        revision_id = report.revision_id
+        declared_risk = str(fm.get("risk_class") or "R1").upper()
+        purpose = str(fm.get("purpose") or fm.get("description") or "")
+        allowed_tools = fm.get("allowed_tools") or []
+        if isinstance(allowed_tools, str):
+            allowed_tools = [allowed_tools]
+
+        if report.gate_decision == "QUARANTINE":
+            skill_status = "quarantined"
+        elif report.gate_decision == "REQUIRE_APPROVAL":
+            skill_status = "candidate"
+        else:
+            skill_status = "active"
+
         self._persist_skill_and_scan(
             skill_id=skill_id,
             revision_id=revision_id,
@@ -544,7 +569,7 @@ class SkillSpectorScanner:
             purpose=purpose,
             description=str(fm.get("description") or purpose),
             disk_path=str(root),
-            bundle_sha256=bundle_sha,
+            bundle_sha256=report.bundle_sha256,
             risk_class=declared_risk,
             allowed_tools=allowed_tools,
             status=skill_status,
@@ -555,7 +580,7 @@ class SkillSpectorScanner:
             "revision_id": revision_id,
             "name": name,
             "status": skill_status,
-            "bundle_sha256": bundle_sha,
+            "bundle_sha256": report.bundle_sha256,
             "scan": report.to_dict(),
         }
 

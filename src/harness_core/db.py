@@ -2790,6 +2790,12 @@ class LedgerStore:
             )
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
+    def get_call_journal(self, task_id: str) -> list[dict[str, Any]]:
+        return self.list_tool_calls(task_id)
+
+    async def get_call_journal_async(self, task_id: str) -> list[dict[str, Any]]:
+        return await self.list_tool_calls_async(task_id)
+
     # ------------------------------------------------------------------
     # Approvals (FR-004, FR-023, Section 12.1)
     # ------------------------------------------------------------------
