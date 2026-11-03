@@ -1,8 +1,9 @@
-"""Empirical Verification Suite for the 5 High-Efficiency Graphify Capabilities.
+"""Empirical Verification Suite for the 6 High-Efficiency Graphify & Coherent Work-Memory Capabilities.
 
 Verifies:
-1. Incremental `(mtime_ns, size)` Stat Cache: Unchanged files hit cache (`cache_hits == N`, `cache_misses == 0`)
-   on repeat `build_or_refresh()` calls, and modifying 1 file re-parses only that 1 file.
+1. Incremental `(mtime_ns, size)` Stat Cache & Persistent `.hex/graph.json`: Unchanged files hit cache
+   (`cache_hits == N`, `cache_misses == 0`) on repeat `build_or_refresh()` calls, and modifying 1 file
+   re-parses only that 1 file.
 2. Surgical AST Symbol Slicing (`extract_surgical_context` + `graphify.file_slice`): Extracts only the
    failing/mutated function body + module header + 1-hop caller signatures (>70% prompt token reduction
    compared to dumping whole multi-hundred-line files).
@@ -12,17 +13,22 @@ Verifies:
    `graphify.analyze.god_nodes`, `graphify.analyze.find_import_cycles`, and `graphify.analyze.graph_diff`.
 5. Interactive D3 v7 HTML Architecture Tree Export (`export_interactive_html`): Wires
    `graphify.tree_html.build_tree` and `emit_html`.
+6. Unified Graphify Work-Memory Reflection & AST Code-Hash Staleness Detection: Wires
+   `GovernedMemoryService` (`router.py`) + `ActiveGraphifyAdapter.reflect_work_memory()` (`graphify.reflect`)
+   so memories anchored to AST `source_nodes` generate `LESSONS.md` + `.graphify_learning.json` and
+   automatically flag `is_stale=True` when the underlying source file changes.
 """
 
 from __future__ import annotations
 
-import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
+from harness_core.db import LedgerStore
 from harness_core.graphify import ActiveGraphifyAdapter
+from harness_core.router import GovernedMemoryService
 
 
 class TestGraphifyEfficiencySuite(unittest.TestCase):
@@ -68,7 +74,6 @@ class TestGraphifyEfficiencySuite(unittest.TestCase):
             "GLOBAL_CONST = 42",
             "",
         ]
-        # Generate 25 unrelated large functions + 1 target failing function (`compute_invoice_total`)
         for idx in range(25):
             lines.append(f"def helper_func_{idx}(x: int) -> int:")
             for step in range(12):
@@ -180,6 +185,88 @@ class TestGraphifyEfficiencySuite(unittest.TestCase):
         self.assertIn("<!DOCTYPE html>", content)
         self.assertIn("d3.v7.min.js", content)
         self.assertIn("CoreEngine", content)
+
+    def test_6_unified_graphify_work_memory_reflection_and_staleness_detection(self) -> None:
+        """Verify GovernedMemoryService + Graphify reflect.py integration and SHA-256 staleness tracking."""
+        src_file = self.root / "payment_gateway.py"
+        src_file.write_text(
+            "def charge_card(amount: int) -> bool:\n    return amount > 0\n",
+            encoding="utf-8",
+        )
+
+        adapter = ActiveGraphifyAdapter(self.root)
+        adapter.build_or_refresh(self.root)
+        ledger = LedgerStore(self.root / "ledger.db")
+        memory_svc = GovernedMemoryService(ledger, graphify=adapter)
+
+        # Record 2 corroborating 'useful' memories and 1 'dead_end' memory anchored to AST symbol `charge_card`
+        memory_svc.write_memory(
+            scope="project",
+            project_id=" billing_proj ",
+            subject="Validate positive charge amounts in charge_card",
+            content="charge_card expects integer cents > 0.",
+            source_nodes=["charge_card"],
+            outcome="useful",
+            workspace_dir=self.root,
+        )
+        memory_svc.write_memory(
+            scope="episodic",
+            project_id=" billing_proj ",
+            subject="Verify charge_card retry idempotency",
+            content="charge_card verified with integer cents.",
+            source_nodes=["charge_card"],
+            outcome="useful",
+            workspace_dir=self.root,
+        )
+        memory_svc.write_memory(
+            scope="episodic",
+            project_id=" billing_proj ",
+            subject="Float currency conversion attempt",
+            content="Passing float dollars caused rounding drift.",
+            source_nodes=[" payment_gateway.py "],
+            outcome="dead_end",
+            workspace_dir=self.root,
+        )
+
+        # 1. Verify upstream Graphify reflection generated LESSONS.md and .graphify_learning.json
+        ref = adapter.reflect_work_memory(self.root)
+        self.assertIn("**Preferred sources**", ref["lessons_markdown"])
+        self.assertIn("`charge_card`", ref["lessons_markdown"])
+        self.assertIn("**Known dead ends**", ref["lessons_markdown"])
+        self.assertTrue(Path(ref["lessons_path"]).is_file())
+        self.assertTrue(Path(ref["learning_sidecar_path"]).is_file())
+
+        # 2. Verify retrieved memories are fresh (is_stale == False) before file modification
+        mems_fresh = memory_svc.retrieve_memories(
+            project_id=" billing_proj ",
+            target_symbols=["charge_card"],
+            workspace_dir=self.root,
+        )
+        self.assertTrue(len(mems_fresh) >= 2)
+        self.assertFalse(mems_fresh[0]["is_stale"])
+        self.assertIn('stale="false"', mems_fresh[0]["quoted_evidence"])
+
+        # 3. Modify payment_gateway.py -> verify code-fingerprint staleness flips is_stale to True!
+        src_file.write_text(
+            "def charge_card(amount: int, currency: str = 'USD') -> bool:\n    return amount > 0\n",
+            encoding="utf-8",
+        )
+        mems_after_edit = memory_svc.retrieve_memories(
+            project_id=" billing_proj ",
+            target_symbols=["charge_card"],
+            workspace_dir=self.root,
+        )
+        self.assertTrue(mems_after_edit[0]["is_stale"])
+        self.assertIn('stale="true"', mems_after_edit[0]["quoted_evidence"])
+
+        # 4. Verify combined prompt context includes both governed memories and Graphify LESSONS.md
+        combined_ctx = memory_svc.retrieve_graphify_lessons_context(
+            project_id=" billing_proj ",
+            target_symbols=["charge_card"],
+            workspace_dir=self.root,
+        )
+        self.assertIn("[Governed Episodic & Project Memory]", combined_ctx)
+        self.assertIn("[Graphify Work-Memory Reflections]", combined_ctx)
 
 
 if __name__ == "__main__":

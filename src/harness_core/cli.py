@@ -239,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     p_dmp.add_argument("--output", default=None, help="Path to save plain-text dump (defaults to stdout)")
     p_dmp.add_argument("--workspace", default=None, help="Custom project workspace root")
 
+    p_ref = sub.add_parser("reflect", help="Run deterministic Graphify work-memory reflection (LESSONS.md + learning sidecar)")
+    p_ref.add_argument("--workspace", default=None, help="Custom project workspace root")
+    p_ref.add_argument("--json", action="store_true", help="Output raw JSON reflection aggregate")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -854,9 +858,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             db_file = data_dir / "hex.db"
             if not db_file.exists():
-                legacy_db = data_dir / "harness.db"
-                if legacy_db.exists():
-                    db_file = legacy_db
+                for cand_name in ("ledger.db", "harness.db"):
+                    cand_db = data_dir / cand_name
+                    if cand_db.exists():
+                        db_file = cand_db
+                        break
                 else:
                     dbs = [f for f in data_dir.glob("*.db") if not f.name.endswith("-wal") and not f.name.endswith("-shm")]
                     if dbs:
@@ -944,6 +950,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Diagnostic dump saved to {out_file} ({len(dump_text):,} chars)")
         else:
             print(dump_text)
+        return 0
+
+    if args.cmd == "reflect":
+        ws_dir = Path(getattr(args, "workspace", None) or repo_root).resolve()
+        res = orch.graphify.reflect_work_memory(ws_dir)
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2, default=str))
+        else:
+            print(res.get("lessons_markdown") or "No work-memory lessons recorded yet.")
         return 0
 
     return 0

@@ -18,6 +18,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .db import LedgerStore, canonical_json, utcnow_iso
@@ -363,10 +364,68 @@ class TwoTierModelRouter:
 
 
 class GovernedMemoryService:
-    """Project, Personal, and Episodic Memory with strict scope isolation (FR-030..FR-035)."""
+    """Project, Personal, and Episodic Memory unified with Graphify AST Node Provenance & Staleness Detection (FR-030..FR-035).
 
-    def __init__(self, ledger: LedgerStore):
+    Coherently bridges:
+    1. SQLite/PostgreSQL `memories` table (strict `project`, `personal`, and `episodic` scope isolation)
+    2. Graphify AST symbol & file SHA-256 code fingerprints (automatic staleness detection when code changes)
+    3. Upstream `vendor/graphify/graphify/reflect.py` work-memory reflection (`useful`, `dead_end`, `corrected`
+       outcomes producing `.hex/reflections/LESSONS.md` and `.hex/.graphify_learning.json`).
+    """
+
+    def __init__(self, ledger: LedgerStore, graphify: Any = None):
         self.ledger = ledger
+        self.graphify = graphify
+
+    def _compute_code_fingerprints(
+        self,
+        source_nodes: list[str] | None,
+        workspace_dir: Path | str | None = None,
+    ) -> dict[str, str]:
+        """Compute current file SHA-256 hashes for any cited AST symbols or file paths."""
+        if not source_nodes or self.graphify is None:
+            return {}
+        ws = Path(workspace_dir or getattr(self.graphify, "workspace_root", Path.cwd())).resolve()
+        self.graphify.build_or_refresh(ws)
+        fingerprints: dict[str, str] = {}
+        for node in source_nodes:
+            clean = str(node).strip()
+            if not clean:
+                continue
+            rel_file = ""
+            if clean in self.graphify.symbols_by_file:
+                rel_file = clean
+            elif clean in self.graphify.file_of_qualified:
+                rel_file = self.graphify.file_of_qualified[clean]
+            elif clean in self.graphify.symbols_by_name and self.graphify.symbols_by_name[clean]:
+                rel_file = self.graphify.symbols_by_name[clean][0].rel_path
+
+            if rel_file:
+                fpath = ws / rel_file
+                if fpath.is_file():
+                    import hashlib
+
+                    try:
+                        fingerprints[clean] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+                    except OSError:
+                        pass
+        return fingerprints
+
+    def _is_memory_stale(
+        self,
+        prov: dict[str, Any],
+        workspace_dir: Path | str | None = None,
+    ) -> bool:
+        """Return True if any cited AST node's source file has changed its SHA-256 since the memory was recorded."""
+        recorded_fps = prov.get("code_fingerprints")
+        if not isinstance(recorded_fps, dict) or not recorded_fps or self.graphify is None:
+            return False
+        current_fps = self._compute_code_fingerprints(list(recorded_fps.keys()), workspace_dir=workspace_dir)
+        for node, old_sha in recorded_fps.items():
+            cur_sha = current_fps.get(node)
+            if cur_sha is None or cur_sha != old_sha:
+                return True
+        return False
 
     def write_memory(
         self,
@@ -380,6 +439,10 @@ class GovernedMemoryService:
         sensitivity: str = "internal",
         status: str = "active",
         expires_at: str | None = None,
+        source_nodes: list[str] | None = None,
+        outcome: str = "useful",
+        correction: str = "",
+        workspace_dir: Path | str | None = None,
     ) -> dict[str, Any]:
         if scope not in ("project", "personal", "episodic"):
             raise ValueError(f"Invalid memory scope: {scope}")
@@ -387,10 +450,21 @@ class GovernedMemoryService:
             raise ValueError("Project memory requires an explicit project_id")
 
         sanitized_content = str(redact_secrets(content))
+        sanitized_correction = str(redact_secrets(correction)) if correction else ""
         mem_id = f"mem_{uuid.uuid4().hex[:12]}"
         now = utcnow_iso()
         prov = dict(provenance or {})
         prov.setdefault("recorded_at", now)
+        nodes = list(dict.fromkeys(source_nodes or prov.get("source_nodes") or []))
+        if nodes:
+            prov["source_nodes"] = nodes
+            fps = self._compute_code_fingerprints(nodes, workspace_dir=workspace_dir)
+            if fps:
+                prov["code_fingerprints"] = fps
+        if outcome:
+            prov["outcome"] = outcome
+        if sanitized_correction:
+            prov["correction"] = sanitized_correction
 
         with self.ledger._lock:
             self.ledger.conn.execute(
@@ -420,17 +494,41 @@ class GovernedMemoryService:
             row = self.ledger.conn.execute(
                 "SELECT * FROM memories WHERE memory_id = ?", (mem_id,)
             ).fetchone()
-            return self.ledger._row_to_dict(row)  # type: ignore[return-value]
+            saved = self.ledger._row_to_dict(row)  # type: ignore[return-value]
+
+        # Mirror non-personal AST-linked outcomes into Graphify's work-memory reflection store
+        if (
+            self.graphify is not None
+            and scope in ("project", "episodic")
+            and sensitivity not in ("sensitive", "secret")
+            and hasattr(self.graphify, "record_work_memory_outcome")
+        ):
+            try:
+                self.graphify.record_work_memory_outcome(
+                    workspace_dir=workspace_dir,
+                    question=subject,
+                    outcome=outcome if outcome in ("useful", "dead_end", "corrected") else "useful",
+                    source_nodes=nodes,
+                    correction=sanitized_correction or sanitized_content,
+                    task_id=prov.get("task_id"),
+                )
+            except Exception:
+                pass
+
+        return saved  # type: ignore[return-value]
 
     def retrieve_memories(
         self,
         *,
         project_id: str,
         query: str = "",
+        target_symbols: list[str] | None = None,
         include_personal: bool = False,
         include_episodic: bool = True,
+        include_stale: bool = True,
+        workspace_dir: Path | str | None = None,
     ) -> list[dict[str, Any]]:
-        """Enforces cross-project isolation: project memories never leak across project_id."""
+        """Enforces cross-project isolation, checks AST code-hash staleness, and ranks by symbol overlap."""
         with self.ledger._lock:
             rows = self.ledger.conn.execute(
                 "SELECT * FROM memories WHERE status = 'active' ORDER BY updated_at DESC"
@@ -438,6 +536,9 @@ class GovernedMemoryService:
 
         results: list[dict[str, Any]] = []
         q_lower = query.lower().strip()
+        q_tokens = [t for t in re.split(r"\W+", q_lower) if len(t) >= 3]
+        target_sym_set = {s.strip() for s in (target_symbols or []) if s.strip()}
+
         for r in rows:
             item = self.ledger._row_to_dict(r)
             if not item:
@@ -453,16 +554,78 @@ class GovernedMemoryService:
                 if item.get("project_id") not in (project_id, "general", None):
                     continue
 
-            if q_lower and q_lower not in item["subject"].lower() and q_lower not in item["content"].lower():
+            prov = item.get("provenance") or {}
+            if not isinstance(prov, dict):
+                prov = {}
+            mem_nodes = set(prov.get("source_nodes") or [])
+            node_overlap = len(mem_nodes & target_sym_set)
+
+            subj_l = item["subject"].lower()
+            cont_l = item["content"].lower()
+            nodes_l = " ".join(mem_nodes).lower()
+
+            if q_lower:
+                exact_sub = q_lower in subj_l or q_lower in cont_l or q_lower in nodes_l
+                token_hits = sum(1 for tok in q_tokens if tok in subj_l or tok in cont_l or tok in nodes_l)
+                if not exact_sub and node_overlap == 0 and (not q_tokens or token_hits == 0):
+                    continue
+
+            is_stale = self._is_memory_stale(prov, workspace_dir=workspace_dir)
+            if is_stale and not include_stale:
                 continue
 
-            # Quote untrusted retrieved content as data with provenance (FR-034)
+            outcome = str(prov.get("outcome") or "useful")
+            item["is_stale"] = is_stale
+            item["outcome"] = outcome
+            item["source_nodes"] = sorted(mem_nodes)
+
+            # Quote untrusted retrieved content as data with provenance, outcome & staleness (FR-034)
+            stale_attr = f' stale="{str(is_stale).lower()}"' if prov.get("code_fingerprints") else ""
+            outcome_attr = f' outcome="{outcome}"'
+            nodes_attr = f' nodes="{",".join(sorted(mem_nodes))}"' if mem_nodes else ""
             item["quoted_evidence"] = (
                 f"<memory_data id=\"{item['memory_id']}\" scope=\"{scope}\" "
-                f"confidence=\"{item['confidence']}\">{item['content']}</memory_data>"
+                f"confidence=\"{item['confidence']}\"{outcome_attr}{stale_attr}{nodes_attr}>"
+                f"{item['content']}</memory_data>"
             )
             results.append(item)
+
         return results
+
+    def retrieve_graphify_lessons_context(
+        self,
+        *,
+        project_id: str,
+        query: str = "",
+        target_symbols: list[str] | None = None,
+        workspace_dir: Path | str | None = None,
+        max_memories: int = 5,
+    ) -> str:
+        """Build a unified memory + Graphify work-memory reflection digest for planning and repair prompts."""
+        memories = self.retrieve_memories(
+            project_id=project_id,
+            query=query,
+            target_symbols=target_symbols,
+            include_personal=False,
+            include_episodic=True,
+            workspace_dir=workspace_dir,
+        )[:max_memories]
+
+        sections: list[str] = []
+        if memories:
+            mem_lines = [m["quoted_evidence"] for m in memories]
+            sections.append("[Governed Episodic & Project Memory]\n" + "\n".join(mem_lines))
+
+        if self.graphify is not None and hasattr(self.graphify, "reflect_work_memory"):
+            try:
+                ref = self.graphify.reflect_work_memory(workspace_dir=workspace_dir)
+                lessons_excerpt = (ref.get("lessons_markdown") or "").strip()
+                if lessons_excerpt and "_No marked outcomes yet._" not in lessons_excerpt:
+                    sections.append(f"[Graphify Work-Memory Reflections]\n{lessons_excerpt[:1600]}")
+            except Exception:
+                pass
+
+        return "\n\n".join(sections)
 
     def forget_memory(self, memory_id: str) -> dict[str, Any]:
         with self.ledger._lock:

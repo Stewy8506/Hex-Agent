@@ -236,10 +236,14 @@ class ActiveGraphifyAdapter:
             return False
 
     def _save_disk_cache(self) -> None:
-        """Atomically persist AST symbol cache to .hex/graph.json."""
+        """Atomically persist AST symbol cache AND upstream Graphify node-link graph to .hex/graph.json."""
         try:
             root_str = str(self.workspace_root)
             files_dict: dict[str, Any] = {}
+            nodes_list: list[dict[str, Any]] = []
+            links_list: list[dict[str, Any]] = []
+            seen_nodes: set[str] = set()
+
             for (ws, rel), entry in self._file_stat_cache.items():
                 if ws != root_str:
                     continue
@@ -256,15 +260,67 @@ class ActiveGraphifyAdapter:
                     "symbols": [s.to_dict() for s in syms],
                     "imports": sorted(imps),
                 }
+                if rel not in seen_nodes:
+                    seen_nodes.add(rel)
+                    nodes_list.append(
+                        {
+                            "id": rel,
+                            "label": Path(rel).name,
+                            "kind": "file",
+                            "source_file": rel,
+                            "file_type": "code",
+                        }
+                    )
+                for s in syms:
+                    if s.qualified_name not in seen_nodes:
+                        seen_nodes.add(s.qualified_name)
+                        nodes_list.append(
+                            {
+                                "id": s.qualified_name,
+                                "label": s.name,
+                                "kind": s.kind,
+                                "source_file": rel,
+                                "file_type": "code",
+                                "lineno": s.lineno,
+                                "end_lineno": s.end_lineno,
+                            }
+                        )
+                    links_list.append(
+                        {
+                            "source": rel,
+                            "target": s.qualified_name,
+                            "relation": "defines",
+                            "source_file": rel,
+                            "confidence": "EXTRACTED",
+                        }
+                    )
+                    for called in sorted(s.calls):
+                        links_list.append(
+                            {
+                                "source": s.qualified_name,
+                                "target": called,
+                                "relation": "calls",
+                                "source_file": rel,
+                                "confidence": "EXTRACTED",
+                            }
+                        )
 
             cache_data = {
                 "version": 1,
+                "directed": True,
+                "multigraph": False,
                 "created_at": time.time(),
                 "workspace_root": root_str,
                 "files": files_dict,
+                "nodes": nodes_list,
+                "links": links_list,
             }
 
             self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+            # Write .graphify_root marker alongside graph.json so upstream graphify.reflect resolves source_file paths
+            root_marker = self.cache_file.parent / ".graphify_root"
+            root_marker.write_text(root_str + "\n", encoding="utf-8")
+
             tmp_file = self.cache_file.parent / f".tmp_{os.getpid()}_{uuid.uuid4().hex}.json"
             tmp_file.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
             os.replace(tmp_file, self.cache_file)
@@ -1296,3 +1352,123 @@ class ActiveGraphifyAdapter:
             or "tests/" in rel_path
             or "__tests__/" in rel_path
         )
+
+    # ------------------------------------------------------------------
+    # Graphify Deterministic Work-Memory & Reflection (`graphify.reflect`)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _yaml_escape(val: str) -> str:
+        return (
+            str(val)
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        )
+
+    def record_work_memory_outcome(
+        self,
+        workspace_dir: Path | str | None = None,
+        *,
+        question: str,
+        outcome: str = "useful",
+        source_nodes: list[str] | None = None,
+        correction: str = "",
+        task_id: str | None = None,
+    ) -> Path:
+        """Write a Graphify-compatible work-memory document to `.hex/memory/` and trigger reflection.
+
+        Each memory doc uses the exact frontmatter format consumed by `vendor/graphify/graphify/reflect.py`
+        (`type`, `date`, `question`, `outcome` in `useful|dead_end|corrected`, `correction`, `source_nodes`).
+        """
+        from datetime import datetime, timezone
+
+        ws = Path(workspace_dir or self.workspace_root).resolve()
+        mem_dir = ws / ".hex" / "memory"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+
+        valid_outcome = outcome if outcome in ("useful", "dead_end", "corrected") else "useful"
+        now_dt = datetime.now(timezone.utc)
+        iso_date = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        nodes = [str(n).strip() for n in (source_nodes or []) if str(n).strip()]
+        nodes_yaml = ", ".join(f'"{self._yaml_escape(n)}"' for n in nodes)
+
+        lines = [
+            "---",
+            'type: "work_memory"',
+            f'date: "{iso_date}"',
+            f'question: "{self._yaml_escape(question)}"',
+            f'outcome: "{valid_outcome}"',
+        ]
+        if correction:
+            lines.append(f'correction: "{self._yaml_escape(correction)}"')
+        lines.append(f"source_nodes: [{nodes_yaml}]")
+        lines.append("---")
+        lines.append("")
+        lines.append(f"# {question}")
+        lines.append("")
+        if correction:
+            lines.append(correction)
+            lines.append("")
+
+        slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", task_id or question)[:36].strip("_") or "mem"
+        fname = f"{now_dt.strftime('%Y%m%d_%H%M%S')}_{slug}_{uuid.uuid4().hex[:6]}.md"
+        doc_path = mem_dir / fname
+        doc_path.write_text("\n".join(lines), encoding="utf-8")
+
+        try:
+            self.reflect_work_memory(ws)
+        except Exception:
+            pass
+        return doc_path
+
+    def reflect_work_memory(
+        self,
+        workspace_dir: Path | str | None = None,
+    ) -> dict[str, Any]:
+        """Run upstream `vendor/graphify/graphify/reflect.py` over `.hex/memory/` and `.hex/graph.json`.
+
+        Produces:
+        - `.hex/reflections/LESSONS.md`: Preferred sources, Tentative, Contested, Known dead ends, Corrections
+        - `.hex/.graphify_learning.json`: Per-node experiential overlay with SHA-256 code-fingerprint staleness
+        """
+        ws = Path(workspace_dir or self.workspace_root).resolve()
+        self.build_or_refresh(ws)
+        hex_dir = ws / ".hex"
+        mem_dir = hex_dir / "memory"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        lessons_path = hex_dir / "reflections" / "LESSONS.md"
+        graph_path = self.cache_file if self.cache_file.is_file() else (hex_dir / "graph.json")
+        learning_sidecar = graph_path.parent / ".graphify_learning.json"
+
+        try:
+            from graphify import reflect as upstream_reflect
+
+            out_path, agg = upstream_reflect.reflect(
+                memory_dir=mem_dir,
+                out_path=lessons_path,
+                graph_path=graph_path if graph_path.is_file() else None,
+            )
+            lessons_md = out_path.read_text(encoding="utf-8") if out_path.is_file() else ""
+            sidecar_data: dict[str, Any] = {}
+            if learning_sidecar.is_file():
+                try:
+                    sidecar_data = json.loads(learning_sidecar.read_text(encoding="utf-8"))
+                except Exception:
+                    sidecar_data = {}
+            return {
+                "lessons_path": str(out_path),
+                "learning_sidecar_path": str(learning_sidecar),
+                "lessons_markdown": lessons_md,
+                "aggregate": {k: v for k, v in agg.items() if not str(k).startswith("_")},
+                "learning_overlay": sidecar_data,
+            }
+        except Exception as exc:
+            return {
+                "lessons_path": str(lessons_path),
+                "learning_sidecar_path": str(learning_sidecar),
+                "lessons_markdown": "",
+                "aggregate": {"total": 0, "error": str(exc)},
+                "learning_overlay": {},
+            }

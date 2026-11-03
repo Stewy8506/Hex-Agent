@@ -75,7 +75,7 @@ class HarnessOrchestrator:
         )
         self.scanner = SkillSpectorScanner(self.ledger)
         self.router = TwoTierModelRouter()
-        self.memory = GovernedMemoryService(self.ledger)
+        self.memory = GovernedMemoryService(self.ledger, graphify=self.graphify)
         self.proof_service = VerificationAndProofService(
             self.ledger,
             self.cow,
@@ -324,6 +324,20 @@ class HarnessOrchestrator:
             except Exception:
                 arch_summary = ""
 
+        task = self.ledger.get_task(task_id) or {}
+        proj_id = task.get("project_id") or "default"
+        memory_lessons_ctx = ""
+        if hasattr(self.memory, "retrieve_graphify_lessons_context"):
+            try:
+                memory_lessons_ctx = self.memory.retrieve_graphify_lessons_context(
+                    project_id=proj_id,
+                    query=task.get("goal", ""),
+                    target_symbols=mod_syms + target_files,
+                    workspace_dir=attempt_ws,
+                )
+            except Exception:
+                memory_lessons_ctx = ""
+
         # Ordered stable -> context -> volatile tiers for prompt prefix caching
         stable_system_prompt = (
             "You are an autonomous software repair agent.\n"
@@ -337,12 +351,11 @@ class HarnessOrchestrator:
         )
         cacheable_context_prefix = (
             (f"{arch_summary}\n\n" if arch_summary else "")
+            + (f"{memory_lessons_ctx}\n\n" if memory_lessons_ctx else "")
             + f"[AST Blast Radius Report]\nWarning: {blast_warning}\nImpacted Symbols: {impacted_symbols}\n\n"
             + f"[Surgical Source Code Context]\n{code_context_str}"
         )
         volatile_failure_prompt = f"[Failure Digest]\n{failure_digest}"
-
-        task = self.ledger.get_task(task_id) or {}
         budget_dict = task.get("budget") or {}
         task_budget = TaskBudget.from_dict(budget_dict)
 
@@ -1132,13 +1145,23 @@ class HarnessOrchestrator:
 
         head_sha = self.cow.compute_tree_sha(attempt_ws)
         self.ledger.update_attempt(attempt_id, status="SUCCEEDED", head_tree_sha=head_sha)
-        # Record episodic memory summary (FR-032)
+        ast_impact_dict = ver_outcome.get("ast_impact") or {}
+        cited_nodes = list(
+            dict.fromkeys(
+                (ast_impact_dict.get("modified_symbols") or []) + list(modified_files)
+            )
+        )
+        mem_outcome = "corrected" if repair_attempt > 0 else "useful"
+        # Record episodic memory summary linked to Graphify AST nodes (FR-032)
         self.memory.write_memory(
             scope="episodic",
             project_id=task.get("project_id") or "default",
             subject=f"Task {task_id} succeeded",
             content=f"Goal '{task['goal']}' verified with proof {ver_outcome['proof']['proof_id']} and tree SHA {head_sha[:12]}.",
             provenance={"task_id": task_id, "proof_id": ver_outcome["proof"]["proof_id"]},
+            source_nodes=cited_nodes,
+            outcome=mem_outcome,
+            workspace_dir=attempt_ws,
         )
 
         return self.ledger.transition_task(

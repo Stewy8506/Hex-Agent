@@ -911,8 +911,9 @@ class HexConsole:
                 "/help", "/status", "/diff", "/sbs", "/rollback", "/fork",
                 "/skills", "/scan", "/model", "/compressor", "/budget",
                 "/quota", "/antigravity", "/blast", "/proof", "/memory",
-                "/remember", "/workers", "/harness2", "/skin", "/banner",
-                "/clear", "/quit", "/exit",
+                "/remember", "/reflect", "/search", "/doctor", "/recipe",
+                "/backup", "/dump", "/workers", "/harness2", "/skin",
+                "/banner", "/clear", "/quit", "/exit",
             ]
             skin_cmds = [f"/skin {s}" for s in SKIN_REGISTRY]
             comp_cmds = ["/compressor local", "/compressor cloud"]
@@ -1056,6 +1057,18 @@ class HexConsole:
             self._cmd_memory(arg)
         elif cmd == "/remember":
             self._cmd_remember(arg)
+        elif cmd in ("/reflect", "/lessons"):
+            self._cmd_reflect()
+        elif cmd == "/search":
+            self._cmd_search(arg)
+        elif cmd == "/doctor":
+            self._cmd_doctor(arg)
+        elif cmd == "/recipe":
+            self._cmd_recipe()
+        elif cmd == "/backup":
+            self._cmd_backup()
+        elif cmd == "/dump":
+            self._cmd_dump()
         elif cmd == "/workers":
             self._cmd_workers()
         elif cmd in ("/harness2", "/h2"):
@@ -1076,7 +1089,7 @@ class HexConsole:
             ("/status", "Display active/recent tasks, proof bundle, and worker state"),
             ("/diff", "Inspect uncommitted changes in active workspace via unified diff"),
             ("/sbs <file>", "Render two-column side-by-side diff for a modified workspace file"),
-            ("/blast [sym|file]", "Render Active Graphify AST blast-radius tree and pinned tests"),
+            ("/blast [sym|file]", "Render Active Graphify AST blast-radius tree (or --html export)"),
             ("/proof [task_id]", "Display cryptographic Proof-Carrying Artifact bundle & diff"),
             ("/rollback", "Roll back workspace changes or cancel active task"),
             ("/fork", "Fork active task into speculative attempt branches"),
@@ -1086,8 +1099,14 @@ class HexConsole:
             ("/compressor [mode]", "Switch Tier-1 log compressor between 'local' (M4 MLX) and 'cloud'"),
             ("/budget", "Display session token usage, compression ratio, and cost"),
             ("/quota", "Inspect Google Antigravity OAuth session & live model quota windows"),
-            ("/memory [query]", "Search governed project, personal, and episodic memories"),
-            ("/remember <k>: <v>", "Record a governed project memory with provenance"),
+            ("/memory [query]", "Search governed memories with AST code-hash staleness badges"),
+            ("/remember <k>: <v>", "Record a governed project memory linked to AST nodes"),
+            ("/reflect", "Run Graphify deterministic work-memory reflection (LESSONS.md)"),
+            ("/search <query>", "Run SQLite FTS5 BM25 search across tasks, logs, and tool calls"),
+            ("/doctor [--fix]", "Run 8-category system health diagnostics and self-healing"),
+            ("/recipe", "Auto-detect project bootstrap, build, test, and start recipes"),
+            ("/backup", "Create a quick zip backup of state, config, and ledger"),
+            ("/dump", "Generate plain-text system diagnostic dump with secret redaction"),
             ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
             ("/harness2", "Run a gated Google Research Harness² Propose-Probe-Compose probe"),
             ("/skin [name]", "Switch TUI theme (amber, cyberpunk, matrix, nord, mono)"),
@@ -1416,13 +1435,20 @@ class HexConsole:
             query=arg.strip(),
             include_personal=True,
             include_episodic=True,
+            workspace_dir=self.workspace_root,
         )
         if not mems:
             print(f"{ANSI_DIM}No matching governed memories found.{ANSI_RESET}")
             return
         print(f"\n{ANSI_BOLD}{ANSI_CYAN}Governed Memories ({len(mems)}):{ANSI_RESET}")
         for m in mems:
-            print(f"  • [{m['scope']}] {ANSI_BOLD}{m['subject']}{ANSI_RESET}: {m['content']} (conf={m['confidence']})")
+            stale_tag = f" {ANSI_YELLOW}[STALE - CODE CHANGED]{ANSI_RESET}" if m.get("is_stale") else ""
+            outcome_tag = f" [{m.get('outcome', 'useful')}]" if m.get("outcome") else ""
+            nodes_str = f" (nodes: {', '.join(m['source_nodes'])})" if m.get("source_nodes") else ""
+            print(
+                f"  • [{m['scope']}]{outcome_tag}{stale_tag} {ANSI_BOLD}{m['subject']}{ANSI_RESET}: "
+                f"{m['content']}{nodes_str} (conf={m['confidence']})"
+            )
         print()
 
     def _cmd_remember(self, arg: str = "") -> None:
@@ -1435,8 +1461,67 @@ class HexConsole:
             project_id=self.project_id,
             subject=subj.strip(),
             content=content.strip(),
+            workspace_dir=self.workspace_root,
         )
         print(f"{ANSI_GREEN}✓ Stored governed project memory {mem['memory_id']} ('{mem['subject']}').{ANSI_RESET}")
+
+    def _cmd_reflect(self) -> None:
+        if not hasattr(self.orchestrator, "graphify") or not hasattr(self.orchestrator.graphify, "reflect_work_memory"):
+            print(f"{ANSI_YELLOW}Graphify reflection unavailable.{ANSI_RESET}")
+            return
+        res = self.orchestrator.graphify.reflect_work_memory(self.workspace_root)
+        md = (res.get("lessons_markdown") or "").strip()
+        print(f"\n{ANSI_BOLD}{ANSI_CYAN}Graphify Work-Memory Reflection ({res.get('lessons_path')}):{ANSI_RESET}")
+        print(md if md else f"{ANSI_DIM}No work-memory outcomes recorded yet.{ANSI_RESET}")
+        print()
+
+    def _cmd_search(self, arg: str = "") -> None:
+        q = arg.strip()
+        if not q:
+            print(f"{ANSI_YELLOW}Usage: /search <query>{ANSI_RESET}")
+            return
+        if hasattr(self.orchestrator, "ledger") and hasattr(self.orchestrator.ledger, "search_tasks"):
+            results = self.orchestrator.ledger.search_tasks(q, project_id=self.project_id)
+            if not results:
+                print(f"{ANSI_DIM}No tasks matched '{q}'.{ANSI_RESET}")
+                return
+            print(f"\n{ANSI_BOLD}{ANSI_CYAN}FTS5 Search Results ({len(results)}):{ANSI_RESET}")
+            for r in results:
+                d = r.to_dict() if hasattr(r, "to_dict") else dict(r)
+                print(f"  • [{d.get('task_id')}] ({d.get('status')}) score={d.get('score')}: {d.get('snippet')}")
+            print()
+
+    def _cmd_doctor(self, arg: str = "") -> None:
+        from .doctor import HexDoctor
+
+        doc = HexDoctor(workspace_root=self.workspace_root, data_dir=getattr(self.orchestrator, "data_dir", None))
+        rep = doc.run_all(fix=("--fix" in arg), live=("--live" in arg))
+        print(rep.format_summary(color=True))
+
+    def _cmd_recipe(self) -> None:
+        from .recipes import detect_recipe
+
+        rcp = detect_recipe(self.workspace_root)
+        if not rcp:
+            print(f"{ANSI_YELLOW}No build/test recipe detected in {self.workspace_root}.{ANSI_RESET}")
+            return
+        print(f"\n{ANSI_BOLD}{ANSI_CYAN}Detected Project Recipe:{ANSI_RESET} {rcp.name} ({rcp.kind})")
+        print(f"  Bootstrap: {rcp.bootstrap or 'None'}")
+        print(f"  Build:     {rcp.build or 'None'}")
+        print(f"  Test:      {rcp.test}")
+        print(f"  Start:     {rcp.start or 'None'}")
+        print()
+
+    def _cmd_backup(self) -> None:
+        from .backup import create_backup
+
+        res = create_backup(data_dir=getattr(self.orchestrator, "data_dir", None), workspace_root=self.workspace_root, quick=True)
+        print(f"{ANSI_GREEN}✓ Quick state backup created:{ANSI_RESET} {res['backup_path']} ({res['files_archived']} files)")
+
+    def _cmd_dump(self) -> None:
+        from .backup import generate_dump
+
+        print(generate_dump(data_dir=getattr(self.orchestrator, "data_dir", None), workspace_root=self.workspace_root))
 
     def _cmd_workers(self) -> None:
         workers = self.orchestrator.ledger.list_workers() if hasattr(self.orchestrator, "ledger") else []

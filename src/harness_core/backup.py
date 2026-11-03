@@ -365,9 +365,11 @@ def generate_dump(
     lines.append("-" * 80)
     db_file = data / "hex.db"
     if not db_file.exists():
-        legacy_db = data / "harness.db"
-        if legacy_db.exists():
-            db_file = legacy_db
+        for cand_name in ("ledger.db", "harness.db"):
+            cand_db = data / cand_name
+            if cand_db.exists():
+                db_file = cand_db
+                break
 
     db_engine = "SQLite WAL" if db_file.exists() else "Not Initialized / PostgreSQL"
     lines.append(f"Storage Path:     {data}")
