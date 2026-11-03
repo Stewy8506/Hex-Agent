@@ -284,28 +284,45 @@ class HarnessOrchestrator:
                 except TypeError:
                     return self.repair_patch_generator(failure_digest)
 
-        # Formulate repair prompt with failure context, blast radius, and failing code
+        # Formulate repair prompt with failure context, blast radius, and surgical AST symbol slices
         blast_dict = blast_report.to_dict() if hasattr(blast_report, "to_dict") else {}
-        impacted_symbols = blast_dict.get("modified_symbols", []) + blast_dict.get("hop1_dependents", [])
+        mod_syms = list(blast_dict.get("modified_symbols") or [])
+        impacted_symbols = mod_syms + list(blast_dict.get("hop1_dependents") or [])
         blast_warning = blast_dict.get("warning_message", "No AST blast warnings")
 
-        # Read context for modified or failing files
+        # Identify target files from modified_files and failure_digest
         target_files = list(modified_files)
-        for match in re.findall(r"([\w./\-]+\.py)", failure_digest):
+        for match in re.findall(r"([\w./\-]+\.(?:py|ts|tsx|js|jsx|go|rs))", failure_digest):
             clean_p = match.strip("'\"")
             if clean_p not in target_files:
                 target_files.append(clean_p)
 
-        file_contexts: list[str] = []
-        for file_rel in target_files:
-            file_path = attempt_ws / file_rel
-            if file_path.is_file():
-                try:
-                    file_contexts.append(f"--- File: {file_rel} ---\n{file_path.read_text(encoding='utf-8')}")
-                except Exception:
-                    pass
+        # Use Graphify surgical symbol slicing instead of dumping whole files
+        if hasattr(self.graphify, "extract_surgical_context"):
+            surgical = self.graphify.extract_surgical_context(
+                attempt_ws,
+                target_files,
+                target_symbols=mod_syms,
+                failure_digest=failure_digest,
+            )
+            code_context_str = surgical["context_text"]
+        else:
+            file_contexts: list[str] = []
+            for file_rel in target_files:
+                file_path = attempt_ws / file_rel
+                if file_path.is_file():
+                    try:
+                        file_contexts.append(f"--- File: {file_rel} ---\n{file_path.read_text(encoding='utf-8')}")
+                    except Exception:
+                        pass
+            code_context_str = "\n\n".join(file_contexts) if file_contexts else "No existing code files found."
 
-        code_context_str = "\n\n".join(file_contexts) if file_contexts else "No existing code files found."
+        arch_summary = ""
+        if hasattr(self.graphify, "analyze_architecture"):
+            try:
+                arch_summary = self.graphify.analyze_architecture(attempt_ws, top_n=5).get("compact_summary", "")
+            except Exception:
+                arch_summary = ""
 
         # Ordered stable -> context -> volatile tiers for prompt prefix caching
         stable_system_prompt = (
@@ -319,8 +336,9 @@ class HarnessOrchestrator:
             "Provide only valid code in the content."
         )
         cacheable_context_prefix = (
-            f"[AST Blast Radius Report]\nWarning: {blast_warning}\nImpacted Symbols: {impacted_symbols}\n\n"
-            f"[Source Code Context]\n{code_context_str}"
+            (f"{arch_summary}\n\n" if arch_summary else "")
+            + f"[AST Blast Radius Report]\nWarning: {blast_warning}\nImpacted Symbols: {impacted_symbols}\n\n"
+            + f"[Surgical Source Code Context]\n{code_context_str}"
         )
         volatile_failure_prompt = f"[Failure Digest]\n{failure_digest}"
 

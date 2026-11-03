@@ -1358,13 +1358,22 @@ class HexConsole:
         if not hasattr(self.orchestrator, "graphify") or self.orchestrator.graphify is None:
             print(f"{ANSI_YELLOW}Graphify adapter not initialized.{ANSI_RESET}")
             return
+        if target in ("--html", "html"):
+            out_path = self.workspace_root / ".hex" / "architecture_tree.html"
+            if hasattr(self.orchestrator.graphify, "export_interactive_html"):
+                saved = self.orchestrator.graphify.export_interactive_html(out_path, workspace_dir=self.workspace_root)
+                print(f"{ANSI_GREEN}Interactive D3 Architecture Tree exported to:{ANSI_RESET} {saved}")
+                return
         self.orchestrator.graphify.build_or_refresh(self.workspace_root)
-        if not target or target.endswith(".py"):
+        if not target or target.endswith((".py", ".ts", ".tsx", ".js", ".go", ".rs")):
             files = [target] if target else list(self.orchestrator.graphify.symbols_by_file.keys())[:2]
             br = self.orchestrator.graphify.compute_blast_radius(self.workspace_root, files)
             data = br.to_dict()
             data["risk_class"] = "R2" if files else "R0"
             print(render_blast_radius_tree(data))
+            if hasattr(self.orchestrator.graphify, "analyze_architecture"):
+                arch = self.orchestrator.graphify.analyze_architecture(self.workspace_root, top_n=5)
+                print(f"\n{ANSI_DIM}{arch.get('compact_summary', '')}{ANSI_RESET}")
         else:
             q = self.orchestrator.graphify.query_symbol(target)
             data = {
