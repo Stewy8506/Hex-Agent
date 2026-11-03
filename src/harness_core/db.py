@@ -2582,6 +2582,52 @@ class LedgerStore:
             )
             return self._row_to_dict(row)
 
+    def record_tool_call(
+        self,
+        call_id: str | None = None,
+        task_id: str = "",
+        tool_name: str = "",
+        risk_class: str = "R1",
+        args: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Convenience method for recording / beginning a tool call."""
+        cid = call_id or f"cal_{uuid.uuid4().hex[:12]}"
+        now = utcnow_iso()
+        attempt_id = kwargs.get("attempt_id", "att_1")
+        step_id = kwargs.get("step_id", "stp_1")
+        seq = kwargs.get("sequence_in_step", 1)
+        args_dict = args or {}
+        policy_decision = kwargs.get("policy_decision", "ALLOW")
+        idempotency_key = kwargs.get("idempotency_key", f"idem_{cid}")
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO tool_calls (
+                    call_id, task_id, attempt_id, step_id, sequence_in_step,
+                    tool_id, risk_class, canonical_args_hash, arguments_redacted_json,
+                    replayed_from_call_id, policy_decision, idempotency_key,
+                    started_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'PENDING')
+                """,
+                (
+                    cid,
+                    task_id,
+                    attempt_id,
+                    step_id,
+                    seq,
+                    tool_name,
+                    risk_class,
+                    sha256_hex(canonical_json(args_dict)),
+                    canonical_json(args_dict),
+                    policy_decision,
+                    idempotency_key,
+                    now,
+                ),
+            )
+            self.conn.commit()
+            return cid
+
     def begin_tool_call(
         self,
         *,
@@ -2771,10 +2817,12 @@ class LedgerStore:
             row = self.conn.execute("SELECT * FROM tool_calls WHERE call_id = ?", (call_id,)).fetchone()
             try:
                 if row and row["task_id"]:
+                    t_name = row["tool_id"] if "tool_id" in row.keys() else (row["tool_name"] if "tool_name" in row.keys() else "")
+                    a_text = str(row["arguments_redacted_json"] if "arguments_redacted_json" in row.keys() else (row["args_json"] if "args_json" in row.keys() else ""))
                     self.search_index.append_tool_call(
                         task_id=row["task_id"],
-                        tool_name=row["tool_name"] or "",
-                        args_text=str(row["args_json"] or ""),
+                        tool_name=t_name,
+                        args_text=a_text,
                         result_text=json.dumps(result) if isinstance(result, (dict, list)) else str(result),
                     )
             except Exception:
@@ -2830,10 +2878,12 @@ class LedgerStore:
             row = await conn.fetchrow("SELECT * FROM tool_calls WHERE call_id = $1", call_id)
             try:
                 if row and row["task_id"]:
+                    t_name = row["tool_id"] if "tool_id" in row else (row["tool_name"] if "tool_name" in row else "")
+                    a_text = str(row["arguments_redacted_json"] if "arguments_redacted_json" in row else (row["args_json"] if "args_json" in row else ""))
                     self.search_index.append_tool_call(
                         task_id=row["task_id"],
-                        tool_name=row["tool_name"] or "",
-                        args_text=str(row["args_json"] or ""),
+                        tool_name=t_name,
+                        args_text=a_text,
                         result_text=json.dumps(result) if isinstance(result, (dict, list)) else str(result),
                     )
             except Exception:

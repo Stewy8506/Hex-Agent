@@ -334,8 +334,8 @@ class TaskSearchIndex:
                 try:
                     tool_calls = ledger.list_tool_calls(task_id)
                     for tc in tool_calls:
-                        t_name = tc.get("tool_name") or ""
-                        t_args = tc.get("args_json") or ""
+                        t_name = tc.get("tool_id") or tc.get("tool_name") or ""
+                        t_args = tc.get("arguments_redacted_json") or tc.get("args_json") or ""
                         t_res = tc.get("result_json") or ""
                         tc_parts.append(f"[{t_name}] args: {t_args} result: {t_res}")
                 except Exception:

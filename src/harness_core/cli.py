@@ -849,11 +849,18 @@ def main(argv: list[str] | None = None) -> int:
         from .db import LedgerStore
 
         data_dir = Path(getattr(args, "data_dir", None) or DEFAULT_DATA_DIR).resolve()
-        db_file = data_dir / "hex.db"
-        if not db_file.exists():
-            legacy_db = data_dir / "harness.db"
-            if legacy_db.exists():
-                db_file = legacy_db
+        if data_dir.is_file():
+            db_file = data_dir
+        else:
+            db_file = data_dir / "hex.db"
+            if not db_file.exists():
+                legacy_db = data_dir / "harness.db"
+                if legacy_db.exists():
+                    db_file = legacy_db
+                else:
+                    dbs = [f for f in data_dir.glob("*.db") if not f.name.endswith("-wal") and not f.name.endswith("-shm")]
+                    if dbs:
+                        db_file = dbs[0]
 
         ledger = LedgerStore(db_file)
         search_idx = ledger.search_index
