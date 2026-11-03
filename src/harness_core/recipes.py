@@ -288,3 +288,4 @@ def detect_recipe(root: Path | str) -> Recipe | None:
         )
 
     return None
+

@@ -36,6 +36,26 @@
 
 ---
 
+## Milestone M4: Hermes Parity & Advanced Graphify Ergonomics
+
+```
+[x] Phase 12: Hermes Ergonomics & Full-Text Search Parity (Doctor, Recipes, FTS5 Search, Backup/Dump & Graphify Cache)
+```
+
+---
+
+### Phase 12: Hermes Ergonomics & Full-Text Search Parity
+- **Goal:** Incorporate top developer ergonomics identified from reverse-engineering Nous Research Hermes Agent: `hex doctor` diagnostic suite, deep multi-framework recipe detection, SQLite FTS5 full-text transcript search, single-command state backup and diagnostic dump, and optimized multi-language Graphify caching.
+- **Must-haves:**
+  - `hex doctor` with `--fix` and `--live` diagnosing Python runtime, M4/GPU acceleration, CoW drivers, sandboxes, and API keys.
+  - Multi-framework recipe detector in `src/harness_core/recipes.py` discovering bootstrap/build/test commands across Python, Node.js, Rust, Go, Makefile, and Docker.
+  - SQLite FTS5 full-text search across past tasks, tool call journals, and transcripts via `hex search "<query>"`.
+  - State backup and plain-text support dump via `hex backup` and `hex dump`.
+  - Incremental disk caching and multi-language support in `ActiveGraphifyAdapter`.
+- **Verification:** Unit and integration tests demonstrating doctor self-healing, recipe detection across multiple project layouts, FTS5 search queries with BM25 ranking, and archive backup/restore verification.
+
+---
+
 ### Phase 08: Interactive Terminal UI (`hex chat`) & Onboarding Polish (Pillars 1 & 2)
 - **Goal:** Provide an interactive terminal pair-programming console (`hex chat`) with live streaming markdown, syntax-highlighted side-by-side diffs, one-key keyboard approvals (`[y] Approve`, `[n] Reject`, `[d] Diff`, `[s] Sandbox`), in-chat slash commands (`/status`, `/diff`, `/rollback`, `/fork`, `/skills`, `/model`, `/budget`), and complete `hex onboard` / `hex init` packaging.
 - **Must-haves:**

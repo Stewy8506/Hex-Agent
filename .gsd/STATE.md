@@ -2,9 +2,9 @@
 
 **Date:** 2026-11-03  
 **Current Milestone:** M4 (Hermes Parity & Advanced Graphify Ergonomics)  
-**Status:** In Progress — Phase 12 Complete (386/386 tests green)  
-**Active Phase:** Phase 12: Hermes Ergonomics & Full-Text Search Parity (Doctor, Recipes, FTS5 Search, Backup/Dump & Graphify Cache)  
-**Completed Plans:** Plan 12-01 (HexDoctor, Recipes, Graphify Persistent Cache), Plan 12-02 (FTS5 Search, State Backup & Diagnostic Dump)  
+**Status:** Complete — All 12 Phases Delivered (386/386 tests green, 0 regressions)  
+**Active Phase:** All Phases (01–12) Complete  
+**Completed Plans:** All Plans (01-01 through 12-02) Complete  
 
 ---
 
@@ -214,18 +214,26 @@
 
 ---
 
-## 3. Product Status: Milestone M4 Active
+## 3. Product Status: FINISHED (All Pillars & Hermes Parity Delivered)
 
-All 5 Product Pillars specified in `PRODUCT_PILLARS.md` are fully delivered and verified.
-Milestone M4: Hermes Parity & Advanced Graphify Ergonomics:
-- Plan 12-01: `hex doctor` Diagnostic Suite, Multi-Framework Recipe Detector & Graphify Multi-Language Caching (COMPLETE).
-- Plan 12-02: SQLite FTS5 Full-Text Task & Transcript Search, `hex backup`, and `hex dump` (COMPLETE).
+All 5 Product Pillars and Hermes Parity enhancements are fully delivered, empirically tested, and shipping:
+- **Pillar 1 (Zero-Friction Onboarding):** `hex onboard`, `hex init`, hardware auto-profiling, repository stack detection.
+- **Pillar 2 (Interactive TUI Pair Programming):** `hex chat` / `hex tui` with live token streaming, side-by-side diffs, one-key approvals (`[y/n/d/s/q]`), and 20+ slash commands.
+- **Pillar 3 (Bidirectional Chat Gateways):** `hex gateway start` supporting Telegram and Discord bots with inline approval buttons and conversational task delegation.
+- **Pillar 4 (Git & GitHub Autopilot):** `hex run --pr`, auto-branching (`hex/task-<id>-<slug>`), conventional commits, rich PR summaries, and `hex gh-action` bot responder.
+- **Pillar 5 (Autonomous Background Automations & Self-Synthesizing Skills):** `hex schedule`, `hex daemon install`, and `hex skill synthesize` with the mandatory NVIDIA SkillSpector supply-chain malware gate.
+- **Hermes Parity & Graphify Ergonomics (Milestone M4):**
+  - `hex doctor` diagnostic suite with `--fix` self-healing and `--live` pings.
+  - Multi-framework recipe auto-detection (`hex recipe`) across Python, Node.js, Rust, Go, Makefile, and Docker.
+  - SQLite FTS5 full-text transcript search (`hex search "<query>"`).
+  - State backup, safe restore with zip-slip defense, and diagnostic support dump (`hex backup`, `hex restore`, `hex dump`).
+  - Active Graphify persistent on-disk cache (`.hex/graph.json` <30ms warm startup) and polyglot symbol extraction.
 
 ---
 
 ## 4. Next Actions
 
-- Phase 12 verification and Milestone M4 completion audit.
+- All phases complete with 386/386 passing tests. Ready for final presentation to user.
 
 
 
