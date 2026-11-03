@@ -225,6 +225,20 @@ def main(argv: list[str] | None = None) -> int:
     p_srch.add_argument("--reindex", action="store_true", help="Rebuild FTS5 index from ledger before searching")
     p_srch.add_argument("--json", action="store_true", help="Output raw JSON results")
 
+    p_bck = sub.add_parser("backup", help="Create a compressed state archive of configuration, database, and skills")
+    p_bck.add_argument("--output", default=None, help="Custom zip archive output path")
+    p_bck.add_argument("--quick", action="store_true", help="Quick mode: archive only database and configuration files")
+    p_bck.add_argument("--workspace", default=None, help="Custom project workspace root")
+
+    p_rst = sub.add_parser("restore", help="Restore state from a backup archive with zip-slip path protection")
+    p_rst.add_argument("archive", help="Path to backup zip archive to restore")
+    p_rst.add_argument("--target", default=None, help="Destination directory to restore files into (defaults to data-dir)")
+    p_rst.add_argument("--dry-run", action="store_true", help="Inspect archive contents without extracting")
+
+    p_dmp = sub.add_parser("dump", help="Generate plain-text system diagnostic profile for support tickets")
+    p_dmp.add_argument("--output", default=None, help="Path to save plain-text dump (defaults to stdout)")
+    p_dmp.add_argument("--workspace", default=None, help="Custom project workspace root")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -868,6 +882,61 @@ def main(argv: list[str] | None = None) -> int:
                     clean_snippet = r.snippet.replace("\n", " ").strip()
                     print(f"{r.task_id:<16} {r.status:<14} {r.score:<8.3f} {r.matched_field:<12} {clean_snippet}")
                 print()
+        return 0
+
+    if args.cmd == "backup":
+        from .backup import create_backup
+
+        ws_dir = getattr(args, "workspace", None)
+        data_dir = getattr(args, "data_dir", None)
+        res = create_backup(
+            output_path=getattr(args, "output", None),
+            data_dir=data_dir,
+            workspace_root=ws_dir,
+            quick=getattr(args, "quick", False),
+        )
+        print(f"Backup created successfully:")
+        print(f"  Path:     {res['backup_path']}")
+        print(f"  Files:    {res['files_archived']}")
+        print(f"  Size:     {res['size_bytes']:,} bytes")
+        print(f"  SHA-256:  {res['sha256']}")
+        print(f"  Quick:    {res['quick']}")
+        return 0
+
+    if args.cmd == "restore":
+        from .backup import restore_backup
+
+        target = getattr(args, "target", None)
+        if not target:
+            target = getattr(args, "data_dir", None) or DEFAULT_DATA_DIR
+        res = restore_backup(
+            archive_path=args.archive,
+            target_dir=target,
+            dry_run=getattr(args, "dry_run", False),
+        )
+        action = "Dry run inspection" if res["dry_run"] else "Restore"
+        print(f"{action} completed for {args.archive}:")
+        print(f"  Target:   {res['target_dir']}")
+        print(f"  Files:    {len(res['restored_files'])}")
+        for f in res["restored_files"][:10]:
+            print(f"    - {f}")
+        if len(res["restored_files"]) > 10:
+            print(f"    ... and {len(res['restored_files']) - 10} more files")
+        return 0
+
+    if args.cmd == "dump":
+        from .backup import generate_dump
+
+        ws_dir = getattr(args, "workspace", None)
+        data_dir = getattr(args, "data_dir", None)
+        dump_text = generate_dump(data_dir=data_dir, workspace_root=ws_dir)
+
+        out_file = getattr(args, "output", None)
+        if out_file:
+            Path(out_file).write_text(dump_text, encoding="utf-8")
+            print(f"Diagnostic dump saved to {out_file} ({len(dump_text):,} chars)")
+        else:
+            print(dump_text)
         return 0
 
     return 0
