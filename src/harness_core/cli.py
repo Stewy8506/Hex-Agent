@@ -207,6 +207,13 @@ def main(argv: list[str] | None = None) -> int:
     p_skl_scan = p_skl_sub.add_parser("scan", help="Scan a skill bundle directory or SKILL.md file via SkillSpector")
     p_skl_scan.add_argument("path", help="Path to skill bundle directory or file")
 
+    p_doc = sub.add_parser("doctor", help="Run system diagnostics, environment auditing, and self-healing")
+    p_doc.add_argument("--fix", action="store_true", help="Automatically resolve fixable diagnostic issues (directories, config, permissions)")
+    p_doc.add_argument("--live", action="store_true", help="Perform live read-only model API connectivity ping")
+    p_doc.add_argument("--json", action="store_true", help="Output raw JSON report instead of formatted text")
+    p_doc.add_argument("--no-color", action="store_true", help="Disable ANSI color formatting")
+    p_doc.add_argument("--workspace", default=None, help="Custom project workspace root")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -773,6 +780,22 @@ def main(argv: list[str] | None = None) -> int:
             res = orch.scanner.scan_and_register_skill(scan_path)
             print(json.dumps(res, indent=2, default=str))
             return 0
+
+    if args.cmd == "doctor":
+        from .doctor import HexDoctor
+
+        ws_dir = getattr(args, "workspace", None)
+        data_dir = getattr(args, "data_dir", None)
+        doc = HexDoctor(workspace_root=ws_dir, data_dir=data_dir)
+        report = doc.run_diagnostics(fix=args.fix, live=args.live)
+
+        if getattr(args, "json", False):
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            no_color = getattr(args, "no_color", False)
+            print(report.format_summary(color=not no_color))
+
+        return 0 if report.is_healthy else 1
 
     return 0
 
