@@ -214,6 +214,10 @@ def main(argv: list[str] | None = None) -> int:
     p_doc.add_argument("--no-color", action="store_true", help="Disable ANSI color formatting")
     p_doc.add_argument("--workspace", default=None, help="Custom project workspace root")
 
+    p_rcp = sub.add_parser("recipe", help="Auto-detect project bootstrap, build, test, and start commands")
+    p_rcp.add_argument("workspace", nargs="?", default=".", help="Target project workspace directory")
+    p_rcp.add_argument("--json", action="store_true", help="Emit raw JSON recipe definition")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -796,6 +800,29 @@ def main(argv: list[str] | None = None) -> int:
             print(report.format_summary(color=not no_color))
 
         return 0 if report.is_healthy else 1
+
+    if args.cmd == "recipe":
+        from .recipes import detect_recipe
+
+        ws_dir = Path(getattr(args, "workspace", ".")).resolve()
+        recipe = detect_recipe(ws_dir)
+        if not recipe:
+            if getattr(args, "json", False):
+                print(json.dumps({"detected": False, "workspace": str(ws_dir)}))
+            else:
+                print(f"No project recipe detected in {ws_dir}")
+            return 1
+
+        if getattr(args, "json", False):
+            print(json.dumps({"detected": True, "workspace": str(ws_dir), "recipe": recipe.to_dict()}, indent=2))
+        else:
+            print(f"Detected Recipe: {recipe.name} ({recipe.kind})")
+            print(f"  Bootstrap: {recipe.bootstrap or 'None'}")
+            print(f"  Build:     {recipe.build or 'None'}")
+            print(f"  Test:      {recipe.test}")
+            print(f"  Start:     {recipe.start or 'None'}" + (f" (Port: {recipe.port})" if recipe.port else ""))
+            print(f"  Evidence:  {', '.join(recipe.evidence)}")
+        return 0
 
     return 0
 

@@ -666,6 +666,12 @@ class HarnessOrchestrator:
             completed_step_ids = set()
             self.cow.clone_to_workspace(base_snap_path, attempt_ws)
 
+        # Auto-detect workspace recipe and inject into task context
+        from .recipes import detect_recipe
+        detected_recipe = detect_recipe(attempt_ws)
+        if detected_recipe and isinstance(task.get("context"), dict):
+            task["context"]["recipe"] = detected_recipe.to_dict()
+
         # Create or reuse Plan DAG
         plan = self.ledger.get_latest_plan(task_id)
         if not plan:

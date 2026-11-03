@@ -486,14 +486,32 @@ class ToolGateway:
         }
 
     def _tool_run_tests(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        from .recipes import detect_recipe
+        import shlex
+
+        recipe = detect_recipe(workspace_dir)
+        explicit_cmd = args.get("command")
         target_tests = args.get("targets") or []
         if isinstance(target_tests, str):
             target_tests = [target_tests]
-        cmd = [sys.executable, "-m", "unittest"]
-        if target_tests:
-            cmd.extend(target_tests)
+
+        if explicit_cmd:
+            if isinstance(explicit_cmd, list):
+                cmd = list(explicit_cmd)
+            else:
+                cmd = shlex.split(str(explicit_cmd))
+            if target_tests:
+                cmd.extend(target_tests)
+        elif target_tests:
+            if recipe:
+                cmd = list(recipe.test_cmd_args) + list(target_tests)
+            else:
+                cmd = [sys.executable, "-m", "unittest"] + list(target_tests)
         else:
-            cmd.extend(["discover", "-s", ".", "-p", "test_*.py"])
+            if recipe:
+                cmd = list(recipe.test_cmd_args)
+            else:
+                cmd = [sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"]
 
         env = {"PYTHONPATH": str(workspace_dir)}
         timeout = float(args.get("timeout", 30.0))
@@ -520,6 +538,7 @@ class ToolGateway:
             "sandbox_backend": result.sandbox_backend,
             "output": redacted_out,
             "output_sha256": sha256_hex(redacted_out),
+            "recipe": recipe.name if recipe else None,
         }
 
     def _tool_git_push_remote(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
