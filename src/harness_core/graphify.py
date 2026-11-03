@@ -17,9 +17,13 @@ Implements PRD Sections 6.4, 11 (FR-036, FR-036a, FR-038) plus 5 high-efficiency
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import os
 import re
 import sys
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -58,7 +62,7 @@ except Exception:
 
 
 SUPPORTED_CODE_EXTENSIONS: frozenset[str] = frozenset(
-    {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs"}
+    {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".go", ".rs"}
 )
 
 # Regex extractors for TypeScript / JavaScript / Go / Rust full-stack symbol & import indexing
@@ -79,11 +83,35 @@ _TS_IMPORT_RE = re.compile(
     re.MULTILINE,
 )
 _GO_FUNC_RE = re.compile(
-    r"^\s*func\s+(?:\([^)]+\)\s+)?([A-Za-z_]\w*)\s*\(",
+    r"^\s*func\s+(?:\((?:[^)]+)\)\s+)?([A-Za-z_]\w*)\s*\(",
+    re.MULTILINE,
+)
+_GO_TYPE_RE = re.compile(
+    r"^\s*type\s+([A-Za-z_]\w*)\s+(?:struct|interface)",
+    re.MULTILINE,
+)
+_GO_IMPORT_RE = re.compile(
+    r"""^\s*import\s+(?:\(\s*([^)]+)\s*\)|['"]([^'"]+)['"])""",
     re.MULTILINE,
 )
 _RS_FN_RE = re.compile(
-    r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*[<(]",
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)\s*[<(]",
+    re.MULTILINE,
+)
+_RS_STRUCT_RE = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Za-z_]\w*)",
+    re.MULTILINE,
+)
+_RS_ENUM_RE = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?enum\s+([A-Za-z_]\w*)",
+    re.MULTILINE,
+)
+_RS_IMPL_RE = re.compile(
+    r"^\s*impl(?:\s*<[^>]+>)?\s+(?:(?:[A-Za-z_]\w*)\s+for\s+)?([A-Za-z_]\w*)",
+    re.MULTILINE,
+)
+_RS_MOD_RE = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;",
     re.MULTILINE,
 )
 _GENERIC_CALL_RE = re.compile(r"\b([A-Za-z_][\w$]*)\s*\(")
@@ -99,13 +127,40 @@ _JS_KEYWORDS = frozenset(
 class SymbolDef:
     name: str
     qualified_name: str
-    kind: str  # 'function' | 'class' | 'method' | 'module' | 'component'
+    kind: str  # 'function' | 'class' | 'method' | 'module' | 'component' | 'struct' | 'enum' | 'interface'
     rel_path: str
     lineno: int
     end_lineno: int
     calls: set[str] = field(default_factory=set)
     bases: set[str] = field(default_factory=set)
     imports_from: set[str] = field(default_factory=set)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "qualified_name": self.qualified_name,
+            "kind": self.kind,
+            "rel_path": self.rel_path,
+            "lineno": self.lineno,
+            "end_lineno": self.end_lineno,
+            "calls": sorted(self.calls),
+            "bases": sorted(self.bases),
+            "imports_from": sorted(self.imports_from),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SymbolDef:
+        return cls(
+            name=data["name"],
+            qualified_name=data["qualified_name"],
+            kind=data["kind"],
+            rel_path=data["rel_path"],
+            lineno=int(data["lineno"]),
+            end_lineno=int(data.get("end_lineno", data["lineno"])),
+            calls=set(data.get("calls") or []),
+            bases=set(data.get("bases") or []),
+            imports_from=set(data.get("imports_from") or []),
+        )
 
 
 @dataclass
@@ -135,20 +190,86 @@ class BlastRadiusReport:
 class ActiveGraphifyAdapter:
     """Repository AST/call-graph index, Incremental Stat Cache, Surgical Slicer & Blast-Radius Hook."""
 
-    def __init__(self, workspace_root: Path | str):
+    def __init__(
+        self,
+        workspace_root: Path | str,
+        cache_file: Path | str | None = None,
+    ):
         self.workspace_root = Path(workspace_root).resolve()
+        self._custom_cache_file = Path(cache_file).resolve() if cache_file else None
+        self.cache_file = self._custom_cache_file or (self.workspace_root / ".hex" / "graph.json")
+        self._disk_cache_loaded: bool = False
         self.symbols_by_file: dict[str, list[SymbolDef]] = {}
         self.symbols_by_name: dict[str, list[SymbolDef]] = {}
         self.callers_of: dict[str, set[str]] = {}  # symbol_name -> set of caller qualified_names
         self.file_of_qualified: dict[str, str] = {}
         self.file_imports: dict[str, set[str]] = {}  # rel_path -> set of imported rel_paths / modules
-        # Incremental stat cache: (workspace_str, rel_path) -> (mtime_ns, size, list[SymbolDef], set[str])
-        self._file_stat_cache: dict[tuple[str, str], tuple[int, int, list[SymbolDef], set[str]]] = {}
+        # Incremental stat cache: (workspace_str, rel_path) -> (mtime_ns, size, list[SymbolDef], set[str], sha256)
+        self._file_stat_cache: dict[tuple[str, str], tuple[int, int, list[SymbolDef], set[str], str]] = {}
         self._file_hashes: dict[str, int] = {}
         self.upstream_available = UPSTREAM_GRAPHIFY_AVAILABLE
         self.graph: Any = None
         self.last_cache_hits: int = 0
         self.last_cache_misses: int = 0
+
+    def _load_disk_cache(self) -> bool:
+        """Load persistent AST cache from .hex/graph.json."""
+        if not self.cache_file.is_file():
+            return False
+        try:
+            raw = json.loads(self.cache_file.read_text(encoding="utf-8"))
+            if raw.get("version") != 1:
+                return False
+            files_data = raw.get("files") or {}
+            root_str = str(self.workspace_root)
+            for rel, f_info in files_data.items():
+                mtime_ns = int(f_info.get("mtime_ns", 0))
+                fsize = int(f_info.get("size", 0))
+                sha256 = str(f_info.get("sha256", ""))
+                syms = [SymbolDef.from_dict(s) for s in f_info.get("symbols", [])]
+                imps = set(f_info.get("imports", []))
+                cache_key = (root_str, rel)
+                self._file_stat_cache[cache_key] = (mtime_ns, fsize, syms, imps, sha256)
+            self._disk_cache_loaded = True
+            return True
+        except Exception:
+            return False
+
+    def _save_disk_cache(self) -> None:
+        """Atomically persist AST symbol cache to .hex/graph.json."""
+        try:
+            root_str = str(self.workspace_root)
+            files_dict: dict[str, Any] = {}
+            for (ws, rel), entry in self._file_stat_cache.items():
+                if ws != root_str:
+                    continue
+                mtime_ns = entry[0]
+                fsize = entry[1]
+                syms = entry[2]
+                imps = entry[3]
+                sha256 = entry[4] if len(entry) > 4 else ""
+                files_dict[rel] = {
+                    "mtime": mtime_ns / 1_000_000_000.0,
+                    "mtime_ns": mtime_ns,
+                    "size": fsize,
+                    "sha256": sha256,
+                    "symbols": [s.to_dict() for s in syms],
+                    "imports": sorted(imps),
+                }
+
+            cache_data = {
+                "version": 1,
+                "created_at": time.time(),
+                "workspace_root": root_str,
+                "files": files_dict,
+            }
+
+            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp_file = self.cache_file.parent / f".tmp_{os.getpid()}_{uuid.uuid4().hex}.json"
+            tmp_file.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
+            os.replace(tmp_file, self.cache_file)
+        except Exception:
+            pass
 
     def build_or_refresh(
         self,
@@ -156,10 +277,16 @@ class ActiveGraphifyAdapter:
         *,
         force: bool = False,
     ) -> dict[str, Any]:
-        """Build or incrementally refresh the multi-language AST & dependency graph."""
+        """Build or incrementally refresh the multi-language AST & dependency graph with persistent cache."""
         root = Path(workspace_dir or self.workspace_root).resolve()
         root_str = str(root)
         self.workspace_root = root
+        if not self._custom_cache_file:
+            self.cache_file = root / ".hex" / "graph.json"
+
+        if not self._disk_cache_loaded and not force:
+            self._load_disk_cache()
+
         self.symbols_by_file.clear()
         self.symbols_by_name.clear()
         self.callers_of.clear()
@@ -198,8 +325,12 @@ class ActiveGraphifyAdapter:
                     self.symbols_by_name.setdefault(d.name, []).append(d)
                 cache_hits += 1
             else:
+                try:
+                    f_sha = hashlib.sha256(fpath.read_bytes()).hexdigest()
+                except OSError:
+                    f_sha = ""
                 defs, imps = self._index_file(rel, fpath)
-                self._file_stat_cache[cache_key] = (mtime_ns, fsize, defs, imps)
+                self._file_stat_cache[cache_key] = (mtime_ns, fsize, defs, imps, f_sha)
                 self._file_hashes[rel] = hash((mtime_ns, fsize))
                 cache_misses += 1
 
@@ -210,6 +341,9 @@ class ActiveGraphifyAdapter:
 
         self.last_cache_hits = cache_hits
         self.last_cache_misses = cache_misses
+
+        # Persist updated cache to disk (.hex/graph.json)
+        self._save_disk_cache()
 
         # Build reverse call/inheritance edge table
         for rel, sym_list in self.symbols_by_file.items():
@@ -310,6 +444,8 @@ class ActiveGraphifyAdapter:
             "cache_misses": cache_misses,
             "workspace_root": str(root),
             "upstream_graphify_active": bool(self.upstream_available and self.graph is not None),
+            "disk_cache_loaded": self._disk_cache_loaded,
+            "cache_file": str(self.cache_file),
         }
 
     def _resolve_import_to_rel_path(
@@ -420,7 +556,7 @@ class ActiveGraphifyAdapter:
         defs: list[SymbolDef] = []
         file_imps: set[str] = set()
 
-        if ext in (".ts", ".tsx", ".js", ".jsx"):
+        if ext in (".ts", ".tsx", ".js", ".jsx", ".mjs"):
             for m in _TS_IMPORT_RE.finditer(src):
                 file_imps.add(m.group(1))
             for pattern, kind in (
@@ -454,6 +590,32 @@ class ActiveGraphifyAdapter:
                         )
                     )
         elif ext == ".go":
+            for m in _GO_IMPORT_RE.finditer(src):
+                if m.group(1):
+                    for imp_line in m.group(1).splitlines():
+                        imp_clean = imp_line.strip().strip('"')
+                        if imp_clean:
+                            file_imps.add(imp_clean)
+                elif m.group(2):
+                    file_imps.add(m.group(2).strip().strip('"'))
+
+            for m in _GO_TYPE_RE.finditer(src):
+                name = m.group(1)
+                kind = "interface" if "interface" in m.group(0) else "struct"
+                lineno = src.count("\n", 0, m.start()) + 1
+                end_lineno = min(total_lines, lineno + 35)
+                defs.append(
+                    SymbolDef(
+                        name=name,
+                        qualified_name=f"{mod_prefix}.{name}",
+                        kind=kind,
+                        rel_path=rel_path,
+                        lineno=lineno,
+                        end_lineno=end_lineno,
+                        imports_from=set(file_imps),
+                    )
+                )
+
             for m in _GO_FUNC_RE.finditer(src):
                 name = m.group(1)
                 lineno = src.count("\n", 0, m.start()) + 1
@@ -469,9 +631,73 @@ class ActiveGraphifyAdapter:
                         lineno=lineno,
                         end_lineno=end_lineno,
                         calls=calls,
+                        imports_from=set(file_imps),
                     )
                 )
         elif ext == ".rs":
+            for m in _RS_STRUCT_RE.finditer(src):
+                name = m.group(1)
+                lineno = src.count("\n", 0, m.start()) + 1
+                end_lineno = min(total_lines, lineno + 25)
+                defs.append(
+                    SymbolDef(
+                        name=name,
+                        qualified_name=f"{mod_prefix}.{name}",
+                        kind="struct",
+                        rel_path=rel_path,
+                        lineno=lineno,
+                        end_lineno=end_lineno,
+                    )
+                )
+
+            for m in _RS_ENUM_RE.finditer(src):
+                name = m.group(1)
+                lineno = src.count("\n", 0, m.start()) + 1
+                end_lineno = min(total_lines, lineno + 25)
+                defs.append(
+                    SymbolDef(
+                        name=name,
+                        qualified_name=f"{mod_prefix}.{name}",
+                        kind="enum",
+                        rel_path=rel_path,
+                        lineno=lineno,
+                        end_lineno=end_lineno,
+                    )
+                )
+
+            for m in _RS_MOD_RE.finditer(src):
+                name = m.group(1)
+                lineno = src.count("\n", 0, m.start()) + 1
+                end_lineno = lineno
+                defs.append(
+                    SymbolDef(
+                        name=name,
+                        qualified_name=f"{mod_prefix}.{name}",
+                        kind="module",
+                        rel_path=rel_path,
+                        lineno=lineno,
+                        end_lineno=end_lineno,
+                    )
+                )
+
+            for m in _RS_IMPL_RE.finditer(src):
+                name = m.group(1)
+                lineno = src.count("\n", 0, m.start()) + 1
+                end_lineno = min(total_lines, lineno + 35)
+                snippet = "\n".join(lines[lineno - 1 : end_lineno])
+                calls = {c.group(1) for c in _GENERIC_CALL_RE.finditer(snippet) if c.group(1) != name}
+                defs.append(
+                    SymbolDef(
+                        name=name,
+                        qualified_name=f"{mod_prefix}.{name}",
+                        kind="class",
+                        rel_path=rel_path,
+                        lineno=lineno,
+                        end_lineno=end_lineno,
+                        calls=calls,
+                    )
+                )
+
             for m in _RS_FN_RE.finditer(src):
                 name = m.group(1)
                 lineno = src.count("\n", 0, m.start()) + 1

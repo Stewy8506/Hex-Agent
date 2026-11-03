@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import subprocess
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -510,6 +511,13 @@ class ToolGateway:
         else:
             if recipe:
                 cmd = list(recipe.test_cmd_args)
+            else:
+                cmd = [sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"]
+
+        # Fall back to standard python -m unittest discovery if pytest is not installed on PATH
+        if cmd and cmd[0] == "pytest" and not shutil.which("pytest") and not (Path(sys.executable).parent / "pytest").is_file():
+            if target_tests:
+                cmd = [sys.executable, "-m", "unittest"] + list(target_tests)
             else:
                 cmd = [sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"]
 
