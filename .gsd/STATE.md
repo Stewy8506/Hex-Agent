@@ -1,9 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-03  
-**Current Milestone:** M3 (The Finished Product Layer: Pillars 1–5)  
-**Status:** Complete — All 5 Pillars Delivered (346/346 tests green, 0 regressions)  
-**Active Phase:** All Phases (01–11) Complete  
+**Current Milestone:** M4 (Hermes Parity & Advanced Graphify Ergonomics)  
+**Status:** In Progress — Phase 12 Complete (386/386 tests green)  
+**Active Phase:** Phase 12: Hermes Ergonomics & Full-Text Search Parity (Doctor, Recipes, FTS5 Search, Backup/Dump & Graphify Cache)  
+**Completed Plans:** Plan 12-01 (HexDoctor, Recipes, Graphify Persistent Cache), Plan 12-02 (FTS5 Search, State Backup & Diagnostic Dump)  
 
 ---
 
@@ -187,23 +188,44 @@
     - Wired `hex skill` (`synthesize`, `list`, `scan`) subcommands into `src/harness_core/cli.py` with SkillSpector status badges (`[ACTIVE]`, `[QUARANTINED]`, `[PENDING]`).
     - Authored 16 unit and integration tests in `tests/test_skill_synthesis.py` (346/346 total repository tests passing with zero regressions).
 
+26. **Phase 12 System Diagnostics, Multi-Framework Recipes & Graphify Persistent Cache Complete (Plan 12-01):**
+    - Implemented `HexDoctor`, `DoctorReport`, and `DoctorCheckResult` in `src/harness_core/doctor.py` diagnosing Python runtime, Apple Silicon M4 / GPU, CoW snapshot providers, sandboxes, credentials, git, storage, and workbench directories.
+    - Added `--fix` self-healing and `--live` bounded connectivity pings.
+    - Implemented `Recipe` and `detect_recipe` in `src/harness_core/recipes.py` for Python (uv, poetry, pytest, django), Node.js (pnpm, yarn, bun, npm, Next.js, Vite), Rust (cargo), Go (go test), Makefile, and Docker Compose.
+    - Wired recipe auto-detection into `ToolGateway._tool_run_tests` and `HarnessOrchestrator`.
+    - Wired `hex doctor` and `hex recipe` CLI subcommands in `src/harness_core/cli.py`.
+    - Implemented `.hex/graph.json` persistent disk caching (< 30ms warm reloads) and polyglot symbol extraction in `src/harness_core/graphify.py`.
+    - Authored 11 unit and integration tests in `tests/test_doctor_and_recipes.py` (370/370 repository tests passing with zero regressions).
+
+27. **Phase 12 SQLite FTS5 Full-Text Task Search & State Backup/Dump Complete (Plan 12-02):**
+    - Implemented `TaskSearchIndex` in `src/harness_core/search.py` with `task_search_fts` SQLite FTS5 virtual table, unicode61 tokenizer diacritic removal, BM25 ranking, and highlighted match snippet extraction.
+    - Built robust query sanitization `sanitize_fts5_query` defending against special character syntax injection while preserving quoted phrases and prefix tokens.
+    - Integrated automatic task and tool call transcript indexing into `LedgerStore` (`src/harness_core/db.py`) with full historical `reindex_all`.
+    - Implemented state backup and restore in `src/harness_core/backup.py` (`create_backup` timestamped archives with WAL checkpointing, `restore_backup` with strict Zip-Slip path traversal defense, and `generate_dump` plain-text system diagnostic report with secret scrubbing).
+    - Wired `hex search`, `hex backup`, `hex restore`, and `hex dump` subcommands into `src/harness_core/cli.py`.
+    - Authored 16 unit and integration tests in `tests/test_search_and_backup.py` (386/386 full repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (346/346 tests green).
-- Milestone M3 (Pillars 1–5) and all 11 roadmap phases are 100% complete and verified.
+- None. Full repository test suite passing cleanly with zero failures (386/386 tests green).
+- Milestone M4 Phase 12 is 100% complete and verified.
 
 ---
 
-## 3. Product Status: FINISHED
+## 3. Product Status: Milestone M4 Active
 
-All 5 Product Pillars specified in `PRODUCT_PILLARS.md` are fully implemented, empirically tested, and shipping:
-- **Pillar 1 (Zero-Friction Onboarding):** `hex onboard`, `hex init`, hardware auto-profiling, repository stack detection.
-- **Pillar 2 (Interactive TUI Pair Programming):** `hex chat` / `hex tui` with live token streaming, side-by-side diffs, one-key approvals (`[y/n/d/s/q]`), and 20+ slash commands.
-- **Pillar 3 (Bidirectional Chat Gateways):** `hex gateway start` supporting Telegram and Discord bots with inline approval buttons and conversational task delegation.
-- **Pillar 4 (Git & GitHub Autopilot):** `hex run --pr`, auto-branching (`hex/task-<id>-<slug>`), conventional commits, rich PR summaries, and `hex gh-action` bot responder.
-- **Pillar 5 (Autonomous Background Automations & Self-Synthesizing Skills):** `hex schedule`, `hex daemon install`, and `hex skill synthesize` with the mandatory NVIDIA SkillSpector supply-chain malware gate.
+All 5 Product Pillars specified in `PRODUCT_PILLARS.md` are fully delivered and verified.
+Milestone M4: Hermes Parity & Advanced Graphify Ergonomics:
+- Plan 12-01: `hex doctor` Diagnostic Suite, Multi-Framework Recipe Detector & Graphify Multi-Language Caching (COMPLETE).
+- Plan 12-02: SQLite FTS5 Full-Text Task & Transcript Search, `hex backup`, and `hex dump` (COMPLETE).
+
+---
+
+## 4. Next Actions
+
+- Phase 12 verification and Milestone M4 completion audit.
 
 
 
