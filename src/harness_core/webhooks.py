@@ -298,3 +298,44 @@ class WebhookNotifier:
             self.sent_payloads.append({"target": "discord_decision", "payload": dc_payload, "response": res_dc})
 
         return results
+
+    def send_alert(self, title: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Dispatches an alert notification to Telegram and/or Discord."""
+        clean_title = redact_secrets(title)
+        clean_message = redact_secrets(message)
+
+        tg_text = f"<b>⚠️ {clean_title}</b>\n\n{clean_message}"
+        tg_payload = {"text": tg_text, "parse_mode": "HTML"}
+        if self.config.telegram_chat_id:
+            tg_payload["chat_id"] = self.config.telegram_chat_id
+
+        dc_payload = {
+            "embeds": [
+                {
+                    "title": f"⚠️ {clean_title}",
+                    "description": clean_message[:2000],
+                    "color": 0xED4245,
+                }
+            ]
+        }
+
+        results: dict[str, Any] = {}
+        if self.config.dry_run or (not self.config.telegram_bot_token and not self.config.discord_webhook_url):
+            self.sent_payloads.append({"target": "telegram_alert", "payload": tg_payload})
+            self.sent_payloads.append({"target": "discord_alert", "payload": dc_payload})
+            status = "dry_run" if self.config.dry_run else "noop"
+            return {"status": status, "telegram": tg_payload, "discord": dc_payload}
+
+        if self.config.telegram_bot_token and self.config.telegram_chat_id:
+            tg_url = f"https://api.telegram.org/bot{self.config.telegram_bot_token}/sendMessage"
+            res_tg = self._dispatch_http(tg_url, tg_payload)
+            results["telegram"] = res_tg
+            self.sent_payloads.append({"target": "telegram_alert", "payload": tg_payload, "response": res_tg})
+
+        if self.config.discord_webhook_url:
+            res_dc = self._dispatch_http(self.config.discord_webhook_url, dc_payload)
+            results["discord"] = res_dc
+            self.sent_payloads.append({"target": "discord_alert", "payload": dc_payload, "response": res_dc})
+
+        return results
+

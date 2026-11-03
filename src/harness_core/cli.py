@@ -136,6 +136,41 @@ def main(argv: list[str] | None = None) -> int:
     p_gha.add_argument("--workspace", default=None, help="Path to repository workspace")
     p_gha.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
+    p_sch = sub.add_parser("schedule", help="Manage background automations and cron schedules")
+    p_sch_sub = p_sch.add_subparsers(dest="schedule_cmd", required=True)
+
+    p_sch_add = p_sch_sub.add_parser("add", help="Add a new scheduled automation job")
+    p_sch_add.add_argument("cron", help="Standard 5-field cron expression")
+    p_sch_add.add_argument("--goal", required=True, help="Task goal description")
+    p_sch_add.add_argument("--project", default="default", help="Project ID")
+    p_sch_add.add_argument("--storage-path", default=None, help="Custom schedules.json path")
+
+    p_sch_list = p_sch_sub.add_parser("list", help="List all scheduled jobs")
+    p_sch_list.add_argument("--all", action="store_true", help="Include disabled jobs")
+    p_sch_list.add_argument("--storage-path", default=None, help="Custom schedules.json path")
+
+    p_sch_rm = p_sch_sub.add_parser("remove", help="Remove a scheduled job by ID")
+    p_sch_rm.add_argument("job_id", help="Job ID to remove")
+    p_sch_rm.add_argument("--storage-path", default=None, help="Custom schedules.json path")
+
+    p_sch_run = p_sch_sub.add_parser("run-due", help="Execute all currently due scheduled jobs")
+    p_sch_run.add_argument("--once", action="store_true", help="Run due jobs once and exit")
+    p_sch_run.add_argument("--storage-path", default=None, help="Custom schedules.json path")
+
+    p_dmn = sub.add_parser("daemon", help="Manage background OS service daemon (launchd/systemd)")
+    p_dmn_sub = p_dmn.add_subparsers(dest="daemon_cmd", required=True)
+
+    p_dmn_inst = p_dmn_sub.add_parser("install", help="Generate and install OS service configuration")
+    p_dmn_inst.add_argument("--launchd", action="store_true", help="Target macOS LaunchAgent")
+    p_dmn_inst.add_argument("--systemd", action="store_true", help="Target Linux systemd")
+    p_dmn_inst.add_argument("--user", action="store_true", default=True, help="Install as user service (default: True)")
+    p_dmn_inst.add_argument("--system", dest="user", action="store_false", help="Install as system-wide service")
+    p_dmn_inst.add_argument("--dry-run", action="store_true", help="Dry run: print generated configuration without writing files")
+    p_dmn_inst.add_argument("--path", default=None, help="Custom destination path")
+    p_dmn_inst.add_argument("--interval", type=int, default=60, help="Poll interval in seconds")
+
+    p_dmn_stat = p_dmn_sub.add_parser("status", help="Inspect daemon service file and active state")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -456,6 +491,101 @@ def main(argv: list[str] | None = None) -> int:
         if res.get("status") == "failed":
             return 1
         return 0
+
+    if args.cmd == "schedule":
+        from .scheduler import TaskScheduler
+        from .webhooks import WebhookNotifier
+
+        storage_path = getattr(args, "storage_path", None)
+        scheduler = TaskScheduler(storage_path=storage_path)
+
+        if args.schedule_cmd == "add":
+            try:
+                job = scheduler.add_job(args.cron, args.goal, project_id=args.project)
+                print(
+                    json.dumps(
+                        {
+                            "status": "added",
+                            "job_id": job.job_id,
+                            "cron_expr": job.cron_expr,
+                            "goal": job.goal,
+                            "project_id": job.project_id,
+                            "next_run": job.next_run,
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            except Exception as e:
+                print(json.dumps({"status": "error", "error": str(e)}), file=sys.stderr)
+                return 1
+
+        if args.schedule_cmd == "list":
+            jobs = scheduler.list_jobs(include_disabled=True)
+            print(json.dumps([j.to_dict() for j in jobs], indent=2))
+            return 0
+
+        if args.schedule_cmd == "remove":
+            removed = scheduler.remove_job(args.job_id)
+            if removed:
+                print(json.dumps({"status": "removed", "job_id": args.job_id}, indent=2))
+                return 0
+            else:
+                print(json.dumps({"status": "not_found", "job_id": args.job_id}, indent=2), file=sys.stderr)
+                return 1
+
+        if args.schedule_cmd == "run-due":
+            notifier = WebhookNotifier.from_env() if hasattr(WebhookNotifier, "from_env") else WebhookNotifier()
+            results = scheduler.execute_due_jobs(orch, notifier=notifier)
+            print(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "executed_count": len(results),
+                        "results": results,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+            return 0
+
+    if args.cmd == "daemon":
+        import platform
+        from .daemon import DaemonConfig, DaemonInstaller
+
+        interval = getattr(args, "interval", 60)
+        cfg = DaemonConfig(
+            interval_seconds=interval,
+            data_dir=str(args.data_dir),
+        )
+        installer = DaemonInstaller(config=cfg)
+
+        if args.daemon_cmd == "install":
+            target_path = getattr(args, "path", None)
+            dry_run = getattr(args, "dry_run", False)
+            target_launchd = getattr(args, "launchd", False)
+            target_systemd = getattr(args, "systemd", False)
+
+            if not target_launchd and not target_systemd:
+                if platform.system() == "Darwin":
+                    target_launchd = True
+                else:
+                    target_systemd = True
+
+            if target_launchd:
+                res = installer.install_launchd(target_path=target_path, dry_run=dry_run)
+            else:
+                user_service = getattr(args, "user", True)
+                res = installer.install_systemd(user=user_service, target_path=target_path, dry_run=dry_run)
+
+            print(json.dumps(res, indent=2))
+            return 0
+
+        if args.daemon_cmd == "status":
+            stat = installer.get_daemon_status()
+            print(json.dumps(stat, indent=2))
+            return 0
 
     return 0
 
