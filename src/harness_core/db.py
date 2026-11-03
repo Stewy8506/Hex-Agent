@@ -150,6 +150,7 @@ class LedgerStore:
         self._sync_runner: _SyncRunner | None = None
         self._pool: Any = None
         self._pool_loop: Any = None
+        self._search_index: Any = None
 
         if (
             db_str.startswith("postgresql://")
@@ -198,6 +199,19 @@ class LedgerStore:
                     self.conn.commit()
                 except Exception:
                     pass
+
+    @property
+    def search_index(self) -> Any:
+        """Lazily initialize or return the TaskSearchIndex instance."""
+        if self._search_index is None:
+            from .search import TaskSearchIndex
+
+            if self.backend_type == "sqlite" and self.conn:
+                self._search_index = TaskSearchIndex(self.conn)
+            else:
+                search_db_path = Path.home() / ".hex" / "data" / "task_search.db"
+                self._search_index = TaskSearchIndex(search_db_path)
+        return self._search_index
 
     def normalize_query(self, sql: str) -> str:
         return normalize_query(sql, self.backend_type)
@@ -377,7 +391,25 @@ class LedgerStore:
                 actor="control_api",
             )
             self.conn.commit()
+            try:
+                self.search_index.index_task(
+                    task_id=task_id,
+                    project_id=req.project_id or "default",
+                    goal=req.goal,
+                    status=initial_status,
+                )
+            except Exception:
+                pass
             return self.get_task(task_id)  # type: ignore[return-value]
+
+    def create_task(self, req: TaskSubmitRequest | dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+        """Convenience alias for submit_task supporting dict, model, or kwargs."""
+        if req is None:
+            return self.submit_task(kwargs)
+        if isinstance(req, dict):
+            merged = {**req, **kwargs}
+            return self.submit_task(merged)
+        return self.submit_task(req)
 
     async def submit_task_async(self, req: TaskSubmitRequest | dict[str, Any], policy_snapshot_id: str = "pol-v1.3") -> dict[str, Any]:
         is_dict_input = isinstance(req, dict)
@@ -455,6 +487,15 @@ class LedgerStore:
                     actor="control_api",
                 )
                 row = await conn.fetchrow("SELECT * FROM tasks WHERE task_id = $1", task_id)
+                try:
+                    self.search_index.index_task(
+                        task_id=task_id,
+                        project_id=req.project_id or "default",
+                        goal=req.goal,
+                        status=initial_status,
+                    )
+                except Exception:
+                    pass
                 return self._row_to_dict(row)  # type: ignore[return-value]
 
     def _is_fast_path_eligible(self, req: TaskSubmitRequest) -> bool:
@@ -556,6 +597,10 @@ class LedgerStore:
                 actor=actor,
             )
             self.conn.commit()
+            try:
+                self.search_index.update_task_status(task_id, target.value)
+            except Exception:
+                pass
             return self.get_task(task_id)  # type: ignore[return-value]
 
     async def transition_task_async(
@@ -657,6 +702,10 @@ class LedgerStore:
                     actor=actor,
                 )
                 updated = await conn.fetchrow("SELECT * FROM tasks WHERE task_id = $1", task_id)
+                try:
+                    self.search_index.update_task_status(task_id, target.value)
+                except Exception:
+                    pass
                 return self._row_to_dict(updated)  # type: ignore[return-value]
 
     def record_event(
@@ -2720,6 +2769,16 @@ class LedgerStore:
             )
             self.conn.commit()
             row = self.conn.execute("SELECT * FROM tool_calls WHERE call_id = ?", (call_id,)).fetchone()
+            try:
+                if row and row["task_id"]:
+                    self.search_index.append_tool_call(
+                        task_id=row["task_id"],
+                        tool_name=row["tool_name"] or "",
+                        args_text=str(row["args_json"] or ""),
+                        result_text=json.dumps(result) if isinstance(result, (dict, list)) else str(result),
+                    )
+            except Exception:
+                pass
             return self._row_to_dict(row)  # type: ignore[return-value]
 
     async def seal_tool_call_async(
@@ -2769,6 +2828,16 @@ class LedgerStore:
                 call_id,
             )
             row = await conn.fetchrow("SELECT * FROM tool_calls WHERE call_id = $1", call_id)
+            try:
+                if row and row["task_id"]:
+                    self.search_index.append_tool_call(
+                        task_id=row["task_id"],
+                        tool_name=row["tool_name"] or "",
+                        args_text=str(row["args_json"] or ""),
+                        result_text=json.dumps(result) if isinstance(result, (dict, list)) else str(result),
+                    )
+            except Exception:
+                pass
             return self._row_to_dict(row)  # type: ignore[return-value]
 
     def list_tool_calls(self, task_id: str) -> list[dict[str, Any]]:
@@ -3351,3 +3420,14 @@ class LedgerStore:
                 task_id,
             )
             return self._row_to_dict(row)
+
+    def search_tasks(
+        self,
+        query: str,
+        project_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search tasks, execution transcripts, and logs via FTS5 BM25 index."""
+        results = self.search_index.search(query, project_id=project_id, limit=limit)
+        return [r.to_dict() for r in results]
+

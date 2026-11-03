@@ -218,6 +218,13 @@ def main(argv: list[str] | None = None) -> int:
     p_rcp.add_argument("workspace", nargs="?", default=".", help="Target project workspace directory")
     p_rcp.add_argument("--json", action="store_true", help="Emit raw JSON recipe definition")
 
+    p_srch = sub.add_parser("search", help="Full-text search across past tasks, transcripts, and logs")
+    p_srch.add_argument("query", help="Search terms or prefix pattern (e.g. auth*)")
+    p_srch.add_argument("--project", default=None, help="Filter results by project ID")
+    p_srch.add_argument("--limit", type=int, default=20, help="Maximum number of results (default: 20)")
+    p_srch.add_argument("--reindex", action="store_true", help="Rebuild FTS5 index from ledger before searching")
+    p_srch.add_argument("--json", action="store_true", help="Output raw JSON results")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "onboard":
@@ -822,6 +829,45 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  Test:      {recipe.test}")
             print(f"  Start:     {recipe.start or 'None'}" + (f" (Port: {recipe.port})" if recipe.port else ""))
             print(f"  Evidence:  {', '.join(recipe.evidence)}")
+        return 0
+
+    if args.cmd == "search":
+        from .db import LedgerStore
+
+        data_dir = Path(getattr(args, "data_dir", None) or DEFAULT_DATA_DIR).resolve()
+        db_file = data_dir / "hex.db"
+        if not db_file.exists():
+            legacy_db = data_dir / "harness.db"
+            if legacy_db.exists():
+                db_file = legacy_db
+
+        ledger = LedgerStore(db_file)
+        search_idx = ledger.search_index
+
+        if getattr(args, "reindex", False):
+            count = search_idx.reindex_all(ledger)
+            if not getattr(args, "json", False):
+                print(f"Reindexed {count} tasks into FTS5 index.")
+
+        results = search_idx.search(
+            args.query,
+            project_id=getattr(args, "project", None),
+            limit=getattr(args, "limit", 20),
+        )
+
+        if getattr(args, "json", False):
+            print(json.dumps([r.to_dict() for r in results], indent=2))
+        else:
+            if not results:
+                print(f"No tasks found matching '{args.query}'")
+            else:
+                print(f"\nFound {len(results)} matching tasks:")
+                print(f"{'TASK ID':<16} {'STATUS':<14} {'SCORE':<8} {'MATCHED':<12} {'SNIPPET'}")
+                print("-" * 80)
+                for r in results:
+                    clean_snippet = r.snippet.replace("\n", " ").strip()
+                    print(f"{r.task_id:<16} {r.status:<14} {r.score:<8.3f} {r.matched_field:<12} {clean_snippet}")
+                print()
         return 0
 
     return 0
