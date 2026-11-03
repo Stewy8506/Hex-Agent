@@ -910,8 +910,9 @@ class HexConsole:
             slash_cmds = [
                 "/help", "/status", "/diff", "/sbs", "/rollback", "/fork",
                 "/skills", "/scan", "/model", "/compressor", "/budget",
-                "/blast", "/proof", "/memory", "/remember", "/workers",
-                "/harness2", "/skin", "/banner", "/clear", "/quit", "/exit",
+                "/quota", "/antigravity", "/blast", "/proof", "/memory",
+                "/remember", "/workers", "/harness2", "/skin", "/banner",
+                "/clear", "/quit", "/exit",
             ]
             skin_cmds = [f"/skin {s}" for s in SKIN_REGISTRY]
             comp_cmds = ["/compressor local", "/compressor cloud"]
@@ -1045,6 +1046,8 @@ class HexConsole:
             self._cmd_compressor(arg)
         elif cmd == "/budget":
             self._cmd_budget()
+        elif cmd in ("/quota", "/antigravity", "/ag"):
+            self._cmd_quota(arg)
         elif cmd in ("/blast", "/graph", "/ast"):
             self._cmd_blast(arg)
         elif cmd == "/proof":
@@ -1079,9 +1082,10 @@ class HexConsole:
             ("/fork", "Fork active task into speculative attempt branches"),
             ("/skills", "List registered skills, risk scores, and gate decisions"),
             ("/scan <dir>", "Scan and register a SKILL.md bundle via NVIDIA SkillSpector"),
-            ("/model [name]", "Inspect or switch active model routing profile"),
+            ("/model [name]", "Inspect or switch active model routing profile (or 'antigravity')"),
             ("/compressor [mode]", "Switch Tier-1 log compressor between 'local' (M4 MLX) and 'cloud'"),
             ("/budget", "Display session token usage, compression ratio, and cost"),
+            ("/quota", "Inspect Google Antigravity OAuth session & live model quota windows"),
             ("/memory [query]", "Search governed project, personal, and episodic memories"),
             ("/remember <k>: <v>", "Record a governed project memory with provenance"),
             ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
@@ -1266,7 +1270,10 @@ class HexConsole:
             self.model_profile = arg
             if hasattr(self.orchestrator, "router"):
                 self.orchestrator.router.profile = arg
-                if arg not in ("hybrid", "local", "cloud"):
+                if arg.lower() in ("antigravity", "google-antigravity", "agy"):
+                    if hasattr(self.orchestrator.router, "switch_cloud_provider"):
+                        self.orchestrator.router.switch_cloud_provider("antigravity")
+                elif arg not in ("hybrid", "local", "cloud"):
                     self.orchestrator.router.cloud_model_id = arg
             print(f"{ANSI_GREEN}Model profile updated to: {arg}{ANSI_RESET}")
         else:
@@ -1275,8 +1282,10 @@ class HexConsole:
             print(f"  Profile:          {current}")
             if hasattr(self.orchestrator, "router"):
                 r = self.orchestrator.router
+                prov_id = getattr(getattr(r, "cloud_provider", None), "provider_id", "cloud_frontier")
                 print(f"  Tier-1 Local:     {getattr(r, 'local_model_id', 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit')}")
-                print(f"  Tier-2 Cloud:     {getattr(r, 'cloud_model_id', 'claude-3-5-sonnet')}")
+                print(f"  Tier-2 Provider:  {prov_id}")
+                print(f"  Tier-2 Model:     {getattr(r, 'cloud_model_id', 'claude-3-5-sonnet')}")
                 print(f"  Compressor Mode:  {getattr(r, 'compressor_mode', 'local')}")
                 if hasattr(r, "budget_tracker"):
                     bt = r.budget_tracker
@@ -1306,6 +1315,42 @@ class HexConsole:
             bt = self.orchestrator.router.budget_tracker
             spent = getattr(bt, "total_usd_spent", 0.0)
             print(f"  Lifetime Spend:    ${spent:.4f} USD")
+        print()
+
+    def _cmd_quota(self, arg: str = "") -> None:
+        from .providers.antigravity_provider import AntigravityModelProvider, AntigravityOAuthManager
+
+        print(f"\n{ANSI_BOLD}{ANSI_CYAN}Google Antigravity OAuth & Quota Status:{ANSI_RESET}")
+        mgr = AntigravityOAuthManager()
+        cred = mgr.resolve_credential(auto_refresh=False)
+        if not cred or not (cred.access_token or cred.refresh_token):
+            print(f"  Status:           {ANSI_YELLOW}Unauthenticated{ANSI_RESET}")
+            print(f"  Action:           Run `hex auth antigravity --auth-url` or sign in to Antigravity IDE")
+            print()
+            return
+
+        print(f"  Session Status:   {ANSI_GREEN}Active ($0.00 marginal API billing){ANSI_RESET}")
+        print(f"  Credential Source:{cred.source}")
+        if cred.project_id:
+            print(f"  Project ID:       {cred.project_id}")
+
+        prov = getattr(getattr(self.orchestrator, "router", None), "cloud_provider", None)
+        if not isinstance(prov, AntigravityModelProvider):
+            prov = AntigravityModelProvider(oauth_manager=mgr)
+        try:
+            snap = prov.fetch_quota_status()
+            print(f"  Plan Tier:        {snap.plan_name}")
+            if snap.available_prompt_credits is not None:
+                print(f"  Prompt Credits:   {snap.available_prompt_credits:,}")
+            if snap.models:
+                print(f"  Model Quotas:")
+                for m in snap.models:
+                    rem_pct = round(m.remaining_fraction * 100.0, 1)
+                    col = ANSI_GREEN if rem_pct > 30 else (ANSI_YELLOW if rem_pct > 0 else ANSI_RED)
+                    rst = f" (resets {m.reset_time})" if m.reset_time else ""
+                    print(f"    • {m.model_id:<28} {col}{rem_pct:>5.1f}% remaining{ANSI_RESET}{rst}")
+        except Exception as exc:
+            print(f"  Live Quota Probe: {ANSI_DIM}{exc}{ANSI_RESET}")
         print()
 
     def _cmd_blast(self, arg: str = "") -> None:

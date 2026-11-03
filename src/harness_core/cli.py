@@ -2,6 +2,8 @@
 
 Commands:
 - `hex onboard`: Run interactive onboarding wizard for hardware discovery, model profile, and configuration.
+- `hex auth antigravity`: Discover, import, or authenticate Google Antigravity OAuth session for $0 Day-1 quota.
+- `hex quota`: Inspect live Google Antigravity model quota windows, remaining percentages, and reset timers.
 - `hex init`: Initialize local database, CoW snapshot store, and seed default repo skills.
 - `hex up`: Start the local web control surface & HTTP API on 127.0.0.1:8420.
 - `hex run` / `hex exec <goal>`: Run task with automated Git branching, commits, and GitHub Pull Requests.
@@ -61,6 +63,22 @@ def main(argv: list[str] | None = None) -> int:
     p_onb.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode using hardware defaults")
     p_onb.add_argument("--defaults", dest="defaults_only", action="store_true", help="Accept all hardware auto-detected defaults")
 
+    p_auth = sub.add_parser("auth", help="Manage Google Antigravity OAuth credentials and local IDE token import")
+    p_auth.add_argument("provider", nargs="?", default="antigravity", choices=["antigravity"], help="Target auth provider")
+    p_auth.add_argument("--status", action="store_true", help="Show discovered Antigravity OAuth session status")
+    p_auth.add_argument("--import-ide", action="store_true", help="Import OAuth token from local Antigravity IDE state.vscdb / Keychain")
+    p_auth.add_argument("--token", default=None, help="Save an explicit Antigravity OAuth access token (ya29...)")
+    p_auth.add_argument("--refresh-token", default=None, help="Save an explicit Antigravity OAuth refresh token (1//...)")
+    p_auth.add_argument("--project-id", default=None, help="Optional Google Cloud Companion Project ID")
+    p_auth.add_argument("--auth-url", action="store_true", help="Generate OAuth 2.0 PKCE authorization URL for browser login")
+    p_auth.add_argument("--code", default=None, help="Exchange OAuth authorization code or redirect URL for tokens")
+    p_auth.add_argument("--verifier", default=None, help="PKCE verifier corresponding to --code")
+    p_auth.add_argument("--auth-file", default=None, help="Custom path to antigravity_auth.json")
+
+    p_quota = sub.add_parser("quota", help="Inspect live Google Antigravity model quota windows and reset times")
+    p_quota.add_argument("--auth-file", default=None, help="Custom path to antigravity_auth.json")
+    p_quota.add_argument("--json", action="store_true", help="Emit raw JSON quota snapshot")
+
     p_init = sub.add_parser("init", help="Initialize project configuration, ledger schema, and seed built-in skills")
     p_init.add_argument("--workspace", default=None, help="Path to project repository root (defaults to current working directory)")
     p_init.add_argument("--force", action="store_true", help="Overwrite existing .hex/config.yaml")
@@ -76,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("goal", help="Task goal description")
     p_run.add_argument("--project", default="default")
     p_run.add_argument("--mode", choices=["auto", "fast_path", "standard"], default="auto")
+    p_run.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=None, help="Cloud reasoner provider override (e.g., antigravity)")
+    p_run.add_argument("--model", default=None, help="Cloud model ID override (e.g., gemini-3.5-pro, gemini-3.8-flash)")
     p_run.add_argument("--workspace", default=None)
     p_run.add_argument("--branch", nargs="?", const=True, default=None, help="Custom branch name or flag to auto-branch (hex/task-<id>-<slug>)")
     p_run.add_argument("--pr", action="store_true", help="Automatically create GitHub Pull Request on success")
@@ -86,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     p_sub.add_argument("goal", help="Task goal description")
     p_sub.add_argument("--project", default="default")
     p_sub.add_argument("--mode", choices=["auto", "fast_path", "standard"], default="auto")
+    p_sub.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=None, help="Cloud reasoner provider override")
     p_sub.add_argument("--workspace", default=None)
 
     p_stat = sub.add_parser("status", help="Inspect task status, events, and Proof-Carrying Artifact")
@@ -108,7 +129,8 @@ def main(argv: list[str] | None = None) -> int:
     p_chat = sub.add_parser("chat", aliases=["tui"], help="Start interactive TUI pair-programming console")
     p_chat.add_argument("--project", default="default", help="Project ID")
     p_chat.add_argument("--workspace", default=None, help="Workspace path (defaults to repository root)")
-    p_chat.add_argument("--model", default=None, help="Model routing profile override (hybrid, local, cloud)")
+    p_chat.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=None, help="Cloud reasoner provider override (e.g., antigravity)")
+    p_chat.add_argument("--model", default=None, help="Model routing profile override (hybrid, local, cloud, or model ID)")
     p_chat.add_argument("--skin", default="amber", choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
     p_chat.add_argument("-Q", "--quiet", action="store_true", help="Quiet mode: suppress startup banner and spinner")
     p_chat.add_argument("--no-stream", action="store_true", help="Disable live token streaming")
@@ -198,8 +220,115 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.cmd == "auth":
+        from .providers.antigravity_provider import AntigravityCredential, AntigravityOAuthManager
+
+        mgr = AntigravityOAuthManager(auth_file=args.auth_file)
+        if args.auth_url:
+            pkce = mgr.generate_pkce_pair()
+            url = mgr.build_authorization_url(pkce["challenge"])
+            print(
+                json.dumps(
+                    {
+                        "status": "pkce_ready",
+                        "authorization_url": url,
+                        "code_verifier": pkce["verifier"],
+                        "instructions": (
+                            "1. Open authorization_url in your browser and sign in with your Google Antigravity account.\n"
+                            "2. Copy the redirected localhost URL (or `code` parameter) and run:\n"
+                            f"   hex auth antigravity --code '<REDIRECT_URL_OR_CODE>' --verifier '{pkce['verifier']}'"
+                        ),
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+
+        if args.code and args.verifier:
+            cred = mgr.exchange_code_for_tokens(args.code, args.verifier)
+            print(
+                json.dumps(
+                    {
+                        "status": "authenticated",
+                        "source": cred.source,
+                        "auth_file": str(mgr.auth_file),
+                        "has_access_token": bool(cred.access_token),
+                        "has_refresh_token": bool(cred.refresh_token),
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+
+        if args.token or args.refresh_token:
+            cred = AntigravityCredential(
+                access_token=args.token or "",
+                refresh_token=args.refresh_token or "",
+                project_id=args.project_id,
+                source="cli_manual",
+            )
+            saved_path = mgr.save_credential(cred)
+            print(
+                json.dumps(
+                    {
+                        "status": "saved",
+                        "auth_file": str(saved_path),
+                        "has_access_token": bool(cred.access_token),
+                        "has_refresh_token": bool(cred.refresh_token),
+                        "project_id": cred.project_id,
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+
+        cred = mgr.resolve_credential(auto_refresh=False)
+        if cred and args.import_ide:
+            mgr.save_credential(cred)
+        print(
+            json.dumps(
+                {
+                    "status": "authenticated" if (cred and (cred.access_token or cred.refresh_token)) else "unauthenticated",
+                    "provider": "google-antigravity",
+                    "source": cred.source if cred else None,
+                    "auth_file": str(mgr.auth_file),
+                    "has_access_token": bool(cred and cred.access_token),
+                    "has_refresh_token": bool(cred and cred.refresh_token),
+                    "project_id": cred.project_id if cred else None,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.cmd == "quota":
+        from .providers.antigravity_provider import AntigravityModelProvider, AntigravityOAuthManager
+
+        mgr = AntigravityOAuthManager(auth_file=args.auth_file)
+        prov = AntigravityModelProvider(oauth_manager=mgr)
+        try:
+            snap = prov.fetch_quota_status()
+            print(json.dumps(snap.to_dict(), indent=2))
+            return 0
+        except Exception as exc:
+            print(json.dumps({"status": "unavailable", "error": str(exc)}, indent=2))
+            return 1
+
     repo_root = Path(__file__).resolve().parents[2]
     orch = HarnessOrchestrator(args.data_dir, default_workspace=repo_root)
+
+    if getattr(args, "provider", None):
+        if args.provider == "local":
+            orch.router.cloud_provider = orch.router.local_provider
+        else:
+            orch.router.switch_cloud_provider(
+                args.provider,
+                model_id=getattr(args, "model", None) or orch.router.cloud_model_id,
+            )
+    elif getattr(args, "model", None) and args.cmd in ("run", "exec"):
+        orch.router.cloud_model_id = args.model
+        if hasattr(orch.router.cloud_provider, "model_id"):
+            orch.router.cloud_provider.model_id = args.model  # type: ignore[attr-defined]
 
     if args.cmd in ("chat", "tui"):
         from .tui import HexConsole

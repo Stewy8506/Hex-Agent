@@ -1,7 +1,8 @@
 """HEX Onboarding Wizard (`hex onboard`).
 
 Guides the operator through hardware discovery, snapshot & sandbox configuration,
-model provider selection, credential storage, and ledger initialization.
+Google Antigravity OAuth quota detection, model provider selection, credential storage,
+and ledger initialization.
 """
 
 from __future__ import annotations
@@ -10,12 +11,13 @@ import os
 import platform
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .cow import get_default_snapshot_provider
 from .orchestrator import HarnessOrchestrator
+from .providers.antigravity_provider import AntigravityOAuthManager
 from .sandbox import get_default_sandbox
 
 
@@ -124,6 +126,8 @@ def run_onboard_wizard(
     config_file = cfg_dir / "config.yaml"
 
     profile = HardwareProfile.detect()
+    ag_mgr = AntigravityOAuthManager(auth_file=cfg_dir / "antigravity_auth.json")
+    ag_cred = ag_mgr.resolve_credential(auto_refresh=False)
 
     print(HEX_BANNER)
     print("Welcome to HEX — The Autonomous AI Workbench.")
@@ -135,29 +139,53 @@ def run_onboard_wizard(
     print(f"  Execution Sandbox:  {profile.sandbox_backend}")
     if profile.is_apple_silicon:
         print("  Apple Silicon MLX:  Accelerated (Metal Unified Memory available)")
+    if ag_cred and (ag_cred.access_token or ag_cred.refresh_token):
+        print(f"  Antigravity Quota:  Detected ({ag_cred.source}) — Ready for $0 Day-1 routing")
+    else:
+        print("  Antigravity Quota:  Ready to link via `hex auth antigravity`")
     print("=" * 60)
     print()
 
     # Model configuration
-    model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+    model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
+    cloud_provider = "antigravity"
+    cloud_model_id = "gemini-3.5-pro"
+
     anthropic_key = os.environ.get("HEX_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
     openai_key = os.environ.get("HEX_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
     gemini_key = os.environ.get("HEX_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+    antigravity_token = (
+        os.environ.get("HEX_ANTIGRAVITY_TOKEN")
+        or os.environ.get("ANTIGRAVITY_OAUTH_TOKEN")
+        or (ag_cred.access_token if ag_cred else "")
+    )
 
     if not non_interactive and not defaults_only:
         print("1. Select Model Routing Profile:")
-        print("   [1] Hybrid (Local M4 Log Compressor + Cloud Frontier Reasoner - Recommended)")
-        print("   [2] Local Only (100% private, Apple Silicon MLX / Ollama, zero API cost)")
-        print("   [3] Cloud Frontier (Anthropic Claude, OpenAI GPT-4o, Google Gemini)")
-        choice = input("Select profile [1/2/3, default=1]: ").strip()
+        print("   [1] Google Antigravity Quota + Local M4 MLX Compressor ($0 API billing - Day-1 Default)")
+        print("   [2] Hybrid API Keys (Local M4 Log Compressor + Cloud Frontier API Key)")
+        print("   [3] Local Only (100% private, Apple Silicon MLX / Ollama, zero network egress)")
+        print("   [4] Cloud Frontier API Keys Only (Anthropic Claude, OpenAI GPT-4o, Google Gemini)")
+        choice = input("Select profile [1/2/3/4, default=1]: ").strip()
         if choice == "2":
-            model_profile = "local"
-        elif choice == "3":
-            model_profile = "cloud"
-        else:
             model_profile = "hybrid"
+            cloud_provider = "gemini"
+        elif choice == "3":
+            model_profile = "local"
+            cloud_provider = "local"
+        elif choice == "4":
+            model_profile = "cloud"
+            cloud_provider = "gemini"
+        else:
+            model_profile = "antigravity_hybrid"
+            cloud_provider = "antigravity"
 
-        if model_profile in ("hybrid", "cloud") and not (anthropic_key or openai_key or gemini_key):
+        if cloud_provider == "antigravity" and not antigravity_token:
+            print("\nGoogle Antigravity OAuth Session (leave blank to auto-discover from IDE or `hex auth antigravity`):")
+            k_ag = input("Antigravity OAuth Access/Refresh Token (optional): ").strip()
+            if k_ag:
+                antigravity_token = k_ag
+        elif model_profile in ("hybrid", "cloud") and not (anthropic_key or openai_key or gemini_key):
             print("\nEnter Cloud API Keys (leave blank to skip or configure later):")
             k_ant = input("Anthropic API Key (sk-ant-...): ").strip()
             if k_ant:
@@ -172,6 +200,8 @@ def run_onboard_wizard(
     # Write credentials securely
     creds_content = [
         "# HEX Secure Credentials Environment File",
+        f"HEX_CLOUD_PROVIDER={cloud_provider}",
+        f"HEX_ANTIGRAVITY_TOKEN={antigravity_token}",
         f"ANTHROPIC_API_KEY={anthropic_key}",
         f"OPENAI_API_KEY={openai_key}",
         f"GEMINI_API_KEY={gemini_key}",
@@ -192,8 +222,9 @@ def run_onboard_wizard(
 version: "1.0"
 model:
   profile: "{model_profile}"
+  cloud_provider: "{cloud_provider}"
   compressor_mode: "local"
-  cloud_model_id: "claude-3-5-sonnet-20241022"
+  cloud_model_id: "{cloud_model_id}"
   local_model_id: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
 storage:
   backend: "{db_backend}"
@@ -223,19 +254,22 @@ webhooks:
     print("✓ HEX has been successfully initialized!")
     print(f"  • Configuration: {config_file}")
     print(f"  • Credentials:   {credentials_file} (chmod 0600)")
+    print(f"  • Cloud Tier:    {cloud_provider} ({cloud_model_id})")
     print(f"  • Data Store:    {data_dir}")
     print(f"  • Seeded Skills: {len(seeded)} verified skills registered")
     print()
     print("Quick Start:")
-    print("  • Start Web Control Surface & API:  hex up")
-    print("  • Run an autonomous coding task:     hex submit \"Your goal here\"")
-    print("  • Start a distributed worker daemon: hex worker")
+    print("  • Link or inspect Antigravity Quota: hex auth antigravity --status")
+    print("  • Check live Antigravity model quota: hex quota")
+    print("  • Start Interactive TUI Cockpit:      hex tui")
+    print("  • Run an autonomous coding task:      hex run \"Your goal here\" --provider antigravity")
     print()
 
     return {
         "status": "ready",
         "config_file": str(config_file),
         "credentials_file": str(credentials_file),
+        "cloud_provider": cloud_provider,
         "data_dir": str(data_dir),
         "hardware": {
             "os": profile.os_name,
@@ -310,6 +344,10 @@ version: "1.0"
 project:
   name: "{repo.name}"
   stack: "{stack_info['stack']}"
+model:
+  cloud_provider: "antigravity"
+  cloud_model_id: "gemini-3.5-pro"
+  compressor_mode: "local"
 verification:
   test_command: "{stack_info['test_cmd']}"
   timeout_seconds: 120
@@ -339,5 +377,3 @@ tmp/
         "gitignore_path": str(gitignore_file),
         "created": created,
     }
-
-

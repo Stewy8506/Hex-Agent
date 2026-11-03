@@ -1,7 +1,7 @@
 """Governed Cloud Frontier Model Provider with multi-backend dispatch,
 
-prompt prefix caching (stable -> context -> volatile), optional cloud log compression,
-per-task budget tracking, and strict privacy gating.
+Google Antigravity OAuth quota routing, prompt prefix caching (stable -> context -> volatile),
+optional cloud log compression, per-task budget tracking, and strict privacy gating.
 """
 
 from __future__ import annotations
@@ -17,6 +17,12 @@ from typing import Any, Callable
 
 from harness_core.gateway import redact_secrets
 
+from .antigravity_provider import (
+    AntigravityCredential,
+    AntigravityModelProvider,
+    AntigravityOAuthManager,
+    AntigravityQuotaSnapshot,
+)
 from .base import (
     BudgetExceededError,
     ModelProvider,
@@ -32,6 +38,7 @@ from .base import (
 class CloudProviderType(str, Enum):
     """Supported cloud model provider backends."""
 
+    ANTIGRAVITY = "antigravity"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     GEMINI = "gemini"
@@ -42,11 +49,13 @@ class ModelPricing:
 
     RATES: dict[str, tuple[float, float]] = {
         # model_pattern: (input_usd_per_1m, output_usd_per_1m)
+        "antigravity": (0.00, 0.00),
         "claude-3-5-sonnet": (3.00, 15.00),
         "claude-3.5-sonnet": (3.00, 15.00),
         "gpt-4o": (2.50, 10.00),
         "gemini-1.5-pro": (1.25, 5.00),
         "gemini-3.5-pro": (1.50, 6.00),
+        "gemini-3.8-flash": (0.10, 0.40),
         "gemini-2.0-flash": (0.10, 0.40),
         "gemini-1.5-flash": (0.075, 0.30),
     }
@@ -135,8 +144,8 @@ class TaskBudgetTracker:
 class CloudModelProvider(ModelProvider):
     """Governed Cloud Frontier Model Provider with multi-backend dispatch,
 
-    prompt prefix caching (stable -> context -> volatile), optional cloud log compression,
-    per-task budget tracking, and strict privacy gating.
+    Google Antigravity OAuth quota support, prompt prefix caching (stable -> context -> volatile),
+    optional cloud log compression, per-task budget tracking, and strict privacy gating.
     """
 
     provider_id: str = "cloud_frontier"
@@ -150,11 +159,15 @@ class CloudModelProvider(ModelProvider):
         budget_tracker: TaskBudgetTracker | None = None,
         http_transport: Callable[[str, dict[str, str], bytes], tuple[int, bytes]] | None = None,
         enable_prompt_caching: bool = False,
+        oauth_manager: AntigravityOAuthManager | None = None,
     ) -> None:
         if isinstance(provider_type, CloudProviderType):
             self.provider_type = provider_type
         else:
-            self.provider_type = CloudProviderType(str(provider_type).lower())
+            norm_p = str(provider_type).lower().strip()
+            if norm_p in ("google-antigravity", "google_antigravity", "agy"):
+                norm_p = "antigravity"
+            self.provider_type = CloudProviderType(norm_p)
 
         if model_id:
             self.model_id = model_id
@@ -166,24 +179,52 @@ class CloudModelProvider(ModelProvider):
             else:
                 self.model_id = "gemini-3.5-pro"
 
-        self.api_key = api_key or self._resolve_env_api_key()
         self.budget_tracker = budget_tracker or TaskBudgetTracker()
         self.http_transport = http_transport
         self.enable_prompt_caching = enable_prompt_caching
+        self._antigravity_delegate: AntigravityModelProvider | None = None
+
+        if self.provider_type == CloudProviderType.ANTIGRAVITY:
+            self.provider_id = "google_antigravity"
+            self._antigravity_delegate = AntigravityModelProvider(
+                model_id=self.model_id,
+                oauth_manager=oauth_manager,
+                access_token=api_key,
+                budget_tracker=self.budget_tracker,
+                http_transport=http_transport,
+                enable_prompt_caching=enable_prompt_caching,
+            )
+            self.api_key = api_key or self._resolve_env_api_key()
+        else:
+            self.api_key = api_key or self._resolve_env_api_key()
 
     def _resolve_env_api_key(self) -> str | None:
+        if self.provider_type == CloudProviderType.ANTIGRAVITY:
+            if self._antigravity_delegate is not None:
+                cred = self._antigravity_delegate._get_active_credential()
+                if cred and cred.access_token:
+                    return cred.access_token
+            return (
+                os.getenv("HEX_ANTIGRAVITY_TOKEN")
+                or os.getenv("ANTIGRAVITY_OAUTH_TOKEN")
+                or os.getenv("ANTIGRAVITY_ACCESS_TOKEN")
+            )
         if self.provider_type == CloudProviderType.ANTHROPIC:
-            return os.getenv("ANTHROPIC_API_KEY")
+            return os.getenv("ANTHROPIC_API_KEY") or os.getenv("HEX_ANTHROPIC_API_KEY")
         elif self.provider_type == CloudProviderType.OPENAI:
-            return os.getenv("OPENAI_API_KEY")
+            return os.getenv("OPENAI_API_KEY") or os.getenv("HEX_OPENAI_API_KEY")
         elif self.provider_type == CloudProviderType.GEMINI:
-            return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("HEX_GEMINI_API_KEY")
         return None
 
     def is_available(self) -> bool:
+        if self._antigravity_delegate is not None:
+            return self._antigravity_delegate.is_available()
         return bool(self.api_key) or (self.http_transport is not None)
 
     def get_capabilities(self) -> ProviderCapabilities:
+        if self._antigravity_delegate is not None:
+            return self._antigravity_delegate.get_capabilities()
         return ProviderCapabilities(
             supports_system_prompt=True,
             supports_streaming=False,
@@ -207,6 +248,21 @@ class CloudModelProvider(ModelProvider):
         **kwargs: Any,
     ) -> ModelResponse:
         """Generate response from frontier cloud provider with privacy, prefix caching, and budget enforcement."""
+        if self._antigravity_delegate is not None:
+            self._antigravity_delegate.model_id = AntigravityModelProvider._normalize_model_id(self.model_id)
+            return self._antigravity_delegate.generate(
+                prompt,
+                system_prompt=system_prompt,
+                cacheable_prefix=cacheable_prefix,
+                enable_prompt_caching=enable_prompt_caching,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stop_sequences=stop_sequences,
+                data_classification=data_classification,
+                budget=budget,
+                **kwargs,
+            )
+
         # Privacy Gate: Sensitive / secret data classification is strictly blocked from cloud egress
         if data_classification in ("sensitive", "secret"):
             raise PolicyBlockedError(
@@ -299,6 +355,14 @@ class CloudModelProvider(ModelProvider):
         budget: Any = None,
     ) -> dict[str, Any]:
         """Compress verbose test/build logs using this CloudModelProvider (with deterministic pre-filter)."""
+        if self._antigravity_delegate is not None:
+            return self._antigravity_delegate.compress_log(
+                raw_log,
+                max_chars=max_chars,
+                data_classification=data_classification,
+                budget=budget,
+            )
+
         if data_classification in ("sensitive", "secret"):
             raise PolicyBlockedError(
                 f"Cloud log compression forbidden for data classification '{data_classification}'."

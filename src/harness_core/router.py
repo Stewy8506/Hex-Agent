@@ -4,6 +4,9 @@
   1. Distills verbose pytest/compiler logs (>20,000 tokens) into compact, provenance-linked
      failure summaries (>70% token reduction while preserving file, line number, and assertion error).
   2. Runs local R0/R1 triage and keeps sensitive/secret data 100% local.
+- Tier-2 Cloud / Google Antigravity Reasoner:
+  Supports Day-1 Google Antigravity OAuth quota routing (`AntigravityModelProvider` at $0 marginal API billing)
+  as well as Anthropic, OpenAI, and Gemini API keys with ephemeral prompt prefix caching.
 - Governed Memory Service:
   Enforces strict isolation across `project`, `personal`, and `episodic` scopes with provenance,
   confidence, sensitivity, and expiration controls.
@@ -11,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -19,6 +23,7 @@ from typing import Any
 from .db import LedgerStore, canonical_json, utcnow_iso
 from .gateway import redact_secrets
 from .models import TaskBudget
+from .providers.antigravity_provider import AntigravityModelProvider
 from .providers.base import ModelProvider, ModelResponse, PolicyBlockedError
 from .providers.cloud_provider import CloudModelProvider
 from .providers.mlx_provider import LocalMLXModelProvider
@@ -63,10 +68,12 @@ class RouteDecision:
 class TwoTierModelRouter:
     """Routes between Tier-1 Local M4 MLX Gatekeeper/Compressor and Tier-2 Heavy Reasoner.
 
-    Supports configurable log compression mode (`compressor_mode`):
-    - `'local'` (default): 100% local M4 MLX / deterministic compression at $0 marginal cost.
-    - `'cloud'`: Uses `compressor_provider` (or `cloud_provider`) for cloud LLM log compression,
-      automatically falling back to `'local'` when `data_classification` is `'sensitive'` or `'secret'`.
+    Supports:
+    - Day-1 Google Antigravity OAuth quota routing (`cloud_provider_type='antigravity'`).
+    - Configurable log compression mode (`compressor_mode`):
+      - `'local'` (default): 100% local M4 MLX / deterministic compression at $0 marginal cost.
+      - `'cloud'`: Uses `compressor_provider` (or `cloud_provider`) for cloud LLM log compression,
+        automatically falling back to `'local'` when `data_classification` is `'sensitive'` or `'secret'`.
     """
 
     def __init__(
@@ -75,19 +82,59 @@ class TwoTierModelRouter:
         cloud_provider: ModelProvider | None = None,
         local_model_id: str = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
         cloud_model_id: str = "gemini-3.5-pro",
+        cloud_provider_type: str | None = None,
         compressor_mode: str | None = None,
         compressor_provider: ModelProvider | None = None,
     ):
-        import os
-
         self.local_provider = local_provider or LocalMLXModelProvider(model_id=local_model_id)
-        self.cloud_provider = cloud_provider or CloudModelProvider(model_id=cloud_model_id)
+
+        resolved_provider_type = (
+            cloud_provider_type
+            or os.getenv("HEX_CLOUD_PROVIDER")
+            or os.getenv("HARNESS_CLOUD_PROVIDER")
+            or ""
+        ).strip().lower()
+
+        if cloud_provider is not None:
+            self.cloud_provider = cloud_provider
+        elif resolved_provider_type in ("antigravity", "google-antigravity", "google_antigravity", "agy") or (
+            cloud_model_id.lower().startswith(("antigravity/", "google/antigravity-"))
+        ):
+            self.cloud_provider = AntigravityModelProvider(model_id=cloud_model_id)
+        else:
+            # Auto-detect local Antigravity OAuth session if no paid raw API key is explicitly set
+            has_raw_api_key = bool(
+                os.getenv("GEMINI_API_KEY")
+                or os.getenv("GOOGLE_API_KEY")
+                or os.getenv("ANTHROPIC_API_KEY")
+                or os.getenv("OPENAI_API_KEY")
+            )
+            ag_probe = AntigravityModelProvider(model_id=cloud_model_id)
+            if not has_raw_api_key and ag_probe.is_available():
+                self.cloud_provider = ag_probe
+            else:
+                self.cloud_provider = CloudModelProvider(
+                    provider_type=resolved_provider_type or "gemini",
+                    model_id=cloud_model_id,
+                )
+
         self.compressor_provider = compressor_provider or self.cloud_provider
         self.compressor_mode = (
             compressor_mode or os.getenv("HARNESS_COMPRESSOR_MODE") or "local"
         ).strip().lower()
         self.local_model_id = getattr(self.local_provider, "model_id", local_model_id)
         self.cloud_model_id = getattr(self.cloud_provider, "model_id", cloud_model_id)
+
+    def switch_cloud_provider(self, provider_type: str, model_id: str | None = None) -> ModelProvider:
+        """Switch the Tier-2 cloud reasoner backend dynamically (e.g., to 'antigravity')."""
+        norm = provider_type.strip().lower()
+        target_model = model_id or self.cloud_model_id
+        if norm in ("antigravity", "google-antigravity", "google_antigravity", "agy"):
+            self.cloud_provider = AntigravityModelProvider(model_id=target_model)
+        else:
+            self.cloud_provider = CloudModelProvider(provider_type=norm, model_id=target_model)
+        self.cloud_model_id = getattr(self.cloud_provider, "model_id", target_model)
+        return self.cloud_provider
 
     def compress_verbose_log(
         self,
@@ -244,9 +291,10 @@ class TwoTierModelRouter:
                 compressed_context=comp["compressed_text"],
             )
 
+        cloud_prov_id = getattr(self.cloud_provider, "provider_id", "cloud_frontier")
         return RouteDecision(
             tier="tier2_cloud_reasoner",
-            provider="cloud_frontier",
+            provider=cloud_prov_id,
             model_id=self.cloud_model_id,
             reason="Escalated to Tier-2 heavy reasoner after Tier-1 M4 log pre-compression",
             raw_tokens_estimated=comp["raw_tokens"],
