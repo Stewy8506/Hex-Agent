@@ -66,13 +66,35 @@ def main(argv: list[str] | None = None) -> int:
         else:
             default_dir = str(Path.home() / ".hex" / "data")
 
-    parser = argparse.ArgumentParser(prog="hex", description="HEX: Autonomous AI Workbench CLI")
+    parser = argparse.ArgumentParser(
+        prog="hex",
+        description="HEX: Autonomous AI Workbench & Interactive TUI (Run 'hex' to launch interactive console)",
+    )
+    parser.add_argument("-v", "--version", action="version", version="hex 0.1.0")
     parser.add_argument(
         "--data-dir",
         default=default_dir,
         help="Path to local HEX ledger and CoW storage directory",
     )
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    # Interactive TUI options directly supported at top-level so 'hex' immediately starts TUI
+    parser.add_argument("--project", default="default", help="Project ID")
+    parser.add_argument("--workspace", default=None, help="Workspace path (defaults to repository root)")
+    parser.add_argument(
+        "--provider",
+        choices=["antigravity", "gemini", "anthropic", "openai", "local"],
+        default=None,
+        help="Cloud reasoner provider override (e.g., antigravity)",
+    )
+    parser.add_argument("--model", default=None, help="Model routing profile override (hybrid, local, cloud, or model ID)")
+    parser.add_argument(
+        "--skin",
+        default="amber",
+        choices=["amber", "cyberpunk", "matrix", "nord", "mono"],
+        help="TUI color skin (default: amber)",
+    )
+    parser.add_argument("-Q", "--quiet", action="store_true", help="Quiet mode: suppress startup banner and spinner")
+    parser.add_argument("--no-stream", action="store_true", help="Disable live token streaming")
+    sub = parser.add_subparsers(dest="cmd", required=False)
 
     p_onb = sub.add_parser("onboard", help="Run interactive onboarding wizard for hardware & configuration")
     p_onb.add_argument("--config-dir", default=None, help="Custom configuration directory (defaults to ~/.hex)")
@@ -142,14 +164,14 @@ def main(argv: list[str] | None = None) -> int:
     p_wrk.add_argument("--token", default=None, help="Worker authentication token")
     p_wrk.add_argument("--once", action="store_true", help="Execute at most one claimed task and exit")
 
-    p_chat = sub.add_parser("chat", aliases=["tui"], help="Start interactive TUI pair-programming console")
-    p_chat.add_argument("--project", default="default", help="Project ID")
-    p_chat.add_argument("--workspace", default=None, help="Workspace path (defaults to repository root)")
-    p_chat.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=None, help="Cloud reasoner provider override (e.g., antigravity)")
-    p_chat.add_argument("--model", default=None, help="Model routing profile override (hybrid, local, cloud, or model ID)")
-    p_chat.add_argument("--skin", default="amber", choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
-    p_chat.add_argument("-Q", "--quiet", action="store_true", help="Quiet mode: suppress startup banner and spinner")
-    p_chat.add_argument("--no-stream", action="store_true", help="Disable live token streaming")
+    p_chat = sub.add_parser("chat", aliases=["tui"], help="Start interactive TUI pair-programming console (or run 'hex')")
+    p_chat.add_argument("--project", default=argparse.SUPPRESS, help="Project ID")
+    p_chat.add_argument("--workspace", default=argparse.SUPPRESS, help="Workspace path (defaults to repository root)")
+    p_chat.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=argparse.SUPPRESS, help="Cloud reasoner provider override (e.g., antigravity)")
+    p_chat.add_argument("--model", default=argparse.SUPPRESS, help="Model routing profile override (hybrid, local, cloud, or model ID)")
+    p_chat.add_argument("--skin", default=argparse.SUPPRESS, choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
+    p_chat.add_argument("-Q", "--quiet", action="store_true", default=argparse.SUPPRESS, help="Quiet mode: suppress startup banner and spinner")
+    p_chat.add_argument("--no-stream", action="store_true", default=argparse.SUPPRESS, help="Disable live token streaming")
     p_chat.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
     p_gw = sub.add_parser("gateway", help="Manage bidirectional chat gateways (Telegram & Discord)")
@@ -378,20 +400,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.provider,
                 model_id=getattr(args, "model", None) or orch.router.cloud_model_id,
             )
-    elif getattr(args, "model", None) and args.cmd in ("run", "exec"):
+    elif getattr(args, "model", None) and getattr(args, "cmd", None) in ("run", "exec"):
         orch.router.cloud_model_id = args.model
         if hasattr(orch.router.cloud_provider, "model_id"):
             orch.router.cloud_provider.model_id = args.model  # type: ignore[attr-defined]
 
-    if args.cmd in ("chat", "tui"):
+    if args.cmd is None or args.cmd in ("chat", "tui"):
         from .tui import HexConsole
 
         console = HexConsole(
             orch,
-            project_id=args.project,
-            workspace_root=args.workspace,
-            stream=not args.no_stream,
-            model_profile=args.model,
+            project_id=getattr(args, "project", "default"),
+            workspace_root=getattr(args, "workspace", None),
+            stream=not getattr(args, "no_stream", False),
+            model_profile=getattr(args, "model", None),
             skin_name=getattr(args, "skin", "amber"),
             quiet=getattr(args, "quiet", False),
         )

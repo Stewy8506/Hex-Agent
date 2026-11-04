@@ -181,7 +181,7 @@ if [ "$PATH_NEEDS_UPDATE" -eq 1 ]; then
 fi
 
 echo "Quick Start Commands:"
-echo -e "  • Start Interactive TUI:     ${CYAN}hex chat${NC}   (or ${CYAN}hex tui${NC})"
+echo -e "  • Start Interactive TUI:     ${CYAN}hex${NC}   (or ${CYAN}hex chat${NC})"
 echo -e "  • Run System Diagnostics:    ${CYAN}hex doctor${NC}"
 echo -e "  • Search Past Tasks:         ${CYAN}hex search \"query\"${NC}"
 echo -e "  • Inspect Antigravity Quota: ${CYAN}hex quota${NC}"

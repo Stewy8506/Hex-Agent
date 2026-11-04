@@ -82,8 +82,8 @@ hex doctor --fix
 # 4. Build the persistent polyglot AST & dependency cache (.hex/graph.json)
 hex init .
 
-# 5. Launch the 24-bit TrueColor interactive TUI cockpit
-hex tui --skin amber --provider antigravity
+# 5. Launch the 24-bit TrueColor interactive TUI cockpit (just run 'hex' like Hermes)
+hex --skin amber --provider antigravity
 ```
 
 ### 3. Dispatch Autonomous Tasks, Search History, or Inspect Recipes

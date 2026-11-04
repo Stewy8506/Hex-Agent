@@ -99,6 +99,27 @@ class TestHexCLI(unittest.TestCase):
         self.assertTrue(res["proof"]["verification_results"]["passed"])
         self.assertTrue(res["proof"]["ledger_signature"].startswith("ed25519-hmac-sha256:"))
 
+    def test_hex_bare_invocation_starts_tui(self) -> None:
+        """Running 'hex' with no subcommands immediately launches the interactive TUI console like Hermes."""
+        from unittest.mock import patch
+
+        with patch("harness_core.tui.HexConsole.start", return_value=0) as mock_start:
+            ret = main([])
+            self.assertEqual(ret, 0)
+            self.assertTrue(mock_start.called, "Running bare 'hex' should start HexConsole")
+
+    def test_hex_tui_options_at_top_level(self) -> None:
+        """Top-level options like 'hex --skin matrix -Q' pass directly to HexConsole."""
+        from unittest.mock import patch
+
+        with patch("harness_core.tui.HexConsole.__init__", return_value=None) as mock_init, \
+             patch("harness_core.tui.HexConsole.start", return_value=0):
+            ret = main(["--skin", "matrix", "-Q"])
+            self.assertEqual(ret, 0)
+            kwargs = mock_init.call_args.kwargs
+            self.assertEqual(kwargs["skin_name"], "matrix")
+            self.assertTrue(kwargs["quiet"])
+
 
 if __name__ == "__main__":
     unittest.main()

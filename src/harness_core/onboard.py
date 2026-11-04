@@ -264,7 +264,7 @@ webhooks:
     print("Quick Start:")
     print("  • Link or inspect Antigravity Quota: hex auth antigravity --status")
     print("  • Check live Antigravity model quota: hex quota")
-    print("  • Start Interactive TUI Cockpit:      hex tui")
+    print("  • Start Interactive TUI Cockpit:      hex   (or hex tui)")
     print("  • Run an autonomous coding task:      hex run \"Your goal here\" --provider antigravity")
     print()
 
