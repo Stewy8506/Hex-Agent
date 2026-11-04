@@ -22,9 +22,10 @@ from .db import LedgerStore, canonical_json, sha256_hex, utcnow_iso
 from .gateway import ToolGateway
 from .graphify import ActiveGraphifyAdapter
 from .skillspector import SkillSpectorScanner
+from .vendor_paths import get_harness2_dir
 
 # Import cloned Google Research Harness2 from vendor/harness2
-VENDOR_HARNESS2 = Path(__file__).resolve().parents[2] / "vendor" / "harness2"
+VENDOR_HARNESS2 = get_harness2_dir()
 if str(VENDOR_HARNESS2) not in sys.path and VENDOR_HARNESS2.is_dir():
     sys.path.insert(0, str(VENDOR_HARNESS2))
 

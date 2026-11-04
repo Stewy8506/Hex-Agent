@@ -32,11 +32,12 @@ from pathlib import Path
 from typing import Any
 
 from .db import LedgerStore, canonical_json, utcnow_iso
+from .vendor_paths import get_skillspector_dir
 
 # -----------------------------------------------------------------------------
 # 1. Wire vendor/skillspector to sys.path with lightweight zero-dep shims
 # -----------------------------------------------------------------------------
-VENDOR_SKILLSPECTOR = Path(__file__).resolve().parents[2] / "vendor" / "skillspector" / "src"
+VENDOR_SKILLSPECTOR = get_skillspector_dir()
 if str(VENDOR_SKILLSPECTOR) not in sys.path and VENDOR_SKILLSPECTOR.is_dir():
     sys.path.insert(0, str(VENDOR_SKILLSPECTOR))
 

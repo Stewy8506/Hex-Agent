@@ -135,7 +135,10 @@ class SkillSynthesizer:
         if quarantine_dir:
             self.quarantine_dir = Path(quarantine_dir).resolve()
         else:
-            self.quarantine_dir = (repo_root / ".hex" / "quarantine").resolve()
+            if (repo_root / ".hex" / "quarantine").is_dir():
+                self.quarantine_dir = (repo_root / ".hex" / "quarantine").resolve()
+            else:
+                self.quarantine_dir = (Path.home() / ".hex" / "quarantine").resolve()
 
     def extract_task_context(self, task_id: str) -> dict[str, Any]:
         """Inspects completed task records, proof bundle, and tool journal."""
@@ -392,7 +395,9 @@ class SkillSynthesizer:
 
         # 1. Built-in skills
         repo_root = Path(__file__).resolve().parents[2]
-        builtin_root = repo_root / "skills"
+        builtin_root = Path(__file__).resolve().parent / "skills"
+        if not builtin_root.is_dir():
+            builtin_root = repo_root / "skills"
         if builtin_root.is_dir():
             for sub in sorted(builtin_root.iterdir()):
                 if sub.is_dir() and sub.name != "custom" and (sub / "SKILL.md").is_file():

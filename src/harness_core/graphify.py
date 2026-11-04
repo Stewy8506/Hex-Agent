@@ -29,9 +29,10 @@ from pathlib import Path
 from typing import Any
 
 from .cow import IGNORE_DIRS
+from .vendor_paths import get_graphify_dir
 
 # Wire directly to vendor/graphify upstream engine
-_VENDOR_GRAPHIFY = Path(__file__).resolve().parent.parent.parent / "vendor" / "graphify"
+_VENDOR_GRAPHIFY = get_graphify_dir()
 if _VENDOR_GRAPHIFY.is_dir() and str(_VENDOR_GRAPHIFY) not in sys.path:
     sys.path.insert(0, str(_VENDOR_GRAPHIFY))
 

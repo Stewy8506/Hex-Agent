@@ -46,9 +46,25 @@ def seed_default_skills(orch: HarnessOrchestrator, repo_root: Path) -> list[dict
 def main(argv: list[str] | None = None) -> int:
     default_dir = os.environ.get("HEX_DATA_DIR") or os.environ.get("HARNESS_DATA_DIR")
     if not default_dir:
+        cwd = Path.cwd()
+        cwd_hex = cwd / ".hex_data"
+        cwd_legacy = cwd / ".harness_data"
         repo_data = Path(__file__).resolve().parents[2] / ".hex_data"
-        legacy_data = Path(__file__).resolve().parents[2] / ".harness_data"
-        default_dir = str(repo_data if repo_data.exists() or not legacy_data.exists() else legacy_data)
+        repo_legacy = Path(__file__).resolve().parents[2] / ".harness_data"
+        if cwd_hex.is_dir():
+            default_dir = str(cwd_hex)
+        elif cwd_legacy.is_dir():
+            default_dir = str(cwd_legacy)
+        elif repo_data.is_dir():
+            default_dir = str(repo_data)
+        elif repo_legacy.is_dir():
+            default_dir = str(repo_legacy)
+        elif (Path.home() / ".hex" / "data").is_dir():
+            default_dir = str(Path.home() / ".hex" / "data")
+        elif (Path(__file__).resolve().parents[2] / "pyproject.toml").is_file():
+            default_dir = str(repo_data)
+        else:
+            default_dir = str(Path.home() / ".hex" / "data")
 
     parser = argparse.ArgumentParser(prog="hex", description="HEX: Autonomous AI Workbench CLI")
     parser.add_argument(
@@ -350,7 +366,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"status": "unavailable", "error": str(exc)}, indent=2))
             return 1
 
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_candidate = Path(__file__).resolve().parents[2]
+    repo_root = repo_candidate if (repo_candidate / "pyproject.toml").is_file() else Path.cwd()
     orch = HarnessOrchestrator(args.data_dir, default_workspace=repo_root)
 
     if getattr(args, "provider", None):

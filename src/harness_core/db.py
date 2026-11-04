@@ -285,7 +285,11 @@ class LedgerStore:
 
     def _init_schema(self, schema_sql_path: Path | str | None) -> None:
         if schema_sql_path is None:
-            candidate = Path(__file__).resolve().parents[2] / "migrations" / "0001_initial_schema.sql"
+            # 1. Bundled package schema
+            candidate = Path(__file__).resolve().parent / "migrations" / "0001_initial_schema.sql"
+            if not candidate.is_file():
+                # 2. Repository root migration
+                candidate = Path(__file__).resolve().parents[2] / "migrations" / "0001_initial_schema.sql"
             if candidate.is_file():
                 schema_sql_path = candidate
         if schema_sql_path and Path(schema_sql_path).is_file():

@@ -37,15 +37,33 @@
 
 ## 🚀 30-Second Quickstart
 
-### 1. Install `hex`
+### 1. Install `hex` on Any Device
 
+**Method A: One-Line Universal Installer (macOS & Linux)**
 ```bash
-git clone https://github.com/your-org/harness.git
-cd harness
+curl -fsSL https://raw.githubusercontent.com/Stewy8506/Harness/main/install.sh | bash
+```
 
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+**Method B: Via `pipx` or `uv tool` (Zero-Pollution Isolated CLI)**
+```bash
+# Using pipx
+pipx install "git+https://github.com/Stewy8506/Harness.git[tui]"
+
+# Or using astral uv
+uv tool install "git+https://github.com/Stewy8506/Harness.git[tui]"
+```
+
+**Method C: Direct Pre-Built Wheel (GitHub Releases)**
+```bash
+# Download and install the latest universal wheel
+pip install "https://github.com/Stewy8506/Harness/releases/latest/download/hex_ai-0.1.0-py3-none-any.whl"
+```
+
+**Method D: From Source Checkout**
+```bash
+git clone https://github.com/Stewy8506/Harness.git
+cd Harness
+./install.sh
 ```
 
 ### 2. Link Your Day-1 Google Antigravity Quota, Diagnose & Initialize

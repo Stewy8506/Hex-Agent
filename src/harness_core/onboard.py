@@ -240,9 +240,12 @@ webhooks:
     config_file.write_text(config_yaml, encoding="utf-8")
 
     # Initialize ledger and seed built-in skills with SkillSpector
-    repo_root = Path(__file__).resolve().parents[2]
-    orch = HarnessOrchestrator(data_dir=data_dir, default_workspace=repo_root)
-    skills_root = repo_root / "skills"
+    repo_candidate = Path(__file__).resolve().parents[2]
+    workspace_root = repo_candidate if (repo_candidate / "pyproject.toml").is_file() else Path.cwd()
+    orch = HarnessOrchestrator(data_dir=data_dir, default_workspace=workspace_root)
+    skills_root = Path(__file__).resolve().parent / "skills"
+    if not skills_root.is_dir():
+        skills_root = repo_candidate / "skills"
     seeded: list[dict[str, Any]] = []
     if skills_root.is_dir():
         for sub in sorted(skills_root.iterdir()):
