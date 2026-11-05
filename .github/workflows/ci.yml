@@ -51,5 +51,14 @@ jobs:
 
       - name: Verify CLI Entrypoint
         run: |
+          which hex || echo "hex binary not found in PATH"
           hex --help
-          hex doctor
+          if ! hex doctor 2>&1 | tee doctor_run.log; then
+            echo "### ❌ Hex Doctor Report (Degraded)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat doctor_run.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            err_msg=$(grep -E "✗|FAILED|Error|error" doctor_run.log | head -n 5 | tr '\n' ' ')
+            echo "::error title=Hex Doctor Issue::${err_msg:-Hex Doctor reported errors}"
+            exit 1
+          fi
