@@ -30,12 +30,25 @@ def get_vendor_dir() -> Path:
     if repo_vendor.is_dir():
         return repo_vendor
 
-    # 4. User home cache: ~/.hex/vendor
+    # 4. Check if current working directory or any parent has vendor/ (e.g. tests running in repo)
+    cwd = Path.cwd()
+    for parent in [cwd, *cwd.parents]:
+        cand = parent / "vendor"
+        if cand.is_dir() and ((cand / "graphify").is_dir() or (cand / "skillspector").is_dir()):
+            return cand
+
+    # 5. Walk up parents from this file to find repository root with vendor/
+    for parent in Path(__file__).resolve().parents:
+        cand = parent / "vendor"
+        if cand.is_dir() and ((cand / "graphify").is_dir() or (cand / "skillspector").is_dir()):
+            return cand
+
+    # 6. User home cache: ~/.hex/vendor
     home_vendor = Path.home() / ".hex" / "vendor"
     if home_vendor.is_dir():
         return home_vendor
 
-    # 5. Shared system directory: sys.prefix / share / hex / vendor
+    # 7. Shared system directory: sys.prefix / share / hex / vendor
     sys_vendor = Path(sys.prefix) / "share" / "hex" / "vendor"
     if sys_vendor.is_dir():
         return sys_vendor
