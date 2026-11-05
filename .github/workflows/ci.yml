@@ -31,9 +31,23 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -e ".[full]"
 
+      - name: Configure Git Committer
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "*"
+
       - name: Run test suite
         run: |
-          python -m unittest discover tests
+          python -m unittest discover -v tests 2>&1 | tee test_run.log || {
+            echo "### ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 100 test_run.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail_err=$(tail -n 25 test_run.log | tr '\n' ' ')
+            echo "::error title=Test Failure::$tail_err"
+            exit 1
+          }
 
       - name: Verify CLI Entrypoint
         run: |
