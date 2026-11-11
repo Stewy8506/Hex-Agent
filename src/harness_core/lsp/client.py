@@ -2,7 +2,8 @@
 
 Implements JSON-RPC 2.0 message framing over stdio using standard
 HTTP-style Content-Length headers, asynchronous reader threads,
-request/response demultiplexing, and notification dispatch.
+request/response demultiplexing, notification dispatch, document synchronization,
+and compiler diagnostics tracking.
 """
 
 from __future__ import annotations
@@ -10,13 +11,67 @@ from __future__ import annotations
 import collections
 import json
 import logging
+import os
 import subprocess
 import threading
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+SEVERITY_MAP: dict[int, str] = {
+    1: "ERROR",
+    2: "WARNING",
+    3: "INFO",
+    4: "HINT",
+}
+
+
+def path_to_uri(path: Path | str) -> str:
+    """Convert local file path to LSP file URI."""
+    return Path(path).resolve().as_uri()
+
+
+def uri_to_path(uri: str) -> str:
+    """Convert LSP file URI to local filesystem path."""
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme == "file":
+        return urllib.request.url2pathname(parsed.path)
+    return uri
+
+
+@dataclass
+class LSPDiagnostic:
+    """Represents a compiler / linter diagnostic published by an LSP server."""
+
+    file_path: str
+    line: int
+    character: int
+    end_line: int
+    end_character: int
+    severity: int  # 1=Error, 2=Warning, 3=Info, 4=Hint
+    severity_name: str  # "ERROR", "WARNING", "INFO", "HINT"
+    message: str
+    source: str = ""
+    code: str | int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize diagnostic to dictionary."""
+        return {
+            "file_path": self.file_path,
+            "line": self.line,
+            "character": self.character,
+            "end_line": self.end_line,
+            "end_character": self.end_character,
+            "severity": self.severity,
+            "severity_name": self.severity_name,
+            "message": self.message,
+            "source": self.source,
+            "code": self.code,
+        }
 
 
 @dataclass
@@ -406,8 +461,359 @@ class StdioLSPTransport:
                 except Exception:
                     pass
 
+        # Close stdout and stderr streams to release file descriptors cleanly
+        if self.process.stdout and not self.process.stdout.closed:
+            try:
+                self.process.stdout.close()
+            except Exception:
+                pass
+
+        if self.process.stderr and not self.process.stderr.closed:
+            try:
+                self.process.stderr.close()
+            except Exception:
+                pass
+
         with self._pending_lock:
             for event, result_box in self._pending.values():
                 result_box["error"] = ConnectionError("LSP transport closed")
                 event.set()
             self._pending.clear()
+
+
+class LSPClient:
+    """High-level Polyglot LSP client managing lifecycle, documents, and diagnostics."""
+
+    def __init__(
+        self,
+        transport: StdioLSPTransport | None = None,
+        command: list[str] | None = None,
+        workspace_root: Path | str | None = None,
+        spec: Any = None,
+        cwd: Path | str | None = None,
+    ) -> None:
+        if transport is not None:
+            self.transport = transport
+        elif command:
+            self.transport = StdioLSPTransport(command=command, cwd=cwd or workspace_root)
+        else:
+            raise ValueError("Either transport or command must be provided")
+
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
+        self.spec = spec
+        self._diagnostics: dict[str, list[LSPDiagnostic]] = {}
+        self._diag_lock = threading.Lock()
+        self._doc_versions: dict[str, int] = {}
+        self._initialized = False
+        self._server_capabilities: dict[str, Any] = {}
+
+        # Register publishDiagnostics handler
+        self.transport.register_handler(
+            "textDocument/publishDiagnostics",
+            self._on_publish_diagnostics,
+        )
+
+    @property
+    def is_alive(self) -> bool:
+        """Return True if underlying transport is alive."""
+        return self.transport.is_alive
+
+    @property
+    def is_initialized(self) -> bool:
+        """Return True if LSP initialize handshake succeeded."""
+        return self._initialized
+
+    @property
+    def capabilities(self) -> dict[str, Any]:
+        """Return language server capabilities returned during initialization."""
+        return dict(self._server_capabilities)
+
+    def _on_publish_diagnostics(self, notification: dict[str, Any]) -> None:
+        """Parse textDocument/publishDiagnostics notification into LSPDiagnostic objects."""
+        params = notification.get("params") or {}
+        uri = params.get("uri", "")
+        raw_diagnostics = params.get("diagnostics", [])
+
+        file_path = uri_to_path(uri) if uri else ""
+        parsed: list[LSPDiagnostic] = []
+
+        for d in raw_diagnostics:
+            rng = d.get("range", {})
+            start = rng.get("start", {})
+            end = rng.get("end", {})
+            sev = d.get("severity", 1)
+            sev_name = SEVERITY_MAP.get(sev, "ERROR")
+
+            parsed.append(
+                LSPDiagnostic(
+                    file_path=file_path or uri,
+                    line=start.get("line", 0),
+                    character=start.get("character", 0),
+                    end_line=end.get("line", 0),
+                    end_character=end.get("character", 0),
+                    severity=sev,
+                    severity_name=sev_name,
+                    message=d.get("message", ""),
+                    source=d.get("source", ""),
+                    code=d.get("code"),
+                )
+            )
+
+        with self._diag_lock:
+            if uri:
+                self._diagnostics[uri] = parsed
+            if file_path:
+                self._diagnostics[file_path] = parsed
+
+    def initialize(
+        self,
+        workspace_root: Path | str | None = None,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Complete standard LSP initialize handshake and initialized notification."""
+        if workspace_root:
+            self.workspace_root = Path(workspace_root).resolve()
+
+        root_path_str = str(self.workspace_root) if self.workspace_root else None
+        root_uri_str = path_to_uri(self.workspace_root) if self.workspace_root else None
+
+        init_params: dict[str, Any] = {
+            "processId": os.getpid(),
+            "rootUri": root_uri_str,
+            "rootPath": root_path_str,
+            "capabilities": {
+                "workspace": {
+                    "applyEdit": True,
+                    "workspaceFolders": True,
+                    "configuration": True,
+                },
+                "textDocument": {
+                    "synchronization": {
+                        "dynamicRegistration": False,
+                        "willSave": False,
+                        "willSaveWaitUntil": False,
+                        "didSave": True,
+                    },
+                    "publishDiagnostics": {
+                        "relatedInformation": True,
+                        "versionSupport": True,
+                        "codeDescriptionSupport": True,
+                        "dataSupport": True,
+                    },
+                    "hover": {
+                        "dynamicRegistration": False,
+                        "contentFormat": ["markdown", "plaintext"],
+                    },
+                    "definition": {
+                        "dynamicRegistration": False,
+                        "linkSupport": True,
+                    },
+                    "references": {
+                        "dynamicRegistration": False,
+                    },
+                },
+            },
+            "trace": "off",
+        }
+
+        if self.spec and getattr(self.spec, "initialization_options", None):
+            init_params["initializationOptions"] = self.spec.initialization_options
+
+        result = self.transport.send_request("initialize", init_params, timeout=timeout)
+        self._server_capabilities = result.get("capabilities", {}) if isinstance(result, dict) else {}
+        self.transport.send_notification("initialized", {})
+        self._initialized = True
+        return result if isinstance(result, dict) else {}
+
+    def did_open(
+        self,
+        file_path: Path | str,
+        text: str | None = None,
+        language_id: str | None = None,
+    ) -> None:
+        """Send textDocument/didOpen notification for a file."""
+        path_obj = Path(file_path).resolve()
+        uri = path_to_uri(path_obj)
+
+        if text is None:
+            try:
+                text = path_obj.read_text(encoding="utf-8")
+            except Exception:
+                text = ""
+
+        if language_id is None:
+            if self.spec and getattr(self.spec, "language_id", None):
+                language_id = self.spec.language_id
+            else:
+                ext_map = {
+                    ".py": "python",
+                    ".ts": "typescript",
+                    ".tsx": "typescriptreact",
+                    ".js": "javascript",
+                    ".jsx": "javascriptreact",
+                    ".go": "go",
+                    ".rs": "rust",
+                    ".c": "c",
+                    ".cpp": "cpp",
+                    ".java": "java",
+                }
+                language_id = ext_map.get(path_obj.suffix.lower(), "plaintext")
+
+        self._doc_versions[uri] = 1
+        params = {
+            "textDocument": {
+                "uri": uri,
+                "languageId": language_id,
+                "version": 1,
+                "text": text,
+            }
+        }
+        self.transport.send_notification("textDocument/didOpen", params)
+
+    def did_change(
+        self,
+        file_path: Path | str,
+        text: str,
+        version: int | None = None,
+    ) -> None:
+        """Send textDocument/didChange notification with full document contents."""
+        path_obj = Path(file_path).resolve()
+        uri = path_to_uri(path_obj)
+
+        if version is None:
+            version = self._doc_versions.get(uri, 1) + 1
+        self._doc_versions[uri] = version
+
+        params = {
+            "textDocument": {
+                "uri": uri,
+                "version": version,
+            },
+            "contentChanges": [
+                {"text": text}
+            ],
+        }
+        self.transport.send_notification("textDocument/didChange", params)
+
+    def did_close(self, file_path: Path | str) -> None:
+        """Send textDocument/didClose notification."""
+        path_obj = Path(file_path).resolve()
+        uri = path_to_uri(path_obj)
+        self._doc_versions.pop(uri, None)
+
+        params = {
+            "textDocument": {
+                "uri": uri,
+            }
+        }
+        self.transport.send_notification("textDocument/didClose", params)
+
+    def get_definition(
+        self,
+        file_path: Path | str,
+        line: int,
+        character: int,
+        timeout: float = 10.0,
+    ) -> list[dict[str, Any]]:
+        """Query symbol definition locations at line/character (0-indexed)."""
+        uri = path_to_uri(file_path)
+        params = {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+        }
+        res = self.transport.send_request("textDocument/definition", params, timeout=timeout)
+        if res is None:
+            return []
+        if isinstance(res, dict):
+            return [res]
+        if isinstance(res, list):
+            return res
+        return []
+
+    def get_references(
+        self,
+        file_path: Path | str,
+        line: int,
+        character: int,
+        include_declaration: bool = True,
+        timeout: float = 10.0,
+    ) -> list[dict[str, Any]]:
+        """Find symbol references across the workspace at line/character (0-indexed)."""
+        uri = path_to_uri(file_path)
+        params = {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "context": {"includeDeclaration": include_declaration},
+        }
+        res = self.transport.send_request("textDocument/references", params, timeout=timeout)
+        if res is None:
+            return []
+        if isinstance(res, list):
+            return res
+        if isinstance(res, dict):
+            return [res]
+        return []
+
+    def get_hover(
+        self,
+        file_path: Path | str,
+        line: int,
+        character: int,
+        timeout: float = 10.0,
+    ) -> dict[str, Any] | None:
+        """Retrieve hover documentation and type signatures at line/character (0-indexed)."""
+        uri = path_to_uri(file_path)
+        params = {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+        }
+        res = self.transport.send_request("textDocument/hover", params, timeout=timeout)
+        return res if isinstance(res, dict) else None
+
+    def get_diagnostics(
+        self,
+        file_path: Path | str | None = None,
+        severity: str | int | None = None,
+    ) -> list[LSPDiagnostic]:
+        """Retrieve stored diagnostics filtered by file and/or severity."""
+        with self._diag_lock:
+            if file_path is not None:
+                target_str = str(Path(file_path).resolve())
+                target_uri = path_to_uri(file_path)
+                diags = self._diagnostics.get(target_str) or self._diagnostics.get(target_uri) or []
+                candidates = list(diags)
+            else:
+                # Deduplicate by (file_path, line, character, message)
+                seen: set[tuple[str, int, int, str]] = set()
+                candidates = []
+                for diag_list in self._diagnostics.values():
+                    for d in diag_list:
+                        key = (d.file_path, d.line, d.character, d.message)
+                        if key not in seen:
+                            seen.add(key)
+                            candidates.append(d)
+
+        if severity is None or str(severity).upper() == "ALL":
+            return candidates
+
+        sev_filter: str | int
+        if isinstance(severity, int):
+            sev_filter = severity
+            return [d for d in candidates if d.severity == sev_filter]
+        else:
+            sev_name_filter = str(severity).upper()
+            return [d for d in candidates if d.severity_name == sev_name_filter]
+
+    def shutdown(self, timeout: float = 5.0) -> None:
+        """Send LSP shutdown request, exit notification, and close transport."""
+        if self._initialized:
+            try:
+                self.transport.send_request("shutdown", None, timeout=timeout)
+            except Exception as exc:
+                logger.debug("Error during LSP shutdown request: %s", exc)
+            try:
+                self.transport.send_notification("exit", None)
+            except Exception as exc:
+                logger.debug("Error during LSP exit notification: %s", exc)
+        self.transport.close()
+        self._initialized = False
