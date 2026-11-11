@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-11  
-**Current Milestone:** M5 (Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration)  
-**Status:** Complete — All 13 Phases Delivered (415/415 tests green, 0 regressions)  
-**Active Phase:** All Phases (01–13) Complete  
-**Completed Plans:** All Plans (01-01 through 13-02) Complete  
+**Current Milestone:** M6 (Live Model Discovery, OAuth Quotas & Project Workspaces)  
+**Status:** Complete — All 15 Phases Delivered (455/455 tests green, 0 regressions)  
+**Active Phase:** All Phases (01–15) Complete  
+**Completed Plans:** All Plans (01-01 through 15-02) Complete  
 
 ---
 
@@ -223,12 +223,23 @@
     - Added automatic token refresh in `AntigravityModelProvider.generate()` on HTTP 401 when `refresh_token` exists, silently recovering expired sessions.
     - Authored 7 unit and integration tests in `tests/test_antigravity_oauth_and_tui_resilience.py` (422/422 total repository tests passing with zero regressions).
 
+30. **Phase 15 Live Model Discovery, Quota Dashboard & Project Workspaces Complete (Plans 15-01 & 15-02):**
+    - Implemented live model discovery via official provider APIs (`fetch_available_models`) with in-memory caching and fallback to curated lists for Antigravity, Anthropic, OpenAI, and Gemini.
+    - Implemented `AntigravityQuotaSnapshot`, sliding-window quota calculation, and reset timer estimation. Added `hex quota` CLI and `/quota` TUI commands.
+    - Added OAuth token acquisition flow in onboarding wizard before presenting model choice.
+    - Implemented persistent project workspace registry `ProjectRegistry` in `src/harness_core/project_registry.py` backed by `~/.hex/projects.json`.
+    - Added enclosing project auto-detection (`detect_enclosing_project`) and interactive daily project switcher ("What project do you want to work on today?").
+    - Enforced folder-scoped context isolation under `<repo>/.hex/` with `config.yaml`, `graph.json`, `reflections/LESSONS.md`, and `data/`.
+    - Added `hex project` CLI (`list`, `add`, `use`, `switch`) and TUI `/project` command.
+    - Globally migrated command from `hex onboard` to `hex setup` (preserving `hex onboard` as backwards-compatible alias).
+    - Authored comprehensive test suite in `tests/test_project_registry_and_workspace.py` (20 tests) and `tests/test_live_model_discovery.py` (13 tests) (455/455 total repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (422/422 tests green).
-- Milestone M5 Phases 13 and 14 are 100% complete and verified.
+- None. Full repository test suite passing cleanly with zero failures (455/455 tests green).
+- Milestone M6 Phase 15 is 100% complete and verified.
 
 ---
 
