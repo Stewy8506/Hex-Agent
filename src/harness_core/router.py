@@ -82,7 +82,7 @@ class TwoTierModelRouter:
         local_provider: ModelProvider | None = None,
         cloud_provider: ModelProvider | None = None,
         local_model_id: str = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
-        cloud_model_id: str = "gemini-3.5-pro",
+        cloud_model_id: str = "gemini-2.5-pro",
         cloud_provider_type: str | None = None,
         compressor_mode: str | None = None,
         compressor_provider: ModelProvider | None = None,

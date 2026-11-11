@@ -54,6 +54,8 @@ class ModelPricing:
         "claude-3.5-sonnet": (3.00, 15.00),
         "gpt-4o": (2.50, 10.00),
         "gemini-1.5-pro": (1.25, 5.00),
+        "gemini-2.5-pro": (1.25, 5.00),
+        "gemini-2.5-flash": (0.10, 0.40),
         "gemini-3.5-pro": (1.50, 6.00),
         "gemini-3.8-flash": (0.10, 0.40),
         "gemini-2.0-flash": (0.10, 0.40),
@@ -177,7 +179,7 @@ class CloudModelProvider(ModelProvider):
             elif self.provider_type == CloudProviderType.OPENAI:
                 self.model_id = "gpt-4o"
             else:
-                self.model_id = "gemini-3.5-pro"
+                self.model_id = "gemini-2.5-pro"
 
         self.budget_tracker = budget_tracker or TaskBudgetTracker()
         self.http_transport = http_transport

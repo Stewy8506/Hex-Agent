@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--project", default="default")
     p_run.add_argument("--mode", choices=["auto", "fast_path", "standard"], default="auto")
     p_run.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=None, help="Cloud reasoner provider override (e.g., antigravity)")
-    p_run.add_argument("--model", default=None, help="Cloud model ID override (e.g., gemini-3.5-pro, gemini-3.8-flash)")
+    p_run.add_argument("--model", default=None, help="Cloud model ID override (e.g., gemini-2.5-pro, gemini-2.5-flash)")
     p_run.add_argument("--workspace", default=None)
     p_run.add_argument("--branch", nargs="?", const=True, default=None, help="Custom branch name or flag to auto-branch (hex/task-<id>-<slug>)")
     p_run.add_argument("--pr", action="store_true", help="Automatically create GitHub Pull Request on success")

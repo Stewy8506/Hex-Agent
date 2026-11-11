@@ -497,6 +497,7 @@ class TestCloudModelProvider(unittest.TestCase):
         tracker = TaskBudgetTracker(max_cost_usd=0.05)
         provider = CloudModelProvider(
             provider_type=CloudProviderType.GEMINI,
+            model_id="gemini-3.5-pro",
             budget_tracker=tracker,
             http_transport=mock_transport,
         )

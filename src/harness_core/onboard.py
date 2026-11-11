@@ -114,6 +114,26 @@ class HardwareProfile:
         )
 
 
+def _probe_antigravity_token(token: str) -> bool:
+    """Test whether an Antigravity OAuth access token is live and authenticated."""
+    if not token or not token.strip():
+        return False
+    import urllib.request
+    url = "https://cloudaicompanion.googleapis.com/v1internal:loadCodeAssist"
+    headers = {
+        "Authorization": f"Bearer {token.strip()}",
+        "Content-Type": "application/json",
+        "User-Agent": "HEX/0.1.0",
+    }
+    body = b'{"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}'
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            return resp.status in (200, 201)
+    except Exception:
+        return False
+
+
 def run_onboard_wizard(
     *,
     config_dir: Path | None = None,
@@ -154,7 +174,7 @@ def run_onboard_wizard(
     # Default configuration state
     model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
     cloud_provider = "antigravity"
-    cloud_model_id = "gemini-3.5-pro"
+    cloud_model_id = "gemini-2.5-pro"
 
     anthropic_key = os.environ.get("HEX_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
     openai_key = os.environ.get("HEX_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
@@ -192,31 +212,96 @@ def run_onboard_wizard(
 
         if selected_provider_key == "antigravity":
             cloud_provider = "antigravity"
-            cloud_model_id = "gemini-3.5-pro"
             model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
-            if not antigravity_token:
-                print("  Google Antigravity OAuth token (press Enter to auto-discover or launch browser later):")
-                k_ag = prompt_secret("  Token: ")
-                if k_ag:
-                    antigravity_token = k_ag
+
+            ag_models = [
+                ("gemini-2.5-pro", "gemini-2.5-pro (Recommended - Flagship reasoning & deep coding)"),
+                ("gemini-2.5-flash", "gemini-2.5-flash (Ultra-fast, high rate limits)"),
+                ("claude-3-5-sonnet", "claude-3-5-sonnet (Frontier coding model via Antigravity)"),
+            ]
+            m_idx = select_option("Select Primary Antigravity Model:", ag_models, default_index=0)
+            cloud_model_id = ag_models[m_idx][0]
+            print()
+
+            is_valid_token = _probe_antigravity_token(antigravity_token)
+            if is_valid_token:
+                print("  ✓ Active Google Antigravity session verified ($0 Day-1 Free Tier)")
+            else:
+                auth_options = [
+                    ("browser", "Sign in with Google in browser (Browser PKCE OAuth 2.0)"),
+                    ("manual", "Enter OAuth token manually (ya29... / 1//...)"),
+                    ("skip", "Skip for now (configure later)"),
+                ]
+                a_idx = select_option("Google Antigravity Authentication:", auth_options, default_index=0)
+                chosen_auth = auth_options[a_idx][0]
+
+                if chosen_auth == "browser":
+                    pkce = ag_mgr.generate_pkce_pair()
+                    auth_url = ag_mgr.build_authorization_url(pkce["challenge"])
+                    print("\n  1. Opening Google Antigravity Sign-In in your browser...")
+                    print(f"     URL: {auth_url}\n")
+                    try:
+                        import webbrowser
+
+                        webbrowser.open(auth_url)
+                    except Exception:
+                        pass
+                    print("  2. After signing in, copy the redirected URL from your browser address bar")
+                    print("     (e.g., http://localhost:8420/?code=... or just the code parameter).")
+                    code_in = input("  Paste redirected URL or authorization code: ").strip()
+                    if code_in:
+                        try:
+                            cred = ag_mgr.exchange_code_for_tokens(code_in, pkce["verifier"])
+                            antigravity_token = cred.access_token
+                            print(f"\n  ✓ Successfully authenticated with Google Antigravity!\n")
+                        except Exception as exc:
+                            print(f"\n  ✖ OAuth exchange error: {exc}\n")
+                elif chosen_auth == "manual":
+                    k_ag = prompt_secret("  Enter Antigravity OAuth Token: ")
+                    if k_ag:
+                        antigravity_token = k_ag
+
         elif selected_provider_key == "anthropic":
             cloud_provider = "anthropic"
-            cloud_model_id = "claude-3-5-sonnet"
             model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+            ant_models = [
+                ("claude-3-5-sonnet", "claude-3-5-sonnet (Recommended)"),
+                ("claude-3-opus", "claude-3-opus (Complex architecture)"),
+                ("claude-3-5-haiku", "claude-3-5-haiku (Fast & low cost)"),
+            ]
+            m_idx = select_option("Select Anthropic Model:", ant_models, default_index=0)
+            cloud_model_id = ant_models[m_idx][0]
+            print()
             if not anthropic_key:
                 anthropic_key = prompt_secret("  Enter Anthropic API Key (sk-ant-...): ")
+
         elif selected_provider_key == "openai":
             cloud_provider = "openai"
-            cloud_model_id = "gpt-4o"
             model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+            oai_models = [
+                ("gpt-4o", "gpt-4o (Recommended)"),
+                ("o1-preview", "o1-preview (Deep reasoning)"),
+                ("o3-mini", "o3-mini (Fast reasoning)"),
+            ]
+            m_idx = select_option("Select OpenAI Model:", oai_models, default_index=0)
+            cloud_model_id = oai_models[m_idx][0]
+            print()
             if not openai_key:
                 openai_key = prompt_secret("  Enter OpenAI API Key (sk-...): ")
+
         elif selected_provider_key == "gemini":
             cloud_provider = "gemini"
-            cloud_model_id = "gemini-2.5-pro"
             model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+            gem_models = [
+                ("gemini-2.5-pro", "gemini-2.5-pro (Recommended)"),
+                ("gemini-2.5-flash", "gemini-2.5-flash (Fast & lightweight)"),
+            ]
+            m_idx = select_option("Select Google Gemini Model:", gem_models, default_index=0)
+            cloud_model_id = gem_models[m_idx][0]
+            print()
             if not gemini_key:
                 gemini_key = prompt_secret("  Enter Gemini API Key (AIza...): ")
+
         elif selected_provider_key == "local":
             cloud_provider = "local"
             cloud_model_id = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
@@ -230,7 +315,7 @@ def run_onboard_wizard(
             ("duckduckgo", "DuckDuckGo Search (100% Free, zero API key required, instant ready)"),
             ("tavily", "Tavily Search API (Optimized for AI agents & clean markdown extraction)"),
             ("brave", "Brave Search API (Fast, independent web search index)"),
-            ("none", "Air-gapped / Disabled (Strict offline code operations only)"),
+            ("none", "Disabled"),
         ]
         s_idx = select_option(
             "Select Web Search Engine for Autonomous Research:",
@@ -271,22 +356,6 @@ def run_onboard_wizard(
             raw_hook = input("  Discord Webhook URL (optional, press Enter to skip): ").strip()
             if raw_hook:
                 discord_webhook = raw_hook
-
-        print()
-
-        # Step 4: Machine Profile Confirmation
-        isolation_options = [
-            ("accept", f"Accept recommended profile ({profile.cow_backend} CoW + {profile.sandbox_backend} sandbox)"),
-            ("custom", "Customize execution sandbox (Allow network egress)"),
-        ]
-        iso_idx = select_option(
-            "Execution Sandbox & CoW Isolation:",
-            isolation_options,
-            default_index=0,
-        )
-        if isolation_options[iso_idx][0] == "custom":
-            print("  Custom sandbox policy: allowing standard network egress.")
-            profile.sandbox_backend = "restricted_subprocess"
 
         print()
 
@@ -463,7 +532,7 @@ project:
   stack: "{stack_info['stack']}"
 model:
   cloud_provider: "antigravity"
-  cloud_model_id: "gemini-3.5-pro"
+  cloud_model_id: "gemini-2.5-pro"
   compressor_mode: "local"
 verification:
   test_command: "{stack_info['test_cmd']}"

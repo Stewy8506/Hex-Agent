@@ -837,7 +837,7 @@ class HexDoctor:
                     f"  name: \"{self.workspace_root.name or 'default'}\"\n"
                     "router:\n"
                     "  primary_provider: \"antigravity\"\n"
-                    "  primary_model: \"gemini-3.5-pro\"\n"
+                    "  primary_model: \"gemini-2.5-pro\"\n"
                     "  fallback_provider: \"local\"\n"
                     "cow:\n"
                     "  provider: \"auto\"\n"

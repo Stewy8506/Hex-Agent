@@ -53,10 +53,10 @@ class TestAutoSetupAndPolish(unittest.TestCase):
         mock_prompt: MagicMock,
     ) -> None:
         # Step 1: Anthropic (idx 1)
+        # Step 1b: Model claude-3-5-sonnet (idx 0)
         # Step 2: Tavily (idx 1)
         # Step 3: Skip messaging (idx 0)
-        # Step 4: Accept isolation (idx 0)
-        mock_select.side_effect = [1, 1, 0, 0]
+        mock_select.side_effect = [1, 0, 1, 0]
         mock_prompt.side_effect = ["sk-ant-test-key-999", "tvly-test-key-888"]
 
         result = run_onboard_wizard(
