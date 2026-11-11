@@ -83,6 +83,12 @@ class TestHexDoctor(unittest.TestCase):
         self.assertTrue(len(dir_results) >= 1)
         self.assertEqual(dir_results[0].category, "directories")
 
+        # 9. Audio hardware & speech engines check
+        audio_results = self.doctor.check_audio_devices()
+        self.assertEqual(len(audio_results), 3)
+        self.assertTrue(all(c.category == "audio" for c in audio_results))
+        self.assertTrue(all(c.status in ("ok", "warning") for c in audio_results))
+
     def test_doctor_fix_mode(self) -> None:
         """Verify --fix auto-remediates missing directories and generates default configuration."""
         hex_dir = self.ws / ".hex"
@@ -131,6 +137,32 @@ class TestHexDoctor(unittest.TestCase):
         self.assertIn("Overall Status:", summary_plain)
         self.assertIn("\033[", summary_color)
         self.assertNotIn("\033[", summary_plain)
+
+    def test_doctor_audio_checks_fallback(self) -> None:
+        """Verify audio checks return warnings and remain healthy in headless/no-hardware environments."""
+        with patch(
+            "harness_core.voice.probe_audio_hardware",
+            return_value={
+                "platform": "Linux",
+                "tts_available": False,
+                "tts_engine": None,
+                "audio_player": None,
+                "mic_available": False,
+                "mic_tool": None,
+                "devices": [],
+            },
+        ):
+            audio_results = self.doctor.check_audio_devices()
+            self.assertEqual(len(audio_results), 3)
+            # All 3 should be warnings, 0 errors
+            self.assertTrue(all(c.status == "warning" for c in audio_results))
+            self.assertFalse(any(c.status == "error" for c in audio_results))
+
+            # Report overall health should remain True despite warnings
+            report = DoctorReport(checks=audio_results)
+            self.assertTrue(report.is_healthy)
+            self.assertEqual(report.warnings, 3)
+            self.assertEqual(report.errors, 0)
 
 
 class TestRecipeDetection(unittest.TestCase):

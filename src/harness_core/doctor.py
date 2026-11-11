@@ -9,6 +9,7 @@ Diagnoses and self-heals:
 6. Git Repository: Binary availability, worktree root, branch, clean/dirty worktree state.
 7. Disk Storage: Free space across workspace and data directories (>2GB threshold).
 8. Directories & Config: `.hex/`, `.hex/data/`, `skills/custom/`, `.hex/quarantine/`, `.hex/config.yaml`.
+9. Audio Hardware & Speech: Speech synthesis (TTS: say/espeak), audio playback (afplay/aplay), and microphone input capture.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ class DoctorCheckResult:
     """Individual diagnostic check outcome."""
 
     name: str
-    category: str  # "python" | "hardware" | "cow" | "sandbox" | "credentials" | "git" | "storage" | "directories" | "live"
+    category: str  # "python" | "hardware" | "cow" | "sandbox" | "credentials" | "git" | "storage" | "directories" | "audio" | "live"
     status: str  # "ok" | "warning" | "error" | "fixed"
     message: str
     remediation: str | None = None
@@ -98,6 +99,7 @@ class DoctorReport:
             "git": "VERSION CONTROL & WORKTREE",
             "storage": "DISK STORAGE CAPACITY",
             "directories": "WORKBENCH DIRECTORIES & CONFIG",
+            "audio": "AUDIO HARDWARE & SPEECH ENGINES",
             "live": "LIVE CONNECTIVITY PINGS",
         }
 
@@ -790,6 +792,93 @@ class HexDoctor:
 
         return results
 
+    def check_audio_devices(self) -> list[DoctorCheckResult]:
+        """Diagnose audio hardware, speech synthesis engine, audio player, and microphone input."""
+        results: list[DoctorCheckResult] = []
+        try:
+            from harness_core.voice import probe_audio_hardware
+
+            info = probe_audio_hardware()
+        except Exception as e:
+            results.append(
+                DoctorCheckResult(
+                    name="Audio Subsystem Probe",
+                    category="audio",
+                    status="warning",
+                    message=f"Could not probe audio hardware: {e}",
+                    remediation="Ensure harness_core.voice module is available.",
+                )
+            )
+            return results
+
+        # Check 1: Speech Synthesis Engine (TTS)
+        if info.get("tts_available"):
+            tts_engine = info.get("tts_engine") or "native"
+            results.append(
+                DoctorCheckResult(
+                    name="Speech Synthesis (TTS)",
+                    category="audio",
+                    status="ok",
+                    message=f"Speech synthesis engine active ({tts_engine})",
+                )
+            )
+        else:
+            results.append(
+                DoctorCheckResult(
+                    name="Speech Synthesis (TTS)",
+                    category="audio",
+                    status="warning",
+                    message="No native TTS synthesizer found (say/espeak)",
+                    remediation="Install espeak (Linux: sudo apt install espeak) or rely on visual TUI mode.",
+                )
+            )
+
+        # Check 2: Audio Output Player
+        audio_player = info.get("audio_player")
+        if audio_player:
+            results.append(
+                DoctorCheckResult(
+                    name="Audio Output Player",
+                    category="audio",
+                    status="ok",
+                    message=f"Audio output player found ({audio_player})",
+                )
+            )
+        else:
+            results.append(
+                DoctorCheckResult(
+                    name="Audio Output Player",
+                    category="audio",
+                    status="warning",
+                    message="No command-line audio player detected (afplay/aplay)",
+                    remediation="Ensure audio subsystem is configured.",
+                )
+            )
+
+        # Check 3: Audio Input / Microphone Capture
+        if info.get("mic_available"):
+            mic_tool = info.get("mic_tool") or "native"
+            results.append(
+                DoctorCheckResult(
+                    name="Audio Input Capture",
+                    category="audio",
+                    status="ok",
+                    message=f"Audio input capture utility found ({mic_tool})",
+                )
+            )
+        else:
+            results.append(
+                DoctorCheckResult(
+                    name="Audio Input Capture",
+                    category="audio",
+                    status="warning",
+                    message="No command-line audio capture utility found (rec/arecord)",
+                    remediation="Install sox/arecord or use keyboard input.",
+                )
+            )
+
+        return results
+
     def apply_fixes(self, checks: list[DoctorCheckResult] | None = None) -> list[DoctorCheckResult]:
         """Automatically remediate fixable issues (directories, default config, permissions)."""
         remediated: list[DoctorCheckResult] = []
@@ -954,6 +1043,7 @@ class HexDoctor:
         all_checks.extend(self.check_git())
         all_checks.extend(self.check_storage())
         all_checks.extend(self.check_directories_and_config())
+        all_checks.extend(self.check_audio_devices())
 
         if fix:
             fix_results = self.apply_fixes(all_checks)
