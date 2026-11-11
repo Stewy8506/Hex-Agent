@@ -394,6 +394,26 @@ def main(argv: list[str] | None = None) -> int:
 
     repo_candidate = Path(__file__).resolve().parents[2]
     repo_root = repo_candidate if (repo_candidate / "pyproject.toml").is_file() else Path.cwd()
+
+    from .config_loader import has_active_credentials, load_hex_environment
+
+    is_test_runner = (
+        bool(os.environ.get("HEX_TESTING"))
+        or any("unittest" in arg for arg in sys.argv)
+        or any("pytest" in arg for arg in sys.argv)
+    )
+
+    # Auto-intercept unconfigured launch when starting interactive console without credentials
+    if (args.cmd is None or args.cmd in ("chat", "tui")) and not has_active_credentials():
+        if sys.stdin.isatty() and not getattr(args, "quiet", False) and not is_test_runner:
+            print("\n◈ Welcome to HEX. No model provider or API key was detected.")
+            print("  Launching interactive auto-setup sequence...\n")
+            from .onboard import run_onboard_wizard
+
+            cfg_dir = Path(args.config_dir) if getattr(args, "config_dir", None) else None
+            run_onboard_wizard(config_dir=cfg_dir)
+            load_hex_environment(config_dir=cfg_dir, override=True)
+
     orch = HarnessOrchestrator(args.data_dir, default_workspace=repo_root)
 
     if getattr(args, "provider", None):

@@ -1,8 +1,8 @@
 """HEX Onboarding Wizard (`hex onboard`).
 
 Guides the operator through hardware discovery, snapshot & sandbox configuration,
-Google Antigravity OAuth quota detection, model provider selection, credential storage,
-and ledger initialization.
+Google Antigravity OAuth quota detection, model provider selection, web search engine,
+remote messaging gateways (Telegram & Discord), credential storage, and ledger initialization.
 """
 
 from __future__ import annotations
@@ -15,10 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .config_loader import load_hex_environment
 from .cow import get_default_snapshot_provider
 from .orchestrator import HarnessOrchestrator
 from .providers.antigravity_provider import AntigravityOAuthManager
 from .sandbox import get_default_sandbox
+from .ui_selector import prompt_secret, select_option
 
 
 HEX_BANNER = r"""
@@ -59,14 +61,18 @@ class HardwareProfile:
                 is_apple_silicon = True
                 has_metal = True
                 try:
-                    out = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()
+                    out = subprocess.check_output(
+                        ["sysctl", "-n", "machdep.cpu.brand_string"], text=True
+                    ).strip()
                     if out:
                         machine_model = out
                 except Exception:
                     machine_model = "Apple Silicon Mac"
 
             try:
-                mem_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip())
+                mem_bytes = int(
+                    subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip()
+                )
                 ram_gb = round(mem_bytes / (1024**3), 1)
             except Exception:
                 pass
@@ -82,7 +88,6 @@ class HardwareProfile:
             except Exception:
                 pass
 
-            # Check for nvidia-smi
             try:
                 subprocess.check_output(["nvidia-smi"], stderr=subprocess.DEVNULL)
                 has_cuda = True
@@ -131,7 +136,7 @@ def run_onboard_wizard(
 
     print(HEX_BANNER)
     print("Welcome to HEX — The Autonomous AI Workbench.")
-    print("=" * 60)
+    print("=" * 64)
     print(f"  OS / Architecture:  {profile.os_name} ({profile.arch})")
     print(f"  Hardware Model:     {profile.machine_model}")
     print(f"  System Memory:      {profile.ram_gb} GB RAM")
@@ -143,10 +148,10 @@ def run_onboard_wizard(
         print(f"  Antigravity Quota:  Detected ({ag_cred.source}) — Ready for $0 Day-1 routing")
     else:
         print("  Antigravity Quota:  Ready to link via `hex auth antigravity`")
-    print("=" * 60)
+    print("=" * 64)
     print()
 
-    # Model configuration
+    # Default configuration state
     model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
     cloud_provider = "antigravity"
     cloud_model_id = "gemini-3.5-pro"
@@ -160,51 +165,147 @@ def run_onboard_wizard(
         or (ag_cred.access_token if ag_cred else "")
     )
 
-    if not non_interactive and not defaults_only:
-        print("1. Select Model Routing Profile:")
-        print("   [1] Google Antigravity Quota + Local M4 MLX Compressor ($0 API billing - Day-1 Default)")
-        print("   [2] Hybrid API Keys (Local M4 Log Compressor + Cloud Frontier API Key)")
-        print("   [3] Local Only (100% private, Apple Silicon MLX / Ollama, zero network egress)")
-        print("   [4] Cloud Frontier API Keys Only (Anthropic Claude, OpenAI GPT-4o, Google Gemini)")
-        choice = input("Select profile [1/2/3/4, default=1]: ").strip()
-        if choice == "2":
-            model_profile = "hybrid"
-            cloud_provider = "gemini"
-        elif choice == "3":
-            model_profile = "local"
-            cloud_provider = "local"
-        elif choice == "4":
-            model_profile = "cloud"
-            cloud_provider = "gemini"
-        else:
-            model_profile = "antigravity_hybrid"
-            cloud_provider = "antigravity"
+    web_search_provider = "duckduckgo"
+    tavily_key = os.environ.get("HEX_TAVILY_API_KEY") or os.environ.get("TAVILY_API_KEY", "")
+    brave_key = os.environ.get("HEX_BRAVE_API_KEY") or os.environ.get("BRAVE_API_KEY", "")
 
-        if cloud_provider == "antigravity" and not antigravity_token:
-            print("\nGoogle Antigravity OAuth Session (leave blank to auto-discover from IDE or `hex auth antigravity`):")
-            k_ag = input("Antigravity OAuth Access/Refresh Token (optional): ").strip()
-            if k_ag:
-                antigravity_token = k_ag
-        elif model_profile in ("hybrid", "cloud") and not (anthropic_key or openai_key or gemini_key):
-            print("\nEnter Cloud API Keys (leave blank to skip or configure later):")
-            k_ant = input("Anthropic API Key (sk-ant-...): ").strip()
-            if k_ant:
-                anthropic_key = k_ant
-            k_oai = input("OpenAI API Key (sk-...): ").strip()
-            if k_oai:
-                openai_key = k_oai
-            k_gem = input("Gemini API Key: ").strip()
-            if k_gem:
-                gemini_key = k_gem
+    telegram_token = os.environ.get("HEX_TELEGRAM_BOT_TOKEN", "")
+    telegram_allowed = os.environ.get("HEX_TELEGRAM_ALLOWED_USERS", "")
+    discord_token = os.environ.get("HEX_DISCORD_BOT_TOKEN", "")
+    discord_webhook = os.environ.get("HEX_DISCORD_WEBHOOK_URL", "")
+
+    if not non_interactive and not defaults_only:
+        # Step 1: Model Provider Selection
+        provider_options = [
+            ("antigravity", "Connect Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detect IDE session)"),
+            ("anthropic", "Enter Anthropic API Key (Claude 3.5 Sonnet / Opus)"),
+            ("openai", "Enter OpenAI API Key (GPT-4o / o1 / o3-mini)"),
+            ("gemini", "Enter Google Gemini API Key (Gemini 2.5 Pro / Flash)"),
+            ("local", "Use Local Offline Model (Apple Silicon MLX / Ollama — Zero egress)"),
+        ]
+        p_idx = select_option(
+            "Select Primary Model Provider & Brain:",
+            provider_options,
+            default_index=0,
+        )
+        selected_provider_key = provider_options[p_idx][0]
+
+        if selected_provider_key == "antigravity":
+            cloud_provider = "antigravity"
+            cloud_model_id = "gemini-3.5-pro"
+            model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
+            if not antigravity_token:
+                print("  Google Antigravity OAuth token (press Enter to auto-discover or launch browser later):")
+                k_ag = prompt_secret("  Token: ")
+                if k_ag:
+                    antigravity_token = k_ag
+        elif selected_provider_key == "anthropic":
+            cloud_provider = "anthropic"
+            cloud_model_id = "claude-3-5-sonnet"
+            model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+            if not anthropic_key:
+                anthropic_key = prompt_secret("  Enter Anthropic API Key (sk-ant-...): ")
+        elif selected_provider_key == "openai":
+            cloud_provider = "openai"
+            cloud_model_id = "gpt-4o"
+            model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+            if not openai_key:
+                openai_key = prompt_secret("  Enter OpenAI API Key (sk-...): ")
+        elif selected_provider_key == "gemini":
+            cloud_provider = "gemini"
+            cloud_model_id = "gemini-2.5-pro"
+            model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+            if not gemini_key:
+                gemini_key = prompt_secret("  Enter Gemini API Key (AIza...): ")
+        elif selected_provider_key == "local":
+            cloud_provider = "local"
+            cloud_model_id = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+            model_profile = "local"
+            print("  ✓ Local offline profile configured. Zero external network egress.")
+
+        print()
+
+        # Step 2: Web Search Provider Selection
+        search_options = [
+            ("duckduckgo", "DuckDuckGo Search (100% Free, zero API key required, instant ready)"),
+            ("tavily", "Tavily Search API (Optimized for AI agents & clean markdown extraction)"),
+            ("brave", "Brave Search API (Fast, independent web search index)"),
+            ("none", "Air-gapped / Disabled (Strict offline code operations only)"),
+        ]
+        s_idx = select_option(
+            "Select Web Search Engine for Autonomous Research:",
+            search_options,
+            default_index=0,
+        )
+        web_search_provider = search_options[s_idx][0]
+
+        if web_search_provider == "tavily" and not tavily_key:
+            tavily_key = prompt_secret("  Enter Tavily API Key (tvly-...): ")
+        elif web_search_provider == "brave" and not brave_key:
+            brave_key = prompt_secret("  Enter Brave Search API Key (BSA...): ")
+
+        print()
+
+        # Step 3: Remote Messaging & Bot Gateways
+        messaging_options = [
+            ("skip", "Skip for now (Terminal Cockpit and Web Surface only)"),
+            ("telegram", "Configure Telegram Bot (Telegram bot token + allowed user IDs)"),
+            ("discord", "Configure Discord Bot (Discord bot token + channel webhook)"),
+            ("both", "Configure Both (Telegram + Discord)"),
+        ]
+        m_idx = select_option(
+            "Configure Remote Messaging Gateways (Control HEX from Phone):",
+            messaging_options,
+            default_index=0,
+        )
+        chosen_msg = messaging_options[m_idx][0]
+
+        if chosen_msg in ("telegram", "both") and not telegram_token:
+            telegram_token = prompt_secret("  Enter Telegram Bot Token: ")
+            raw_users = input("  Allowed Telegram User IDs / Names (comma-separated, or Enter for all): ").strip()
+            if raw_users:
+                telegram_allowed = raw_users
+
+        if chosen_msg in ("discord", "both") and not discord_token:
+            discord_token = prompt_secret("  Enter Discord Bot Token: ")
+            raw_hook = input("  Discord Webhook URL (optional, press Enter to skip): ").strip()
+            if raw_hook:
+                discord_webhook = raw_hook
+
+        print()
+
+        # Step 4: Machine Profile Confirmation
+        isolation_options = [
+            ("accept", f"Accept recommended profile ({profile.cow_backend} CoW + {profile.sandbox_backend} sandbox)"),
+            ("custom", "Customize execution sandbox (Allow network egress)"),
+        ]
+        iso_idx = select_option(
+            "Execution Sandbox & CoW Isolation:",
+            isolation_options,
+            default_index=0,
+        )
+        if isolation_options[iso_idx][0] == "custom":
+            print("  Custom sandbox policy: allowing standard network egress.")
+            profile.sandbox_backend = "restricted_subprocess"
+
+        print()
 
     # Write credentials securely
     creds_content = [
         "# HEX Secure Credentials Environment File",
         f"HEX_CLOUD_PROVIDER={cloud_provider}",
+        f"HEX_CLOUD_MODEL_ID={cloud_model_id}",
         f"HEX_ANTIGRAVITY_TOKEN={antigravity_token}",
         f"ANTHROPIC_API_KEY={anthropic_key}",
         f"OPENAI_API_KEY={openai_key}",
         f"GEMINI_API_KEY={gemini_key}",
+        f"HEX_WEB_SEARCH_PROVIDER={web_search_provider}",
+        f"TAVILY_API_KEY={tavily_key}",
+        f"BRAVE_API_KEY={brave_key}",
+        f"HEX_TELEGRAM_BOT_TOKEN={telegram_token}",
+        f"HEX_TELEGRAM_ALLOWED_USERS={telegram_allowed}",
+        f"HEX_DISCORD_BOT_TOKEN={discord_token}",
+        f"HEX_DISCORD_WEBHOOK_URL={discord_webhook}",
     ]
     credentials_file.write_text("\n".join(creds_content) + "\n", encoding="utf-8")
     try:
@@ -226,6 +327,11 @@ model:
   compressor_mode: "local"
   cloud_model_id: "{cloud_model_id}"
   local_model_id: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+web_search:
+  provider: "{web_search_provider}"
+messaging:
+  telegram_enabled: {str(bool(telegram_token)).lower()}
+  discord_enabled: {str(bool(discord_token)).lower()}
 storage:
   backend: "{db_backend}"
   data_dir: "{data_dir}"
@@ -238,6 +344,9 @@ webhooks:
   public_base_url: "http://127.0.0.1:8420"
 """
     config_file.write_text(config_yaml, encoding="utf-8")
+
+    # Hydrate current running process environment immediately
+    load_hex_environment(config_dir=cfg_dir, override=True)
 
     # Initialize ledger and seed built-in skills with SkillSpector
     repo_candidate = Path(__file__).resolve().parents[2]
@@ -253,19 +362,22 @@ webhooks:
                 res = orch.scanner.scan_and_register_skill(sub)
                 seeded.append(res)
 
-    print()
     print("✓ HEX has been successfully initialized!")
     print(f"  • Configuration: {config_file}")
     print(f"  • Credentials:   {credentials_file} (chmod 0600)")
-    print(f"  • Cloud Tier:    {cloud_provider} ({cloud_model_id})")
-    print(f"  • Data Store:    {data_dir}")
+    print(f"  • Model Provider: {cloud_provider} ({cloud_model_id})")
+    print(f"  • Web Search:    {web_search_provider}")
+    if telegram_token:
+        print("  • Telegram Bot:  Configured & ready for `hex gateway start`")
+    if discord_token:
+        print("  • Discord Bot:   Configured & ready for `hex gateway start`")
+    print(f"  • Storage Dir:   {data_dir}")
     print(f"  • Seeded Skills: {len(seeded)} verified skills registered")
     print()
-    print("Quick Start:")
-    print("  • Link or inspect Antigravity Quota: hex auth antigravity --status")
-    print("  • Check live Antigravity model quota: hex quota")
-    print("  • Start Interactive TUI Cockpit:      hex   (or hex tui)")
-    print("  • Run an autonomous coding task:      hex run \"Your goal here\" --provider antigravity")
+    print("Commands:")
+    print("  • Start Cockpit TUI:            hex   (or hex chat)")
+    print("  • Start Messaging Gateways:     hex gateway start")
+    print("  • Run autonomous coding task:   hex run \"Your goal here\"")
     print()
 
     return {
@@ -273,6 +385,8 @@ webhooks:
         "config_file": str(config_file),
         "credentials_file": str(credentials_file),
         "cloud_provider": cloud_provider,
+        "cloud_model_id": cloud_model_id,
+        "web_search_provider": web_search_provider,
         "data_dir": str(data_dir),
         "hardware": {
             "os": profile.os_name,

@@ -89,15 +89,21 @@ class HarnessOrchestrator:
             self.data_dir / "harness_revisions",
         )
 
-        # Register default local MacBook Air M4 worker
-        self.default_worker_id = "wrk_m4_air_local"
+        # Register default local worker with dynamic hardware specs
+        from .onboard import HardwareProfile
+
+        profile = HardwareProfile.detect()
+        slug_model = re.sub(r"[^a-zA-Z0-9]+", "_", profile.machine_model.lower()).strip("_")
+        self.default_worker_id = f"wrk_{slug_model[:16]}_local"
         self.ledger.register_worker(
             worker_id=self.default_worker_id,
-            machine_class="m4_air",
+            machine_class=slug_model[:16] or "posix_host",
             cow_backend=self.cow.backend_name,
             capabilities={
-                "apfs_clone": True,
-                "mlx": True,
+                "apfs_clone": profile.cow_backend == "apfs",
+                "mlx": profile.is_apple_silicon,
+                "cuda": profile.has_cuda,
+                "ram_gb": profile.ram_gb,
                 "sandbox": True,
                 "sandbox_backend": self.sandbox.backend_name,
             },

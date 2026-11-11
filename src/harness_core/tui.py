@@ -321,6 +321,7 @@ TOOL_CATEGORY_MAP: dict[str, str] = {
     "write_file": "file",
     "list_files": "file",
     "query_graphify": "ast_graph",
+    "web_search": "search",
     "run_tests": "verification",
     "git_push_remote": "git_ops",
     "modify_system_policy": "policy_guard",
@@ -687,7 +688,13 @@ def render_hermes_splash(
     except Exception:
         pass
 
-    title_plain = f" HEX Autonomous AI Workbench v1.3.0 · upstream {git_sha} "
+    try:
+        import importlib.metadata
+        pkg_version = importlib.metadata.version("hex-ai")
+    except Exception:
+        pkg_version = "0.1.0"
+
+    title_plain = f" HEX Autonomous AI Workbench v{pkg_version} · upstream {git_sha} "
     dash_total = max(2, inner_w - len(title_plain))
     left_d = dash_total // 2
     right_d = dash_total - left_d
@@ -711,7 +718,10 @@ def render_hermes_splash(
         left_lines.append(_c(_pad_visible(eline.strip(), left_w, align="center"), fg=rgb, bold=True))
     left_lines.append("")
 
-    mdl_line = f"{_c(model_id, fg=skin.heading_rgb, bold=True)}{_c(' · ', fg=skin.muted_rgb)}{_c(f'M4 MLX ({compressor_mode})', fg=skin.category_rgb)}"
+    from .onboard import HardwareProfile
+    prof = HardwareProfile.detect()
+    hw_label = "M4 MLX" if prof.is_apple_silicon else (prof.machine_model if prof.has_cuda else "Local CPU")
+    mdl_line = f"{_c(model_id, fg=skin.heading_rgb, bold=True)}{_c(' · ', fg=skin.muted_rgb)}{_c(f'{hw_label} ({compressor_mode})', fg=skin.category_rgb)}"
     left_lines.append(_pad_visible(mdl_line, left_w, align="center"))
 
     home_str = str(Path.home())
@@ -735,6 +745,7 @@ def render_hermes_splash(
     else:
         grouped_tools = {
             "file": ["list_files", "read_file", "write_file"],
+            "search": ["web_search"],
             "ast_graph": ["query_graphify"],
             "verification": ["run_tests"],
             "git_ops": ["git_push_remote"],

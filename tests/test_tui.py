@@ -211,7 +211,7 @@ class TestSessionBannerAndHermesSplash(unittest.TestCase):
                 width=110,
             )
             plain = strip_ansi(splash)
-            self.assertIn("HEX Autonomous AI Workbench v1.3.0", plain)
+            self.assertIn("HEX Autonomous AI Workbench v", plain)
             self.assertIn("Available Tools", plain)
             self.assertIn("Available Skills", plain)
             self.assertIn("query_graphify", plain)
