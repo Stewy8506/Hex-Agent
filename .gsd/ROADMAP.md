@@ -242,9 +242,9 @@
 ## Milestone M8: Deep Upstream Vendor Integration
 
 ```
-[ ] Phase 18: Google Research Harness² Deep Wiring
-    [ ] 18-01: Experience Library (INDEX.md / EXPERIENCE.md) integration into HarnessOrchestrator
-    [ ] 18-02: OrchestratorBenchmarkAdapter & Propose-Probe-Compose task sweep runner
+[x] Phase 18: Google Research Harness² Deep Wiring
+    [x] 18-01: Experience Library (INDEX.md / EXPERIENCE.md) integration into HarnessOrchestrator
+    [x] 18-02: OrchestratorBenchmarkAdapter & Propose-Probe-Compose task sweep runner
 [ ] Phase 19: NVIDIA SkillSpector Upstream Behavioral AST & Live OSV Scanner
     [ ] 19-01: Python AST dangerous call analyzer & taint tracking integration
     [ ] 19-02: Live OSV.dev batch client with offline cache fallback

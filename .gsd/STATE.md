@@ -2,9 +2,9 @@
 
 **Date:** 2026-11-11  
 **Current Milestone:** M8 (Deep Upstream Vendor Integration)  
-**Status:** In Progress — Planning Phase 18 (Google Research Harness² Deep Wiring)  
-**Active Phase:** Phase 18 (Google Research Harness² Deep Wiring)  
-**Completed Plans:** Plans 01-01 through 17-02 Complete (491/491 tests green)  
+**Status:** In Progress — Phase 18 Complete; Planning Phase 19  
+**Active Phase:** Phase 19 (NVIDIA SkillSpector Upstream Behavioral AST & Live OSV Scanner)  
+**Completed Plans:** Plans 01-01 through 18-02 Complete (508/508 tests green)  
 
 ---
 
@@ -252,12 +252,21 @@
     - Added CLI standalone command `hex voice` and `--voice`, `--voice-name`, `--speech-rate` options across `hex` and `hex chat`.
     - Authored unit and integration tests in `tests/test_voice_engine.py` (491/491 total repository tests passing with zero regressions).
 
+33. **Phase 18 Google Research Harness² Deep Wiring Complete (Plans 18-01 & 18-02):**
+    - Integrated `harness2.core.library.Library` directly into `HarnessOrchestrator` (`src/harness_core/orchestrator.py`).
+    - Stored domain experience libraries under `.hex/harness2_library/` with automated post-task experience recording (`cue`, `lesson`, `evidence`, and adopted tree), rebuilding `INDEX.md` and `EXPERIENCE.md`.
+    - Wired pre-task domain experience retrieval into autonomous repair loops and reasoning prompts, preserving strict domain isolation.
+    - Implemented `OrchestratorBenchmarkAdapter` (`src/harness_core/harness2_adapter.py`) strictly conforming to `harness2.core.spec.BenchmarkAdapter`.
+    - Supported isolated rollout workspaces, `[ACTION]/[OBSERVATION]/[ERROR]` trajectory logs, deliverable checks, and scoring.
+    - Connected Propose-Probe-Compose multi-rollout sweeps (`run_parallel`, `run_sequential`) and exposed `hex harness2-eval` CLI command.
+    - Authored 17 unit and integration tests across `tests/test_harness2_library_wiring.py` and `tests/test_harness2_benchmark_adapter.py` (508/508 repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (491/491 tests green).
-- Milestone M7 is 100% complete and verified. All 17 phases delivered.
+- None. Full repository test suite passing cleanly with zero failures (508/508 tests green).
+- Milestone M8 Phase 18 is 100% complete and verified. Moving to Phase 19.
 
 ---
 
@@ -280,10 +289,10 @@ All 5 Product Pillars and Hermes Parity enhancements are fully delivered, empiri
 
 ## 4. Next Actions
 
-- Author Phase 18 plans (`18-01-PLAN.md`, `18-02-PLAN.md`) for Google Research Harness² Deep Wiring.
-- Execute Plan 18-01: Experience Library (`INDEX.md` / `EXPERIENCE.md`) integration into `HarnessOrchestrator`.
-- Execute Plan 18-02: `OrchestratorBenchmarkAdapter` & Propose-Probe-Compose task sweep runner.
-- Verify Phase 18 with empirical evidence and commit.
+- Author Phase 19 plans (`19-01-PLAN.md`, `19-02-PLAN.md`) for NVIDIA SkillSpector Upstream Behavioral AST & Live OSV Scanner.
+- Execute Plan 19-01: Python AST dangerous call analyzer & taint tracking integration.
+- Execute Plan 19-02: Live OSV.dev batch client with offline cache fallback.
+- Verify Phase 19 with empirical evidence and commit.
 
 
 
