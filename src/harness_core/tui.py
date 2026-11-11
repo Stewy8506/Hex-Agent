@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from .gateway import ApprovalRequiredInterrupt, redact_secrets
+from .voice import VoiceConfig, VoiceEngine, clean_text_for_speech
 
 # Optional rich imports for enhanced terminal aesthetics
 try:
@@ -619,12 +620,16 @@ def render_session_banner(
     compressor_mode: str = "M4 MLX Local",
     sandbox_backend: str = "bwrap",
     cow_backend: str = "apfs",
+    voice_status: str | None = None,
     width: int = 78,
 ) -> str:
     """Render the compact 78-column HEX pair-programming session header banner."""
     title = "HEX Autonomous AI Workbench — Interactive Terminal Console"
     line1 = f"Model: {model_id}  │  Compressor: {compressor_mode}"
-    line2 = f"Sandbox: {sandbox_backend}  │  CoW Store: {cow_backend}"
+    if voice_status:
+        line2 = f"Sandbox: {sandbox_backend}  │  CoW Store: {cow_backend}  │  Voice: {voice_status}"
+    else:
+        line2 = f"Sandbox: {sandbox_backend}  │  CoW Store: {cow_backend}"
     hint = "Type /help for slash commands, or enter a natural language prompt."
 
     inner_w = width - 2
@@ -655,6 +660,7 @@ def render_hermes_splash(
     compressor_mode: str = "local",
     workspace_root: Path | str | None = None,
     session_id: str | None = None,
+    voice_status: str | None = None,
     width: int = 108,
     enable_color: bool = True,
 ) -> str:
@@ -737,6 +743,12 @@ def render_hermes_splash(
 
     sess = session_id or f"Session: {time.strftime('%Y%m%d_%H%M%S')}"
     left_lines.append(_pad_visible(_c(_truncate_visible(sess, left_w - 2), fg=skin.muted_rgb), left_w, align="center"))
+    if voice_status:
+        v_upper = voice_status.strip().upper()
+        v_icon = "🎙️" if v_upper == "ON" else ("🔇" if v_upper == "MUTED" else "🎙️")
+        v_badge = f"{v_icon} Voice: {v_upper}"
+        v_fg = skin.accent_rgb if v_upper == "ON" else (skin.warn_rgb if v_upper == "MUTED" else skin.muted_rgb)
+        left_lines.append(_pad_visible(_c(v_badge, fg=v_fg, bold=(v_upper == "ON")), left_w, align="center"))
 
     # 4. Right column: Categorized Available Tools & Available Skills
     right_lines: list[str] = [_c("Available Tools", fg=skin.heading_rgb, bold=True)]
@@ -821,6 +833,7 @@ def render_status_bar(
     cost_usd: float = 0.0,
     max_cost_usd: float = 2.0,
     elapsed_seconds: int = 0,
+    voice_status: str | None = None,
     skin_name: str = "amber",
     width: int = 108,
     enable_color: bool = True,
@@ -865,9 +878,23 @@ def render_status_bar(
         _c(f" {ctx_str} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
         _c(f" [{bar_str}] {pct_str} ", fg=gauge_fg, bg=skin.status_bg_rgb, bold=True),
         _c(f" comp:{compressor_mode} · cow:{cow_backend} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
+    ]
+
+    if voice_status:
+        v_upper = voice_status.strip().upper()
+        if v_upper == "ON":
+            parts.append(_c(" 🎙️ ON ", fg=skin.accent_rgb, bg=skin.status_bg_rgb, bold=True))
+        elif v_upper == "MUTED":
+            parts.append(_c(" 🔇 MUTED ", fg=skin.warn_rgb, bg=skin.status_bg_rgb, bold=True))
+        elif v_upper == "OFF":
+            parts.append(_c(" 🎙️ OFF ", fg=skin.muted_rgb, bg=skin.status_bg_rgb))
+        else:
+            parts.append(_c(f" 🎙️ {voice_status} ", fg=skin.muted_rgb, bg=skin.status_bg_rgb))
+
+    parts.extend([
         _c(f" ${cost_usd:.3f} ", fg=skin.muted_rgb, bg=skin.status_bg_rgb),
         _c(f" {elapsed_seconds}s ", fg=skin.muted_rgb, bg=skin.status_bg_rgb),
-    ]
+    ])
     sep = _c("│", fg=skin.border_rgb, bg=skin.status_bg_rgb)
     rule = _c("─" * max(76, width), fg=skin.border_rgb)
     return f"{sep.join(parts)}\n{rule}"
@@ -890,6 +917,9 @@ class HexConsole:
         model_profile: str | None = None,
         skin_name: str = "amber",
         quiet: bool = False,
+        voice_enabled: bool = False,
+        voice_name: str | None = None,
+        speech_rate: int = 190,
     ):
         self.orchestrator = orchestrator
         self.project_id = project_id
@@ -915,6 +945,16 @@ class HexConsole:
         self.session_compression_ratio: float = 0.0
         self.session_cost_usd: float = 0.0
 
+        # Hands-free real-time voice & speech pair-programming engine
+        self.voice_engine = VoiceEngine(
+            VoiceConfig(
+                tts_enabled=voice_enabled,
+                stt_enabled=voice_enabled,
+                voice_name=voice_name,
+                speech_rate=speech_rate,
+            )
+        )
+
     @property
     def skin(self) -> TUISkin:
         return SKIN_REGISTRY.get(self.skin_name, SKIN_REGISTRY["amber"])
@@ -928,12 +968,13 @@ class HexConsole:
                 "/skills", "/scan", "/model", "/compressor", "/budget",
                 "/quota", "/antigravity", "/blast", "/proof", "/memory",
                 "/remember", "/reflect", "/search", "/doctor", "/recipe",
-                "/backup", "/dump", "/workers", "/harness2", "/skin",
-                "/banner", "/clear", "/quit", "/exit",
+                "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
+                "/voice", "/banner", "/clear", "/quit", "/exit",
             ]
+            voice_cmds = ["/voice on", "/voice off", "/voice mute", "/voice status"]
             skin_cmds = [f"/skin {s}" for s in SKIN_REGISTRY]
             comp_cmds = ["/compressor local", "/compressor cloud"]
-            candidates = sorted(set(slash_cmds + skin_cmds + comp_cmds))
+            candidates = sorted(set(slash_cmds + voice_cmds + skin_cmds + comp_cmds))
 
             def completer(text: str, state: int) -> str | None:
                 buf = readline.get_line_buffer().lstrip()
@@ -962,6 +1003,11 @@ class HexConsole:
             or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", None)
             or "claude-3-5-sonnet"
         )
+        v_stat = (
+            "MUTED"
+            if self.voice_engine.is_muted()
+            else ("ON" if self.voice_engine.config.tts_enabled else "OFF")
+        )
         splash = render_hermes_splash(
             self.orchestrator,
             skin_name=self.skin_name,
@@ -969,12 +1015,14 @@ class HexConsole:
             compressor_mode=comp_mode,
             workspace_root=self.workspace_root,
             session_id=f"Session: {self.session_id}",
+            voice_status=v_stat,
         )
         compact = render_session_banner(
             model_id=active_model,
             compressor_mode=f"M4 MLX ({comp_mode})",
             sandbox_backend=sandbox_backend,
             cow_backend=cow_backend,
+            voice_status=v_stat,
         )
         status_bar = self.get_status_bar()
         return f"{splash}\n\n{compact}\n{status_bar}"
@@ -988,6 +1036,11 @@ class HexConsole:
             or "claude-3-5-sonnet"
         )
         elapsed = int(max(0.0, time.time() - self.session_start))
+        v_stat = (
+            "MUTED"
+            if self.voice_engine.is_muted()
+            else ("ON" if self.voice_engine.config.tts_enabled else "OFF")
+        )
         return render_status_bar(
             model_id=active_model,
             compressor_mode=comp_mode,
@@ -996,6 +1049,7 @@ class HexConsole:
             compression_ratio=self.session_compression_ratio,
             cost_usd=self.session_cost_usd,
             elapsed_seconds=elapsed,
+            voice_status=v_stat,
             skin_name=self.skin_name,
         )
 
@@ -1010,25 +1064,29 @@ class HexConsole:
         else:
             read_line = input
 
-        while True:
-            try:
-                line = read_line("hex> ")
-            except (EOFError, KeyboardInterrupt):
-                print(f"\n{ANSI_DIM}Exiting HEX console.{ANSI_RESET}")
-                return 0
-
-            line = line.strip()
-            if not line:
-                continue
-
-            self.history.append(line)
-
-            if line.startswith("/"):
-                should_exit = self.handle_slash_command(line)
-                if should_exit:
+        try:
+            while True:
+                try:
+                    line = read_line("hex> ")
+                except (EOFError, KeyboardInterrupt):
+                    print(f"\n{ANSI_DIM}Exiting HEX console.{ANSI_RESET}")
                     return 0
-            else:
-                self.handle_user_prompt(line)
+
+                line = line.strip()
+                if not line:
+                    continue
+
+                self.history.append(line)
+
+                if line.startswith("/"):
+                    should_exit = self.handle_slash_command(line)
+                    if should_exit:
+                        return 0
+                else:
+                    self.handle_user_prompt(line)
+        finally:
+            if hasattr(self, "voice_engine"):
+                self.voice_engine.shutdown()
 
         return 0
 
@@ -1095,6 +1153,8 @@ class HexConsole:
             self._cmd_project(arg)
         elif cmd in ("/skin", "/theme"):
             self._cmd_skin(arg)
+        elif cmd == "/voice":
+            self._cmd_voice(arg)
         elif cmd in ("/banner", "/splash"):
             print(self.render_welcome_splash())
         elif cmd == "/clear":
@@ -1131,6 +1191,7 @@ class HexConsole:
             ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
             ("/harness2", "Run a gated Google Research Harness² Propose-Probe-Compose probe"),
             ("/skin [name]", "Switch TUI theme (amber, cyberpunk, matrix, nord, mono)"),
+            ("/voice [on|off|mute]", "Toggle hands-free voice mode, mute, speech rate or audio status"),
             ("/project [list|switch]", "Inspect active project card, list workspaces, or switch context"),
             ("/banner", "Re-render the Hermes-style startup splash screen and status bar"),
             ("/clear", "Clear the terminal screen"),
@@ -1147,6 +1208,12 @@ class HexConsole:
         print(f"  Workspace Root: {self.workspace_root}")
         print(f"  Skin / Theme:   {self.skin.name} ({self.skin.description})")
         print(f"  Streaming:      {'Enabled' if self.stream else 'Disabled'}")
+        v_stat = (
+            "MUTED"
+            if self.voice_engine.is_muted()
+            else ("ON" if self.voice_engine.config.tts_enabled else "OFF")
+        )
+        print(f"  Voice Mode:     {v_stat} (TTS:{self.voice_engine.config.tts_enabled}, STT:{self.voice_engine.config.stt_enabled})")
         print(f"  Active Task ID: {self.active_task_id or '(none)'}")
 
         workers = []
@@ -1693,6 +1760,69 @@ class HexConsole:
             if created_mgr:
                 mgr.close_all()
 
+    def _cmd_voice(self, arg: str = "") -> None:
+        sub = arg.strip().split()
+        subcmd = sub[0].lower() if sub else "status"
+        param = sub[1] if len(sub) > 1 else ""
+
+        if subcmd == "on":
+            self.voice_engine.config.tts_enabled = True
+            self.voice_engine.config.stt_enabled = True
+            self.voice_engine.unmute()
+            self.voice_engine.speak("Voice mode enabled", clean=False)
+            print(f"\n{ANSI_GREEN}✔ Voice mode enabled (TTS and speech capture active).{ANSI_RESET}\n")
+        elif subcmd == "off":
+            self.voice_engine.config.tts_enabled = False
+            self.voice_engine.config.stt_enabled = False
+            self.voice_engine.stop()
+            print(f"\n{ANSI_YELLOW}⏹ Voice mode disabled.{ANSI_RESET}\n")
+        elif subcmd == "mute":
+            is_muted = self.voice_engine.toggle_mute()
+            if is_muted:
+                print(f"\n{ANSI_YELLOW}🔇 Voice muted.{ANSI_RESET}\n")
+            else:
+                print(f"\n{ANSI_GREEN}🎙️ Voice unmuted.{ANSI_RESET}\n")
+        elif subcmd == "voice":
+            if param:
+                self.voice_engine.set_voice(param)
+                print(f"\n{ANSI_GREEN}✔ Voice set to: {param}{ANSI_RESET}\n")
+            else:
+                curr = self.voice_engine.config.voice_name or "(system default)"
+                print(f"\n{ANSI_CYAN}Current voice: {curr}{ANSI_RESET}\n")
+        elif subcmd == "rate":
+            if param:
+                try:
+                    wpm = int(param)
+                    self.voice_engine.set_rate(wpm)
+                    print(f"\n{ANSI_GREEN}✔ Speech rate set to: {self.voice_engine.config.speech_rate} wpm{ANSI_RESET}\n")
+                except ValueError:
+                    print(f"\n{ANSI_RED}Invalid speech rate: {param}. Please provide an integer (80-400).{ANSI_RESET}\n")
+            else:
+                print(f"\n{ANSI_CYAN}Current speech rate: {self.voice_engine.config.speech_rate} wpm{ANSI_RESET}\n")
+        elif subcmd == "status":
+            from .voice import probe_audio_hardware
+
+            hw = probe_audio_hardware()
+            v_stat = (
+                "MUTED"
+                if self.voice_engine.is_muted()
+                else ("ON" if self.voice_engine.config.tts_enabled else "OFF")
+            )
+            print(f"\n{ANSI_BOLD}{ANSI_CYAN}HEX Hands-Free Voice Status:{ANSI_RESET}")
+            print(f"  Voice Mode:     {v_stat}")
+            print(f"  TTS Enabled:    {self.voice_engine.config.tts_enabled}")
+            print(f"  STT Enabled:    {self.voice_engine.config.stt_enabled}")
+            print(f"  Muted:          {self.voice_engine.is_muted()}")
+            print(f"  Active Voice:   {self.voice_engine.config.voice_name or '(default)'}")
+            print(f"  Speech Rate:    {self.voice_engine.config.speech_rate} wpm")
+            print(f"  Backend:        {self.voice_engine.config.backend}")
+            print(f"  Host Platform:  {hw.get('platform')}")
+            print(f"  TTS Synthesizer:{hw.get('tts_engine') or 'None (using mock)'}")
+            print(f"  Audio Output:   {hw.get('audio_player') or 'None'}")
+            print(f"  Audio Input:    {hw.get('mic_tool') or 'None'}\n")
+        else:
+            print(f"\n{ANSI_RED}Usage: /voice [on|off|mute|status|rate <wpm>|voice <name>]{ANSI_RESET}\n")
+
     def _cmd_backup(self) -> None:
         from .backup import create_backup
 
@@ -2084,10 +2214,26 @@ class HexConsole:
                 v_badge = f"{ANSI_GREEN}[VERIFIED]{ANSI_RESET}" if verified else f"{ANSI_YELLOW}[UNVERIFIED]{ANSI_RESET}"
                 sha = str(proof.get("workspace_tree_sha", ""))[:12]
                 print(f"  Proof-Carrying Artifact: {v_badge} Merkle SHA: {sha}...")
+            if hasattr(self, "voice_engine") and self.voice_engine.config.tts_enabled and not self.voice_engine.is_muted():
+                raw_summary = (
+                    task.get("summary")
+                    or task.get("result")
+                    or (proof.get("summary") if proof else None)
+                    or f"Task {tid} completed successfully."
+                )
+                cleaned = clean_text_for_speech(str(raw_summary))
+                sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned) if s.strip()]
+                speech_text = " ".join(sentences[:2]) if sentences else f"Task {tid} completed successfully."
+                self.voice_engine.speak(speech_text, clean=False)
         elif status == "REJECTED":
             print(f"{ANSI_RED}✖ Task {tid} rejected: {task.get('terminal_reason')}{ANSI_RESET}")
+            if hasattr(self, "voice_engine") and self.voice_engine.config.tts_enabled and not self.voice_engine.is_muted():
+                reason = task.get("terminal_reason") or "Task rejected."
+                self.voice_engine.speak(f"Task rejected. {reason}", clean=True)
         elif status == "NEEDS_ATTENTION":
             print(f"{ANSI_YELLOW}⚠ Task {tid} requires operator attention: {task.get('terminal_reason')}{ANSI_RESET}")
+            if hasattr(self, "voice_engine") and self.voice_engine.config.tts_enabled and not self.voice_engine.is_muted():
+                self.voice_engine.speak("Task requires operator attention.", clean=True)
         else:
             print(f"Task {tid} status: {status}")
 
