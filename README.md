@@ -130,6 +130,11 @@ hex reflect
 # Query compiler diagnostics, syntax errors, and language server status across all major languages
 hex lsp status
 hex lsp diagnostics
+
+# Start hands-free voice pair programming with real-time speech synthesis
+hex voice
+# or start interactive TUI with real-time voice commentary enabled
+hex chat --voice
 ```
 
 ---
@@ -224,7 +229,7 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 - **Interactive R2/R3 Keyboard Approval Cards:** Inspect colorized unified diffs and press `[y]` Approve · `[n]` Reject · `[d]` Full Unified Diff · `[s]` Isolated CoW Sandbox Subshell · `[q]` Abort & Rollback.
 
 <details>
-<summary><strong>📋 Click to expand all 27 Interactive TUI Slash Commands</strong></summary>
+<summary><strong>📋 Click to expand all 28 Interactive TUI Slash Commands</strong></summary>
 
 | Slash Command | Category | Description |
 | :--- | :--- | :--- |
@@ -242,12 +247,13 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 | `/quota` / `/antigravity` | Antigravity | Inspect active Google Antigravity OAuth session, plan tier, and per-model quota windows |
 | `/project [name\|list]` | Workspace | Inspect current project workspace or interactively switch project context |
 | `/lsp [status\|diagnostics]` | Compiler & LSP | Inspect language servers (Pyright, TS, Gopls, rust-analyzer, clangd, jdtls) and compiler diagnostics |
+| `/voice [on\|off\|mute\|status\|rate\|voice]` | Voice & Speech | Configure hands-free voice mode, speech rate (wpm), voice profile, or toggle mute |
 | `/compressor [local\|cloud]` | Model Routing | Switch Tier-1 log compressor between local M4 MLX (`$0`) and cloud (`Flash`/`Haiku`) |
 | `/memory [query]` | Memory | Search governed memories with live AST code-hash staleness badges (`[STALE - CODE CHANGED]`) |
 | `/remember <k>: <v>` | Memory | Record a governed project memory anchored to workspace AST provenance |
 | `/reflect` / `/lessons` | Memory | Run deterministic Graphify work-memory reflection and display `.hex/reflections/LESSONS.md` |
 | `/search <query>` | Search | Run SQLite FTS5 BM25 full-text search across past tasks, tool transcripts, and logs |
-| `/doctor [--fix]` | Diagnostics | Run 8-category system health audit and optional `--fix` self-healing remediation |
+| `/doctor [--fix]` | Diagnostics | Run 9-category system health audit and optional `--fix` self-healing remediation |
 | `/recipe` | Lifecycle | Auto-detect project `bootstrap`, `build`, `test`, and `start` commands |
 | `/backup` | Operations | Create an instant zip backup of configuration, SQLite ledger (WAL-checkpointed), and skills |
 | `/dump` | Operations | Generate a secret-scrubbed plain-text diagnostic dump for bug reports |
@@ -263,7 +269,7 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 
 ## 🛠️ Complete CLI & Self-Healing Diagnostics Surface
 
-HEX ships a unified 24-subcommand CLI (`hex` and `harness`):
+HEX ships a unified 25-subcommand CLI (`hex` and `harness`):
 
 ```text
 hex
@@ -272,7 +278,7 @@ hex
 ├── lsp          # Polyglot Language Server Protocol gateway (status, diagnostics, definition, hover)
 ├── auth         # Manage Google Antigravity OAuth credentials (--import-ide, --auth-url, --status)
 ├── quota        # Inspect live Google Antigravity per-model quota windows and reset timers
-├── doctor       # 8-category system diagnostics, environment auditing, and self-healing (--fix, --live)
+├── doctor       # 9-category system diagnostics, environment auditing, and self-healing (--fix, --live)
 ├── recipe       # Zero-config auto-detection of bootstrap, build, test, and start commands
 ├── search       # Full-text SQLite FTS5 BM25 search across tasks, tool transcripts, and logs
 ├── reflect      # Run deterministic Graphify work-memory reflection (.hex/reflections/LESSONS.md)
@@ -282,6 +288,7 @@ hex
 ├── init         # Initialize project configuration (.hex/config.yaml), ledger schema, and skills
 ├── up           # Start local web control surface and /v1/* HTTP + SSE API (Uvicorn / ASGI)
 ├── chat (tui)   # Hermes-grade 24-bit TrueColor TUI pair-programming console
+├── voice        # Interactive hands-free voice pair-programming console (--speech-rate, --voice-name)
 ├── run (exec)   # Execute task with automated Git branching, conventional commits, and PR creation
 ├── submit       # Submit and execute a task (--mode auto|fast_path|standard)
 ├── status       # Inspect task state machine, call journal, and Proof-Carrying Artifact bundle
@@ -365,12 +372,13 @@ harness/
 │   ├── daemon.py                  # Background OS service installer (macOS launchd & Linux systemd)
 │   ├── dashboard.py               # Embedded Web Control Surface UI
 │   ├── db.py                      # Dual-driver PostgreSQL 16 (SKIP LOCKED) & SQLite WAL + FTS5 sync
-│   ├── doctor.py                  # 8-category system health auditor & `--fix` self-healing engine
+│   ├── doctor.py                  # 9-category system health auditor & `--fix` self-healing engine
 │   ├── gateway.py                 # Default-Deny R0–R4 Tool Gateway, recipe test runner & 0ms journal
 │   ├── gateways/                  # Bidirectional Telegram & Discord conversational bot gateways
 │   ├── git_autopilot.py           # Automated Git branching, conventional commits & PR generator
 │   ├── github_action.py           # GitHub Actions `@hex-bot` event responder
 │   ├── graphify.py                # Persistent polyglot AST indexer, surgical slicer & work-memory reflection
+│   ├── lsp/                       # Polyglot Language Server Protocol gateway (client, registry, manager)
 │   ├── mcp_client.py              # Stdio & HTTP/SSE external MCP client with dynamic risk tagging
 │   ├── models.py                  # Canonical state machine & request/budget dataclasses
 │   ├── onboard.py                 # Interactive `hex setup` (alias `hex onboard`) hardware & OAuth wizard
@@ -385,7 +393,8 @@ harness/
 │   ├── server.py                  # REST + SSE control plane (/v1/*, /livez, /healthz)
 │   ├── skill_synthesizer.py       # Autonomous SKILL.md synthesizer gated by NVIDIA SkillSpector
 │   ├── skillspector.py            # NVIDIA SkillSpector static + OSV + M4 semantic security gate
-│   ├── tui.py                     # Hermes-grade 24-bit TrueColor TUI engine, 5 skins & 27 slash commands
+│   ├── tui.py                     # Hermes-grade 24-bit TrueColor TUI engine, 5 skins & 28 slash commands
+│   ├── voice.py                   # Real-time asynchronous TTS/STT speech engine & markdown sanitizer
 │   ├── webhooks.py                # Outbound Telegram & Discord interactive approval cards
 │   ├── worker_daemon.py           # Distributed worker daemon with CAS fencing & delta tar sync
 │   └── providers/
@@ -393,7 +402,7 @@ harness/
 │       ├── base.py                # ModelProvider protocol & cached token accounting
 │       ├── cloud_provider.py      # Antigravity, Anthropic, OpenAI & Gemini provider with 90% prefix caching
 │       └── mlx_provider.py        # Apple Silicon M4 MLX local runner & >70% log compressor
-├── tests/                         # 27 test modules (390+ unit, stage, concurrency, TUI & parity tests)
+├── tests/                         # 30 test modules (491 unit, stage, concurrency, LSP, voice & parity tests)
 ├── vendor/                        # Detached upstream engines (graphify, harness2, skillspector)
 ├── AUDIT_REPORT.md                # Principal Systems Architect & Security Compliance Verdict
 ├── HERMES_ANALYSIS.md             # Reverse-Engineering Hermes Agent & Parity Architecture Report
