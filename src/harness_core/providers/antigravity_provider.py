@@ -253,6 +253,7 @@ class AntigravityOAuthManager:
         allow_keychain: bool = True,
     ) -> None:
         default_hex_dir = Path(os.getenv("HEX_CONFIG_DIR") or (Path.home() / ".hex"))
+        self._explicit_auth_file: bool = auth_file is not None
         self.auth_file = Path(auth_file) if auth_file else (default_hex_dir / "antigravity_auth.json")
         self.ide_db_paths = ide_db_paths if ide_db_paths is not None else self._default_ide_db_paths()
         self.external_auth_paths = (
@@ -413,13 +414,22 @@ class AntigravityOAuthManager:
 
     def resolve_credential(self, auto_refresh: bool = True) -> AntigravityCredential | None:
         """Discover local Antigravity OAuth credentials across env, HEX store, IDE SQLite, and Keychain."""
-        cred = (
-            self._from_env()
-            or self._from_hex_auth_file()
-            or self._from_external_auth_files()
-            or self._from_ide_state_vscdb()
-            or (self._from_os_keychain() if self.allow_keychain else None)
-        )
+        if self._explicit_auth_file:
+            cred = (
+                self._from_hex_auth_file()
+                or self._from_env()
+                or self._from_external_auth_files()
+                or self._from_ide_state_vscdb()
+                or (self._from_os_keychain() if self.allow_keychain else None)
+            )
+        else:
+            cred = (
+                self._from_env()
+                or self._from_hex_auth_file()
+                or self._from_external_auth_files()
+                or self._from_ide_state_vscdb()
+                or (self._from_os_keychain() if self.allow_keychain else None)
+            )
         if cred is None:
             return None
 
@@ -605,7 +615,7 @@ class AntigravityModelProvider(ModelProvider):
     def __init__(
         self,
         *,
-        model_id: str = "gemini-3.5-pro",
+        model_id: str = "gemini-2.5-pro",
         oauth_manager: AntigravityOAuthManager | None = None,
         access_token: str | None = None,
         refresh_token: str | None = None,
@@ -648,7 +658,7 @@ class AntigravityModelProvider(ModelProvider):
             if norm.lower().startswith(prefix):
                 norm = norm[len(prefix) :]
                 break
-        return norm or "gemini-3.5-pro"
+        return norm or "gemini-2.5-pro"
 
     def _get_active_credential(self) -> AntigravityCredential | None:
         if self._explicit_cred is not None:
@@ -871,6 +881,26 @@ class AntigravityModelProvider(ModelProvider):
         t0 = time.perf_counter()
         status_code, resp_bytes = self._execute_http(url, headers, body_bytes)
         latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        # Handle HTTP 401 unauthenticated with automatic refresh token retry
+        if status_code == 401 and cred.refresh_token:
+            try:
+                refreshed_cred = self.oauth_manager.refresh_access_token(cred)
+                self.oauth_manager.save_credential(refreshed_cred)
+                self._explicit_cred = refreshed_cred
+                new_url, new_headers, new_body = self._build_request(
+                    clean_prompt,
+                    access_token=refreshed_cred.access_token,
+                    project_id=project_id,
+                    system_prompt=clean_system,
+                    cacheable_prefix=clean_prefix,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stop_sequences=stop_sequences,
+                )
+                status_code, resp_bytes = self._execute_http(new_url, new_headers, new_body)
+            except Exception:
+                pass
 
         # Handle HTTP 429 quota exhaustion with reset delay extraction
         if status_code == 429:

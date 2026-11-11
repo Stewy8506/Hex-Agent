@@ -313,7 +313,7 @@ EMBLEM_ART: tuple[str, ...] = (
     "         ▀▄▄          ▄▄▀         ",
     "           ▀▀▄▄    ▄▄▀▀           ",
     "              ▀▀▀▀▀▀              ",
-    "          ───═══╬═══───           ",
+    "         ───═══╬═══───            ",
 )
 
 TOOL_CATEGORY_MAP: dict[str, str] = {
@@ -647,7 +647,7 @@ def render_hermes_splash(
     orchestrator: Any = None,
     *,
     skin_name: str = "amber",
-    model_id: str = "gemini-3.5-pro",
+    model_id: str = "gemini-2.5-pro",
     compressor_mode: str = "local",
     workspace_root: Path | str | None = None,
     session_id: str | None = None,
@@ -807,7 +807,7 @@ def render_hermes_splash(
 
 def render_status_bar(
     *,
-    model_id: str = "gemini-3.5-pro",
+    model_id: str = "gemini-2.5-pro",
     compressor_mode: str = "local",
     cow_backend: str = "apfs_clone",
     tokens_in: int = 0,
@@ -1773,6 +1773,32 @@ class HexConsole:
             task = apr_res.get("task") if isinstance(apr_res, dict) else None
             if not task:
                 return
+        except Exception as exc:
+            spinner.stop()
+            from .providers.base import ProviderUnavailableError
+
+            is_auth_error = "401" in str(exc) or "UNAUTHENTICATED" in str(exc)
+            err_title = (
+                "Model Provider Error"
+                if isinstance(exc, ProviderUnavailableError) or is_auth_error
+                else "Execution Error"
+            )
+
+            def _col(txt: str, fg: tuple[int, int, int] | None = None, bold: bool = False) -> str:
+                return colorize_rgb(txt, fg=fg, bold=bold)
+
+            print()
+            print(_col(f"✖ {err_title}: {exc}", fg=self.skin.danger_rgb, bold=True))
+            if is_auth_error:
+                print(_col("  Your authentication credentials are invalid or expired.", fg=self.skin.category_rgb))
+                print(_col("  Options to resolve:", fg=self.skin.muted_rgb))
+                print(_col("    • Re-authenticate Antigravity: hex auth antigravity --auth-url", fg=self.skin.category_rgb))
+                print(_col("    • Re-run setup wizard:         hex onboard", fg=self.skin.category_rgb))
+                print(_col("    • Switch model provider:       /model (anthropic / openai / gemini / local)", fg=self.skin.category_rgb))
+            else:
+                print(_col("  Tip: Type /model to inspect active provider, or /help for commands.", fg=self.skin.muted_rgb))
+            print()
+            return
         finally:
             spinner.stop()
 
