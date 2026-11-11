@@ -402,3 +402,8 @@ class Harness2ControlledAdapter:
                 ),
             )
             self.ledger.conn.commit()
+
+
+# Re-export OrchestratorBenchmarkAdapter for Stage 5 benchmark evaluation
+from .harness2_adapter import OrchestratorBenchmarkAdapter
+
