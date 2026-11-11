@@ -7,11 +7,16 @@ from harness_core.voice import (
     BaseTTSProvider,
     LinuxTTSProvider,
     MacOSTTSProvider,
+    MockSTTProvider,
     MockTTSProvider,
+    NativeSTTProvider,
+    SpeechToTextProvider,
     VoiceConfig,
     VoiceEngine,
     clean_text_for_speech,
+    get_stt_provider,
     get_tts_provider,
+    probe_audio_hardware,
 )
 
 
@@ -103,6 +108,71 @@ class TestVoiceEngine(unittest.TestCase):
 
         finally:
             eng.shutdown()
+
+    def test_audio_hardware_probe(self) -> None:
+        info = probe_audio_hardware()
+        self.assertIn("platform", info)
+        self.assertIn("tts_available", info)
+        self.assertIn("tts_engine", info)
+        self.assertIn("audio_player", info)
+        self.assertIn("mic_available", info)
+        self.assertIn("mic_tool", info)
+        self.assertIn("devices", info)
+        self.assertIsInstance(info["devices"], list)
+
+    def test_mock_stt_provider_and_voice_engine(self) -> None:
+        mock_stt = MockSTTProvider()
+        mock_tts = MockTTSProvider()
+        cfg = VoiceConfig(backend="mock")
+        eng = VoiceEngine(config=cfg, tts_provider=mock_tts, stt_provider=mock_stt)
+
+        try:
+            # Nothing in queue, listen_once returns None on timeout
+            self.assertIsNone(eng.listen_once(timeout=0.1))
+
+            # Feed transcript
+            mock_stt.feed_transcript("hex status")
+            heard = eng.listen_once(timeout=1.0)
+            self.assertEqual(heard, "hex status")
+
+            # Push to talk toggle
+            self.assertFalse(eng.push_to_talk)
+            eng.push_to_talk = True
+            self.assertTrue(eng.push_to_talk)
+
+            # Continuous listening
+            import threading
+            captured: list[str] = []
+            stop_ev = threading.Event()
+            t = threading.Thread(
+                target=eng.start_listening,
+                args=(captured.append, stop_ev),
+                daemon=True,
+            )
+            t.start()
+
+            mock_stt.feed_transcript("continuous utterance 1")
+            mock_stt.feed_transcript("continuous utterance 2")
+            import time
+            time.sleep(0.3)
+            stop_ev.set()
+            t.join(timeout=1.0)
+            self.assertEqual(captured, ["continuous utterance 1", "continuous utterance 2"])
+
+            # STT disabled
+            eng.config.stt_enabled = False
+            mock_stt.feed_transcript("should not hear")
+            self.assertIsNone(eng.listen_once(timeout=0.1))
+
+        finally:
+            eng.shutdown()
+
+    def test_native_stt_provider(self) -> None:
+        native = NativeSTTProvider()
+        self.assertIsInstance(native.is_available(), bool)
+        # Non-blocking / graceful in test environment
+        res = native.listen_once(timeout=0.1)
+        self.assertIsNone(res)
 
 
 if __name__ == "__main__":

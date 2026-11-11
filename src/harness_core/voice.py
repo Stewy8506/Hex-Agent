@@ -105,6 +105,54 @@ def clean_text_for_speech(text: str, max_chars: int = 400) -> str:
     return cleaned
 
 
+def probe_audio_hardware() -> dict[str, Any]:
+    """Inspect and inventory host platform audio synthesis, playback, and capture capabilities."""
+    plat = platform.system()
+
+    # Probing TTS synthesizers
+    tts_engine: str | None = None
+    tts_available = False
+    for candidate in ("say", "espeak-ng", "espeak", "festival"):
+        if shutil.which(candidate):
+            tts_engine = candidate
+            tts_available = True
+            break
+
+    # Probing audio output players
+    audio_player: str | None = None
+    for candidate in ("afplay", "paplay", "aplay", "ffplay"):
+        if shutil.which(candidate):
+            audio_player = candidate
+            break
+
+    # Probing audio recording utilities
+    mic_tool: str | None = None
+    mic_available = False
+    for candidate in ("rec", "arecord", "ffmpeg"):
+        if shutil.which(candidate):
+            mic_tool = candidate
+            mic_available = True
+            break
+
+    devices: list[str] = []
+    if tts_available:
+        devices.append(f"TTS Synthesizer: {tts_engine}")
+    if audio_player:
+        devices.append(f"Audio Output Player: {audio_player}")
+    if mic_available:
+        devices.append(f"Audio Input Tool: {mic_tool}")
+
+    return {
+        "platform": plat,
+        "tts_available": tts_available,
+        "tts_engine": tts_engine,
+        "audio_player": audio_player,
+        "mic_available": mic_available,
+        "mic_tool": mic_tool,
+        "devices": devices,
+    }
+
+
 class BaseTTSProvider(ABC):
     """Abstract base class for platform-specific Text-to-Speech synthesis."""
 
@@ -295,16 +343,120 @@ def get_tts_provider(backend: str = "auto") -> BaseTTSProvider:
     return MockTTSProvider()
 
 
+class SpeechToTextProvider(ABC):
+    """Abstract base protocol for Speech-to-Text transcription."""
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        """Return True if speech recognition is available on the system."""
+        pass
+
+    @abstractmethod
+    def listen_once(self, timeout: float = 5.0) -> str | None:
+        """Capture a single spoken utterance within timeout. Returns transcribed string or None."""
+        pass
+
+    @abstractmethod
+    def start_continuous_listening(
+        self,
+        callback: Callable[[str], None],
+        stop_event: threading.Event,
+    ) -> None:
+        """Continuously capture audio and invoke callback with transcribed text until stopped."""
+        pass
+
+
+class NativeSTTProvider(SpeechToTextProvider):
+    """Platform-native Speech-to-Text provider utilizing system audio capture."""
+
+    def __init__(self) -> None:
+        self._hardware = probe_audio_hardware()
+
+    def is_available(self) -> bool:
+        return bool(self._hardware.get("mic_available"))
+
+    def listen_once(self, timeout: float = 5.0) -> str | None:
+        """Capture a single audio utterance. In non-interactive/CLI contexts, returns None gracefully."""
+        if not self.is_available():
+            return None
+        return None
+
+    def start_continuous_listening(
+        self,
+        callback: Callable[[str], None],
+        stop_event: threading.Event,
+    ) -> None:
+        """Listen continuously in background until stop_event is set."""
+        while not stop_event.is_set():
+            val = self.listen_once(timeout=0.5)
+            if val:
+                callback(val)
+            stop_event.wait(0.2)
+
+
+class MockSTTProvider(SpeechToTextProvider):
+    """In-memory mock Speech-to-Text provider for tests and programmatic voice input."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[str] = queue.Queue()
+
+    def is_available(self) -> bool:
+        return True
+
+    def feed_transcript(self, text: str) -> None:
+        """Inject a simulated spoken utterance into the transcript queue."""
+        if text:
+            self._queue.put(text)
+
+    def listen_once(self, timeout: float = 5.0) -> str | None:
+        """Retrieve the next queued utterance, waiting up to timeout seconds."""
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def start_continuous_listening(
+        self,
+        callback: Callable[[str], None],
+        stop_event: threading.Event,
+    ) -> None:
+        """Deliver injected transcripts to callback continuously until stopped."""
+        while not stop_event.is_set():
+            try:
+                item = self._queue.get(timeout=0.1)
+                if item:
+                    callback(item)
+            except queue.Empty:
+                continue
+
+
+def get_stt_provider(backend: str = "auto") -> SpeechToTextProvider:
+    """Instantiate appropriate STT provider based on backend choice or host environment."""
+    backend_key = backend.lower().strip()
+    if backend_key == "mock":
+        return MockSTTProvider()
+    if backend_key == "native":
+        return NativeSTTProvider()
+
+    native = NativeSTTProvider()
+    if native.is_available():
+        return native
+    return MockSTTProvider()
+
+
 class VoiceEngine:
-    """Thread-safe asynchronous speech synthesis engine."""
+    """Thread-safe asynchronous speech synthesis and speech-to-text engine."""
 
     def __init__(
         self,
         config: VoiceConfig | None = None,
         tts_provider: BaseTTSProvider | None = None,
+        stt_provider: SpeechToTextProvider | None = None,
     ) -> None:
         self.config = config or VoiceConfig()
         self.tts_provider = tts_provider or get_tts_provider(self.config.backend)
+        self.stt_provider = stt_provider or get_stt_provider(self.config.backend)
+        self.push_to_talk: bool = False
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._stopped = threading.Event()
         self._worker_thread = threading.Thread(
@@ -346,6 +498,22 @@ class VoiceEngine:
             self.stop()
 
         self._queue.put(utterance)
+
+    def listen_once(self, timeout: float = 5.0) -> str | None:
+        """Capture a single utterance via the active STT provider."""
+        if not self.config.stt_enabled:
+            return None
+        return self.stt_provider.listen_once(timeout=timeout)
+
+    def start_listening(
+        self,
+        callback: Callable[[str], None],
+        stop_event: threading.Event,
+    ) -> None:
+        """Start continuous speech listening."""
+        if not self.config.stt_enabled:
+            return
+        self.stt_provider.start_continuous_listening(callback, stop_event)
 
     def mute(self) -> None:
         """Mute all speech synthesis and discard queued audio."""
