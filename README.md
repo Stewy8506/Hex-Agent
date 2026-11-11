@@ -6,7 +6,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.3.0-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-390%2B%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](AUDIT_REPORT.md)
+[![Tests](https://img.shields.io/badge/tests-415%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](AUDIT_REPORT.md)
 [![Antigravity Quota](https://img.shields.io/badge/day--1%20quota-Google%20Antigravity%20OAuth-4285F4?style=flat-square&logo=google&logoColor=white)](src/harness_core/providers/antigravity_provider.py)
 [![Security Gate](https://img.shields.io/badge/security-NVIDIA%20SkillSpector-76b900?style=flat-square&logo=nvidia&logoColor=white)](vendor/skillspector/README.md)
 [![AST & Memory](https://img.shields.io/badge/AST%20%2B%20memory-Graphify%20(71.5x%20compression)-00f5d4?style=flat-square)](vendor/graphify/README.md)
@@ -66,24 +66,44 @@ cd Harness
 ./install.sh
 ```
 
-### 2. Link Your Day-1 Google Antigravity Quota, Diagnose & Initialize
+### 2. Zero-Friction First-Run Auto-Setup & Antigravity Quota
+
+If launching HEX on a clean machine without configured API keys, running bare `hex` (or `hex chat`) automatically intercepts boot and presents the **interactive terminal arrow-key setup wizard** (`↑`/`↓`, `[•]` selection, masked API keys):
+
+```text
+◈ Welcome to HEX — Autonomous AI Workbench
+  No model provider or API key was detected. Select your primary brain:
+
+  [•] Connect Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detect IDE session)
+  [ ] Enter Anthropic API Key (Claude 3.5 Sonnet / Opus)
+  [ ] Enter OpenAI API Key (GPT-4o / o1 / o3-mini)
+  [ ] Enter Google Gemini API Key (Gemini 2.5 Pro / Flash)
+  [ ] Use Local Offline Model (Apple Silicon MLX / Ollama — Zero egress)
+```
+
+The 4-step onboarding wizard configures:
+1. **Primary Model Brain & Auth**: Auto-detects local Google Antigravity OAuth sessions (`~/.gemini`), accepts Anthropic/OpenAI/Gemini keys with live validation, or sets local MLX/Ollama.
+2. **Autonomous Web Search Engine**: Zero-key DuckDuckGo (free, instant), Tavily Search API, or Brave Search API.
+3. **Remote Messaging & Bot Gateways**: Telegram Bot token + allowed user IDs, Discord Bot token + webhook, or Skip.
+4. **Machine Hardware & Isolation**: Auto-detects APFS clonefiles / Linux OverlayFS and sandbox profile.
+Credentials and configs are saved securely to `~/.hex/credentials.env` (chmod 0600) and `~/.hex/config.yaml`, and injected into `os.environ` in real time.
 
 ```bash
-# 1. Interactive onboarding wizard (auto-detects Apple Silicon M4 MLX, CoW drivers & Antigravity OAuth)
+# Explicitly re-run interactive onboarding at any time:
 hex onboard
 
-# 2. Import local Antigravity IDE OAuth session (or run --auth-url for browser PKCE login) & inspect live quota
+# Import local Antigravity IDE OAuth session & inspect live quota windows:
 hex auth antigravity --import-ide --status
 hex quota
 
-# 3. Run 8-category system health diagnostics & auto-remediate any missing directories/configs
+# Run 8-category system health diagnostics & auto-remediate missing dirs/configs:
 hex doctor --fix
 
-# 4. Build the persistent polyglot AST & dependency cache (.hex/graph.json)
+# Build persistent polyglot AST & dependency cache (.hex/graph.json):
 hex init .
 
-# 5. Launch the 24-bit TrueColor interactive TUI cockpit (just run 'hex' like Hermes)
-hex --skin amber --provider antigravity
+# Launch the 24-bit TrueColor interactive TUI cockpit (or just run 'hex'):
+hex --skin amber
 ```
 
 ### 3. Dispatch Autonomous Tasks, Search History, or Inspect Recipes
@@ -266,7 +286,7 @@ hex
 
 ### R0–R4 Default-Deny Tool Gateway & NVIDIA SkillSpector
 - **R0 (Read-Only):** `list_files`, `read_file` — Auto-approved, Fast-Path eligible (`<15ms`), 0ms journal cached.
-- **R1 (Scoped Analysis):** `query_graphify` — Auto-approved inside active workspace.
+- **R1 (Scoped Analysis & Research):** `query_graphify`, `web_search` — Auto-approved AST analysis and autonomous multi-engine web search (DuckDuckGo zero-key default, Tavily, Brave).
 - **R2 (Scoped Workspace Write / Test):** `write_file`, `run_tests` — Isolated inside Copy-on-Write clone; triggers pre-flight AST blast-radius & circular import check + auto-detected `hex recipe` test runner.
 - **R3 (External Egress / Git Push):** `git_push_remote`, external MCP mutations — Secret scrubber (`redact_secrets`) + mandatory human approval via TUI `[y/n/d/s/q]` or interactive Telegram/Discord webhook cards (`/v1/approvals/{id}:decide`).
 - **R4 (Destructive / Policy Mutation):** `modify_system_policy`, protected files (`policy.yaml`, `.env`, `secrets.json`) — **Hard-blocked by default** (`PolicyBlockedError`).
@@ -294,19 +314,22 @@ hex
 Every architectural invariant in [`PRD.md`](PRD.md) and [`HERMES_ANALYSIS.md`](HERMES_ANALYSIS.md) is backed by hermetic unit, integration, and stress tests:
 
 ```bash
-# 1. Full repository test suite (390+ tests across 27 test modules, 0 regressions)
+# 1. Full repository test suite (415 tests across 28 test modules, 100% green, 0 regressions)
 .venv/bin/python -m unittest discover -s tests -p "test_*.py"
 
 # 2. Authoritative 5-Stage PRD Section 16 Acceptance Suite
 .venv/bin/python -m unittest tests/test_harness_stages.py -v
 
-# 3. Graphify Efficiency, Polyglot AST, Surgical Slicing & Work-Memory Reflection Suite
+# 3. Interactive UI Selector, Web Search & Auto-Setup Suite
+.venv/bin/python -m unittest tests/test_ui_selector_and_web_search.py tests/test_auto_setup_and_polish.py -v
+
+# 4. Graphify Efficiency, Polyglot AST, Surgical Slicing & Work-Memory Reflection Suite
 .venv/bin/python -m unittest tests/test_graphify_efficiency.py -v
 
-# 4. Google Antigravity OAuth & Quota-Backed Provider Suite
+# 5. Google Antigravity OAuth & Quota-Backed Provider Suite
 .venv/bin/python -m unittest tests/test_antigravity_provider.py -v
 
-# 5. Doctor Diagnostics, Multi-Framework Recipes, FTS5 Search & Zip-Slip Safe Backup
+# 6. Doctor Diagnostics, Multi-Framework Recipes, FTS5 Search & Zip-Slip Safe Backup
 .venv/bin/python -m unittest tests/test_doctor_and_recipes.py tests/test_search_and_backup.py -v
 ```
 
