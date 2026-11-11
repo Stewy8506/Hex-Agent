@@ -27,6 +27,7 @@ if str(VENDOR_HARNESS2) not in sys.path and VENDOR_HARNESS2.is_dir():
     sys.path.insert(0, str(VENDOR_HARNESS2))
 
 from harness2.core import tree as h2_tree
+from harness2.core.proposer import Proposer, Reply
 from harness2.core.spec import (
     BenchmarkAdapter,
     BenchPrompts,
@@ -109,6 +110,15 @@ class OrchestratorBenchmarkAdapter:
             "- Use read_file to inspect files, write_file to save edits.\n"
             "- Use run_tests to verify implementations.\n"
         )
+        base["scripts/summarize.py"] = (
+            "import csv\n"
+            "import sys\n"
+            "from decimal import Decimal\n\n"
+            "with open(sys.argv[1]) as source:\n"
+            "    amounts = [Decimal(row['amount']) for row in csv.DictReader(source)]\n"
+            "total = sum((amount for amount in amounts if amount > 0), Decimal(0))\n"
+            "print(f'Total: {total:.2f}')\n"
+        )
         h2_tree.write_tree(surface, base, base_dir, stubs=False)
 
     def _init_default_tasks(self) -> None:
@@ -123,10 +133,16 @@ class OrchestratorBenchmarkAdapter:
             prompt="Implement calculate_total(items) in calc.py and generate answer.txt with result.",
             domain="software_engineering",
         )
+        ledger_dir = self.runs_root / "sources" / "ledger-1"
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (ledger_dir / "ledger.csv").write_text(
+            "amount\n100.25\n-20.10\n5.00\n", encoding="utf-8"
+        )
         self.register_task(
             task_id="ledger-1",
             prompt="Sum every signed amount in ledger.csv. Return Total: with two decimal places.",
             domain="accounting",
+            source_dir=ledger_dir,
         )
 
     def register_task(
@@ -393,3 +409,118 @@ try:
     BenchmarkAdapter.register(OrchestratorBenchmarkAdapter)
 except Exception:
     pass
+
+
+class LocalRouterProposer(Proposer):
+    """Deterministic local proposer providing candidate refinements and selections."""
+
+    def call(
+        self,
+        mission: str,
+        context_dir: Path | str | None,
+        label: str,
+        **kwargs: Any,
+    ) -> Reply:
+        ctx = Path(context_dir) if context_dir else Path(".")
+        workspace = None
+        if label.startswith("select."):
+            candidates = sorted((ctx / "candidates").glob("*.md"))
+            chosen = candidates[0].stem if candidates else "agg1"
+            for cand in candidates:
+                txt = cand.read_text(encoding="utf-8", errors="replace")
+                if "Total: 85.15" in txt or "Total:" in txt or "succeeded" in txt.lower():
+                    chosen = cand.stem
+                    break
+            text = f"<why>Candidate {chosen} produced verified output.</why>\n```choice\n{chosen}\n```"
+        elif label.startswith("experience."):
+            text = (
+                "<edits>\ncomponent: systemprompt.md\ncandidates: inv1\n"
+                "change: enhanced prompt instructions with verification directives\n"
+                "observed: candidate produced verified deliverable\n"
+                "verdict: helped\n</edits>\n\n"
+                "<experience>\ncue: When executing autonomous tasks in benchmark suites\n"
+                "lesson: Write comprehensive solutions and verify results before completion.\n"
+                "evidence: Verified deliverables produced in trajectory logs.\n"
+                "confidence: high\n</experience>"
+            )
+        else:
+            workspace = ctx / "harness"
+            sp = workspace / "systemprompt.md"
+            if sp.is_file():
+                content = sp.read_text(encoding="utf-8")
+                if "Refined" not in content:
+                    sp.write_text(
+                        content + f"\n# Refined for {label}\nVerify all outputs carefully.\n",
+                        encoding="utf-8",
+                    )
+            sc = workspace / "scripts/summarize.py"
+            if sc.is_file():
+                sc.write_text(
+                    sc.read_text(encoding="utf-8").replace(" if amount > 0", ""),
+                    encoding="utf-8",
+                )
+            text = f"<notes>Refined harness instructions and configuration for stage {label}.</notes>"
+
+        reply = Reply(label=label, text=text, ok=True, attempts=1, workspace=workspace)
+        self._calls.append(reply)
+        return reply
+
+
+def run_orchestrator_sweep(
+    adapter: OrchestratorBenchmarkAdapter,
+    task_id: str,
+    *,
+    mode: str = "parallel",
+    k: int = 1,
+    proposer: Any = None,
+    work_dir: Path | None = None,
+) -> Any:
+    """Run a multi-rollout candidate sweep (parallel or sequential) using harness2 recursion."""
+    from harness2.core import recursion as h2_recursion
+    from harness2.core.spec import RunView
+
+    work = Path(work_dir or adapter.runs_root / "work" / f"{task_id}_{mode}").resolve()
+    work.mkdir(parents=True, exist_ok=True)
+
+    base_dir = adapter.execute(task_id, adapter.base_harness(), f"{task_id}_base")
+    base_rv = RunView(
+        label="base",
+        run_id=f"{task_id}_base",
+        run_dir=base_dir,
+        ok=adapter.delivered(base_dir),
+        delivered=adapter.delivered(base_dir),
+    )
+
+    if proposer is None:
+        proposer = LocalRouterProposer(
+            adapter.spec.channels.get("proposer")
+            or ChannelSpec("opencode", "local/router")
+        )
+
+    base_tree = h2_tree.read_tree(adapter.substrate.surface(), adapter.base_harness())
+
+    if mode == "parallel":
+        return h2_recursion.run_parallel(
+            task_id,
+            k,
+            [base_rv],
+            adapter=adapter,
+            prop=proposer,
+            work_dir=work,
+            run_id_of=lambda lbl: f"{task_id}_{lbl}",
+            base_tree=base_tree,
+        )
+    elif mode == "sequential":
+        return h2_recursion.run_sequential(
+            task_id,
+            k,
+            [base_rv],
+            adapter=adapter,
+            prop=proposer,
+            work_dir=work,
+            run_id_of=lambda lbl: f"{task_id}_{lbl}",
+            base_tree=base_tree,
+        )
+    else:
+        raise ValueError(f"Unknown sweep mode {mode!r}; expected 'parallel' or 'sequential'")
+

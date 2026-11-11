@@ -175,6 +175,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("harness2-demo", help="Run a gated Harness2 Propose-Probe-Compose refinement verification")
 
+    p_h2_eval = sub.add_parser("harness2-eval", help="Run multi-rollout Propose-Probe-Compose sweep via OrchestratorBenchmarkAdapter")
+    p_h2_eval.add_argument("--task-id", default="demo-1", help="Task ID to evaluate")
+    p_h2_eval.add_argument("--mode", choices=["parallel", "sequential"], default="parallel", help="Recursion execution mode")
+    p_h2_eval.add_argument("--k", type=int, default=1, help="Number of candidate iterations / width")
+    p_h2_eval.add_argument("--runs-root", default=None, help="Root directory for rollout executions and logs")
+    p_h2_eval.add_argument("--json", action="store_true", help="Output results as JSON")
+
     p_wrk = sub.add_parser("worker", help="Start standalone distributed worker daemon")
     p_wrk.add_argument("--worker-id", default=None, help="Worker ID (defaults to hostname-hash)")
     p_wrk.add_argument("--machine-class", choices=["auto", "m4_air", "desktop_gpu", "server"], default="auto")
@@ -834,6 +841,34 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(res, indent=2, default=str))
         return 0
+
+    if args.cmd == "harness2-eval":
+        from .harness2_adapter import OrchestratorBenchmarkAdapter, run_orchestrator_sweep
+
+        runs_root = Path(args.runs_root) if args.runs_root else (orch.data_dir / "benchmarks")
+        adapter = OrchestratorBenchmarkAdapter(orch, runs_root=runs_root)
+        res = run_orchestrator_sweep(
+            adapter=adapter,
+            task_id=args.task_id,
+            mode=args.mode,
+            k=args.k,
+        )
+        if args.json:
+            print(json.dumps(res.to_dict(), indent=2, default=str))
+        else:
+            print(f"\n=======================================================")
+            print(f" Google Research Harness² Sweep Evaluation: {args.task_id}")
+            print(f"=======================================================")
+            print(f" Mode:           {res.mode.upper()}")
+            print(f" Task ID:        {res.task_id}")
+            print(f" Width (k):      {res.k}")
+            print(f" Status:         {'SUCCESS' if res.ok else 'FAILED'}")
+            print(f" Stages Run:     {len(res.stages)}")
+            print(f" Winning Finals: {', '.join(res.finals) if res.finals else 'None'}")
+            print(f" Fallbacks:      {len(res.fell_back)}")
+            print(f" Total Rollouts: {len(res.rollouts)}")
+            print(f"=======================================================\n")
+        return 0 if res.ok else 1
 
     if args.cmd == "worker":
         from .worker_daemon import DirectLedgerWorkerClient, RestWorkerClient, WorkerDaemon
