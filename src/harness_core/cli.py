@@ -14,6 +14,7 @@ Commands:
 - `hex harness2-demo`: Run a live Propose-Probe-Compose cycle through the gated `vendor/harness2` adapter.
 - `hex worker`: Start standalone distributed worker daemon.
 - `hex chat` / `hex tui`: Start interactive TUI pair-programming console with Hermes-style splash & skin engine.
+- `hex voice`: Start interactive hands-free voice pair-programming console.
 """
 
 from __future__ import annotations
@@ -95,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("-Q", "--quiet", action="store_true", help="Quiet mode: suppress startup banner and spinner")
     parser.add_argument("--no-stream", action="store_true", help="Disable live token streaming")
+    parser.add_argument("--voice", action="store_true", help="Enable hands-free voice mode and spoken agent commentary")
+    parser.add_argument("--voice-name", default=None, help="TTS voice name override")
+    parser.add_argument("--speech-rate", type=int, default=190, help="Speech rate in words per minute (default: 190)")
     sub = parser.add_subparsers(dest="cmd", required=False)
 
     p_setup = sub.add_parser("setup", aliases=["onboard"], help="Run interactive setup wizard for hardware & configuration (alias: hex onboard)")
@@ -188,7 +192,23 @@ def main(argv: list[str] | None = None) -> int:
     p_chat.add_argument("--skin", default=argparse.SUPPRESS, choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
     p_chat.add_argument("-Q", "--quiet", action="store_true", default=argparse.SUPPRESS, help="Quiet mode: suppress startup banner and spinner")
     p_chat.add_argument("--no-stream", action="store_true", default=argparse.SUPPRESS, help="Disable live token streaming")
+    p_chat.add_argument("--voice", action="store_true", default=argparse.SUPPRESS, help="Enable hands-free voice mode and spoken agent commentary")
+    p_chat.add_argument("--voice-name", default=argparse.SUPPRESS, help="TTS voice name override")
+    p_chat.add_argument("--speech-rate", type=int, default=argparse.SUPPRESS, help="Speech rate in words per minute")
     p_chat.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
+
+    p_voice = sub.add_parser("voice", help="Start interactive hands-free voice pair-programming console")
+    p_voice.add_argument("--project", default=argparse.SUPPRESS, help="Project ID")
+    p_voice.add_argument("--workspace", default=argparse.SUPPRESS, help="Workspace path (defaults to repository root)")
+    p_voice.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=argparse.SUPPRESS, help="Cloud reasoner provider override")
+    p_voice.add_argument("--model", default=argparse.SUPPRESS, help="Model routing profile override")
+    p_voice.add_argument("--voice-name", default=None, help="TTS voice name (e.g., Samantha, Daniel)")
+    p_voice.add_argument("--speech-rate", type=int, default=190, help="Speech rate in words per minute (default: 190)")
+    p_voice.add_argument("--muted", action="store_true", default=False, help="Start voice console in muted state")
+    p_voice.add_argument("--skin", default=argparse.SUPPRESS, choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
+    p_voice.add_argument("-Q", "--quiet", action="store_true", default=argparse.SUPPRESS, help="Quiet mode: suppress startup banner and spinner")
+    p_voice.add_argument("--no-stream", action="store_true", default=argparse.SUPPRESS, help="Disable live token streaming")
+    p_voice.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
     p_gw = sub.add_parser("gateway", help="Manage bidirectional chat gateways (Telegram & Discord)")
     p_gw_sub = p_gw.add_subparsers(dest="gateway_cmd", required=True)
@@ -502,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # Auto-intercept unconfigured launch when starting interactive console without credentials
-    if (args.cmd is None or args.cmd in ("chat", "tui")) and not has_active_credentials():
+    if (args.cmd is None or args.cmd in ("chat", "tui", "voice")) and not has_active_credentials():
         if sys.stdin.isatty() and not getattr(args, "quiet", False) and not is_test_runner:
             print("\n◈ Welcome to HEX. No model provider or API key was detected.")
             print("  Launching interactive auto-setup sequence...\n")
@@ -530,7 +550,7 @@ def main(argv: list[str] | None = None) -> int:
             registry.touch_active(active_project.path)
         else:
             if (
-                (args.cmd is None or args.cmd in ("chat", "tui"))
+                (args.cmd is None or args.cmd in ("chat", "tui", "voice"))
                 and sys.stdin.isatty()
                 and not getattr(args, "quiet", False)
                 and not is_test_runner
@@ -593,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(orch.router.cloud_provider, "model_id"):
             orch.router.cloud_provider.model_id = args.model  # type: ignore[attr-defined]
 
-    if args.cmd is None or args.cmd in ("chat", "tui"):
+    if args.cmd is None or args.cmd in ("chat", "tui", "voice"):
         from .tui import HexConsole
 
         active_proj_id = (
@@ -601,6 +621,13 @@ def main(argv: list[str] | None = None) -> int:
             if (active_project and getattr(args, "project", "default") == "default")
             else getattr(args, "project", "default")
         )
+        voice_mode = args.cmd == "voice" or bool(getattr(args, "voice", False))
+        voice_name = getattr(args, "voice_name", None)
+        speech_rate = getattr(args, "speech_rate", 190)
+
+        if args.cmd == "voice" and not getattr(args, "quiet", False):
+            print("\n◈ HEX Hands-Free Voice Console Active (Type /voice for audio settings)\n")
+
         console = HexConsole(
             orch,
             project_id=active_proj_id,
@@ -609,7 +636,12 @@ def main(argv: list[str] | None = None) -> int:
             model_profile=getattr(args, "model", None),
             skin_name=getattr(args, "skin", "amber"),
             quiet=getattr(args, "quiet", False),
+            voice_enabled=voice_mode,
+            voice_name=voice_name,
+            speech_rate=speech_rate,
         )
+        if getattr(args, "muted", False):
+            console.voice_engine.mute()
         return console.start()
 
     if args.cmd == "init":
