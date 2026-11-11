@@ -1678,8 +1678,55 @@ class HarnessOrchestrator:
                 shutil.rmtree(o["workspace_path"], ignore_errors=True)
                 discarded.append(o["branch_label"])
 
+        reflected_experience: dict[str, str] | None = None
+        experience_entry_path: Path | None = None
         if winner:
             self.cow.clone_to_workspace(winner["workspace_path"], source_ws)
+            # Automatically distill contrastive speculative branch lesson into Harness2 Experience Library
+            if discarded:
+                exp_domain = task.get("domain") or constraints.get("domain") or "general"
+                loser_excerpts: list[str] = []
+                for o in outcomes:
+                    if not o["passed"]:
+                        ex = (o.get("verification_results") or {}).get("test_output_excerpt", "")[:160].replace("\n", " ")
+                        loser_excerpts.append(f"{o['branch_label']} failed ({ex or 'verification check failed'})")
+                contrast_str = "; ".join(loser_excerpts) if loser_excerpts else f"discarded { ', '.join(discarded) }"
+                reflected_experience = {
+                    "cue": f"When resolving speculative branches for '{task['goal'][:120]}'",
+                    "lesson": (
+                        f"Adopt strategy '{winner['branch_label']}' (tree SHA {winner['head_tree_sha'][:10]}) "
+                        f"which passed deterministic verification, avoiding {', '.join(discarded)}."
+                    ),
+                    "evidence": (
+                        f"Winning branch '{winner['branch_label']}' passed verification "
+                        f"(proof {winner['proof']['proof_id']}); contrast: {contrast_str}."
+                    ),
+                    "confidence": "high",
+                }
+                experience_entry_path = self.record_task_experience(
+                    task_id=task_id,
+                    domain=exp_domain,
+                    experience=reflected_experience,
+                    why=f"Speculative branch '{winner['branch_label']}' beat {len(discarded)} competing branch(es).",
+                    label=winner["branch_label"],
+                    run_id=winner["attempt_id"],
+                )
+                if experience_entry_path:
+                    self.ledger.record_event(
+                        task_id=task_id,
+                        event_type="HARNESS2_SPECULATIVE_EXPERIENCE_RECORDED",
+                        reason_code="SPECULATIVE_CONTRAST_LEARNED",
+                        attempt_id=winner["attempt_id"],
+                        workspace_tree_sha=winner["head_tree_sha"],
+                        payload={
+                            "domain": exp_domain,
+                            "winning_branch": winner["branch_label"],
+                            "discarded_branches": discarded,
+                            "experience": reflected_experience,
+                            "entry_path": str(experience_entry_path),
+                        },
+                    )
+
             final_task = self.ledger.transition_task(
                 task_id,
                 TaskState.SUCCEEDED,
@@ -1691,6 +1738,7 @@ class HarnessOrchestrator:
                     "winning_attempt_id": winner["attempt_id"],
                     "discarded_branches": discarded,
                     "proof_id": winner["proof"]["proof_id"],
+                    "experience_entry_path": str(experience_entry_path) if experience_entry_path else None,
                 },
             )
         else:
@@ -1706,4 +1754,6 @@ class HarnessOrchestrator:
             "winning_branch": winner["branch_label"] if winner else None,
             "branches": outcomes,
             "discarded_branches": discarded,
+            "experience": reflected_experience,
+            "experience_entry_path": str(experience_entry_path) if experience_entry_path else None,
         }

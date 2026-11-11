@@ -179,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     p_h2_eval.add_argument("--task-id", default="demo-1", help="Task ID to evaluate")
     p_h2_eval.add_argument("--mode", choices=["parallel", "sequential"], default="parallel", help="Recursion execution mode")
     p_h2_eval.add_argument("--k", type=int, default=1, help="Number of candidate iterations / width")
+    p_h2_eval.add_argument("--substrate", choices=["opencode", "codex"], default="opencode", help="Editable harness surface substrate (opencode or codex)")
+    p_h2_eval.add_argument("--proposer", choices=["local", "llm"], default="local", help="Proposer backend (deterministic local or live LLMRouterProposer)")
     p_h2_eval.add_argument("--runs-root", default=None, help="Root directory for rollout executions and logs")
     p_h2_eval.add_argument("--json", action="store_true", help="Output results as JSON")
 
@@ -856,12 +858,18 @@ def main(argv: list[str] | None = None) -> int:
         from .harness2_adapter import OrchestratorBenchmarkAdapter, run_orchestrator_sweep
 
         runs_root = Path(args.runs_root) if args.runs_root else (orch.data_dir / "benchmarks")
-        adapter = OrchestratorBenchmarkAdapter(orch, runs_root=runs_root)
+        adapter = OrchestratorBenchmarkAdapter(
+            orch,
+            runs_root=runs_root,
+            substrate=getattr(args, "substrate", "opencode"),
+        )
+        prop_arg = "llm" if getattr(args, "proposer", "local") == "llm" else None
         res = run_orchestrator_sweep(
             adapter=adapter,
             task_id=args.task_id,
             mode=args.mode,
             k=args.k,
+            proposer=prop_arg,
         )
         if args.json:
             print(json.dumps(res.to_dict(), indent=2, default=str))
@@ -870,13 +878,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f" Google Research Harness² Sweep Evaluation: {args.task_id}")
             print(f"=======================================================")
             print(f" Mode:           {res.mode.upper()}")
+            print(f" Substrate:      {adapter.substrate.surface().name}")
             print(f" Task ID:        {res.task_id}")
             print(f" Width (k):      {res.k}")
             print(f" Status:         {'SUCCESS' if res.ok else 'FAILED'}")
             print(f" Stages Run:     {len(res.stages)}")
             print(f" Winning Finals: {', '.join(res.finals) if res.finals else 'None'}")
+            if res.selection:
+                print(f" Selected Pick:  {res.selection.chosen_label} (id={res.selection.chosen_id})")
+            if res.experience:
+                print(f" Learned Lesson: {res.experience.get('lesson', 'N/A')}")
+            print(f" Cache Hits:     {res.cache_hits}")
             print(f" Fallbacks:      {len(res.fell_back)}")
             print(f" Total Rollouts: {len(res.rollouts)}")
+            if res.report_text:
+                print(f"-------------------------------------------------------")
+                print(res.report_text)
             print(f"=======================================================\n")
         return 0 if res.ok else 1
 

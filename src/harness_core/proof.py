@@ -193,11 +193,14 @@ class Harness2ControlledAdapter:
         base_tree: dict[str, str],
         created_by: str = "harness2_proposer",
         run_demo_probe: bool = False,
+        substrate_name: str | None = None,
     ) -> dict[str, Any]:
         """Validates a candidate harness tree via `harness2.core.tree`, scans any skills via
         SkillSpector, runs optional Propose-Probe-Compose demo verification, and registers the revision.
+        Supports both `opencode` (`systemprompt.md`) and `codex` (`AGENTS.md`) substrates.
         """
         from harness2.core import tree as h2_tree
+        from harness2.substrate.codex import CodexSubstrate
         from harness2.substrate.opencode import OpencodeSubstrate
 
         # 1. Enforce FR-061 Protected Policy & Credential Guard
@@ -210,7 +213,15 @@ class Harness2ControlledAdapter:
                 f"FR-061 violation: candidate attempted to modify protected policy/secret paths: {touched_protected}"
             )
 
-        substrate = OpencodeSubstrate()
+        # Auto-detect Codex (`AGENTS.md`) vs OpenCode (`systemprompt.md`) substrate if not explicitly passed
+        effective_sub = (substrate_name or "").strip().lower()
+        if not effective_sub:
+            if "AGENTS.md" in candidate_tree or "AGENTS.md" in base_tree:
+                effective_sub = "codex"
+            else:
+                effective_sub = "opencode"
+
+        substrate = CodexSubstrate() if effective_sub in ("codex", "cx") else OpencodeSubstrate()
         surface = substrate.surface()
 
         # 2. Validate against Harness2 editable surface rules (c1..c8)
