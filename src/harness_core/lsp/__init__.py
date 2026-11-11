@@ -11,10 +11,16 @@ from harness_core.lsp.client import (
     LSPTimeoutError,
     StdioLSPTransport,
 )
+from harness_core.lsp.registry import (
+    LanguageServerRegistry,
+    LanguageServerSpec,
+)
 
 __all__ = [
     "LSPMessage",
     "LSPResponseError",
     "LSPTimeoutError",
+    "LanguageServerRegistry",
+    "LanguageServerSpec",
     "StdioLSPTransport",
 ]
