@@ -1383,7 +1383,10 @@ class HexConsole:
                 print(f"  Compressor Mode:  {getattr(r, 'compressor_mode', 'local')}")
                 if hasattr(r, "budget_tracker"):
                     bt = r.budget_tracker
-                    max_usd = getattr(bt, "max_usd_per_task", 1.0)
+                    try:
+                        max_usd = float(getattr(bt, "max_usd_per_task", 1.0))
+                    except (TypeError, ValueError):
+                        max_usd = 1.0
                     print(f"  Task Ceiling:     ${max_usd:.2f} USD")
             print()
 
