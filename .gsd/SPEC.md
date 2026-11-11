@@ -84,3 +84,32 @@ Every implementation task must produce empirical verification output before mark
   - Push-to-talk (`Space` hold) and hands-free conversational loop.
   - Health check in `hex doctor` auditing microphone and audio playback availability.
 
+---
+
+## 5. Milestone M8: Deep Upstream Vendor Integration
+
+### 5.1 Google Research Harness² Deep Wiring (Phase 18)
+- **Experience Library Integration (`harness2.core.library`):**
+  - Wire `Library` into `HarnessOrchestrator` to record structured experience (`INDEX.md` and `EXPERIENCE.md`) containing cue, lesson, and empirical evidence upon successful task completion.
+  - Automatically query domain library before executing related tasks to inject proven lessons into agent context.
+- **Orchestrator Benchmark Adapter (`harness2.core.spec.BenchmarkAdapter`):**
+  - Implement `OrchestratorBenchmarkAdapter` satisfying `BenchmarkAdapter` protocol to run candidate harness evaluations through `HarnessOrchestrator` instead of `DemoAdapter`.
+  - Capture trajectories in standard `[ACTION]/[OBSERVATION]/[ERROR]` format and verify deliverables.
+- **Propose-Probe-Compose Sweeps:**
+  - Wire `harness2.core.recursion` (`run_parallel`, `run_sequential`) and `harness2.core.selection` to a dedicated CLI subcommand (`hex harness2-eval`).
+
+### 5.2 NVIDIA SkillSpector Behavioral AST & Live OSV Scanner (Phase 19)
+- **AST-Level Dangerous Call Detection:**
+  - Wire `skillspector.python_ast` and `skillspector.nodes.analyzers.behavioral_ast` into `SkillSpectorScanner` to parse Python code in skill bundles and detect eval/exec, dynamic imports, subprocess executions, deserialization attacks, and network socket calls.
+- **Live OSV.dev Batch Vulnerability Lookups:**
+  - Wire `skillspector.nodes.analyzers.osv_client` to perform live batch queries against `https://api.osv.dev/v1/querybatch` for skill package manifests with automatic offline cache fallback.
+- **YARA & Heavy Dependency Resilience:**
+  - Evaluate curated rules from `vendor/skillspector/src/skillspector/yara_rules/` when `yara-python` is present, while preserving fast regex scanning as the zero-dependency fallback.
+
+### 5.3 Graphify Upstream CLI & Tree-Sitter Adapter (Phase 20)
+- **Upstream CLI Runner (`GraphifyUpstreamRunner`):**
+  - Implement a pluggable runner executing `graphify run` via subprocess or ingesting `graphify-out/graph.json` from upstream tree-sitter extractions.
+- **Polyglot Graph Unification:**
+  - Merge upstream tree-sitter extracted nodes and edges into `ActiveGraphifyAdapter`, combining 33+ language AST extraction with our 0ms active blast-radius and architecture analysis.
+
+

@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-11  
-**Current Milestone:** M7 (Polyglot LSP Gateway & Real-Time Hands-Free Voice)  
-**Status:** Complete — All 17 Phases Delivered (491/491 tests green, 0 regressions)  
-**Active Phase:** All Phases (01–17) Complete  
-**Completed Plans:** All Plans (01-01 through 17-02) Complete  
+**Current Milestone:** M8 (Deep Upstream Vendor Integration)  
+**Status:** In Progress — Planning Phase 18 (Google Research Harness² Deep Wiring)  
+**Active Phase:** Phase 18 (Google Research Harness² Deep Wiring)  
+**Completed Plans:** Plans 01-01 through 17-02 Complete (491/491 tests green)  
 
 ---
 
@@ -280,9 +280,10 @@ All 5 Product Pillars and Hermes Parity enhancements are fully delivered, empiri
 
 ## 4. Next Actions
 
-- Milestone M7 (Phases 16 and 17) is 100% complete, verified, and shipping with 491/491 tests green.
-- Synchronize `README.md` with Phase 17 voice capabilities and full command tree documentation.
-- Maintain repository health and support user workflow operations.
+- Author Phase 18 plans (`18-01-PLAN.md`, `18-02-PLAN.md`) for Google Research Harness² Deep Wiring.
+- Execute Plan 18-01: Experience Library (`INDEX.md` / `EXPERIENCE.md`) integration into `HarnessOrchestrator`.
+- Execute Plan 18-02: `OrchestratorBenchmarkAdapter` & Propose-Probe-Compose task sweep runner.
+- Verify Phase 18 with empirical evidence and commit.
 
 
 
