@@ -1084,6 +1084,8 @@ class HexConsole:
             self._cmd_workers()
         elif cmd in ("/harness2", "/h2"):
             self._cmd_harness2()
+        elif cmd in ("/project", "/proj"):
+            self._cmd_project(arg)
         elif cmd in ("/skin", "/theme"):
             self._cmd_skin(arg)
         elif cmd in ("/banner", "/splash"):
@@ -1121,6 +1123,7 @@ class HexConsole:
             ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
             ("/harness2", "Run a gated Google Research Harness² Propose-Probe-Compose probe"),
             ("/skin [name]", "Switch TUI theme (amber, cyberpunk, matrix, nord, mono)"),
+            ("/project [list|switch]", "Inspect active project card, list workspaces, or switch context"),
             ("/banner", "Re-render the Hermes-style startup splash screen and status bar"),
             ("/clear", "Clear the terminal screen"),
             ("/quit, /exit", "Exit interactive console session"),
@@ -1637,6 +1640,83 @@ class HexConsole:
         self.skin_name = name
         print(f"{ANSI_GREEN}Skin updated to: {name} ({self.skin.description}){ANSI_RESET}")
 
+    def _cmd_project(self, arg: str = "") -> None:
+        from .project_registry import ProjectRegistry
+
+        registry = ProjectRegistry()
+        target = arg.strip()
+
+        if not target:
+            rec = registry.detect_enclosing_project(self.workspace_root)
+            proj_name = rec.name if rec else self.workspace_root.name
+            stack = rec.stack if rec else "generic"
+            data_dir = self.workspace_root / ".hex" / "data"
+            lessons_file = self.workspace_root / ".hex" / "reflections" / "LESSONS.md"
+            lessons_count = 0
+            if lessons_file.is_file():
+                try:
+                    lines = [
+                        line
+                        for line in lessons_file.read_text(encoding="utf-8").splitlines()
+                        if line.strip().startswith("- ") or line.strip().startswith("* ")
+                    ]
+                    lessons_count = len(lines)
+                except Exception:
+                    pass
+
+            print(f"\n{ANSI_BOLD}{ANSI_CYAN}Active Project Workspace:{ANSI_RESET}")
+            print(f"  Name:          {proj_name}")
+            print(f"  Path:          {self.workspace_root}")
+            print(f"  Stack:         {stack}")
+            print(f"  Lessons:       {lessons_count} recorded in .hex/reflections/LESSONS.md")
+            print(f"  Data Dir:      {data_dir if data_dir.is_dir() else getattr(self.orchestrator, 'data_dir', 'default')}")
+            print(f"  Config:        {self.workspace_root / '.hex' / 'config.yaml'}")
+            print()
+            return
+
+        if target in ("list", "ls"):
+            projects = registry.list_projects()
+            print(f"\n{ANSI_BOLD}{ANSI_CYAN}Registered Project Workspaces ({len(projects)}):{ANSI_RESET}")
+            if not projects:
+                print("  No projects registered yet. Use '/project switch <path>' or 'hex project add <path>'.")
+            else:
+                print(f"  {'PROJECT':<20} {'STACK':<10} {'TASKS':<8} {'LAST ACTIVE':<24} {'PATH'}")
+                print("  " + "-" * 78)
+                for p in projects:
+                    active_marker = " *" if str(Path(p.path).resolve()) == str(self.workspace_root.resolve()) else "  "
+                    print(f"{active_marker}{p.name:<20} {p.stack:<10} {p.task_count:<8} {p.last_active:<24} {p.path}")
+            print()
+            return
+
+        switch_target = target[7:].strip() if target.startswith("switch ") else target
+        rec = registry.get_project(switch_target)
+        if not rec and (Path(switch_target).exists() or Path(switch_target).is_dir()):
+            rec = registry.register_project(Path(switch_target).resolve())
+
+        if not rec:
+            print(f"{ANSI_RED}Project '{switch_target}' not found in registry. Type '/project list' to view registered projects.{ANSI_RESET}")
+            return
+
+        new_ws = Path(rec.path).resolve()
+        self.workspace_root = new_ws
+        self.project_id = rec.name
+        registry.touch_active(new_ws)
+
+        if hasattr(self.orchestrator, "graphify"):
+            self.orchestrator.graphify.workspace_root = new_ws
+            try:
+                self.orchestrator.graphify.build_or_refresh(new_ws)
+            except Exception:
+                pass
+
+        proj_data = new_ws / ".hex" / "data"
+        if proj_data.is_dir() and hasattr(self.orchestrator, "data_dir"):
+            self.orchestrator.data_dir = proj_data
+
+        print(f"\n{ANSI_GREEN}✓ Switched active project to '{rec.name}' ({rec.stack}){ANSI_RESET}")
+        print(f"  Workspace: {new_ws}")
+        print(f"  Config:    {rec.config_path}\n")
+
     def _cmd_clear(self) -> None:
         if os.name == "nt":
             os.system("cls")
@@ -1860,7 +1940,7 @@ class HexConsole:
                 print(_col("  Your authentication credentials are invalid or expired.", fg=self.skin.category_rgb))
                 print(_col("  Options to resolve:", fg=self.skin.muted_rgb))
                 print(_col("    • Re-authenticate Antigravity: hex auth antigravity --auth-url", fg=self.skin.category_rgb))
-                print(_col("    • Re-run setup wizard:         hex onboard", fg=self.skin.category_rgb))
+                print(_col("    • Re-run setup wizard:         hex setup", fg=self.skin.category_rgb))
                 print(_col("    • Switch model provider:       /model (anthropic / openai / gemini / local)", fg=self.skin.category_rgb))
             else:
                 print(_col("  Tip: Type /model to inspect active provider, or /help for commands.", fg=self.skin.muted_rgb))

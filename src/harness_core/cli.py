@@ -1,7 +1,8 @@
 """CLI Entrypoint (`hex`) for Owner Workflows and Debugging (PRD Sections 5, 8.1, 15).
 
 Commands:
-- `hex onboard`: Run interactive onboarding wizard for hardware discovery, model profile, and configuration.
+- `hex setup`: Run interactive onboarding wizard for hardware discovery, model profile, and configuration (alias: `hex onboard`).
+- `hex project`: Manage persistent global project registry and daily switching (`list`, `add`, `use`, `switch`).
 - `hex auth antigravity`: Discover, import, or authenticate Google Antigravity OAuth session for $0 Day-1 quota.
 - `hex quota`: Inspect live Google Antigravity model quota windows, remaining percentages, and reset timers.
 - `hex init`: Initialize local database, CoW snapshot store, and seed default repo skills.
@@ -96,10 +97,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-stream", action="store_true", help="Disable live token streaming")
     sub = parser.add_subparsers(dest="cmd", required=False)
 
-    p_onb = sub.add_parser("onboard", help="Run interactive onboarding wizard for hardware & configuration")
-    p_onb.add_argument("--config-dir", default=None, help="Custom configuration directory (defaults to ~/.hex)")
-    p_onb.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode using hardware defaults")
-    p_onb.add_argument("--defaults", dest="defaults_only", action="store_true", help="Accept all hardware auto-detected defaults")
+    p_setup = sub.add_parser("setup", aliases=["onboard"], help="Run interactive setup wizard for hardware & configuration (alias: hex onboard)")
+    p_setup.add_argument("--config-dir", default=None, help="Custom configuration directory (defaults to ~/.hex)")
+    p_setup.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode using hardware defaults")
+    p_setup.add_argument("--defaults", dest="defaults_only", action="store_true", help="Accept all hardware auto-detected defaults")
+
+    p_proj = sub.add_parser("project", help="Manage project workspace registry and daily switching")
+    p_proj_sub = p_proj.add_subparsers(dest="project_cmd", required=False)
+
+    p_proj_list = p_proj_sub.add_parser("list", help="List all registered project workspaces")
+    p_proj_list.add_argument("--json", action="store_true", help="Output raw JSON array of project records")
+
+    p_proj_add = p_proj_sub.add_parser("add", help="Register a directory as a project workspace")
+    p_proj_add.add_argument("path", help="Path to project directory")
+    p_proj_add.add_argument("--name", default=None, help="Optional custom project name")
+    p_proj_add.add_argument("--json", action="store_true", help="Output raw JSON project record")
+
+    p_proj_use = p_proj_sub.add_parser("use", aliases=["switch"], help="Switch active project workspace")
+    p_proj_use.add_argument("target", help="Project name or directory path")
+    p_proj_use.add_argument("--json", action="store_true", help="Output raw JSON project record")
 
     p_auth = sub.add_parser("auth", help="Manage Google Antigravity OAuth credentials and local IDE token import")
     p_auth.add_argument("provider", nargs="?", default="antigravity", choices=["antigravity"], help="Target auth provider")
@@ -287,16 +303,68 @@ def main(argv: list[str] | None = None) -> int:
 
     load_hex_environment(config_dir=Path(args.config_dir) if getattr(args, "config_dir", None) else None)
 
-    if args.cmd == "onboard":
+    if args.cmd in ("setup", "onboard"):
         from .onboard import run_onboard_wizard
 
-        cfg_dir = Path(args.config_dir) if args.config_dir else None
+        cfg_dir = Path(args.config_dir) if getattr(args, "config_dir", None) else None
         run_onboard_wizard(
             config_dir=cfg_dir,
-            non_interactive=args.non_interactive,
-            defaults_only=args.defaults_only,
+            non_interactive=getattr(args, "non_interactive", False),
+            defaults_only=getattr(args, "defaults_only", False),
         )
         return 0
+
+    if args.cmd == "project":
+        from .project_registry import ProjectRegistry
+
+        registry = ProjectRegistry()
+        project_cmd = getattr(args, "project_cmd", None) or "list"
+        if project_cmd == "list":
+            projects = registry.list_projects()
+            if getattr(args, "json", False):
+                print(json.dumps([p.to_dict() for p in projects], indent=2))
+            else:
+                if not projects:
+                    print("No projects registered yet. Use 'hex project add <path>' or run 'hex init'.")
+                else:
+                    print(f"\nRegistered Projects ({len(projects)}):")
+                    print(f"{'PROJECT':<20} {'STACK':<10} {'TASKS':<8} {'LAST ACTIVE':<24} {'PATH'}")
+                    print("-" * 80)
+                    for p in projects:
+                        print(f"{p.name:<20} {p.stack:<10} {p.task_count:<8} {p.last_active:<24} {p.path}")
+                    print()
+            return 0
+
+        if project_cmd == "add":
+            target_path = Path(args.path).resolve()
+            rec = registry.register_project(target_path, name=getattr(args, "name", None))
+            if getattr(args, "json", False):
+                print(json.dumps(rec.to_dict(), indent=2))
+            else:
+                print(f"Registered project '{rec.name}' ({rec.stack}) at {rec.path}")
+            return 0
+
+        if project_cmd in ("use", "switch"):
+            rec = registry.get_project(args.target)
+            if not rec:
+                cand = Path(args.target).resolve()
+                if cand.is_dir():
+                    rec = registry.register_project(cand)
+            if not rec:
+                err_msg = f"Error: Project '{args.target}' not found in registry."
+                if getattr(args, "json", False):
+                    print(json.dumps({"status": "error", "error": err_msg}))
+                else:
+                    print(err_msg, file=sys.stderr)
+                return 1
+            registry.touch_active(rec.path)
+            if getattr(args, "json", False):
+                print(json.dumps(rec.to_dict(), indent=2))
+            else:
+                print(f"Active project set to '{rec.name}' ({rec.stack}) at {rec.path}")
+                print(f"  Configuration: {rec.config_path}")
+                print(f"  Last active:   {rec.last_active}")
+            return 0
 
     if args.cmd == "auth":
         from .providers.antigravity_provider import AntigravityCredential, AntigravityOAuthManager
@@ -414,7 +482,73 @@ def main(argv: list[str] | None = None) -> int:
             run_onboard_wizard(config_dir=cfg_dir)
             load_hex_environment(config_dir=cfg_dir, override=True)
 
-    orch = HarnessOrchestrator(args.data_dir, default_workspace=repo_root)
+    from .project_registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    explicit_ws = getattr(args, "workspace", None)
+    active_project = None
+    ws_root = repo_root
+
+    if explicit_ws:
+        ws_root = Path(explicit_ws).resolve()
+        active_project = registry.register_project(ws_root)
+        registry.touch_active(ws_root)
+    else:
+        active_project = registry.detect_enclosing_project(Path.cwd())
+        if active_project:
+            ws_root = Path(active_project.path)
+            registry.touch_active(active_project.path)
+        else:
+            if (
+                (args.cmd is None or args.cmd in ("chat", "tui"))
+                and sys.stdin.isatty()
+                and not getattr(args, "quiet", False)
+                and not is_test_runner
+            ):
+                projects = registry.list_projects()
+                options = []
+                for p in projects:
+                    options.append((p.path, f"{p.name} ({p.stack} • {p.path})"))
+                options.append(("__ADD__", "[+] Register an existing directory as project"))
+                options.append(("__INIT__", f"[★] Initialize current directory ({Path.cwd().name}) as project"))
+
+                from .ui_selector import select_option
+
+                chosen_idx = select_option(
+                    "What project do you want to work on today?",
+                    options,
+                    default_index=0,
+                )
+                chosen_key = options[chosen_idx][0]
+                if chosen_key == "__ADD__":
+                    entered_path = input("Enter project directory path: ").strip()
+                    if entered_path:
+                        ws_path = Path(entered_path).resolve()
+                        active_project = registry.register_project(ws_path)
+                        ws_root = Path(active_project.path)
+                        registry.touch_active(active_project.path)
+                    else:
+                        ws_root = repo_root
+                elif chosen_key == "__INIT__":
+                    from .onboard import init_project
+
+                    init_project(Path.cwd())
+                    active_project = registry.register_project(Path.cwd())
+                    ws_root = Path(active_project.path)
+                    registry.touch_active(active_project.path)
+                else:
+                    active_project = registry.get_project(chosen_key)
+                    ws_root = Path(active_project.path) if active_project else Path(chosen_key)
+                    if active_project:
+                        registry.touch_active(active_project.path)
+            else:
+                ws_root = repo_root
+
+    bound_data_dir = args.data_dir
+    if ws_root and (ws_root / ".hex" / "data").is_dir() and args.data_dir == default_dir:
+        bound_data_dir = str(ws_root / ".hex" / "data")
+
+    orch = HarnessOrchestrator(bound_data_dir, default_workspace=ws_root)
 
     if getattr(args, "provider", None):
         if args.provider == "local":
@@ -432,10 +566,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd is None or args.cmd in ("chat", "tui"):
         from .tui import HexConsole
 
+        active_proj_id = (
+            active_project.name
+            if (active_project and getattr(args, "project", "default") == "default")
+            else getattr(args, "project", "default")
+        )
         console = HexConsole(
             orch,
-            project_id=getattr(args, "project", "default"),
-            workspace_root=getattr(args, "workspace", None),
+            project_id=active_proj_id,
+            workspace_root=ws_root,
             stream=not getattr(args, "no_stream", False),
             model_profile=getattr(args, "model", None),
             skin_name=getattr(args, "skin", "amber"),
@@ -490,7 +629,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd in ("run", "exec"):
         from .git_autopilot import GitAutopilot, GitAutopilotConfig
 
-        ws_root = Path(args.workspace).resolve() if getattr(args, "workspace", None) else repo_root
+        ws_root = Path(args.workspace).resolve() if getattr(args, "workspace", None) else ws_root
+        if active_project:
+            registry.touch_active(ws_root, increment_tasks=True)
         req = TaskSubmitRequest(
             goal=args.goal,
             project_id=args.project,
@@ -587,11 +728,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "submit":
+        if active_project:
+            registry.touch_active(ws_root, increment_tasks=True)
         req = TaskSubmitRequest(
             goal=args.goal,
             project_id=args.project,
             execution_mode=args.mode,
-            workspace_root=args.workspace or str(repo_root),
+            workspace_root=args.workspace or str(ws_root),
         )
         task = orch.submit_and_run(req, auto_execute=True)
         proof = orch.ledger.get_proof_bundle(task["task_id"])

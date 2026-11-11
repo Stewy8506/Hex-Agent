@@ -52,8 +52,18 @@ class ProjectRegistry:
     def __init__(self, registry_file: Path | str | None = None) -> None:
         if registry_file is not None:
             self.registry_file = Path(registry_file)
+        elif os.environ.get("HEX_PROJECTS_REGISTRY"):
+            self.registry_file = Path(os.environ["HEX_PROJECTS_REGISTRY"])
         else:
-            self.registry_file = Path.home() / ".hex" / "projects.json"
+            cand = Path.home() / ".hex" / "projects.json"
+            try:
+                cand.parent.mkdir(parents=True, exist_ok=True)
+                test_file = cand.parent / ".perm_check"
+                test_file.touch()
+                test_file.unlink()
+                self.registry_file = cand
+            except (PermissionError, OSError):
+                self.registry_file = Path(".hex").resolve() / "projects.json"
         self._projects: dict[str, ProjectRecord] = {}
         self._load()
 

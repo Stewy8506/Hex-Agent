@@ -89,8 +89,13 @@ The 4-step onboarding wizard configures:
 Credentials and configs are saved securely to `~/.hex/credentials.env` (chmod 0600) and `~/.hex/config.yaml`, and injected into `os.environ` in real time.
 
 ```bash
-# Explicitly re-run interactive onboarding at any time:
-hex onboard
+# Explicitly run interactive setup wizard at any time (alias: hex onboard):
+hex setup
+
+# Manage persistent global project registry and switch workspace context:
+hex project list
+hex project add /path/to/my-repo
+hex project use my-repo
 
 # Import local Antigravity IDE OAuth session & inspect live quota windows:
 hex auth antigravity --import-ide --status
@@ -360,8 +365,9 @@ harness/
 │   ├── graphify.py                # Persistent polyglot AST indexer, surgical slicer & work-memory reflection
 │   ├── mcp_client.py              # Stdio & HTTP/SSE external MCP client with dynamic risk tagging
 │   ├── models.py                  # Canonical state machine & request/budget dataclasses
-│   ├── onboard.py                 # Interactive `hex onboard` hardware & Antigravity OAuth wizard
+│   ├── onboard.py                 # Interactive `hex setup` (alias `hex onboard`) hardware & OAuth wizard
 │   ├── orchestrator.py            # Multi-turn repair loop, DAG replanner & speculative worktrees
+│   ├── project_registry.py        # Persistent global project registry (`~/.hex/projects.json`) & daily switcher
 │   ├── proof.py                   # Proof-carrying artifact generator & Google Harness² loop
 │   ├── recipes.py                 # Multi-framework run-recipe auto-detector (Node, Python, Rust, Go, Docker)
 │   ├── router.py                  # Two-tier model router & AST-linked GovernedMemoryService

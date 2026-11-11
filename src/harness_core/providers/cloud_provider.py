@@ -614,7 +614,7 @@ class CloudModelProvider(ModelProvider):
     ) -> tuple[str, dict[str, str], bytes]:
         if not self.api_key and self.http_transport is None:
             raise ProviderUnavailableError(
-                f"No API key provided for {self.provider_type.value}. Run 'hex onboard' or set the appropriate environment variable."
+                f"No API key provided for {self.provider_type.value}. Run 'hex setup' or set the appropriate environment variable."
             )
 
         if self.provider_type == CloudProviderType.ANTHROPIC:
