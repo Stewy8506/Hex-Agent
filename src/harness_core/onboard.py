@@ -547,7 +547,7 @@ def detect_project_stack(repo_root: Path | str) -> dict[str, Any]:
     }
 
 
-def init_project(repo_root: Path | str, *, force: bool = False) -> dict[str, Any]:
+def init_project(repo_root: Path | str, *, name: str | None = None, force: bool = False) -> dict[str, Any]:
     """Initialize project-scoped .hex configuration and gitignore based on detected stack."""
     repo = Path(repo_root).resolve()
     hex_dir = repo / ".hex"
@@ -557,12 +557,14 @@ def init_project(repo_root: Path | str, *, force: bool = False) -> dict[str, Any
     config_file = hex_dir / "config.yaml"
     gitignore_file = hex_dir / ".gitignore"
 
+    proj_name = name or repo.name
+
     created = False
     if not config_file.exists() or force:
         config_yaml = f"""# HEX Project Configuration
 version: "1.0"
 project:
-  name: "{repo.name}"
+  name: "{proj_name}"
   stack: "{stack_info['stack']}"
 model:
   cloud_provider: "antigravity"
@@ -594,7 +596,7 @@ tmp/
     lessons_file = reflections_dir / "LESSONS.md"
     if not lessons_file.exists():
         lessons_file.write_text(
-            f"# Project Reflections & Work Memory: {repo.name}\n\n## Lessons Learned\n",
+            f"# Project Reflections & Work Memory: {proj_name}\n\n## Lessons Learned\n",
             encoding="utf-8",
         )
 
@@ -604,12 +606,12 @@ tmp/
     try:
         from .project_registry import ProjectRegistry
 
-        ProjectRegistry().register_project(repo, name=repo.name, stack=stack_info["stack"])
+        ProjectRegistry().register_project(repo, name=proj_name, stack=stack_info["stack"])
     except Exception:
         pass
 
     return {
-        "project_name": repo.name,
+        "project_name": proj_name,
         "stack": stack_info["stack"],
         "test_command": stack_info["test_cmd"],
         "config_path": str(config_file),

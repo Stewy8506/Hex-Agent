@@ -466,9 +466,12 @@ def main(argv: list[str] | None = None) -> int:
     from .config_loader import has_active_credentials, load_hex_environment
 
     is_test_runner = (
-        bool(os.environ.get("HEX_TESTING"))
-        or any("unittest" in arg for arg in sys.argv)
-        or any("pytest" in arg for arg in sys.argv)
+        (
+            bool(os.environ.get("HEX_TESTING"))
+            or any("unittest" in arg for arg in sys.argv)
+            or any("pytest" in arg for arg in sys.argv)
+        )
+        and not os.environ.get("HEX_FORCE_INTERACTIVE")
     )
 
     # Auto-intercept unconfigured launch when starting interactive console without credentials

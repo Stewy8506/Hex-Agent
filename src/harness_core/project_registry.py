@@ -183,7 +183,8 @@ class ProjectRegistry:
         if not config_path.is_file():
             try:
                 from .onboard import init_project
-                init_project(proj_dir, force=False)
+
+                init_project(proj_dir, name=proj_name, force=False)
             except Exception:
                 pass
 

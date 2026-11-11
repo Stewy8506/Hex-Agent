@@ -64,12 +64,22 @@ class TestHexCLI(unittest.TestCase):
             self.assertEqual(mode, "0o600")
 
     def test_hex_cli_onboard_subcommand(self) -> None:
-        """Verify hex CLI invokes onboard wizard cleanly."""
+        """Verify hex CLI invokes onboard wizard cleanly (backwards-compatible alias)."""
         buf = io.StringIO()
         with redirect_stdout(buf):
             exit_code = main(["--data-dir", str(self.data_dir), "onboard", "--config-dir", str(self.config_dir), "--defaults"])
         self.assertEqual(exit_code, 0)
         self.assertTrue((self.config_dir / "config.yaml").is_file())
+
+    def test_hex_cli_setup_subcommand(self) -> None:
+        """Verify hex CLI invokes setup wizard cleanly."""
+        setup_cfg_dir = Path(self.tmp_dir.name) / "setup_config"
+        setup_cfg_dir.mkdir()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            exit_code = main(["--data-dir", str(self.data_dir), "setup", "--config-dir", str(setup_cfg_dir), "--defaults"])
+        self.assertEqual(exit_code, 0)
+        self.assertTrue((setup_cfg_dir / "config.yaml").is_file())
 
     def test_hex_cli_init_and_status(self) -> None:
         """Verify hex init sets up ledger and hex status reports tasks."""
