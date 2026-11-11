@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -54,6 +55,14 @@ class ProjectRegistry:
             self.registry_file = Path(registry_file)
         elif os.environ.get("HEX_PROJECTS_REGISTRY"):
             self.registry_file = Path(os.environ["HEX_PROJECTS_REGISTRY"])
+        elif (
+            "unittest" in sys.modules
+            or "pytest" in sys.modules
+            or bool(os.environ.get("PYTEST_CURRENT_TEST"))
+        ):
+            # Isolate tests to a temporary registry file so test runs never pollute ~/.hex/projects.json
+            test_reg = Path(tempfile.gettempdir()) / f"hex_test_projects_{os.getpid()}.json"
+            self.registry_file = test_reg
         else:
             cand = Path.home() / ".hex" / "projects.json"
             try:
@@ -91,7 +100,7 @@ class ProjectRegistry:
             self.registry_file.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "version": "1.0",
-                "projects": [p.to_dict() for p in self.list_projects()],
+                "projects": [p.to_dict() for p in self.list_projects(validate_paths=False)],
             }
             content = json.dumps(payload, indent=2) + "\n"
             temp_file = tempfile.NamedTemporaryFile(
@@ -111,7 +120,18 @@ class ProjectRegistry:
             except Exception:
                 pass
 
-    def list_projects(self) -> list[ProjectRecord]:
+    def prune_stale(self) -> list[str]:
+        """Prune projects whose directory paths no longer exist on disk."""
+        stale = [path for path, rec in self._projects.items() if not os.path.exists(rec.path)]
+        for path in stale:
+            del self._projects[path]
+        if stale:
+            self._save()
+        return stale
+
+    def list_projects(self, validate_paths: bool = True) -> list[ProjectRecord]:
+        if validate_paths:
+            self.prune_stale()
         return sorted(
             self._projects.values(),
             key=lambda p: p.last_active or "",

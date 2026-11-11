@@ -121,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     p_proj_use.add_argument("target", help="Project name or directory path")
     p_proj_use.add_argument("--json", action="store_true", help="Output raw JSON project record")
 
+    p_proj_prune = p_proj_sub.add_parser("prune", aliases=["clean"], help="Prune deleted or non-existent project directories from registry")
+    p_proj_prune.add_argument("--json", action="store_true", help="Output raw JSON summary of pruned paths")
+
     p_auth = sub.add_parser("auth", help="Manage Google Antigravity OAuth credentials and local IDE token import")
     p_auth.add_argument("provider", nargs="?", default="antigravity", choices=["antigravity"], help="Target auth provider")
     p_auth.add_argument("--status", action="store_true", help="Show discovered Antigravity OAuth session status")
@@ -430,6 +433,19 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Active project set to '{rec.name}' ({rec.stack}) at {rec.path}")
                 print(f"  Configuration: {rec.config_path}")
                 print(f"  Last active:   {rec.last_active}")
+            return 0
+
+        if project_cmd in ("prune", "clean"):
+            stale = registry.prune_stale()
+            if getattr(args, "json", False):
+                print(json.dumps({"pruned": stale, "count": len(stale)}, indent=2))
+            else:
+                if not stale:
+                    print("Project registry is clean. No stale projects found.")
+                else:
+                    print(f"Pruned {len(stale)} stale project(s) whose paths no longer exist on disk:")
+                    for s in stale:
+                        print(f"  • {s}")
             return 0
 
     if args.cmd == "auth":

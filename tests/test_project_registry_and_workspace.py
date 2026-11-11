@@ -224,6 +224,22 @@ class TestProjectCLICommands(unittest.TestCase):
         code = main(["project", "use", "nonexistent-project-xyz", "--json"])
         self.assertEqual(code, 1)
 
+    def test_project_prune_cli(self) -> None:
+        target = self.tmp_dir / "temp-to-delete"
+        target.mkdir()
+        main(["project", "add", str(target), "--name", "temp-del", "--json"])
+
+        # Delete directory so it becomes stale
+        shutil.rmtree(target)
+
+        buf_prune = io.StringIO()
+        with redirect_stdout(buf_prune):
+            code_prune = main(["project", "prune", "--json"])
+        self.assertEqual(code_prune, 0)
+        payload = json.loads(buf_prune.getvalue())
+        self.assertEqual(payload["count"], 1)
+        self.assertIn(str(target.resolve()), payload["pruned"])
+
 
 class TestDailyProjectSwitcher(unittest.TestCase):
     """Verifies interactive project picker when launching HEX outside a project."""
