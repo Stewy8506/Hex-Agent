@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
-**Date:** 2026-11-03  
-**Current Milestone:** M4 (Hermes Parity & Advanced Graphify Ergonomics)  
-**Status:** Complete — All 12 Phases Delivered (386/386 tests green, 0 regressions)  
-**Active Phase:** All Phases (01–12) Complete  
-**Completed Plans:** All Plans (01-01 through 12-02) Complete  
+**Date:** 2026-11-11  
+**Current Milestone:** M5 (Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration)  
+**Status:** Complete — All 13 Phases Delivered (415/415 tests green, 0 regressions)  
+**Active Phase:** All Phases (01–13) Complete  
+**Completed Plans:** All Plans (01-01 through 13-02) Complete  
 
 ---
 
@@ -205,12 +205,21 @@
     - Wired `hex search`, `hex backup`, `hex restore`, and `hex dump` subcommands into `src/harness_core/cli.py`.
     - Authored 16 unit and integration tests in `tests/test_search_and_backup.py` (386/386 full repository tests passing with zero regressions).
 
+28. **Phase 13 Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration Complete (Plans 13-01 & 13-02):**
+    - Implemented `TerminalUISelector` in `src/harness_core/ui_selector.py` with POSIX termios/tty arrow-key navigation (`↑`/`↓` and `k`/`j`), `[•]` radio display, multi-select `[✓]`, and masked secret input (`••••••••`).
+    - Implemented `load_hex_environment` in `src/harness_core/config_loader.py` discovering `credentials.env` and nested `config.yaml` without external dependencies, hydrating `os.environ` on every CLI invocation.
+    - Implemented autonomous multi-engine `web_search` in `src/harness_core/web_search.py` (DuckDuckGo zero-key fallback, Tavily, and Brave Search) and registered as an R1 tool in `ToolGateway`.
+    - Upgraded `run_onboard_wizard` in `src/harness_core/onboard.py` into a 4-step arrow-key wizard (Model Provider, Web Search Engine, Remote Messaging Gateways, and Hardware Profile).
+    - Wired first-run auto-setup interceptor into `cli.py` to automatically detect unconfigured first-run states on bare `hex` or `hex chat` and guide setup cleanly.
+    - Completely purged all hardcoded mock artifacts (`v1.3.0`, `M4 MLX`, `wrk_m4_air_local`, `mock-key`).
+    - Authored 21 unit and integration tests across `tests/test_ui_selector_and_web_search.py` and `tests/test_auto_setup_and_polish.py` (415/415 total repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (386/386 tests green).
-- Milestone M4 Phase 12 is 100% complete and verified.
+- None. Full repository test suite passing cleanly with zero failures (415/415 tests green).
+- Milestone M5 Phase 13 is 100% complete and verified.
 
 ---
 

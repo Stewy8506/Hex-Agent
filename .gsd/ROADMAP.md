@@ -152,3 +152,24 @@
   - Operator runbook for disaster recovery, database restore, quarantined skill forensics, and harness rollback.
 - **Verification:** Trigger an `R3` action, verify webhook notification arrives with proof preview, approve via webhook/API, and confirm task finishes successfully.
 
+
+---
+
+## Milestone M5: Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration
+
+```
+[x] Phase 13: Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration
+    [x] 13-01: Terminal UI Selector, Environment Hydration & Autonomous Web Search
+    [x] 13-02: Interactive Onboarding Wizard, Auto-Setup Interceptor & Harness Polish
+```
+
+### Phase 13: Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration
+- **Goal:** Upgrade HEX onboarding into an interactive terminal arrow-key experience (`[•]` radio selection), implement autonomous web search tool, wire remote messaging gateways into setup, and auto-intercept unconfigured launches.
+- **Must-haves:**
+  - `TerminalUISelector` with POSIX termios/tty arrow-key navigation (`↑`/`↓`), `[•]` radio display, and masked secret input.
+  - Universal environment & configuration loader (`load_hex_environment`) injecting `~/.hex/credentials.env` and `config.yaml` on boot.
+  - Multi-engine autonomous Web Search tool (`web_search`) supporting DuckDuckGo (zero-key fallback), Tavily, and Brave Search registered in `ToolGateway`.
+  - 4-step interactive setup wizard in `run_onboard_wizard`: Model Provider, Web Search Engine, Remote Messaging Gateways, and Hardware Profile.
+  - First-run startup interceptor in `cli.py` detecting zero-key unconfigured state and guiding setup.
+  - Purged hardcoded dummy artifacts (`v1.3.0`, `M4 MLX`, `wrk_m4_air_local`, `mock-key`).
+- **Verification:** Unit and integration test suites passing in `tests/test_ui_selector_and_web_search.py` and `tests/test_auto_setup_and_polish.py`, with 100% green full-repository verification.
