@@ -118,6 +118,9 @@ class TestConfigLoader(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+        os.environ.pop("TEST_KEY_ALPHA", None)
+        os.environ.pop("HEX_CLOUD_PROVIDER", None)
+        os.environ.pop("HEX_CLOUD_MODEL_ID", None)
 
     def test_parse_env_file(self) -> None:
         env_file = self.cfg_dir / "test.env"
