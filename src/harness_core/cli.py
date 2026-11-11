@@ -283,6 +283,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    from .config_loader import load_hex_environment
+
+    load_hex_environment(config_dir=Path(args.config_dir) if getattr(args, "config_dir", None) else None)
+
     if args.cmd == "onboard":
         from .onboard import run_onboard_wizard
 

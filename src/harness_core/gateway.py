@@ -186,6 +186,14 @@ class ToolGateway:
         )
         self.register_tool(
             ToolSpec(
+                tool_id="web_search",
+                description="Search the live web for technical documentation, compiler error solutions, and API references (R1).",
+                risk_class=RiskClass.R1,
+                handler=self._tool_web_search,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
                 tool_id="write_file",
                 description="Modify or create a file inside the isolated CoW workspace (R2).",
                 risk_class=RiskClass.R2,
@@ -473,6 +481,14 @@ class ToolGateway:
             "indexed_files": len(self.graphify.symbols_by_file),
             "symbols": sorted(self.graphify.symbols_by_name.keys()),
         }
+
+    def _tool_web_search(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        from .web_search import execute_web_search
+
+        query = str(args.get("query", "")).strip()
+        max_results = int(args.get("max_results", 5))
+        provider = str(args.get("provider", "auto"))
+        return execute_web_search(query=query, max_results=max_results, provider=provider)
 
     def _tool_write_file(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         target = self._resolve_confined_path(workspace_dir, str(args["path"]))
