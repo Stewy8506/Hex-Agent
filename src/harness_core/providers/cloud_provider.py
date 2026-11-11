@@ -18,10 +18,12 @@ from typing import Any, Callable
 from harness_core.gateway import redact_secrets
 
 from .antigravity_provider import (
+    ANTIGRAVITY_FALLBACK_MODELS,
     AntigravityCredential,
     AntigravityModelProvider,
     AntigravityOAuthManager,
     AntigravityQuotaSnapshot,
+    fetch_available_models as ag_fetch_available_models,
 )
 from .base import (
     BudgetExceededError,
@@ -42,6 +44,164 @@ class CloudProviderType(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     GEMINI = "gemini"
+    LOCAL = "local"
+    OLLAMA = "ollama"
+
+
+ANTHROPIC_FALLBACK_MODELS: list[tuple[str, str]] = [
+    ("claude-3-7-sonnet", "claude-3-7-sonnet [offline fallback]"),
+    ("claude-3-5-sonnet", "claude-3-5-sonnet [offline fallback]"),
+    ("claude-3-5-haiku", "claude-3-5-haiku [offline fallback]"),
+]
+
+OPENAI_FALLBACK_MODELS: list[tuple[str, str]] = [
+    ("gpt-4o", "gpt-4o [offline fallback]"),
+    ("o1", "o1 [offline fallback]"),
+    ("o3-mini", "o3-mini [offline fallback]"),
+    ("gpt-4o-mini", "gpt-4o-mini [offline fallback]"),
+]
+
+GEMINI_FALLBACK_MODELS: list[tuple[str, str]] = [
+    ("gemini-2.5-pro", "gemini-2.5-pro [offline fallback]"),
+    ("gemini-2.5-flash", "gemini-2.5-flash [offline fallback]"),
+    ("gemini-2.0-flash", "gemini-2.0-flash [offline fallback]"),
+]
+
+LOCAL_FALLBACK_MODELS: list[tuple[str, str]] = [
+    ("qwen2.5-coder:7b", "qwen2.5-coder:7b [offline fallback]"),
+    ("llama3.3:70b", "llama3.3:70b [offline fallback]"),
+    ("deepseek-r1:8b", "deepseek-r1:8b [offline fallback]"),
+    ("codellama:13b", "codellama:13b [offline fallback]"),
+]
+
+
+def fetch_available_models(
+    provider_type: CloudProviderType | str,
+    api_key: str | None = None,
+    timeout: float = 3.0,
+) -> list[tuple[str, str]]:
+    """Discover available models from live provider API, or return curated offline fallback."""
+    raw_type = getattr(provider_type, "value", provider_type)
+    norm = str(raw_type).lower().strip()
+
+    if norm in ("antigravity", "google-antigravity", "cloudcode"):
+        return ag_fetch_available_models(access_token=api_key, timeout=timeout)
+
+    elif norm == "anthropic":
+        key = (api_key or os.getenv("HEX_ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip()
+        if not key:
+            return list(ANTHROPIC_FALLBACK_MODELS)
+        url = "https://api.anthropic.com/v1/models"
+        headers = {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "User-Agent": "HEX/0.1.0",
+        }
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    items = data.get("data")
+                    if isinstance(items, list) and items:
+                        results = []
+                        for m in items:
+                            if isinstance(m, dict) and "id" in m:
+                                mid = str(m["id"])
+                                disp = str(m.get("display_name") or mid)
+                                results.append((mid, disp))
+                        if results:
+                            results.sort(key=lambda x: (x[1].lower(), x[0].lower()))
+                            return results
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
+            pass
+        return list(ANTHROPIC_FALLBACK_MODELS)
+
+    elif norm == "openai":
+        key = (api_key or os.getenv("HEX_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+        if not key:
+            return list(OPENAI_FALLBACK_MODELS)
+        url = "https://api.openai.com/v1/models"
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "User-Agent": "HEX/0.1.0",
+        }
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    items = data.get("data")
+                    if isinstance(items, list) and items:
+                        allowed_pats = ("gpt-4o", "gpt-4.5", "o1", "o3-mini", "gpt-4-turbo")
+                        results = []
+                        for m in items:
+                            if isinstance(m, dict) and "id" in m:
+                                mid = str(m["id"])
+                                if any(p in mid for p in allowed_pats):
+                                    results.append((mid, mid))
+                        if results:
+                            results.sort(key=lambda x: x[0])
+                            return results
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
+            pass
+        return list(OPENAI_FALLBACK_MODELS)
+
+    elif norm in ("gemini", "google"):
+        key = (api_key or os.getenv("HEX_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+        if not key:
+            return list(GEMINI_FALLBACK_MODELS)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        headers = {"User-Agent": "HEX/0.1.0"}
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    items = data.get("models")
+                    if isinstance(items, list) and items:
+                        results = []
+                        for m in items:
+                            if not isinstance(m, dict):
+                                continue
+                            methods = m.get("supportedGenerationMethods") or []
+                            if "generateContent" in methods:
+                                raw_name = str(m.get("name", ""))
+                                clean_id = raw_name.removeprefix("models/").strip()
+                                if clean_id:
+                                    disp = m.get("displayName")
+                                    label = f"{clean_id} ({disp})" if disp and disp != clean_id else clean_id
+                                    results.append((clean_id, label))
+                        if results:
+                            results.sort(key=lambda x: x[0])
+                            return results
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
+            pass
+        return list(GEMINI_FALLBACK_MODELS)
+
+    elif norm in ("local", "ollama"):
+        url = "http://localhost:11434/api/tags"
+        headers = {"User-Agent": "HEX/0.1.0"}
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    items = data.get("models")
+                    if isinstance(items, list) and items:
+                        results = []
+                        for m in items:
+                            if isinstance(m, dict) and "name" in m:
+                                name = str(m["name"])
+                                results.append((name, name))
+                        if results:
+                            results.sort(key=lambda x: x[0])
+                            return results
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
+            pass
+        return list(LOCAL_FALLBACK_MODELS)
+
+    return []
 
 
 class ModelPricing:
@@ -151,6 +311,14 @@ class CloudModelProvider(ModelProvider):
     """
 
     provider_id: str = "cloud_frontier"
+
+    @staticmethod
+    def fetch_available_models(
+        provider_type: CloudProviderType | str,
+        api_key: str | None = None,
+        timeout: float = 3.0,
+    ) -> list[tuple[str, str]]:
+        return fetch_available_models(provider_type, api_key=api_key, timeout=timeout)
 
     def __init__(
         self,

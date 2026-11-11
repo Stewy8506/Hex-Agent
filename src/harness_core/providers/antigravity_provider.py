@@ -240,6 +240,91 @@ def extract_tokens_from_blob(raw_value: str | bytes) -> tuple[str, str]:
     return access_token, refresh_token
 
 
+ANTIGRAVITY_FALLBACK_MODELS: list[tuple[str, str]] = [
+    ("gemini-2.5-pro", "gemini-2.5-pro [offline fallback]"),
+    ("gemini-2.5-flash", "gemini-2.5-flash [offline fallback]"),
+    ("claude-3-5-sonnet", "claude-3-5-sonnet [offline fallback]"),
+]
+
+
+def fetch_available_models(
+    access_token: str | None = None,
+    project_id: str | None = None,
+    base_url: str | None = None,
+    timeout: float = 3.0,
+) -> list[tuple[str, str]]:
+    """Query Antigravity endpoints for available models, with graceful offline fallback."""
+    tok = (access_token or "").strip()
+    proj = project_id or DEFAULT_FALLBACK_PROJECT_ID
+
+    if not tok:
+        try:
+            tok = (
+                os.getenv("HEX_ANTIGRAVITY_TOKEN")
+                or os.getenv("ANTIGRAVITY_OAUTH_TOKEN")
+                or os.getenv("ANTIGRAVITY_ACCESS_TOKEN")
+                or ""
+            ).strip()
+            if not tok:
+                cred = AntigravityOAuthManager().resolve_credential(auto_refresh=False)
+                if cred and cred.access_token:
+                    tok = cred.access_token.strip()
+                    proj = cred.project_id or proj
+        except Exception:
+            pass
+
+    if not tok:
+        return list(ANTIGRAVITY_FALLBACK_MODELS)
+
+    url_base = base_url or "https://cloudaicompanion.googleapis.com"
+    models_url = f"{url_base}/v1internal:fetchAvailableModels"
+    headers = {
+        "Authorization": f"Bearer {tok}",
+        "Content-Type": "application/json",
+        "User-Agent": "antigravity",
+        "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+        "Client-Metadata": json.dumps(
+            {
+                "ideType": "ANTIGRAVITY",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI",
+            }
+        ),
+    }
+    body = json.dumps({"project": proj}).encode("utf-8")
+    req = urllib.request.Request(models_url, data=body, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status in (200, 201):
+                raw = resp.read().decode("utf-8")
+                data = json.loads(raw)
+                models_dict = data.get("models")
+                if isinstance(models_dict, dict) and models_dict:
+                    parsed: list[tuple[str, str]] = []
+                    for mid, minfo in models_dict.items():
+                        if not isinstance(minfo, dict):
+                            continue
+                        disp = str(minfo.get("displayName") or mid)
+                        qinfo = minfo.get("quotaInfo")
+                        if isinstance(qinfo, dict) and "remainingFraction" in qinfo:
+                            try:
+                                rem = max(0.0, min(1.0, float(qinfo["remainingFraction"])))
+                                rem_pct = int(rem * 100)
+                                label = f"{disp} ({rem_pct}% quota remaining)"
+                            except (TypeError, ValueError):
+                                label = disp
+                        else:
+                            label = disp
+                        parsed.append((str(mid), label))
+                    if parsed:
+                        return parsed
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
+        pass
+
+    return list(ANTIGRAVITY_FALLBACK_MODELS)
+
+
 class AntigravityOAuthManager:
     """Discovers, refreshes, and persists Google Antigravity OAuth credentials."""
 
@@ -601,6 +686,28 @@ class AntigravityOAuthManager:
         except Exception as e:
             raise ProviderUnavailableError(f"Antigravity HTTP request to {url} failed: {e}") from e
 
+    def fetch_available_models(
+        self,
+        access_token: str | None = None,
+        timeout: float = 3.0,
+    ) -> list[tuple[str, str]]:
+        """Discover live models for Google Antigravity or return fallback."""
+        tok = access_token
+        proj_id = None
+        if not tok:
+            try:
+                cred = self.resolve_credential(auto_refresh=False)
+                if cred and cred.access_token:
+                    tok = cred.access_token
+                    proj_id = cred.project_id
+            except Exception:
+                pass
+        return fetch_available_models(
+            access_token=tok,
+            project_id=proj_id,
+            timeout=timeout,
+        )
+
 
 class AntigravityModelProvider(ModelProvider):
     """Google Antigravity (Cloud Code Assist) Model Provider.
@@ -828,6 +935,30 @@ class AntigravityModelProvider(ModelProvider):
             email=cred.email,
             credential_source=cred.source,
             models=windows,
+        )
+
+    def fetch_available_models(
+        self,
+        access_token: str | None = None,
+        timeout: float = 3.0,
+    ) -> list[tuple[str, str]]:
+        """Discover live models for Google Antigravity or return fallback."""
+        tok = access_token
+        proj_id = getattr(self, "_cached_project_id", None)
+        base = getattr(self, "base_url", None)
+        if not tok:
+            try:
+                cred = self._get_active_credential()
+                if cred and cred.access_token:
+                    tok = cred.access_token
+                    proj_id = cred.project_id or proj_id
+            except Exception:
+                pass
+        return fetch_available_models(
+            access_token=tok,
+            project_id=proj_id,
+            base_url=base,
+            timeout=timeout,
         )
 
     def generate(
