@@ -334,6 +334,14 @@ def fetch_available_models(
                         # Filter out internal IDE tab completion and raw preview models
                         if mid.startswith("tab_") or mid.startswith("chat_"):
                             continue
+                        if mid in (
+                            "gemini-2.5-flash-lite",
+                            "gemini-2.5-flash-thinking",
+                            "gemini-3.5-flash-lite",
+                            "gemini-3.8-flash-tiered",
+                            "gemini-3.1-flash-image",
+                        ):
+                            continue
                         disp = str(minfo.get("displayName") or mid)
                         qinfo = minfo.get("quotaInfo")
                         if isinstance(qinfo, dict) and "remainingFraction" in qinfo:
