@@ -14,17 +14,22 @@ from __future__ import annotations
 
 import collections
 import json
+import logging
 import re
+import tempfile
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-import tempfile
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from .cow import APFSAndPortableCoWProvider, WorkspaceSnapshotProvider, get_default_snapshot_provider
 from .db import LedgerStore, utcnow_iso
 from .gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
 from .graphify import ActiveGraphifyAdapter
+from .lsp.manager import LSPManager
 from .models import PlanNode, TaskBudget, TaskState, TaskSubmitRequest
 from .proof import Harness2ControlledAdapter, VerificationAndProofService
 from .providers.base import BudgetExceededError
@@ -67,11 +72,13 @@ class HarnessOrchestrator:
 
         self.sandbox = sandbox or get_default_sandbox(self.workspaces_root)
         self.graphify = ActiveGraphifyAdapter(self.default_workspace)
+        self.lsp_manager = LSPManager(self.default_workspace)
         self.gateway = ToolGateway(
             self.ledger,
             self.graphify,
             sandbox=self.sandbox,
             notifier=self.webhook_notifier,
+            lsp_manager=self.lsp_manager,
         )
         self.scanner = SkillSpectorScanner(self.ledger)
         self.router = TwoTierModelRouter()
@@ -645,6 +652,90 @@ class HarnessOrchestrator:
             )
         return reconstructed_sha
 
+    def _run_compiler_preflight(self, attempt_ws: Path, modified_files: list[str]) -> dict[str, Any]:
+        """Runs pre-flight compiler diagnostics on modified files to fail fast on syntax/type errors."""
+        if not modified_files or self.lsp_manager is None:
+            return {"passed": True, "error_count": 0, "errors": []}
+
+        # Ensure manager's workspace_root matches attempt_ws
+        if self.lsp_manager.workspace_root is None or self.lsp_manager.workspace_root != attempt_ws:
+            self.lsp_manager.workspace_root = Path(attempt_ws).resolve()
+
+        resolved_files: list[Path] = []
+        for mf in modified_files:
+            file_p = (attempt_ws / mf).resolve() if not Path(mf).is_absolute() else Path(mf).resolve()
+            if not file_p.is_file():
+                continue
+            spec = self.lsp_manager.registry.find_server_for_file(
+                file_p,
+                workspace_root=attempt_ws,
+                require_installed=True,
+            )
+            if not spec:
+                continue
+            resolved_files.append(file_p)
+            try:
+                content = file_p.read_text(encoding="utf-8", errors="replace")
+                self.lsp_manager.sync_file(file_p, text=content, auto_start=True)
+            except Exception as exc:
+                logger.debug("LSP sync_file failed for %s: %s", file_p, exc)
+
+        if not resolved_files:
+            return {"passed": True, "error_count": 0, "errors": []}
+
+        # Poll diagnostics for modified files with bounded timeout (up to 1.5s)
+        all_errors: list[Any] = []
+        start_time = time.time()
+        timeout = 1.5
+        time.sleep(0.05)
+
+        while time.time() - start_time < timeout:
+            current_errors = []
+            for rf in resolved_files:
+                diags = self.lsp_manager.get_diagnostics(file_path=rf, severity="error")
+                for d in diags:
+                    if d.severity == 1 or getattr(d, "severity_name", "") == "ERROR":
+                        current_errors.append(d)
+            if current_errors:
+                all_errors = current_errors
+                break
+            time.sleep(0.05)
+
+        if not all_errors:
+            diags = self.lsp_manager.get_diagnostics(severity="error")
+            target_str_set = {str(rf.resolve()) for rf in resolved_files}
+            all_errors = [
+                d for d in diags
+                if (d.severity == 1 or getattr(d, "severity_name", "") == "ERROR") and (
+                    str(Path(d.file_path).resolve()) in target_str_set
+                    or any(str(rf).endswith(d.file_path) or d.file_path.endswith(str(rf)) for rf in resolved_files)
+                )
+            ]
+
+        if all_errors:
+            summary_lines = []
+            for err in all_errors:
+                rel_f = str(getattr(err, "file_path", ""))
+                try:
+                    rel_f = str(Path(rel_f).relative_to(attempt_ws))
+                except Exception:
+                    pass
+                line = getattr(err, "line", 0) + 1
+                col = getattr(err, "character", 0) + 1
+                code_val = getattr(err, "code", None)
+                code_str = f" {code_val}:" if code_val else ""
+                summary_lines.append(f"[{rel_f}:{line}:{col}] [ERROR]{code_str} {err.message}")
+
+            formatted_summary = "\n".join(summary_lines)
+            return {
+                "passed": False,
+                "error_count": len(all_errors),
+                "errors": all_errors,
+                "summary": formatted_summary,
+            }
+
+        return {"passed": True, "error_count": 0, "errors": []}
+
     def _execute_standard_dag(
         self,
         task: dict[str, Any],
@@ -961,14 +1052,40 @@ class HarnessOrchestrator:
             fencing_token=fencing_token,
         )
 
-        ver_outcome = self.proof_service.run_verification_and_build_proof(
-            task_id=task_id,
-            attempt_id=attempt_id,
-            base_snapshot_path=base_snap_path,
-            workspace_dir=attempt_ws,
-            modified_files=modified_files,
-            run_tests=True,
-        )
+        preflight = self._run_compiler_preflight(attempt_ws, modified_files)
+        if not preflight["passed"]:
+            failure_digest = (
+                f"Compiler Diagnostic Pre-Flight Failed ({preflight['error_count']} compiler/syntax error(s)):\n"
+                f"{preflight['summary']}"
+            )
+            self.ledger.record_event(
+                task_id=task_id,
+                event_type="LSP_COMPILER_PREFLIGHT_FAILED",
+                reason_code="COMPILER_SYNTAX_ERROR",
+                attempt_id=attempt_id,
+                workspace_tree_sha=head_sha,
+                payload={
+                    "error_count": preflight["error_count"],
+                    "errors": [e.to_dict() if hasattr(e, "to_dict") else e for e in preflight["errors"]],
+                    "summary": preflight["summary"],
+                },
+            )
+            ver_outcome = {
+                "passed": False,
+                "verification_results": {
+                    "test_output_excerpt": failure_digest,
+                    "compiler_preflight": preflight,
+                },
+            }
+        else:
+            ver_outcome = self.proof_service.run_verification_and_build_proof(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                base_snapshot_path=base_snap_path,
+                workspace_dir=attempt_ws,
+                modified_files=modified_files,
+                run_tests=True,
+            )
 
         repair_attempt = 0
         task_budget = TaskBudget.from_dict(task.get("budget"))
@@ -1082,14 +1199,40 @@ class HarnessOrchestrator:
             )
 
             # Re-execute verification
-            ver_outcome = self.proof_service.run_verification_and_build_proof(
-                task_id=task_id,
-                attempt_id=attempt_id,
-                base_snapshot_path=base_snap_path,
-                workspace_dir=attempt_ws,
-                modified_files=modified_files,
-                run_tests=True,
-            )
+            preflight = self._run_compiler_preflight(attempt_ws, modified_files)
+            if not preflight["passed"]:
+                failure_digest = (
+                    f"Compiler Diagnostic Pre-Flight Failed ({preflight['error_count']} compiler/syntax error(s)):\n"
+                    f"{preflight['summary']}"
+                )
+                self.ledger.record_event(
+                    task_id=task_id,
+                    event_type="LSP_COMPILER_PREFLIGHT_FAILED",
+                    reason_code="COMPILER_SYNTAX_ERROR",
+                    attempt_id=attempt_id,
+                    workspace_tree_sha=curr_sha,
+                    payload={
+                        "error_count": preflight["error_count"],
+                        "errors": [e.to_dict() if hasattr(e, "to_dict") else e for e in preflight["errors"]],
+                        "summary": preflight["summary"],
+                    },
+                )
+                ver_outcome = {
+                    "passed": False,
+                    "verification_results": {
+                        "test_output_excerpt": failure_digest,
+                        "compiler_preflight": preflight,
+                    },
+                }
+            else:
+                ver_outcome = self.proof_service.run_verification_and_build_proof(
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    base_snapshot_path=base_snap_path,
+                    workspace_dir=attempt_ws,
+                    modified_files=modified_files,
+                    run_tests=True,
+                )
 
         if not ver_outcome["passed"]:
             forensic_snap = self.cow.create_snapshot(

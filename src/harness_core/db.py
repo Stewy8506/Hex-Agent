@@ -753,6 +753,8 @@ class LedgerStore:
             self.conn.commit()
             return ev
 
+    record_task_event = record_event
+
     async def record_event_async(
         self,
         task_id: str,
