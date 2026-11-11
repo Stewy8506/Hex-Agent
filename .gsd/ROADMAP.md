@@ -164,6 +164,9 @@
 [x] Phase 14: Antigravity Interactive OAuth, Model Selection & TUI Crash Hardening
     [x] 14-01: Token Probing, Browser PKCE OAuth & Model Selection
     [x] 14-02: TUI Crash Resilience, Automatic OAuth Refresh & Test Suite
+[ ] Phase 15: Live API Model Discovery & Project-Scoped Workspaces
+    [ ] 15-01: Live Dynamic Model Discovery Engine
+    [ ] 15-02: Project Workspace Registry & Daily Project Switcher
 ```
 
 ### Phase 13: Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration
@@ -187,3 +190,18 @@
   - TUI crash resilience: catch `ProviderUnavailableError` and HTTP 401 cleanly with remediation commands (`hex auth antigravity --auth-url`, `/model`, `hex onboard`).
   - Automatic token refresh in `AntigravityModelProvider` upon HTTP 401 when `refresh_token` is present.
 - **Verification:** Unit and integration tests in `tests/test_antigravity_oauth_and_tui_resilience.py` (7/7 tests passing) and 422/422 repository tests 100% green.
+
+### Phase 15: Live API Model Discovery & Project-Scoped Workspaces
+- **Goal:** Invert provider onboarding to authenticate first, query live provider API endpoints for dynamic model discovery with offline fallbacks, and introduce a global project registry with folder-scoped context isolation and daily project switcher.
+- **Must-haves:**
+  - Authenticate-first onboarding sequence across Antigravity, Anthropic, OpenAI, Gemini, and Local/Ollama.
+  - Live model discovery querying `fetchAvailableModels` (Antigravity), `v1/models` (Anthropic & OpenAI), `v1beta/models` (Gemini), and `api/tags` (Ollama).
+  - Clear `[offline fallback]` badge on curated fallback models when unreachable or offline.
+  - Interactive `/model` command in TUI querying live provider models via `TerminalUISelector`.
+  - Global project registry in `~/.hex/projects.json` tracking registered projects and last active timestamps.
+  - Daily project switcher ("What project do you want to work on today?") when launched outside a workspace.
+  - Automatic project binding when launched inside a git repo or `.hex/` project folder.
+  - Complete folder-scoped context isolation: `<project_dir>/.hex/` with `config.yaml`, `graph.json`, `reflections/LESSONS.md`, and `data/`.
+  - CLI command `hex project [list|add|use|switch]`.
+- **Verification:** Comprehensive unit and integration test suites in `tests/test_live_model_discovery.py` and `tests/test_project_registry_and_workspace.py`.
+
