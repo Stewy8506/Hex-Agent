@@ -39,6 +39,9 @@ from harness_core.providers.base import ModelResponse, ModelUsage
 from harness_core.router import RouteDecision
 
 
+from contextlib import redirect_stdout
+
+
 class TestHarness2DeepIntegrations(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = Path(tempfile.mkdtemp(prefix="harness2_deep_test_"))
@@ -281,7 +284,7 @@ class TestHarness2DeepIntegrations(unittest.TestCase):
     def test_cli_harness2_eval_with_codex_and_llm_flags(self) -> None:
         """Verify hex harness2-eval supports --substrate codex --proposer llm --json."""
         buf = StringIO()
-        with redirect_stdout_stderr(buf):
+        with redirect_stdout(buf):
             rc = cli_main(
                 [
                     "--data-dir",
@@ -297,26 +300,11 @@ class TestHarness2DeepIntegrations(unittest.TestCase):
                 ]
             )
         self.assertEqual(rc, 0)
-        payload = json.loads(buf.getvalue())
+        payload = json.loads(buf.getvalue().strip())
         self.assertTrue(payload["ok"])
         self.assertIsNotNone(payload["selection"])
         self.assertTrue(payload["experience"].get("lesson"))
         self.assertEqual(len(payload["scored"]), 1)
-
-
-from contextlib import contextmanager
-
-
-@contextmanager
-def redirect_stdout_stderr(stream: StringIO):
-    old_out, old_err = sys.stdout, sys.stderr
-    sys.stdout = stream
-    sys.stderr = stream
-    try:
-        yield
-    finally:
-        sys.stdout = old_out
-        sys.stderr = old_err
 
 
 if __name__ == "__main__":
