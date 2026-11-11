@@ -6,7 +6,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.3.0-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-415%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](AUDIT_REPORT.md)
+[![Tests](https://img.shields.io/badge/tests-422%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](AUDIT_REPORT.md)
 [![Antigravity Quota](https://img.shields.io/badge/day--1%20quota-Google%20Antigravity%20OAuth-4285F4?style=flat-square&logo=google&logoColor=white)](src/harness_core/providers/antigravity_provider.py)
 [![Security Gate](https://img.shields.io/badge/security-NVIDIA%20SkillSpector-76b900?style=flat-square&logo=nvidia&logoColor=white)](vendor/skillspector/README.md)
 [![AST & Memory](https://img.shields.io/badge/AST%20%2B%20memory-Graphify%20(71.5x%20compression)-00f5d4?style=flat-square)](vendor/graphify/README.md)
@@ -208,7 +208,7 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 - **5 Built-In Theme Skins (`--skin` or `/skin <name>`):** `amber` *(default)*, `cyberpunk`, `matrix`, `nord`, and `mono`.
 - **Live Persistent Bottom Status Bar:**
   ```text
-  ⚕ gemini-3.5-pro │ 🗜️ local:m4-mlx │ 🌿 main ✓ │ 💲$0.0000 (Antigravity Quota) │ ctx 6.4k/32.0k (78% saved) │ [██░░░░░░░░] 20%
+  ⚕ gemini-2.5-pro │ 🗜️ local:m4-mlx │ 🌿 main ✓ │ 💲$0.0000 (Antigravity Quota) │ ctx 6.4k/32.0k (78% saved) │ [██░░░░░░░░] 20%
   ```
   The `[██░░░░░░░░] 20%` gauge tracks real-time **context window utilization** (`tokens_in / max_context_tokens`).
 - **Interactive R2/R3 Keyboard Approval Cards:** Inspect colorized unified diffs and press `[y]` Approve · `[n]` Reject · `[d]` Full Unified Diff · `[s]` Isolated CoW Sandbox Subshell · `[q]` Abort & Rollback.
@@ -314,14 +314,14 @@ hex
 Every architectural invariant in [`PRD.md`](PRD.md) and [`HERMES_ANALYSIS.md`](HERMES_ANALYSIS.md) is backed by hermetic unit, integration, and stress tests:
 
 ```bash
-# 1. Full repository test suite (415 tests across 28 test modules, 100% green, 0 regressions)
+# 1. Full repository test suite (422 tests across 29 test modules, 100% green, 0 regressions)
 .venv/bin/python -m unittest discover -s tests -p "test_*.py"
 
 # 2. Authoritative 5-Stage PRD Section 16 Acceptance Suite
 .venv/bin/python -m unittest tests/test_harness_stages.py -v
 
-# 3. Interactive UI Selector, Web Search & Auto-Setup Suite
-.venv/bin/python -m unittest tests/test_ui_selector_and_web_search.py tests/test_auto_setup_and_polish.py -v
+# 3. Interactive UI Selector, Web Search, Auto-Setup & Antigravity OAuth Resilience Suite
+.venv/bin/python -m unittest tests/test_ui_selector_and_web_search.py tests/test_auto_setup_and_polish.py tests/test_antigravity_oauth_and_tui_resilience.py -v
 
 # 4. Graphify Efficiency, Polyglot AST, Surgical Slicing & Work-Memory Reflection Suite
 .venv/bin/python -m unittest tests/test_graphify_efficiency.py -v
