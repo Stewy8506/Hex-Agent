@@ -19,6 +19,7 @@ from .config_loader import load_hex_environment
 from .cow import get_default_snapshot_provider
 from .orchestrator import HarnessOrchestrator
 from .providers.antigravity_provider import AntigravityOAuthManager
+from .providers.cloud_provider import fetch_available_models
 from .sandbox import get_default_sandbox
 from .ui_selector import prompt_secret, select_option
 
@@ -144,7 +145,10 @@ def run_onboard_wizard(
     cfg_dir = config_dir or (Path.home() / ".hex")
     try:
         cfg_dir.mkdir(parents=True, exist_ok=True)
-    except PermissionError:
+        test_file = cfg_dir / ".write_test"
+        test_file.touch()
+        test_file.unlink()
+    except (PermissionError, OSError):
         cfg_dir = Path(".hex").resolve()
         cfg_dir.mkdir(parents=True, exist_ok=True)
     credentials_file = cfg_dir / "credentials.env"
@@ -213,15 +217,7 @@ def run_onboard_wizard(
         if selected_provider_key == "antigravity":
             cloud_provider = "antigravity"
             model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
-
-            ag_models = [
-                ("gemini-2.5-pro", "gemini-2.5-pro (Recommended - Flagship reasoning & deep coding)"),
-                ("gemini-2.5-flash", "gemini-2.5-flash (Ultra-fast, high rate limits)"),
-                ("claude-3-5-sonnet", "claude-3-5-sonnet (Frontier coding model via Antigravity)"),
-            ]
-            m_idx = select_option("Select Primary Antigravity Model:", ag_models, default_index=0)
-            cloud_model_id = ag_models[m_idx][0]
-            print()
+            provider_title = "Google Antigravity"
 
             is_valid_token = _probe_antigravity_token(antigravity_token)
             if is_valid_token:
@@ -261,52 +257,89 @@ def run_onboard_wizard(
                     if k_ag:
                         antigravity_token = k_ag
 
+            print("  ◈ Querying available models from Google Antigravity...")
+            discovered_models = fetch_available_models("antigravity", api_key=antigravity_token)
+            if discovered_models:
+                m_idx = select_option(f"Select Primary {provider_title} Model:", discovered_models, default_index=0)
+                cloud_model_id = discovered_models[m_idx][0]
+            else:
+                cloud_model_id = "gemini-2.5-pro"
+            print()
+
         elif selected_provider_key == "anthropic":
             cloud_provider = "anthropic"
             model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
-            ant_models = [
-                ("claude-3-5-sonnet", "claude-3-5-sonnet (Recommended)"),
-                ("claude-3-opus", "claude-3-opus (Complex architecture)"),
-                ("claude-3-5-haiku", "claude-3-5-haiku (Fast & low cost)"),
-            ]
-            m_idx = select_option("Select Anthropic Model:", ant_models, default_index=0)
-            cloud_model_id = ant_models[m_idx][0]
-            print()
+            provider_title = "Anthropic"
+
             if not anthropic_key:
-                anthropic_key = prompt_secret("  Enter Anthropic API Key (sk-ant-...): ")
+                anthropic_key = prompt_secret("Enter Anthropic API Key (sk-ant-...): ")
+
+            print("  ◈ Querying available models from Anthropic...")
+            discovered_models = fetch_available_models("anthropic", api_key=anthropic_key)
+            if discovered_models:
+                m_idx = select_option(f"Select Primary {provider_title} Model:", discovered_models, default_index=0)
+                cloud_model_id = discovered_models[m_idx][0]
+            else:
+                cloud_model_id = "claude-3-5-sonnet"
+            print()
 
         elif selected_provider_key == "openai":
             cloud_provider = "openai"
             model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
-            oai_models = [
-                ("gpt-4o", "gpt-4o (Recommended)"),
-                ("o1-preview", "o1-preview (Deep reasoning)"),
-                ("o3-mini", "o3-mini (Fast reasoning)"),
-            ]
-            m_idx = select_option("Select OpenAI Model:", oai_models, default_index=0)
-            cloud_model_id = oai_models[m_idx][0]
-            print()
+            provider_title = "OpenAI"
+
             if not openai_key:
-                openai_key = prompt_secret("  Enter OpenAI API Key (sk-...): ")
+                openai_key = prompt_secret("Enter OpenAI API Key (sk-...): ")
+
+            print("  ◈ Querying available models from OpenAI...")
+            discovered_models = fetch_available_models("openai", api_key=openai_key)
+            if discovered_models:
+                m_idx = select_option(f"Select Primary {provider_title} Model:", discovered_models, default_index=0)
+                cloud_model_id = discovered_models[m_idx][0]
+            else:
+                cloud_model_id = "gpt-4o"
+            print()
 
         elif selected_provider_key == "gemini":
             cloud_provider = "gemini"
             model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
-            gem_models = [
-                ("gemini-2.5-pro", "gemini-2.5-pro (Recommended)"),
-                ("gemini-2.5-flash", "gemini-2.5-flash (Fast & lightweight)"),
-            ]
-            m_idx = select_option("Select Google Gemini Model:", gem_models, default_index=0)
-            cloud_model_id = gem_models[m_idx][0]
-            print()
+            provider_title = "Google Gemini"
+
             if not gemini_key:
-                gemini_key = prompt_secret("  Enter Gemini API Key (AIza...): ")
+                gemini_key = prompt_secret("Enter Gemini API Key (AIza...): ")
+
+            print("  ◈ Querying available models from Google Gemini...")
+            discovered_models = fetch_available_models("gemini", api_key=gemini_key)
+            if discovered_models:
+                m_idx = select_option(f"Select Primary {provider_title} Model:", discovered_models, default_index=0)
+                cloud_model_id = discovered_models[m_idx][0]
+            else:
+                cloud_model_id = "gemini-2.5-pro"
+            print()
 
         elif selected_provider_key == "local":
             cloud_provider = "local"
-            cloud_model_id = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
             model_profile = "local"
+            provider_title = "Local"
+
+            print("  ◈ Checking local model runtimes...")
+            discovered_models = fetch_available_models("local")
+            if profile.is_apple_silicon:
+                mlx_models = [
+                    ("mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit (Apple Silicon MLX)"),
+                    ("mlx-community/Llama-3.2-3B-Instruct-4bit", "mlx-community/Llama-3.2-3B-Instruct-4bit (Fast MLX)"),
+                ]
+                all_local = mlx_models + discovered_models
+            else:
+                all_local = discovered_models
+
+            if all_local:
+                m_idx = select_option(f"Select Primary {provider_title} Model:", all_local, default_index=0)
+                cloud_model_id = all_local[m_idx][0]
+            else:
+                cloud_model_id = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
             print("  ✓ Local offline profile configured. Zero external network egress.")
+            print()
 
         print()
 
@@ -455,6 +488,7 @@ webhooks:
         "credentials_file": str(credentials_file),
         "cloud_provider": cloud_provider,
         "cloud_model_id": cloud_model_id,
+        "model": cloud_model_id,
         "web_search_provider": web_search_provider,
         "data_dir": str(data_dir),
         "hardware": {

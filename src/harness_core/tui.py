@@ -1307,6 +1307,70 @@ class HexConsole:
                     self.orchestrator.router.cloud_model_id = arg
             print(f"{ANSI_GREEN}Model profile updated to: {arg}{ANSI_RESET}")
         else:
+            in_stream = getattr(self, "stream_in", sys.stdin)
+            out_stream = getattr(self, "stream_out", sys.stdout)
+            is_interactive = (
+                hasattr(in_stream, "isatty")
+                and in_stream.isatty()
+                and hasattr(out_stream, "isatty")
+                and out_stream.isatty()
+            )
+            if is_interactive:
+                from .ui_selector import select_option
+                from .providers.cloud_provider import fetch_available_models
+
+                active_provider = "antigravity"
+                api_key: str | None = None
+
+                if hasattr(self.orchestrator, "router"):
+                    r = self.orchestrator.router
+                    cp = getattr(r, "cloud_provider", None)
+                    if cp is not None:
+                        prov_id = getattr(cp, "provider_id", "")
+                        if prov_id == "google_antigravity":
+                            active_provider = "antigravity"
+                            api_key = getattr(cp, "access_token", None)
+                        elif hasattr(cp, "provider_type"):
+                            pt = cp.provider_type
+                            active_provider = str(getattr(pt, "value", pt)).lower()
+                            api_key = getattr(cp, "api_key", None)
+                if not active_provider or active_provider not in ("antigravity", "anthropic", "openai", "gemini", "local"):
+                    active_provider = (os.getenv("HEX_CLOUD_PROVIDER") or "antigravity").lower()
+
+                if not api_key:
+                    if active_provider == "antigravity":
+                        api_key = os.getenv("HEX_ANTIGRAVITY_TOKEN") or os.getenv("ANTIGRAVITY_OAUTH_TOKEN")
+                    elif active_provider == "anthropic":
+                        api_key = os.getenv("HEX_ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+                    elif active_provider == "openai":
+                        api_key = os.getenv("HEX_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+                    elif active_provider == "gemini":
+                        api_key = os.getenv("HEX_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+                print(f"◈ Querying live models from {active_provider}...")
+                models = fetch_available_models(active_provider, api_key=api_key)
+                if models:
+                    try:
+                        chosen_idx = select_option(
+                            "Select Active Model:",
+                            models,
+                            stream_in=in_stream,
+                            stream_out=getattr(self, "stream_out", sys.stdout),
+                        )
+                        chosen_model_id = models[chosen_idx][0]
+                        self.model_profile = chosen_model_id
+                        if hasattr(self.orchestrator, "router"):
+                            self.orchestrator.router.cloud_model_id = chosen_model_id
+                            if hasattr(self.orchestrator.router, "cloud_provider"):
+                                cp = self.orchestrator.router.cloud_provider
+                                if hasattr(cp, "model_id"):
+                                    cp.model_id = chosen_model_id
+                        print(f"{ANSI_GREEN}✓ Active model switched to: {chosen_model_id}{ANSI_RESET}")
+                        return
+                    except Exception as exc:
+                        print(f"{ANSI_RED}Model selection cancelled: {exc}{ANSI_RESET}")
+                        return
+
             current = self.model_profile or "hybrid (Two-Tier MLX Local + Cloud)"
             print(f"\n{ANSI_BOLD}{ANSI_CYAN}Active Model Routing Configuration:{ANSI_RESET}")
             print(f"  Profile:          {current}")
