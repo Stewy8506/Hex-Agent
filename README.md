@@ -269,7 +269,7 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 
 ## 🛠️ Complete CLI & Self-Healing Diagnostics Surface
 
-HEX ships a unified 25-subcommand CLI (`hex` and `harness`):
+HEX ships a unified 27-subcommand CLI (`hex` and `harness`):
 
 ```text
 hex
@@ -295,8 +295,10 @@ hex
 ├── gateway      # Bidirectional Telegram & Discord chat gateway daemons (start, status)
 ├── gh-action    # GitHub Actions autonomous bot responder (@hex-bot fix ...)
 ├── schedule     # Native background 5-field cron scheduler (add, list, remove, run-due)
-├── daemon       # Background OS service installer (macOS launchd & Linux systemd)
+├── daemon       # Background OS service installer and uninstaller (macOS launchd & Linux systemd)
 ├── skill        # Self-synthesize verified SKILL.md bundles from completed tasks via SkillSpector
+├── harness2-eval# Multi-rollout Propose-Probe-Compose sweep via OrchestratorBenchmarkAdapter
+├── uninstall    # Unload background daemons, remove binary symlinks, and optionally purge ~/.hex
 └── worker       # Distributed worker daemon with PostgreSQL SKIP LOCKED, CAS fencing & delta tar sync
 ```
 
@@ -378,6 +380,7 @@ harness/
 │   ├── git_autopilot.py           # Automated Git branching, conventional commits & PR generator
 │   ├── github_action.py           # GitHub Actions `@hex-bot` event responder
 │   ├── graphify.py                # Persistent polyglot AST indexer, surgical slicer & work-memory reflection
+│   ├── harness2_adapter.py        # Google Research Harness² BenchmarkAdapter & Propose-Probe-Compose sweep runner
 │   ├── lsp/                       # Polyglot Language Server Protocol gateway (client, registry, manager)
 │   ├── mcp_client.py              # Stdio & HTTP/SSE external MCP client with dynamic risk tagging
 │   ├── models.py                  # Canonical state machine & request/budget dataclasses
@@ -402,7 +405,7 @@ harness/
 │       ├── base.py                # ModelProvider protocol & cached token accounting
 │       ├── cloud_provider.py      # Antigravity, Anthropic, OpenAI & Gemini provider with 90% prefix caching
 │       └── mlx_provider.py        # Apple Silicon M4 MLX local runner & >70% log compressor
-├── tests/                         # 30 test modules (491 unit, stage, concurrency, LSP, voice & parity tests)
+├── tests/                         # 32 test modules (513 unit, stage, concurrency, LSP, voice, harness2 & parity tests)
 ├── vendor/                        # Detached upstream engines (graphify, harness2, skillspector)
 ├── AUDIT_REPORT.md                # Principal Systems Architect & Security Compliance Verdict
 ├── HERMES_ANALYSIS.md             # Reverse-Engineering Hermes Agent & Parity Architecture Report

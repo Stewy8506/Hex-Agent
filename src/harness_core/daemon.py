@@ -270,3 +270,64 @@ class DaemonInstaller:
             "service_path": str(service_path) if installed else None,
             "active": active,
         }
+
+    def uninstall_daemon(self, dry_run: bool = False) -> dict[str, Any]:
+        """Unloads and removes the daemon service plist or systemd unit file."""
+        status = self.get_daemon_status()
+        service_path_str = status.get("service_path")
+        if not service_path_str:
+            return {"status": "not_installed", "unloaded": False, "removed": False}
+
+        service_path = Path(service_path_str)
+        is_darwin = platform.system() == "Darwin"
+        unloaded = False
+
+        if dry_run:
+            return {
+                "status": "dry_run",
+                "service_path": str(service_path),
+                "unloaded": status.get("active", False),
+                "removed": True,
+            }
+
+        if is_darwin:
+            try:
+                subprocess.run(
+                    ["launchctl", "unload", str(service_path)],
+                    capture_output=True,
+                    timeout=5,
+                )
+                unloaded = True
+            except Exception:
+                pass
+        else:
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "stop", self.config.service_name],
+                    capture_output=True,
+                    timeout=5,
+                )
+                subprocess.run(
+                    ["systemctl", "--user", "disable", self.config.service_name],
+                    capture_output=True,
+                    timeout=5,
+                )
+                unloaded = True
+            except Exception:
+                pass
+
+        removed = False
+        try:
+            if service_path.is_file():
+                service_path.unlink()
+                removed = True
+        except OSError as exc:
+            logger.warning("Failed to remove service file %s: %s", service_path, exc)
+
+        return {
+            "status": "uninstalled",
+            "service_path": str(service_path),
+            "unloaded": unloaded,
+            "removed": removed,
+        }
+

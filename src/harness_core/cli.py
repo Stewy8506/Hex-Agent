@@ -274,6 +274,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_dmn_stat = p_dmn_sub.add_parser("status", help="Inspect daemon service file and active state")
 
+    p_dmn_uninst = p_dmn_sub.add_parser("uninstall", aliases=["remove"], help="Unload and remove OS service daemon")
+    p_dmn_uninst.add_argument("--dry-run", action="store_true", help="Preview service removal without modifying disk")
+
     p_skl = sub.add_parser("skill", help="Manage and self-synthesize skills via NVIDIA SkillSpector")
     p_skl_sub = p_skl.add_subparsers(dest="skill_cmd", required=True)
 
@@ -350,6 +353,13 @@ def main(argv: list[str] | None = None) -> int:
     p_lsp_hov.add_argument("character", type=int, help="Column number (1-based)")
     p_lsp_hov.add_argument("--workspace", default=None, help="Workspace directory")
     p_lsp_hov.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_uninst = sub.add_parser("uninstall", help="Uninstall HEX CLI, unload background daemons, and optionally purge data")
+    p_uninst.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+    p_uninst.add_argument("--purge", action="store_true", help="Permanently delete user configuration and ledger database (~/.hex)")
+    p_uninst.add_argument("--keep-data", action="store_true", help="Preserve ~/.hex configuration, credentials, and data")
+    p_uninst.add_argument("--dry-run", action="store_true", help="Preview items to be removed without modifying disk")
+    p_uninst.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
     args = parser.parse_args(argv)
 
@@ -1069,6 +1079,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(stat, indent=2))
             return 0
 
+        if args.daemon_cmd in ("uninstall", "remove"):
+            dry_run = getattr(args, "dry_run", False)
+            res = installer.uninstall_daemon(dry_run=dry_run)
+            print(json.dumps(res, indent=2))
+            return 0
+
     if args.cmd == "skill":
         from .skill_synthesizer import SkillSynthesizer
 
@@ -1375,6 +1391,88 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"\nHover Information ({args.file}:{args.line}:{args.character}):")
                         print(hover["contents"])
             return 0
+
+    if args.cmd == "uninstall":
+        import shutil
+        from .daemon import DaemonInstaller, DaemonConfig
+
+        dry_run = getattr(args, "dry_run", False)
+        purge = getattr(args, "purge", False)
+        keep_data = getattr(args, "keep_data", False)
+        yes = getattr(args, "yes", False)
+
+        print("\n🗑️  HEX Uninstaller\n" + "=" * 40)
+
+        # 1. Background daemon cleanup
+        installer = DaemonInstaller(config=DaemonConfig(data_dir=str(args.data_dir)))
+        daemon_res = installer.uninstall_daemon(dry_run=dry_run)
+        if daemon_res.get("status") == "uninstalled":
+            if daemon_res.get("removed"):
+                print(f"  ✓ Background OS service descriptor removed ({daemon_res.get('service_path')})")
+            if daemon_res.get("unloaded"):
+                print("  ✓ Background service unloaded from system manager")
+        elif daemon_res.get("status") == "dry_run":
+            print(f"  [dry-run] Would unload and remove service descriptor: {daemon_res.get('service_path')}")
+        else:
+            print("  ✓ No active background OS service detected")
+
+        # 2. Binary / CLI symlink cleanup
+        candidate_symlinks = [
+            Path.home() / ".local" / "bin" / "hex",
+            Path.home() / ".local" / "bin" / "harness",
+            Path("/usr/local/bin/hex"),
+            Path("/usr/local/bin/harness"),
+        ]
+        for sym in candidate_symlinks:
+            try:
+                if sym.is_symlink() or sym.is_file():
+                    if dry_run:
+                        print(f"  [dry-run] Would remove binary/symlink: {sym}")
+                    else:
+                        sym.unlink()
+                        print(f"  ✓ Removed binary/symlink: {sym}")
+            except (OSError, PermissionError):
+                pass
+
+        # 3. Data directory cleanup (~/.hex)
+        hex_dir = Path.home() / ".hex"
+        should_purge = False
+        if purge:
+            should_purge = True
+        elif not keep_data and not yes:
+            if hex_dir.is_dir():
+                print(f"\nConfiguration and data directory found at: {hex_dir}")
+                print("Options:")
+                print("  [y] Purge all configuration, models, credentials, and task history")
+                print("  [N] Keep data directory (default)")
+                try:
+                    ans = input("Purge data directory? [y/N]: ").strip().lower()
+                    should_purge = ans in ("y", "yes")
+                except (EOFError, KeyboardInterrupt):
+                    should_purge = False
+
+        if should_purge:
+            if hex_dir.is_dir():
+                if dry_run:
+                    print(f"  [dry-run] Would purge data directory: {hex_dir}")
+                else:
+                    try:
+                        shutil.rmtree(hex_dir, ignore_errors=True)
+                        print(f"  ✓ Purged data directory: {hex_dir}")
+                    except OSError as exc:
+                        print(f"  ! Warning: could not completely remove {hex_dir}: {exc}")
+        else:
+            if hex_dir.is_dir():
+                print(f"  ✓ Preserved data directory at: {hex_dir}")
+
+        print("\n" + "=" * 40)
+        if dry_run:
+            print("✓ Dry-run completed. No files were removed.")
+        else:
+            print("✓ HEX CLI environment successfully uninstalled.")
+            print("\nTo remove the Python package itself, run:")
+            print("  pip uninstall -y harness-core\n")
+        return 0
 
     return 0
 
