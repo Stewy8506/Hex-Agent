@@ -16,6 +16,7 @@ import collections
 import json
 import logging
 import re
+import sys
 import tempfile
 import time
 import uuid
@@ -36,7 +37,16 @@ from .providers.base import BudgetExceededError
 from .router import GovernedMemoryService, TwoTierModelRouter
 from .sandbox import ExecutionSandbox, get_default_sandbox
 from .skillspector import SkillSpectorScanner
+from .vendor_paths import get_harness2_dir
 from .webhooks import WebhookConfig, WebhookNotifier
+
+# Vendor path setup for Google Research Harness2
+VENDOR_HARNESS2 = get_harness2_dir()
+if str(VENDOR_HARNESS2) not in sys.path and VENDOR_HARNESS2.is_dir():
+    sys.path.insert(0, str(VENDOR_HARNESS2))
+
+from harness2.core.library import Library, domain_dir, has_experience
+from harness2.substrate.opencode import OPENCODE_SURFACE
 
 
 class HarnessOrchestrator:
@@ -50,6 +60,7 @@ class HarnessOrchestrator:
         sandbox: ExecutionSandbox | None = None,
         repair_patch_generator: Callable[..., list[dict[str, Any]]] | None = None,
         webhook_notifier: WebhookNotifier | None = None,
+        library_root: Path | str | None = None,
     ):
         if str(data_dir) == ":memory:":
             self._temp_mem_dir = tempfile.TemporaryDirectory(prefix="harness_mem_")
@@ -96,6 +107,14 @@ class HarnessOrchestrator:
             self.data_dir / "harness_revisions",
         )
 
+        # Harness2 Experience Library Root
+        if library_root is not None:
+            self.library_root = Path(library_root).resolve()
+        else:
+            self.library_root = (self.data_dir / "harness2_library").resolve()
+        self.library_root.mkdir(parents=True, exist_ok=True)
+        self._domain_libraries: dict[str, Library] = {}
+
         # Register default local worker with dynamic hardware specs
         from .onboard import HardwareProfile
 
@@ -117,6 +136,80 @@ class HarnessOrchestrator:
             local_llm_models=[self.router.local_model_id],
             trust_level="trusted_local",
         )
+
+    def get_domain_library(self, domain: str = "general") -> Library:
+        """Retrieve or lazily create a cached harness2 Library instance for the specified domain."""
+        norm_domain = (domain or "general").strip() or "general"
+        if norm_domain not in self._domain_libraries:
+            self._domain_libraries[norm_domain] = Library(
+                root=self.library_root,
+                domain=norm_domain,
+                surface=OPENCODE_SURFACE,
+            )
+        return self._domain_libraries[norm_domain]
+
+    def record_task_experience(
+        self,
+        task_id: str,
+        domain: str = "general",
+        tree: dict[str, str] | None = None,
+        *,
+        experience: dict[str, str],
+        why: str = "",
+        label: str = "",
+        run_id: str = "",
+    ) -> Path | None:
+        """Records structured post-task experience into the domain's harness2 Library.
+
+        Validates experience structure ('cue', 'lesson', 'evidence') and writes
+        the adopted tree and EXPERIENCE.md, rebuilding INDEX.md.
+        """
+        if not has_experience(experience):
+            logger.warning(
+                "Invalid or incomplete experience payload for task %s in domain %s: %s",
+                task_id,
+                domain,
+                experience,
+            )
+            return None
+
+        if tree is None:
+            # Assemble active harness tree representing current configuration
+            tree = {
+                "systemprompt.md": "# Autonomous Agent System Prompt\nOperating under HEX Workbench.\n",
+                "guardrails.md": "# Guardrails\nEnforce safe tool execution and default-deny policy.\n",
+                "LongTermMEMORY.md": "# Long-Term Memory\n",
+                "tool_descriptions/tool_guidance.md": "# Tool Descriptions\nGuidance on tool execution.\n",
+            }
+            # Scan skills in workspace or repository
+            search_dirs: list[Path] = []
+            if hasattr(self, "default_workspace") and self.default_workspace and Path(self.default_workspace).is_dir():
+                search_dirs.append(Path(self.default_workspace))
+            repo_skills = Path(__file__).resolve().parents[2] / "skills"
+            if repo_skills.is_dir():
+                search_dirs.append(repo_skills.parent)
+
+            for base_p in search_dirs:
+                skills_dir = base_p / "skills"
+                if skills_dir.is_dir():
+                    for skill_file in sorted(skills_dir.glob("*/SKILL.md")):
+                        rel = f"skills/{skill_file.parent.name}/SKILL.md"
+                        if rel not in tree:
+                            try:
+                                tree[rel] = skill_file.read_text(encoding="utf-8", errors="replace")
+                            except Exception:
+                                pass
+
+        lib = self.get_domain_library(domain)
+        entry_path = lib.add(
+            task_id=task_id,
+            harness=tree,
+            why=why or f"Task {task_id} completed successfully.",
+            label=label or task_id,
+            run_id=run_id,
+            experience=experience,
+        )
+        return entry_path
 
     # ------------------------------------------------------------------
     # Task Submission & Execution Entrypoints
@@ -1312,6 +1405,41 @@ class HarnessOrchestrator:
             outcome=mem_outcome,
             workspace_dir=attempt_ws,
         )
+
+        # Record harness2 experience if supplied in constraints or task payload
+        task_constraints = task.get("constraints") or {}
+        exp_payload = task_constraints.get("experience") or task.get("experience")
+        if exp_payload and isinstance(exp_payload, dict):
+            exp_domain = task.get("domain") or task_constraints.get("domain") or "general"
+            exp_why = (
+                task_constraints.get("experience_why")
+                or task.get("experience_why")
+                or f"Task {task_id} verified with proof {ver_outcome['proof']['proof_id']}."
+            )
+            exp_label = task_constraints.get("experience_label") or task.get("experience_label") or task_id
+            exp_entry = self.record_task_experience(
+                task_id=task_id,
+                domain=exp_domain,
+                experience=exp_payload,
+                why=exp_why,
+                label=exp_label,
+            )
+            if exp_entry:
+                self.ledger.record_event(
+                    task_id=task_id,
+                    event_type="HARNESS2_EXPERIENCE_RECORDED",
+                    reason_code="EXPERIENCE_STORED",
+                    attempt_id=attempt_id,
+                    workspace_tree_sha=head_sha,
+                    payload={
+                        "task_id": task_id,
+                        "domain": exp_domain,
+                        "cue": exp_payload.get("cue"),
+                        "lesson": exp_payload.get("lesson"),
+                        "evidence": exp_payload.get("evidence"),
+                        "entry_path": str(exp_entry),
+                    },
+                )
 
         return self.ledger.transition_task(
             task_id,
