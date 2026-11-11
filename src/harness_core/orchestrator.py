@@ -211,6 +211,69 @@ class HarnessOrchestrator:
         )
         return entry_path
 
+    def retrieve_domain_experience(self, domain: str = "general", max_entries: int = 5) -> str:
+        """Retrieves and formats proven domain lessons from Google Research Harness² Library.
+
+        Scans the domain-specific Library index and EXPERIENCE.md records, extracting
+        cues, lessons, and evidence to inject into agent context. Returns empty string if none exist.
+        """
+        lib = self.get_domain_library(domain)
+        if not lib.exists():
+            return ""
+        entries = lib.entries()
+        if not entries:
+            return ""
+
+        # Read latest entries up to max_entries
+        selected_entries = entries[-max_entries:] if len(entries) > max_entries else entries
+        lesson_blocks: list[str] = []
+
+        for tid in selected_entries:
+            exp_file = lib.entry_dir(tid) / "EXPERIENCE.md"
+            if not exp_file.is_file():
+                continue
+            content = exp_file.read_text(encoding="utf-8", errors="replace")
+            cue = ""
+            lesson = ""
+            evidence = ""
+            for line in content.splitlines():
+                line_s = line.strip()
+                if line_s.lower().startswith("- **cue**:"):
+                    cue = line_s.split(":", 1)[1].strip()
+                elif line_s.lower().startswith("- **lesson**:"):
+                    lesson = line_s.split(":", 1)[1].strip()
+                elif line_s.lower().startswith("- **evidence**:"):
+                    evidence = line_s.split(":", 1)[1].strip()
+
+            if cue or lesson or evidence:
+                entry_lines = [
+                    f"- **Cue**: {cue or 'N/A'}",
+                    f"  **Lesson**: {lesson or 'N/A'}",
+                    f"  **Evidence**: {evidence or 'N/A'}",
+                ]
+                lesson_blocks.append("\n".join(entry_lines))
+
+        if not lesson_blocks:
+            return ""
+
+        header = (
+            f"### Proven Domain Lessons (Google Research Harness² Library: {lib.domain})\n"
+            "The following empirical lessons were learned and verified on past tasks in this domain:\n"
+        )
+        return header + "\n\n".join(lesson_blocks)
+
+    def get_domain_experience_summary(self, domain: str = "general") -> dict[str, Any]:
+        """Provides a structured summary of stored experiences in a domain for diagnostics and status."""
+        lib = self.get_domain_library(domain)
+        entries = lib.entries()
+        return {
+            "domain": lib.domain,
+            "total_entries": len(entries),
+            "entries": entries,
+            "index_path": str(lib.index),
+            "has_context": lib.context_dir() is not None,
+        }
+
     # ------------------------------------------------------------------
     # Task Submission & Execution Entrypoints
     # ------------------------------------------------------------------
@@ -432,6 +495,8 @@ class HarnessOrchestrator:
 
         task = self.ledger.get_task(task_id) or {}
         proj_id = task.get("project_id") or "default"
+        domain = task.get("domain") or task.get("constraints", {}).get("domain") or "general"
+        domain_lessons_ctx = self.retrieve_domain_experience(domain)
         memory_lessons_ctx = ""
         if hasattr(self.memory, "retrieve_graphify_lessons_context"):
             try:
@@ -457,6 +522,7 @@ class HarnessOrchestrator:
         )
         cacheable_context_prefix = (
             (f"{arch_summary}\n\n" if arch_summary else "")
+            + (f"{domain_lessons_ctx}\n\n" if domain_lessons_ctx else "")
             + (f"{memory_lessons_ctx}\n\n" if memory_lessons_ctx else "")
             + f"[AST Blast Radius Report]\nWarning: {blast_warning}\nImpacted Symbols: {impacted_symbols}\n\n"
             + f"[Surgical Source Code Context]\n{code_context_str}"
