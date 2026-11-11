@@ -81,9 +81,9 @@ If launching HEX on a clean machine without configured API keys, running bare `h
   [ ] Use Local Offline Model (Apple Silicon MLX / Ollama — Zero egress)
 ```
 
-The 4-step onboarding wizard configures:
-1. **Primary Model Brain & Auth**: Auto-detects local Google Antigravity OAuth sessions (`~/.gemini`), accepts Anthropic/OpenAI/Gemini keys with live validation, or sets local MLX/Ollama.
-2. **Autonomous Web Search Engine**: Zero-key DuckDuckGo (free, instant), Tavily Search API, or Brave Search API.
+The 4-step setup wizard configures:
+1. **Primary Model Brain & Live Model Discovery**: Authenticates first (auto-detects local Google Antigravity OAuth sessions, browser PKCE OAuth flow, or validates API keys), then queries provider endpoints live (`fetchAvailableModels`, `/v1/models`, `/v1beta/models`, `/api/tags`) with strict 3.0s timeouts and resilient offline fallback badging (`[offline fallback]`).
+2. **Autonomous Web Search Engine**: Zero-key DuckDuckGo (free, instant), Tavily Search API, Brave Search API, or Air-gapped (Disabled).
 3. **Remote Messaging & Bot Gateways**: Telegram Bot token + allowed user IDs, Discord Bot token + webhook, or Skip.
 4. **Machine Hardware & Isolation**: Auto-detects APFS clonefiles / Linux OverlayFS and sandbox profile.
 Credentials and configs are saved securely to `~/.hex/credentials.env` (chmod 0600) and `~/.hex/config.yaml`, and injected into `os.environ` in real time.
@@ -96,6 +96,7 @@ hex setup
 hex project list
 hex project add /path/to/my-repo
 hex project use my-repo
+hex project switch
 
 # Import local Antigravity IDE OAuth session & inspect live quota windows:
 hex auth antigravity --import-ide --status
@@ -233,10 +234,10 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 | `/fork` | Speculative | Fork active task into parallel speculative CoW worktree branches |
 | `/skills` | Capabilities | List registered skills with NVIDIA SkillSpector risk scores and gate decisions |
 | `/scan <dir>` | Security | Run on-demand NVIDIA SkillSpector static + OSV + M4 semantic scan on a skill bundle |
-| `/model [name]` | Model Routing | Inspect or switch active model routing profile (or switch to `antigravity`) |
-| `/compressor [local\|cloud]` | Model Routing | Switch Tier-1 log compressor between local M4 MLX (`$0`) and cloud (`Flash`/`Haiku`) |
-| `/budget` | Telemetry | Display session token usage, compression ratio, and cumulative USD spend |
+| `/model [name]` | Model Routing | Inspect or switch active model routing profile via live provider discovery |
 | `/quota` / `/antigravity` | Antigravity | Inspect active Google Antigravity OAuth session, plan tier, and per-model quota windows |
+| `/project [name\|list]` | Workspace | Inspect current project workspace or interactively switch project context |
+| `/compressor [local\|cloud]` | Model Routing | Switch Tier-1 log compressor between local M4 MLX (`$0`) and cloud (`Flash`/`Haiku`) |
 | `/memory [query]` | Memory | Search governed memories with live AST code-hash staleness badges (`[STALE - CODE CHANGED]`) |
 | `/remember <k>: <v>` | Memory | Record a governed project memory anchored to workspace AST provenance |
 | `/reflect` / `/lessons` | Memory | Run deterministic Graphify work-memory reflection and display `.hex/reflections/LESSONS.md` |
@@ -257,11 +258,12 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 
 ## 🛠️ Complete CLI & Self-Healing Diagnostics Surface
 
-HEX ships a unified 19-subcommand CLI (`hex` and `harness`):
+HEX ships a unified 23-subcommand CLI (`hex` and `harness`):
 
 ```text
 hex
-├── onboard      # Interactive hardware auto-profiling, Antigravity OAuth & config wizard
+├── setup        # Interactive hardware auto-profiling, live model discovery & config wizard (alias: onboard)
+├── project      # Manage persistent workspace registry and switch projects (list, add, use, switch)
 ├── auth         # Manage Google Antigravity OAuth credentials (--import-ide, --auth-url, --status)
 ├── quota        # Inspect live Google Antigravity per-model quota windows and reset timers
 ├── doctor       # 8-category system diagnostics, environment auditing, and self-healing (--fix, --live)

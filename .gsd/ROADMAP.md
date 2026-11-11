@@ -164,9 +164,9 @@
 [x] Phase 14: Antigravity Interactive OAuth, Model Selection & TUI Crash Hardening
     [x] 14-01: Token Probing, Browser PKCE OAuth & Model Selection
     [x] 14-02: TUI Crash Resilience, Automatic OAuth Refresh & Test Suite
-[ ] Phase 15: Live API Model Discovery & Project-Scoped Workspaces
-    [ ] 15-01: Live Dynamic Model Discovery Engine
-    [ ] 15-02: Project Workspace Registry & Daily Project Switcher
+[x] Phase 15: Live API Model Discovery & Project-Scoped Workspaces
+    [x] 15-01: Live Dynamic Model Discovery Engine
+    [x] 15-02: Project Workspace Registry & Daily Project Switcher
 ```
 
 ### Phase 13: Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration
