@@ -214,12 +214,21 @@
     - Completely purged all hardcoded mock artifacts (`v1.3.0`, `M4 MLX`, `wrk_m4_air_local`, `mock-key`).
     - Authored 21 unit and integration tests across `tests/test_ui_selector_and_web_search.py` and `tests/test_auto_setup_and_polish.py` (415/415 total repository tests passing with zero regressions).
 
+29. **Phase 14 Antigravity Interactive OAuth, Model Selection & TUI Crash Hardening Complete (Plans 14-01 & 14-02):**
+    - Implemented `_probe_antigravity_token` in `src/harness_core/onboard.py` to validate OAuth tokens before declaring active session ($0 Day-1 Free Tier).
+    - Added interactive browser PKCE OAuth 2.0 handoff (`webbrowser.open`) and manual token entry in onboarding when unauthenticated.
+    - Added interactive model selection menus for Antigravity (`gemini-2.5-pro` default, `gemini-2.5-flash`, `claude-3-5-sonnet`), Anthropic, OpenAI, and Gemini; purged all fictitious `gemini-3.5-pro` references.
+    - Streamlined setup menus: simplified search option label to `"Disabled"` and removed redundant execution sandbox interactive prompt.
+    - Hardened TUI against provider errors: `handle_user_prompt` in `src/harness_core/tui.py` catches `ProviderUnavailableError` and HTTP 401 exceptions, rendering a styled error card with remediation tips without crashing the REPL loop.
+    - Added automatic token refresh in `AntigravityModelProvider.generate()` on HTTP 401 when `refresh_token` exists, silently recovering expired sessions.
+    - Authored 7 unit and integration tests in `tests/test_antigravity_oauth_and_tui_resilience.py` (422/422 total repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (415/415 tests green).
-- Milestone M5 Phase 13 is 100% complete and verified.
+- None. Full repository test suite passing cleanly with zero failures (422/422 tests green).
+- Milestone M5 Phases 13 and 14 are 100% complete and verified.
 
 ---
 
@@ -242,7 +251,7 @@ All 5 Product Pillars and Hermes Parity enhancements are fully delivered, empiri
 
 ## 4. Next Actions
 
-- All phases complete with 386/386 passing tests. Ready for final presentation to user.
+- All phases complete with 422/422 passing tests. Ready for final presentation to user.
 
 
 

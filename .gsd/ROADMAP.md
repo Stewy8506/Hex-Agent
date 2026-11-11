@@ -161,6 +161,9 @@
 [x] Phase 13: Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration
     [x] 13-01: Terminal UI Selector, Environment Hydration & Autonomous Web Search
     [x] 13-02: Interactive Onboarding Wizard, Auto-Setup Interceptor & Harness Polish
+[x] Phase 14: Antigravity Interactive OAuth, Model Selection & TUI Crash Hardening
+    [x] 14-01: Token Probing, Browser PKCE OAuth & Model Selection
+    [x] 14-02: TUI Crash Resilience, Automatic OAuth Refresh & Test Suite
 ```
 
 ### Phase 13: Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration
@@ -173,3 +176,14 @@
   - First-run startup interceptor in `cli.py` detecting zero-key unconfigured state and guiding setup.
   - Purged hardcoded dummy artifacts (`v1.3.0`, `M4 MLX`, `wrk_m4_air_local`, `mock-key`).
 - **Verification:** Unit and integration test suites passing in `tests/test_ui_selector_and_web_search.py` and `tests/test_auto_setup_and_polish.py`, with 100% green full-repository verification.
+
+### Phase 14: Antigravity Interactive OAuth, Model Selection & TUI Crash Hardening
+- **Goal:** Resolve live operator issues during first-run onboarding: validate Antigravity tokens before accepting, provide browser PKCE OAuth sign-in fallback, replace fictitious model strings with real production models, simplify search prompts, and prevent TUI crashes on provider authentication errors.
+- **Must-haves:**
+  - `_probe_antigravity_token()` validating discovered tokens against Google Cloud companion API before declaring active.
+  - Interactive browser PKCE OAuth 2.0 flow (`webbrowser.open`) or manual token entry in onboarding when unauthenticated.
+  - Production model selection (`gemini-2.5-pro` default, `gemini-2.5-flash`, `claude-3-5-sonnet`) across `onboard.py`, `router.py`, `doctor.py`, and `cli.py`.
+  - Simplified search label (`Disabled`) and silent hardware profiling without redundant sandbox questions.
+  - TUI crash resilience: catch `ProviderUnavailableError` and HTTP 401 cleanly with remediation commands (`hex auth antigravity --auth-url`, `/model`, `hex onboard`).
+  - Automatic token refresh in `AntigravityModelProvider` upon HTTP 401 when `refresh_token` is present.
+- **Verification:** Unit and integration tests in `tests/test_antigravity_oauth_and_tui_resilience.py` (7/7 tests passing) and 422/422 repository tests 100% green.
