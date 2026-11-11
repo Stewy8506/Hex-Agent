@@ -322,6 +322,10 @@ TOOL_CATEGORY_MAP: dict[str, str] = {
     "list_files": "file",
     "query_graphify": "ast_graph",
     "web_search": "search",
+    "lsp_diagnostics": "lsp_compiler",
+    "lsp_definition": "lsp_compiler",
+    "lsp_references": "lsp_compiler",
+    "lsp_hover": "lsp_compiler",
     "run_tests": "verification",
     "git_push_remote": "git_ops",
     "modify_system_policy": "policy_guard",
@@ -745,6 +749,7 @@ def render_hermes_splash(
     else:
         grouped_tools = {
             "file": ["list_files", "read_file", "write_file"],
+            "lsp_compiler": ["lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover"],
             "search": ["web_search"],
             "ast_graph": ["query_graphify"],
             "verification": ["run_tests"],
@@ -1076,6 +1081,8 @@ class HexConsole:
             self._cmd_doctor(arg)
         elif cmd == "/recipe":
             self._cmd_recipe()
+        elif cmd in ("/lsp", "/compiler"):
+            self._cmd_lsp(arg)
         elif cmd == "/backup":
             self._cmd_backup()
         elif cmd == "/dump":
@@ -1118,6 +1125,7 @@ class HexConsole:
             ("/search <query>", "Run SQLite FTS5 BM25 search across tasks, logs, and tool calls"),
             ("/doctor [--fix]", "Run 8-category system health diagnostics and self-healing"),
             ("/recipe", "Auto-detect project bootstrap, build, test, and start recipes"),
+            ("/lsp [status|diag]", "Inspect language servers and query compiler diagnostics"),
             ("/backup", "Create a quick zip backup of state, config, and ledger"),
             ("/dump", "Generate plain-text system diagnostic dump with secret redaction"),
             ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
@@ -1592,6 +1600,98 @@ class HexConsole:
         print(f"  Test:      {rcp.test}")
         print(f"  Start:     {rcp.start or 'None'}")
         print()
+
+    def _cmd_lsp(self, arg: str = "") -> None:
+        from .lsp.manager import LSPManager
+        from .lsp.registry import LanguageServerRegistry
+
+        reg = LanguageServerRegistry()
+        tokens = arg.strip().split()
+        subaction = tokens[0].lower() if tokens else ""
+        target_file = tokens[1] if len(tokens) > 1 else None
+
+        mgr = getattr(self.orchestrator, "lsp_manager", None)
+        created_mgr = False
+        if mgr is None:
+            mgr = LSPManager(workspace_root=self.workspace_root, registry=reg)
+            created_mgr = True
+
+        try:
+            if subaction in ("status", "servers"):
+                specs = reg.get_all_specs()
+                detected_specs = reg.detect_workspace_servers(self.workspace_root)
+                detected_langs = {s.language_id for s in detected_specs}
+
+                print(f"\n{ANSI_BOLD}{ANSI_CYAN}Polyglot Language Server Status ({Path(self.workspace_root).name}):{ANSI_RESET}")
+                header = f"  {'LANGUAGE':<12} {'SERVER':<26} {'STATUS':<14} {'EXTENSIONS'}"
+                print(f"{ANSI_BOLD}{header}{ANSI_RESET}")
+                print(f"  {'-' * (len(header) - 2)}")
+                for spec in specs:
+                    installed_bin = spec.resolve_binary()
+                    badge = f"{ANSI_GREEN}[INSTALLED]{ANSI_RESET}" if installed_bin else f"{ANSI_DIM}[NOT FOUND]{ANSI_RESET}"
+                    det = " *" if spec.language_id in detected_langs else ""
+                    exts = ", ".join(spec.file_extensions)
+                    print(f"  {spec.language_id + det:<12} {spec.server_name:<26} {badge:<23} {exts}")
+                print(f"\n{ANSI_DIM}  (* = detected in workspace root){ANSI_RESET}\n")
+
+            elif subaction in ("diagnostics", "diag"):
+                f_path = (self.workspace_root / target_file).resolve() if target_file else None
+                if f_path and f_path.is_file():
+                    mgr.sync_file(f_path)
+                    diags = mgr.get_diagnostics(file_path=f_path)
+                else:
+                    diags = mgr.get_diagnostics()
+
+                errors = [d for d in diags if d.severity == 1 or getattr(d, "severity_name", "") == "ERROR"]
+                warnings = [d for d in diags if d.severity == 2 or getattr(d, "severity_name", "") == "WARNING"]
+
+                scope_label = target_file if target_file else "Workspace"
+                print(f"\n{ANSI_BOLD}{ANSI_CYAN}LSP Compiler Diagnostics — {scope_label}:{ANSI_RESET}")
+                print(f"  Errors: {ANSI_RED}{len(errors)}{ANSI_RESET} | Warnings: {ANSI_YELLOW}{len(warnings)}{ANSI_RESET} | Total: {len(diags)}")
+
+                if not diags:
+                    print(f"  {ANSI_GREEN}No compiler syntax errors or warnings detected.{ANSI_RESET}\n")
+                else:
+                    print()
+                    for d in diags:
+                        rel_p = str(d.file_path)
+                        try:
+                            rel_p = str(Path(d.file_path).relative_to(self.workspace_root))
+                        except Exception:
+                            pass
+                        sev_badge = f"{ANSI_RED}[ERROR]{ANSI_RESET}" if d.severity == 1 or getattr(d, "severity_name", "") == "ERROR" else f"{ANSI_YELLOW}[WARN]{ANSI_RESET}"
+                        code_str = f" [{d.code}]" if getattr(d, "code", None) else ""
+                        print(f"  {rel_p}:{d.line + 1}:{d.character + 1} {sev_badge}{code_str} {d.message}")
+                    print()
+
+            else:
+                detected_specs = reg.detect_workspace_servers(self.workspace_root)
+                installed_detected = [s for s in detected_specs if s.resolve_binary()]
+                diags = mgr.get_diagnostics()
+                errors = [d for d in diags if d.severity == 1 or getattr(d, "severity_name", "") == "ERROR"]
+                warnings = [d for d in diags if d.severity == 2 or getattr(d, "severity_name", "") == "WARNING"]
+
+                print(f"\n{ANSI_BOLD}{ANSI_CYAN}Language Server Protocol (LSP) Gateway Summary:{ANSI_RESET}")
+                print(f"  Workspace:        {self.workspace_root}")
+                active_langs = mgr.active_languages
+                print(f"  Active Servers:   {', '.join(active_langs) if active_langs else '(none running)'}")
+                detected_names = [f"{s.language_id}:{s.server_name}" for s in installed_detected]
+                print(f"  Detected Specs:   {', '.join(detected_names) if detected_names else '(none installed)'}")
+                print(f"  Compiler Status:  Errors: {ANSI_RED}{len(errors)}{ANSI_RESET} | Warnings: {ANSI_YELLOW}{len(warnings)}{ANSI_RESET}")
+                if errors:
+                    print(f"\n{ANSI_BOLD}{ANSI_RED}Top Fatal Syntax / Compiler Errors:{ANSI_RESET}")
+                    for d in errors[:5]:
+                        rel_p = str(d.file_path)
+                        try:
+                            rel_p = str(Path(d.file_path).relative_to(self.workspace_root))
+                        except Exception:
+                            pass
+                        print(f"  • {rel_p}:{d.line + 1}:{d.character + 1} - {d.message}")
+                print(f"\n{ANSI_DIM}  Use '/lsp status' for full server matrix, '/lsp diagnostics [file]' for details.{ANSI_RESET}\n")
+
+        finally:
+            if created_mgr:
+                mgr.close_all()
 
     def _cmd_backup(self) -> None:
         from .backup import create_backup

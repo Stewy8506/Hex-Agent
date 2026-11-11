@@ -552,7 +552,16 @@ class ToolGateway:
                 }
             if target_path.is_file():
                 mgr.sync_file(target_path)
-            diags = mgr.get_diagnostics(file_path=target_path, severity=severity)
+                # Bounded poll for async publishDiagnostics notification from language server
+                start_t = time.time()
+                diags = []
+                while time.time() - start_t < 0.6:
+                    diags = mgr.get_diagnostics(file_path=target_path, severity=severity)
+                    if diags:
+                        break
+                    time.sleep(0.02)
+            else:
+                diags = mgr.get_diagnostics(file_path=target_path, severity=severity)
         else:
             diags = mgr.get_diagnostics(severity=severity)
 

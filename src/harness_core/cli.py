@@ -297,6 +297,33 @@ def main(argv: list[str] | None = None) -> int:
     p_ref.add_argument("--workspace", default=None, help="Custom project workspace root")
     p_ref.add_argument("--json", action="store_true", help="Output raw JSON reflection aggregate")
 
+    p_lsp = sub.add_parser("lsp", help="Language Server Protocol (LSP) diagnostics and symbol inspection")
+    p_lsp_sub = p_lsp.add_subparsers(dest="lsp_cmd", help="LSP subcommands")
+
+    p_lsp_stat = p_lsp_sub.add_parser("status", help="Inspect active and detected language servers")
+    p_lsp_stat.add_argument("--workspace", default=None, help="Workspace directory")
+    p_lsp_stat.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_lsp_diag = p_lsp_sub.add_parser("diagnostics", help="Query compiler syntax errors, type mismatches, and linter warnings")
+    p_lsp_diag.add_argument("--file", "-f", default=None, help="Specific file path")
+    p_lsp_diag.add_argument("--errors-only", "-e", action="store_true", help="Filter to fatal compiler/syntax errors only")
+    p_lsp_diag.add_argument("--workspace", default=None, help="Workspace directory")
+    p_lsp_diag.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_lsp_def = p_lsp_sub.add_parser("definition", help="Find symbol definition location")
+    p_lsp_def.add_argument("file", help="Source file path")
+    p_lsp_def.add_argument("line", type=int, help="Line number (1-based)")
+    p_lsp_def.add_argument("character", type=int, help="Column number (1-based)")
+    p_lsp_def.add_argument("--workspace", default=None, help="Workspace directory")
+    p_lsp_def.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_lsp_hov = p_lsp_sub.add_parser("hover", help="Retrieve hover documentation and type signatures")
+    p_lsp_hov.add_argument("file", help="Source file path")
+    p_lsp_hov.add_argument("line", type=int, help="Line number (1-based)")
+    p_lsp_hov.add_argument("character", type=int, help="Column number (1-based)")
+    p_lsp_hov.add_argument("--workspace", default=None, help="Workspace directory")
+    p_lsp_hov.add_argument("--json", action="store_true", help="Output JSON")
+
     args = parser.parse_args(argv)
 
     from .config_loader import load_hex_environment
@@ -1169,6 +1196,118 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(res.get("lessons_markdown") or "No work-memory lessons recorded yet.")
         return 0
+
+    if args.cmd == "lsp":
+        from .lsp.manager import LSPManager
+        from .lsp.registry import LanguageServerRegistry
+
+        ws = Path(getattr(args, "workspace", None) or repo_root).resolve()
+        reg = LanguageServerRegistry()
+        lsp_action = getattr(args, "lsp_cmd", None) or "status"
+
+        if lsp_action == "status":
+            specs = reg.get_all_specs()
+            detected_specs = reg.detect_workspace_servers(ws)
+            detected_langs = {s.language_id for s in detected_specs}
+
+            status_list = []
+            for spec in specs:
+                installed_bin = spec.resolve_binary()
+                is_detected = spec.language_id in detected_langs
+                status_list.append({
+                    "language": spec.language_id,
+                    "server": spec.server_name,
+                    "status": "INSTALLED" if installed_bin else "NOT FOUND",
+                    "binary": installed_bin,
+                    "detected_in_workspace": is_detected,
+                    "extensions": list(spec.file_extensions),
+                })
+
+            if getattr(args, "json", False):
+                print(json.dumps(status_list, indent=2))
+            else:
+                print(f"\nPolyglot Language Server Registry ({ws.name}):\n")
+                header = f"{'LANGUAGE':<12} {'SERVER':<26} {'STATUS':<14} {'EXTENSIONS'}"
+                print(header)
+                print("-" * len(header))
+                for item in status_list:
+                    badge = f"\033[32m[INSTALLED]\033[0m" if item["status"] == "INSTALLED" else "\033[90m[NOT FOUND]\033[0m"
+                    exts = ", ".join(item["extensions"])
+                    det = " *" if item["detected_in_workspace"] else ""
+                    print(f"{item['language'] + det:<12} {item['server']:<26} {badge:<23} {exts}")
+                print("\n(* = active file types detected in workspace root)")
+            return 0
+
+        elif lsp_action == "diagnostics":
+            with LSPManager(workspace_root=ws, registry=reg) as mgr:
+                file_arg = getattr(args, "file", None)
+                errors_only = getattr(args, "errors_only", False)
+                sev = "error" if errors_only else "all"
+
+                if file_arg:
+                    f_path = (ws / file_arg).resolve() if not Path(file_arg).is_absolute() else Path(file_arg).resolve()
+                    if f_path.is_file():
+                        mgr.sync_file(f_path)
+                    diags = mgr.get_diagnostics(file_path=f_path, severity=sev)
+                else:
+                    diags = mgr.get_diagnostics(severity=sev)
+
+                diag_dicts = [d.to_dict() for d in diags]
+                error_count = sum(1 for d in diags if d.severity == 1 or getattr(d, "severity_name", "") == "ERROR")
+                if getattr(args, "json", False):
+                    print(json.dumps({
+                        "diagnostics": diag_dicts,
+                        "error_count": error_count,
+                        "total_count": len(diag_dicts),
+                    }, indent=2))
+                else:
+                    if not diags:
+                        print("No compiler diagnostics found.")
+                    else:
+                        print(f"\nCompiler Diagnostics ({len(diags)}):")
+                        for d in diags:
+                            rel_p = str(d.file_path)
+                            try:
+                                rel_p = str(Path(d.file_path).relative_to(ws))
+                            except Exception:
+                                pass
+                            sev_color = "\033[31m" if d.severity == 1 or getattr(d, "severity_name", "") == "ERROR" else "\033[33m"
+                            code_str = f" [{d.code}]" if getattr(d, "code", None) else ""
+                            print(f" {rel_p}:{d.line + 1}:{d.character + 1} - {sev_color}{d.severity_name}\033[0m{code_str}: {d.message}")
+            return 0
+
+        elif lsp_action == "definition":
+            with LSPManager(workspace_root=ws, registry=reg) as mgr:
+                f_path = (ws / args.file).resolve() if not Path(args.file).is_absolute() else Path(args.file).resolve()
+                defs = mgr.get_definition(f_path, args.line, args.character)
+                if getattr(args, "json", False):
+                    print(json.dumps({"definitions": defs}, indent=2))
+                else:
+                    if not defs:
+                        print(f"No definition found for {args.file}:{args.line}:{args.character}")
+                    else:
+                        for item in defs:
+                            rel_p = str(item["file"])
+                            try:
+                                rel_p = str(Path(item["file"]).relative_to(ws))
+                            except Exception:
+                                pass
+                            print(f"Definition: {rel_p}:{item['line']}:{item['character']}")
+            return 0
+
+        elif lsp_action == "hover":
+            with LSPManager(workspace_root=ws, registry=reg) as mgr:
+                f_path = (ws / args.file).resolve() if not Path(args.file).is_absolute() else Path(args.file).resolve()
+                hover = mgr.get_hover(f_path, args.line, args.character)
+                if getattr(args, "json", False):
+                    print(json.dumps({"hover": hover or {"contents": ""}}, indent=2))
+                else:
+                    if not hover or not hover.get("contents"):
+                        print(f"No hover information for {args.file}:{args.line}:{args.character}")
+                    else:
+                        print(f"\nHover Information ({args.file}:{args.line}:{args.character}):")
+                        print(hover["contents"])
+            return 0
 
     return 0
 
