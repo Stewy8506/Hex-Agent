@@ -2,9 +2,9 @@
 
 **Date:** 2026-11-11  
 **Current Milestone:** M7 (Polyglot LSP Gateway & Real-Time Hands-Free Voice)  
-**Status:** In Progress — Phase 16 Complete (480/480 tests green); Planning Phase 17  
-**Active Phase:** Phase 17 (Real-Time Hands-Free Voice & Speech Pair-Programming)  
-**Completed Plans:** Plans 01-01 through 16-02 Complete (480/480 tests green)  
+**Status:** Complete — All 17 Phases Delivered (491/491 tests green, 0 regressions)  
+**Active Phase:** All Phases (01–17) Complete  
+**Completed Plans:** All Plans (01-01 through 17-02) Complete  
 
 ---
 
@@ -243,12 +243,21 @@
     - Added CLI command `hex lsp` (`status`, `diagnostics`, `definition`, `hover`) and TUI `/lsp` slash command.
     - Authored 25 unit and integration tests across `tests/test_lsp_client.py` and `tests/test_lsp_gateway_and_repair.py` (480/480 repository tests passing with zero regressions).
 
+32. **Phase 17 Real-Time Hands-Free Voice & Speech Pair-Programming Complete (Plans 17-01 & 17-02):**
+    - Implemented `VoiceConfig` and asynchronous `VoiceEngine` worker thread with zero external C/audio dependencies (`src/harness_core/voice.py`).
+    - Built platform speech synthesis supporting macOS `say`, Linux `espeak`/`aplay`, and mock fallback, with sequential non-blocking playback, rate clamping (80-400 wpm), and instant mute toggles.
+    - Implemented `clean_text_for_speech` sanitizing markdown headers, bold/italic markers, raw URLs, and replacing raw code fences with natural spoken placeholders.
+    - Added 9th diagnostic category ("Audio Hardware & Speech") to `HexDoctor` in `src/harness_core/doctor.py`.
+    - Added `/voice` TUI slash command suite (`on`, `off`, `mute`, `status`, `rate`, `voice`) and dynamic status bar badges (`🎙️ ON`, `🔇 MUTED`, `🎙️ OFF`).
+    - Added CLI standalone command `hex voice` and `--voice`, `--voice-name`, `--speech-rate` options across `hex` and `hex chat`.
+    - Authored unit and integration tests in `tests/test_voice_engine.py` (491/491 total repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (480/480 tests green).
-- Milestone M7 Phase 16 is 100% complete and verified. Moving to Phase 17.
+- None. Full repository test suite passing cleanly with zero failures (491/491 tests green).
+- Milestone M7 is 100% complete and verified. All 17 phases delivered.
 
 ---
 
@@ -271,10 +280,9 @@ All 5 Product Pillars and Hermes Parity enhancements are fully delivered, empiri
 
 ## 4. Next Actions
 
-- Author Phase 17 plans (17-01-PLAN.md, 17-02-PLAN.md) for Real-Time Hands-Free Voice & Speech Pair-Programming.
-- Execute Plan 17-01: Audio Capture, Speech-to-Text & Text-to-Speech Engine.
-- Execute Plan 17-02: Interactive TUI Voice Mode & Hands-Free Conversation Loop.
-- Deliver Phase 17 and conclude Milestone M7.
+- Milestone M7 (Phases 16 and 17) is 100% complete, verified, and shipping with 491/491 tests green.
+- Synchronize `README.md` with Phase 17 voice capabilities and full command tree documentation.
+- Maintain repository health and support user workflow operations.
 
 
 

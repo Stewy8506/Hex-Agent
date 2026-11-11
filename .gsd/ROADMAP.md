@@ -213,9 +213,9 @@
 [x] Phase 16: Polyglot Language Server Protocol (LSP) Gateway & Compiler Diagnostic Interceptor
     [x] 16-01: Polyglot LSP Client Core & Stdio Transport
     [x] 16-02: Tool Gateway Registration & Autonomous Repair Pre-Flight Interceptor
-[ ] Phase 17: Real-Time Hands-Free Voice & Speech Pair-Programming
-    [ ] 17-01: Audio Capture, Speech-to-Text & Text-to-Speech Engine
-    [ ] 17-02: Interactive TUI Voice Mode & Hands-Free Conversation Loop
+[x] Phase 17: Real-Time Hands-Free Voice & Speech Pair-Programming
+    [x] 17-01: Audio Capture, Speech-to-Text & Text-to-Speech Engine
+    [x] 17-02: Interactive TUI Voice Mode & Hands-Free Conversation Loop
 ```
 
 ### Phase 16: Polyglot Language Server Protocol (LSP) Gateway & Compiler Diagnostic Interceptor
