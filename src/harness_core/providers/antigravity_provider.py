@@ -55,7 +55,7 @@ ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com"
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json"
-DEFAULT_FALLBACK_PROJECT_ID = "rising-fact-p41fc"
+DEFAULT_FALLBACK_PROJECT_ID = "aicode-consumers"
 DEFAULT_REDIRECT_URI = "http://localhost:51121/oauth-callback"
 
 ANTIGRAVITY_SCOPES: tuple[str, ...] = (
@@ -276,7 +276,7 @@ def fetch_available_models(
     if not tok:
         return list(ANTIGRAVITY_FALLBACK_MODELS)
 
-    url_base = base_url or "https://cloudaicompanion.googleapis.com"
+    url_base = base_url or ANTIGRAVITY_PROD_ENDPOINT
     models_url = f"{url_base}/v1internal:fetchAvailableModels"
     headers = {
         "Authorization": f"Bearer {tok}",
@@ -291,6 +291,32 @@ def fetch_available_models(
             }
         ),
     }
+
+    # If project_id not explicitly supplied, check if loadCodeAssist provides a specific project
+    if not project_id and proj == DEFAULT_FALLBACK_PROJECT_ID:
+        try:
+            load_url = f"{url_base}/v1internal:loadCodeAssist"
+            load_body = json.dumps(
+                {
+                    "metadata": {
+                        "ideType": "ANTIGRAVITY",
+                        "platform": "PLATFORM_UNSPECIFIED",
+                        "pluginType": "GEMINI",
+                    }
+                }
+            ).encode("utf-8")
+            load_req = urllib.request.Request(load_url, data=load_body, headers=headers, method="POST")
+            with urllib.request.urlopen(load_req, timeout=min(timeout, 2.0)) as l_resp:
+                if l_resp.status in (200, 201):
+                    l_data = json.loads(l_resp.read().decode("utf-8"))
+                    l_proj = l_data.get("cloudaicompanionProject")
+                    if isinstance(l_proj, str) and l_proj.strip():
+                        proj = l_proj.strip()
+                    elif isinstance(l_proj, dict) and l_proj.get("id"):
+                        proj = str(l_proj["id"]).strip()
+        except Exception:
+            pass
+
     body = json.dumps({"project": proj}).encode("utf-8")
     req = urllib.request.Request(models_url, data=body, headers=headers, method="POST")
 
@@ -305,6 +331,9 @@ def fetch_available_models(
                     for mid, minfo in models_dict.items():
                         if not isinstance(minfo, dict):
                             continue
+                        # Filter out internal IDE tab completion and raw preview models
+                        if mid.startswith("tab_") or mid.startswith("chat_"):
+                            continue
                         disp = str(minfo.get("displayName") or mid)
                         qinfo = minfo.get("quotaInfo")
                         if isinstance(qinfo, dict) and "remainingFraction" in qinfo:
@@ -318,6 +347,17 @@ def fetch_available_models(
                             label = disp
                         parsed.append((str(mid), label))
                     if parsed:
+                        priority_order = [
+                            "gemini-2.5-pro",
+                            "gemini-2.5-flash",
+                            "claude-sonnet-4-6",
+                            "claude-opus-4-6-thinking",
+                            "gpt-oss-120b-medium",
+                            "gemini-3.1-flash-lite",
+                        ]
+                        def _sort_key(item: tuple[str, str]) -> int:
+                            return priority_order.index(item[0]) if item[0] in priority_order else 100
+                        parsed.sort(key=_sort_key)
                         return parsed
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
         pass
@@ -449,10 +489,39 @@ class AntigravityOAuthManager:
         data = json.loads(body.decode("utf-8"))
         expires_in = int(data.get("expires_in", 3600))
         expires_at_ms = int((time.time() + expires_in - 300) * 1000)
+        access_tok = str(data.get("access_token", ""))
+        refresh_tok = str(data.get("refresh_token", ""))
+
+        project_id = DEFAULT_FALLBACK_PROJECT_ID
+        plan_tier = "Antigravity ($0 Free Tier)"
+        try:
+            load_url = f"{ANTIGRAVITY_PROD_ENDPOINT}/v1internal:loadCodeAssist"
+            headers_load = {
+                "Authorization": f"Bearer {access_tok}",
+                "Content-Type": "application/json",
+                "User-Agent": "antigravity",
+                "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+                "Client-Metadata": json.dumps({"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}),
+            }
+            body_load = json.dumps({"metadata": {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}}).encode("utf-8")
+            status_l, body_l = self._http_request(load_url, headers_load, body_load, "POST")
+            if status_l in (200, 201):
+                l_data = json.loads(body_l.decode("utf-8"))
+                p = l_data.get("cloudaicompanionProject")
+                if isinstance(p, str) and p.strip():
+                    project_id = p.strip()
+                tier = l_data.get("currentTier")
+                if isinstance(tier, dict) and tier.get("name"):
+                    plan_tier = str(tier["name"])
+        except Exception:
+            pass
+
         cred = AntigravityCredential(
-            access_token=str(data.get("access_token", "")),
-            refresh_token=str(data.get("refresh_token", "")),
+            access_token=access_tok,
+            refresh_token=refresh_tok,
             expires_at_ms=expires_at_ms,
+            project_id=project_id,
+            plan_tier=plan_tier,
             source="pkce_oauth",
         )
         self.save_credential(cred)

@@ -120,7 +120,7 @@ def _probe_antigravity_token(token: str) -> bool:
     if not token or not token.strip():
         return False
     import urllib.request
-    url = "https://cloudaicompanion.googleapis.com/v1internal:loadCodeAssist"
+    url = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
     headers = {
         "Authorization": f"Bearer {token.strip()}",
         "Content-Type": "application/json",
