@@ -2,9 +2,9 @@
 
 **Date:** 2026-11-11  
 **Current Milestone:** M7 (Polyglot LSP Gateway & Real-Time Hands-Free Voice)  
-**Status:** In Progress — Executing Phase 16 (Polyglot LSP Gateway)  
-**Active Phase:** Phase 16 (Polyglot LSP Gateway & Compiler Diagnostic Interceptor)  
-**Completed Plans:** Plans 01-01 through 15-02 Complete (455/455 tests green)  
+**Status:** In Progress — Phase 16 Complete (480/480 tests green); Planning Phase 17  
+**Active Phase:** Phase 17 (Real-Time Hands-Free Voice & Speech Pair-Programming)  
+**Completed Plans:** Plans 01-01 through 16-02 Complete (480/480 tests green)  
 
 ---
 
@@ -234,12 +234,21 @@
     - Globally migrated command from `hex onboard` to `hex setup` (preserving `hex onboard` as backwards-compatible alias).
     - Authored comprehensive test suite in `tests/test_project_registry_and_workspace.py` (20 tests) and `tests/test_live_model_discovery.py` (13 tests) (455/455 total repository tests passing with zero regressions).
 
+31. **Phase 16 Polyglot Language Server Protocol (LSP) Gateway Complete (Plans 16-01 & 16-02):**
+    - Implemented zero-dependency `StdioLSPTransport` with HTTP-style `Content-Length` framing, request/response demuxing, and background IO threads (`src/harness_core/lsp/client.py`).
+    - Built `LanguageServerRegistry` supporting 6 major language families: Python (`pyright`, `pylsp`, `ruff`), TypeScript/JavaScript (`typescript-language-server`, `vtsls`), Go (`gopls`), Rust (`rust-analyzer`), C/C++ (`clangd`), and Java (`jdtls`).
+    - Implemented `LSPManager` managing per-workspace server lifecycles, document sync (`didOpen`, `didChange`), and diagnostic aggregation (`publishDiagnostics`).
+    - Registered 4 read-only R1 tools in `ToolGateway`: `lsp_diagnostics`, `lsp_definition`, `lsp_references`, and `lsp_hover`.
+    - Integrated compiler pre-flight gate into `HarnessOrchestrator` repair loop: short-circuits test runs on compiler syntax/type errors and records hash-chained `LSP_COMPILER_PREFLIGHT_FAILED` task events.
+    - Added CLI command `hex lsp` (`status`, `diagnostics`, `definition`, `hover`) and TUI `/lsp` slash command.
+    - Authored 25 unit and integration tests across `tests/test_lsp_client.py` and `tests/test_lsp_gateway_and_repair.py` (480/480 repository tests passing with zero regressions).
+
 ---
 
 ## 2. Blockers & Dependencies
 
-- None. Full repository test suite passing cleanly with zero failures (455/455 tests green).
-- Milestone M6 Phase 15 is 100% complete and verified.
+- None. Full repository test suite passing cleanly with zero failures (480/480 tests green).
+- Milestone M7 Phase 16 is 100% complete and verified. Moving to Phase 17.
 
 ---
 
@@ -262,10 +271,10 @@ All 5 Product Pillars and Hermes Parity enhancements are fully delivered, empiri
 
 ## 4. Next Actions
 
-- Author Phase 16 plans (16-01-PLAN.md, 16-02-PLAN.md) for Polyglot LSP Gateway.
-- Implement LSP Client with stdio JSON-RPC 2.0 transport for Python, TypeScript/JavaScript, Go, Rust, C/C++, Java.
-- Wire LSP diagnostics into ToolGateway and autonomous repair loop.
-- Deliver Phase 17 for Real-Time Hands-Free Voice & Speech Pair-Programming.
+- Author Phase 17 plans (17-01-PLAN.md, 17-02-PLAN.md) for Real-Time Hands-Free Voice & Speech Pair-Programming.
+- Execute Plan 17-01: Audio Capture, Speech-to-Text & Text-to-Speech Engine.
+- Execute Plan 17-02: Interactive TUI Voice Mode & Hands-Free Conversation Loop.
+- Deliver Phase 17 and conclude Milestone M7.
 
 
 

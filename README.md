@@ -126,6 +126,10 @@ hex search "router compression"
 
 # Run deterministic Graphify work-memory reflection (.hex/reflections/LESSONS.md)
 hex reflect
+
+# Query compiler diagnostics, syntax errors, and language server status across all major languages
+hex lsp status
+hex lsp diagnostics
 ```
 
 ---
@@ -237,6 +241,7 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 | `/model [name]` | Model Routing | Inspect or switch active model routing profile via live provider discovery |
 | `/quota` / `/antigravity` | Antigravity | Inspect active Google Antigravity OAuth session, plan tier, and per-model quota windows |
 | `/project [name\|list]` | Workspace | Inspect current project workspace or interactively switch project context |
+| `/lsp [status\|diagnostics]` | Compiler & LSP | Inspect language servers (Pyright, TS, Gopls, rust-analyzer, clangd, jdtls) and compiler diagnostics |
 | `/compressor [local\|cloud]` | Model Routing | Switch Tier-1 log compressor between local M4 MLX (`$0`) and cloud (`Flash`/`Haiku`) |
 | `/memory [query]` | Memory | Search governed memories with live AST code-hash staleness badges (`[STALE - CODE CHANGED]`) |
 | `/remember <k>: <v>` | Memory | Record a governed project memory anchored to workspace AST provenance |
@@ -258,12 +263,13 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 
 ## 🛠️ Complete CLI & Self-Healing Diagnostics Surface
 
-HEX ships a unified 23-subcommand CLI (`hex` and `harness`):
+HEX ships a unified 24-subcommand CLI (`hex` and `harness`):
 
 ```text
 hex
 ├── setup        # Interactive hardware auto-profiling, live model discovery & config wizard (alias: onboard)
 ├── project      # Manage persistent workspace registry and switch projects (list, add, use, switch)
+├── lsp          # Polyglot Language Server Protocol gateway (status, diagnostics, definition, hover)
 ├── auth         # Manage Google Antigravity OAuth credentials (--import-ide, --auth-url, --status)
 ├── quota        # Inspect live Google Antigravity per-model quota windows and reset timers
 ├── doctor       # 8-category system diagnostics, environment auditing, and self-healing (--fix, --live)
@@ -293,7 +299,7 @@ hex
 
 ### R0–R4 Default-Deny Tool Gateway & NVIDIA SkillSpector
 - **R0 (Read-Only):** `list_files`, `read_file` — Auto-approved, Fast-Path eligible (`<15ms`), 0ms journal cached.
-- **R1 (Scoped Analysis & Research):** `query_graphify`, `web_search` — Auto-approved AST analysis and autonomous multi-engine web search (DuckDuckGo zero-key default, Tavily, Brave).
+- **R1 (Scoped Analysis & Research):** `query_graphify`, `web_search`, `lsp_diagnostics`, `lsp_definition`, `lsp_references`, `lsp_hover` — Auto-approved AST analysis, autonomous multi-engine web search, and polyglot compiler diagnostics.
 - **R2 (Scoped Workspace Write / Test):** `write_file`, `run_tests` — Isolated inside Copy-on-Write clone; triggers pre-flight AST blast-radius & circular import check + auto-detected `hex recipe` test runner.
 - **R3 (External Egress / Git Push):** `git_push_remote`, external MCP mutations — Secret scrubber (`redact_secrets`) + mandatory human approval via TUI `[y/n/d/s/q]` or interactive Telegram/Discord webhook cards (`/v1/approvals/{id}:decide`).
 - **R4 (Destructive / Policy Mutation):** `modify_system_policy`, protected files (`policy.yaml`, `.env`, `secrets.json`) — **Hard-blocked by default** (`PolicyBlockedError`).
