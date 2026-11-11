@@ -12,7 +12,12 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from harness_core.lsp.client import LSPClient, LSPDiagnostic
+from harness_core.lsp.client import (
+    LSPClient,
+    LSPDiagnostic,
+    path_to_uri,
+    uri_to_path,
+)
 from harness_core.lsp.registry import LanguageServerRegistry, LanguageServerSpec
 
 logger = logging.getLogger(__name__)
@@ -134,6 +139,105 @@ class LSPManager:
                     results.append(d)
 
         return results
+
+    def get_definition(
+        self,
+        file_path: Path | str,
+        line: int,
+        character: int,
+        timeout: float = 10.0,
+    ) -> list[dict[str, Any]]:
+        """Query symbol definition locations at 1-based line/character."""
+        try:
+            client = self.get_client_for_file(file_path, auto_start=True, timeout=timeout)
+            if not client:
+                return []
+            l_idx = max(0, line - 1) if line > 0 else 0
+            c_idx = max(0, character - 1) if character > 0 else 0
+            raw = client.get_definition(file_path, l_idx, c_idx, timeout=timeout)
+            results: list[dict[str, Any]] = []
+            for item in raw:
+                uri = item.get("uri") or item.get("targetUri", "")
+                target_file = uri_to_path(uri) if uri else str(file_path)
+                rng = item.get("range") or item.get("targetSelectionRange") or item.get("targetRange") or {}
+                start = rng.get("start", {})
+                results.append({
+                    "file": target_file,
+                    "line": start.get("line", 0) + 1,
+                    "character": start.get("character", 0) + 1,
+                })
+            return results
+        except Exception as exc:
+            logger.debug("LSP get_definition error: %s", exc)
+            return []
+
+    def get_references(
+        self,
+        file_path: Path | str,
+        line: int,
+        character: int,
+        include_declaration: bool = True,
+        timeout: float = 10.0,
+    ) -> list[dict[str, Any]]:
+        """Query symbol references at 1-based line/character."""
+        try:
+            client = self.get_client_for_file(file_path, auto_start=True, timeout=timeout)
+            if not client:
+                return []
+            l_idx = max(0, line - 1) if line > 0 else 0
+            c_idx = max(0, character - 1) if character > 0 else 0
+            raw = client.get_references(file_path, l_idx, c_idx, include_declaration=include_declaration, timeout=timeout)
+            results: list[dict[str, Any]] = []
+            for item in raw:
+                uri = item.get("uri") or ""
+                target_file = uri_to_path(uri) if uri else str(file_path)
+                rng = item.get("range", {})
+                start = rng.get("start", {})
+                results.append({
+                    "file": target_file,
+                    "line": start.get("line", 0) + 1,
+                    "character": start.get("character", 0) + 1,
+                })
+            return results
+        except Exception as exc:
+            logger.debug("LSP get_references error: %s", exc)
+            return []
+
+    def get_hover(
+        self,
+        file_path: Path | str,
+        line: int,
+        character: int,
+        timeout: float = 10.0,
+    ) -> dict[str, Any] | None:
+        """Query hover tooltip at 1-based line/character."""
+        try:
+            client = self.get_client_for_file(file_path, auto_start=True, timeout=timeout)
+            if not client:
+                return None
+            l_idx = max(0, line - 1) if line > 0 else 0
+            c_idx = max(0, character - 1) if character > 0 else 0
+            raw = client.get_hover(file_path, l_idx, c_idx, timeout=timeout)
+            if not raw:
+                return None
+            contents = raw.get("contents")
+            contents_str = ""
+            if isinstance(contents, str):
+                contents_str = contents
+            elif isinstance(contents, dict):
+                contents_str = contents.get("value", "")
+            elif isinstance(contents, list):
+                parts = []
+                for p in contents:
+                    if isinstance(p, str):
+                        parts.append(p)
+                    elif isinstance(p, dict):
+                        parts.append(p.get("value", ""))
+                contents_str = "\n".join(parts)
+            return {"contents": contents_str}
+        except Exception as exc:
+            logger.debug("LSP get_hover error: %s", exc)
+            return None
 
     def close_all(self, timeout: float = 3.0) -> None:
         """Gracefully shut down all running language servers."""

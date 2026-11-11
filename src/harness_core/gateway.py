@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 from .db import LedgerStore, canonical_json, sha256_hex
 from .graphify import ActiveGraphifyAdapter
+from .lsp.manager import LSPManager
 from .mcp_client import MCPClientAdapter, MCPToolDefinition
 from .models import PolicyDecisionType, RiskClass
 from .sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
@@ -88,14 +89,23 @@ class ToolGateway:
         graphify: ActiveGraphifyAdapter | None = None,
         sandbox: ExecutionSandbox | None = None,
         notifier: WebhookNotifier | None = None,
+        lsp_manager: LSPManager | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
         self.sandbox = sandbox or get_default_sandbox()
         self.notifier = notifier
+        self.lsp_manager = lsp_manager
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
         self._register_builtin_tools()
+
+    def _get_lsp_manager(self, workspace_dir: Path) -> LSPManager:
+        if self.lsp_manager is None:
+            self.lsp_manager = LSPManager(workspace_root=workspace_dir)
+        elif self.lsp_manager.workspace_root is None:
+            self.lsp_manager.workspace_root = Path(workspace_dir).resolve()
+        return self.lsp_manager
 
     def register_tool(self, spec: ToolSpec) -> None:
         self.tools[spec.tool_id] = spec
@@ -190,6 +200,38 @@ class ToolGateway:
                 description="Search the live web for technical documentation, compiler error solutions, and API references (R1).",
                 risk_class=RiskClass.R1,
                 handler=self._tool_web_search,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="lsp_diagnostics",
+                description="Query compiler syntax errors, type mismatches, and linter warnings from active language servers across workspace or specific file (R1).",
+                risk_class=RiskClass.R1,
+                handler=self._tool_lsp_diagnostics,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="lsp_definition",
+                description="Find symbol definition URI, line, and column coordinates using language server (R1).",
+                risk_class=RiskClass.R1,
+                handler=self._tool_lsp_definition,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="lsp_references",
+                description="Find all reference locations and call sites for a symbol across the workspace (R1).",
+                risk_class=RiskClass.R1,
+                handler=self._tool_lsp_references,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="lsp_hover",
+                description="Retrieve type signatures and markdown docstrings for a symbol at coordinates (R1).",
+                risk_class=RiskClass.R1,
+                handler=self._tool_lsp_hover,
             )
         )
         self.register_tool(
@@ -489,6 +531,101 @@ class ToolGateway:
         max_results = int(args.get("max_results", 5))
         provider = str(args.get("provider", "auto"))
         return execute_web_search(query=query, max_results=max_results, provider=provider)
+
+    def _tool_lsp_diagnostics(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        mgr = self._get_lsp_manager(workspace_dir)
+        file_path_arg = args.get("file_path") or args.get("path")
+        severity = args.get("severity", "all")
+
+        if file_path_arg:
+            target_path = self._resolve_confined_path(workspace_dir, str(file_path_arg)) if not Path(str(file_path_arg)).is_absolute() else Path(str(file_path_arg))
+            spec = mgr.registry.find_server_for_file(target_path, require_installed=True)
+            if not spec:
+                spec_uninstalled = mgr.registry.find_server_for_file(target_path, require_installed=False)
+                return {
+                    "status": "no_server_available",
+                    "language": spec_uninstalled.language_id if spec_uninstalled else "unknown",
+                    "diagnostics": [],
+                    "error_count": 0,
+                    "warning_count": 0,
+                    "total_count": 0,
+                }
+            if target_path.is_file():
+                mgr.sync_file(target_path)
+            diags = mgr.get_diagnostics(file_path=target_path, severity=severity)
+        else:
+            diags = mgr.get_diagnostics(severity=severity)
+
+        diag_dicts = [d.to_dict() for d in diags]
+        error_count = sum(1 for d in diags if d.severity == 1 or d.severity_name == "ERROR")
+        warning_count = sum(1 for d in diags if d.severity == 2 or d.severity_name == "WARNING")
+
+        return {
+            "diagnostics": diag_dicts,
+            "error_count": error_count,
+            "warning_count": warning_count,
+            "total_count": len(diag_dicts),
+        }
+
+    def _tool_lsp_definition(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        mgr = self._get_lsp_manager(workspace_dir)
+        file_path_arg = args.get("file_path") or args.get("path")
+        if not file_path_arg:
+            return {"definitions": []}
+        target_path = self._resolve_confined_path(workspace_dir, str(file_path_arg)) if not Path(str(file_path_arg)).is_absolute() else Path(str(file_path_arg))
+        spec = mgr.registry.find_server_for_file(target_path, require_installed=True)
+        if not spec:
+            spec_uninstalled = mgr.registry.find_server_for_file(target_path, require_installed=False)
+            return {
+                "status": "no_server_available",
+                "language": spec_uninstalled.language_id if spec_uninstalled else "unknown",
+                "definitions": [],
+            }
+        line = int(args.get("line", 1))
+        character = int(args.get("character", 1))
+        defs = mgr.get_definition(target_path, line, character)
+        return {"definitions": defs}
+
+    def _tool_lsp_references(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        mgr = self._get_lsp_manager(workspace_dir)
+        file_path_arg = args.get("file_path") or args.get("path")
+        if not file_path_arg:
+            return {"references": []}
+        target_path = self._resolve_confined_path(workspace_dir, str(file_path_arg)) if not Path(str(file_path_arg)).is_absolute() else Path(str(file_path_arg))
+        spec = mgr.registry.find_server_for_file(target_path, require_installed=True)
+        if not spec:
+            spec_uninstalled = mgr.registry.find_server_for_file(target_path, require_installed=False)
+            return {
+                "status": "no_server_available",
+                "language": spec_uninstalled.language_id if spec_uninstalled else "unknown",
+                "references": [],
+            }
+        line = int(args.get("line", 1))
+        character = int(args.get("character", 1))
+        include_decl = bool(args.get("include_declaration", True))
+        refs = mgr.get_references(target_path, line, character, include_declaration=include_decl)
+        return {"references": refs}
+
+    def _tool_lsp_hover(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        mgr = self._get_lsp_manager(workspace_dir)
+        file_path_arg = args.get("file_path") or args.get("path")
+        if not file_path_arg:
+            return {"hover": {"contents": ""}}
+        target_path = self._resolve_confined_path(workspace_dir, str(file_path_arg)) if not Path(str(file_path_arg)).is_absolute() else Path(str(file_path_arg))
+        spec = mgr.registry.find_server_for_file(target_path, require_installed=True)
+        if not spec:
+            spec_uninstalled = mgr.registry.find_server_for_file(target_path, require_installed=False)
+            return {
+                "status": "no_server_available",
+                "language": spec_uninstalled.language_id if spec_uninstalled else "unknown",
+                "hover": {"contents": ""},
+            }
+        line = int(args.get("line", 1))
+        character = int(args.get("character", 1))
+        hover_data = mgr.get_hover(target_path, line, character)
+        if not hover_data:
+            return {"hover": {"contents": ""}}
+        return {"hover": hover_data}
 
     def _tool_write_file(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         target = self._resolve_confined_path(workspace_dir, str(args["path"]))
