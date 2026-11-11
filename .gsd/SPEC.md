@@ -55,3 +55,32 @@ Every implementation task must produce empirical verification output before mark
 - **Security & Skills:** Adversarial skill test cases quarantined with 100% recall.
 - **Proof-Carrying Artifacts:** Verifiable JSON manifests with diff SHA-256, tree hashes, test hashes, and signed event hashes.
 
+---
+
+## 4. Milestone M7: Polyglot LSP Gateway & Real-Time Hands-Free Voice
+
+### 4.1 Polyglot Language Server Protocol (LSP) Gateway
+- **Major Language Support:** Auto-detection and stdio JSON-RPC 2.0 lifecycle management for:
+  - Python: `pyright`, `pylsp`, `ruff`
+  - TypeScript / JavaScript: `typescript-language-server`, `vtsls`
+  - Go: `gopls`
+  - Rust: `rust-analyzer`
+  - C / C++: `clangd`
+  - Java: `jdtls`
+- **LSP Capabilities & Tools:**
+  - `lsp_diagnostics`: Aggregate compiler syntax errors, type mismatches, and linter warnings across dirty and open files.
+  - `lsp_definition`: Query symbol definition URI, line, and column coordinates.
+  - `lsp_references`: Discover all call sites and symbol usages across the codebase.
+  - `lsp_hover`: Retrieve type signatures and markdown docstrings.
+- **Autonomous Repair Integration:** Pre-flight compiler verification after CoW patch application before test execution to prune broken repairs early.
+- **CLI & TUI Ergonomics:** `hex lsp [check|diagnostics|status]` and `/lsp` TUI slash command.
+
+### 4.2 Real-Time Hands-Free Voice & Speech Pair-Programming
+- **Speech Capture & STT:** Audio capture with Voice Activity Detection (VAD) and speech-to-text transcription (macOS native speech recognition / local Whisper / Gemini Live streaming).
+- **Speech Synthesis (TTS):** Low-latency audio playback for agent responses (macOS native `say` / neural TTS) with mute toggle.
+- **Hands-Free Console Integration:**
+  - `/voice [on|off]` TUI toggle with visible microphone status indicators.
+  - `hex chat --voice` and `hex voice` standalone voice console.
+  - Push-to-talk (`Space` hold) and hands-free conversational loop.
+  - Health check in `hex doctor` auditing microphone and audio playback availability.
+

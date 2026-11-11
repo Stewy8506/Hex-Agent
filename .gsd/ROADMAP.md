@@ -205,3 +205,36 @@
   - CLI command `hex project [list|add|use|switch]`.
 - **Verification:** Comprehensive unit and integration test suites in `tests/test_live_model_discovery.py` and `tests/test_project_registry_and_workspace.py`.
 
+---
+
+## Milestone M7: Polyglot LSP Gateway & Real-Time Hands-Free Voice
+
+```
+[ ] Phase 16: Polyglot Language Server Protocol (LSP) Gateway & Compiler Diagnostic Interceptor
+    [ ] 16-01: Polyglot LSP Client Core & Stdio Transport
+    [ ] 16-02: Tool Gateway Registration & Autonomous Repair Pre-Flight Interceptor
+[ ] Phase 17: Real-Time Hands-Free Voice & Speech Pair-Programming
+    [ ] 17-01: Audio Capture, Speech-to-Text & Text-to-Speech Engine
+    [ ] 17-02: Interactive TUI Voice Mode & Hands-Free Conversation Loop
+```
+
+### Phase 16: Polyglot Language Server Protocol (LSP) Gateway & Compiler Diagnostic Interceptor
+- **Goal:** Implement native Language Server Protocol (LSP) client support for all major programming languages (Python, TypeScript/JavaScript, Go, Rust, C/C++, Java), expose compiler diagnostics and navigation through `ToolGateway`, and integrate compiler pre-flight validation directly into the autonomous repair loop.
+- **Must-haves:**
+  - Multi-language server detection & lifecycle manager (`LSPManager`) supporting `pyright`/`pylsp`/`ruff` (Python), `typescript-language-server`/`vtsls` (TS/JS), `gopls` (Go), `rust-analyzer` (Rust), `clangd` (C/C++), and `jdtls` (Java).
+  - Stdio JSON-RPC 2.0 transport with initialization handshake, document synchronization (`didOpen`, `didChange`), and diagnostic tracking (`publishDiagnostics`).
+  - Read-only tools in `ToolGateway`: `lsp_diagnostics` (file/workspace error & warning aggregation), `lsp_definition` (go-to-definition), `lsp_references` (find call sites), and `lsp_hover` (type signatures and docstrings).
+  - Compiler pre-flight gate in `HarnessOrchestrator`: validate repaired files against language server diagnostics before running slow verification suites.
+  - CLI command `hex lsp [diagnostics|status|definition]` and TUI `/lsp` command.
+- **Verification:** Unit and integration test suites proving JSON-RPC message framing, mock/real LSP server lifecycle, diagnostic extraction, definition navigation, and repair pre-flight gating.
+
+### Phase 17: Real-Time Hands-Free Voice & Speech Pair-Programming
+- **Goal:** Add real-time hands-free voice conversation to HEX, enabling speech-to-text voice commands, spoken audio responses from the agent, and seamless switching between voice and keyboard modes.
+- **Must-haves:**
+  - Modular audio capture and speech recognition engine (`VoiceEngine`) supporting native platform speech (macOS `NSSpeechRecognizer` / AVFoundation / `say`), local Whisper STT, or cloud speech streaming.
+  - Speech synthesis (TTS) for agent responses with configurable speed, voice selection, and instant mute toggle (`Ctrl+M` / `/voice mute`).
+  - Interactive voice mode in TUI: `/voice` slash command, `hex chat --voice`, and push-to-talk / continuous voice activity detection (VAD).
+  - Audio diagnostic in `hex doctor` validating microphone access and audio output hardware.
+- **Verification:** Unit and integration tests for audio pipeline framing, transcript dispatch, TTS synthesis invocation, and TUI voice mode state transitions.
+
+
