@@ -589,6 +589,25 @@ tmp/
 """
         gitignore_file.write_text(gitignore_content, encoding="utf-8")
 
+    reflections_dir = hex_dir / "reflections"
+    reflections_dir.mkdir(parents=True, exist_ok=True)
+    lessons_file = reflections_dir / "LESSONS.md"
+    if not lessons_file.exists():
+        lessons_file.write_text(
+            f"# Project Reflections & Work Memory: {repo.name}\n\n## Lessons Learned\n",
+            encoding="utf-8",
+        )
+
+    data_dir = hex_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from .project_registry import ProjectRegistry
+
+        ProjectRegistry().register_project(repo, name=repo.name, stack=stack_info["stack"])
+    except Exception:
+        pass
+
     return {
         "project_name": repo.name,
         "stack": stack_info["stack"],
