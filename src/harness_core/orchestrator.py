@@ -15,6 +15,7 @@ from __future__ import annotations
 import collections
 import json
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -142,6 +143,108 @@ class HarnessOrchestrator:
             local_llm_models=[self.router.local_model_id],
             trust_level="trusted_local",
         )
+
+    def set_active_model(self, model_id: str, durable: bool = True) -> tuple[str, str, Path | None]:
+        """Synchronously switch active model on router, provider, and durable config."""
+        clean_id = model_id.strip()
+        if hasattr(self, "router") and self.router is not None:
+            self.router.set_active_model(clean_id)
+            prov = getattr(self.router.cloud_provider, "provider_id", "cloud")
+        else:
+            prov = "unknown"
+
+        saved_path: Path | None = None
+        if durable:
+            cand = self.default_workspace / ".hex" / "config.yaml"
+            if cand.is_file():
+                saved_path = cand
+            else:
+                saved_path = Path.home() / ".hex" / "config.yaml"
+
+            try:
+                from .onboard import update_config_yaml_model
+
+                update_config_yaml_model(
+                    saved_path,
+                    cloud_provider=prov if prov != "google_antigravity" else "antigravity",
+                    cloud_model_id=clean_id,
+                    profile=getattr(getattr(self, "router", None), "profile", "antigravity_hybrid"),
+                )
+            except Exception:
+                saved_path = None
+
+        return prov, clean_id, saved_path
+
+    def switch_project(
+        self,
+        new_workspace_root: Path | str,
+        new_project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically switch workspace, rebind all services, and hydrate environment."""
+        new_ws = Path(new_workspace_root).resolve()
+        new_ws.mkdir(parents=True, exist_ok=True)
+        self.default_workspace = new_ws
+
+        # 1. Hydrate project-scoped environment
+        try:
+            from .config_loader import load_hex_environment
+
+            load_hex_environment(workspace_root=new_ws, override=True)
+        except Exception:
+            pass
+
+        # 2. Rebind workspace-scoped services
+        self.graphify = ActiveGraphifyAdapter(new_ws)
+        self.lsp_manager = LSPManager(new_ws)
+        if hasattr(self, "gateway"):
+            self.gateway.graphify = self.graphify
+            self.gateway.lsp_manager = self.lsp_manager
+        if hasattr(self, "memory"):
+            self.memory.graphify = self.graphify
+        if hasattr(self, "proof_service"):
+            self.proof_service.graphify = self.graphify
+
+        # 3. Rebuild model router from new project configuration
+        config_candidate = new_ws / ".hex" / "config.yaml"
+        new_provider = None
+        new_model = None
+        new_comp = None
+        if config_candidate.is_file():
+            try:
+                from .config_loader import parse_config_yaml
+
+                cdata = parse_config_yaml(config_candidate)
+                msec = cdata.get("model") or cdata.get("models") or {}
+                if isinstance(msec, dict):
+                    new_provider = msec.get("cloud_provider")
+                    new_model = msec.get("cloud_model_id")
+                    new_comp = msec.get("compressor_mode")
+            except Exception:
+                pass
+
+        self.router = TwoTierModelRouter(
+            cloud_provider_type=new_provider or os.getenv("HEX_CLOUD_PROVIDER"),
+            cloud_model_id=new_model or os.getenv("HEX_CLOUD_MODEL_ID"),
+            compressor_mode=new_comp or os.getenv("HEX_COMPRESSOR_MODE") or os.getenv("HARNESS_COMPRESSOR_MODE"),
+        )
+
+        # 4. Touch active in project registry
+        try:
+            from .project_registry import ProjectRegistry
+
+            reg = ProjectRegistry()
+            reg.touch_active(new_ws)
+        except Exception:
+            pass
+
+        return {
+            "workspace_root": str(new_ws),
+            "project_id": new_project_id or new_ws.name,
+            "cloud_model_id": self.router.cloud_model_id,
+            "cloud_provider": getattr(getattr(self.router, "cloud_provider", None), "provider_id", "cloud"),
+            "compressor_mode": self.router.compressor_mode,
+            "config_path": str(config_candidate) if config_candidate.is_file() else "",
+        }
 
     def get_domain_library(self, domain: str = "general") -> Library:
         """Retrieve or lazily create a cached harness2 Library instance for the specified domain."""
@@ -381,10 +484,21 @@ class HarnessOrchestrator:
             payload={"lane": "R0_R1_FAST_PATH"},
         )
 
-        steps = (task.get("constraints") or {}).get("requested_steps") or [
-            {"step_id": "fp_list", "tool_id": "list_files", "args": {}, "risk_class": "R0"},
-            {"step_id": "fp_graph", "tool_id": "query_graphify", "args": {}, "risk_class": "R1"},
-        ]
+        goal = (task.get("goal") or "").strip()
+        g_clean = re.sub(r"[?!.,]", "", goal.lower()).strip()
+        is_greeting = g_clean in {
+            "hey", "hi", "hello", "yo", "greetings", "howdy",
+            "good morning", "good evening", "good afternoon",
+            "who are you", "what are you", "help",
+        } or (len(g_clean) <= 12 and g_clean.split()[0] in {"hey", "hi", "hello"})
+
+        if is_greeting:
+            steps = []
+        else:
+            steps = (task.get("constraints") or {}).get("requested_steps") or [
+                {"step_id": "fp_list", "tool_id": "list_files", "args": {}, "risk_class": "R0"},
+                {"step_id": "fp_graph", "tool_id": "query_graphify", "args": {}, "risk_class": "R1"},
+            ]
 
         tool_results: list[dict[str, Any]] = []
         try:
@@ -418,22 +532,28 @@ class HarnessOrchestrator:
         synthesized_text = ""
         if hasattr(self, "router") and self.router is not None:
             try:
-                findings_blocks = []
-                for tr in tool_results:
-                    tid = tr["tool_id"]
-                    r_dict = tr.get("result") or {}
-                    if isinstance(r_dict, dict):
-                        clean_dict = {k: v for k, v in r_dict.items() if not k.startswith("_")}
-                    else:
-                        clean_dict = r_dict
-                    findings_blocks.append(f"Tool `{tid}` output:\n{json.dumps(clean_dict, default=str)[:3000]}")
+                if is_greeting:
+                    prompt = (
+                        f"User Request: {goal}\n\n"
+                        "Respond directly, helpfully, and warmly as HEX, the Autonomous AI Workbench."
+                    )
+                else:
+                    findings_blocks = []
+                    for tr in tool_results:
+                        tid = tr["tool_id"]
+                        r_dict = tr.get("result") or {}
+                        if isinstance(r_dict, dict):
+                            clean_dict = {k: v for k, v in r_dict.items() if not k.startswith("_")}
+                        else:
+                            clean_dict = r_dict
+                        findings_blocks.append(f"Tool `{tid}` output:\n{json.dumps(clean_dict, default=str)[:3000]}")
 
-                context_str = "\n\n".join(findings_blocks)
-                prompt = (
-                    f"User Request / Goal: {task.get('goal', '')}\n\n"
-                    f"Workspace Context & Findings:\n{context_str}\n\n"
-                    "Synthesize a direct, helpful, and concise response to the user's prompt based on the workspace findings."
-                )
+                    context_str = "\n\n".join(findings_blocks)
+                    prompt = (
+                        f"User Request / Goal: {goal}\n\n"
+                        f"Workspace Context & Findings:\n{context_str}\n\n"
+                        "Synthesize a direct, helpful, and concise response to the user's prompt based on the workspace findings."
+                    )
                 decision, model_resp = self.router.execute_routed_request(
                     prompt=prompt,
                     task_class="synthesis",
@@ -443,8 +563,8 @@ class HarnessOrchestrator:
                 )
                 if model_resp and getattr(model_resp, "text", None):
                     synthesized_text = model_resp.text.strip()
-            except Exception:
-                pass
+            except Exception as synth_exc:
+                synthesized_text = f"I completed task execution, but encountered an error synthesizing the response: {synth_exc}"
 
         self.ledger.transition_task(
             task_id,
@@ -466,6 +586,17 @@ class HarnessOrchestrator:
             status="SUCCEEDED",
             head_tree_sha=base_tree_sha,
         )
+        if synthesized_text and hasattr(self.ledger, "conn"):
+            try:
+                with self.ledger._lock:
+                    self.ledger.conn.execute(
+                        "UPDATE tasks SET deliverable = ? WHERE task_id = ?",
+                        (synthesized_text, task_id),
+                    )
+                    self.ledger.conn.commit()
+            except Exception:
+                pass
+
         return self.ledger.transition_task(
             task_id,
             TaskState.SUCCEEDED,

@@ -64,7 +64,7 @@ class HardwareProfile:
                 has_metal = True
                 try:
                     out = subprocess.check_output(
-                        ["sysctl", "-n", "machdep.cpu.brand_string"], text=True
+                        ["sysctl", "-n", "machdep.cpu.brand_string"], text=True, stderr=subprocess.DEVNULL
                     ).strip()
                     if out:
                         machine_model = out
@@ -73,7 +73,7 @@ class HardwareProfile:
 
             try:
                 mem_bytes = int(
-                    subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip()
+                    subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, stderr=subprocess.DEVNULL).strip()
                 )
                 ram_gb = round(mem_bytes / (1024**3), 1)
             except Exception:
@@ -454,10 +454,13 @@ def run_onboard_wizard(
                     m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
                     chosen_mid = model_options[m_idx][0]
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                    print(f"  ✓ Active model selected: {cloud_model_id}\n")
                 else:
-                    manual_mid = prompt_secret(f"  Enter {provider_title} Model ID: ")
-                    cloud_model_id = manual_mid.strip() if manual_mid else (existing_model_id or "")
-                print(f"  ✓ Active model selected: {cloud_model_id}\n")
+                    print(f"  ℹ [Offline/Manual Entry] Live model discovery was unavailable for {provider_title}.")
+                    default_mid = existing_model_id or "gemini-3-flash"
+                    manual_mid = input(f"  Enter {provider_title} Model ID (default: {default_mid}): ").strip()
+                    cloud_model_id = manual_mid or default_mid
+                    print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
 
             elif selected_provider_key == "anthropic":
                 cloud_provider = "anthropic"
@@ -494,10 +497,13 @@ def run_onboard_wizard(
                     m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
                     chosen_mid = model_options[m_idx][0]
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                    print(f"  ✓ Active model selected: {cloud_model_id}\n")
                 else:
-                    manual_mid = prompt_secret(f"  Enter {provider_title} Model ID: ")
-                    cloud_model_id = manual_mid.strip() if manual_mid else (existing_model_id or "")
-                print(f"  ✓ Active model selected: {cloud_model_id}\n")
+                    print(f"  ℹ [Offline/Manual Entry] Live model discovery was unavailable for {provider_title}.")
+                    default_mid = existing_model_id or "claude-3-5-sonnet"
+                    manual_mid = input(f"  Enter {provider_title} Model ID (default: {default_mid}): ").strip()
+                    cloud_model_id = manual_mid or default_mid
+                    print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
 
             elif selected_provider_key == "openai":
                 cloud_provider = "openai"
@@ -534,10 +540,13 @@ def run_onboard_wizard(
                     m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
                     chosen_mid = model_options[m_idx][0]
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                    print(f"  ✓ Active model selected: {cloud_model_id}\n")
                 else:
-                    manual_mid = prompt_secret(f"  Enter {provider_title} Model ID: ")
-                    cloud_model_id = manual_mid.strip() if manual_mid else (existing_model_id or "")
-                print(f"  ✓ Active model selected: {cloud_model_id}\n")
+                    print(f"  ℹ [Offline/Manual Entry] Live model discovery was unavailable for {provider_title}.")
+                    default_mid = existing_model_id or "gpt-4o"
+                    manual_mid = input(f"  Enter {provider_title} Model ID (default: {default_mid}): ").strip()
+                    cloud_model_id = manual_mid or default_mid
+                    print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
 
             elif selected_provider_key == "gemini":
                 cloud_provider = "gemini"
@@ -574,10 +583,13 @@ def run_onboard_wizard(
                     m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
                     chosen_mid = model_options[m_idx][0]
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                    print(f"  ✓ Active model selected: {cloud_model_id}\n")
                 else:
-                    manual_mid = prompt_secret(f"  Enter {provider_title} Model ID: ")
-                    cloud_model_id = manual_mid.strip() if manual_mid else (existing_model_id or "")
-                print(f"  ✓ Active model selected: {cloud_model_id}\n")
+                    print(f"  ℹ [Offline/Manual Entry] Live model discovery was unavailable for {provider_title}.")
+                    default_mid = existing_model_id or "gemini-2.5-pro"
+                    manual_mid = input(f"  Enter {provider_title} Model ID (default: {default_mid}): ").strip()
+                    cloud_model_id = manual_mid or default_mid
+                    print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
 
             elif selected_provider_key == "local":
                 cloud_provider = "local"
@@ -609,8 +621,8 @@ def run_onboard_wizard(
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
                 else:
                     print("  ℹ No local models discovered in Ollama or HuggingFace/LM-Studio cache.")
-                    manual_model = prompt_secret("  Enter Local Model Path or HuggingFace ID / Tag: ")
-                    cloud_model_id = manual_model.strip() if manual_model and manual_model.strip() else (existing_model_id or "local_model")
+                    manual_model = input("  Enter Local Model Path or HuggingFace ID / Tag: ").strip()
+                    cloud_model_id = manual_model if manual_model else (existing_model_id or "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
                 print("  ✓ Local offline profile configured. Zero external network egress.\n")
 
         # Step 2: Web Search Provider Selection

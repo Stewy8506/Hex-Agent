@@ -521,16 +521,33 @@ class HexDoctor:
         results: list[DoctorCheckResult] = []
 
         # Google Antigravity Auth
-        antigravity_auth_file = Path.home() / ".hex" / "antigravity_auth.json"
         has_antigravity = False
-        if antigravity_auth_file.is_file():
-            try:
-                import json
-                data = json.loads(antigravity_auth_file.read_text(encoding="utf-8"))
-                if data.get("access_token") or data.get("refresh_token"):
-                    has_antigravity = True
-            except Exception:
-                pass
+        antigravity_src = ""
+        try:
+            from .providers.antigravity_provider import AntigravityOAuthManager
+
+            ag_cred = AntigravityOAuthManager().resolve_credential(auto_refresh=False)
+            if ag_cred and (ag_cred.access_token or ag_cred.refresh_token):
+                has_antigravity = True
+                antigravity_src = ag_cred.source or "credentials"
+        except Exception:
+            pass
+
+        if not has_antigravity:
+            antigravity_auth_file = Path.home() / ".hex" / "antigravity_auth.json"
+            if antigravity_auth_file.is_file():
+                try:
+                    import json
+                    data = json.loads(antigravity_auth_file.read_text(encoding="utf-8"))
+                    if data.get("access_token") or data.get("refresh_token"):
+                        has_antigravity = True
+                        antigravity_src = "antigravity_auth.json"
+                except Exception:
+                    pass
+
+        if not has_antigravity and os.environ.get("HEX_ANTIGRAVITY_TOKEN"):
+            has_antigravity = True
+            antigravity_src = "environment"
 
         if has_antigravity:
             results.append(
@@ -538,7 +555,7 @@ class HexDoctor:
                     name="Google Antigravity OAuth Session",
                     category="credentials",
                     status="ok",
-                    message="Antigravity credentials found with $0 Day-1 model quota",
+                    message=f"Antigravity credentials found via {antigravity_src} with $0 Day-1 model quota",
                 )
             )
         else:
@@ -547,8 +564,8 @@ class HexDoctor:
                     name="Google Antigravity OAuth Session",
                     category="credentials",
                     status="warning",
-                    message="No Antigravity OAuth credentials found at ~/.hex/antigravity_auth.json",
-                    remediation="Run 'hex auth antigravity --import-ide' or 'hex auth antigravity --auth-url' to link account.",
+                    message="No Antigravity OAuth credentials found",
+                    remediation="Run 'hex auth antigravity' or 'hex setup model' to link account.",
                 )
             )
 

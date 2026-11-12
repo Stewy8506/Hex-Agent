@@ -986,7 +986,9 @@ class LedgerStore:
             return d
 
     def get_project_task_sequence(self, task_id: str, project_id: str | None = None) -> int:
-        """Return 1-based sequential task index for this task within its project."""
+        """Return 1-based sequential task index for this task within its project.
+        Uses deterministic (created_at, task_id) tie-breaking for stability under identical timestamps.
+        """
         if self.backend_type == "postgres":
             return self._run_sync(self.get_project_task_sequence_async, task_id, project_id)
         with self._lock:
@@ -996,8 +998,12 @@ class LedgerStore:
             proj = project_id or (row[0] if isinstance(row, (list, tuple)) else row["project_id"]) or "default"
             created_at = row[1] if isinstance(row, (list, tuple)) else row["created_at"]
             c_row = self.conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE (project_id = ? OR (project_id IS NULL AND ? = 'default')) AND created_at <= ?",
-                (proj, proj, created_at),
+                """
+                SELECT COUNT(*) FROM tasks 
+                WHERE (project_id = ? OR (project_id IS NULL AND ? = 'default'))
+                  AND (created_at < ? OR (created_at = ? AND task_id <= ?))
+                """,
+                (proj, proj, created_at, created_at, task_id),
             ).fetchone()
             seq = int(c_row[0]) if c_row and c_row[0] is not None else 1
             return max(1, seq)
@@ -1013,9 +1019,14 @@ class LedgerStore:
             proj = project_id or row["project_id"] or "default"
             created_at = row["created_at"]
             cnt = await conn.fetchval(
-                "SELECT COUNT(*) FROM tasks WHERE (project_id = $1 OR (project_id IS NULL AND $1 = 'default')) AND created_at <= $2",
+                """
+                SELECT COUNT(*) FROM tasks 
+                WHERE (project_id = $1 OR (project_id IS NULL AND $1 = 'default'))
+                  AND (created_at < $2 OR (created_at = $2 AND task_id <= $3))
+                """,
                 proj,
                 created_at,
+                task_id,
             )
             seq = int(cnt) if cnt is not None else 1
             return max(1, seq)

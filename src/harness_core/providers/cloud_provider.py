@@ -376,6 +376,7 @@ class CloudModelProvider(ModelProvider):
             )
             self.api_key = api_key or self._resolve_env_api_key()
         else:
+            self.provider_id = self.provider_type.value
             self.api_key = api_key or self._resolve_env_api_key()
 
     def _resolve_env_api_key(self) -> str | None:

@@ -506,9 +506,9 @@ class LocalMLXModelProvider(ModelProvider):
         latency_ms = (time.perf_counter() - t0) * 1000.0
         in_tokens = max(1, len(clean_prompt) // 4)
         output_text = (
-            f"[Local MLX Fallback Response]\n"
-            f"Prompt processed ({in_tokens} tokens) on local runner.\n"
-            f"Triage: Local execution completed successfully without external dependencies."
+            f"[Notice] Local model '{self.model_id}' is not loaded or weights are not downloaded.\n"
+            f"To run offline local models on Apple Silicon, download model weights via 'hex setup model' "
+            f"or select an active cloud provider via '/model'."
         )
         out_tokens = max(1, len(output_text) // 4)
         usage = ModelUsage(

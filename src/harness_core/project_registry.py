@@ -6,6 +6,7 @@ Provides automatic enclosing project detection and complete folder-scoped contex
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -16,6 +17,12 @@ from pathlib import Path
 from typing import Any
 
 
+def compute_project_id(path: Path | str) -> str:
+    """Derive a stable, collision-free project identifier from the resolved canonical path."""
+    canonical = str(Path(path).resolve())
+    return "proj_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
 @dataclass
 class ProjectRecord:
     name: str
@@ -24,9 +31,15 @@ class ProjectRecord:
     last_active: str
     task_count: int = 0
     config_path: str = ""
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id and self.path:
+            self.id = compute_project_id(self.path)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "id": self.id,
             "name": self.name,
             "path": self.path,
             "stack": self.stack,
@@ -37,13 +50,16 @@ class ProjectRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProjectRecord:
+        path = str(data.get("path", ""))
+        rec_id = str(data.get("id", "")) or (compute_project_id(path) if path else "")
         return cls(
             name=str(data.get("name", "")),
-            path=str(data.get("path", "")),
+            path=path,
             stack=str(data.get("stack", "generic")),
             last_active=str(data.get("last_active", "")),
             task_count=int(data.get("task_count", 0)),
             config_path=str(data.get("config_path", "")),
+            id=rec_id,
         )
 
 
@@ -142,6 +158,11 @@ class ProjectRegistry:
         if not name_or_path:
             return None
 
+        # 0. Match by stable project UUID/ID
+        for p in self._projects.values():
+            if getattr(p, "id", None) == name_or_path:
+                return p
+
         # 1. Exact match by stored path
         if name_or_path in self._projects:
             return self._projects[name_or_path]
@@ -160,16 +181,22 @@ class ProjectRegistry:
         except Exception:
             pass
 
-        # 4. Match by exact name
-        for p in self._projects.values():
-            if p.name == name_or_path:
-                return p
+        # 4. Match by exact name (with disambiguation if multiple projects share the same name)
+        matching_name = [p for p in self._projects.values() if p.name == name_or_path]
+        if len(matching_name) == 1:
+            return matching_name[0]
+        elif len(matching_name) > 1:
+            cwd_str = str(Path.cwd().resolve())
+            for p in matching_name:
+                if str(Path(p.path).resolve()) == cwd_str:
+                    return p
+            return matching_name[0]
 
         # 5. Case-insensitive name match
         name_lower = name_or_path.lower()
-        for p in self._projects.values():
-            if p.name.lower() == name_lower:
-                return p
+        matching_lower = [p for p in self._projects.values() if p.name.lower() == name_lower]
+        if matching_lower:
+            return matching_lower[0]
 
         return None
 

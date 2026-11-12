@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .config_loader import parse_config_yaml
 from .db import LedgerStore, canonical_json, utcnow_iso
 from .gateway import redact_secrets
 from .models import TaskBudget
@@ -81,10 +82,7 @@ def _detect_default_local_model() -> str:
     ):
         if cfg_candidate.is_file():
             try:
-                import yaml
-
-                with open(cfg_candidate, "r") as f:
-                    cfg = yaml.safe_load(f) or {}
+                cfg = parse_config_yaml(cfg_candidate)
                 model_sec = cfg.get("model") or cfg.get("models") or {}
                 m = model_sec.get("local_model_id")
                 if m and isinstance(m, str) and m.strip():
@@ -142,12 +140,31 @@ class TwoTierModelRouter:
             or ""
         ).strip().lower()
 
-        resolved_cloud_model = (
-            cloud_model_id
-            or os.getenv("HEX_CLOUD_MODEL_ID")
-            or os.getenv("HARNESS_CLOUD_MODEL_ID")
-            or ""
-        )
+        env_prov = (os.getenv("HEX_CLOUD_PROVIDER") or os.getenv("HARNESS_CLOUD_PROVIDER") or "").strip().lower()
+        if cloud_model_id:
+            resolved_cloud_model = cloud_model_id
+        elif cloud_provider_type and env_prov and cloud_provider_type != env_prov:
+            resolved_cloud_model = ""
+        else:
+            resolved_cloud_model = (
+                os.getenv("HEX_CLOUD_MODEL_ID")
+                or os.getenv("HARNESS_CLOUD_MODEL_ID")
+                or ""
+            )
+
+        # Safeguard against cross-provider model contamination
+        if resolved_provider_type == "anthropic" and (
+            resolved_cloud_model.startswith(("gemini", "gpt", "o1", "o3", "chatgpt"))
+        ):
+            resolved_cloud_model = ""
+        elif resolved_provider_type == "openai" and (
+            resolved_cloud_model.startswith(("gemini", "claude"))
+        ):
+            resolved_cloud_model = ""
+        elif resolved_provider_type == "gemini" and (
+            resolved_cloud_model.startswith(("claude", "gpt", "o1", "o3", "chatgpt"))
+        ):
+            resolved_cloud_model = ""
 
         if not resolved_cloud_model:
             # Check config file if present
@@ -157,10 +174,7 @@ class TwoTierModelRouter:
             ):
                 if cfg_candidate.is_file():
                     try:
-                        import yaml
-
-                        with open(cfg_candidate, "r") as f:
-                            cfg = yaml.safe_load(f) or {}
+                        cfg = parse_config_yaml(cfg_candidate)
                         model_sec = cfg.get("model") or cfg.get("models") or {}
                         m = model_sec.get("cloud_model_id")
                         if m and isinstance(m, str) and m.strip():
@@ -182,7 +196,14 @@ class TwoTierModelRouter:
                 pass
 
         if not resolved_cloud_model:
-            resolved_cloud_model = "claude-opus-4-6-thinking" if resolved_provider_type == "antigravity" else ""
+            default_provider_models = {
+                "antigravity": "gemini-3-flash",
+                "anthropic": "claude-3-5-sonnet",
+                "openai": "gpt-4o",
+                "gemini": "gemini-2.5-pro",
+                "local": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+            }
+            resolved_cloud_model = default_provider_models.get(resolved_provider_type, "gemini-3-flash")
 
         if cloud_provider is not None:
             self.cloud_provider = cloud_provider
@@ -190,8 +211,14 @@ class TwoTierModelRouter:
             resolved_cloud_model.lower().startswith(("antigravity/", "google/antigravity-"))
         ):
             self.cloud_provider = AntigravityModelProvider(model_id=resolved_cloud_model)
+        elif resolved_provider_type in ("anthropic", "openai", "gemini"):
+            # Explicit provider configured by user; respect authoritative choice
+            self.cloud_provider = CloudModelProvider(
+                provider_type=resolved_provider_type,
+                model_id=resolved_cloud_model,
+            )
         else:
-            # Auto-detect local Antigravity OAuth session if no paid raw API key is explicitly set
+            # Auto-detect local Antigravity OAuth session if no provider is explicitly configured
             has_raw_api_key = bool(
                 os.getenv("GEMINI_API_KEY")
                 or os.getenv("GOOGLE_API_KEY")
@@ -209,10 +236,24 @@ class TwoTierModelRouter:
 
         self.compressor_provider = compressor_provider or self.cloud_provider
         self.compressor_mode = (
-            compressor_mode or os.getenv("HARNESS_COMPRESSOR_MODE") or "local"
+            compressor_mode
+            or os.getenv("HEX_COMPRESSOR_MODE")
+            or os.getenv("HARNESS_COMPRESSOR_MODE")
+            or "local"
         ).strip().lower()
         self.local_model_id = getattr(self.local_provider, "model_id", resolved_local_model)
         self.cloud_model_id = getattr(self.cloud_provider, "model_id", resolved_cloud_model)
+
+    def set_active_model(self, model_id: str) -> None:
+        """Synchronously update the model ID across router and providers."""
+        clean_id = model_id.strip()
+        if not clean_id:
+            return
+        self.cloud_model_id = clean_id
+        if hasattr(self.cloud_provider, "model_id"):
+            self.cloud_provider.model_id = clean_id
+        if hasattr(self.compressor_provider, "model_id") and self.compressor_mode == "cloud":
+            self.compressor_provider.model_id = clean_id
 
     def switch_cloud_provider(self, provider_type: str, model_id: str | None = None) -> ModelProvider:
         """Switch the Tier-2 cloud reasoner backend dynamically (e.g., to 'antigravity')."""

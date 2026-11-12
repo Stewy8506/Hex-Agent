@@ -1390,7 +1390,19 @@ class HexConsole:
                         self.orchestrator.router.switch_cloud_provider("antigravity")
                 elif arg not in ("hybrid", "local", "cloud"):
                     self.orchestrator.router.cloud_model_id = arg
+
+            if hasattr(self.orchestrator, "set_active_model"):
+                try:
+                    res = self.orchestrator.set_active_model(arg, durable=True)
+                    if isinstance(res, (tuple, list)) and len(res) >= 3:
+                        prov, final_id, saved_path = res[:3]
+                        scope = f" (provider: {prov}, saved to {saved_path})" if saved_path else f" (provider: {prov})"
+                        print(f"{ANSI_GREEN}Model profile updated to: {arg}{scope}{ANSI_RESET}")
+                        return
+                except Exception:
+                    pass
             print(f"{ANSI_GREEN}Model profile updated to: {arg}{ANSI_RESET}")
+            return
         else:
             in_stream = getattr(self, "stream_in", sys.stdin)
             out_stream = getattr(self, "stream_out", sys.stdout)
@@ -1450,6 +1462,17 @@ class HexConsole:
                                 cp = self.orchestrator.router.cloud_provider
                                 if hasattr(cp, "model_id"):
                                     cp.model_id = chosen_model_id
+
+                        if hasattr(self.orchestrator, "set_active_model"):
+                            try:
+                                res = self.orchestrator.set_active_model(chosen_model_id, durable=True)
+                                if isinstance(res, (tuple, list)) and len(res) >= 3:
+                                    prov, final_id, saved_path = res[:3]
+                                    scope = f" (saved to {saved_path})" if saved_path else " (session-only)"
+                                    print(f"{ANSI_GREEN}✓ Active model switched to: {final_id}{scope}{ANSI_RESET}")
+                                    return
+                            except Exception:
+                                pass
                         print(f"{ANSI_GREEN}✓ Active model switched to: {chosen_model_id}{ANSI_RESET}")
                         return
                     except Exception as exc:
@@ -1935,24 +1958,31 @@ class HexConsole:
             return
 
         new_ws = Path(rec.path).resolve()
-        self.workspace_root = new_ws
-        self.project_id = rec.name
-        registry.touch_active(new_ws)
-
-        if hasattr(self.orchestrator, "graphify"):
-            self.orchestrator.graphify.workspace_root = new_ws
-            try:
-                self.orchestrator.graphify.build_or_refresh(new_ws)
-            except Exception:
-                pass
-
-        proj_data = new_ws / ".hex" / "data"
-        if proj_data.is_dir() and hasattr(self.orchestrator, "data_dir"):
-            self.orchestrator.data_dir = proj_data
-
-        print(f"\n{ANSI_GREEN}✓ Switched active project to '{rec.name}' ({rec.stack}){ANSI_RESET}")
-        print(f"  Workspace: {new_ws}")
-        print(f"  Config:    {rec.config_path}\n")
+        if hasattr(self.orchestrator, "switch_project"):
+            sw = self.orchestrator.switch_project(new_ws, rec.name)
+            self.workspace_root = Path(sw["workspace_root"])
+            self.project_id = sw["project_id"]
+            self.model_profile = sw.get("cloud_model_id") or self.model_profile
+            print(f"\n{ANSI_GREEN}✓ Switched active project to '{rec.name}' ({rec.stack}){ANSI_RESET}")
+            print(f"  Workspace: {new_ws}")
+            print(f"  Config:    {sw.get('config_path') or rec.config_path}")
+            print(f"  Model:     {sw.get('cloud_model_id')} ({sw.get('cloud_provider')})\n")
+        else:
+            self.workspace_root = new_ws
+            self.project_id = rec.name
+            registry.touch_active(new_ws)
+            if hasattr(self.orchestrator, "graphify"):
+                self.orchestrator.graphify.workspace_root = new_ws
+                try:
+                    self.orchestrator.graphify.build_or_refresh(new_ws)
+                except Exception:
+                    pass
+            proj_data = new_ws / ".hex" / "data"
+            if proj_data.is_dir() and hasattr(self.orchestrator, "data_dir"):
+                self.orchestrator.data_dir = proj_data
+            print(f"\n{ANSI_GREEN}✓ Switched active project to '{rec.name}' ({rec.stack}){ANSI_RESET}")
+            print(f"  Workspace: {new_ws}")
+            print(f"  Config:    {rec.config_path}\n")
 
     def _cmd_clear(self) -> None:
         if os.name == "nt":
@@ -2119,8 +2149,25 @@ class HexConsole:
         for c in calls:
             tool_id = c.get("tool_id", "tool")
             risk = c.get("risk_class", "R1")
+            status = c.get("status", "SEALED")
             res = c.get("result") or {}
-            lines.append(f"  {ANSI_CYAN}┊{ANSI_RESET} ⚙ {ANSI_BOLD}{tool_id}{ANSI_RESET} ({risk})")
+            is_replay = bool(c.get("replayed_from_call_id") or (isinstance(res, dict) and res.get("_replayed")))
+            dur = res.get("_duration_ms", 0.0) if isinstance(res, dict) else 0.0
+
+            if is_replay:
+                badge = f"{ANSI_YELLOW}↻ [replayed]{ANSI_RESET}"
+            elif status == "SEALED":
+                if dur >= 1000.0:
+                    badge = f"{ANSI_GREEN}✓ ({dur/1000.0:.1f}s){ANSI_RESET}"
+                else:
+                    badge = f"{ANSI_GREEN}✓{ANSI_RESET}"
+            elif status in ("FAILED", "ERROR"):
+                err_msg = res.get("error", status) if isinstance(res, dict) else status
+                badge = f"{ANSI_RED}✗ [{err_msg}]{ANSI_RESET}"
+            else:
+                badge = f"{ANSI_CYAN}[{status}]{ANSI_RESET}"
+
+            lines.append(f"  {ANSI_CYAN}┊{ANSI_RESET} ⚙ {ANSI_BOLD}{tool_id}{ANSI_RESET} ({risk}) {badge}")
             if isinstance(res, dict) and "ast_blast_radius" in res:
                 warn_msg = res["ast_blast_radius"].get("warning_message", "")
                 if warn_msg:
@@ -2139,6 +2186,13 @@ class HexConsole:
             execution_mode="auto",
         )
 
+        try:
+            from .project_registry import ProjectRegistry
+
+            ProjectRegistry().touch_active(self.workspace_root or Path.cwd(), increment_tasks=True)
+        except Exception:
+            pass
+
         spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
         spinner.start(f"Executing: {_truncate_visible(prompt, 44)}")
         try:
@@ -2146,7 +2200,12 @@ class HexConsole:
         except KeyboardInterrupt:
             spinner.stop()
             print()
-            print(f"{ANSI_YELLOW}⚡ Task cancelled by user (Ctrl+C).{ANSI_RESET}\n")
+            if getattr(self, "active_task_id", None) and hasattr(self.orchestrator, "cancel_task"):
+                try:
+                    self.orchestrator.cancel_task(self.active_task_id, actor="owner")
+                except Exception:
+                    pass
+            print(f"{ANSI_YELLOW}⚡ Task cancelled by operator (Ctrl+C).{ANSI_RESET}\n")
             return
         except ApprovalRequiredInterrupt as apr_int:
             spinner.stop()
