@@ -267,7 +267,7 @@ def run_onboard_wizard(
 
     # Initial state resolving existing settings first
     cloud_provider = existing_provider or "antigravity"
-    cloud_model_id = existing_model_id or ("claude-opus-4-6-thinking" if cloud_provider == "antigravity" else "gemini-2.5-pro")
+    cloud_model_id = existing_model_id or ("claude-opus-4-6-thinking" if cloud_provider == "antigravity" else "")
     model_profile = existing_profile or (
         "antigravity_hybrid" if profile.is_apple_silicon and cloud_provider == "antigravity" else ("hybrid" if profile.is_apple_silicon else "cloud")
     )
@@ -375,7 +375,11 @@ def run_onboard_wizard(
                             antigravity_token = k_ag
 
                 print("  ◈ Querying available models from Google Antigravity...")
-                discovered_models = fetch_available_models("antigravity", api_key=antigravity_token)
+                try:
+                    discovered_models = fetch_available_models("antigravity", api_key=antigravity_token)
+                except Exception as exc:
+                    print(f"  ⚠ Live model query failed: {exc}")
+                    discovered_models = []
                 model_options: list[tuple[str, str]] = []
                 if existing_model_id and existing_provider == "antigravity":
                     model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
@@ -388,7 +392,8 @@ def run_onboard_wizard(
                     chosen_mid = model_options[m_idx][0]
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
                 else:
-                    cloud_model_id = existing_model_id or "claude-opus-4-6-thinking"
+                    manual_mid = prompt_secret(f"  Enter {provider_title} Model ID: ")
+                    cloud_model_id = manual_mid.strip() if manual_mid else (existing_model_id or "")
                 print(f"  ✓ Active model selected: {cloud_model_id}\n")
 
             elif selected_provider_key == "anthropic":
@@ -405,7 +410,11 @@ def run_onboard_wizard(
                         anthropic_key = new_key.strip()
 
                 print("  ◈ Querying available models from Anthropic...")
-                discovered_models = fetch_available_models("anthropic", api_key=anthropic_key)
+                try:
+                    discovered_models = fetch_available_models("anthropic", api_key=anthropic_key)
+                except Exception as exc:
+                    print(f"  ⚠ Live model query failed: {exc}")
+                    discovered_models = []
                 model_options = []
                 if existing_model_id and existing_provider == "anthropic":
                     model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
@@ -418,7 +427,8 @@ def run_onboard_wizard(
                     chosen_mid = model_options[m_idx][0]
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
                 else:
-                    cloud_model_id = existing_model_id or "claude-3-5-sonnet"
+                    manual_mid = prompt_secret(f"  Enter {provider_title} Model ID: ")
+                    cloud_model_id = manual_mid.strip() if manual_mid else (existing_model_id or "")
                 print(f"  ✓ Active model selected: {cloud_model_id}\n")
 
             elif selected_provider_key == "openai":
@@ -435,7 +445,11 @@ def run_onboard_wizard(
                         openai_key = new_key.strip()
 
                 print("  ◈ Querying available models from OpenAI...")
-                discovered_models = fetch_available_models("openai", api_key=openai_key)
+                try:
+                    discovered_models = fetch_available_models("openai", api_key=openai_key)
+                except Exception as exc:
+                    print(f"  ⚠ Live model query failed: {exc}")
+                    discovered_models = []
                 model_options = []
                 if existing_model_id and existing_provider == "openai":
                     model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
@@ -448,7 +462,8 @@ def run_onboard_wizard(
                     chosen_mid = model_options[m_idx][0]
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
                 else:
-                    cloud_model_id = existing_model_id or "gpt-4o"
+                    manual_mid = prompt_secret(f"  Enter {provider_title} Model ID: ")
+                    cloud_model_id = manual_mid.strip() if manual_mid else (existing_model_id or "")
                 print(f"  ✓ Active model selected: {cloud_model_id}\n")
 
             elif selected_provider_key == "gemini":
@@ -465,7 +480,11 @@ def run_onboard_wizard(
                         gemini_key = new_key.strip()
 
                 print("  ◈ Querying available models from Google Gemini...")
-                discovered_models = fetch_available_models("gemini", api_key=gemini_key)
+                try:
+                    discovered_models = fetch_available_models("gemini", api_key=gemini_key)
+                except Exception as exc:
+                    print(f"  ⚠ Live model query failed: {exc}")
+                    discovered_models = []
                 model_options = []
                 if existing_model_id and existing_provider == "gemini":
                     model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
@@ -478,7 +497,8 @@ def run_onboard_wizard(
                     chosen_mid = model_options[m_idx][0]
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
                 else:
-                    cloud_model_id = existing_model_id or "gemini-2.5-pro"
+                    manual_mid = prompt_secret(f"  Enter {provider_title} Model ID: ")
+                    cloud_model_id = manual_mid.strip() if manual_mid else (existing_model_id or "")
                 print(f"  ✓ Active model selected: {cloud_model_id}\n")
 
             elif selected_provider_key == "local":
@@ -487,15 +507,11 @@ def run_onboard_wizard(
                 provider_title = "Local"
 
                 print("  ◈ Checking local model runtimes...")
-                discovered_models = fetch_available_models("local")
-                if profile.is_apple_silicon:
-                    mlx_models = [
-                        ("mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit (Apple Silicon MLX)"),
-                        ("mlx-community/Llama-3.2-3B-Instruct-4bit", "mlx-community/Llama-3.2-3B-Instruct-4bit (Fast MLX)"),
-                    ]
-                    all_local = mlx_models + discovered_models
-                else:
-                    all_local = discovered_models
+                try:
+                    all_local = fetch_available_models("local")
+                except Exception as exc:
+                    print(f"  ⚠ Local discovery error: {exc}")
+                    all_local = []
 
                 model_options = []
                 if existing_model_id and existing_provider == "local":
@@ -509,7 +525,9 @@ def run_onboard_wizard(
                     chosen_mid = model_options[m_idx][0]
                     cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
                 else:
-                    cloud_model_id = existing_model_id or "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+                    print("  ℹ No local models discovered in Ollama or HuggingFace/LM-Studio cache.")
+                    manual_model = prompt_secret("  Enter Local Model Path or HuggingFace ID / Tag: ")
+                    cloud_model_id = manual_model.strip() if manual_model and manual_model.strip() else (existing_model_id or "local_model")
                 print("  ✓ Local offline profile configured. Zero external network egress.\n")
 
         # Step 2: Web Search Provider Selection

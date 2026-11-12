@@ -45,13 +45,16 @@ class TestAutoSetupAndPolish(unittest.TestCase):
         self.assertEqual(creds.get("HEX_WEB_SEARCH_PROVIDER"), "duckduckgo")
         self.assertEqual(creds.get("HEX_CLOUD_PROVIDER"), "antigravity")
 
+    @patch("harness_core.onboard.fetch_available_models")
     @patch("harness_core.onboard.prompt_secret")
     @patch("harness_core.onboard.select_option")
     def test_onboard_wizard_interactive_anthropic_and_tavily(
         self,
         mock_select: MagicMock,
         mock_prompt: MagicMock,
+        mock_fetch: MagicMock,
     ) -> None:
+        mock_fetch.return_value = [("claude-3-5-sonnet", "Claude 3.5 Sonnet")]
         # Step 1: Anthropic (idx 1)
         # Step 1b: Model claude-3-5-sonnet (idx 0)
         # Step 2: Tavily (idx 1)

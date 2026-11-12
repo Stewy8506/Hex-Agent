@@ -730,7 +730,7 @@ def render_hermes_splash(
 
     from .onboard import HardwareProfile
     prof = HardwareProfile.detect()
-    hw_label = "M4 MLX" if prof.is_apple_silicon else (prof.machine_model if prof.has_cuda else "Local CPU")
+    hw_label = f"{prof.machine_model} MLX" if prof.is_apple_silicon else (prof.machine_model if prof.has_cuda else "Local CPU")
     mdl_line = f"{_c(model_id, fg=skin.heading_rgb, bold=True)}{_c(' · ', fg=skin.muted_rgb)}{_c(f'{hw_label} ({compressor_mode})', fg=skin.category_rgb)}"
     left_lines.append(_pad_visible(mdl_line, left_w, align="center"))
 
@@ -1017,9 +1017,13 @@ class HexConsole:
             session_id=f"Session: {self.session_id}",
             voice_status=v_stat,
         )
+        from .onboard import HardwareProfile
+
+        prof = HardwareProfile.detect()
+        hw_comp = f"{prof.machine_model} MLX ({comp_mode})" if prof.is_apple_silicon else f"CPU ({comp_mode})"
         compact = render_session_banner(
             model_id=active_model,
-            compressor_mode=f"M4 MLX ({comp_mode})",
+            compressor_mode=hw_comp,
             sandbox_backend=sandbox_backend,
             cow_backend=cow_backend,
             voice_status=v_stat,
@@ -1179,7 +1183,7 @@ class HexConsole:
             ("/skills", "List registered skills, risk scores, and gate decisions"),
             ("/scan <dir>", "Scan and register a SKILL.md bundle via NVIDIA SkillSpector"),
             ("/model [name]", "Inspect or switch active model routing profile (or 'antigravity')"),
-            ("/compressor [mode]", "Switch Tier-1 log compressor between 'local' (M4 MLX) and 'cloud'"),
+            ("/compressor [mode]", "Switch Tier-1 log compressor between 'local' and 'cloud'"),
             ("/budget", "Display session token usage, compression ratio, and cost"),
             ("/quota", "Inspect Google Antigravity OAuth session & live model quota windows"),
             ("/memory [query]", "Search governed memories with AST code-hash staleness badges"),
@@ -1458,9 +1462,9 @@ class HexConsole:
             if hasattr(self.orchestrator, "router"):
                 r = self.orchestrator.router
                 prov_id = getattr(getattr(r, "cloud_provider", None), "provider_id", "cloud_frontier")
-                print(f"  Tier-1 Local:     {getattr(r, 'local_model_id', 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit')}")
+                print(f"  Tier-1 Local:     {getattr(r, 'local_model_id', 'local')}")
                 print(f"  Tier-2 Provider:  {prov_id}")
-                print(f"  Tier-2 Model:     {getattr(r, 'cloud_model_id', 'claude-3-5-sonnet')}")
+                print(f"  Tier-2 Model:     {getattr(r, 'cloud_model_id', 'model')}")
                 print(f"  Compressor Mode:  {getattr(r, 'compressor_mode', 'local')}")
                 if hasattr(r, "budget_tracker"):
                     bt = r.budget_tracker
@@ -2115,17 +2119,8 @@ class HexConsole:
         for c in calls:
             tool_id = c.get("tool_id", "tool")
             risk = c.get("risk_class", "R1")
-            status = c.get("status", "SEALED")
             res = c.get("result") or {}
-            is_replay = bool(c.get("replayed_from_call_id") or (isinstance(res, dict) and res.get("_replayed")))
-            if is_replay:
-                badge = f"{ANSI_BOLD}{ANSI_YELLOW}[0ms JOURNAL REPLAY]{ANSI_RESET}"
-            elif status == "SEALED":
-                dur = res.get("_duration_ms", 0.0) if isinstance(res, dict) else 0.0
-                badge = f"{ANSI_GREEN}[SEALED {dur:.1f}ms]{ANSI_RESET}"
-            else:
-                badge = f"{ANSI_CYAN}[{status}]{ANSI_RESET}"
-            lines.append(f"  {ANSI_CYAN}┊{ANSI_RESET} ⚙ {ANSI_BOLD}{tool_id}{ANSI_RESET} ({risk}) → {badge}")
+            lines.append(f"  {ANSI_CYAN}┊{ANSI_RESET} ⚙ {ANSI_BOLD}{tool_id}{ANSI_RESET} ({risk})")
             if isinstance(res, dict) and "ast_blast_radius" in res:
                 warn_msg = res["ast_blast_radius"].get("warning_message", "")
                 if warn_msg:
@@ -2192,6 +2187,14 @@ class HexConsole:
         tid = self.active_task_id
         status = task.get("status") if task else None
 
+        task_seq = 1
+        if tid and hasattr(self.orchestrator, "ledger") and hasattr(self.orchestrator.ledger, "get_project_task_sequence"):
+            try:
+                task_seq = self.orchestrator.ledger.get_project_task_sequence(tid, self.project_id)
+            except Exception:
+                task_seq = 1
+        task_label = f"Task #{task_seq}"
+
         if status == "WAITING_APPROVAL":
             if hasattr(self.orchestrator, "ledger") and hasattr(self.orchestrator.ledger, "list_approvals"):
                 try:
@@ -2206,7 +2209,7 @@ class HexConsole:
 
         if self.stream:
             renderer = StreamingTokenRenderer(output_stream=sys.stdout)
-            renderer.feed(f"{ANSI_DIM}Executing task {tid}...{ANSI_RESET}\n")
+            renderer.feed(f"{ANSI_DIM}Executing {task_label}...{ANSI_RESET}\n")
             renderer.flush()
 
         if tid:
@@ -2215,14 +2218,8 @@ class HexConsole:
                 print(feed)
 
         if status in ("COMPLETED", "SUCCEEDED"):
-            print(f"{ANSI_GREEN}✔ Task {tid} completed successfully!{ANSI_RESET}")
-            proof = self.orchestrator.ledger.get_proof_bundle(tid)
-            if proof:
-                ver_res = proof.get("verification_results") or {}
-                verified = proof.get("verified", ver_res.get("passed", False))
-                v_badge = f"{ANSI_GREEN}[VERIFIED]{ANSI_RESET}" if verified else f"{ANSI_YELLOW}[UNVERIFIED]{ANSI_RESET}"
-                sha = str(proof.get("workspace_tree_sha", ""))[:12]
-                print(f"  Proof-Carrying Artifact: {v_badge} Merkle SHA: {sha}...")
+            print(f"{ANSI_GREEN}✔ {task_label} completed successfully!{ANSI_RESET}")
+            proof = self.orchestrator.ledger.get_proof_bundle(tid) if hasattr(self.orchestrator, "ledger") else None
 
             # Render assistant's synthesized response / deliverable
             result_text = (
@@ -2241,23 +2238,23 @@ class HexConsole:
                     task.get("summary")
                     or task.get("result")
                     or (proof.get("summary") if proof else None)
-                    or f"Task {tid} completed successfully."
+                    or f"{task_label} completed successfully."
                 )
                 cleaned = clean_text_for_speech(str(raw_summary))
                 sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned) if s.strip()]
-                speech_text = " ".join(sentences[:2]) if sentences else f"Task {tid} completed successfully."
+                speech_text = " ".join(sentences[:2]) if sentences else f"{task_label} completed successfully."
                 self.voice_engine.speak(speech_text, clean=False)
         elif status == "REJECTED":
-            print(f"{ANSI_RED}✖ Task {tid} rejected: {task.get('terminal_reason')}{ANSI_RESET}")
+            print(f"{ANSI_RED}✖ {task_label} rejected: {task.get('terminal_reason')}{ANSI_RESET}")
             if hasattr(self, "voice_engine") and self.voice_engine.config.tts_enabled and not self.voice_engine.is_muted():
                 reason = task.get("terminal_reason") or "Task rejected."
                 self.voice_engine.speak(f"Task rejected. {reason}", clean=True)
         elif status == "NEEDS_ATTENTION":
-            print(f"{ANSI_YELLOW}⚠ Task {tid} requires operator attention: {task.get('terminal_reason')}{ANSI_RESET}")
+            print(f"{ANSI_YELLOW}⚠ {task_label} requires operator attention: {task.get('terminal_reason')}{ANSI_RESET}")
             if hasattr(self, "voice_engine") and self.voice_engine.config.tts_enabled and not self.voice_engine.is_muted():
                 self.voice_engine.speak("Task requires operator attention.", clean=True)
         else:
-            print(f"Task {tid} status: {status}")
+            print(f"{task_label} status: {status}")
 
 
 # Alias for backward & forward compatibility

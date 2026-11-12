@@ -13,12 +13,12 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
 
 from harness_core.gateway import redact_secrets
 
 from .antigravity_provider import (
-    ANTIGRAVITY_FALLBACK_MODELS,
     AntigravityCredential,
     AntigravityModelProvider,
     AntigravityOAuthManager,
@@ -48,39 +48,12 @@ class CloudProviderType(str, Enum):
     OLLAMA = "ollama"
 
 
-ANTHROPIC_FALLBACK_MODELS: list[tuple[str, str]] = [
-    ("claude-3-7-sonnet", "claude-3-7-sonnet [offline fallback]"),
-    ("claude-3-5-sonnet", "claude-3-5-sonnet [offline fallback]"),
-    ("claude-3-5-haiku", "claude-3-5-haiku [offline fallback]"),
-]
-
-OPENAI_FALLBACK_MODELS: list[tuple[str, str]] = [
-    ("gpt-4o", "gpt-4o [offline fallback]"),
-    ("o1", "o1 [offline fallback]"),
-    ("o3-mini", "o3-mini [offline fallback]"),
-    ("gpt-4o-mini", "gpt-4o-mini [offline fallback]"),
-]
-
-GEMINI_FALLBACK_MODELS: list[tuple[str, str]] = [
-    ("gemini-2.5-pro", "gemini-2.5-pro [offline fallback]"),
-    ("gemini-2.5-flash", "gemini-2.5-flash [offline fallback]"),
-    ("gemini-2.0-flash", "gemini-2.0-flash [offline fallback]"),
-]
-
-LOCAL_FALLBACK_MODELS: list[tuple[str, str]] = [
-    ("qwen2.5-coder:7b", "qwen2.5-coder:7b [offline fallback]"),
-    ("llama3.3:70b", "llama3.3:70b [offline fallback]"),
-    ("deepseek-r1:8b", "deepseek-r1:8b [offline fallback]"),
-    ("codellama:13b", "codellama:13b [offline fallback]"),
-]
-
-
 def fetch_available_models(
     provider_type: CloudProviderType | str,
     api_key: str | None = None,
     timeout: float = 3.0,
 ) -> list[tuple[str, str]]:
-    """Discover available models from live provider API, or return curated offline fallback."""
+    """Discover available models from live provider API without hardcoded fallbacks."""
     raw_type = getattr(provider_type, "value", provider_type)
     norm = str(raw_type).lower().strip()
 
@@ -90,7 +63,7 @@ def fetch_available_models(
     elif norm == "anthropic":
         key = (api_key or os.getenv("HEX_ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip()
         if not key:
-            return list(ANTHROPIC_FALLBACK_MODELS)
+            raise ProviderUnavailableError("No Anthropic API key found. Set HEX_ANTHROPIC_API_KEY to live-fetch models.")
         url = "https://api.anthropic.com/v1/models"
         headers = {
             "x-api-key": key,
@@ -113,14 +86,16 @@ def fetch_available_models(
                         if results:
                             results.sort(key=lambda x: (x[1].lower(), x[0].lower()))
                             return results
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
-            pass
-        return list(ANTHROPIC_FALLBACK_MODELS)
+            raise ProviderUnavailableError(f"Anthropic returned HTTP status {resp.status}.")
+        except Exception as exc:
+            if isinstance(exc, ProviderUnavailableError):
+                raise
+            raise ProviderUnavailableError(f"Failed to live-fetch Anthropic models: {exc}") from exc
 
     elif norm == "openai":
         key = (api_key or os.getenv("HEX_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
         if not key:
-            return list(OPENAI_FALLBACK_MODELS)
+            raise ProviderUnavailableError("No OpenAI API key found. Set HEX_OPENAI_API_KEY to live-fetch models.")
         url = "https://api.openai.com/v1/models"
         headers = {
             "Authorization": f"Bearer {key}",
@@ -143,14 +118,16 @@ def fetch_available_models(
                         if results:
                             results.sort(key=lambda x: x[0])
                             return results
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
-            pass
-        return list(OPENAI_FALLBACK_MODELS)
+            raise ProviderUnavailableError(f"OpenAI returned HTTP status {resp.status}.")
+        except Exception as exc:
+            if isinstance(exc, ProviderUnavailableError):
+                raise
+            raise ProviderUnavailableError(f"Failed to live-fetch OpenAI models: {exc}") from exc
 
     elif norm in ("gemini", "google"):
         key = (api_key or os.getenv("HEX_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
         if not key:
-            return list(GEMINI_FALLBACK_MODELS)
+            raise ProviderUnavailableError("No Gemini API key found. Set HEX_GEMINI_API_KEY to live-fetch models.")
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
         headers = {"User-Agent": "HEX/0.1.0"}
         req = urllib.request.Request(url, headers=headers, method="GET")
@@ -175,31 +152,61 @@ def fetch_available_models(
                         if results:
                             results.sort(key=lambda x: x[0])
                             return results
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
-            pass
-        return list(GEMINI_FALLBACK_MODELS)
+            raise ProviderUnavailableError(f"Gemini returned HTTP status {resp.status}.")
+        except Exception as exc:
+            if isinstance(exc, ProviderUnavailableError):
+                raise
+            raise ProviderUnavailableError(f"Failed to live-fetch Gemini models: {exc}") from exc
 
     elif norm in ("local", "ollama"):
+        results: list[tuple[str, str]] = []
+        # 1. Probe local Ollama if running
         url = "http://localhost:11434/api/tags"
         headers = {"User-Agent": "HEX/0.1.0"}
         req = urllib.request.Request(url, headers=headers, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=min(timeout, 1.5)) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
                     items = data.get("models")
                     if isinstance(items, list) and items:
-                        results = []
                         for m in items:
                             if isinstance(m, dict) and "name" in m:
                                 name = str(m["name"])
-                                results.append((name, name))
-                        if results:
-                            results.sort(key=lambda x: x[0])
-                            return results
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
+                                results.append((name, f"{name} (Ollama)"))
+        except Exception:
             pass
-        return list(LOCAL_FALLBACK_MODELS)
+
+        # 2. Check HuggingFace hub cache
+        hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+        if hf_cache.is_dir():
+            try:
+                for entry in hf_cache.iterdir():
+                    if entry.is_dir() and entry.name.startswith("models--"):
+                        raw_id = entry.name.removeprefix("models--").replace("--", "/")
+                        label = f"{raw_id} (HuggingFace Hub)"
+                        if (raw_id, label) not in results:
+                            results.append((raw_id, label))
+            except Exception:
+                pass
+
+        # 3. Check LM Studio cache
+        lms_cache = Path.home() / ".cache" / "lm-studio" / "models"
+        if lms_cache.is_dir():
+            try:
+                for author_dir in lms_cache.iterdir():
+                    if author_dir.is_dir():
+                        for m_dir in author_dir.iterdir():
+                            if m_dir.is_dir():
+                                mid = f"{author_dir.name}/{m_dir.name}"
+                                label = f"{mid} (LM Studio)"
+                                if (mid, label) not in results:
+                                    results.append((mid, label))
+            except Exception:
+                pass
+
+        results.sort(key=lambda x: x[0].lower())
+        return results
 
     return []
 
@@ -342,12 +349,15 @@ class CloudModelProvider(ModelProvider):
         if model_id:
             self.model_id = model_id
         else:
-            if self.provider_type == CloudProviderType.ANTHROPIC:
-                self.model_id = "claude-3-5-sonnet-20241022"
-            elif self.provider_type == CloudProviderType.OPENAI:
-                self.model_id = "gpt-4o"
+            resolved_env_model = os.getenv("HEX_CLOUD_MODEL_ID") or os.getenv("HARNESS_CLOUD_MODEL_ID")
+            if resolved_env_model:
+                self.model_id = resolved_env_model
             else:
-                self.model_id = "gemini-2.5-pro"
+                try:
+                    disc = fetch_available_models(self.provider_type, api_key=api_key)
+                    self.model_id = disc[0][0] if disc else ""
+                except Exception:
+                    self.model_id = ""
 
         self.budget_tracker = budget_tracker or TaskBudgetTracker()
         self.http_transport = http_transport

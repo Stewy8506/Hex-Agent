@@ -21,16 +21,12 @@ from unittest.mock import MagicMock, call, patch
 
 from harness_core.onboard import run_onboard_wizard
 from harness_core.providers.antigravity_provider import (
-    ANTIGRAVITY_FALLBACK_MODELS,
     AntigravityModelProvider,
     AntigravityOAuthManager,
     fetch_available_models as ag_fetch_available_models,
 )
+from harness_core.providers.base import ProviderUnavailableError
 from harness_core.providers.cloud_provider import (
-    ANTHROPIC_FALLBACK_MODELS,
-    GEMINI_FALLBACK_MODELS,
-    LOCAL_FALLBACK_MODELS,
-    OPENAI_FALLBACK_MODELS,
     CloudModelProvider,
     CloudProviderType,
     fetch_available_models,
@@ -104,12 +100,15 @@ class TestAntigravityLiveModelDiscovery(unittest.TestCase):
         self.assertEqual(models_prov[0][0], "gemini-2.5-flash")
 
     @patch("urllib.request.urlopen")
-    def test_antigravity_offline_fallback(self, mock_urlopen: MagicMock) -> None:
+    def test_antigravity_error_on_network_failure(self, mock_urlopen: MagicMock) -> None:
         mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
-        models = ag_fetch_available_models(access_token="ya29.mock_token")
-        self.assertEqual(models, ANTIGRAVITY_FALLBACK_MODELS)
-        for _, label in models:
-            self.assertIn("[offline fallback]", label)
+        with self.assertRaises(ProviderUnavailableError):
+            ag_fetch_available_models(access_token="ya29.mock_token")
+
+    def test_antigravity_error_without_token(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch("harness_core.providers.antigravity_provider.AntigravityOAuthManager.resolve_credential", return_value=None):
+            with self.assertRaises(ProviderUnavailableError):
+                ag_fetch_available_models(access_token="")
 
 
 class TestCloudProvidersLiveModelDiscovery(unittest.TestCase):
@@ -198,27 +197,28 @@ class TestCloudProvidersLiveModelDiscovery(unittest.TestCase):
         self.assertIn("qwen2.5-coder:7b", model_ids)
 
 
-class TestOfflineFallbackBadging(unittest.TestCase):
-    """Verifies that offline or unreachable conditions badge all models with [offline fallback]."""
+class TestLiveModelFetchFailureHandling(unittest.TestCase):
+    """Verifies that offline or unreachable conditions raise ProviderUnavailableError or return empty for local."""
 
     @patch("urllib.request.urlopen")
-    def test_all_provider_offline_fallbacks(self, mock_urlopen: MagicMock) -> None:
+    def test_all_provider_live_fetch_failures(self, mock_urlopen: MagicMock) -> None:
         mock_urlopen.side_effect = urllib.error.URLError("Network unreachable")
 
-        providers = [
-            ("anthropic", "sk-ant-test", ANTHROPIC_FALLBACK_MODELS),
-            ("openai", "sk-test", OPENAI_FALLBACK_MODELS),
-            ("gemini", "AIzaTest", GEMINI_FALLBACK_MODELS),
-            ("local", None, LOCAL_FALLBACK_MODELS),
-            ("antigravity", "ya29.test", ANTIGRAVITY_FALLBACK_MODELS),
-        ]
+        with self.assertRaises(ProviderUnavailableError):
+            fetch_available_models("anthropic", api_key="sk-ant-test")
 
-        for p_type, key, expected in providers:
-            with self.subTest(provider=p_type):
-                models = fetch_available_models(p_type, api_key=key)
-                self.assertEqual(models, expected)
-                for _, label in models:
-                    self.assertIn("[offline fallback]", label)
+        with self.assertRaises(ProviderUnavailableError):
+            fetch_available_models("openai", api_key="sk-test")
+
+        with self.assertRaises(ProviderUnavailableError):
+            fetch_available_models("gemini", api_key="AIzaTest")
+
+        with self.assertRaises(ProviderUnavailableError):
+            fetch_available_models("antigravity", api_key="ya29.test")
+
+        # Local returns empty list when no local models are running or cached
+        local_models = fetch_available_models("local")
+        self.assertEqual(local_models, [])
 
 
 class TestInvertedOnboardingFlow(unittest.TestCase):

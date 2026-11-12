@@ -240,13 +240,7 @@ def extract_tokens_from_blob(raw_value: str | bytes) -> tuple[str, str]:
     return access_token, refresh_token
 
 
-ANTIGRAVITY_FALLBACK_MODELS: list[tuple[str, str]] = [
-    ("claude-opus-4-6-thinking", "claude-opus-4-6-thinking [offline fallback]"),
-    ("claude-sonnet-4-6", "claude-sonnet-4-6 [offline fallback]"),
-    ("gemini-2.5-pro", "gemini-2.5-pro [offline fallback]"),
-    ("gemini-2.5-flash", "gemini-2.5-flash [offline fallback]"),
-    ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite [offline fallback]"),
-]
+_LIVE_ANTIGRAVITY_METADATA: dict[str, dict[str, Any]] = {}
 
 
 def fetch_available_models(
@@ -255,7 +249,7 @@ def fetch_available_models(
     base_url: str | None = None,
     timeout: float = 3.0,
 ) -> list[tuple[str, str]]:
-    """Query Antigravity endpoints for available models, with graceful offline fallback."""
+    """Query Antigravity endpoints for available models live without hardcoded fallbacks."""
     tok = (access_token or "").strip()
     proj = project_id or DEFAULT_FALLBACK_PROJECT_ID
 
@@ -276,7 +270,9 @@ def fetch_available_models(
             pass
 
     if not tok:
-        return list(ANTIGRAVITY_FALLBACK_MODELS)
+        raise ProviderUnavailableError(
+            "No Antigravity access token found. Please authenticate via 'hex auth antigravity' to live-fetch available models."
+        )
 
     url_base = base_url or ANTIGRAVITY_PROD_ENDPOINT
     models_url = f"{url_base}/v1internal:fetchAvailableModels"
@@ -333,6 +329,7 @@ def fetch_available_models(
                     for mid, minfo in models_dict.items():
                         if not isinstance(minfo, dict):
                             continue
+                        _LIVE_ANTIGRAVITY_METADATA[str(mid)] = minfo
                         # Filter out internal IDE tab completion and raw preview models
                         if mid.startswith("tab_") or mid.startswith("chat_"):
                             continue
@@ -358,21 +355,24 @@ def fetch_available_models(
                         parsed.append((str(mid), label))
                     if parsed:
                         priority_order = [
+                            "claude-opus-4-6-thinking",
+                            "claude-sonnet-4-6",
                             "gemini-2.5-pro",
                             "gemini-2.5-flash",
-                            "claude-sonnet-4-6",
-                            "claude-opus-4-6-thinking",
                             "gpt-oss-120b-medium",
                             "gemini-3.1-flash-lite",
+                            "gemini-3-flash",
                         ]
                         def _sort_key(item: tuple[str, str]) -> int:
                             return priority_order.index(item[0]) if item[0] in priority_order else 100
                         parsed.sort(key=_sort_key)
                         return parsed
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, Exception):
-        pass
-
-    return list(ANTIGRAVITY_FALLBACK_MODELS)
+                raise ProviderUnavailableError("Google Antigravity returned empty model inventory.")
+            raise ProviderUnavailableError(f"Google Antigravity returned HTTP status {resp.status}.")
+    except Exception as exc:
+        if isinstance(exc, ProviderUnavailableError):
+            raise
+        raise ProviderUnavailableError(f"Failed to live-fetch models from Google Antigravity: {exc}") from exc
 
 
 class AntigravityOAuthManager:
@@ -801,7 +801,7 @@ class AntigravityModelProvider(ModelProvider):
     def __init__(
         self,
         *,
-        model_id: str = "gemini-2.5-pro",
+        model_id: str | None = None,
         oauth_manager: AntigravityOAuthManager | None = None,
         access_token: str | None = None,
         refresh_token: str | None = None,
@@ -811,7 +811,13 @@ class AntigravityModelProvider(ModelProvider):
         http_transport: Callable[[str, dict[str, str], bytes], tuple[int, bytes]] | None = None,
         enable_prompt_caching: bool = True,
     ) -> None:
-        self.model_id = self._normalize_model_id(model_id)
+        resolved_mid = (
+            model_id
+            or os.getenv("HEX_CLOUD_MODEL_ID")
+            or os.getenv("ANTIGRAVITY_MODEL_ID")
+            or ""
+        )
+        self.model_id = self._normalize_model_id(resolved_mid)
         self.base_url = base_url.rstrip("/")
         self.http_transport = http_transport
         self.enable_prompt_caching = enable_prompt_caching
@@ -838,13 +844,15 @@ class AntigravityModelProvider(ModelProvider):
         self._cached_project_id: str | None = project_id or os.getenv("HEX_ANTIGRAVITY_PROJECT_ID")
 
     @staticmethod
-    def _normalize_model_id(model_id: str) -> str:
+    def _normalize_model_id(model_id: str | None) -> str:
+        if not model_id:
+            return ""
         norm = model_id.strip()
         for prefix in ("google/antigravity-", "antigravity/", "antigravity-"):
             if norm.lower().startswith(prefix):
                 norm = norm[len(prefix) :]
                 break
-        return norm or "gemini-2.5-pro"
+        return norm
 
     def _get_active_credential(self) -> AntigravityCredential | None:
         if self._explicit_cred is not None:
@@ -863,10 +871,18 @@ class AntigravityModelProvider(ModelProvider):
             return False
 
     def get_capabilities(self) -> ProviderCapabilities:
+        meta = _LIVE_ANTIGRAVITY_METADATA.get(self.model_id)
+        if not meta and self.model_id and self.is_available():
+            try:
+                self.fetch_available_models()
+                meta = _LIVE_ANTIGRAVITY_METADATA.get(self.model_id)
+            except Exception:
+                meta = None
+        max_ctx = int(meta["maxTokens"]) if (meta and meta.get("maxTokens")) else 128000
         return ProviderCapabilities(
             supports_system_prompt=True,
             supports_streaming=True,
-            max_context_window=1_000_000,
+            max_context_window=max_ctx,
             quantization=None,
             local_unified_memory=False,
         )

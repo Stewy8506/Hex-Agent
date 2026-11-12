@@ -985,6 +985,41 @@ class LedgerStore:
                 d["result"] = d["deliverable"]
             return d
 
+    def get_project_task_sequence(self, task_id: str, project_id: str | None = None) -> int:
+        """Return 1-based sequential task index for this task within its project."""
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_project_task_sequence_async, task_id, project_id)
+        with self._lock:
+            row = self.conn.execute("SELECT project_id, created_at FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            if not row:
+                return 1
+            proj = project_id or (row[0] if isinstance(row, (list, tuple)) else row["project_id"]) or "default"
+            created_at = row[1] if isinstance(row, (list, tuple)) else row["created_at"]
+            c_row = self.conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE (project_id = ? OR (project_id IS NULL AND ? = 'default')) AND created_at <= ?",
+                (proj, proj, created_at),
+            ).fetchone()
+            seq = int(c_row[0]) if c_row and c_row[0] is not None else 1
+            return max(1, seq)
+
+    async def get_project_task_sequence_async(self, task_id: str, project_id: str | None = None) -> int:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_project_task_sequence, task_id, project_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT project_id, created_at FROM tasks WHERE task_id = $1", task_id)
+            if not row:
+                return 1
+            proj = project_id or row["project_id"] or "default"
+            created_at = row["created_at"]
+            cnt = await conn.fetchval(
+                "SELECT COUNT(*) FROM tasks WHERE (project_id = $1 OR (project_id IS NULL AND $1 = 'default')) AND created_at <= $2",
+                proj,
+                created_at,
+            )
+            seq = int(cnt) if cnt is not None else 1
+            return max(1, seq)
+
     def list_tasks(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         if self.backend_type == "postgres":
             return self._run_sync(self.list_tasks_async, status, limit)

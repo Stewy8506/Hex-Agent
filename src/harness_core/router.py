@@ -69,15 +69,38 @@ class RouteDecision:
 
 
 def _detect_default_local_model() -> str:
-    """Dynamically determine sensible default local model based on host platform and hardware."""
+    """Dynamically determine default local model from environment, config, or live local discovery."""
     env_local = os.getenv("HEX_LOCAL_MODEL_ID") or os.getenv("HARNESS_LOCAL_MODEL_ID")
     if env_local:
         return env_local
 
-    # Hardware detection on Apple Silicon Darwin
-    if sys.platform == "darwin" and platform.machine().lower() in ("arm64", "aarch64"):
-        return "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
-    # Non-Apple Silicon host (Linux, Intel, Windows, Cloud VMs)
+    # Check local config file if present
+    for cfg_candidate in (
+        Path.cwd() / ".hex" / "config.yaml",
+        Path.home() / ".hex" / "config.yaml",
+    ):
+        if cfg_candidate.is_file():
+            try:
+                import yaml
+
+                with open(cfg_candidate, "r") as f:
+                    cfg = yaml.safe_load(f) or {}
+                m = cfg.get("models", {}).get("local_model_id")
+                if m and isinstance(m, str) and m.strip():
+                    return m.strip()
+            except Exception:
+                pass
+
+    # Live discover installed models from Ollama, HuggingFace Hub, or LM Studio
+    try:
+        from .providers.cloud_provider import fetch_available_models
+
+        disc = fetch_available_models("local")
+        if disc:
+            return disc[0][0]
+    except Exception:
+        pass
+
     return "local_deterministic_compressor"
 
 
@@ -121,8 +144,42 @@ class TwoTierModelRouter:
             cloud_model_id
             or os.getenv("HEX_CLOUD_MODEL_ID")
             or os.getenv("HARNESS_CLOUD_MODEL_ID")
-            or "gemini-2.5-pro"
+            or ""
         )
+
+        if not resolved_cloud_model:
+            # Check config file if present
+            for cfg_candidate in (
+                Path.cwd() / ".hex" / "config.yaml",
+                Path.home() / ".hex" / "config.yaml",
+            ):
+                if cfg_candidate.is_file():
+                    try:
+                        import yaml
+
+                        with open(cfg_candidate, "r") as f:
+                            cfg = yaml.safe_load(f) or {}
+                        m = cfg.get("models", {}).get("cloud_model_id")
+                        if m and isinstance(m, str) and m.strip():
+                            resolved_cloud_model = m.strip()
+                            break
+                    except Exception:
+                        pass
+
+        if not resolved_cloud_model:
+            # Live discover available models from active provider
+            probe_ptype = resolved_provider_type or "antigravity"
+            try:
+                from .providers.cloud_provider import fetch_available_models
+
+                disc = fetch_available_models(probe_ptype)
+                if disc:
+                    resolved_cloud_model = disc[0][0]
+            except Exception:
+                pass
+
+        if not resolved_cloud_model:
+            resolved_cloud_model = "claude-opus-4-6-thinking" if resolved_provider_type == "antigravity" else ""
 
         if cloud_provider is not None:
             self.cloud_provider = cloud_provider
