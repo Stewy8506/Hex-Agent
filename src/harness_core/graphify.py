@@ -21,6 +21,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -188,6 +190,126 @@ class BlastRadiusReport:
         }
 
 
+
+class GraphifyUpstreamRunner:
+    """Subprocess and in-process execution bridge to upstream Graphify CLI."""
+
+    def __init__(self, vendor_dir: Path | None = None) -> None:
+        self.vendor_dir = Path(vendor_dir).resolve() if vendor_dir else get_graphify_dir()
+
+    def is_cli_available(self) -> bool:
+        """Check if graphify CLI binary is in PATH or vendor/graphify package directory exists."""
+        if shutil.which("graphify") is not None:
+            return True
+        return self.vendor_dir.is_dir()
+
+    def run_command(
+        self,
+        cmd: str,
+        args: list[str] | None = None,
+        cwd: Path | None = None,
+        timeout: float = 60.0,
+    ) -> tuple[int, str, str]:
+        """Execute a graphify CLI command via binary or python -m graphify."""
+        cmd_args = list(args or [])
+        cli_bin = shutil.which("graphify")
+        env = os.environ.copy()
+
+        if cli_bin:
+            full_cmd = [cli_bin, cmd, *cmd_args]
+        elif self.vendor_dir.is_dir():
+            full_cmd = [sys.executable, "-m", "graphify", cmd, *cmd_args]
+            cur_pypath = env.get("PYTHONPATH", "")
+            vendor_str = str(self.vendor_dir)
+            env["PYTHONPATH"] = f"{vendor_str}:{cur_pypath}" if cur_pypath else vendor_str
+        else:
+            return (-1, "", f"Graphify CLI not found and vendor directory does not exist: {self.vendor_dir}")
+
+        work_dir = str(cwd) if cwd else None
+        try:
+            res = subprocess.run(
+                full_cmd,
+                cwd=work_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return (res.returncode, res.stdout, res.stderr)
+        except subprocess.TimeoutExpired:
+            return (-1, "", "Timeout expired")
+        except Exception as exc:
+            return (-1, "", str(exc))
+
+    def run_update(
+        self,
+        workspace_root: Path | str,
+        force: bool = True,
+        no_cluster: bool = True,
+    ) -> tuple[bool, Path]:
+        """Run graphify update via CLI or in-process fallback."""
+        ws = Path(workspace_root).resolve()
+        out_path = ws / "graphify-out" / "graph.json"
+
+        # Attempt CLI/subprocess invocation if available
+        if self.is_cli_available():
+            cli_args: list[str] = []
+            if force:
+                cli_args.append("--force")
+            if no_cluster:
+                cli_args.append("--no-cluster")
+            code, stdout, stderr = self.run_command("update", args=cli_args, cwd=ws)
+            if code == 0 and out_path.is_file():
+                return (True, out_path)
+
+        # In-process fallback using graphify.watch._rebuild_code
+        try:
+            from graphify.watch import _rebuild_code
+            success = _rebuild_code(
+                watch_path=ws,
+                force=force,
+                no_cluster=no_cluster,
+                acquire_lock=False,
+            )
+            if success and out_path.is_file():
+                return (True, out_path)
+            return (out_path.is_file(), out_path)
+        except Exception:
+            return (out_path.is_file(), out_path)
+
+    def run_extract(
+        self,
+        workspace_root: Path | str,
+        force: bool = True,
+    ) -> tuple[bool, Path]:
+        """Run graphify extraction via CLI or in-process fallback."""
+        ws = Path(workspace_root).resolve()
+        out_path = ws / "graphify-out" / "graph.json"
+
+        if self.is_cli_available():
+            cli_args: list[str] = []
+            if force:
+                cli_args.append("--force")
+            cli_args.append("--no-cluster")
+            code, stdout, stderr = self.run_command("extract", args=cli_args, cwd=ws)
+            if code == 0 and out_path.is_file():
+                return (True, out_path)
+
+        try:
+            from graphify.watch import _rebuild_code
+            success = _rebuild_code(
+                watch_path=ws,
+                force=force,
+                no_cluster=True,
+                acquire_lock=False,
+            )
+            if success and out_path.is_file():
+                return (True, out_path)
+            return (out_path.is_file(), out_path)
+        except Exception:
+            return (out_path.is_file(), out_path)
+
+
 class ActiveGraphifyAdapter:
     """Repository AST/call-graph index, Incremental Stat Cache, Surgical Slicer & Blast-Radius Hook."""
 
@@ -327,6 +449,134 @@ class ActiveGraphifyAdapter:
             os.replace(tmp_file, self.cache_file)
         except Exception:
             pass
+
+    def ingest_upstream_graph(self, path: Path | str | None = None) -> dict[str, Any]:
+        """Ingest upstream Graphify JSON (graphify-out/graph.json or .hex/graph.json).
+
+        Populates self.graph (NetworkX DiGraph), self.symbols_by_file, self.symbols_by_name,
+        self.callers_of, and self.file_of_qualified.
+        Returns a summary dict with ingested flag, path, node_count, edge_count.
+        """
+        candidate: Path | None = None
+        if path is not None:
+            candidate = Path(path).resolve()
+        else:
+            p1 = self.workspace_root / "graphify-out" / "graph.json"
+            p2 = self.workspace_root / ".hex" / "graph.json"
+            if p1.is_file():
+                candidate = p1
+            elif p2.is_file():
+                candidate = p2
+
+        if candidate is None or not candidate.is_file():
+            return {
+                "ingested": False,
+                "node_count": 0,
+                "edge_count": 0,
+                "path": str(candidate) if candidate else None,
+            }
+
+        try:
+            raw = candidate.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except Exception:
+            return {
+                "ingested": False,
+                "node_count": 0,
+                "edge_count": 0,
+                "path": str(candidate),
+            }
+
+        raw_nodes = data.get("nodes", [])
+        if not isinstance(raw_nodes, list):
+            return {
+                "ingested": False,
+                "node_count": 0,
+                "edge_count": 0,
+                "path": str(candidate),
+            }
+
+        raw_edges = data.get("edges") or data.get("links") or []
+        if not isinstance(raw_edges, list):
+            raw_edges = []
+
+        if nx is not None and self.graph is None:
+            self.graph = nx.DiGraph()
+
+        # Ingest nodes
+        for node in raw_nodes:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id", ""))
+            if not node_id:
+                continue
+
+            label = str(node.get("label") or node.get("name") or node_id)
+            source_file = str(node.get("source_file") or node.get("file") or node.get("path") or "")
+            file_type = str(node.get("file_type") or "code")
+            kind = str(node.get("kind") or "symbol")
+            lineno = int(node.get("lineno") or 0)
+            end_lineno = int(node.get("end_lineno") or lineno)
+
+            if self.graph is not None:
+                node_attrs = {k: v for k, v in node.items() if k != "id"}
+                node_attrs.setdefault("label", label)
+                node_attrs.setdefault("source_file", source_file)
+                node_attrs.setdefault("file_type", file_type)
+                node_attrs.setdefault("kind", kind)
+                self.graph.add_node(node_id, **node_attrs)
+
+            if source_file:
+                self.file_of_qualified[node_id] = source_file
+                self.file_of_qualified[label] = source_file
+
+                if kind not in ("file", "document", "external", "concept") and file_type == "code":
+                    existing_syms = self.symbols_by_file.get(source_file, [])
+                    if not any(s.qualified_name == node_id for s in existing_syms):
+                        sym = SymbolDef(
+                            name=label,
+                            kind=kind,
+                            lineno=lineno,
+                            end_lineno=end_lineno,
+                            qualified_name=node_id,
+                            rel_path=source_file,
+                        )
+                        self.symbols_by_file.setdefault(source_file, []).append(sym)
+                        self.symbols_by_name.setdefault(label, []).append(sym)
+
+        # Ingest links / edges
+        for edge in raw_edges:
+            if not isinstance(edge, dict):
+                continue
+            src = str(edge.get("source") or edge.get("from") or "")
+            tgt = str(edge.get("target") or edge.get("to") or "")
+            if not src or not tgt:
+                continue
+
+            relation = str(edge.get("relation") or edge.get("type") or "related_to")
+            confidence = str(edge.get("confidence") or "EXTRACTED")
+            edge_src_file = str(edge.get("source_file") or "")
+
+            if self.graph is not None:
+                edge_attrs = {k: v for k, v in edge.items() if k not in ("source", "target", "from", "to")}
+                edge_attrs.setdefault("relation", relation)
+                edge_attrs.setdefault("confidence", confidence)
+                if edge_src_file:
+                    edge_attrs.setdefault("source_file", edge_src_file)
+                self.graph.add_edge(src, tgt, **edge_attrs)
+
+            if relation == "calls":
+                self.callers_of.setdefault(tgt, set()).add(src)
+
+        node_count = len(self.graph.nodes) if self.graph is not None else len(raw_nodes)
+        edge_count = len(self.graph.edges) if self.graph is not None else len(raw_edges)
+
+        return {
+            "ingested": True,
+            "path": str(candidate),
+            "node_count": node_count,
+            "edge_count": edge_count,
+        }
 
     def build_or_refresh(
         self,
@@ -1137,15 +1387,16 @@ class ActiveGraphifyAdapter:
 
     def export_interactive_html(
         self,
-        output_path: Path | str,
+        output_path: Path | str | None = None,
         *,
         workspace_dir: Path | str | None = None,
         project_label: str | None = None,
     ) -> Path:
         """Generate a self-contained D3 v7 collapsible architecture tree HTML via `graphify.tree_html`."""
         ws = Path(workspace_dir or self.workspace_root).resolve()
-        self.build_or_refresh(ws)
-        out_file = Path(output_path).resolve()
+        if not self.symbols_by_file and (self.graph is None or len(self.graph.nodes) == 0):
+            self.build_or_refresh(ws)
+        out_file = Path(output_path or (ws / "graphify-out" / "tree.html")).resolve()
         out_file.parent.mkdir(parents=True, exist_ok=True)
         label = project_label or ws.name or "HEX Workspace"
 
@@ -1160,6 +1411,22 @@ class ActiveGraphifyAdapter:
                         "label": f"{s.name} ({s.kind})",
                         "source_file": rel,
                         "file_type": "code",
+                    }
+                )
+
+        if not nodes_payload and self.graph is not None:
+            for nid, ndata in self.graph.nodes(data=True):
+                k = ndata.get("kind", "symbol")
+                if k in ("file", "external"):
+                    continue
+                sf = ndata.get("source_file") or ndata.get("file") or ""
+                lbl = ndata.get("label", nid)
+                nodes_payload.append(
+                    {
+                        "id": nid,
+                        "label": f"{lbl} ({k})",
+                        "source_file": sf,
+                        "file_type": ndata.get("file_type", "code"),
                     }
                 )
 

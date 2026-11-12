@@ -359,6 +359,41 @@ def main(argv: list[str] | None = None) -> int:
     p_lsp_hov.add_argument("--workspace", default=None, help="Workspace directory")
     p_lsp_hov.add_argument("--json", action="store_true", help="Output JSON")
 
+    p_grph = sub.add_parser("graphify", help="Manage upstream Graphify tree-sitter AST extraction and knowledge graph")
+    p_grph_sub = p_grph.add_subparsers(dest="graphify_cmd", help="Graphify subcommands")
+
+    p_grph_stat = p_grph_sub.add_parser("status", help="Inspect Graphify CLI discovery, active graph paths, and node/edge statistics")
+    p_grph_stat.add_argument("--workspace", default=None, help="Workspace directory")
+    p_grph_stat.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_grph_upd = p_grph_sub.add_parser("update", help="Run Graphify incremental update on workspace (CLI or in-process fallback)")
+    p_grph_upd.add_argument("--workspace", default=None, help="Workspace directory")
+    p_grph_upd.add_argument("--no-force", action="store_true", help="Do not force overwrite if node count decreases")
+    p_grph_upd.add_argument("--cluster", action="store_true", help="Enable community clustering (default: no-cluster)")
+    p_grph_upd.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_grph_ing = p_grph_sub.add_parser("ingest", help="Ingest graphify-out/graph.json or .hex/graph.json into active architecture engine")
+    p_grph_ing.add_argument("--path", default=None, help="Explicit path to graph.json")
+    p_grph_ing.add_argument("--workspace", default=None, help="Workspace directory")
+    p_grph_ing.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_grph_god = p_grph_sub.add_parser("god-nodes", help="Analyze core architectural abstractions and god nodes")
+    p_grph_god.add_argument("--top", type=int, default=5, help="Number of top god nodes to display (default: 5)")
+    p_grph_god.add_argument("--workspace", default=None, help="Workspace directory")
+    p_grph_god.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_grph_aff = p_grph_sub.add_parser("affected", help="Query blast-radius and affected nodes for a symbol or file")
+    p_grph_aff.add_argument("target", help="Symbol name or file path to analyze")
+    p_grph_aff.add_argument("--depth", type=int, default=2, help="Blast-radius traversal depth (default: 2)")
+    p_grph_aff.add_argument("--workspace", default=None, help="Workspace directory")
+    p_grph_aff.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_grph_tree = p_grph_sub.add_parser("tree", help="Generate self-contained interactive D3 architecture tree visualization HTML")
+    p_grph_tree.add_argument("--output", "-o", default=None, help="Output HTML file path (default: graphify-out/tree.html)")
+    p_grph_tree.add_argument("--open", action="store_true", help="Open generated HTML in default web browser")
+    p_grph_tree.add_argument("--workspace", default=None, help="Workspace directory")
+    p_grph_tree.add_argument("--json", action="store_true", help="Output JSON")
+
     p_uninst = sub.add_parser("uninstall", help="Uninstall HEX CLI, unload background daemons, and optionally purge data")
     p_uninst.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
     p_uninst.add_argument("--purge", action="store_true", help="Permanently delete user configuration and ledger database (~/.hex)")
@@ -1423,6 +1458,183 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         print(f"\nHover Information ({args.file}:{args.line}:{args.character}):")
                         print(hover["contents"])
+            return 0
+
+    if args.cmd == "graphify":
+        from .graphify import ActiveGraphifyAdapter, GraphifyUpstreamRunner, UPSTREAM_GRAPHIFY_AVAILABLE
+
+        ws_dir = Path(getattr(args, "workspace", None) or repo_root).resolve()
+        subcmd = getattr(args, "graphify_cmd", None) or "status"
+        runner = GraphifyUpstreamRunner()
+        adapter = orch.graphify if (ws_dir == orch.default_workspace) else ActiveGraphifyAdapter(ws_dir)
+
+        if subcmd == "status":
+            cli_avail = runner.is_cli_available()
+            out_path = ws_dir / "graphify-out" / "graph.json"
+            hex_path = ws_dir / ".hex" / "graph.json"
+            active_path = None
+            if out_path.is_file():
+                active_path = str(out_path)
+            elif hex_path.is_file():
+                active_path = str(hex_path)
+
+            node_count = 0
+            edge_count = 0
+            if active_path:
+                try:
+                    data = json.loads(Path(active_path).read_text(encoding="utf-8"))
+                    node_count = len(data.get("nodes", []))
+                    edge_count = len(data.get("edges") or data.get("links") or [])
+                except Exception:
+                    pass
+
+            status_payload = {
+                "cli_available": cli_avail,
+                "vendor_directory": str(runner.vendor_dir),
+                "workspace": str(ws_dir),
+                "active_graph_path": active_path,
+                "node_count": node_count,
+                "edge_count": edge_count,
+                "upstream_graphify_library": UPSTREAM_GRAPHIFY_AVAILABLE,
+            }
+
+            if getattr(args, "json", False):
+                print(json.dumps(status_payload, indent=2))
+            else:
+                print("HEX Graphify Upstream Status:")
+                print(f"  CLI Available:       {'YES' if cli_avail else 'NO'}")
+                print(f"  Vendor Directory:    {runner.vendor_dir}")
+                print(f"  Workspace:           {ws_dir}")
+                print(f"  Active Graph File:   {active_path or 'None'}")
+                if active_path:
+                    print(f"  Indexed Nodes:       {node_count}")
+                    print(f"  Indexed Edges:       {edge_count}")
+            return 0
+
+        if subcmd == "update":
+            force = not getattr(args, "no_force", False)
+            no_cluster = not getattr(args, "cluster", False)
+            ok, target_path = runner.run_update(ws_dir, force=force, no_cluster=no_cluster)
+            res_payload = {
+                "success": ok,
+                "path": str(target_path) if target_path else None,
+                "force": force,
+                "no_cluster": no_cluster,
+            }
+            if ok and target_path.is_file():
+                ing_res = adapter.ingest_upstream_graph(target_path)
+                res_payload["node_count"] = ing_res.get("node_count", 0)
+                res_payload["edge_count"] = ing_res.get("edge_count", 0)
+
+            if getattr(args, "json", False):
+                print(json.dumps(res_payload, indent=2))
+            else:
+                if ok:
+                    print(f"Graphify update succeeded: {target_path}")
+                    if "node_count" in res_payload:
+                        print(f"Ingested {res_payload['node_count']} nodes, {res_payload['edge_count']} edges.")
+                else:
+                    print(f"Graphify update completed with fallback or errors. Path: {target_path}")
+            return 0 if ok else 1
+
+        if subcmd == "ingest":
+            custom_path = getattr(args, "path", None)
+            res = adapter.ingest_upstream_graph(custom_path)
+            if getattr(args, "json", False):
+                print(json.dumps(res, indent=2))
+            else:
+                if res.get("ingested"):
+                    print(f"Graphify ingested successfully from: {res.get('path')}")
+                    print(f"  Nodes: {res.get('node_count', 0)}")
+                    print(f"  Edges: {res.get('edge_count', 0)}")
+                else:
+                    print(f"No Graphify graph found to ingest at {res.get('path') or ws_dir}")
+            return 0
+
+        if subcmd == "god-nodes":
+            ing_res = adapter.ingest_upstream_graph()
+            if not ing_res.get("ingested"):
+                adapter.build_or_refresh(ws_dir)
+
+            top_n = getattr(args, "top", 5)
+            arch = adapter.analyze_architecture(top_n=top_n)
+            gods = arch.get("god_nodes", [])
+
+            if getattr(args, "json", False):
+                print(json.dumps(arch, indent=2, default=str))
+            else:
+                print(f"Top {len(gods)} Architectural God Nodes:")
+                if not gods:
+                    print("  No god nodes identified (graph may be empty or balanced).")
+                for i, g in enumerate(gods, 1):
+                    nid = g.get("node_id") or g.get("id") or str(g)
+                    deg = g.get("degree") or g.get("total_degree") or 0
+                    print(f"  {i}. {nid} (degree: {deg})")
+            return 0
+
+        if subcmd == "affected":
+            target = args.target
+            depth = getattr(args, "depth", 2)
+            ing_res = adapter.ingest_upstream_graph()
+            if not ing_res.get("ingested"):
+                adapter.build_or_refresh(ws_dir)
+
+            from .graphify import upstream_affected
+            affected_nodes: list[dict[str, Any]] = []
+            if adapter.upstream_available and adapter.graph is not None and upstream_affected is not None:
+                try:
+                    hits = upstream_affected.affected_nodes(adapter.graph, seed=target, depth=depth)
+                    for hit in hits:
+                        affected_nodes.append({
+                            "node_id": hit.node_id,
+                            "depth": hit.depth,
+                            "via_relation": hit.via_relation,
+                        })
+                except Exception as exc:
+                    affected_nodes.append({"error": str(exc)})
+            else:
+                callers = adapter.callers_of.get(target, set())
+                for c in sorted(callers):
+                    affected_nodes.append({
+                        "node_id": c,
+                        "depth": 1,
+                        "via_relation": "calls",
+                    })
+
+            aff_payload = {
+                "target": target,
+                "depth": depth,
+                "count": len(affected_nodes),
+                "affected": affected_nodes,
+            }
+            if getattr(args, "json", False):
+                print(json.dumps(aff_payload, indent=2))
+            else:
+                print(f"Blast-Radius Impact for '{target}' (depth {depth}):")
+                if not affected_nodes:
+                    print("  No downstream affected nodes found.")
+                for a in affected_nodes:
+                    print(f"  - {a.get('node_id')} (depth: {a.get('depth')}, via: {a.get('via_relation')})")
+            return 0
+
+        if subcmd == "tree":
+            ing_res = adapter.ingest_upstream_graph()
+            if not ing_res.get("ingested"):
+                adapter.build_or_refresh(ws_dir)
+
+            out_arg = getattr(args, "output", None)
+            out_file = adapter.export_interactive_html(out_arg, workspace_dir=ws_dir)
+            if getattr(args, "open", False):
+                try:
+                    import webbrowser
+                    webbrowser.open(f"file://{out_file}")
+                except Exception:
+                    pass
+
+            if getattr(args, "json", False):
+                print(json.dumps({"html_file": str(out_file)}, indent=2))
+            else:
+                print(f"Interactive architecture tree HTML generated: {out_file}")
             return 0
 
     if args.cmd == "uninstall":
