@@ -27,7 +27,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 from .db import LedgerStore, canonical_json, sha256_hex
-from .graphify import ActiveGraphifyAdapter
+from .graphify import (
+    ActiveGraphifyAdapter,
+    BlastRadiusReport,
+    SUPPORTED_CODE_EXTENSIONS,
+)
 from .lsp.manager import LSPManager
 from .mcp_client import MCPClientAdapter, MCPToolDefinition
 from .models import PolicyDecisionType, RiskClass
@@ -80,6 +84,44 @@ class ApprovalRequiredInterrupt(RuntimeError):
         self.approval_record = approval_record
 
 
+class ActiveBlastRadiusInterceptor:
+    """Active Graphify blast-radius interceptor for tool operations modifying polyglot code files."""
+
+    def __init__(self, graphify: ActiveGraphifyAdapter | None = None) -> None:
+        self.graphify = graphify
+
+    def inspect_file_modification(
+        self,
+        workspace_dir: Path | str,
+        rel_path: str,
+        *,
+        before_sources: dict[str, str] | None = None,
+    ) -> BlastRadiusReport | None:
+        """Inspects file modification and returns BlastRadiusReport if file has a supported code extension."""
+        if self.graphify is None:
+            return None
+        norm_p = str(rel_path).replace("\\", "/").lstrip("./")
+        ext = Path(norm_p).suffix.lower()
+        if ext in SUPPORTED_CODE_EXTENSIONS:
+            return self.graphify.compute_blast_radius(
+                workspace_dir, [norm_p], before_sources=before_sources
+            )
+        return None
+
+    def compute_blast_radius(
+        self,
+        workspace_dir: Path | str,
+        modified_rel_paths: list[str],
+        before_sources: dict[str, str] | None = None,
+    ) -> BlastRadiusReport | None:
+        """Direct blast-radius calculation for given modified paths."""
+        if self.graphify is None:
+            return None
+        return self.graphify.compute_blast_radius(
+            workspace_dir, modified_rel_paths, before_sources=before_sources
+        )
+
+
 class ToolGateway:
     """Policy-enforcing, call-journaling gateway for direct tools and Code Mode scripts."""
 
@@ -93,6 +135,7 @@ class ToolGateway:
     ):
         self.ledger = ledger
         self.graphify = graphify
+        self.blast_interceptor = ActiveBlastRadiusInterceptor(graphify)
         self.sandbox = sandbox or get_default_sandbox()
         self.notifier = notifier
         self.lsp_manager = lsp_manager
@@ -432,15 +475,22 @@ class ToolGateway:
         sanitized_result["_result_sha256"] = sha256_hex(canonical_json(sanitized_result))
 
         # 4. Active Graphify Blast-Radius Hook on R2 file modification (FR-036a)
-        if spec.tool_id == "write_file" and self.graphify is not None and "path" in args:
+        if spec.tool_id == "write_file" and "path" in args:
             rel_p = str(args["path"]).lstrip("./")
-            if rel_p.endswith(".py"):
-                br = self.graphify.compute_blast_radius(ws_path, [rel_p], before_sources=before_sources)
-                sanitized_result["ast_blast_radius"] = br.to_dict()
-                if br.impacted_tests or br.hop1_dependents:
-                    self.ledger.append_blast_radius_checks(
-                        task_id, br.impacted_tests, br.warning_message
-                    )
+            ext = Path(rel_p).suffix.lower()
+            if ext in SUPPORTED_CODE_EXTENSIONS and (
+                self.graphify is not None or getattr(self, "blast_interceptor", None) is not None
+            ):
+                interceptor = getattr(self, "blast_interceptor", None) or ActiveBlastRadiusInterceptor(self.graphify)
+                if self.graphify is not None and interceptor.graphify is None:
+                    interceptor.graphify = self.graphify
+                br = interceptor.inspect_file_modification(ws_path, rel_p, before_sources=before_sources)
+                if br is not None:
+                    sanitized_result["ast_blast_radius"] = br.to_dict()
+                    if br.impacted_tests or br.hop1_dependents:
+                        self.ledger.append_blast_radius_checks(
+                            task_id, br.impacted_tests, br.warning_message
+                        )
 
         self.ledger.seal_tool_call(call_id, sanitized_result, status="SEALED", fencing_token=fencing_token)
         return sanitized_result
@@ -514,6 +564,8 @@ class ToolGateway:
     def _tool_query_graphify(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         if self.graphify is None:
             self.graphify = ActiveGraphifyAdapter(workspace_dir)
+            if hasattr(self, "blast_interceptor") and self.blast_interceptor is not None:
+                self.blast_interceptor.graphify = self.graphify
         self.graphify.build_or_refresh(workspace_dir)
         symbol = str(args.get("symbol", ""))
         if symbol:

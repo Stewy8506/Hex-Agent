@@ -65,10 +65,26 @@ except Exception:
 
 
 SUPPORTED_CODE_EXTENSIONS: frozenset[str] = frozenset(
-    {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".go", ".rs"}
+    {
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".go",
+        ".rs",
+        ".java",
+        ".c",
+        ".cpp",
+        ".cc",
+        ".cxx",
+        ".h",
+        ".hpp",
+    }
 )
 
-# Regex extractors for TypeScript / JavaScript / Go / Rust full-stack symbol & import indexing
+# Regex extractors for TypeScript / JavaScript / Go / Rust / Java / C++ full-stack symbol & import indexing
 _TS_FUNC_RE = re.compile(
     r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(",
     re.MULTILINE,
@@ -116,6 +132,44 @@ _RS_IMPL_RE = re.compile(
 _RS_MOD_RE = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;",
     re.MULTILINE,
+)
+_JAVA_IMPORT_RE = re.compile(
+    r"^\s*import\s+(?:static\s+)?([A-Za-z0-9_$.*]+);",
+    re.MULTILINE,
+)
+_JAVA_CLASS_RE = re.compile(
+    r"^\s*(?:(?:public|protected|private|abstract|static|final|sealed|non-sealed)\s+)*(?:class|interface|enum|record)\s+([A-Za-z_]\w*)(?:\s*<[^>]+>)?(?:\s+extends\s+([A-Za-z0-9_$.]+))?",
+    re.MULTILINE,
+)
+_JAVA_METHOD_RE = re.compile(
+    r"^\s*(?:(?:public|protected|private|static|final|synchronized|abstract|native)\s+)*(?:<[^>]+>\s+)?(?:void|[A-Za-z0-9_<>\[\],\s]+)\s+([A-Za-z_]\w*)\s*\([^)]*\)",
+    re.MULTILINE,
+)
+_JAVA_KEYWORDS = frozenset(
+    {
+        "if", "for", "while", "switch", "catch", "return", "new", "import", "package",
+        "class", "interface", "this", "super", "throws", "throw", "try", "void", "int",
+        "boolean", "double", "float", "long", "byte", "char", "short",
+    }
+)
+_CPP_INCLUDE_RE = re.compile(
+    r"""^\s*#\s*include\s*[<"]([^>"]+)[>"]""",
+    re.MULTILINE,
+)
+_CPP_CLASS_RE = re.compile(
+    r"^\s*(?:template\s*<[^>]+>\s*)?(?:class|struct)\s+([A-Za-z_]\w*)",
+    re.MULTILINE,
+)
+_CPP_FUNC_RE = re.compile(
+    r"^\s*(?:(?:inline|static|virtual|explicit|constexpr|friend)\s+)*(?:[A-Za-z_][\w:*&<>]*\s+)+([A-Za-z_]\w*)\s*\([^;)]*\)",
+    re.MULTILINE,
+)
+_CPP_KEYWORDS = frozenset(
+    {
+        "if", "for", "while", "switch", "catch", "return", "new", "delete", "sizeof",
+        "this", "throw", "try", "void", "int", "bool", "double", "float", "long",
+        "char", "auto", "const", "static", "struct", "class",
+    }
 )
 _GENERIC_CALL_RE = re.compile(r"\b([A-Za-z_][\w$]*)\s*\(")
 _JS_KEYWORDS = frozenset(
@@ -332,6 +386,7 @@ class ActiveGraphifyAdapter:
         self._file_hashes: dict[str, int] = {}
         self.upstream_available = UPSTREAM_GRAPHIFY_AVAILABLE
         self.graph: Any = None
+        self._last_ingested_graph: Path | None = None
         self.last_cache_hits: int = 0
         self.last_cache_misses: int = 0
 
@@ -476,6 +531,8 @@ class ActiveGraphifyAdapter:
                 "path": str(candidate) if candidate else None,
             }
 
+        self._last_ingested_graph = candidate
+
         try:
             raw = candidate.read_text(encoding="utf-8")
             data = json.loads(raw)
@@ -567,6 +624,10 @@ class ActiveGraphifyAdapter:
 
             if relation == "calls":
                 self.callers_of.setdefault(tgt, set()).add(src)
+                if self.graph is not None:
+                    tgt_lbl = self.graph.nodes.get(tgt, {}).get("label")
+                    if tgt_lbl:
+                        self.callers_of.setdefault(tgt_lbl, set()).add(src)
 
         node_count = len(self.graph.nodes) if self.graph is not None else len(raw_nodes)
         edge_count = len(self.graph.edges) if self.graph is not None else len(raw_edges)
@@ -744,6 +805,13 @@ class ActiveGraphifyAdapter:
                             confidence="EXTRACTED",
                         )
 
+        # Re-ingest upstream Graphify JSON if present in workspace or previously ingested
+        upstream_graph_path = root / "graphify-out" / "graph.json"
+        if upstream_graph_path.is_file():
+            self.ingest_upstream_graph(upstream_graph_path)
+        elif self._last_ingested_graph is not None and self._last_ingested_graph.is_file():
+            self.ingest_upstream_graph(self._last_ingested_graph)
+
         return {
             "indexed_files": len(code_files),
             "indexed_symbols": sum(len(v) for v in self.symbols_by_file.values()),
@@ -851,7 +919,7 @@ class ActiveGraphifyAdapter:
         return defs, file_imps
 
     def _index_polyglot_file(self, rel_path: str, fpath: Path, ext: str) -> tuple[list[SymbolDef], set[str]]:
-        """Index TypeScript/React (.ts/.tsx), JavaScript (.js/.jsx), Go (.go), and Rust (.rs) files."""
+        """Index TypeScript/React (.ts/.tsx), JavaScript (.js/.jsx), Go (.go), Rust (.rs), Java (.java), and C/C++ files."""
         try:
             src = fpath.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -1020,6 +1088,97 @@ class ActiveGraphifyAdapter:
                         lineno=lineno,
                         end_lineno=end_lineno,
                         calls=calls,
+                    )
+                )
+        elif ext == ".java":
+            for m in _JAVA_IMPORT_RE.finditer(src):
+                file_imps.add(m.group(1))
+
+            for m in _JAVA_CLASS_RE.finditer(src):
+                name = m.group(1)
+                lineno = src.count("\n", 0, m.start()) + 1
+                end_lineno = min(total_lines, lineno + 40)
+                base = m.group(2) if m.lastindex and m.lastindex >= 2 and m.group(2) else None
+                bases = {base} if base else set()
+                defs.append(
+                    SymbolDef(
+                        name=name,
+                        qualified_name=f"{mod_prefix}.{name}",
+                        kind="class",
+                        rel_path=rel_path,
+                        lineno=lineno,
+                        end_lineno=end_lineno,
+                        bases=bases,
+                        imports_from=set(file_imps),
+                    )
+                )
+
+            for m in _JAVA_METHOD_RE.finditer(src):
+                name = m.group(1)
+                if name in _JAVA_KEYWORDS:
+                    continue
+                lineno = src.count("\n", 0, m.start()) + 1
+                end_lineno = min(total_lines, lineno + 35)
+                snippet = "\n".join(lines[lineno - 1 : end_lineno])
+                calls = {
+                    c.group(1)
+                    for c in _GENERIC_CALL_RE.finditer(snippet)
+                    if c.group(1) not in _JAVA_KEYWORDS and c.group(1) != name
+                }
+                defs.append(
+                    SymbolDef(
+                        name=name,
+                        qualified_name=f"{mod_prefix}.{name}",
+                        kind="method",
+                        rel_path=rel_path,
+                        lineno=lineno,
+                        end_lineno=end_lineno,
+                        calls=calls,
+                        imports_from=set(file_imps),
+                    )
+                )
+        elif ext in (".c", ".cpp", ".cc", ".cxx", ".h", ".hpp"):
+            for m in _CPP_INCLUDE_RE.finditer(src):
+                file_imps.add(m.group(1))
+
+            for m in _CPP_CLASS_RE.finditer(src):
+                name = m.group(1)
+                lineno = src.count("\n", 0, m.start()) + 1
+                end_lineno = min(total_lines, lineno + 40)
+                defs.append(
+                    SymbolDef(
+                        name=name,
+                        qualified_name=f"{mod_prefix}.{name}",
+                        kind="class",
+                        rel_path=rel_path,
+                        lineno=lineno,
+                        end_lineno=end_lineno,
+                        imports_from=set(file_imps),
+                    )
+                )
+
+            for m in _CPP_FUNC_RE.finditer(src):
+                name = m.group(1)
+                if name in _CPP_KEYWORDS:
+                    continue
+                lineno = src.count("\n", 0, m.start()) + 1
+                end_lineno = min(total_lines, lineno + 35)
+                snippet = "\n".join(lines[lineno - 1 : end_lineno])
+                calls = {
+                    c.group(1)
+                    for c in _GENERIC_CALL_RE.finditer(snippet)
+                    if c.group(1) not in _CPP_KEYWORDS and c.group(1) != name
+                }
+                defs.append(
+                    SymbolDef(
+                        name=name,
+                        qualified_name=f"{mod_prefix}.{name}",
+                        kind="function",
+                        rel_path=rel_path,
+                        lineno=lineno,
+                        end_lineno=end_lineno,
+                        calls=calls,
+                        imports_from=set(file_imps),
                     )
                 )
 
@@ -1463,6 +1622,8 @@ class ActiveGraphifyAdapter:
         norm_paths = [p.replace("\\", "/").lstrip("./") for p in modified_rel_paths]
 
         modified_symbols: list[str] = []
+        seed_nodes: list[str] = []
+
         for rel in norm_paths:
             syms = self.symbols_by_file.get(rel, [])
             prev_src = (before_sources or {}).get(rel)
@@ -1474,42 +1635,96 @@ class ActiveGraphifyAdapter:
                 if changed:
                     modified_symbols.extend(changed)
                     continue
+
             for s in syms:
                 if s.kind != "module" and s.name not in modified_symbols:
                     modified_symbols.append(s.name)
+                if s.qualified_name:
+                    seed_nodes.append(s.qualified_name)
+                if s.name:
+                    seed_nodes.append(s.name)
+
+            # Check nodes in self.graph associated with this file
+            if self.graph is not None:
+                if rel in self.graph:
+                    seed_nodes.append(rel)
+                for n, data in self.graph.nodes(data=True):
+                    src_f = (
+                        data.get("source_file")
+                        or data.get("file")
+                        or data.get("path")
+                        or self.file_of_qualified.get(n, "")
+                    )
+                    if not src_f:
+                        if n == rel or n.startswith(f"{rel}:"):
+                            src_f = rel
+                    if src_f == rel:
+                        seed_nodes.append(n)
+                        lbl = data.get("label") or data.get("name") or (n.split(":")[-1] if ":" in n else n)
+                        kind = data.get("kind", "")
+                        if kind != "file" and lbl and lbl not in modified_symbols:
+                            modified_symbols.append(lbl)
+                        if lbl:
+                            seed_nodes.append(lbl)
+
+        # Deduplicate while preserving order
+        seed_nodes = list(dict.fromkeys(seed_nodes))
+        for sym_name in modified_symbols:
+            if sym_name not in seed_nodes:
+                seed_nodes.append(sym_name)
 
         hop1_map: dict[str, dict[str, Any]] = {}
         hop2_map: dict[str, dict[str, Any]] = {}
         impacted_tests: set[str] = set()
 
-        # Interrogate upstream Graphify affected engine if active
+        def _resolve_node_file(nid: str, ndata: dict[str, Any] | None = None) -> str:
+            if ndata:
+                f = ndata.get("source_file") or ndata.get("file") or ndata.get("path")
+                if f:
+                    return str(f)
+            if self.graph is not None and nid in self.graph:
+                gdata = self.graph.nodes[nid]
+                f = gdata.get("source_file") or gdata.get("file") or gdata.get("path")
+                if f:
+                    return str(f)
+            qf = self.file_of_qualified.get(nid, "")
+            if qf:
+                return qf
+            if Path(nid).suffix.lower() in SUPPORTED_CODE_EXTENSIONS:
+                return nid
+            if ":" in nid:
+                cand = nid.split(":")[0]
+                if Path(cand).suffix.lower() in SUPPORTED_CODE_EXTENSIONS:
+                    return cand
+            return ""
+
+        # 1. Interrogate upstream Graphify affected engine if active
         if self.upstream_available and self.graph is not None and upstream_affected is not None:
-            for sym_name in modified_symbols:
+            for seed in seed_nodes:
+                if seed not in self.graph:
+                    continue
                 try:
-                    hits = upstream_affected.affected_nodes(self.graph, seed=sym_name, depth=2)
+                    hits = upstream_affected.affected_nodes(self.graph, seed=seed, depth=2)
                     for hit in hits:
                         if hit.via_relation == "defines":
                             continue
                         node_id = hit.node_id
                         node_data = self.graph.nodes.get(node_id, {})
-                        node_file = node_data.get("file") or (
-                            node_id
-                            if Path(node_id).suffix.lower() in SUPPORTED_CODE_EXTENSIONS
-                            else self.file_of_qualified.get(node_id, "")
-                        )
+                        node_file = _resolve_node_file(node_id, node_data)
+                        via_sym = seed.split(":")[-1] if ":" in seed else seed
                         if hit.depth == 1:
                             if node_id not in hop1_map:
                                 hop1_map[node_id] = {
                                     "qualified_name": node_id,
                                     "file": node_file,
-                                    "via_symbol": sym_name,
+                                    "via_symbol": via_sym,
                                 }
                         elif hit.depth == 2:
                             if node_id not in hop1_map and node_id not in hop2_map:
                                 hop2_map[node_id] = {
                                     "qualified_name": node_id,
                                     "file": node_file,
-                                    "via_hop1": sym_name,
+                                    "via_hop1": via_sym,
                                 }
                         if node_file and self._is_test_file(node_file):
                             impacted_tests.add(node_file)
@@ -1518,49 +1733,116 @@ class ActiveGraphifyAdapter:
                 except Exception:
                     pass
 
+        # 2. Direct NetworkX in_edges traversal across graph
+        if self.graph is not None:
+            for seed in seed_nodes:
+                if seed not in self.graph:
+                    continue
+                via_sym = seed.split(":")[-1] if ":" in seed else seed
+                for pred, _, edge_data in self.graph.in_edges(seed, data=True):
+                    if pred == seed or pred in seed_nodes:
+                        continue
+                    rel = edge_data.get("relation") or ""
+                    if rel == "defines":
+                        continue
+                    p_file = _resolve_node_file(pred)
+                    if pred not in hop1_map:
+                        hop1_map[pred] = {
+                            "qualified_name": pred,
+                            "file": p_file,
+                            "via_symbol": via_sym,
+                        }
+                    if p_file and self._is_test_file(p_file):
+                        impacted_tests.add(p_file)
+                    elif self._is_test_file(pred):
+                        impacted_tests.add(pred)
+
+                    for p2, _, e2_data in self.graph.in_edges(pred, data=True):
+                        if p2 == seed or p2 in seed_nodes or p2 == pred or p2 in hop1_map:
+                            continue
+                        rel2 = e2_data.get("relation") or ""
+                        if rel2 == "defines":
+                            continue
+                        p2_file = _resolve_node_file(p2)
+                        if p2 not in hop2_map:
+                            hop2_map[p2] = {
+                                "qualified_name": p2,
+                                "file": p2_file,
+                                "via_hop1": pred,
+                            }
+                        if p2_file and self._is_test_file(p2_file):
+                            impacted_tests.add(p2_file)
+                        elif self._is_test_file(p2):
+                            impacted_tests.add(p2)
+
+        # 3. Native callers_of lookup
         for sym_name in modified_symbols:
             for caller_qn in sorted(self.callers_of.get(sym_name, set())):
                 caller_file = self.file_of_qualified.get(caller_qn, "")
-                hop1_map[caller_qn] = {
-                    "qualified_name": caller_qn,
-                    "file": caller_file,
-                    "via_symbol": sym_name,
-                }
-                if self._is_test_file(caller_file):
+                if not caller_file and Path(caller_qn).suffix.lower() in SUPPORTED_CODE_EXTENSIONS:
+                    caller_file = caller_qn
+                if caller_qn not in hop1_map:
+                    hop1_map[caller_qn] = {
+                        "qualified_name": caller_qn,
+                        "file": caller_file,
+                        "via_symbol": sym_name,
+                    }
+                if caller_file and self._is_test_file(caller_file):
                     impacted_tests.add(caller_file)
+                elif self._is_test_file(caller_qn):
+                    impacted_tests.add(caller_qn)
 
-                caller_short = caller_qn.split(".")[-1]
-                for h2_qn in sorted(self.callers_of.get(caller_short, set())):
-                    if h2_qn not in hop1_map:
+                caller_short = caller_qn.split(".")[-1].split(":")[-1]
+                for h2_qn in sorted(self.callers_of.get(caller_short, set()) | self.callers_of.get(caller_qn, set())):
+                    if h2_qn not in hop1_map and h2_qn not in hop2_map:
                         h2_file = self.file_of_qualified.get(h2_qn, "")
+                        if not h2_file and Path(h2_qn).suffix.lower() in SUPPORTED_CODE_EXTENSIONS:
+                            h2_file = h2_qn
                         hop2_map[h2_qn] = {
                             "qualified_name": h2_qn,
                             "file": h2_file,
                             "via_hop1": caller_qn,
                         }
-                        if self._is_test_file(h2_file):
+                        if h2_file and self._is_test_file(h2_file):
                             impacted_tests.add(h2_file)
+                        elif self._is_test_file(h2_qn):
+                            impacted_tests.add(h2_qn)
 
         hop1_list = list(hop1_map.values())
         hop2_list = list(hop2_map.values())
 
-        # Expand 1 more hop specifically for test methods/classes that call 2-hop dependents
+        # 4. Expand 1 more hop for test methods/classes calling 2-hop dependents
         for h2_item in hop2_list:
-            h2_short = h2_item["qualified_name"].split(".")[-1]
-            for h3_qn in sorted(self.callers_of.get(h3_short := h2_short, set())):
+            h2_qn = h2_item["qualified_name"]
+            h2_short = h2_qn.split(".")[-1].split(":")[-1]
+            for h3_qn in sorted(self.callers_of.get(h3_short := h2_short, set()) | self.callers_of.get(h2_qn, set())):
                 h3_file = self.file_of_qualified.get(h3_qn, "")
-                if self._is_test_file(h3_file):
+                if not h3_file and Path(h3_qn).suffix.lower() in SUPPORTED_CODE_EXTENSIONS:
+                    h3_file = h3_qn
+                if h3_file and self._is_test_file(h3_file):
                     impacted_tests.add(h3_file)
+                elif self._is_test_file(h3_qn):
+                    impacted_tests.add(h3_qn)
 
-        # Also check if any test file imports/mentions the modified module stem or hop1/hop2 symbols
-        hop_symbols = set(modified_symbols) | {x["qualified_name"].split(".")[-1] for x in hop1_list + hop2_list}
+        # 5. Check if test files import or reference modified stems / symbols
+        hop_symbols = (
+            set(modified_symbols)
+            | set(seed_nodes)
+            | {x["qualified_name"].split(".")[-1].split(":")[-1] for x in hop1_list + hop2_list}
+            | {x["qualified_name"] for x in hop1_list + hop2_list}
+        )
         for rel in norm_paths:
             stem = Path(rel).stem
+            if self._is_test_file(rel):
+                impacted_tests.add(rel)
             for f_rel, syms in self.symbols_by_file.items():
                 if self._is_test_file(f_rel):
                     for s in syms:
                         if stem in s.calls or any(ms in s.calls for ms in hop_symbols):
                             impacted_tests.add(f_rel)
+                    f_imps = self.file_imports.get(f_rel, set())
+                    if stem in f_imps or rel in f_imps or any(stem in imp for imp in f_imps):
+                        impacted_tests.add(f_rel)
 
         tests_list = sorted(impacted_tests)
         arch = self.analyze_architecture(workspace_dir, top_n=5)
@@ -1577,7 +1859,16 @@ class ActiveGraphifyAdapter:
                 + "."
             )
         else:
-            warning = f"[AST Blast-Radius]: Modified {', '.join(norm_paths)} (no symbol delta detected)."
+            warning = (
+                f"[AST Blast-Radius]: Modified {', '.join(norm_paths)}; "
+                f"impacts {len(hop1_list)} 1-hop caller(s), {len(hop2_list)} 2-hop dependent(s), "
+                f"and {len(tests_list)} test file(s)"
+                + (f" ({', '.join(tests_list)})" if tests_list else "")
+                + (f" [WARNING: {len(cycles)} circular import cycle(s) detected!]" if cycles else "")
+                + "."
+                if (hop1_list or tests_list)
+                else f"[AST Blast-Radius]: Modified {', '.join(norm_paths)} (no symbol delta detected)."
+            )
 
         return BlastRadiusReport(
             modified_files=norm_paths,
@@ -1612,14 +1903,70 @@ class ActiveGraphifyAdapter:
         return sorted(set(changed + removed))
 
     def _is_test_file(self, rel_path: str) -> bool:
+        if not rel_path:
+            return False
         p = Path(rel_path)
-        name_l = p.name.lower()
-        return (
-            name_l.startswith("test_")
-            or name_l.endswith(("_test.py", ".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx", ".test.js"))
-            or "tests/" in rel_path
-            or "__tests__/" in rel_path
-        )
+        name = p.name
+        name_l = name.lower()
+        norm = rel_path.replace("\\", "/")
+
+        # Directory check: paths inside tests/, __tests__/, spec/
+        parts = [part.lower() for part in p.parent.parts]
+        if any(d in parts for d in ("tests", "__tests__", "spec")):
+            return True
+        if norm.startswith(("tests/", "__tests__/", "spec/")):
+            return True
+        if "/tests/" in norm or "/__tests__/" in norm or "/spec/" in norm:
+            return True
+
+        # Python test conventions: test_*.py, *_test.py
+        if name_l.endswith(".py") and (name_l.startswith("test_") or name_l.endswith("_test.py")):
+            return True
+
+        # TypeScript / JavaScript test conventions: *.test.ts, *.test.tsx, *.spec.ts, *.spec.tsx, *.test.js, etc.
+        if name_l.endswith((
+            ".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx",
+            ".test.js", ".spec.js", ".test.jsx", ".spec.jsx",
+            ".test.mjs", ".spec.mjs",
+        )):
+            return True
+
+        # Go test conventions: *_test.go
+        if name_l.endswith("_test.go"):
+            return True
+
+        # Rust test conventions: test_*.rs, *_test.rs
+        if name_l.endswith(".rs") and (name_l.startswith("test_") or name_l.endswith("_test.rs")):
+            return True
+
+        # Java test conventions: *Test.java, *Tests.java, *TestCase.java, Test*.java
+        if name_l.endswith(".java"):
+            stem = p.stem
+            stem_l = stem.lower()
+            if (
+                stem_l.endswith(("test", "tests", "testcase"))
+                or stem_l.startswith("test")
+            ):
+                return True
+
+        # C/C++ test conventions: test_*.cpp, test_*.cc, *_test.cpp, *_unittest.cc, etc.
+        c_cpp_exts = (".cpp", ".cc", ".cxx", ".c", ".h", ".hpp")
+        if any(name_l.endswith(ext) for ext in c_cpp_exts):
+            stem_l = p.stem.lower()
+            if (
+                stem_l.startswith("test_")
+                or stem_l.endswith(("_test", "_unittest"))
+                or stem_l.startswith("unittest_")
+            ):
+                return True
+
+        # Catch-all for test_ prefix or _test suffix across any code file
+        ext = p.suffix.lower()
+        if ext in SUPPORTED_CODE_EXTENSIONS:
+            if name_l.startswith("test_") or p.stem.lower().endswith(("_test", "_spec")):
+                return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Graphify Deterministic Work-Memory & Reflection (`graphify.reflect`)
