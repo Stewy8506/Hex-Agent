@@ -315,11 +315,18 @@ def fetch_available_models(
                             "gemini-2.5-flash-lite",
                             "gemini-2.5-flash-thinking",
                             "gemini-3.5-flash-lite",
-                            "gemini-3.8-flash-tiered",
                             "gemini-3.1-flash-image",
                         ):
                             continue
-                        disp = str(minfo.get("displayName") or mid)
+                        disp_raw = minfo.get("displayName")
+                        if not disp_raw:
+                            if mid == "gemini-3.8-flash-tiered":
+                                disp = "Gemini 3.8 Flash"
+                            else:
+                                disp = str(mid)
+                        else:
+                            disp = str(disp_raw)
+
                         qinfo = minfo.get("quotaInfo")
                         if isinstance(qinfo, dict) and "remainingFraction" in qinfo:
                             try:
@@ -335,11 +342,12 @@ def fetch_available_models(
                         priority_order = [
                             "claude-opus-4-6-thinking",
                             "claude-sonnet-4-6",
+                            "gemini-3.8-flash-tiered",
+                            "gemini-3-flash",
                             "gemini-2.5-pro",
                             "gemini-2.5-flash",
                             "gpt-oss-120b-medium",
                             "gemini-3.1-flash-lite",
-                            "gemini-3-flash",
                         ]
                         def _sort_key(item: tuple[str, str]) -> int:
                             return priority_order.index(item[0]) if item[0] in priority_order else 100
