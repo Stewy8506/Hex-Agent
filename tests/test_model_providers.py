@@ -121,9 +121,9 @@ class TestLocalMLXModelProvider(unittest.TestCase):
             with patch("importlib.util.find_spec", return_value=None):
                 self.assertFalse(provider.is_mlx_available())
 
-    def test_is_available_always_true(self) -> None:
+    def test_is_available_requires_loaded_model(self) -> None:
         provider = LocalMLXModelProvider()
-        self.assertTrue(provider.is_available())
+        self.assertFalse(provider.is_available())
 
     def test_capabilities(self) -> None:
         provider = LocalMLXModelProvider(model_id="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
@@ -140,7 +140,7 @@ class TestLocalMLXModelProvider(unittest.TestCase):
                 system_prompt="You are an autonomous triage agent.",
             )
             self.assertIsInstance(resp, ModelResponse)
-            self.assertIn("Fallback", resp.text)
+            self.assertIn("not loaded or weights are not downloaded", resp.text)
             self.assertEqual(resp.usage.cost_usd, 0.0)
             self.assertEqual(resp.provider_id, "local_mlx")
             self.assertEqual(resp.finish_reason, "stop")

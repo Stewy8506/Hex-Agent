@@ -52,6 +52,38 @@ class TestUXAuditRepairs(unittest.TestCase):
         # Verify durable persistence in config.yaml
         parsed = parse_config_yaml(hex_dir / "config.yaml")
         self.assertEqual(parsed.get("model", {}).get("cloud_model_id"), "gemini-3-flash")
+        self.assertTrue(parsed.get("model", {}).get("project_override"))
+
+    def test_legacy_project_model_values_do_not_shadow_global_selection(self):
+        """Copied project config/env model fields must not defeat the global model."""
+        global_hex = self.root / "global_hex"
+        global_hex.mkdir()
+        (global_hex / "config.yaml").write_text(
+            'model:\n  cloud_provider: "antigravity"\n  cloud_model_id: "gemini-3.8-flash-tiered"\n',
+            encoding="utf-8",
+        )
+        # A prior setup version duplicated the old selection in credentials.
+        # It must no longer win over the authoritative global config.
+        (global_hex / "credentials.env").write_text(
+            "HEX_CLOUD_PROVIDER=antigravity\nHEX_CLOUD_MODEL_ID=gemini-3-flash\n",
+            encoding="utf-8",
+        )
+        project_hex = self.ws_dir / ".hex"
+        project_hex.mkdir()
+        (project_hex / "config.yaml").write_text(
+            'model:\n  cloud_provider: "anthropic"\n  cloud_model_id: "claude-opus-4-6-thinking"\n',
+            encoding="utf-8",
+        )
+        (project_hex / "credentials.env").write_text(
+            "HEX_CLOUD_PROVIDER=anthropic\nHEX_CLOUD_MODEL_ID=claude-opus-4-6-thinking\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            load_hex_environment(global_hex, self.ws_dir, override=True, reset_managed=True)
+            self.assertEqual(os.environ.get("HEX_CLOUD_PROVIDER"), "antigravity")
+            self.assertEqual(os.environ.get("HEX_CLOUD_MODEL_ID"), "gemini-3.8-flash-tiered")
+            self.assertEqual(os.environ.get("HEX_MODEL_SOURCE"), "global default")
 
     def test_atomic_project_switching_rebinds_all_services(self):
         """P0: Project switching rebinds router, gateway, graphify, lsp, and workspace."""
@@ -64,7 +96,7 @@ class TestUXAuditRepairs(unittest.TestCase):
         hex_b = proj_b / ".hex"
         hex_b.mkdir(parents=True, exist_ok=True)
         (hex_b / "config.yaml").write_text(
-            'model:\n  cloud_provider: "antigravity"\n  cloud_model_id: "claude-opus-4-6-thinking"\n',
+            'model:\n  project_override: true\n  cloud_provider: "antigravity"\n  cloud_model_id: "claude-opus-4-6-thinking"\n',
             encoding="utf-8",
         )
 
@@ -221,7 +253,7 @@ class TestUXAuditRepairs(unittest.TestCase):
         hex_a = proj_a / ".hex"
         hex_a.mkdir(parents=True, exist_ok=True)
         (hex_a / "config.yaml").write_text(
-            'model:\n  cloud_provider: "anthropic"\n  cloud_model_id: "claude-3-7-sonnet"\n',
+            'model:\n  project_override: true\n  cloud_provider: "anthropic"\n  cloud_model_id: "claude-3-7-sonnet"\n',
             encoding="utf-8",
         )
 

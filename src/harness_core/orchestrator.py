@@ -156,10 +156,10 @@ class HarnessOrchestrator:
         saved_path: Path | None = None
         if durable:
             cand = self.default_workspace / ".hex" / "config.yaml"
-            if cand.is_file():
-                saved_path = cand
-            else:
-                saved_path = Path.home() / ".hex" / "config.yaml"
+            # A change made from an open project is deliberately a project
+            # override.  Create the project config when necessary instead of
+            # silently changing the operator's unrelated global default.
+            saved_path = cand
 
             try:
                 from .onboard import update_config_yaml_model
@@ -169,6 +169,7 @@ class HarnessOrchestrator:
                     cloud_provider=prov if prov != "google_antigravity" else "antigravity",
                     cloud_model_id=clean_id,
                     profile=getattr(getattr(self, "router", None), "profile", "antigravity_hybrid"),
+                    project_override=True,
                 )
                 if not saved:
                     saved_path = None
@@ -206,28 +207,14 @@ class HarnessOrchestrator:
         if hasattr(self, "proof_service"):
             self.proof_service.graphify = self.graphify
 
-        # 3. Rebuild model router from new project configuration
+        # 3. Rebuild the model router from the already scope-resolved
+        # environment. Do not reread project YAML here: that would bypass the
+        # explicit project_override rule enforced by config_loader.
         config_candidate = new_ws / ".hex" / "config.yaml"
-        new_provider = None
-        new_model = None
-        new_comp = None
-        if config_candidate.is_file():
-            try:
-                from .config_loader import parse_config_yaml
-
-                cdata = parse_config_yaml(config_candidate)
-                msec = cdata.get("model") or cdata.get("models") or {}
-                if isinstance(msec, dict):
-                    new_provider = msec.get("cloud_provider")
-                    new_model = msec.get("cloud_model_id")
-                    new_comp = msec.get("compressor_mode")
-            except Exception:
-                pass
-
         self.router = TwoTierModelRouter(
-            cloud_provider_type=new_provider or os.getenv("HEX_CLOUD_PROVIDER"),
-            cloud_model_id=new_model or os.getenv("HEX_CLOUD_MODEL_ID"),
-            compressor_mode=new_comp or os.getenv("HEX_COMPRESSOR_MODE") or os.getenv("HARNESS_COMPRESSOR_MODE"),
+            cloud_provider_type=os.getenv("HEX_CLOUD_PROVIDER"),
+            cloud_model_id=os.getenv("HEX_CLOUD_MODEL_ID"),
+            compressor_mode=os.getenv("HEX_COMPRESSOR_MODE") or os.getenv("HARNESS_COMPRESSOR_MODE"),
         )
 
         # 4. Touch active in project registry

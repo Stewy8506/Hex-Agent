@@ -380,9 +380,10 @@ class TestGlobalHexSetupAndOnboardParity(unittest.TestCase):
         self.assertTrue((self.config_dir / "config.yaml").is_file())
 
     def test_cloud_provider_error_mentions_hex_setup(self) -> None:
-        prov = CloudModelProvider(provider_type=CloudProviderType.ANTHROPIC, api_key="")
-        with self.assertRaises(ProviderUnavailableError) as ctx:
-            prov._build_request("test prompt", system_prompt=None, max_tokens=100, temperature=0.7, stop_sequences=None)
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "", "HEX_ANTHROPIC_API_KEY": ""}):
+            prov = CloudModelProvider(provider_type=CloudProviderType.ANTHROPIC, api_key="")
+            with self.assertRaises(ProviderUnavailableError) as ctx:
+                prov._build_request("test prompt", system_prompt=None, max_tokens=100, temperature=0.7, stop_sequences=None)
         self.assertIn("Run 'hex setup'", str(ctx.exception))
 
 

@@ -758,7 +758,9 @@ def render_session_banner(
 ) -> str:
     """Render the compact 78-column HEX pair-programming session header banner."""
     title = "HEX Autonomous AI Workbench — Interactive Terminal Console"
-    line1 = f"Model: {model_id}  │  Compressor: {compressor_mode}"
+    model_source = os.getenv("HEX_MODEL_SOURCE")
+    source_suffix = f"  │  Source: {model_source}" if model_source else ""
+    line1 = f"Model: {model_id}{source_suffix}  │  Compressor: {compressor_mode}"
     if voice_status:
         line2 = f"Sandbox: {sandbox_backend}  │  CoW Store: {cow_backend}  │  Voice: {voice_status}"
     else:
@@ -1544,7 +1546,7 @@ class HexConsole:
                     res = self.orchestrator.set_active_model(arg, durable=True)
                     if isinstance(res, (tuple, list)) and len(res) >= 3:
                         prov, final_id, saved_path = res[:3]
-                        scope = f" (provider: {prov}, saved to {saved_path})" if saved_path else f" (provider: {prov})"
+                        scope = f" (provider: {prov}, project override saved to {saved_path})" if saved_path else f" (provider: {prov})"
                         print(f"{ANSI_GREEN}Model profile updated to: {arg}{scope}{ANSI_RESET}")
                         return
                 except Exception:
@@ -1616,7 +1618,7 @@ class HexConsole:
                                 res = self.orchestrator.set_active_model(chosen_model_id, durable=True)
                                 if isinstance(res, (tuple, list)) and len(res) >= 3:
                                     prov, final_id, saved_path = res[:3]
-                                    scope = f" (saved to {saved_path})" if saved_path else " (session-only)"
+                                    scope = f" (project override saved to {saved_path})" if saved_path else " (session-only)"
                                     print(f"{ANSI_GREEN}✓ Active model switched to: {final_id}{scope}{ANSI_RESET}")
                                     return
                             except Exception:

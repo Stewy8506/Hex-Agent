@@ -414,8 +414,14 @@ class LocalMLXModelProvider(ModelProvider):
             return None
 
     def is_available(self) -> bool:
-        """Return True. Provider is always operational via MLX or resilient fallback engine."""
-        return True
+        """Return whether a real local model is loaded and ready for inference.
+
+        The deterministic notice is useful diagnostic output when local mode was
+        explicitly requested, but it is not a usable model response.  Reporting
+        it as available caused cloud failures to look like an invisible switch to
+        a local model.
+        """
+        return self._loaded_model is not None
 
     def get_capabilities(self) -> ProviderCapabilities:
         """Return provider architectural capabilities."""

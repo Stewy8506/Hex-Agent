@@ -180,6 +180,15 @@ class TwoTierModelRouter:
                     try:
                         cfg = parse_config_yaml(cfg_candidate)
                         model_sec = cfg.get("model") or cfg.get("models") or {}
+                        is_project_config = (
+                            cfg_candidate == Path.cwd() / ".hex" / "config.yaml"
+                            and cfg_candidate != Path.home() / ".hex" / "config.yaml"
+                        )
+                        project_override = model_sec.get("project_override") is True or str(
+                            model_sec.get("project_override", "")
+                        ).lower() == "true"
+                        if is_project_config and not project_override:
+                            continue
                         m = model_sec.get("cloud_model_id")
                         if m and isinstance(m, str) and m.strip():
                             resolved_cloud_model = m.strip()
@@ -500,8 +509,15 @@ class TwoTierModelRouter:
                     **kwargs,
                 )
             except ProviderUnavailableError as pue:
-                # Fail over to Tier-1 Local M4 if in hybrid profile and local provider is initialized
-                if self.profile in ("hybrid", "antigravity_hybrid") and self.local_provider is not None:
+                # Only fail over when a real local runtime is ready. The old
+                # deterministic MLX notice hid the cloud error and looked like a
+                # model switch to the operator.
+                local_ready = bool(
+                    self.local_provider is not None
+                    and hasattr(self.local_provider, "is_available")
+                    and self.local_provider.is_available()
+                )
+                if self.profile in ("hybrid", "antigravity_hybrid") and local_ready:
                     try:
                         response = self.local_provider.generate(
                             prompt=effective_prompt,

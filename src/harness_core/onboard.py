@@ -142,6 +142,7 @@ def update_config_yaml_model(
     cloud_provider: str,
     cloud_model_id: str,
     profile: str,
+    project_override: bool = False,
 ) -> bool:
     """Safely update model section in config.yaml without requiring third-party PyYAML."""
     try:
@@ -153,27 +154,28 @@ def update_config_yaml_model(
         else:
             config_path.parent.mkdir(parents=True, exist_ok=True)
             content = "# HEX Project Configuration\nmodel:\n"
-        content = re.sub(
-            r'(\bcloud_provider:\s*)[^\n]+',
-            rf'\g<1>"{_clean_val(cloud_provider)}"',
-            content,
-        )
-        content = re.sub(
-            r'(\bcloud_model_id:\s*)[^\n]+',
-            rf'\g<1>"{_clean_val(cloud_model_id)}"',
-            content,
-        )
-        content = re.sub(
-            r'(\bprofile:\s*)[^\n]+',
-            rf'\g<1>"{_clean_val(profile)}"',
-            content,
-        )
-        if "cloud_provider:" not in content:
-            content += f'  cloud_provider: "{_clean_val(cloud_provider)}"\n'
-        if "cloud_model_id:" not in content:
-            content += f'  cloud_model_id: "{_clean_val(cloud_model_id)}"\n'
-        if "profile:" not in content:
-            content += f'  profile: "{_clean_val(profile)}"\n'
+
+        header = re.search(r"(?m)^model:\s*(?:#.*)?$", content)
+        if not header:
+            content = content.rstrip() + "\nmodel:\n"
+            header = re.search(r"(?m)^model:\s*(?:#.*)?$", content)
+        assert header is not None
+        next_section = re.search(r"(?m)^[^ \t#][^\n]*:\s*(?:#.*)?$", content[header.end():])
+        block_end = header.end() + next_section.start() if next_section else len(content)
+        block = content[header.end():block_end]
+
+        def _set_field(block_text: str, name: str, value: str) -> str:
+            pattern = rf"(?m)^(  {re.escape(name)}:\s*)[^\n]*$"
+            if re.search(pattern, block_text):
+                return re.sub(pattern, rf'\g<1>{value}', block_text)
+            return block_text.rstrip("\n") + f"\n  {name}: {value}\n"
+
+        block = _set_field(block, "cloud_provider", f'"{_clean_val(cloud_provider)}"')
+        block = _set_field(block, "cloud_model_id", f'"{_clean_val(cloud_model_id)}"')
+        block = _set_field(block, "profile", f'"{_clean_val(profile)}"')
+        if project_override:
+            block = _set_field(block, "project_override", "true")
+        content = content[:header.end()] + block + content[block_end:]
         config_path.write_text(content, encoding="utf-8")
         return True
     except Exception:
@@ -729,8 +731,6 @@ def run_onboard_wizard(
     # Write credentials securely
     creds_content = [
         "# HEX Secure Credentials Environment File",
-        f"HEX_CLOUD_PROVIDER={cloud_provider}",
-        f"HEX_CLOUD_MODEL_ID={cloud_model_id}",
         f"HEX_ANTIGRAVITY_TOKEN={antigravity_token}",
         f"HEX_ANTIGRAVITY_REFRESH_TOKEN={ag_cred.refresh_token if ag_cred and ag_cred.refresh_token else existing_creds.get('HEX_ANTIGRAVITY_REFRESH_TOKEN', '')}",
         f"ANTHROPIC_API_KEY={anthropic_key}",
@@ -750,13 +750,8 @@ def run_onboard_wizard(
     except Exception:
         pass
 
-    # Also update project-level .hex/credentials.env if present in current working directory and not using custom config_dir
-    local_creds = Path.cwd() / ".hex" / "credentials.env"
-    if config_dir is None and local_creds.is_file() and local_creds.resolve() != credentials_file.resolve():
-        try:
-            local_creds.write_text("\n".join(creds_content) + "\n", encoding="utf-8")
-        except Exception:
-            pass
+    # Do not mirror global model credentials into a project. A project model is
+    # an explicit override selected from within that project, not a setup side effect.
 
     # Storage configuration
     db_backend = (existing_config.get("storage") or {}).get("backend") or "sqlite"
@@ -793,53 +788,6 @@ webhooks:
   public_base_url: "http://127.0.0.1:8420"
 """
     config_file.write_text(config_yaml, encoding="utf-8")
-
-    # If current working directory has a project-scoped .hex/config.yaml, synchronize model settings
-    local_proj_cfg = Path.cwd() / ".hex" / "config.yaml"
-    if config_dir is None and local_proj_cfg.is_file() and local_proj_cfg.resolve() != config_file.resolve():
-        update_config_yaml_model(
-            local_proj_cfg,
-            cloud_provider=cloud_provider,
-            cloud_model_id=cloud_model_id,
-            profile=model_profile,
-        )
-
-    # Synchronize model settings and credentials across all registered projects in ProjectRegistry
-    try:
-        from .project_registry import ProjectRegistry
-
-        reg_candidates = [
-            cfg_dir / "projects.json",
-            Path.home() / ".hex" / "projects.json",
-        ]
-        registered_paths: set[Path] = set()
-        for r_cand in reg_candidates:
-            if r_cand.is_file():
-                try:
-                    reg = ProjectRegistry(r_cand)
-                    for prj in reg.list_projects():
-                        registered_paths.add(Path(prj.path))
-                except Exception:
-                    pass
-        for p_dir in registered_paths:
-            if p_dir.is_dir():
-                p_hex = p_dir / ".hex"
-                p_cfg = p_hex / "config.yaml"
-                p_cr = p_hex / "credentials.env"
-                if p_cfg.is_file() and p_cfg.resolve() != config_file.resolve():
-                    update_config_yaml_model(
-                        p_cfg,
-                        cloud_provider=cloud_provider,
-                        cloud_model_id=cloud_model_id,
-                        profile=model_profile,
-                    )
-                if p_cr.is_file() and p_cr.resolve() != credentials_file.resolve():
-                    try:
-                        p_cr.write_text("\n".join(creds_content) + "\n", encoding="utf-8")
-                    except Exception:
-                        pass
-    except Exception:
-        pass
 
     # Hydrate current running process environment immediately
     load_hex_environment(config_dir=cfg_dir, override=True)
@@ -1003,9 +951,6 @@ def init_project(repo_root: Path | str, *, name: str | None = None, force: bool 
 
     proj_name = name or repo.name
 
-    global_model = os.environ.get("HEX_CLOUD_MODEL_ID", "claude-opus-4-6-thinking")
-    global_provider = os.environ.get("HEX_CLOUD_PROVIDER", "antigravity")
-
     created = False
     if not config_file.exists() or force:
         config_yaml = f"""# HEX Project Configuration
@@ -1014,8 +959,8 @@ project:
   name: "{proj_name}"
   stack: "{stack_info['stack']}"
 model:
-  cloud_provider: "{global_provider}"
-  cloud_model_id: "{global_model}"
+  # Inherits the operator's global model unless explicitly overridden.
+  project_override: false
   compressor_mode: "local"
 verification:
   test_command: "{stack_info['test_cmd']}"

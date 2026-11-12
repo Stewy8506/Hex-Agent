@@ -16,6 +16,17 @@ from typing import Any
 
 _managed_environment: dict[str, str] = {}
 
+# Model selection has a different scope from credentials.  A project may keep
+# its own API credentials, but it must explicitly opt in before its selection
+# can replace the operator's global model choice.
+_MODEL_SELECTION_ENV_KEYS = {
+    "HEX_MODEL_PROFILE",
+    "HEX_CLOUD_PROVIDER",
+    "HEX_CLOUD_MODEL_ID",
+    "HEX_LOCAL_MODEL_ID",
+    "HEX_COMPRESSOR_MODE",
+}
+
 try:
     import yaml  # type: ignore
 except ImportError:
@@ -109,7 +120,12 @@ def load_hex_environment(
     global_dir = config_dir or (Path.home() / ".hex")
     local_dir = (workspace_root or Path.cwd()) / ".hex"
 
-    # Search paths in order: global first, local second (local overrides global)
+    def _project_model_override_enabled(section: dict[str, Any]) -> bool:
+        return section.get("project_override") is True or str(section.get("project_override", "")).lower() == "true"
+
+    # Credentials are kept separate from model selection.  Older installs wrote
+    # selected-model fields into credentials.env too, creating two competing
+    # sources of truth (and letting an old value win at startup).
     candidate_env_files = [
         global_dir / "credentials.env",
         local_dir / "credentials.env",
@@ -118,6 +134,11 @@ def load_hex_environment(
     for env_file in candidate_env_files:
         if env_file.is_file():
             parsed = parse_env_file(env_file)
+            # Preserve real credentials, but always ignore legacy selection
+            # fields here. config.yaml is the single source of truth for model
+            # choice; a project config needs project_override: true to take
+            # precedence over the global config.
+            parsed = {k: v for k, v in parsed.items() if k not in _MODEL_SELECTION_ENV_KEYS}
             discovered.update(parsed)
 
     # Apply discovered variables to os.environ
@@ -136,16 +157,23 @@ def load_hex_environment(
             cfg_data = parse_config_yaml(cfg_file)
             model_section = cfg_data.get("model") or cfg_data.get("models") or {}
             if isinstance(model_section, dict):
-                if model_section.get("profile"):
-                    cfg_props["HEX_MODEL_PROFILE"] = str(model_section["profile"])
-                if model_section.get("cloud_provider"):
-                    cfg_props["HEX_CLOUD_PROVIDER"] = str(model_section["cloud_provider"])
-                if model_section.get("cloud_model_id"):
-                    cfg_props["HEX_CLOUD_MODEL_ID"] = str(model_section["cloud_model_id"])
-                if model_section.get("local_model_id"):
-                    cfg_props["HEX_LOCAL_MODEL_ID"] = str(model_section["local_model_id"])
-                if model_section.get("compressor_mode"):
-                    cfg_props["HEX_COMPRESSOR_MODE"] = str(model_section["compressor_mode"])
+                is_project_file = cfg_file == local_dir / "config.yaml" and local_dir != global_dir
+                # A project inherits global model settings unless it deliberately
+                # opts in. This prevents generated/stale project configs from
+                # silently defeating the operator's global model choice.
+                use_model_section = not is_project_file or _project_model_override_enabled(model_section)
+                if use_model_section:
+                    if model_section.get("profile"):
+                        cfg_props["HEX_MODEL_PROFILE"] = str(model_section["profile"])
+                    if model_section.get("cloud_provider"):
+                        cfg_props["HEX_CLOUD_PROVIDER"] = str(model_section["cloud_provider"])
+                    if model_section.get("cloud_model_id"):
+                        cfg_props["HEX_CLOUD_MODEL_ID"] = str(model_section["cloud_model_id"])
+                    if model_section.get("local_model_id"):
+                        cfg_props["HEX_LOCAL_MODEL_ID"] = str(model_section["local_model_id"])
+                    if model_section.get("compressor_mode"):
+                        cfg_props["HEX_COMPRESSOR_MODE"] = str(model_section["compressor_mode"])
+                    cfg_props["HEX_MODEL_SOURCE"] = "project override" if is_project_file else "global default"
 
             web_search_section = cfg_data.get("web_search", {})
             if isinstance(web_search_section, dict):
