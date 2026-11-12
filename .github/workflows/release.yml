@@ -37,9 +37,15 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -e ".[full]"
 
+      - name: Configure Git Committer
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "*"
+
       - name: Run unit test suite
         run: |
-          python -m unittest discover tests
+          python -m unittest discover -v tests
 
   build-and-release:
     name: Build Wheel & Create GitHub Release
@@ -50,6 +56,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Configure Git Committer
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "*"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -71,7 +83,8 @@ jobs:
       - name: Smoke test installed wheel
         run: |
           python -m venv /tmp/smoke_env
-          /tmp/smoke_env/bin/pip install dist/*.whl
+          /tmp/smoke_env/bin/pip install --upgrade pip
+          /tmp/smoke_env/bin/pip install dist/*.whl ".[full]"
           /tmp/smoke_env/bin/hex --help
           /tmp/smoke_env/bin/hex doctor --json
 
