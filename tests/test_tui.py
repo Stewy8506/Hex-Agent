@@ -183,12 +183,13 @@ class TestSessionBannerAndHermesSplash(unittest.TestCase):
     """Verifies session header banner, Hermes two-column splash card, skins, and status bar."""
 
     def test_session_banner_contents_and_borders(self):
-        banner = render_session_banner(
-            model_id="claude-3-7-sonnet",
-            compressor_mode="M4 MLX Local Engine",
-            sandbox_backend="bwrap",
-            cow_backend="apfs_clone",
-        )
+        with patch.dict(os.environ, {"HEX_MODEL_SOURCE": ""}):
+            banner = render_session_banner(
+                model_id="claude-3-7-sonnet",
+                compressor_mode="M4 MLX Local Engine",
+                sandbox_backend="bwrap",
+                cow_backend="apfs_clone",
+            )
         self.assertIn("HEX Autonomous AI Workbench", banner)
         self.assertIn("claude-3-7-sonnet", banner)
         self.assertIn("M4 MLX Local Engine", banner)
@@ -406,6 +407,69 @@ class TestHexConsoleSlashCommands(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("Submitting task to HEX orchestrator", text)
         self.assertIsNotNone(self.console.active_task_id)
+
+
+class TestDockedInputFrameAndGhostSuggestions(unittest.TestCase):
+    """Verifies Hermes-grade docked input frame and dynamic ghost suggestions."""
+
+    def test_default_prompt_suggestions_pool(self):
+        from harness_core.tui import DEFAULT_PROMPT_SUGGESTIONS
+        self.assertGreaterEqual(len(DEFAULT_PROMPT_SUGGESTIONS), 10)
+        self.assertIn("Ask me anything...", DEFAULT_PROMPT_SUGGESTIONS)
+        for s in DEFAULT_PROMPT_SUGGESTIONS:
+            self.assertTrue(len(s) > 5)
+
+    def test_render_docked_input_frame_empty_with_ghost_text(self):
+        from harness_core.tui import render_docked_input_frame
+        top, mid, bot = render_docked_input_frame(
+            width=100,
+            text="",
+            suggestion="Ask me anything...",
+            mode="ask",
+            task_num=3,
+            project_name="Harness",
+            git_branch="main",
+            model_id="gemini-3.8-flash-tiered",
+            enable_color=False,
+        )
+        self.assertTrue(top.startswith("╭"))
+        self.assertTrue(top.endswith("╮"))
+        self.assertIn("Ask me anything...", mid)
+        self.assertIn("│ ❯ ", mid)
+        self.assertTrue(mid.endswith("│"))
+        self.assertTrue(bot.startswith("╰─"))
+        self.assertTrue(bot.endswith("─╯"))
+        self.assertIn("Harness", bot)
+        self.assertIn("main", bot)
+        self.assertIn("enter send", bot)
+
+    def test_render_docked_input_frame_typed_text_replaces_ghost(self):
+        from harness_core.tui import render_docked_input_frame
+        top, mid, bot = render_docked_input_frame(
+            width=100,
+            text="Explain AST graphify",
+            suggestion="Ask me anything...",
+            enable_color=False,
+        )
+        self.assertIn("Explain AST graphify", mid)
+        self.assertNotIn("Ask me anything...", mid)
+
+    def test_render_docked_input_frame_across_widths(self):
+        from harness_core.tui import render_docked_input_frame, strip_ansi
+        for w in [70, 80, 95, 110]:
+            top, mid, bot = render_docked_input_frame(width=w, text="", enable_color=True)
+            self.assertEqual(len(strip_ansi(top)), w)
+            self.assertEqual(len(strip_ansi(bot)), w)
+
+    def test_console_suggestion_rotation(self):
+        from harness_core.tui import HexConsole, DEFAULT_PROMPT_SUGGESTIONS
+        mock_orch = MagicMock()
+        console = HexConsole(mock_orch, quiet=True)
+        s1 = console._get_next_suggestion()
+        s2 = console._get_next_suggestion()
+        self.assertEqual(s1, DEFAULT_PROMPT_SUGGESTIONS[0])
+        self.assertEqual(s2, DEFAULT_PROMPT_SUGGESTIONS[1])
+        self.assertNotEqual(s1, s2)
 
 
 class TestCLIChatSubcommand(unittest.TestCase):

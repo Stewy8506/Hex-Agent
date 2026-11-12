@@ -768,10 +768,10 @@ def render_session_banner(
     hint = "Type /help for slash commands, or enter a natural language prompt."
 
     inner_w = width - 2
-    t_pad = _pad_visible(f"  {ANSI_YELLOW}⚡ {ANSI_BOLD}{title}{ANSI_RESET}", inner_w)
-    l1_pad = _pad_visible(f"  {ANSI_WHITE}{line1}{ANSI_RESET}", inner_w)
-    l2_pad = _pad_visible(f"  {ANSI_WHITE}{line2}{ANSI_RESET}", inner_w)
-    h_pad = _pad_visible(f"  {ANSI_DIM}{hint}{ANSI_RESET}", inner_w)
+    t_pad = _pad_visible(f"  {ANSI_YELLOW}⚡ {ANSI_BOLD}{_truncate_visible(title, inner_w - 4)}{ANSI_RESET}", inner_w)
+    l1_pad = _pad_visible(f"  {ANSI_WHITE}{_truncate_visible(line1, inner_w - 4)}{ANSI_RESET}", inner_w)
+    l2_pad = _pad_visible(f"  {ANSI_WHITE}{_truncate_visible(line2, inner_w - 4)}{ANSI_RESET}", inner_w)
+    h_pad = _pad_visible(f"  {ANSI_DIM}{_truncate_visible(hint, inner_w - 4)}{ANSI_RESET}", inner_w)
 
     border_top = "═" * (width - 2)
     border_bot = "═" * (width - 2)
@@ -1036,6 +1036,114 @@ def render_status_bar(
 
 
 # ==============================================================================
+# Hermes Docked Input Frame & Dynamic Ghost Suggestions
+# ==============================================================================
+
+DEFAULT_PROMPT_SUGGESTIONS: tuple[str, ...] = (
+    "Ask me anything...",
+    "Describe a feature or fix to implement...",
+    "Find and fix bugs in this codebase...",
+    "Explain how the model router works...",
+    "Refactor a function or write unit tests...",
+    "Type /help to see all available commands...",
+    "Run tests and verify the latest changes...",
+    "Inspect AST dependencies and blast radius...",
+    "Ask about architecture, tools, or skills...",
+    "Create a CoW snapshot branch to test an idea...",
+    "Review git diff against origin/main...",
+    "Search files or query the symbol index...",
+    "Switch models with /model gemini-3.8-flash-tiered...",
+    "Audit security gates and CVE vulnerabilities...",
+    "Synthesize a new tool or MCP capability...",
+    "What would you like to build or solve today?...",
+)
+
+
+def render_docked_input_frame(
+    width: int = 100,
+    text: str = "",
+    cursor_pos: int = 0,
+    suggestion: str = "Ask me anything...",
+    mode: str = "ask",
+    task_num: int = 1,
+    project_name: str = "Harness",
+    git_branch: str = "main",
+    model_id: str = "gemini-3.8-flash-tiered",
+    skin: TUISkin | None = None,
+    enable_color: bool = True,
+) -> tuple[str, str, str]:
+    """Render the Hermes-grade docked input frame with ghost suggestion and status footer."""
+    sk = skin or SKIN_REGISTRY["amber"]
+    w = max(60, min(120, width))
+
+    def _c(txt: str, fg: tuple[int, int, int] | None = None, bg: tuple[int, int, int] | None = None, bold: bool = False) -> str:
+        return colorize_rgb(txt, fg=fg, bg=bg, bold=bold, enabled=enable_color)
+
+    # 1. Top border
+    top = _c("╭" + ("─" * (w - 2)) + "╮", fg=sk.border_rgb)
+
+    # 2. Middle input line
+    prompt_pfx = f"{_c('│', fg=sk.border_rgb)} {_c('❯', fg=sk.accent_rgb, bold=True)} "
+    inner_space = w - 2 - 4  # 4 chars: '│ ❯ '
+
+    if not text:
+        sugg_disp = _truncate_visible(suggestion, inner_space)
+        pad_len = max(0, inner_space - len(strip_ansi(sugg_disp)))
+        mid = f"{prompt_pfx}{_c(sugg_disp, fg=sk.muted_rgb)}{' ' * pad_len}{_c('│', fg=sk.border_rgb)}"
+    else:
+        plain_len = len(text)
+        if plain_len <= inner_space:
+            disp_txt = text
+            pad_len = max(0, inner_space - plain_len)
+            mid = f"{prompt_pfx}{_c(disp_txt, fg=sk.text_rgb)}{' ' * pad_len}{_c('│', fg=sk.border_rgb)}"
+        else:
+            start = max(0, cursor_pos - inner_space + 4)
+            disp_txt = "…" + text[start + 1 : start + inner_space]
+            pad_len = max(0, inner_space - len(disp_txt))
+            mid = f"{prompt_pfx}{_c(disp_txt, fg=sk.text_rgb)}{' ' * pad_len}{_c('│', fg=sk.border_rgb)}"
+
+    # 3. Bottom border with fused status & shortcut pills
+    right_plain = " enter send · /help · ctrl+c ─╯"
+    right_colored = (
+        _c(" enter send · /help · ctrl+c", fg=sk.muted_rgb)
+        + _c(" ─╯", fg=sk.border_rgb)
+    )
+
+    left_badges = [
+        _c(mode, fg=sk.accent_rgb, bold=True),
+        _c(f"{task_num} hex", fg=sk.heading_rgb),
+        _c(project_name, fg=sk.heading_rgb, bold=True),
+        _c(git_branch, fg=sk.category_rgb),
+        _c(model_id, fg=sk.category_rgb),
+    ]
+    sep = _c(" · ", fg=sk.muted_rgb)
+    left_str = _c("╰─ ", fg=sk.border_rgb) + sep.join(left_badges) + " "
+    left_plain_len = len(strip_ansi(left_str))
+    right_plain_len = len(strip_ansi(right_plain))
+
+    if left_plain_len + right_plain_len > w:
+        left_badges_compact = [
+            _c(mode, fg=sk.accent_rgb, bold=True),
+            _c(project_name, fg=sk.heading_rgb, bold=True),
+            _c(_truncate_visible(model_id, 18), fg=sk.category_rgb),
+        ]
+        left_str = _c("╰─ ", fg=sk.border_rgb) + sep.join(left_badges_compact) + " "
+        left_plain_len = len(strip_ansi(left_str))
+
+    if left_plain_len + right_plain_len > w:
+        left_str = _c(f"╰─ {project_name} ", fg=sk.border_rgb)
+        left_plain_len = len(strip_ansi(left_str))
+        right_plain = " enter send ─╯"
+        right_colored = _c(" enter send", fg=sk.muted_rgb) + _c(" ─╯", fg=sk.border_rgb)
+        right_plain_len = len(strip_ansi(right_plain))
+
+    dash_fill = max(1, w - left_plain_len - right_plain_len)
+    bot = left_str + _c("─" * dash_fill, fg=sk.border_rgb) + right_colored
+
+    return top, mid, bot
+
+
+# ==============================================================================
 # HexConsole Interactive REPL
 # ==============================================================================
 
@@ -1070,6 +1178,7 @@ class HexConsole:
         self.quiet = quiet
         self.active_task_id: str | None = None
         self.history: list[str] = []
+        self._suggestion_idx: int = 0
         self.session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         self.session_start = time.time()
 
@@ -1192,6 +1301,221 @@ class HexConsole:
             skin_name=self.skin_name,
         )
 
+    def _get_next_suggestion(self) -> str:
+        """Return the next ghost suggestion string in rotation."""
+        sugg = DEFAULT_PROMPT_SUGGESTIONS[self._suggestion_idx % len(DEFAULT_PROMPT_SUGGESTIONS)]
+        self._suggestion_idx += 1
+        return sugg
+
+    def _read_docked_input(self, prompt: str = "hex> ") -> str:
+        """Hermes-grade docked input frame with ghost suggestions and live status pills."""
+        if (
+            not hasattr(sys.stdin, "isatty")
+            or not sys.stdin.isatty()
+            or not hasattr(sys.stdout, "isatty")
+            or not sys.stdout.isatty()
+            or self.quiet
+        ):
+            return input(prompt)
+
+        try:
+            import termios
+            import tty
+            import select
+            import shutil
+        except ImportError:
+            return input(prompt)
+
+        ws_name = self.workspace_root.name if self.workspace_root else "Harness"
+        git_branch = "main"
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(self.workspace_root),
+                capture_output=True,
+                text=True,
+                timeout=0.6,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                git_branch = res.stdout.strip()
+        except Exception:
+            pass
+
+        active_model = (
+            self.model_profile
+            or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", None)
+            or "gemini-3.8-flash-tiered"
+        )
+        task_num = len(self.history) + 1
+        mode = "ask"
+        suggestion = self._get_next_suggestion()
+
+        w = min(112, max(68, shutil.get_terminal_size(fallback=(100, 24)).columns))
+
+        top, mid, bot = render_docked_input_frame(
+            width=w,
+            text="",
+            cursor_pos=0,
+            suggestion=suggestion,
+            mode=mode,
+            task_num=task_num,
+            project_name=ws_name,
+            git_branch=git_branch,
+            model_id=active_model,
+            skin=self.skin,
+            enable_color=True,
+        )
+
+        sys.stdout.write(f"\n{top}\n{mid}\n{bot}")
+        sys.stdout.flush()
+        # Move cursor up 1 line to mid line, and position at column 4 (after '│ ❯ ')
+        prompt_offset = 4
+        sys.stdout.write(f"\033[A\r\033[{prompt_offset}C")
+        sys.stdout.flush()
+
+        buffer: list[str] = []
+        cursor: int = 0
+        hist_idx = len(self.history)
+        fd = sys.stdin.fileno()
+
+        try:
+            old_settings = termios.tcgetattr(fd)
+        except Exception:
+            return input(prompt)
+
+        slash_cmds = [
+            "/help", "/status", "/tasks", "/diff", "/sbs", "/rollback", "/fork",
+            "/skills", "/scan", "/model", "/compressor", "/budget",
+            "/quota", "/antigravity", "/blast", "/proof", "/memory",
+            "/remember", "/reflect", "/search", "/doctor", "/recipe",
+            "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
+            "/voice", "/banner", "/clear", "/quit", "/exit",
+        ]
+
+        def _redraw(buf: list[str], cur: int) -> None:
+            cur_txt = "".join(buf)
+            _, n_mid, _ = render_docked_input_frame(
+                width=w,
+                text=cur_txt,
+                cursor_pos=cur,
+                suggestion=suggestion,
+                mode=mode,
+                task_num=task_num,
+                project_name=ws_name,
+                git_branch=git_branch,
+                model_id=active_model,
+                skin=self.skin,
+                enable_color=True,
+            )
+            in_sp = w - 2 - 4
+            if len(cur_txt) <= in_sp:
+                scr_cur = prompt_offset + cur
+            else:
+                st = max(0, cur - in_sp + 4)
+                scr_cur = prompt_offset + (cur - st)
+            sys.stdout.write(f"\r{n_mid}\r\033[{scr_cur}C")
+            sys.stdout.flush()
+
+        try:
+            tty.setraw(fd)
+            while True:
+                ch = sys.stdin.read(1)
+                if ch in ("\r", "\n"):
+                    sys.stdout.write("\033[B\r\n")
+                    sys.stdout.flush()
+                    return "".join(buffer)
+                elif ch == "\x03":  # Ctrl+C
+                    sys.stdout.write("\033[B\r\n")
+                    sys.stdout.flush()
+                    raise KeyboardInterrupt()
+                elif ch == "\x04":  # Ctrl+D
+                    if not buffer:
+                        sys.stdout.write("\033[B\r\n")
+                        sys.stdout.flush()
+                        raise EOFError()
+                    if cursor < len(buffer):
+                        buffer.pop(cursor)
+                        _redraw(buffer, cursor)
+                elif ch in ("\x7f", "\x08"):  # Backspace
+                    if cursor > 0:
+                        buffer.pop(cursor - 1)
+                        cursor -= 1
+                        _redraw(buffer, cursor)
+                elif ch == "\x1b":  # Escape sequence
+                    seq = ""
+                    while select.select([sys.stdin], [], [], 0.05)[0]:
+                        seq += sys.stdin.read(1)
+                    if seq == "[A":  # Up arrow
+                        if self.history and hist_idx > 0:
+                            hist_idx -= 1
+                            buffer = list(self.history[hist_idx])
+                            cursor = len(buffer)
+                            _redraw(buffer, cursor)
+                    elif seq == "[B":  # Down arrow
+                        if hist_idx < len(self.history) - 1:
+                            hist_idx += 1
+                            buffer = list(self.history[hist_idx])
+                            cursor = len(buffer)
+                            _redraw(buffer, cursor)
+                        else:
+                            hist_idx = len(self.history)
+                            buffer = []
+                            cursor = 0
+                            _redraw(buffer, cursor)
+                    elif seq == "[C":  # Right arrow
+                        if cursor < len(buffer):
+                            cursor += 1
+                            _redraw(buffer, cursor)
+                    elif seq == "[D":  # Left arrow
+                        if cursor > 0:
+                            cursor -= 1
+                            _redraw(buffer, cursor)
+                    elif seq in ("[H", "[1~"):  # Home
+                        cursor = 0
+                        _redraw(buffer, cursor)
+                    elif seq in ("[F", "[4~"):  # End
+                        cursor = len(buffer)
+                        _redraw(buffer, cursor)
+                    elif seq == "[3~":  # Delete
+                        if cursor < len(buffer):
+                            buffer.pop(cursor)
+                            _redraw(buffer, cursor)
+                elif ch == "\t":  # Tab completion
+                    txt = "".join(buffer)
+                    if txt.startswith("/"):
+                        matches = [c for c in slash_cmds if c.startswith(txt)]
+                        if len(matches) == 1:
+                            buffer = list(matches[0] + " ")
+                            cursor = len(buffer)
+                            _redraw(buffer, cursor)
+                elif ord(ch) >= 32:
+                    b_val = ord(ch)
+                    extra_bytes = 0
+                    if (b_val & 0xE0) == 0xC0:
+                        extra_bytes = 1
+                    elif (b_val & 0xF0) == 0xE0:
+                        extra_bytes = 2
+                    elif (b_val & 0xF8) == 0xF0:
+                        extra_bytes = 3
+
+                    if extra_bytes > 0:
+                        raw_bytes = bytearray([b_val])
+                        for _ in range(extra_bytes):
+                            nxt = sys.stdin.read(1)
+                            raw_bytes.append(ord(nxt))
+                        ch_str = raw_bytes.decode("utf-8", errors="replace")
+                    else:
+                        ch_str = ch
+
+                    buffer.insert(cursor, ch_str)
+                    cursor += len(ch_str)
+                    _redraw(buffer, cursor)
+        finally:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except Exception:
+                pass
+
     def start(self, input_fn: Callable[[str], str] | None = None) -> int:
         """Start interactive REPL prompt loop. Returns exit code 0 on termination."""
         self._setup_readline()
@@ -1201,7 +1525,7 @@ class HexConsole:
         if input_fn is not None:
             read_line = input_fn
         else:
-            read_line = input
+            read_line = self._read_docked_input
 
         try:
             while True:
