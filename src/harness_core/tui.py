@@ -1078,12 +1078,15 @@ class HexConsole:
 
                 self.history.append(line)
 
-                if line.startswith("/"):
-                    should_exit = self.handle_slash_command(line)
-                    if should_exit:
-                        return 0
-                else:
-                    self.handle_user_prompt(line)
+                try:
+                    if line.startswith("/"):
+                        should_exit = self.handle_slash_command(line)
+                        if should_exit:
+                            return 0
+                    else:
+                        self.handle_user_prompt(line)
+                except KeyboardInterrupt:
+                    print(f"\n{ANSI_YELLOW}⚡ Task cancelled by user (Ctrl+C).{ANSI_RESET}\n")
         finally:
             if hasattr(self, "voice_engine"):
                 self.voice_engine.shutdown()
@@ -2133,17 +2136,33 @@ class HexConsole:
         """Submit natural language coding prompt to orchestrator."""
         from .models import TaskSubmitRequest
 
+        # Fast conversational short-circuit for greetings and light conversational queries
+        conv_greetings = {"hey", "hi", "hello", "yo", "greetings", "good morning", "good evening", "good afternoon", "sup", "howdy", "hola"}
+        clean_prompt = prompt.strip().lower().rstrip("!.,?")
+        if clean_prompt in conv_greetings:
+            active_model = self.model_profile or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", "claude-opus-4-6-thinking")
+            print(f"\n{ANSI_BOLD}HEX Assistant{ANSI_RESET} ({active_model}):")
+            print(f"Hey! I'm ready to work on {self.project_id}. What would you like to build or inspect today?")
+            print(f"{ANSI_DIM}Tip: You can ask me to inspect code, run tests, implement features, or type /help for commands.{ANSI_RESET}\n")
+            return
+
         print(f"{ANSI_CYAN}⚡ Submitting task to HEX orchestrator...{ANSI_RESET}")
         req = TaskSubmitRequest(
             goal=prompt,
             project_id=self.project_id,
             workspace_root=str(self.workspace_root) if self.workspace_root else None,
+            execution_mode="auto",
         )
 
         spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
         spinner.start(f"Executing: {_truncate_visible(prompt, 44)}")
         try:
             task = self.orchestrator.submit_and_run(req, auto_execute=True)
+        except KeyboardInterrupt:
+            spinner.stop()
+            print()
+            print(f"{ANSI_YELLOW}⚡ Task cancelled by user (Ctrl+C).{ANSI_RESET}\n")
+            return
         except ApprovalRequiredInterrupt as apr_int:
             spinner.stop()
             apr_res = self.handle_approval_prompt(apr_int)

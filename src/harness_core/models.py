@@ -215,7 +215,7 @@ class TaskSubmitRequest:
     deliverable: str = "proof_bundle"
     constraints: dict[str, Any] = field(default_factory=dict)
     budget: dict[str, Any] = field(default_factory=dict)
-    execution_mode: str = "standard"  # 'standard' | 'fast_path' | 'auto'
+    execution_mode: str = "auto"  # 'standard' | 'fast_path' | 'auto'
     approval_policy: str = "default"
     idempotency_key: str | None = None
     workspace_root: str | None = None

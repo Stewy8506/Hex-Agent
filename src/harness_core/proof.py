@@ -101,8 +101,9 @@ class VerificationAndProofService:
                 pinned_tests.append(t)
 
         # 3. Execute deterministic test verification if applicable
-        has_test_files = any(ws.rglob("test_*.py"))
-        if run_tests and (has_test_files or pinned_tests):
+        # Only run tests if specific tests were pinned or workspace files were modified
+        should_run_tests = run_tests and bool(pinned_tests or modified_files)
+        if should_run_tests:
             test_res = self.gateway._tool_run_tests(ws, {"targets": pinned_tests})
             verification_passed = bool(test_res["ok"])
             verification_results = {

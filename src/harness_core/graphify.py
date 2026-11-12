@@ -2057,6 +2057,17 @@ class ActiveGraphifyAdapter:
         graph_path = self.cache_file if self.cache_file.is_file() else (hex_dir / "graph.json")
         learning_sidecar = graph_path.parent / ".graphify_learning.json"
 
+        # Fast short-circuit: if no memory entries exist, avoid parsing massive graph.json files
+        has_memories = any(mem_dir.iterdir()) if mem_dir.is_dir() else False
+        if not has_memories:
+            return {
+                "lessons_path": str(lessons_path),
+                "learning_sidecar_path": str(learning_sidecar),
+                "lessons_markdown": lessons_path.read_text(encoding="utf-8") if lessons_path.is_file() else "",
+                "aggregate": {},
+                "learning_overlay": {},
+            }
+
         try:
             from graphify import reflect as upstream_reflect
 

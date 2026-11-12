@@ -46,6 +46,14 @@ def seed_default_skills(orch: HarnessOrchestrator, repo_root: Path) -> list[dict
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main_impl(argv)
+    except KeyboardInterrupt:
+        print("\n\x1b[90m[Interrupted by user]\x1b[0m")
+        return 130
+
+
+def _main_impl(argv: list[str] | None = None) -> int:
     default_dir = os.environ.get("HEX_DATA_DIR") or os.environ.get("HARNESS_DATA_DIR")
     if not default_dir:
         cwd = Path.cwd()

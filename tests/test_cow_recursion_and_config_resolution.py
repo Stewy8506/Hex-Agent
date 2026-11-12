@@ -182,6 +182,24 @@ model:
             detected = _detect_default_local_model()
             self.assertEqual(detected, "local_deterministic_compressor")
 
+    def test_conversational_greeting_short_circuit(self):
+        from harness_core.tui import HexConsole
+        orch = MagicMock()
+        console = HexConsole(orch, project_id="test_proj", quiet=True)
+        # Verify that greeting doesn't call submit_and_run
+        console.handle_user_prompt("hey")
+        orch.submit_and_run.assert_not_called()
+
+    def test_ctrl_c_handled_gracefully_in_repl(self):
+        from harness_core.tui import HexConsole
+        orch = MagicMock()
+        console = HexConsole(orch, project_id="test_proj", quiet=True)
+        # Mock inputs: first raises KeyboardInterrupt, which exits cleanly
+        def mock_input(_prompt):
+            raise KeyboardInterrupt()
+        exit_code = console.start(input_fn=mock_input)
+        self.assertEqual(exit_code, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
