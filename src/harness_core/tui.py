@@ -311,16 +311,31 @@ EMBLEM_ART: tuple[str, ...] = (
 )
 
 TOOL_CATEGORY_MAP: dict[str, str] = {
+    # File tools
     "read_file": "file",
     "write_file": "file",
     "list_files": "file",
-    "query_graphify": "ast_graph",
+    "patch": "file",
+    # Search tools
+    "search_files": "search",
     "web_search": "search",
+    "web_extract": "search",
+    # AST & Code Intelligence
+    "query_graphify": "ast_graph",
     "lsp_diagnostics": "lsp_compiler",
     "lsp_definition": "lsp_compiler",
     "lsp_references": "lsp_compiler",
     "lsp_hover": "lsp_compiler",
+    # Execution & Verification
+    "terminal": "shell_exec",
     "run_tests": "verification",
+    "process": "shell_exec",
+    # Autonomy & Memory
+    "todo": "autonomy",
+    "clarify": "autonomy",
+    "memory": "autonomy",
+    "session_search": "autonomy",
+    # Remote Ops & Policy Guard
     "git_push_remote": "git_ops",
     "modify_system_policy": "policy_guard",
 }
@@ -909,12 +924,15 @@ def render_hex_splash(
                 grouped_tools.setdefault(cat, []).append(tid)
     else:
         grouped_tools = {
-            "file": ["list_files", "read_file", "write_file"],
-            "lsp": ["lsp_diagnostics", "lsp_definition", "lsp_hover"],
-            "search": ["web_search"],
-            "ast": ["query_graphify"],
-            "test": ["run_tests"],
-            "git": ["git_push_remote"],
+            "file": ["list_files", "patch", "read_file", "write_file"],
+            "search": ["search_files", "web_extract", "web_search"],
+            "lsp_compiler": ["lsp_definition", "lsp_diagnostics", "lsp_hover", "lsp_references"],
+            "ast_graph": ["query_graphify"],
+            "shell_exec": ["process", "terminal"],
+            "verification": ["run_tests"],
+            "autonomy": ["clarify", "memory", "session_search", "todo"],
+            "git_ops": ["git_push_remote"],
+            "policy_guard": ["modify_system_policy"],
         }
 
     total_tools = sum(len(v) for v in grouped_tools.values())

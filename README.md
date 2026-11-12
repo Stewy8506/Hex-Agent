@@ -144,16 +144,17 @@ HEX separates developer intent into three focused interaction modes. Press **`Ta
         ▄▀   ▄▀    ▄▄▄▄    ▀▄   ▀▄        Session: 5f64fe
        ▐▌   ▐▌   ▄▀    ▀▄   ▐▌   ▐▌
        ▐▌   ▐▌  ▐▌  ██  ▐▌  ▐▌   ▐▌       tools
-       ▐▌   ▐▌  ▐▌ ████ ▐▌  ▐▌   ▐▌         file: list_files, read_file, write_file
-       ▐▌   ▐▌   ▀▄ ▀▀ ▄▀   ▐▌   ▐▌         lsp: lsp_diagnostics, lsp_definition, lsp_hover
-        ▀▄   ▀▄    ▀▀▀▀    ▄▀   ▄▀          search: web_search
-          ▀▄▄  ▀▄▄      ▄▄▀  ▄▄▀            ast: query_graphify
-            ▐▌ ▀▀▄▄▀▀▀▀▄▄▀▀ ▐▌              test: run_tests
-            ▐▌     ▀▀▀▀     ▐▌              git: git_push_remote
-             ▀▄▄          ▄▄▀
-               ▀▀▄▄    ▄▄▀▀               12 tools · 15 skills · /help
-                  ▀▀▀▀▀▀
-              ───═══╬═══───               type a message   / for commands
+       ▐▌   ▐▌  ▐▌ ████ ▐▌  ▐▌   ▐▌         file: list_files, patch, read_file, write_file
+       ▐▌   ▐▌   ▀▄ ▀▀ ▄▀   ▐▌   ▐▌         search: search_files, web_extract, web_search
+        ▀▄   ▀▄    ▀▀▀▀    ▄▀   ▄▀          lsp_compiler: lsp_definition, lsp_diagnostics, lsp_hover, lsp_references
+          ▀▄▄  ▀▄▄      ▄▄▀  ▄▄▀            ast_graph: query_graphify
+            ▐▌ ▀▀▄▄▀▀▀▀▄▄▀▀ ▐▌              shell_exec: process, terminal
+            ▐▌     ▀▀▀▀     ▐▌              verification: run_tests
+             ▀▄▄          ▄▄▀               +6 more
+               ▀▀▄▄    ▄▄▀▀           
+                  ▀▀▀▀▀▀                  21 tools · 83 skills · /help
+              ───═══╬═══───           
+                                          type a message   /help for commands
 ```
 
 ### Highlights:

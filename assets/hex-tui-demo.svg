@@ -229,15 +229,15 @@
 
         <!-- Tools List -->
         <text x="0" y="102" class="mono-bold" fill="#ff9100">tools</text>
-        <text x="14" y="120" class="mono" fill="#38bdf8">file: <tspan fill="#cbd5e1">list_files, read_file, write_file</tspan></text>
-        <text x="14" y="136" class="mono" fill="#38bdf8">lsp: <tspan fill="#cbd5e1">lsp_definition, lsp_diagnostics, lsp_hover</tspan></text>
-        <text x="14" y="152" class="mono" fill="#38bdf8">search: <tspan fill="#cbd5e1">web_search</tspan></text>
-        <text x="14" y="168" class="mono" fill="#38bdf8">ast: <tspan fill="#cbd5e1">query_graphify</tspan></text>
-        <text x="14" y="184" class="mono" fill="#38bdf8">verification: <tspan fill="#cbd5e1">run_tests</tspan></text>
+        <text x="14" y="120" class="mono" fill="#38bdf8">file: <tspan fill="#cbd5e1">list_files, patch, read_file, write_file</tspan></text>
+        <text x="14" y="136" class="mono" fill="#38bdf8">search: <tspan fill="#cbd5e1">search_files, web_extract, web_search</tspan></text>
+        <text x="14" y="152" class="mono" fill="#38bdf8">lsp_compiler: <tspan fill="#cbd5e1">lsp_definition, lsp_diagnostics, lsp_hover, lsp_references</tspan></text>
+        <text x="14" y="168" class="mono" fill="#38bdf8">ast_graph: <tspan fill="#cbd5e1">query_graphify</tspan></text>
+        <text x="14" y="184" class="mono" fill="#38bdf8">shell_exec: <tspan fill="#cbd5e1">process, terminal</tspan></text>
         <text x="14" y="200" class="mono" fill="#64748b">+6 more</text>
 
         <!-- Dynamic Live Stats -->
-        <text x="0" y="226" class="mono-bold" fill="#ff9100">12 tools <tspan fill="#64748b">·</tspan> 85 skills <tspan fill="#64748b">·</tspan> /help</text>
+        <text x="0" y="226" class="mono-bold" fill="#ff9100">21 tools <tspan fill="#64748b">·</tspan> 83 skills <tspan fill="#64748b">·</tspan> /help</text>
         <text x="0" y="244" class="mono-sm" fill="#64748b">type a message   / for commands</text>
       </g>
     </g>

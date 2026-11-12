@@ -10,14 +10,20 @@ Implements PRD Sections 6.2 (FR-015), 6.6 (FR-040..FR-044), and 12.1–12.2:
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import logging
 import os
 import re
-import subprocess
+import shlex
 import shutil
+import signal
+import subprocess
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -231,6 +237,38 @@ class ToolGateway:
         )
         self.register_tool(
             ToolSpec(
+                tool_id="search_files",
+                description="Search workspace files using substring or regex matching (R0 Fast-Path eligible).",
+                risk_class=RiskClass.R0,
+                handler=self._tool_search_files,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="todo",
+                description="Track and manage in-session execution tasks and checklist state (R0 Fast-Path eligible).",
+                risk_class=RiskClass.R0,
+                handler=self._tool_todo,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="clarify",
+                description="Request structured clarification from the user with optional choices (R0 Fast-Path eligible).",
+                risk_class=RiskClass.R0,
+                handler=self._tool_clarify,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="session_search",
+                description="Search past session execution ledgers, tool invocations, and resolutions (R0 Fast-Path eligible).",
+                risk_class=RiskClass.R0,
+                handler=self._tool_session_search,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
                 tool_id="query_graphify",
                 description="Query the repository AST/call graph for symbol definitions and callers (R1).",
                 risk_class=RiskClass.R1,
@@ -243,6 +281,22 @@ class ToolGateway:
                 description="Search the live web for technical documentation, compiler error solutions, and API references (R1).",
                 risk_class=RiskClass.R1,
                 handler=self._tool_web_search,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="web_extract",
+                description="Extract readable text and markdown from web pages and API endpoints (R1).",
+                risk_class=RiskClass.R1,
+                handler=self._tool_web_extract,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="memory",
+                description="Read, write, and persist project facts, conventions, and architectural notes (R1).",
+                risk_class=RiskClass.R1,
+                handler=self._tool_memory,
             )
         )
         self.register_tool(
@@ -287,10 +341,34 @@ class ToolGateway:
         )
         self.register_tool(
             ToolSpec(
+                tool_id="patch",
+                description="Apply unified diff hunks or search/replace blocks to modify files in the isolated CoW workspace (R2).",
+                risk_class=RiskClass.R2,
+                handler=self._tool_patch,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
                 tool_id="run_tests",
                 description="Run bounded deterministic pytest/unittest suite inside the CoW workspace (R2).",
                 risk_class=RiskClass.R2,
                 handler=self._tool_run_tests,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="terminal",
+                description="Execute a terminal shell command inside the sandboxed CoW workspace (R2).",
+                risk_class=RiskClass.R2,
+                handler=self._tool_terminal,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="process",
+                description="Inspect or terminate active background processes running in the workspace (R2).",
+                risk_class=RiskClass.R2,
+                handler=self._tool_process,
             )
         )
         self.register_tool(
@@ -561,6 +639,226 @@ class ToolGateway:
                     files.append(rel)
         return {"ok": True, "files": files[:500], "count": len(files)}
 
+    def _tool_search_files(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        query = str(args.get("query") or args.get("pattern", "")).strip()
+        if not query:
+            return {"ok": True, "matches": [], "total_matches": 0, "query": ""}
+
+        rel_subpath = str(args.get("path", "")).strip()
+        search_dir = self._resolve_confined_path(workspace_dir, rel_subpath) if rel_subpath else workspace_dir
+        if not search_dir.exists():
+            return {"ok": False, "error": f"Path not found: {rel_subpath}", "matches": []}
+
+        file_pat = str(args.get("file_pattern") or args.get("glob", "*"))
+        case_sensitive = bool(args.get("case_sensitive", False))
+        max_matches = int(args.get("max_matches", 100))
+
+        regex_flags = 0 if case_sensitive else re.IGNORECASE
+        use_regex = True
+        try:
+            compiled_re = re.compile(query, regex_flags)
+        except re.error:
+            use_regex = False
+            query_cmp = query if case_sensitive else query.lower()
+
+        matches: list[dict[str, Any]] = []
+        ignored_dirs = {".git", ".venv", ".pytest_cache", ".hex", "__pycache__", "node_modules", ".mypy_cache"}
+
+        for dirpath, dirnames, filenames in os.walk(search_dir):
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in ignored_dirs)
+            for fname in sorted(filenames):
+                if fname.startswith("."):
+                    continue
+                if file_pat != "*" and not fnmatch.fnmatch(fname, file_pat):
+                    continue
+
+                fpath = Path(dirpath) / fname
+                try:
+                    if fpath.stat().st_size > 1_000_000:
+                        continue
+                    with open(fpath, "rb") as bf:
+                        sample = bf.read(1024)
+                        if b"\x00" in sample:
+                            continue
+
+                    rel_path = str(fpath.relative_to(workspace_dir)).replace("\\", "/")
+                    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                        for l_idx, line in enumerate(f, 1):
+                            matched = False
+                            if use_regex:
+                                if compiled_re.search(line):
+                                    matched = True
+                            else:
+                                if (line if case_sensitive else line.lower()).find(query_cmp) != -1:
+                                    matched = True
+                            if matched:
+                                matches.append({
+                                    "path": rel_path,
+                                    "line": l_idx,
+                                    "text": line.rstrip("\r\n")[:300],
+                                })
+                                if len(matches) >= max_matches:
+                                    break
+                except (OSError, UnicodeDecodeError):
+                    continue
+            if len(matches) >= max_matches:
+                break
+
+        return {
+            "ok": True,
+            "matches": matches,
+            "total_matches": len(matches),
+            "query": query,
+        }
+
+    def _tool_todo(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        action = str(args.get("action", "read")).lower()
+        todo_file = workspace_dir / ".hex" / "todo.json"
+
+        todos: list[dict[str, Any]] = []
+        if todo_file.is_file():
+            try:
+                loaded = json.loads(todo_file.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    todos = loaded
+            except Exception:
+                todos = []
+
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        if action in ("read", "list"):
+            pass
+        elif action == "add":
+            new_item = args.get("item") or args.get("task")
+            items = args.get("items")
+            to_add: list[Any] = []
+            if items and isinstance(items, list):
+                to_add.extend(items)
+            elif new_item:
+                to_add.append(new_item)
+
+            for item in to_add:
+                if isinstance(item, dict):
+                    todos.append({
+                        "id": item.get("id", len(todos) + 1),
+                        "task": str(item.get("task") or item.get("text", "")),
+                        "status": str(item.get("status", "pending")),
+                        "updated_at": now,
+                    })
+                else:
+                    todos.append({
+                        "id": len(todos) + 1,
+                        "task": str(item),
+                        "status": "pending",
+                        "updated_at": now,
+                    })
+        elif action == "update":
+            idx = args.get("index")
+            item_id = args.get("id")
+            new_status = args.get("status")
+            new_task = args.get("task") or args.get("item")
+
+            updated = False
+            for i, td in enumerate(todos):
+                if (idx is not None and i == int(idx)) or (item_id is not None and str(td.get("id")) == str(item_id)):
+                    if new_status:
+                        td["status"] = str(new_status)
+                    if new_task:
+                        td["task"] = str(new_task)
+                    td["updated_at"] = now
+                    updated = True
+                    break
+            if not updated and idx is not None and 0 <= int(idx) < len(todos):
+                if new_status:
+                    todos[int(idx)]["status"] = str(new_status)
+                if new_task:
+                    todos[int(idx)]["task"] = str(new_task)
+                todos[int(idx)]["updated_at"] = now
+        elif action in ("clear", "reset"):
+            todos = []
+        elif action in ("remove", "delete"):
+            idx = args.get("index")
+            item_id = args.get("id")
+            if idx is not None and 0 <= int(idx) < len(todos):
+                todos.pop(int(idx))
+            elif item_id is not None:
+                todos = [td for td in todos if str(td.get("id")) != str(item_id)]
+
+        try:
+            todo_file.parent.mkdir(parents=True, exist_ok=True)
+            todo_file.write_text(json.dumps(todos, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+        return {
+            "ok": True,
+            "action": action,
+            "todos": todos,
+            "count": len(todos),
+        }
+
+    def _tool_clarify(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        question = str(args.get("question", "")).strip()
+        options = [str(opt) for opt in args.get("options", [])] if args.get("options") else []
+        context = str(args.get("context", "")).strip()
+
+        return {
+            "ok": True,
+            "question": question,
+            "options": options,
+            "context": context,
+            "clarification_needed": True,
+        }
+
+    def _tool_session_search(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        query = str(args.get("query", "")).strip()
+        limit = int(args.get("limit", 10))
+        project_id = args.get("project_id")
+
+        if not query:
+            return {"ok": True, "query": "", "results": [], "count": 0}
+
+        results: list[dict[str, Any]] = []
+        if self.ledger is not None:
+            try:
+                search_res = self.ledger.search_tasks(query=query, project_id=project_id, limit=limit)
+                if search_res:
+                    return {"ok": True, "query": query, "results": search_res, "count": len(search_res)}
+            except Exception:
+                pass
+
+            try:
+                with self.ledger._lock:
+                    if self.ledger.conn is not None:
+                        like_pat = f"%{query}%"
+                        rows = self.ledger.conn.execute(
+                            """
+                            SELECT task_id, project_id, status, goal, created_at
+                            FROM tasks
+                            WHERE goal LIKE ?
+                            ORDER BY created_at DESC
+                            LIMIT ?
+                            """,
+                            (like_pat, limit),
+                        ).fetchall()
+                        for r in rows:
+                            results.append({
+                                "task_id": r[0],
+                                "project_id": r[1],
+                                "status": r[2],
+                                "snippet": (r[3] or "")[:300],
+                                "created_at": r[4],
+                            })
+            except Exception:
+                pass
+
+        return {
+            "ok": True,
+            "query": query,
+            "results": results,
+            "count": len(results),
+        }
+
     def _tool_query_graphify(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         if self.graphify is None:
             self.graphify = ActiveGraphifyAdapter(workspace_dir)
@@ -583,6 +881,168 @@ class ToolGateway:
         max_results = int(args.get("max_results", 5))
         provider = str(args.get("provider", "auto"))
         return execute_web_search(query=query, max_results=max_results, provider=provider)
+
+    def _tool_web_extract(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        url = str(args.get("url", "")).strip()
+        if not url:
+            return {"ok": False, "error": "URL parameter is required"}
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return {"ok": False, "error": "URL must start with http:// or https://"}
+
+        max_chars = int(args.get("max_chars", 20_000))
+        timeout = float(args.get("timeout", 10.0))
+
+        class TextExtractParser(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.text_parts: list[str] = []
+                self.skip_tags = {"script", "style", "head", "noscript", "svg"}
+                self.tag_stack: list[str] = []
+
+            def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                self.tag_stack.append(tag.lower())
+
+            def handle_endtag(self, tag: str) -> None:
+                tag_lower = tag.lower()
+                if tag_lower in self.tag_stack:
+                    self.tag_stack.remove(tag_lower)
+                if tag_lower in ("p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr"):
+                    self.text_parts.append("\n")
+
+            def handle_data(self, data: str) -> None:
+                if any(t in self.skip_tags for t in self.tag_stack):
+                    return
+                cleaned = data.strip()
+                if cleaned:
+                    self.text_parts.append(cleaned + " ")
+
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "HEX-Agent/1.0",
+                    "Accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw_bytes = resp.read(1_048_576)
+                encoding = resp.headers.get_content_charset() or "utf-8"
+                raw_text = raw_bytes.decode(encoding, errors="replace")
+
+            parser = TextExtractParser()
+            parser.feed(raw_text)
+            extracted = "".join(parser.text_parts)
+            extracted = re.sub(r"\n{3,}", "\n\n", extracted).strip()
+            if len(extracted) < 50 and len(raw_text.strip()) > len(extracted):
+                extracted = raw_text.strip()
+
+            redacted = str(redact_secrets(extracted))[:max_chars]
+            return {
+                "ok": True,
+                "url": url,
+                "content": redacted,
+                "length": len(redacted),
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "url": url,
+                "error": f"Failed to extract URL: {exc}",
+            }
+
+    def _tool_memory(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        action = str(args.get("action", "list")).lower()
+        key = str(args.get("key") or args.get("subject", "")).strip()
+        val = args.get("value") or args.get("content")
+        scope = str(args.get("scope", "project"))
+        project_id = str(args.get("project_id", workspace_dir.name))
+
+        mem_file = workspace_dir / ".hex" / "memory.json"
+        local_store: dict[str, Any] = {}
+        if mem_file.is_file():
+            try:
+                loaded = json.loads(mem_file.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    local_store = loaded
+            except Exception:
+                local_store = {}
+
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        gov_mem = None
+        try:
+            from .router import GovernedMemoryManager
+            gov_mem = GovernedMemoryManager(self.ledger, self.graphify)
+        except Exception:
+            pass
+
+        if action in ("set", "save"):
+            if not key:
+                return {"ok": False, "error": "Key or subject is required to save memory"}
+            local_store[key] = {
+                "value": val,
+                "scope": scope,
+                "updated_at": now,
+            }
+            try:
+                mem_file.parent.mkdir(parents=True, exist_ok=True)
+                mem_file.write_text(json.dumps(local_store, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+
+            if gov_mem is not None:
+                try:
+                    gov_mem.record_memory(
+                        project_id=project_id,
+                        subject=key,
+                        content=str(val),
+                        scope=scope,
+                        workspace_dir=workspace_dir,
+                    )
+                except Exception:
+                    pass
+
+            return {"ok": True, "action": "set", "key": key, "saved": True}
+
+        elif action in ("get", "read"):
+            if key in local_store:
+                return {"ok": True, "action": "get", "key": key, "memory": local_store[key]}
+            if gov_mem is not None:
+                try:
+                    mems = gov_mem.retrieve_memories(project_id=project_id, query=key, workspace_dir=workspace_dir)
+                    if mems:
+                        return {"ok": True, "action": "get", "key": key, "memory": mems[0]}
+                except Exception:
+                    pass
+            return {"ok": False, "action": "get", "key": key, "error": f"Memory key '{key}' not found"}
+
+        elif action in ("delete", "forget"):
+            existed = key in local_store
+            if existed:
+                del local_store[key]
+                try:
+                    mem_file.write_text(json.dumps(local_store, indent=2), encoding="utf-8")
+                except OSError:
+                    pass
+            if gov_mem is not None and key:
+                try:
+                    gov_mem.forget_memory(key)
+                except Exception:
+                    pass
+            return {"ok": True, "action": "delete", "key": key, "deleted": existed}
+
+        else:
+            query = str(args.get("query", "")).lower()
+            results: dict[str, Any] = {}
+            for k, v in local_store.items():
+                if not query or query in k.lower() or query in str(v).lower():
+                    results[k] = v
+            return {
+                "ok": True,
+                "action": "list",
+                "memories": results,
+                "count": len(results),
+            }
 
     def _tool_lsp_diagnostics(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         mgr = self._get_lsp_manager(workspace_dir)
@@ -700,6 +1160,150 @@ class ToolGateway:
             "sha256": sha256_hex(content),
         }
 
+    @staticmethod
+    def _apply_unified_diff(original: str, diff_text: str) -> tuple[bool, str, str]:
+        lines = original.splitlines(keepends=True)
+        diff_lines = diff_text.splitlines(keepends=True)
+
+        hunk_header_re = re.compile(r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@")
+        hunks: list[tuple[int, int, list[str]]] = []
+        current_hunk: list[str] = []
+        old_start = 0
+        old_len = 0
+
+        for line in diff_lines:
+            m = hunk_header_re.match(line)
+            if m:
+                if current_hunk:
+                    hunks.append((old_start, old_len, current_hunk))
+                    current_hunk = []
+                old_start = int(m.group(1))
+                old_len = int(m.group(2)) if m.group(2) is not None else 1
+            elif hunks or old_start > 0:
+                current_hunk.append(line)
+
+        if current_hunk:
+            hunks.append((old_start, old_len, current_hunk))
+
+        if not hunks:
+            return False, original, "No unified diff hunks found in diff text"
+
+        result_lines = list(lines)
+        for start, length, hunk_lines in sorted(hunks, key=lambda h: h[0], reverse=True):
+            line_idx = max(0, start - 1)
+            expected_old: list[str] = []
+            replacement: list[str] = []
+            for hline in hunk_lines:
+                if hline.startswith("-"):
+                    expected_old.append(hline[1:])
+                elif hline.startswith("+"):
+                    replacement.append(hline[1:])
+                elif hline.startswith(" ") or not hline.strip():
+                    ctx = hline[1:] if hline.startswith(" ") else hline
+                    expected_old.append(ctx)
+                    replacement.append(ctx)
+
+            old_chunk_size = len(expected_old)
+            matched_idx = -1
+
+            def chunk_matches(idx: int) -> bool:
+                actual = [l.rstrip("\r\n") for l in result_lines[idx : idx + old_chunk_size]]
+                expected = [l.rstrip("\r\n") for l in expected_old]
+                return actual == expected
+
+            if 0 <= line_idx <= len(result_lines) - old_chunk_size and chunk_matches(line_idx):
+                matched_idx = line_idx
+            else:
+                search_min = max(0, line_idx - 20)
+                search_max = min(len(result_lines) - old_chunk_size, line_idx + 20)
+                for cand in range(search_min, search_max + 1):
+                    if chunk_matches(cand):
+                        matched_idx = cand
+                        break
+
+            if matched_idx == -1:
+                old_str = "".join(expected_old).strip()
+                all_str = "".join(result_lines)
+                if old_str and old_str in all_str:
+                    new_str = "".join(replacement).strip()
+                    all_str = all_str.replace(old_str, new_str, 1)
+                    return True, all_str, ""
+                return False, original, f"Hunk at line {start} does not match target file contents"
+
+            result_lines[matched_idx : matched_idx + old_chunk_size] = replacement
+
+        return True, "".join(result_lines), ""
+
+    def _tool_patch(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        target = self._resolve_confined_path(workspace_dir, str(args["path"]))
+        rel_p = str(args["path"]).replace("\\", "/").lstrip("./")
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        before_content = ""
+        if target.is_file():
+            before_content = target.read_text(encoding="utf-8", errors="replace")
+
+        after_content = before_content
+
+        find_str = args.get("find") or args.get("search")
+        if find_str is not None:
+            find_str = str(find_str)
+            replace_str = str(args.get("replace", ""))
+            if find_str in before_content:
+                after_content = before_content.replace(find_str, replace_str, 1)
+            elif find_str.replace("\r\n", "\n") in before_content.replace("\r\n", "\n"):
+                norm_before = before_content.replace("\r\n", "\n")
+                norm_find = find_str.replace("\r\n", "\n")
+                norm_replace = replace_str.replace("\r\n", "\n")
+                after_content = norm_before.replace(norm_find, norm_replace, 1)
+            else:
+                return {
+                    "ok": False,
+                    "error": f"Search block not found in {args['path']}",
+                    "path": str(args["path"]),
+                }
+        elif "diff" in args or "patch" in args:
+            diff_text = str(args.get("diff") or args.get("patch", ""))
+            success, patched_content, err = self._apply_unified_diff(before_content, diff_text)
+            if not success:
+                return {
+                    "ok": False,
+                    "error": f"Failed to apply patch: {err}",
+                    "path": str(args["path"]),
+                }
+            after_content = patched_content
+        else:
+            return {
+                "ok": False,
+                "error": "Either 'find'/'replace' or 'diff' must be provided to patch",
+                "path": str(args["path"]),
+            }
+
+        target.write_text(after_content, encoding="utf-8")
+
+        blast_info = None
+        if hasattr(self, "blast_interceptor") and self.blast_interceptor is not None:
+            try:
+                report = self.blast_interceptor.inspect_file_modification(
+                    workspace_dir,
+                    rel_p,
+                    before_sources={rel_p: before_content},
+                )
+                if report:
+                    blast_info = report.to_dict()
+            except Exception:
+                pass
+
+        res = {
+            "ok": True,
+            "path": str(args["path"]),
+            "bytes_written": len(after_content.encode("utf-8")),
+            "sha256": sha256_hex(after_content),
+        }
+        if blast_info:
+            res["blast_radius"] = blast_info
+        return res
+
     def _tool_run_tests(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         from .recipes import detect_recipe
         import shlex
@@ -762,6 +1366,102 @@ class ToolGateway:
             "output_sha256": sha256_hex(redacted_out),
             "recipe": recipe.name if recipe else None,
         }
+
+    def _tool_terminal(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        raw_cmd = args.get("command") or args.get("cmd")
+        if not raw_cmd:
+            return {"ok": False, "error": "Command parameter is required"}
+
+        if isinstance(raw_cmd, list):
+            cmd = [str(c) for c in raw_cmd]
+        else:
+            cmd_str = str(raw_cmd).strip()
+            if any(op in cmd_str for op in ("|", ">", "<", ";", "&&", "||", "$")):
+                cmd = ["/bin/sh", "-c", cmd_str]
+            else:
+                cmd = shlex.split(cmd_str)
+
+        timeout = float(args.get("timeout", 30.0))
+        env = dict(args.get("env") or {})
+        env.setdefault("PYTHONPATH", str(workspace_dir))
+
+        result = self.sandbox.execute(
+            cmd=cmd,
+            cwd=workspace_dir,
+            env=env,
+            timeout=timeout,
+        )
+
+        if result.violation_detected:
+            raise PolicyBlockedError(result.violation_reason or "Sandbox security violation detected")
+
+        stdout_redacted = str(redact_secrets(result.stdout))[:16_000]
+        stderr_redacted = str(redact_secrets(result.stderr))[:8_000]
+        is_ok = (result.exit_code == 0) and not result.timed_out
+
+        return {
+            "ok": is_ok,
+            "exit_code": result.exit_code,
+            "stdout": stdout_redacted,
+            "stderr": stderr_redacted,
+            "timed_out": result.timed_out,
+            "sandbox_backend": result.sandbox_backend,
+        }
+
+    def _tool_process(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        action = str(args.get("action", "list")).lower()
+        if action == "list":
+            procs: list[dict[str, Any]] = []
+            try:
+                ps_res = subprocess.run(
+                    ["ps", "-eo", "pid,ppid,stat,command"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5.0,
+                    check=False,
+                )
+                if ps_res.returncode == 0:
+                    ws_str = str(workspace_dir)
+                    for line in ps_res.stdout.splitlines()[1:]:
+                        parts = line.strip().split(None, 3)
+                        if len(parts) >= 4:
+                            pid_s, ppid_s, stat, cmd = parts
+                            if ws_str in cmd or any(w in cmd.lower() for w in ("pytest", "python", "node", "uvicorn", "cargo", "harness")):
+                                try:
+                                    procs.append({
+                                        "pid": int(pid_s),
+                                        "ppid": int(ppid_s),
+                                        "stat": stat,
+                                        "command": cmd[:200],
+                                    })
+                                except ValueError:
+                                    pass
+            except Exception as e:
+                return {"ok": False, "error": str(e), "processes": []}
+            return {"ok": True, "processes": procs, "count": len(procs)}
+
+        elif action == "kill":
+            pid_val = args.get("pid")
+            if pid_val is None:
+                return {"ok": False, "error": "PID parameter required to kill process"}
+            try:
+                target_pid = int(pid_val)
+            except ValueError:
+                return {"ok": False, "error": f"Invalid PID: {pid_val}"}
+
+            if target_pid <= 1 or target_pid == os.getpid():
+                raise PolicyBlockedError(f"Cannot terminate protected system or current process (PID {target_pid})")
+
+            sig_val = int(args.get("signal", signal.SIGTERM))
+            try:
+                os.kill(target_pid, sig_val)
+                return {"ok": True, "killed_pid": target_pid, "signal": sig_val}
+            except ProcessLookupError:
+                return {"ok": False, "error": f"Process {target_pid} not found"}
+            except PermissionError as pe:
+                return {"ok": False, "error": f"Permission denied killing PID {target_pid}: {pe}"}
+        else:
+            return {"ok": False, "error": f"Unknown process action: {action}"}
 
     def _tool_git_push_remote(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         return {

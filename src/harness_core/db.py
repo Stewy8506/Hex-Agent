@@ -509,7 +509,11 @@ class LedgerStore:
                 return False
             return all(s.get("risk_class", "R1") in ("R0", "R1") for s in req.steps)
         lowered = req.goal.lower()
-        write_keywords = ("fix", "edit", "refactor", "write", "modify", "patch", "delete", "deploy")
+        write_keywords = (
+            "fix", "edit", "refactor", "write", "modify", "patch",
+            "delete", "deploy", "test", "run", "execute", "build", "compile",
+            "implement", "create", "add", "update"
+        )
         if any(w in lowered for w in write_keywords):
             return False
         return True

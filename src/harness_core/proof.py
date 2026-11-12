@@ -101,8 +101,10 @@ class VerificationAndProofService:
                 pinned_tests.append(t)
 
         # 3. Execute deterministic test verification if applicable
-        # Only run tests if specific tests were pinned or workspace files were modified
-        should_run_tests = run_tests and bool(pinned_tests or modified_files)
+        has_test_files = any(ws.rglob("test_*.py"))
+        task_rec = self.ledger.get_task(task_id) if hasattr(self, "ledger") and self.ledger else None
+        is_fast_path = (task_rec.get("execution_mode") == "fast_path") if task_rec else False
+        should_run_tests = run_tests and (bool(pinned_tests or modified_files) or (has_test_files and not is_fast_path))
         if should_run_tests:
             test_res = self.gateway._tool_run_tests(ws, {"targets": pinned_tests})
             verification_passed = bool(test_res["ok"])
