@@ -1004,10 +1004,16 @@ def render_status_bar(
 
     parts = [
         _c(f" {skin.prompt_symbol} {model_id} ", fg=skin.heading_rgb, bg=skin.status_bg_rgb, bold=True),
-        _c(f" {ctx_str} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
-        _c(f" [{bar_str}] {pct_str} ", fg=gauge_fg, bg=skin.status_bg_rgb, bold=True),
-        _c(f" comp:{compressor_mode} · cow:{cow_backend} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
     ]
+    if tokens_in > 0:
+        parts.extend([
+            _c(f" {ctx_str} ", fg=skin.category_rgb, bg=skin.status_bg_rgb),
+            _c(f" [{bar_str}] {pct_str} ", fg=gauge_fg, bg=skin.status_bg_rgb, bold=True),
+        ])
+    if compressor_mode and cow_backend:
+        parts.append(_c(f" comp:{compressor_mode} · cow:{cow_backend} ", fg=skin.category_rgb, bg=skin.status_bg_rgb))
+    elif compressor_mode:
+        parts.append(_c(f" comp:{compressor_mode} ", fg=skin.category_rgb, bg=skin.status_bg_rgb))
 
     if voice_status:
         v_upper = voice_status.strip().upper()
@@ -1020,10 +1026,10 @@ def render_status_bar(
         else:
             parts.append(_c(f" 🎙️ {voice_status} ", fg=skin.muted_rgb, bg=skin.status_bg_rgb))
 
-    parts.extend([
-        _c(f" ${cost_usd:.3f} ", fg=skin.muted_rgb, bg=skin.status_bg_rgb),
-        _c(f" {elapsed_seconds}s ", fg=skin.muted_rgb, bg=skin.status_bg_rgb),
-    ])
+    if cost_usd > 0.0:
+        parts.append(_c(f" ${cost_usd:.3f} ", fg=skin.muted_rgb, bg=skin.status_bg_rgb))
+    if elapsed_seconds > 0:
+        parts.append(_c(f" {elapsed_seconds}s ", fg=skin.muted_rgb, bg=skin.status_bg_rgb))
     sep = _c("│", fg=skin.border_rgb, bg=skin.status_bg_rgb)
     rule = _c("─" * max(76, width), fg=skin.border_rgb)
     return f"{sep.join(parts)}\n{rule}"
