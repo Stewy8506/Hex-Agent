@@ -765,6 +765,49 @@ webhooks:
         except Exception:
             pass
 
+    # Synchronize model settings and credentials across all registered projects in ProjectRegistry
+    try:
+        from .project_registry import ProjectRegistry
+
+        reg_candidates = [
+            cfg_dir / "projects.json",
+            Path.home() / ".hex" / "projects.json",
+        ]
+        registered_paths: set[Path] = set()
+        for r_cand in reg_candidates:
+            if r_cand.is_file():
+                try:
+                    reg = ProjectRegistry(r_cand)
+                    for prj in reg.list_projects():
+                        registered_paths.add(Path(prj.path))
+                except Exception:
+                    pass
+        for p_dir in registered_paths:
+            if p_dir.is_dir():
+                p_hex = p_dir / ".hex"
+                p_cfg = p_hex / "config.yaml"
+                p_cr = p_hex / "credentials.env"
+                if p_cfg.is_file() and p_cfg.resolve() != config_file.resolve():
+                    try:
+                        import yaml
+
+                        p_data = yaml.safe_load(p_cfg.read_text(encoding="utf-8")) or {}
+                        if isinstance(p_data, dict):
+                            p_data.setdefault("model", {})
+                            p_data["model"]["cloud_provider"] = cloud_provider
+                            p_data["model"]["cloud_model_id"] = cloud_model_id
+                            p_data["model"]["profile"] = model_profile
+                            p_cfg.write_text(yaml.dump(p_data, sort_keys=False), encoding="utf-8")
+                    except Exception:
+                        pass
+                if p_cr.is_file() and p_cr.resolve() != credentials_file.resolve():
+                    try:
+                        p_cr.write_text("\n".join(creds_content) + "\n", encoding="utf-8")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     # Hydrate current running process environment immediately
     load_hex_environment(config_dir=cfg_dir, override=True)
 

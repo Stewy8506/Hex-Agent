@@ -72,6 +72,11 @@ class TestAutonomousHarnessStages(unittest.TestCase):
             data_dir=self.tmp_dir / "harness_data",
             default_workspace=self.project_ws,
         )
+        if hasattr(self.orch.router.cloud_provider, "http_transport"):
+            self.orch.router.cloud_provider.http_transport = lambda url, headers, body: (
+                200,
+                b'data: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "Sample AST summary"}]}}], "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 10, "totalTokenCount": 20}}}\n\n',
+            )
         self.api = HarnessAPIApp(self.orch)
 
     def tearDown(self) -> None:

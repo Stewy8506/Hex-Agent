@@ -274,8 +274,8 @@ def fetch_available_models(
             "No Antigravity access token found. Please authenticate via 'hex auth antigravity' to live-fetch available models."
         )
 
-    url_base = base_url or ANTIGRAVITY_PROD_ENDPOINT
-    models_url = f"{url_base}/v1internal:fetchAvailableModels"
+    candidate_bases = [base_url] if base_url else [ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_PROD_ENDPOINT]
+
     headers = {
         "Authorization": f"Bearer {tok}",
         "Content-Type": "application/json",
@@ -290,32 +290,9 @@ def fetch_available_models(
         ),
     }
 
-    # If project_id not explicitly supplied, check if loadCodeAssist provides a specific project
-    if not project_id and proj == DEFAULT_FALLBACK_PROJECT_ID:
-        try:
-            load_url = f"{url_base}/v1internal:loadCodeAssist"
-            load_body = json.dumps(
-                {
-                    "metadata": {
-                        "ideType": "ANTIGRAVITY",
-                        "platform": "PLATFORM_UNSPECIFIED",
-                        "pluginType": "GEMINI",
-                    }
-                }
-            ).encode("utf-8")
-            load_req = urllib.request.Request(load_url, data=load_body, headers=headers, method="POST")
-            with urllib.request.urlopen(load_req, timeout=min(timeout, 2.0)) as l_resp:
-                if l_resp.status in (200, 201):
-                    l_data = json.loads(l_resp.read().decode("utf-8"))
-                    l_proj = l_data.get("cloudaicompanionProject")
-                    if isinstance(l_proj, str) and l_proj.strip():
-                        proj = l_proj.strip()
-                    elif isinstance(l_proj, dict) and l_proj.get("id"):
-                        proj = str(l_proj["id"]).strip()
-        except Exception:
-            pass
 
-    def _execute_fetch(target_tok: str, target_proj: str) -> list[tuple[str, str]]:
+    def _execute_fetch(target_tok: str, target_proj: str, target_base: str) -> list[tuple[str, str]]:
+        models_url = f"{target_base}/v1internal:fetchAvailableModels"
         req_headers = dict(headers)
         req_headers["Authorization"] = f"Bearer {target_tok}"
         req_body = json.dumps({"project": target_proj}).encode("utf-8")
@@ -371,35 +348,43 @@ def fetch_available_models(
                 raise ProviderUnavailableError("Google Antigravity returned empty model inventory.")
             raise ProviderUnavailableError(f"Google Antigravity returned HTTP status {resp.status}.")
 
-    try:
-        return _execute_fetch(tok, proj)
-    except urllib.error.HTTPError as http_err:
-        if http_err.code == 401:
-            try:
-                mgr = AntigravityOAuthManager()
-                refreshed = mgr.resolve_credential(auto_refresh=True)
-                if not refreshed or not refreshed.refresh_token:
-                    aux = (
-                        mgr._from_hex_auth_file()
-                        or mgr._from_external_auth_files()
-                        or mgr._from_ide_state_vscdb()
-                    )
-                    if aux and aux.refresh_token:
-                        refreshed = mgr.refresh_access_token(aux)
-                if refreshed and refreshed.access_token and refreshed.access_token != tok:
-                    try:
-                        mgr._sync_to_credentials_env(refreshed)
-                    except Exception:
-                        pass
-                    refreshed_proj = refreshed.project_id or proj
-                    return _execute_fetch(refreshed.access_token, refreshed_proj)
-            except Exception:
-                pass
-        raise ProviderUnavailableError(f"Failed to live-fetch models from Google Antigravity: {http_err}") from http_err
-    except Exception as exc:
-        if isinstance(exc, ProviderUnavailableError):
-            raise
-        raise ProviderUnavailableError(f"Failed to live-fetch models from Google Antigravity: {exc}") from exc
+    last_err: Exception | None = None
+    for cand_base in candidate_bases:
+        try:
+            return _execute_fetch(tok, proj, cand_base)
+        except urllib.error.HTTPError as http_err:
+            if http_err.code == 401:
+                try:
+                    mgr = AntigravityOAuthManager()
+                    refreshed = mgr.resolve_credential(auto_refresh=True)
+                    if not refreshed or not refreshed.refresh_token:
+                        aux = (
+                            mgr._from_hex_auth_file()
+                            or mgr._from_external_auth_files()
+                            or mgr._from_ide_state_vscdb()
+                        )
+                        if aux and aux.refresh_token:
+                            refreshed = mgr.refresh_access_token(aux)
+                    if refreshed and refreshed.access_token and refreshed.access_token != tok:
+                        tok = refreshed.access_token
+                        proj = refreshed.project_id or proj
+                        try:
+                            mgr._sync_to_credentials_env(refreshed)
+                        except Exception:
+                            pass
+                        return _execute_fetch(tok, proj, cand_base)
+                except Exception:
+                    pass
+            last_err = http_err
+            continue
+        except Exception as exc:
+            last_err = exc
+            continue
+
+    if isinstance(last_err, ProviderUnavailableError):
+        raise last_err
+    if last_err is not None:
+        raise ProviderUnavailableError(f"Failed to live-fetch models from Google Antigravity: {last_err}") from last_err
 
 
 class AntigravityOAuthManager:
@@ -683,8 +668,13 @@ class AntigravityOAuthManager:
                 cred.project_id = aux.project_id
             if cred.expires_at_ms <= 0 and aux.expires_at_ms > 0:
                 cred.expires_at_ms = aux.expires_at_ms
-            # If aux has a fresher unexpired access token, adopt it over unverified env token
-            if aux.access_token and not aux.is_expired() and aux.access_token != cred.access_token:
+            # If aux has a fresher unexpired access token with a valid later expiry, adopt it
+            if (
+                aux.access_token
+                and not aux.is_expired()
+                and aux.access_token != cred.access_token
+                and (cred.expires_at_ms <= 0 or aux.expires_at_ms > cred.expires_at_ms)
+            ):
                 cred.access_token = aux.access_token
                 cred.expires_at_ms = aux.expires_at_ms
             if cred.refresh_token and cred.project_id:
@@ -904,7 +894,7 @@ class AntigravityModelProvider(ModelProvider):
         access_token: str | None = None,
         refresh_token: str | None = None,
         project_id: str | None = None,
-        base_url: str = ANTIGRAVITY_PROD_ENDPOINT,
+        base_url: str | None = None,
         budget_tracker: Any = None,
         http_transport: Callable[[str, dict[str, str], bytes], tuple[int, bytes]] | None = None,
         enable_prompt_caching: bool = True,
@@ -916,7 +906,8 @@ class AntigravityModelProvider(ModelProvider):
             or ""
         )
         self.model_id = self._normalize_model_id(resolved_mid)
-        self.base_url = base_url.rstrip("/")
+        default_ep = os.getenv("HEX_ANTIGRAVITY_ENDPOINT") or ANTIGRAVITY_DAILY_ENDPOINT
+        self.base_url = (base_url or default_ep).rstrip("/")
         self.http_transport = http_transport
         self.enable_prompt_caching = enable_prompt_caching
 
@@ -1010,8 +1001,9 @@ class AntigravityModelProvider(ModelProvider):
 
         cred = self._get_active_credential()
         if cred and cred.project_id:
-            self._cached_project_id = cred.project_id
-            return self._cached_project_id
+            if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", cred.project_id, re.I):
+                self._cached_project_id = cred.project_id
+                return self._cached_project_id
 
         tok = access_token or (cred.access_token if cred else "")
         if not tok:
@@ -1478,6 +1470,38 @@ class AntigravityModelProvider(ModelProvider):
             with urllib.request.urlopen(req, timeout=30.0) as resp:
                 return resp.status, resp.read()
         except urllib.error.HTTPError as e:
+            # If 429 or 403 occurs on one endpoint, attempt fallback to alternate Antigravity endpoint
+            if e.code in (403, 429):
+                alt_base = (
+                    ANTIGRAVITY_DAILY_ENDPOINT
+                    if ANTIGRAVITY_PROD_ENDPOINT in url
+                    else (ANTIGRAVITY_PROD_ENDPOINT if ANTIGRAVITY_DAILY_ENDPOINT in url else None)
+                )
+                if alt_base and alt_base not in url:
+                    alt_url = url.replace(ANTIGRAVITY_PROD_ENDPOINT, alt_base).replace(ANTIGRAVITY_DAILY_ENDPOINT, alt_base)
+                    try:
+                        alt_req = urllib.request.Request(alt_url, data=body, headers=headers, method="POST")
+                        with urllib.request.urlopen(alt_req, timeout=30.0) as alt_resp:
+                            if alt_resp.status in (200, 201):
+                                self.base_url = alt_base
+                                return alt_resp.status, alt_resp.read()
+                    except Exception:
+                        pass
             return e.code, e.read()
         except Exception as e:
+            alt_base = (
+                ANTIGRAVITY_DAILY_ENDPOINT
+                if ANTIGRAVITY_PROD_ENDPOINT in url
+                else (ANTIGRAVITY_PROD_ENDPOINT if ANTIGRAVITY_DAILY_ENDPOINT in url else None)
+            )
+            if alt_base and alt_base not in url:
+                alt_url = url.replace(ANTIGRAVITY_PROD_ENDPOINT, alt_base).replace(ANTIGRAVITY_DAILY_ENDPOINT, alt_base)
+                try:
+                    alt_req = urllib.request.Request(alt_url, data=body, headers=headers, method="POST")
+                    with urllib.request.urlopen(alt_req, timeout=30.0) as alt_resp:
+                        if alt_resp.status in (200, 201):
+                            self.base_url = alt_base
+                            return alt_resp.status, alt_resp.read()
+                except Exception:
+                    pass
             raise ProviderUnavailableError(f"Antigravity HTTP request failed: {e}") from e

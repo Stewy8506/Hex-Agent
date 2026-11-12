@@ -125,6 +125,7 @@ class TwoTierModelRouter:
         compressor_mode: str | None = None,
         compressor_provider: ModelProvider | None = None,
     ):
+        self.profile = os.getenv("HEX_MODEL_PROFILE", "antigravity_hybrid")
         resolved_local_model = (
             local_model_id
             or os.getenv("HEX_LOCAL_MODEL_ID")
@@ -352,20 +353,20 @@ class TwoTierModelRouter:
                 compressed_context=comp["compressed_text"],
             )
 
-        # Routine R0/R1 triage or cloud outage routes to local M4
-        if risk_class in ("R0", "R1") and task_class in ("triage", "fast_path", "repo_summary"):
+        # Explicit local or offline profile pins all requests to local M4
+        if self.profile in ("local", "offline"):
             return RouteDecision(
                 tier="tier1_local_m4",
                 provider="local_mlx",
                 model_id=self.local_model_id,
-                reason=f"Fast-Path/triage ({risk_class}) served locally on M4 MLX at $0 marginal cost",
+                reason=f"Model profile '{self.profile}' pinned to local execution",
                 raw_tokens_estimated=comp["raw_tokens"],
                 compressed_tokens_estimated=comp["compressed_tokens"],
                 token_savings_pct=comp["token_savings_pct"],
                 compressed_context=comp["compressed_text"],
             )
 
-        if not cloud_available:
+        if not cloud_available or self.cloud_provider is None:
             return RouteDecision(
                 tier="tier1_local_m4",
                 provider="local_mlx_fallback",

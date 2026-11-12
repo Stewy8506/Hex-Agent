@@ -430,7 +430,8 @@ class HarnessOrchestrator:
                 )
                 decision, model_resp = self.router.execute_routed_request(
                     prompt=prompt,
-                    task_class="fast_path",
+                    task_class="synthesis",
+                    risk_class="R2",
                     budget_remaining=1.0,
                     workspace_dir=source_ws,
                 )
