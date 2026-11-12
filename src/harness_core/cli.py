@@ -182,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     p_h2_eval.add_argument("--task-id", default="demo-1", help="Task ID to evaluate")
     p_h2_eval.add_argument("--mode", choices=["parallel", "sequential"], default="parallel", help="Recursion execution mode")
     p_h2_eval.add_argument("--k", type=int, default=1, help="Number of candidate iterations / width")
-    p_h2_eval.add_argument("--substrate", choices=["opencode", "codex"], default="opencode", help="Editable harness surface substrate (opencode or codex)")
+    p_h2_eval.add_argument("--substrate", choices=["opencode", "codex", "claude", "gemini"], default="opencode", help="Editable harness surface substrate (opencode, codex, claude, or gemini)")
     p_h2_eval.add_argument("--proposer", choices=["local", "llm"], default="local", help="Proposer backend (deterministic local or live LLMRouterProposer)")
     p_h2_eval.add_argument("--runs-root", default=None, help="Root directory for rollout executions and logs")
     p_h2_eval.add_argument("--json", action="store_true", help="Output results as JSON")

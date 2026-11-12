@@ -1757,3 +1757,59 @@ class HarnessOrchestrator:
             "experience": reflected_experience,
             "experience_entry_path": str(experience_entry_path) if experience_entry_path else None,
         }
+
+    def trigger_background_self_improvement(
+        self,
+        domain: str = "software_engineering",
+        task_id: str = "demo-1",
+        mode: str = "parallel",
+        k: int = 1,
+        substrate: str = "opencode",
+        proposer: str = "local",
+    ) -> Any:
+        """Trigger an automated Harness2 Propose-Probe-Compose self-improvement sweep
+        to evolve domain guidance and persist newly reflected experience into the domain library.
+        """
+        from .harness2_adapter import OrchestratorBenchmarkAdapter, run_orchestrator_sweep
+
+        runs_root = self.data_dir / "benchmarks"
+        adapter = OrchestratorBenchmarkAdapter(
+            self,
+            runs_root=runs_root,
+            substrate=substrate,
+        )
+        prop_backend = "llm" if proposer == "llm" else None
+        outcome = run_orchestrator_sweep(
+            adapter=adapter,
+            task_id=task_id,
+            mode=mode,
+            k=k,
+            proposer=prop_backend,
+            record_to_library=True,
+        )
+        meta_task = self.ledger.submit_task(
+            TaskSubmitRequest(
+                goal=f"Automated Harness2 self-improvement sweep for task '{task_id}' in domain '{domain}'",
+                execution_mode="fast_path",
+                workspace_root=str(self.default_workspace),
+                project_id=f"self_improve_{domain}",
+            )
+        )
+        meta_task_id = meta_task["task_id"]
+        self.ledger.record_event(
+            task_id=meta_task_id,
+            event_type="HARNESS2_SELF_IMPROVEMENT_COMPLETED",
+            reason_code="SWEEP_EVAL_RECORDED",
+            payload={
+                "task_id": task_id,
+                "domain": domain,
+                "mode": mode,
+                "k": k,
+                "substrate": substrate,
+                "status": "SUCCESS" if outcome.ok else "FAILED",
+                "lesson": outcome.experience.get("lesson") if outcome.experience else None,
+                "cache_hits": outcome.cache_hits,
+            },
+        )
+        setattr(outcome, "meta_task_id", meta_task_id)
+        return outcome

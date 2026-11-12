@@ -306,6 +306,46 @@ class TestHarness2DeepIntegrations(unittest.TestCase):
         self.assertTrue(payload["experience"].get("lesson"))
         self.assertEqual(len(payload["scored"]), 1)
 
+    def test_claude_and_gemini_substrates(self) -> None:
+        """Verify ClaudeSubstrate and GeminiSubstrate resolution, base tree generation, and execution."""
+        from harness_core.harness2_adapter import ClaudeSubstrate, GeminiSubstrate, resolve_substrate
+
+        sub_claude = resolve_substrate("claude")
+        self.assertIsInstance(sub_claude, ClaudeSubstrate)
+        self.assertEqual(sub_claude.surface().name, "claude")
+        self.assertEqual(sub_claude.surface().always_on, ("CLAUDE.md",))
+
+        sub_gemini = resolve_substrate("gemini")
+        self.assertIsInstance(sub_gemini, GeminiSubstrate)
+        self.assertEqual(sub_gemini.surface().name, "gemini")
+        self.assertEqual(sub_gemini.surface().always_on, ("GEMINI.md",))
+
+        # Test adapter initialization and execution with claude substrate
+        adapter_claude = OrchestratorBenchmarkAdapter(
+            self.orch,
+            runs_root=self.tmp_dir / "benchmarks_claude",
+            substrate="claude",
+        )
+        self.assertTrue((adapter_claude.base_harness() / "CLAUDE.md").is_file())
+        run_dir = adapter_claude.execute("demo-1", adapter_claude.base_harness(), "claude_run_1")
+        self.assertTrue((run_dir / "workspace" / "CLAUDE.md").is_file())
+
+    def test_background_self_improvement_trigger(self) -> None:
+        """Verify orchestrator.trigger_background_self_improvement runs sweep and logs event."""
+        outcome = self.orch.trigger_background_self_improvement(
+            domain="finance",
+            task_id="ledger-1",
+            mode="parallel",
+            k=1,
+            substrate="opencode",
+        )
+        self.assertIsInstance(outcome, SweepEvaluationOutcome)
+        self.assertTrue(outcome.ok)
+        self.assertIsNotNone(outcome.selection)
+        # Verify event was recorded in ledger
+        events = self.orch.ledger.list_events(task_id=outcome.meta_task_id)
+        self.assertTrue(any(e.get("event_type") == "HARNESS2_SELF_IMPROVEMENT_COMPLETED" for e in events))
+
 
 if __name__ == "__main__":
     unittest.main()

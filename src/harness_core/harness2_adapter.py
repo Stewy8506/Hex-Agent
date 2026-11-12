@@ -56,15 +56,78 @@ from harness2.core.spec import (
     RunView,
     SubstrateLike,
 )
+from harness2.core.tree import SurfaceSpec
 from harness2.substrate.codex import CODEX_SURFACE, CodexSubstrate
 from harness2.substrate.opencode import OPENCODE_SURFACE, OpencodeSubstrate
 
+CLAUDE_SURFACE = SurfaceSpec(
+    name="claude",
+    always_on=("CLAUDE.md",),
+    always_on_max=16_000,
+    always_on_cap_reason="CLAUDE.md is loaded as persistent root instructions for Claude sessions",
+    skill_dir=".claude/skills",
+    skill_name_rule="overrides_dir",
+    trigger_hint=(
+        'Add a trigger line naming `{name}` to CLAUDE.md, e.g. "When '
+        "<the situation this skill handles>, read .claude/skills/{name}/SKILL.md "
+        'and follow it."'
+    ),
+    autotrigger_file="CLAUDE.md",
+    trigger_line="- When {desc}, read .claude/skills/{name}/SKILL.md and follow it.\n",
+    subagent_requires_mode=False,
+    plugin_dir=None,
+    hooks_file=".claude/hooks.json",
+    hook_events=frozenset({"task_start", "task_end", "pre_tool", "post_tool"}),
+)
+
+GEMINI_SURFACE = SurfaceSpec(
+    name="gemini",
+    always_on=("GEMINI.md",),
+    always_on_max=32_000,
+    always_on_cap_reason="GEMINI.md is loaded into Google Antigravity and Gemini context",
+    skill_dir=".gemini/skills",
+    skill_name_rule="overrides_dir",
+    trigger_hint=(
+        'Add a trigger line naming `{name}` to GEMINI.md, e.g. "When '
+        "<the situation this skill handles>, read .gemini/skills/{name}/SKILL.md "
+        'and follow it."'
+    ),
+    autotrigger_file="GEMINI.md",
+    trigger_line="- When {desc}, read .gemini/skills/{name}/SKILL.md and follow it.\n",
+    subagent_requires_mode=False,
+    plugin_dir=None,
+    hooks_file=".gemini/hooks.json",
+    hook_events=frozenset({"task_start", "task_end", "pre_tool", "post_tool"}),
+)
+
+
+class ClaudeSubstrate:
+    """Claude substrate using CLAUDE.md as root surface instruction."""
+
+    name = "claude"
+
+    def surface(self) -> SurfaceSpec:
+        return CLAUDE_SURFACE
+
+
+class GeminiSubstrate:
+    """Gemini substrate using GEMINI.md for Google Antigravity & Gemini reasoning."""
+
+    name = "gemini"
+
+    def surface(self) -> SurfaceSpec:
+        return GEMINI_SURFACE
+
 
 def resolve_substrate(substrate_name: str = "opencode") -> SubstrateLike:
-    """Resolve 'opencode' or 'codex' ('cx') into its upstream Harness2 Substrate instance."""
+    """Resolve 'opencode', 'codex', 'claude', or 'gemini' into its Harness2 Substrate instance."""
     norm = (substrate_name or "opencode").strip().lower()
     if norm in ("codex", "cx", "agents", "agents_md"):
         return CodexSubstrate()
+    if norm in ("claude", "claude_md", "anthropic"):
+        return ClaudeSubstrate()
+    if norm in ("gemini", "gemini_md", "antigravity"):
+        return GeminiSubstrate()
     return OpencodeSubstrate()
 
 
@@ -221,8 +284,11 @@ class OrchestratorBenchmarkAdapter:
         if spec is not None:
             self.spec = spec
         else:
+            surface_name = self.substrate.surface().name
             install_mode = (
-                "codex_root" if self.substrate.surface().name == "codex" else "workspace_config"
+                "codex_root"
+                if surface_name == "codex"
+                else "workspace_config"
             )
             self.spec = BenchSpec(
                 name="orchestrator_benchmark",
@@ -240,13 +306,27 @@ class OrchestratorBenchmarkAdapter:
         self._init_default_tasks()
 
     def _init_base_harness(self) -> None:
-        """Initialize the base harness directory tree for either opencode or codex surface."""
+        """Initialize the base harness directory tree for either opencode, codex, claude, or gemini surface."""
         base_dir = self.base_harness()
         surface = self.substrate.surface()
         base = {name: "" for name in surface.always_on}
         if surface.name == "codex":
             base["AGENTS.md"] = (
                 "# AGENTS.md — Orchestrator Benchmark Base Instructions\n\n"
+                "You are an autonomous engineering agent executing within the HEX environment.\n"
+                "- Formulate solutions, write clean code, and verify with tests.\n"
+                "- Never bypass permissions, security gates, or sandbox controls.\n"
+            )
+        elif surface.name == "claude":
+            base["CLAUDE.md"] = (
+                "# CLAUDE.md — Orchestrator Benchmark Base Instructions\n\n"
+                "You are an autonomous engineering agent executing within the HEX environment.\n"
+                "- Formulate solutions, write clean code, and verify with tests.\n"
+                "- Never bypass permissions, security gates, or sandbox controls.\n"
+            )
+        elif surface.name == "gemini":
+            base["GEMINI.md"] = (
+                "# GEMINI.md — Orchestrator Benchmark Base Instructions\n\n"
                 "You are an autonomous engineering agent executing within the HEX environment.\n"
                 "- Formulate solutions, write clean code, and verify with tests.\n"
                 "- Never bypass permissions, security gates, or sandbox controls.\n"
@@ -397,8 +477,9 @@ class OrchestratorBenchmarkAdapter:
             shutil.copytree(h_dir, ws_dir / ".harness", dirs_exist_ok=True)
             if (h_dir / "scripts").is_dir():
                 shutil.copytree(h_dir / "scripts", ws_dir / "scripts", dirs_exist_ok=True)
-            if (h_dir / "AGENTS.md").is_file():
-                shutil.copy2(h_dir / "AGENTS.md", ws_dir / "AGENTS.md")
+            for top_file in ("AGENTS.md", "CLAUDE.md", "GEMINI.md", "systemprompt.md", "guardrails.md"):
+                if (h_dir / top_file).is_file():
+                    shutil.copy2(h_dir / top_file, ws_dir / top_file)
 
         # 3. Check for standalone runnable script (e.g. scripts/summarize.py)
         trajectory_lines: list[str] = [
@@ -650,7 +731,7 @@ class LocalRouterProposer(Proposer):
             )
         else:
             workspace = ctx / "harness"
-            for always_on_file in ("systemprompt.md", "AGENTS.md"):
+            for always_on_file in ("systemprompt.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md"):
                 sp = workspace / always_on_file
                 if sp.is_file():
                     content = sp.read_text(encoding="utf-8")
@@ -870,20 +951,28 @@ def run_orchestrator_sweep(
     work.mkdir(parents=True, exist_ok=True)
     initial_cache_hits = adapter.cache_hits
 
-    base_rvs: list[RunView] = []
-    for idx in range(1, max(1, int(k)) + 1):
+    def _execute_single_base(idx: int) -> RunView:
         lbl = "base" if int(k) == 1 else f"base{idx}"
         run_id = f"{task_id}_{lbl}"
         b_dir = adapter.execute(task_id, adapter.base_harness(), run_id)
-        base_rvs.append(
-            RunView(
-                label=lbl,
-                run_id=run_id,
-                run_dir=b_dir,
-                ok=adapter.delivered(b_dir),
-                delivered=adapter.delivered(b_dir),
-            )
+        return RunView(
+            label=lbl,
+            run_id=run_id,
+            run_dir=b_dir,
+            ok=adapter.delivered(b_dir),
+            delivered=adapter.delivered(b_dir),
         )
+
+    base_rvs: list[RunView] = []
+    if int(k) > 1:
+        import concurrent.futures
+
+        max_workers = min(4, int(k))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_execute_single_base, idx) for idx in range(1, int(k) + 1)]
+            base_rvs = [f.result() for f in futures]
+    else:
+        base_rvs = [_execute_single_base(1)]
 
     if proposer is None:
         proposer = LocalRouterProposer(

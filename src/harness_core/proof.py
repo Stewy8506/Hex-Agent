@@ -213,15 +213,21 @@ class Harness2ControlledAdapter:
                 f"FR-061 violation: candidate attempted to modify protected policy/secret paths: {touched_protected}"
             )
 
-        # Auto-detect Codex (`AGENTS.md`) vs OpenCode (`systemprompt.md`) substrate if not explicitly passed
+        # Auto-detect Codex (`AGENTS.md`), Claude (`CLAUDE.md`), Gemini (`GEMINI.md`), or OpenCode substrate
         effective_sub = (substrate_name or "").strip().lower()
         if not effective_sub:
             if "AGENTS.md" in candidate_tree or "AGENTS.md" in base_tree:
                 effective_sub = "codex"
+            elif "CLAUDE.md" in candidate_tree or "CLAUDE.md" in base_tree:
+                effective_sub = "claude"
+            elif "GEMINI.md" in candidate_tree or "GEMINI.md" in base_tree:
+                effective_sub = "gemini"
             else:
                 effective_sub = "opencode"
 
-        substrate = CodexSubstrate() if effective_sub in ("codex", "cx") else OpencodeSubstrate()
+        from .harness2_adapter import resolve_substrate
+
+        substrate = resolve_substrate(effective_sub)
         surface = substrate.surface()
 
         # 2. Validate against Harness2 editable surface rules (c1..c8)
