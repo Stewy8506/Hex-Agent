@@ -9,7 +9,7 @@ This runbook provides canonical operational instructions for deploying, monitori
 HEX operates as a resilient, distributed autonomous execution engine consisting of the following key planes:
 
 ### 1.1 Control Plane
-- **CLI (`hex`)**: The primary command interface with 28 specialized subcommands (`run`, `exec`, `task`, `chat`, `tui`, `voice`, `auth`, `quota`, `doctor`, `project`, `recipe`, `harness2-eval`, `gateway`, `server`, `daemon`, `uninstall`).
+- **CLI (`hex`)**: The primary command interface with specialized subcommands (`run`, `exec`, `task`, `chat`, `tui`, `voice`, `auth`, `quota`, `doctor`, `project`, `recipe`, `graphify`, `harness2-eval`, `gateway`, `server`, `daemon`, `uninstall`).
 - **REST API (`/v1/*`)**: Handles task submission (`POST /v1/tasks`), status inspection (`GET /v1/tasks/{id}`), dynamic DAG replanning, worker registration, and remote approval decisions on default port `8420`.
 - **SSE Event Stream (`GET /v1/tasks/{id}/events?stream=true`)**: Real-time event streaming for UI control surfaces and external monitors.
 - **Web Control Surface (`GET /`)**: Zero-dependency local dashboard for inspecting state machines, active DAG steps, and call journals.
@@ -108,7 +108,29 @@ hex harness2-eval --task-id demo-1 --mode parallel --k 2
 hex harness2-eval --task-id ledger-1 --mode sequential --substrate codex --proposer llm --k 1 --json
 ```
 
-### 2.5 Daemon & Service Management
+### 2.5 Polyglot Knowledge Graph & Blast-Radius Engine (Graphify)
+
+```bash
+# Check Graphify CLI status and indexed graph stats
+hex graphify status
+
+# Trigger AST update on the workspace (extracts code files without LLM)
+hex graphify update
+
+# Ingest an existing graphify-out/graph.json into the active workbench
+hex graphify ingest --graph graphify-out/graph.json
+
+# Identify architectural hubs and god-nodes (top N connected symbols)
+hex graphify god-nodes --top 10
+
+# Query 1-hop and 2-hop affected blast-radius for a symbol or file
+hex graphify affected calculate_discount
+
+# Export self-contained interactive D3 architecture tree visualization
+hex graphify tree --out architecture.html
+```
+
+### 2.6 Daemon & Service Management
 
 ```bash
 # Start background worker daemon (processes background tasks and schedules)

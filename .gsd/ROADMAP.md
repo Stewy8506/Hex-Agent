@@ -239,7 +239,7 @@
 
 ---
 
-## Milestone M8: Deep Upstream Vendor Integration
+## Milestone M8: Deep Upstream Vendor Integration [100% COMPLETE]
 
 ```
 [x] Phase 18: Google Research Harness² Deep Wiring
@@ -248,9 +248,9 @@
 [x] Phase 19: NVIDIA SkillSpector Upstream Behavioral AST & Live OSV Scanner
     [x] 19-01: Python AST dangerous call analyzer & taint tracking integration
     [x] 19-02: Live OSV.dev batch client with offline cache fallback
-[ ] Phase 20: Graphify Upstream CLI & Tree-Sitter Adapter
-    [ ] 20-01: Upstream graphify CLI runner & graphify-out/graph.json ingest adapter
-    [ ] 20-02: Polyglot graph unification & multi-language blast-radius verification
+[x] Phase 20: Graphify Upstream CLI & Tree-Sitter Adapter
+    [x] 20-01: Upstream graphify CLI runner & graphify-out/graph.json ingest adapter
+    [x] 20-02: Polyglot graph unification & multi-language blast-radius verification
 ```
 
 ### Phase 18: Google Research Harness² Deep Wiring

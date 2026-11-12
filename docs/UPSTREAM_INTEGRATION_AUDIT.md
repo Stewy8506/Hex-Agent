@@ -80,11 +80,13 @@ All three upstream codebases are physically vendored in `vendor/`:
 - Explicitly tags graph edges as `EXTRACTED` (deterministic AST facts) or `INFERRED` (resolved cross-module/semantic links) across calls, imports, and inheritance.
 - Emits queryable knowledge graphs in `graphify-out/`: `graph.json`, `GRAPH_REPORT.md`, and `graph.html`.
 
-#### Current Integration Status: **~35% Wired (Phase 20 Queued)**
-- **Wired:** Custom `ActiveBlastRadiusInterceptor` in `src/harness_core/gateway.py` and `graphify.py`. Hooks into `R2` `write_file` tool calls, diffs modified symbols against the call graph, and automatically pins downstream tests to `plans.blast_radius_checks_json`.
-- **Queued (Phase 20):**
-  1. Add a pluggable `GraphifyUpstreamRunner` that executes upstream Graphify's tree-sitter extractor on polyglot codebases and generates `graphify-out/graph.json`.
-  2. Keep HEX's 0ms native Python AST analyzer as an ultra-fast local option for pure-Python tasks, falling back seamlessly.
+#### Current Integration Status: **100% Wired (Phase 20 Complete)**
+- **Wired:**
+  1. `GraphifyUpstreamRunner` in `src/harness_core/graphify.py`: executes `graphify` CLI or `sys.executable -m graphify` with in-process fallback using `graphify.watch._rebuild_code`.
+  2. `ActiveGraphifyAdapter.ingest_upstream_graph`: loads `graphify-out/graph.json` or `.hex/graph.json` into NetworkX `DiGraph`, mapping nodes, edges, `SymbolDef` records, and qualification paths.
+  3. `hex graphify` CLI commands (`status`, `update`, `ingest`, `god-nodes`, `affected`, `tree`).
+  4. Unified polyglot blast-radius tracking in `ActiveGraphifyAdapter.compute_blast_radius` and `ActiveBlastRadiusInterceptor` in `src/harness_core/gateway.py`. Hooks into `R2` `write_file` tool calls across Python, TypeScript/JavaScript, Go, Rust, Java, and C/C++, automatically pinning downstream tests to `plans.blast_radius_checks_json`.
+  5. Fast native Python AST analyzer maintained as default 0ms zero-dependency engine.
 
 ---
 
@@ -101,13 +103,19 @@ All three upstream codebases are physically vendored in `vendor/`:
 
 ---
 
-## 4. Immediate Roadmap (Milestone M8 Execution)
+## 4. Upstream Vendor Deep Integration: Completed (Milestone M8)
 
-1. **Phase 19: NVIDIA SkillSpector Behavioral AST & Live OSV Scanner**:
-   - Ingest upstream `skillspector.python_ast` and `behavioral_ast` into `SkillSpectorScanner`.
-   - Wire `osv_client.py` for live OSV.dev batch vulnerability queries.
-   - Comprehensive test suite in `tests/test_skillspector_ast_wiring.py` and `tests/test_skillspector_osv_wiring.py`.
-2. **Phase 20: Graphify Upstream CLI & Tree-Sitter 33+ Language Adapter**:
-   - Implement `GraphifyUpstreamRunner` to extract multi-language graphs into `graphify-out/graph.json`.
-   - Connect active blast-radius interceptor to upstream edge graphs.
-   - Maintain fast native Python AST analyzer as default offline engine.
+1. **Phase 18: Google Research Harness² Deep Wiring**:
+   - Integrated `harness2.core.library.Library` directly into `HarnessOrchestrator` (`INDEX.md`, `EXPERIENCE.md`, cue/lesson/evidence).
+   - `OrchestratorBenchmarkAdapter` satisfying `BenchmarkAdapter` protocol.
+   - Propose-Probe-Compose multi-rollout sweeps (`run_parallel`, `run_sequential`) via `hex harness2-eval`.
+   - Verified across `tests/test_harness2_library_wiring.py` and `tests/test_harness2_benchmark_adapter.py`.
+2. **Phase 19: NVIDIA SkillSpector Behavioral AST & Live OSV Scanner**:
+   - Upstream `skillspector.python_ast` and `behavioral_ast._analyze_python` dangerous call and taint tracking.
+   - Real-time `osv_client.query_batch()` for live OSV.dev batch vulnerability queries with offline cache fallback.
+   - Verified across `tests/test_skillspector_ast_wiring.py` and `tests/test_skillspector_osv_wiring.py`.
+3. **Phase 20: Graphify Upstream CLI & Tree-Sitter 33+ Language Adapter**:
+   - `GraphifyUpstreamRunner` and `ActiveGraphifyAdapter.ingest_upstream_graph` ingesting polyglot tree-sitter graphs.
+   - `hex graphify` CLI subcommand suite.
+   - Polyglot blast-radius tracking and automatic test pinning on `write_file` across Python, TS/JS, Go, Rust, Java, and C/C++.
+   - Verified across `tests/test_graphify_upstream_wiring.py` and `tests/test_graphify_polyglot_blast_radius.py`.
