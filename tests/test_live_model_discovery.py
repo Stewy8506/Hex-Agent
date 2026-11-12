@@ -294,8 +294,8 @@ class TestInvertedOnboardingFlow(unittest.TestCase):
             ("claude-3-5-sonnet", "Claude 3.5 Sonnet"),
         ]
 
-        # Select Anthropic as provider (idx 1), then select model (idx 0), then search (0), messaging (0)
-        select_responses = [1, 0, 0, 0]
+        # Select Anthropic as provider (idx 1), then select model (idx 0), compressor (0), search (0), messaging (0)
+        select_responses = [1, 0, 0, 0, 0]
         mock_select.side_effect = select_responses
 
         result = run_onboard_wizard(

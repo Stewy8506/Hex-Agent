@@ -328,8 +328,8 @@ TOOL_CATEGORY_MAP: dict[str, str] = {
 BUILTIN_SKILL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("architecture", ("active-graphify-blast-radius", "cow-snapshot-branching", "0ms-journal-replay")),
     ("autonomous-repair", ("multi-turn-repair-loop", "speculative-tree-of-work", "dynamic-dag-replan")),
-    ("security-gates", ("nvidia-skillspector-static", "osv-cve-scanner", "m4-semantic-alignment")),
-    ("model-routing", ("tier1-m4-mlx-compressor", "tier2-cloud-prefix-cache", "privacy-local-pinning")),
+    ("security-gates", ("nvidia-skillspector-static", "osv-cve-scanner", "local-semantic-alignment")),
+    ("model-routing", ("tier1-local-compressor", "tier2-cloud-prefix-cache", "privacy-local-pinning")),
     ("distributed-ops", ("cas-fencing-leases", "cow-delta-tar-sync", "telegram-discord-webhooks")),
 )
 
@@ -785,7 +785,7 @@ def render_hermes_splash(
     *,
     skin_name: str = "amber",
     model_id: str = "gemini-2.5-pro",
-    compressor_mode: str = "local",
+    compressor_mode: str = "deterministic",
     workspace_root: Path | str | None = None,
     session_id: str | None = None,
     voice_status: str | None = None,
@@ -858,8 +858,9 @@ def render_hermes_splash(
 
     from .onboard import HardwareProfile
     prof = HardwareProfile.detect()
-    hw_label = f"{prof.machine_model} MLX" if prof.is_apple_silicon else (prof.machine_model if prof.has_cuda else "Local CPU")
-    mdl_line = f"{_c(model_id, fg=skin.heading_rgb, bold=True)}{_c(' · ', fg=skin.muted_rgb)}{_c(f'{hw_label} ({compressor_mode})', fg=skin.category_rgb)}"
+    hw_label = f"Apple Silicon ({prof.machine_model})" if prof.is_apple_silicon else (f"NVIDIA CUDA ({prof.machine_model})" if prof.has_cuda else "Host CPU")
+    comp_display = "local AI" if compressor_mode == "local" else compressor_mode
+    mdl_line = f"{_c(model_id, fg=skin.heading_rgb, bold=True)}{_c(' · ', fg=skin.muted_rgb)}{_c(f'{hw_label} ({comp_display})', fg=skin.category_rgb)}"
     left_lines.append(_pad_visible(mdl_line, left_w, align="center"))
 
     home_str = str(Path.home())
@@ -1967,12 +1968,13 @@ class HexConsole:
 
     def _cmd_compressor(self, arg: str = "") -> None:
         mode = arg.strip().lower()
-        if mode not in ("local", "cloud"):
-            cur = getattr(getattr(self.orchestrator, "router", None), "compressor_mode", "local")
-            print(f"{ANSI_CYAN}Current compressor mode:{ANSI_RESET} {cur} (Usage: /compressor <local|cloud>)")
+        valid = ("deterministic", "cloud", "local", "off", "disabled")
+        if mode not in valid:
+            cur = getattr(getattr(self.orchestrator, "router", None), "compressor_mode", "deterministic")
+            print(f"{ANSI_CYAN}Current compressor mode:{ANSI_RESET} {cur} (Usage: /compressor <deterministic|cloud|local|off>)")
             return
         if hasattr(self.orchestrator, "router"):
-            self.orchestrator.router.compressor_mode = mode
+            self.orchestrator.router.compressor_mode = "off" if mode == "disabled" else mode
         print(f"{ANSI_GREEN}Compressor mode updated to: {mode} (session-only; sensitive/secret logs remain auto-pinned to local){ANSI_RESET}")
 
     def _cmd_budget(self) -> None:

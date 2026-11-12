@@ -134,7 +134,7 @@ class TestConfigLoader(unittest.TestCase):
         creds_file = self.cfg_dir / "credentials.env"
         creds_file.write_text("TEST_KEY_ALPHA=secret123\nHEX_CLOUD_PROVIDER=anthropic\n")
         config_file = self.cfg_dir / "config.yaml"
-        config_file.write_text("model:\n  cloud_model_id: claude-3-5-sonnet\n")
+        config_file.write_text("model:\n  cloud_provider: anthropic\n  cloud_model_id: claude-3-5-sonnet\n")
 
         # Clean existing test env vars
         os.environ.pop("TEST_KEY_ALPHA", None)

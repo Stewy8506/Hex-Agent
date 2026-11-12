@@ -301,7 +301,7 @@ class HexDoctor:
                     import mlx.core as mx  # type: ignore
                     results.append(
                         DoctorCheckResult(
-                            name="Apple Silicon MLX Metal Acceleration",
+                            name="Local AI Acceleration (Metal / MLX)",
                             category="hardware",
                             status="ok",
                             message=f"Native MLX framework active with Metal backend",
@@ -310,7 +310,7 @@ class HexDoctor:
                 except ImportError:
                     results.append(
                         DoctorCheckResult(
-                            name="Apple Silicon MLX Metal Acceleration",
+                            name="Local AI Acceleration (Metal / MLX)",
                             category="hardware",
                             status="warning",
                             message="MLX not installed in active environment; using pure-Python log compressor fallback",

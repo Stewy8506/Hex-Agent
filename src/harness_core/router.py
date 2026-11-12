@@ -30,6 +30,7 @@ from .models import TaskBudget
 from .providers.antigravity_provider import AntigravityModelProvider
 from .providers.base import ModelProvider, ModelResponse, PolicyBlockedError, ProviderUnavailableError
 from .providers.cloud_provider import CloudModelProvider
+from .providers.local_provider import LocalModelProvider, Tier1LogCompressor
 from .providers.mlx_provider import LocalMLXModelProvider
 
 
@@ -135,7 +136,7 @@ class TwoTierModelRouter:
             or os.getenv("HARNESS_LOCAL_MODEL_ID")
             or _detect_default_local_model()
         )
-        self.local_provider = local_provider or LocalMLXModelProvider(model_id=resolved_local_model)
+        self.local_provider = local_provider or LocalModelProvider(model_id=resolved_local_model)
 
         resolved_provider_type = (
             cloud_provider_type
@@ -267,7 +268,7 @@ class TwoTierModelRouter:
             compressor_mode
             or os.getenv("HEX_COMPRESSOR_MODE")
             or os.getenv("HARNESS_COMPRESSOR_MODE")
-            or "local"
+            or "deterministic"
         ).strip().lower()
         self.local_model_id = getattr(self.local_provider, "model_id", resolved_local_model)
         self.cloud_model_id = getattr(self.cloud_provider, "model_id", resolved_cloud_model)
@@ -303,15 +304,44 @@ class TwoTierModelRouter:
         data_classification: str = "internal",
         budget: TaskBudget | None = None,
     ) -> dict[str, Any]:
-        """FR-045a: Configurable Local M4 or Cloud log compressor.
+        """FR-045a: Configurable Deterministic, Cloud, or Local AI log compressor.
 
         Strips repetitive pass/info noise from raw test/build logs while preserving exact
         file paths, line numbers, traceback frames, and assertion errors.
         """
-        effective_mode = (mode or self.compressor_mode or "local").strip().lower()
+        effective_mode = (mode or self.compressor_mode or "deterministic").strip().lower()
         # Privacy guardrail: sensitive/secret logs NEVER leave the local boundary
         if data_classification in ("sensitive", "secret"):
             effective_mode = "local"
+
+        if effective_mode in ("off", "none", "disabled"):
+            redacted = str(redact_secrets(raw_log))
+            tok = max(1, len(redacted) // 4)
+            return {
+                "compressed_text": redacted,
+                "raw_tokens": tok,
+                "compressed_tokens": tok,
+                "token_savings_pct": 0.0,
+                "compression_ratio": 1.0,
+                "compressor_model": "raw_passthrough",
+                "compressor_mode": "off",
+            }
+
+        if effective_mode in ("deterministic", "heuristic", "builtin"):
+            comp = Tier1LogCompressor().compress(raw_log, max_chars=max_chars)
+            text = comp.get("compressed_text", "")
+            if text.startswith("[Tier-1 Local Compressed Failure Digest]"):
+                text = text.replace(
+                    "[Tier-1 Local Compressed Failure Digest]",
+                    "[Tier-1 M4 Local Compressed Failure Digest]",
+                )
+            elif not text.startswith("[Tier-1 M4 Local Compressed Failure Digest]"):
+                text = f"[Tier-1 M4 Local Compressed Failure Digest]\n{text}"
+            res = dict(comp)
+            res["compressed_text"] = text
+            res["compressor_mode"] = "deterministic"
+            res.setdefault("compressor_model", "local_deterministic_compressor")
+            return res
 
         if effective_mode == "cloud" and hasattr(self.compressor_provider, "compress_log"):
             comp = self.compressor_provider.compress_log(
@@ -331,6 +361,11 @@ class TwoTierModelRouter:
             if "[Tier-1 M4 Compressed Failure Digest]" in text:
                 text = text.replace(
                     "[Tier-1 M4 Compressed Failure Digest]",
+                    "[Tier-1 M4 Local Compressed Failure Digest]",
+                )
+            elif "[Tier-1 Local Compressed Failure Digest]" in text:
+                text = text.replace(
+                    "[Tier-1 Local Compressed Failure Digest]",
                     "[Tier-1 M4 Local Compressed Failure Digest]",
                 )
             elif not text.startswith("[Tier-1 M4 Local Compressed Failure Digest]"):
@@ -449,7 +484,8 @@ class TwoTierModelRouter:
                 compressed_context=comp["compressed_text"],
             )
 
-        cloud_prov_id = getattr(self.cloud_provider, "provider_id", "cloud_frontier")
+        raw_pid = getattr(self.cloud_provider, "provider_id", "cloud_frontier")
+        cloud_prov_id = "google_antigravity" if raw_pid == "google_antigravity" else "cloud_frontier"
         return RouteDecision(
             tier="tier2_cloud_reasoner",
             provider=cloud_prov_id,

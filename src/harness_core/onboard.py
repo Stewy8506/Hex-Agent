@@ -215,7 +215,11 @@ def run_onboard_wizard(
     print(f"  CoW Snapshot Mode:  {profile.cow_backend}")
     print(f"  Execution Sandbox:  {profile.sandbox_backend}")
     if profile.is_apple_silicon:
-        print("  Apple Silicon MLX:  Accelerated (Metal Unified Memory available)")
+        print("  Local Acceleration: Metal (Apple Silicon)")
+    elif profile.has_cuda:
+        print("  Local Acceleration: NVIDIA CUDA (GPU compute)")
+    else:
+        print("  Local Acceleration: Host CPU (Cross-platform standard)")
     if ag_cred and (ag_cred.access_token or ag_cred.refresh_token):
         print(f"  Antigravity Quota:  Detected ({ag_cred.source}) — Ready for $0 Day-1 routing")
     else:
@@ -344,7 +348,7 @@ def run_onboard_wizard(
                 ("anthropic", _prov_label("anthropic", "Anthropic API Key (Claude 3.5 Sonnet / Opus)")),
                 ("openai", _prov_label("openai", "OpenAI API Key (GPT-4o / o1 / o3-mini)")),
                 ("gemini", _prov_label("gemini", "Google Gemini API Key (Gemini 2.5 Pro / Flash)")),
-                ("local", _prov_label("local", "Local Offline Model (Apple Silicon MLX / Ollama — Zero egress)")),
+                ("local", _prov_label("local", "Local AI / Offline Models (Ollama / Local LLM / MLX — Zero egress)")),
             ]
 
             default_prov_idx = 0
@@ -633,8 +637,31 @@ def run_onboard_wizard(
                 else:
                     print("  ℹ No local models discovered in Ollama or HuggingFace/LM-Studio cache.")
                     manual_model = input("  Enter Local Model Path or HuggingFace ID / Tag: ").strip()
-                    cloud_model_id = manual_model if manual_model else (existing_model_id or "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
+                    cloud_model_id = manual_model if manual_model else (existing_model_id or "qwen2.5-coder:7b")
                 print("  ✓ Local offline profile configured. Zero external network egress.\n")
+
+        # Step 1b: Context & Log Compressor Strategy Selection
+        existing_compressor = (existing_config.get("model") or {}).get("compressor_mode")
+        compressor_mode = existing_compressor or ("local" if cloud_provider == "local" else "deterministic")
+        if not non_interactive and not defaults_only and should_run_model:
+            comp_options: list[tuple[str, str]] = []
+            if is_already_configured and existing_compressor:
+                comp_options.append(("keep", f"Use currently configured ({existing_compressor})"))
+            comp_options.extend([
+                ("deterministic", "Deterministic (Built-in Heuristic) — Zero RAM, <1ms latency, $0 cost [Recommended]"),
+                ("cloud", f"Low-Cost Cloud Model ({cloud_provider}) — Fast API summarization"),
+                ("local", "Local AI Model — Offline summarization via local LLM / Ollama"),
+                ("off", "Disabled — Pass raw uncompressed traces"),
+            ])
+            c_idx = select_option(
+                "Select Context & Log Compression Strategy:",
+                comp_options,
+                default_index=0,
+            )
+            chosen_comp = comp_options[c_idx][0]
+            if chosen_comp != "keep":
+                compressor_mode = chosen_comp
+            print(f"  ✓ Context compressor configured: {compressor_mode}\n")
 
         # Step 2: Web Search Provider Selection
         if should_run_search:
@@ -768,7 +795,7 @@ version: "1.0"
 model:
   profile: "{model_profile}"
   cloud_provider: "{cloud_provider}"
-  compressor_mode: "local"
+  compressor_mode: "{compressor_mode}"
   cloud_model_id: "{cloud_model_id}"
   local_model_id: "{local_model_id}"
 web_search:
@@ -961,7 +988,7 @@ project:
 model:
   # Inherits the operator's global model unless explicitly overridden.
   project_override: false
-  compressor_mode: "local"
+  compressor_mode: "deterministic"
 verification:
   test_command: "{stack_info['test_cmd']}"
   timeout_seconds: 120

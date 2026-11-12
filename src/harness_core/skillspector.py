@@ -10,7 +10,7 @@ MCP definition, or Harness² candidate proposal before registration:
    symlink/path-traversal escapes, shell exfiltration, MCP tool poisoning, trigger hijacking,
    and upstream YARA agent-abuse rules).
 2. Dependency CVE Lookup (scans bundled requirements/manifests against known OSV advisories).
-3. Tier-1 Local M4 Semantic Alignment Check (verifies declared frontmatter purpose and risk_class
+3. Tier-1 Local AI Semantic Alignment Check (verifies declared frontmatter purpose and risk_class
    against actual Markdown instructions and bundled scripts).
 4. Deterministic Gate Enforcement:
    - Critical / High (score >= 60 or risk escalation) -> QUARANTINE (`status = quarantined`)
@@ -550,7 +550,7 @@ class SkillSpectorScanner:
                                     })
                                     max_score = max(max_score, 85 if vuln_info["severity"] == "critical" else 70)
 
-        # 3. Tier-1 Local M4 Semantic Alignment Analysis (declared purpose & risk vs body/scripts)
+        # 3. Tier-1 Local AI Semantic Alignment Analysis (declared purpose & risk vs body/scripts)
         semantic_passed, semantic_notes, sem_score = self._evaluate_semantic_alignment(
             name=name,
             purpose=purpose,
@@ -704,7 +704,7 @@ class SkillSpectorScanner:
 
         return (
             True,
-            f"Tier-1 M4 semantic check passed: instructions and scripts align with declared purpose ('{purpose}') and risk tier {declared_risk}.",
+            f"Tier-1 Local AI semantic check passed: instructions and scripts align with declared purpose ('{purpose}') and risk tier {declared_risk}.",
             0,
         )
 
