@@ -229,13 +229,13 @@ class HexDoctor:
                         message=f"{desc} active",
                     )
                 )
-            except ImportError:
+            except Exception as exc:
                 results.append(
                     DoctorCheckResult(
                         name=f"Dependency: {pkg}",
                         category="python",
                         status="warning",
-                        message=f"Missing package '{pkg}' ({desc})",
+                        message=f"Missing or broken package '{pkg}' ({desc}): {exc}",
                         remediation=f"Install via pip: pip install {pkg}",
                     )
                 )
@@ -257,7 +257,7 @@ class HexDoctor:
                         message=f"{desc} active",
                     )
                 )
-            except ImportError:
+            except Exception:
                 results.append(
                     DoctorCheckResult(
                         name=f"Optional: {pkg}",
