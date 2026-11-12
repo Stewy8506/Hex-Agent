@@ -399,20 +399,24 @@ class SkillSynthesizer:
         if not builtin_root.is_dir():
             builtin_root = repo_root / "skills"
         if builtin_root.is_dir():
-            for sub in sorted(builtin_root.iterdir()):
-                if sub.is_dir() and sub.name != "custom" and (sub / "SKILL.md").is_file():
-                    fm, _ = parse_skill_frontmatter((sub / "SKILL.md").read_text(encoding="utf-8", errors="replace"))
-                    name = str(fm.get("name") or sub.name)
-                    results["built_in"].append({
-                        "name": name,
-                        "purpose": str(fm.get("purpose") or fm.get("description") or ""),
-                        "description": str(fm.get("description") or ""),
-                        "risk_class": str(fm.get("risk_class") or "R1").upper(),
-                        "allowed_tools": fm.get("allowed_tools") or [],
-                        "status": "active",
-                        "status_badge": "[ACTIVE]",
-                        "disk_path": str(sub / "SKILL.md"),
-                    })
+            for skill_file in sorted(builtin_root.rglob("SKILL.md")):
+                if "custom" in skill_file.parts or ".git" in skill_file.parts:
+                    continue
+                sub = skill_file.parent
+                fm, _ = parse_skill_frontmatter(skill_file.read_text(encoding="utf-8", errors="replace"))
+                name = str(fm.get("name") or sub.name)
+                rel_path = str(sub.relative_to(builtin_root)).replace("\\", "/")
+                results["built_in"].append({
+                    "name": name,
+                    "category": rel_path.split("/")[0] if "/" in rel_path else "general",
+                    "purpose": str(fm.get("purpose") or fm.get("description") or ""),
+                    "description": str(fm.get("description") or ""),
+                    "risk_class": str(fm.get("risk_class") or "R1").upper(),
+                    "allowed_tools": fm.get("allowed_tools") or [],
+                    "status": "active",
+                    "status_badge": "[ACTIVE]",
+                    "disk_path": str(skill_file),
+                })
 
         # 2. Custom skills
         if self.custom_skills_dir.is_dir():

@@ -929,8 +929,12 @@ def render_hermes_splash(
                         db_skills_count = row[0]
         except Exception:
             pass
+    disk_skills_count = 0
+    builtin_skills_dir = Path(__file__).resolve().parent / "skills"
+    if builtin_skills_dir.is_dir():
+        disk_skills_count = len(list(builtin_skills_dir.rglob("SKILL.md")))
     builtin_skills_count = sum(len(g[1]) for g in BUILTIN_SKILL_GROUPS)
-    total_skills = max(db_skills_count, builtin_skills_count)
+    total_skills = max(db_skills_count, disk_skills_count, builtin_skills_count)
 
     right_lines: list[str] = [
         _c(f"HEX Autonomous AI Workbench  v{pkg_version}", fg=skin.heading_rgb, bold=True) + _c(f"  (upstream {git_sha})", fg=skin.muted_rgb),

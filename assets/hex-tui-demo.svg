@@ -129,7 +129,7 @@
         <text x="14" y="170" class="mono-sm" fill="#94a3b8" xml:space="preserve"><tspan fill="#38bdf8">verification</tspan>: <tspan fill="#e2e8f0">run_tests</tspan></text>
         <text x="14" y="186" class="mono-xs" fill="#64748b" xml:space="preserve">+1 more</text>
 
-        <text x="0" y="210" class="mono-sm" fill="#f59e0b" font-weight="700" xml:space="preserve">12 tools · 15 skills · /help</text>
+        <text x="0" y="210" class="mono-sm" fill="#f59e0b" font-weight="700" xml:space="preserve">12 tools · 200 skills · /help</text>
         <text x="0" y="226" class="mono-xs" fill="#64748b" xml:space="preserve">type a message   / for commands</text>
       </g>
     </g>
