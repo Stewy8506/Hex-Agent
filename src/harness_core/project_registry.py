@@ -190,12 +190,14 @@ class ProjectRegistry:
             for p in matching_name:
                 if str(Path(p.path).resolve()) == cwd_str:
                     return p
-            return matching_name[0]
+            # A display name is not an identity.  Requiring a path or stable ID
+            # prevents a task from silently being attached to the wrong project.
+            return None
 
         # 5. Case-insensitive name match
         name_lower = name_or_path.lower()
         matching_lower = [p for p in self._projects.values() if p.name.lower() == name_lower]
-        if matching_lower:
+        if len(matching_lower) == 1:
             return matching_lower[0]
 
         return None

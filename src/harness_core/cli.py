@@ -702,7 +702,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
         from .tui import HexConsole
 
         active_proj_id = (
-            active_project.name
+            active_project.id
             if (active_project and getattr(args, "project", "default") == "default")
             else getattr(args, "project", "default")
         )
@@ -779,9 +779,10 @@ def _main_impl(argv: list[str] | None = None) -> int:
         ws_root = Path(args.workspace).resolve() if getattr(args, "workspace", None) else ws_root
         if active_project:
             registry.touch_active(ws_root, increment_tasks=True)
+        task_project_id = active_project.id if active_project and args.project == "default" else args.project
         req = TaskSubmitRequest(
             goal=args.goal,
-            project_id=args.project,
+            project_id=task_project_id,
             execution_mode=args.mode,
             workspace_root=str(ws_root),
         )
@@ -877,9 +878,10 @@ def _main_impl(argv: list[str] | None = None) -> int:
     if args.cmd == "submit":
         if active_project:
             registry.touch_active(ws_root, increment_tasks=True)
+        task_project_id = active_project.id if active_project and args.project == "default" else args.project
         req = TaskSubmitRequest(
             goal=args.goal,
-            project_id=args.project,
+            project_id=task_project_id,
             execution_mode=args.mode,
             workspace_root=args.workspace or str(ws_root),
         )

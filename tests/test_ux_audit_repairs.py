@@ -4,6 +4,8 @@ import os
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +16,7 @@ from harness_core.onboard import HardwareProfile
 from harness_core.orchestrator import HarnessOrchestrator
 from harness_core.project_registry import ProjectRecord, ProjectRegistry, compute_project_id
 from harness_core.router import TwoTierModelRouter
+from harness_core.tui import HexConsole
 
 
 class TestUXAuditRepairs(unittest.TestCase):
@@ -176,6 +179,37 @@ class TestUXAuditRepairs(unittest.TestCase):
         """P2: Hardware detection does not leak sysctl errors to stderr."""
         prof = HardwareProfile.detect()
         self.assertIsNotNone(prof.machine_model)
+
+    def test_provider_alias_does_not_become_a_model_id(self):
+        """A provider command must never persist or execute its alias as a model ID."""
+        hex_dir = self.ws_dir / ".hex"
+        hex_dir.mkdir(parents=True, exist_ok=True)
+        config_path = hex_dir / "config.yaml"
+        config_path.write_text(
+            'model:\n  cloud_provider: "gemini"\n  cloud_model_id: "gemini-2.5-flash"\n',
+            encoding="utf-8",
+        )
+        orch = HarnessOrchestrator(self.data_dir, default_workspace=self.ws_dir)
+        console = HexConsole(orch, workspace_root=self.ws_dir, quiet=True)
+        with redirect_stdout(StringIO()):
+            console._cmd_model("antigravity")
+
+        self.assertEqual(orch.router.cloud_provider.provider_id, "google_antigravity")
+        self.assertNotEqual(orch.router.cloud_model_id, "antigravity")
+        self.assertNotEqual(orch.router.cloud_provider.model_id, "antigravity")
+        self.assertEqual(parse_config_yaml(config_path)["model"]["cloud_model_id"], "gemini-2.5-flash")
+
+    def test_submission_callback_exposes_task_id_before_execution(self):
+        """The TUI can cancel because it receives the task ID immediately after submission."""
+        orch = HarnessOrchestrator(self.data_dir, default_workspace=self.ws_dir)
+        observed: list[str] = []
+        task = orch.submit_and_run(
+            TaskSubmitRequest(goal="queued task", project_id="test", execution_mode="standard"),
+            auto_execute=False,
+            on_submitted=lambda submitted: observed.append(submitted["task_id"]),
+        )
+        self.assertEqual(observed, [task["task_id"]])
+        self.assertEqual(orch.ledger.get_task(observed[0])["status"], "QUEUED")
 
 
 if __name__ == "__main__":

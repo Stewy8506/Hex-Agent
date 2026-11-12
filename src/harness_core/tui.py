@@ -1382,14 +1382,29 @@ class HexConsole:
     def _cmd_model(self, arg: str = "") -> None:
         arg = arg.strip()
         if arg:
-            self.model_profile = arg
+            profile_names = {"hybrid", "local", "cloud", "offline"}
+            provider_names = {"antigravity", "google-antigravity", "agy"}
             if hasattr(self.orchestrator, "router"):
-                self.orchestrator.router.profile = arg
-                if arg.lower() in ("antigravity", "google-antigravity", "agy"):
+                if arg.lower() in provider_names:
                     if hasattr(self.orchestrator.router, "switch_cloud_provider"):
                         self.orchestrator.router.switch_cloud_provider("antigravity")
-                elif arg not in ("hybrid", "local", "cloud"):
-                    self.orchestrator.router.cloud_model_id = arg
+                    self.model_profile = "antigravity"
+                    final_id = self.orchestrator.router.cloud_model_id
+                    print(f"{ANSI_GREEN}Provider switched to: antigravity (model: {final_id}; session-only){ANSI_RESET}")
+                    return
+                if arg.lower() in profile_names:
+                    self.orchestrator.router.profile = arg.lower()
+                    self.model_profile = arg.lower()
+                    print(f"{ANSI_GREEN}Model profile updated to: {arg.lower()} (session-only){ANSI_RESET}")
+                    return
+
+                # Keep the immediately rendered state and the execution provider in
+                # sync even when an older/custom orchestrator has no durable setter.
+                self.model_profile = arg
+                self.orchestrator.router.cloud_model_id = arg
+                provider = getattr(self.orchestrator.router, "cloud_provider", None)
+                if provider is not None and hasattr(provider, "model_id"):
+                    provider.model_id = arg
 
             if hasattr(self.orchestrator, "set_active_model"):
                 try:
@@ -1959,7 +1974,7 @@ class HexConsole:
 
         new_ws = Path(rec.path).resolve()
         if hasattr(self.orchestrator, "switch_project"):
-            sw = self.orchestrator.switch_project(new_ws, rec.name)
+            sw = self.orchestrator.switch_project(new_ws, rec.id)
             self.workspace_root = Path(sw["workspace_root"])
             self.project_id = sw["project_id"]
             self.model_profile = sw.get("cloud_model_id") or self.model_profile
@@ -1969,7 +1984,7 @@ class HexConsole:
             print(f"  Model:     {sw.get('cloud_model_id')} ({sw.get('cloud_provider')})\n")
         else:
             self.workspace_root = new_ws
-            self.project_id = rec.name
+            self.project_id = rec.id
             registry.touch_active(new_ws)
             if hasattr(self.orchestrator, "graphify"):
                 self.orchestrator.graphify.workspace_root = new_ws
@@ -2196,7 +2211,11 @@ class HexConsole:
         spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
         spinner.start(f"Executing: {_truncate_visible(prompt, 44)}")
         try:
-            task = self.orchestrator.submit_and_run(req, auto_execute=True)
+            task = self.orchestrator.submit_and_run(
+                req,
+                auto_execute=True,
+                on_submitted=lambda submitted: setattr(self, "active_task_id", submitted.get("task_id")),
+            )
         except KeyboardInterrupt:
             spinner.stop()
             print()

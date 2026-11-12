@@ -390,8 +390,15 @@ class HarnessOrchestrator:
     def submit_task(self, req: TaskSubmitRequest, auto_execute: bool = False) -> dict[str, Any]:
         return self.submit_and_run(req, auto_execute=auto_execute)
 
-    def submit_and_run(self, req: TaskSubmitRequest, auto_execute: bool = True) -> dict[str, Any]:
+    def submit_and_run(
+        self,
+        req: TaskSubmitRequest,
+        auto_execute: bool = True,
+        on_submitted: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         task = self.ledger.submit_task(req)
+        if on_submitted is not None:
+            on_submitted(task)
         if task["status"] != TaskState.SUBMITTED.value:
             return task
         task_id = task["task_id"]

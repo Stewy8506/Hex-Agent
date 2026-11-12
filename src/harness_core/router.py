@@ -187,6 +187,21 @@ class TwoTierModelRouter:
                     except Exception:
                         pass
 
+        # The configuration fallback above can reintroduce an ID that belongs to
+        # another provider. Validate again before discovery/default selection.
+        if resolved_provider_type == "anthropic" and (
+            resolved_cloud_model.startswith(("gemini", "gpt", "o1", "o3", "chatgpt"))
+        ):
+            resolved_cloud_model = ""
+        elif resolved_provider_type == "openai" and (
+            resolved_cloud_model.startswith(("gemini", "claude"))
+        ):
+            resolved_cloud_model = ""
+        elif resolved_provider_type == "gemini" and (
+            resolved_cloud_model.startswith(("claude", "gpt", "o1", "o3", "chatgpt"))
+        ):
+            resolved_cloud_model = ""
+
         if not resolved_cloud_model:
             # Live discover available models from active provider
             probe_ptype = resolved_provider_type or "antigravity"

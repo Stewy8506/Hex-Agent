@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 from harness_core.cli import main
 from harness_core.onboard import init_project
 from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.project_registry import ProjectRecord, ProjectRegistry
+from harness_core.project_registry import ProjectRecord, ProjectRegistry, compute_project_id
 from harness_core.providers.cloud_provider import CloudModelProvider, CloudProviderType, ProviderUnavailableError
 from harness_core.tui import HexConsole
 
@@ -348,7 +348,7 @@ class TestTUIProjectSlashCommand(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("Switched active project to 'Beta'", out)
         self.assertEqual(self.console.workspace_root.resolve(), self.proj_b.resolve())
-        self.assertEqual(self.console.project_id, "Beta")
+        self.assertEqual(self.console.project_id, compute_project_id(self.proj_b))
 
 
 class TestGlobalHexSetupAndOnboardParity(unittest.TestCase):
