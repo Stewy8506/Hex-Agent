@@ -2710,7 +2710,6 @@ class HexConsole:
         elif mode_val == "code":
             effective_prompt = f"[MODE: CODE - DIRECT CODE SYNTHESIS & TARGETED FILE EDITS]\n{prompt}"
 
-        print(f"{ANSI_CYAN}⚡ Submitting task to HEX orchestrator ({mode_val} mode)...{ANSI_RESET}")
         req = TaskSubmitRequest(
             goal=effective_prompt,
             project_id=self.project_id,

@@ -458,7 +458,7 @@ class TestHexConsoleSlashCommands(unittest.TestCase):
         with patch("sys.stdout", out):
             self.console.handle_user_prompt("Write a test function")
         text = out.getvalue()
-        self.assertIn("Submitting task to HEX orchestrator", text)
+        self.assertNotIn("Submitting task to HEX orchestrator", text)
         self.assertIsNotNone(self.console.active_task_id)
 
 
