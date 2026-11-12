@@ -1103,19 +1103,30 @@ def render_docked_input_frame(
             mid = f"{prompt_pfx}{_c(disp_txt, fg=sk.text_rgb)}{' ' * pad_len}{_c('│', fg=sk.border_rgb)}"
 
     # 3. Bottom border with fused status & shortcut pills
-    right_plain = " enter send · /help · ctrl+c ─╯"
+    right_plain = " enter send · tab mode · /help ─╯"
     right_colored = (
-        _c(" enter send · /help · ctrl+c", fg=sk.muted_rgb)
+        _c(" enter send · tab mode · /help", fg=sk.muted_rgb)
         + _c(" ─╯", fg=sk.border_rgb)
     )
 
+    mode_norm = (mode or "agent").lower()
+    if mode_norm == "ask":
+        mode_badge = _c(mode_norm, fg=sk.accent_rgb, bold=True)
+    elif mode_norm == "code":
+        mode_badge = _c(mode_norm, fg=(190, 130, 255), bold=True)
+    else:
+        mode_badge = _c("agent", fg=sk.heading_rgb, bold=True)
+
     left_badges = [
-        _c(mode, fg=sk.accent_rgb, bold=True),
-        _c(f"{task_num} hex", fg=sk.heading_rgb),
-        _c(project_name, fg=sk.heading_rgb, bold=True),
-        _c(git_branch, fg=sk.category_rgb),
-        _c(model_id, fg=sk.category_rgb),
+        mode_badge,
     ]
+    if project_name:
+        left_badges.append(_c(project_name, fg=sk.heading_rgb))
+    if git_branch:
+        left_badges.append(_c(git_branch, fg=sk.category_rgb, bold=True))
+    if model_id:
+        left_badges.append(_c(model_id, fg=sk.category_rgb))
+
     sep = _c(" · ", fg=sk.muted_rgb)
     left_str = _c("╰─ ", fg=sk.border_rgb) + sep.join(left_badges) + " "
     left_plain_len = len(strip_ansi(left_str))
@@ -1123,15 +1134,15 @@ def render_docked_input_frame(
 
     if left_plain_len + right_plain_len > w:
         left_badges_compact = [
-            _c(mode, fg=sk.accent_rgb, bold=True),
-            _c(project_name, fg=sk.heading_rgb, bold=True),
+            mode_badge,
+            _c(git_branch or project_name, fg=sk.category_rgb, bold=True),
             _c(_truncate_visible(model_id, 18), fg=sk.category_rgb),
         ]
         left_str = _c("╰─ ", fg=sk.border_rgb) + sep.join(left_badges_compact) + " "
         left_plain_len = len(strip_ansi(left_str))
 
     if left_plain_len + right_plain_len > w:
-        left_str = _c(f"╰─ {project_name} ", fg=sk.border_rgb)
+        left_str = _c(f"╰─ {mode_norm} ", fg=sk.border_rgb)
         left_plain_len = len(strip_ansi(left_str))
         right_plain = " enter send ─╯"
         right_colored = _c(" enter send", fg=sk.muted_rgb) + _c(" ─╯", fg=sk.border_rgb)
@@ -1179,6 +1190,7 @@ class HexConsole:
         self.active_task_id: str | None = None
         self.history: list[str] = []
         self._suggestion_idx: int = 0
+        self.mode: str = "agent"  # "ask" | "agent" | "code"
         self.session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         self.session_start = time.time()
 
@@ -1332,7 +1344,7 @@ class HexConsole:
             or "gemini-3.8-flash-tiered"
         )
         task_num = len(self.history) + 1
-        mode = "ask"
+        mode = getattr(self, "mode", "agent")
         suggestion = self._get_next_suggestion()
 
         w = min(112, max(68, shutil.get_terminal_size(fallback=(100, 24)).columns))
@@ -1369,7 +1381,8 @@ class HexConsole:
             return input(prompt)
 
         slash_cmds = [
-            "/help", "/status", "/tasks", "/diff", "/sbs", "/rollback", "/fork",
+            "/help", "/mode", "/ask", "/agent", "/code",
+            "/status", "/tasks", "/diff", "/sbs", "/rollback", "/fork",
             "/skills", "/scan", "/model", "/compressor", "/budget",
             "/quota", "/antigravity", "/blast", "/proof", "/memory",
             "/remember", "/reflect", "/search", "/doctor", "/recipe",
@@ -1377,14 +1390,14 @@ class HexConsole:
             "/voice", "/banner", "/clear", "/quit", "/exit",
         ]
 
-        def _redraw(buf: list[str], cur: int) -> None:
+        def _redraw(buf: list[str], cur: int, update_bot: bool = False) -> None:
             cur_txt = "".join(buf)
-            _, n_mid, _ = render_docked_input_frame(
+            _, n_mid, n_bot = render_docked_input_frame(
                 width=w,
                 text=cur_txt,
                 cursor_pos=cur,
                 suggestion=suggestion,
-                mode=mode,
+                mode=getattr(self, "mode", "agent"),
                 task_num=task_num,
                 project_name=ws_name,
                 git_branch=git_branch,
@@ -1398,7 +1411,10 @@ class HexConsole:
             else:
                 st = max(0, cur - in_sp + 4)
                 scr_cur = prompt_offset + (cur - st)
-            sys.stdout.write(f"\r{n_mid}\r\033[{scr_cur}C")
+            if update_bot:
+                sys.stdout.write(f"\r{n_mid}\n\r{n_bot}\033[A\r\033[{scr_cur}C")
+            else:
+                sys.stdout.write(f"\r{n_mid}\r\033[{scr_cur}C")
             sys.stdout.flush()
 
         try:
@@ -1465,9 +1481,16 @@ class HexConsole:
                         if cursor < len(buffer):
                             buffer.pop(cursor)
                             _redraw(buffer, cursor)
-                elif ch == "\t":  # Tab completion
+                elif ch == "\t":  # Tab completion or empty-line mode cycling
                     txt = "".join(buffer)
-                    if txt.startswith("/"):
+                    if not txt:
+                        # Empty prompt: Tab cycles mode through ask -> agent -> code -> ask
+                        mode_order = ["ask", "agent", "code"]
+                        curr_mode = getattr(self, "mode", "agent")
+                        curr_idx = mode_order.index(curr_mode) if curr_mode in mode_order else 1
+                        self.mode = mode_order[(curr_idx + 1) % len(mode_order)]
+                        _redraw(buffer, cursor, update_bot=True)
+                    elif txt.startswith("/"):
                         matches = [c for c in slash_cmds if c.startswith(txt)]
                         if len(matches) == 1:
                             buffer = list(matches[0] + " ")
@@ -1552,6 +1575,14 @@ class HexConsole:
             return True
         elif cmd in ("/help", "/h", "/?"):
             self._cmd_help()
+        elif cmd in ("/mode", "/m"):
+            self._cmd_mode(arg)
+        elif cmd == "/ask":
+            self._cmd_mode("ask")
+        elif cmd == "/agent":
+            self._cmd_mode("agent")
+        elif cmd == "/code":
+            self._cmd_mode("code")
         elif cmd in ("/status", "/tasks"):
             self._cmd_status()
         elif cmd == "/diff":
@@ -1614,9 +1645,26 @@ class HexConsole:
             print(f"{ANSI_RED}Unknown command: {cmd}. Type /help for available commands.{ANSI_RESET}")
         return False
 
+    def _cmd_mode(self, arg: str = "") -> None:
+        target = arg.strip().lower()
+        valid = ("ask", "agent", "code")
+        if not target:
+            modes = ["ask", "agent", "code"]
+            curr = getattr(self, "mode", "agent")
+            idx = modes.index(curr) if curr in modes else 1
+            self.mode = modes[(idx + 1) % len(modes)]
+            print(f"\n{ANSI_GREEN}✓ Switched mode to: {self.mode.upper()}{ANSI_RESET} (Usage: /mode <ask|agent|code> or press Tab)\n")
+            return
+        if target not in valid:
+            print(f"\n{ANSI_YELLOW}Unknown mode '{arg}'. Available modes: ask, agent, code{ANSI_RESET}\n")
+            return
+        self.mode = target
+        print(f"\n{ANSI_GREEN}✓ Switched mode to: {self.mode.upper()}{ANSI_RESET}\n")
+
     def _cmd_help(self) -> None:
         commands = [
             ("/help", "Show table of all available slash commands"),
+            ("/mode [mode]", "Switch mode: ask (read-only), agent (autonomous), code (synthesis)"),
             ("/status", "Display active/recent tasks, proof bundle, and worker state"),
             ("/diff", "Inspect uncommitted changes in active workspace via unified diff"),
             ("/sbs <file>", "Render two-column side-by-side diff for a modified workspace file"),
@@ -2650,12 +2698,19 @@ class HexConsole:
         """Submit natural language coding prompt to orchestrator."""
         from .models import TaskSubmitRequest
 
-        print(f"{ANSI_CYAN}⚡ Submitting task to HEX orchestrator...{ANSI_RESET}")
+        mode_val = getattr(self, "mode", "agent")
+        effective_prompt = prompt
+        if mode_val == "ask":
+            effective_prompt = f"[MODE: ASK - READ-ONLY CONVERSATIONAL Q&A / DO NOT MODIFY FILES OR RUN MUTATING TOOLS]\n{prompt}"
+        elif mode_val == "code":
+            effective_prompt = f"[MODE: CODE - DIRECT CODE SYNTHESIS & TARGETED FILE EDITS]\n{prompt}"
+
+        print(f"{ANSI_CYAN}⚡ Submitting task to HEX orchestrator ({mode_val} mode)...{ANSI_RESET}")
         req = TaskSubmitRequest(
-            goal=prompt,
+            goal=effective_prompt,
             project_id=self.project_id,
             workspace_root=str(self.workspace_root) if self.workspace_root else None,
-            execution_mode="auto",
+            execution_mode="fast_path" if mode_val == "ask" else "auto",
         )
 
         spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
