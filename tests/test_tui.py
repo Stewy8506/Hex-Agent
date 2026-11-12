@@ -400,6 +400,59 @@ class TestHexConsoleSlashCommands(unittest.TestCase):
         self.assertEqual(res, 0)
         self.assertEqual(self.console.history, ["/help", "/status", "/model", "/budget", "/quit"])
 
+    def test_modes_switching_and_prompt_injection(self):
+        """Verify 3 modes (plan, agent, code), switching commands, and prompt injection."""
+        self.assertEqual(self.console.mode, "agent")
+
+        mock_task = {"task_id": "dummy_task_mode", "status": "COMPLETED"}
+
+        # Switch to plan
+        self.console.handle_slash_command("/plan")
+        self.assertEqual(self.console.mode, "plan")
+
+        # Verify plan prompt injection and fast_path
+        with patch.object(self.orch, "submit_and_run", return_value=mock_task) as mock_submit:
+            self.console.handle_user_prompt("Architecture breakdown")
+            req = mock_submit.call_args[0][0]
+            self.assertIn("[MODE: PLAN", req.goal)
+            self.assertEqual(req.execution_mode, "fast_path")
+
+        # Switch to code
+        self.console.handle_slash_command("/code")
+        self.assertEqual(self.console.mode, "code")
+
+        # Verify code prompt injection and auto execution mode
+        with patch.object(self.orch, "submit_and_run", return_value=mock_task) as mock_submit:
+            self.console.handle_user_prompt("Synthesize helper function")
+            req = mock_submit.call_args[0][0]
+            self.assertIn("[MODE: CODE", req.goal)
+            self.assertEqual(req.execution_mode, "auto")
+
+        # Switch to agent
+        self.console.handle_slash_command("/agent")
+        self.assertEqual(self.console.mode, "agent")
+
+        # Verify agent prompt has no prefix and auto execution mode
+        with patch.object(self.orch, "submit_and_run", return_value=mock_task) as mock_submit:
+            self.console.handle_user_prompt("Fix tests and repair")
+            req = mock_submit.call_args[0][0]
+            self.assertEqual(req.goal, "Fix tests and repair")
+            self.assertEqual(req.execution_mode, "auto")
+
+        # Switch via /mode command
+        self.console.handle_slash_command("/mode plan")
+        self.assertEqual(self.console.mode, "plan")
+        self.console.handle_slash_command("/mode")  # cycle
+        self.assertEqual(self.console.mode, "agent")
+        self.console.handle_slash_command("/mode")  # cycle
+        self.assertEqual(self.console.mode, "code")
+        self.console.handle_slash_command("/mode")  # cycle
+        self.assertEqual(self.console.mode, "plan")
+
+        # Backward compatibility alias
+        self.console.handle_slash_command("/ask")
+        self.assertEqual(self.console.mode, "plan")
+
     def test_handle_user_prompt_submission(self):
         out = StringIO()
         with patch("sys.stdout", out):

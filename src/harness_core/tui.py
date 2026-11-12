@@ -1064,7 +1064,7 @@ def render_docked_input_frame(
     text: str = "",
     cursor_pos: int = 0,
     suggestion: str = "Ask me anything...",
-    mode: str = "ask",
+    mode: str = "plan",
     task_num: int = 1,
     project_name: str = "Harness",
     git_branch: str = "main",
@@ -1110,10 +1110,10 @@ def render_docked_input_frame(
     )
 
     mode_norm = (mode or "agent").lower()
-    if mode_norm == "ask":
-        mode_badge = _c(mode_norm, fg=sk.accent_rgb, bold=True)
+    if mode_norm in ("plan", "ask"):
+        mode_badge = _c("plan", fg=sk.accent_rgb, bold=True)
     elif mode_norm == "code":
-        mode_badge = _c(mode_norm, fg=(190, 130, 255), bold=True)
+        mode_badge = _c("code", fg=(190, 130, 255), bold=True)
     else:
         mode_badge = _c("agent", fg=sk.heading_rgb, bold=True)
 
@@ -1190,7 +1190,7 @@ class HexConsole:
         self.active_task_id: str | None = None
         self.history: list[str] = []
         self._suggestion_idx: int = 0
-        self.mode: str = "agent"  # "ask" | "agent" | "code"
+        self.mode: str = "agent"  # "plan" | "agent" | "code"
         self.session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         self.session_start = time.time()
 
@@ -1381,7 +1381,7 @@ class HexConsole:
             return input(prompt)
 
         slash_cmds = [
-            "/help", "/mode", "/ask", "/agent", "/code",
+            "/help", "/mode", "/plan", "/agent", "/code", "/ask",
             "/status", "/tasks", "/diff", "/sbs", "/rollback", "/fork",
             "/skills", "/scan", "/model", "/compressor", "/budget",
             "/quota", "/antigravity", "/blast", "/proof", "/memory",
@@ -1484,9 +1484,11 @@ class HexConsole:
                 elif ch == "\t":  # Tab completion or empty-line mode cycling
                     txt = "".join(buffer)
                     if not txt:
-                        # Empty prompt: Tab cycles mode through ask -> agent -> code -> ask
-                        mode_order = ["ask", "agent", "code"]
+                        # Empty prompt: Tab cycles mode through plan -> agent -> code -> plan
+                        mode_order = ["plan", "agent", "code"]
                         curr_mode = getattr(self, "mode", "agent")
+                        if curr_mode == "ask":
+                            curr_mode = "plan"
                         curr_idx = mode_order.index(curr_mode) if curr_mode in mode_order else 1
                         self.mode = mode_order[(curr_idx + 1) % len(mode_order)]
                         _redraw(buffer, cursor, update_bot=True)
@@ -1577,8 +1579,8 @@ class HexConsole:
             self._cmd_help()
         elif cmd in ("/mode", "/m"):
             self._cmd_mode(arg)
-        elif cmd == "/ask":
-            self._cmd_mode("ask")
+        elif cmd in ("/plan", "/ask"):
+            self._cmd_mode("plan")
         elif cmd == "/agent":
             self._cmd_mode("agent")
         elif cmd == "/code":
@@ -1647,16 +1649,19 @@ class HexConsole:
 
     def _cmd_mode(self, arg: str = "") -> None:
         target = arg.strip().lower()
-        valid = ("ask", "agent", "code")
         if not target:
-            modes = ["ask", "agent", "code"]
+            modes = ["plan", "agent", "code"]
             curr = getattr(self, "mode", "agent")
+            if curr == "ask":
+                curr = "plan"
             idx = modes.index(curr) if curr in modes else 1
             self.mode = modes[(idx + 1) % len(modes)]
-            print(f"\n{ANSI_GREEN}✓ Switched mode to: {self.mode.upper()}{ANSI_RESET} (Usage: /mode <ask|agent|code> or press Tab)\n")
+            print(f"\n{ANSI_GREEN}✓ Switched mode to: {self.mode.upper()}{ANSI_RESET} (Usage: /mode <plan|agent|code> or press Tab)\n")
             return
-        if target not in valid:
-            print(f"\n{ANSI_YELLOW}Unknown mode '{arg}'. Available modes: ask, agent, code{ANSI_RESET}\n")
+        if target == "ask":
+            target = "plan"
+        if target not in ("plan", "agent", "code"):
+            print(f"\n{ANSI_YELLOW}Unknown mode '{arg}'. Available modes: plan, agent, code{ANSI_RESET}\n")
             return
         self.mode = target
         print(f"\n{ANSI_GREEN}✓ Switched mode to: {self.mode.upper()}{ANSI_RESET}\n")
@@ -1664,7 +1669,7 @@ class HexConsole:
     def _cmd_help(self) -> None:
         commands = [
             ("/help", "Show table of all available slash commands"),
-            ("/mode [mode]", "Switch mode: ask (read-only), agent (autonomous), code (synthesis)"),
+            ("/mode [mode]", "Switch mode: plan (architecture & read-only spec), agent (autonomous execution), code (direct synthesis)"),
             ("/status", "Display active/recent tasks, proof bundle, and worker state"),
             ("/diff", "Inspect uncommitted changes in active workspace via unified diff"),
             ("/sbs <file>", "Render two-column side-by-side diff for a modified workspace file"),
@@ -2700,8 +2705,8 @@ class HexConsole:
 
         mode_val = getattr(self, "mode", "agent")
         effective_prompt = prompt
-        if mode_val == "ask":
-            effective_prompt = f"[MODE: ASK - READ-ONLY CONVERSATIONAL Q&A / DO NOT MODIFY FILES OR RUN MUTATING TOOLS]\n{prompt}"
+        if mode_val in ("plan", "ask"):
+            effective_prompt = f"[MODE: PLAN - READ-ONLY ARCHITECTURE PLANNING & SPECIFICATION / DO NOT MODIFY FILES OR RUN MUTATING TOOLS]\n{prompt}"
         elif mode_val == "code":
             effective_prompt = f"[MODE: CODE - DIRECT CODE SYNTHESIS & TARGETED FILE EDITS]\n{prompt}"
 
@@ -2710,7 +2715,7 @@ class HexConsole:
             goal=effective_prompt,
             project_id=self.project_id,
             workspace_root=str(self.workspace_root) if self.workspace_root else None,
-            execution_mode="fast_path" if mode_val == "ask" else "auto",
+            execution_mode="fast_path" if mode_val in ("plan", "ask") else "auto",
         )
 
         spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
