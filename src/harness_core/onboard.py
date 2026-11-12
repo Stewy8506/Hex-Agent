@@ -297,58 +297,83 @@ def run_onboard_wizard(
     if not non_interactive and not defaults_only:
         # Step 1: Model Provider Selection
         if should_run_model:
-            provider_options: list[tuple[str, str]] = []
-            if is_already_configured and existing_provider and existing_model_id:
-                disp_prov = provider_name_map.get(existing_provider, existing_provider)
-                provider_options.append(("keep", f"Use currently configured ({disp_prov} • {existing_model_id})"))
+            provider_keys = ["antigravity", "anthropic", "openai", "gemini", "local"]
 
-            provider_options.extend([
-                ("antigravity", "Connect Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detect IDE session)"),
-                ("anthropic", "Enter Anthropic API Key (Claude 3.5 Sonnet / Opus)"),
-                ("openai", "Enter OpenAI API Key (GPT-4o / o1 / o3-mini)"),
-                ("gemini", "Enter Google Gemini API Key (Gemini 2.5 Pro / Flash)"),
-                ("local", "Use Local Offline Model (Apple Silicon MLX / Ollama — Zero egress)"),
-            ])
+            def _prov_label(pkey: str, label: str) -> str:
+                if existing_provider == pkey:
+                    return f"{label} [Currently Configured]"
+                return label
+
+            provider_options: list[tuple[str, str]] = [
+                ("antigravity", _prov_label("antigravity", "Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detect IDE session)")),
+                ("anthropic", _prov_label("anthropic", "Anthropic API Key (Claude 3.5 Sonnet / Opus)")),
+                ("openai", _prov_label("openai", "OpenAI API Key (GPT-4o / o1 / o3-mini)")),
+                ("gemini", _prov_label("gemini", "Google Gemini API Key (Gemini 2.5 Pro / Flash)")),
+                ("local", _prov_label("local", "Local Offline Model (Apple Silicon MLX / Ollama — Zero egress)")),
+            ]
+
+            default_prov_idx = 0
+            if existing_provider in provider_keys:
+                default_prov_idx = provider_keys.index(existing_provider)
+
             p_idx = select_option(
                 "Select Primary Model Provider & Brain:",
                 provider_options,
-                default_index=0,
+                default_index=default_prov_idx,
             )
             selected_provider_key = provider_options[p_idx][0]
 
-            if selected_provider_key == "keep":
-                cloud_provider = existing_provider
-                cloud_model_id = existing_model_id
-                model_profile = existing_profile or (
-                    "antigravity_hybrid" if profile.is_apple_silicon and cloud_provider == "antigravity" else ("hybrid" if profile.is_apple_silicon else "cloud")
-                )
-                disp_prov = provider_name_map.get(cloud_provider, cloud_provider)
-                print(f"  ✓ Using currently configured model: {disp_prov} ({cloud_model_id})\n")
-
-            elif selected_provider_key == "antigravity":
+            if selected_provider_key == "antigravity":
                 cloud_provider = "antigravity"
                 model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
                 provider_title = "Google Antigravity"
 
-                is_valid_token = _probe_antigravity_token(antigravity_token)
-                if is_valid_token:
-                    print("  ✓ Active Google Antigravity session verified ($0 Day-1 Free Tier)")
-                else:
-                    auth_options: list[tuple[str, str]] = []
-                    if antigravity_token:
-                        tok_preview = antigravity_token[:12] if len(antigravity_token) > 12 else antigravity_token
-                        auth_options.append(("keep", f"Use currently configured token ({tok_preview}...)"))
-                    auth_options.extend([
+                if antigravity_token:
+                    tok_preview = antigravity_token[:12] if len(antigravity_token) > 12 else antigravity_token
+                    auth_options: list[tuple[str, str]] = [
+                        ("keep", f"Use currently configured Antigravity session ({tok_preview}...)"),
                         ("browser", "Sign in with Google in browser (Browser PKCE OAuth 2.0)"),
                         ("manual", "Enter OAuth token manually (ya29... / 1//...)"),
-                        ("skip", "Skip for now (configure later)"),
-                    ])
+                    ]
                     a_idx = select_option("Google Antigravity Authentication:", auth_options, default_index=0)
                     chosen_auth = auth_options[a_idx][0]
 
                     if chosen_auth == "keep":
-                        print("  ✓ Keeping currently configured Antigravity token.")
+                        print("  ✓ Keeping currently configured Antigravity session.\n")
                     elif chosen_auth == "browser":
+                        pkce = ag_mgr.generate_pkce_pair()
+                        auth_url = ag_mgr.build_authorization_url(pkce["challenge"])
+                        print("\n  1. Opening Google Antigravity Sign-In in your browser...")
+                        print(f"     URL: {auth_url}\n")
+                        try:
+                            import webbrowser
+
+                            webbrowser.open(auth_url)
+                        except Exception:
+                            pass
+                        print("  2. After signing in, copy the redirected URL from your browser address bar")
+                        print("     (e.g., http://localhost:8420/?code=... or just the code parameter).")
+                        code_in = input("  Paste redirected URL or authorization code: ").strip()
+                        if code_in:
+                            try:
+                                cred = ag_mgr.exchange_code_for_tokens(code_in, pkce["verifier"])
+                                antigravity_token = cred.access_token
+                                print(f"\n  ✓ Successfully authenticated with Google Antigravity!\n")
+                            except Exception as exc:
+                                print(f"\n  ✖ OAuth exchange error: {exc}\n")
+                    elif chosen_auth == "manual":
+                        k_ag = prompt_secret("  Enter Antigravity OAuth Token: ")
+                        if k_ag:
+                            antigravity_token = k_ag
+                else:
+                    auth_options = [
+                        ("browser", "Sign in with Google in browser (Browser PKCE OAuth 2.0)"),
+                        ("manual", "Enter OAuth token manually (ya29... / 1//...)"),
+                        ("skip", "Skip for now (configure later)"),
+                    ]
+                    a_idx = select_option("Google Antigravity Authentication:", auth_options, default_index=0)
+                    chosen_auth = auth_options[a_idx][0]
+                    if chosen_auth == "browser":
                         pkce = ag_mgr.generate_pkce_pair()
                         auth_url = ag_mgr.build_authorization_url(pkce["challenge"])
                         print("\n  1. Opening Google Antigravity Sign-In in your browser...")
@@ -382,7 +407,12 @@ def run_onboard_wizard(
                     discovered_models = []
                 model_options: list[tuple[str, str]] = []
                 if existing_model_id and existing_provider == "antigravity":
-                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                    curr_label = existing_model_id
+                    for mid, mlabel in (discovered_models or []):
+                        if mid == existing_model_id:
+                            curr_label = mlabel
+                            break
+                    model_options.append(("keep", f"Use currently configured ({curr_label})"))
                 for mid, mlabel in (discovered_models or []):
                     if mid != existing_model_id:
                         model_options.append((mid, mlabel))
@@ -417,7 +447,12 @@ def run_onboard_wizard(
                     discovered_models = []
                 model_options = []
                 if existing_model_id and existing_provider == "anthropic":
-                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                    curr_label = existing_model_id
+                    for mid, mlabel in (discovered_models or []):
+                        if mid == existing_model_id:
+                            curr_label = mlabel
+                            break
+                    model_options.append(("keep", f"Use currently configured ({curr_label})"))
                 for mid, mlabel in (discovered_models or []):
                     if mid != existing_model_id:
                         model_options.append((mid, mlabel))
@@ -452,7 +487,12 @@ def run_onboard_wizard(
                     discovered_models = []
                 model_options = []
                 if existing_model_id and existing_provider == "openai":
-                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                    curr_label = existing_model_id
+                    for mid, mlabel in (discovered_models or []):
+                        if mid == existing_model_id:
+                            curr_label = mlabel
+                            break
+                    model_options.append(("keep", f"Use currently configured ({curr_label})"))
                 for mid, mlabel in (discovered_models or []):
                     if mid != existing_model_id:
                         model_options.append((mid, mlabel))
@@ -487,7 +527,12 @@ def run_onboard_wizard(
                     discovered_models = []
                 model_options = []
                 if existing_model_id and existing_provider == "gemini":
-                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                    curr_label = existing_model_id
+                    for mid, mlabel in (discovered_models or []):
+                        if mid == existing_model_id:
+                            curr_label = mlabel
+                            break
+                    model_options.append(("keep", f"Use currently configured ({curr_label})"))
                 for mid, mlabel in (discovered_models or []):
                     if mid != existing_model_id:
                         model_options.append((mid, mlabel))
@@ -515,7 +560,12 @@ def run_onboard_wizard(
 
                 model_options = []
                 if existing_model_id and existing_provider == "local":
-                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                    curr_label = existing_model_id
+                    for mid, mlabel in all_local:
+                        if mid == existing_model_id:
+                            curr_label = mlabel
+                            break
+                    model_options.append(("keep", f"Use currently configured ({curr_label})"))
                 for mid, mlabel in all_local:
                     if mid != existing_model_id:
                         model_options.append((mid, mlabel))

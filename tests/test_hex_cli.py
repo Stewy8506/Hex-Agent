@@ -150,7 +150,7 @@ class TestHexCLI(unittest.TestCase):
         self.assertIn("Unrecognized setup target: 'invalid_target_xyz'", buf.getvalue())
 
     def test_hex_setup_use_currently_configured_stage_options(self) -> None:
-        """Verify all setup stages offer 'Use currently configured' when previous config exists."""
+        """Verify auth and model selection offer 'Use currently configured' when previous config exists."""
         from unittest.mock import patch
 
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -161,21 +161,30 @@ class TestHexCLI(unittest.TestCase):
             "model:\n  cloud_provider: anthropic\n  cloud_model_id: claude-3-5-sonnet\nweb_search:\n  provider: tavily\n"
         )
 
-        with patch("harness_core.onboard.select_option") as mock_sel:
-            # Select 0 ("Use currently configured") for model, 0 for search, 0 for messaging
-            mock_sel.side_effect = [0, 0, 0]
+        with patch("harness_core.onboard.fetch_available_models") as mock_fetch, \
+             patch("harness_core.onboard.prompt_secret", return_value="") as mock_prompt, \
+             patch("harness_core.onboard.select_option") as mock_sel:
+            mock_fetch.return_value = [("claude-3-5-sonnet", "Claude 3.5 Sonnet"), ("claude-3-7-sonnet", "Claude 3.7 Sonnet")]
+            # Provider selection: index 1 (Anthropic, which is default index)
+            # Model selection: index 0 ("Use currently configured")
+            # Search: index 0 ("Use currently configured")
+            # Messaging: index 0 ("Keep currently configured")
+            mock_sel.side_effect = [1, 0, 0, 0]
             res = run_onboard_wizard(config_dir=self.config_dir, non_interactive=False)
             self.assertEqual(res["cloud_provider"], "anthropic")
             self.assertEqual(res["cloud_model_id"], "claude-3-5-sonnet")
             self.assertEqual(res["web_search_provider"], "tavily")
 
-            # Check that option 0 in model stage was 'keep'
-            model_options = mock_sel.call_args_list[0][0][1]
+            # Check that provider selection passed default_index=1 (for Anthropic)
+            self.assertEqual(mock_sel.call_args_list[0][1].get("default_index"), 1)
+
+            # Check that option 0 in model selection turn was 'keep'
+            model_options = mock_sel.call_args_list[1][0][1]
             self.assertEqual(model_options[0][0], "keep")
             self.assertIn("currently configured", model_options[0][1])
 
             # Check that option 0 in search stage was 'keep'
-            search_options = mock_sel.call_args_list[1][0][1]
+            search_options = mock_sel.call_args_list[2][0][1]
             self.assertEqual(search_options[0][0], "keep")
             self.assertIn("currently configured", search_options[0][1])
 
