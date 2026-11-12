@@ -271,6 +271,32 @@ class TestUXAuditRepairs(unittest.TestCase):
         self.assertTrue(Path(saved_path).is_file())
         self.assertIn("gemini-3-flash", Path(saved_path).read_text(encoding="utf-8"))
 
+    def test_terminal_markdown_formatting_renders_ansi_not_raw_markdown(self):
+        """Assistant deliverable formats markdown headers, bullets, code, and blocks with ANSI styling."""
+        from harness_core.tui import format_terminal_markdown
+
+        raw_md = (
+            "# Main Title\n"
+            "### Section Title\n"
+            "- First item with `inline_code.py`\n"
+            "1. **Bold Item**\n"
+            "> Quoted text\n"
+            "```python\n"
+            "print('hello')\n"
+            "```\n"
+            "---\n"
+        )
+        rendered = format_terminal_markdown(raw_md)
+        # Raw markdown markers must be transformed
+        self.assertNotIn("### Section Title", rendered)
+        self.assertNotIn("`inline_code.py`", rendered)
+        self.assertNotIn("**Bold Item**", rendered)
+        self.assertIn("inline_code.py", rendered)
+        self.assertIn("Bold Item", rendered)
+        self.assertIn("•", rendered)
+        self.assertIn("┌── [python]", rendered)
+        self.assertIn("│", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

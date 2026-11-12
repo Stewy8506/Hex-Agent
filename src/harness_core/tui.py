@@ -507,6 +507,109 @@ def render_blast_radius_tree(blast_radius_data: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
+def format_terminal_markdown(text: str, skin: TUISkin | None = None) -> str:
+    """Renders GitHub-flavored Markdown text with terminal ANSI formatting, skin colors, and code styling."""
+    if not text:
+        return ""
+
+    sk = skin or SKIN_REGISTRY.get("amber")
+    heading_c = sk.heading_rgb if sk else (250, 204, 21)
+    accent_c = sk.accent_rgb if sk else (245, 158, 11)
+    cat_c = sk.category_rgb if sk else (186, 135, 58)
+
+    lines = text.split("\n")
+    out: list[str] = []
+    in_code = False
+    code_lang = ""
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Fenced code block open/close
+        if stripped.startswith("```"):
+            if not in_code:
+                in_code = True
+                code_lang = stripped[3:].strip()
+                tag = f" [{code_lang}] " if code_lang else " "
+                bar_len = max(0, 60 - len(tag) - 3)
+                out.append(f"{ANSI_DIM}┌──{tag}{'─' * bar_len}{ANSI_RESET}")
+            else:
+                in_code = False
+                out.append(f"{ANSI_DIM}└──{'─' * 60}{ANSI_RESET}")
+            continue
+
+        if in_code:
+            out.append(f"{ANSI_DIM}│{ANSI_RESET} {ANSI_CYAN}{line}{ANSI_RESET}")
+            continue
+
+        # Horizontal rule
+        if stripped in ("---", "***", "___") or (len(stripped) >= 3 and set(stripped) in ({"-"}, {"*"}, {"_"})):
+            out.append(f"{ANSI_DIM}{'─' * 64}{ANSI_RESET}")
+            continue
+
+        # Blockquote
+        if stripped.startswith(">"):
+            quote_text = stripped[1:].strip()
+            quote_text = re.sub(r"`([^`]+)`", f"{ANSI_CYAN}\\1{ANSI_RESET}", quote_text)
+            quote_text = re.sub(r"\*\*([^*]+)\*\*", f"{ANSI_BOLD}\\1{ANSI_RESET}", quote_text)
+            out.append(f"  {colorize_rgb('│', fg=accent_c)} \033[3m{quote_text}\033[0m")
+            continue
+
+        # Headings (# H1, ## H2, ### H3, #### H4)
+        h_match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if h_match:
+            level = len(h_match.group(1))
+            title = h_match.group(2)
+            title = re.sub(r"`([^`]+)`", f"{ANSI_CYAN}\\1{ANSI_RESET}", title)
+            title = re.sub(r"\*\*([^*]+)\*\*", f"{ANSI_BOLD}\\1{ANSI_RESET}", title)
+            if level == 1:
+                hdr_icon = colorize_rgb("■", fg=heading_c, bold=True)
+                hdr_txt = colorize_rgb(title.upper(), fg=heading_c, bold=True)
+                out.append(f"\n{hdr_icon} {hdr_txt}")
+            elif level == 2:
+                hdr_icon = colorize_rgb("◆", fg=accent_c, bold=True)
+                hdr_txt = colorize_rgb(title, fg=accent_c, bold=True)
+                out.append(f"\n{hdr_icon} {hdr_txt}")
+            else:
+                hdr_icon = colorize_rgb("●", fg=cat_c, bold=True)
+                hdr_txt = f"{ANSI_BOLD}{title}{ANSI_RESET}"
+                out.append(f"\n{hdr_icon} {hdr_txt}")
+            continue
+
+        # Unordered bullet list (- item, * item, + item)
+        bullet_match = re.match(r"^(\s*)[-*+]\s+(.+)$", line)
+        if bullet_match:
+            indent = bullet_match.group(1)
+            content = bullet_match.group(2)
+            content = re.sub(r"`([^`]+)`", f"{ANSI_CYAN}\\1{ANSI_RESET}", content)
+            content = re.sub(r"\*\*([^*]+)\*\*", f"{ANSI_BOLD}\\1{ANSI_RESET}", content)
+            content = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", f"\033[3m\\1\033[0m", content)
+            bullet_sym = colorize_rgb("•", fg=accent_c)
+            out.append(f"{indent}  {bullet_sym} {content}")
+            continue
+
+        # Ordered numbered list (1. item, 2. item)
+        num_match = re.match(r"^(\s*)(\d+)\.\s+(.+)$", line)
+        if num_match:
+            indent = num_match.group(1)
+            num = num_match.group(2)
+            content = num_match.group(3)
+            content = re.sub(r"`([^`]+)`", f"{ANSI_CYAN}\\1{ANSI_RESET}", content)
+            content = re.sub(r"\*\*([^*]+)\*\*", f"{ANSI_BOLD}\\1{ANSI_RESET}", content)
+            content = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", f"\033[3m\\1\033[0m", content)
+            out.append(f"{indent}  {ANSI_BOLD}{num}.{ANSI_RESET} {content}")
+            continue
+
+        # Normal prose: inline formatting
+        l = line
+        l = re.sub(r"`([^`]+)`", f"{ANSI_CYAN}\\1{ANSI_RESET}", l)
+        l = re.sub(r"\*\*([^*]+)\*\*", f"{ANSI_BOLD}\\1{ANSI_RESET}", l)
+        l = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", f"\033[3m\\1\033[0m", l)
+        out.append(l)
+
+    return "\n".join(out)
+
+
 # ==============================================================================
 # Streaming Token Renderer & Animated Spinner
 # ==============================================================================
@@ -2351,7 +2454,7 @@ class HexConsole:
             if result_text:
                 active_model = self.model_profile or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", "model")
                 print(f"\n{ANSI_BOLD}HEX Assistant{ANSI_RESET} ({active_model}):\n")
-                print(result_text.strip())
+                print(format_terminal_markdown(result_text.strip(), skin=self.skin))
                 print()
             if hasattr(self, "voice_engine") and self.voice_engine.config.tts_enabled and not self.voice_engine.is_muted():
                 raw_summary = (

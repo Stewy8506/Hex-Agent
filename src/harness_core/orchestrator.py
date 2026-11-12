@@ -576,6 +576,7 @@ class HarnessOrchestrator:
                     risk_class="R2",
                     budget_remaining=1.0,
                     workspace_dir=source_ws,
+                    max_tokens=4096,
                 )
                 if model_resp and getattr(model_resp, "text", None):
                     synthesized_text = model_resp.text.strip()

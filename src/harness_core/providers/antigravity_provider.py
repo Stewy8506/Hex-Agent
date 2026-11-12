@@ -1161,7 +1161,7 @@ class AntigravityModelProvider(ModelProvider):
         system_prompt: str | None = None,
         cacheable_prefix: str | None = None,
         enable_prompt_caching: bool | None = None,
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
         temperature: float = 0.0,
         stop_sequences: list[str] | None = None,
         data_classification: str = "internal",
