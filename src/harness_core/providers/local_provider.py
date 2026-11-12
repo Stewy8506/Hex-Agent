@@ -119,7 +119,7 @@ class Tier1LogCompressor:
                 "token_savings_pct": 0.0,
                 "failing_files": [],
                 "failing_assertions": [],
-                "engine": "tier1_mlx" if self.is_mlx_available() else "tier1_mlx_fallback",
+                "engine": "tier1_mlx" if self.is_mlx_available() else "tier1_deterministic",
             }
 
         records, all_files, all_assertions = self._extract_failures(sanitized)
@@ -147,7 +147,7 @@ class Tier1LogCompressor:
             "token_savings_pct": savings_pct,
             "failing_files": sorted(list(set(all_files))),
             "failing_assertions": sorted(list(set(all_assertions))),
-            "engine": "tier1_mlx" if self.is_mlx_available() else "tier1_mlx_fallback",
+            "engine": "tier1_mlx" if self.is_mlx_available() else "tier1_deterministic",
         }
 
     def _extract_failures(self, sanitized: str) -> tuple[list[FailureRecord], list[str], list[str]]:

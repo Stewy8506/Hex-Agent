@@ -330,13 +330,8 @@ class TwoTierModelRouter:
         if effective_mode in ("deterministic", "heuristic", "builtin"):
             comp = Tier1LogCompressor().compress(raw_log, max_chars=max_chars)
             text = comp.get("compressed_text", "")
-            if text.startswith("[Tier-1 Local Compressed Failure Digest]"):
-                text = text.replace(
-                    "[Tier-1 Local Compressed Failure Digest]",
-                    "[Tier-1 M4 Local Compressed Failure Digest]",
-                )
-            elif not text.startswith("[Tier-1 M4 Local Compressed Failure Digest]"):
-                text = f"[Tier-1 M4 Local Compressed Failure Digest]\n{text}"
+            if not text.startswith(("[Tier-1 Local Compressed Failure Digest]", "[Tier-1 M4 Local Compressed Failure Digest]")):
+                text = f"[Tier-1 Local Compressed Failure Digest]\n{text}"
             res = dict(comp)
             res["compressed_text"] = text
             res["compressor_mode"] = "deterministic"
@@ -358,18 +353,8 @@ class TwoTierModelRouter:
         if hasattr(self.local_provider, "compress_log"):
             comp = self.local_provider.compress_log(raw_log, max_chars=max_chars)
             text = comp.get("compressed_text", "")
-            if "[Tier-1 M4 Compressed Failure Digest]" in text:
-                text = text.replace(
-                    "[Tier-1 M4 Compressed Failure Digest]",
-                    "[Tier-1 M4 Local Compressed Failure Digest]",
-                )
-            elif "[Tier-1 Local Compressed Failure Digest]" in text:
-                text = text.replace(
-                    "[Tier-1 Local Compressed Failure Digest]",
-                    "[Tier-1 M4 Local Compressed Failure Digest]",
-                )
-            elif not text.startswith("[Tier-1 M4 Local Compressed Failure Digest]"):
-                text = f"[Tier-1 M4 Local Compressed Failure Digest]\n{text}"
+            if not text.startswith(("[Tier-1 Local Compressed Failure Digest]", "[Tier-1 M4 Local Compressed Failure Digest]")):
+                text = f"[Tier-1 Local Compressed Failure Digest]\n{text}"
             res = dict(comp)
             res["compressed_text"] = text
             res.setdefault("compressor_model", self.local_model_id)

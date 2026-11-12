@@ -235,7 +235,10 @@ class TestTwoTierCompressionBenchmark(unittest.TestCase):
         comp_text = res["compressed_text"]
 
         self.assertGreaterEqual(res["token_savings_pct"], 70.0)
-        self.assertTrue(comp_text.startswith("[Tier-1 M4 Local Compressed Failure Digest]"))
+        self.assertTrue(
+            comp_text.startswith("[Tier-1 Local Compressed Failure Digest]")
+            or comp_text.startswith("[Tier-1 M4 Local Compressed Failure Digest]")
+        )
         self.assertIn("test_tax.py", comp_text)
         self.assertIn("test_tokens.py", comp_text)
         self.assertIn("test_checkout.py", comp_text)
@@ -414,7 +417,7 @@ class TestTwoTierCompressionBenchmark(unittest.TestCase):
         # 2. Sensitive log automatically overrides to 100% local compressor mode
         sens_res = router.compress_verbose_log(self.raw_trace, data_classification="sensitive")
         self.assertEqual(sens_res["compressor_mode"], "local")
-        self.assertTrue(sens_res["engine"].startswith("tier1_mlx"))
+        self.assertTrue(sens_res["engine"].startswith("tier1_"))
 
 
 if __name__ == "__main__":
