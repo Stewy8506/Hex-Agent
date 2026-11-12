@@ -75,6 +75,10 @@ def _detect_default_local_model() -> str:
     if env_local:
         return env_local
 
+    # Non-Apple Silicon host (Linux, Intel, Windows, Cloud VMs) cannot run local MLX models
+    if sys.platform != "darwin":
+        return "local_deterministic_compressor"
+
     # Check local config file if present
     for cfg_candidate in (
         Path.cwd() / ".hex" / "config.yaml",
