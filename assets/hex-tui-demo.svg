@@ -1,31 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 700" width="100%" height="100%" xml:space="preserve">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 700" width="980" height="700">
   <defs>
     <linearGradient id="termBg" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#0c1017"/>
-      <stop offset="100%" stop-color="#070a0f"/>
+      <stop offset="0%" stop-color="#0b0e14"/>
+      <stop offset="100%" stop-color="#06080c"/>
     </linearGradient>
-    <linearGradient id="bannerGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#ffd000"/>
-      <stop offset="50%" stop-color="#ff9500"/>
-      <stop offset="100%" stop-color="#ff5500"/>
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffc107"/>
+      <stop offset="50%" stop-color="#ff9100"/>
+      <stop offset="100%" stop-color="#ff5722"/>
     </linearGradient>
-    <linearGradient id="emblemGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#ffd700"/>
-      <stop offset="60%" stop-color="#ff9000"/>
-      <stop offset="100%" stop-color="#e04000"/>
+    <linearGradient id="brickFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffb300"/>
+      <stop offset="30%" stop-color="#ff8f00"/>
+      <stop offset="100%" stop-color="#e65100"/>
     </linearGradient>
-
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
     <style type="text/css">
-      <![CDATA[
-      text { white-space: pre; }
-      .mono { font-family: Menlo, Monaco, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace; font-size: 11.5px; }
-      .mono-sm { font-family: Menlo, Monaco, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace; font-size: 11px; }
-      .mono-xs { font-family: Menlo, Monaco, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace; font-size: 10px; }
-      .mono-bold { font-family: Menlo, Monaco, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace; font-size: 11.5px; font-weight: 700; }
+      text { font-family: -apple-system, BlinkMacSystemFont, 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .mono { font-size: 11.5px; }
+      .mono-sm { font-size: 11px; }
+      .mono-xs { font-size: 10px; }
+      .mono-bold { font-size: 11.5px; font-weight: 700; }
       .cursor-blink { animation: blink 1s step-end infinite; }
       @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
-      /* Multi-Stage Dynamic Animation Loop (12s total) */
       .anim-stage-idle { animation: stageIdle 12s infinite; }
       .anim-stage-typing { animation: stageTyping 12s infinite; }
       .anim-stage-exec { animation: stageExec 12s infinite; }
@@ -48,133 +49,234 @@
       @keyframes stageDone {
         0%, 79% { opacity: 0; visibility: hidden; }
         81%, 98% { opacity: 1; visibility: visible; }
-        100% { opacity: 0; visibility: hidden; }
+        99%, 100% { opacity: 0; visibility: hidden; }
       }
-      ]]>
     </style>
   </defs>
 
-  <!-- Outer macOS Terminal Window Frame -->
-  <rect width="980" height="700" rx="10" fill="url(#termBg)" stroke="#2d3548" stroke-width="1.2"/>
+  <!-- Terminal Window Background -->
+  <rect width="980" height="700" rx="10" fill="url(#termBg)"/>
+  <rect width="980" height="700" rx="10" fill="none" stroke="#1e293b" stroke-width="1.5"/>
 
-  <!-- Window Header / Titlebar -->
-  <path d="M 0 10 Q 0 0 10 0 L 970 0 Q 980 0 980 10 L 980 32 L 0 32 Z" fill="#141822"/>
-  <line x1="0" y1="32" x2="980" y2="32" stroke="#222938" stroke-width="1"/>
-  <circle cx="20" cy="16" r="5.5" fill="#ff5f56"/>
-  <circle cx="38" cy="16" r="5.5" fill="#ffbd2e"/>
-  <circle cx="56" cy="16" r="5.5" fill="#27c93f"/>
-  <text x="490" y="20" text-anchor="middle" class="mono-xs" fill="#7d8ba1" xml:space="preserve">anv.@Anuvabs-MacBook-Air: ~/Development/Harness — hex — 112×42</text>
+  <!-- Window Chrome Header -->
+  <g transform="translate(18, 16)">
+    <circle cx="0" cy="0" r="6" fill="#ef4444"/>
+    <circle cx="18" cy="0" r="6" fill="#f59e0b"/>
+    <circle cx="36" cy="0" r="6" fill="#10b981"/>
+    <text x="454" y="4" text-anchor="middle" class="mono-sm" fill="#64748b">HEX — gemini-3.8-flash-tiered — 980×700</text>
+  </g>
+  <line x1="0" y1="32" x2="980" y2="32" stroke="#1e293b" stroke-width="1"/>
 
-  <!-- Terminal Content Area -->
-  <g transform="translate(28, 48)" xml:space="preserve">
+  <!-- Content Container -->
+  <g transform="translate(30, 48)">
+    <!-- Top 'did you know' tip -->
+    <text x="20" y="16" class="mono-sm" fill="#ff9100">did you know <tspan fill="#64748b">·</tspan> <tspan fill="#94a3b8">/proof displays cryptographic Proof-Carrying Artifact bundles &amp; verification hashes.</tspan></text>
 
-    <!-- Shell Prompt & Project Selection -->
-    <text x="0" y="0" class="mono-sm" fill="#94a3b8" xml:space="preserve"><tspan fill="#38bdf8">anv.@MacBook-Air</tspan> <tspan fill="#64748b">~ %</tspan> <tspan fill="#f1f5f9">hex</tspan></text>
-    <text x="0" y="18" class="mono-sm" fill="#e2e8f0" xml:space="preserve"><tspan fill="#ffd000">◈</tspan> What project do you want to work on today?</text>
-    <text x="12" y="34" class="mono-sm" fill="#f8fafc" xml:space="preserve"><tspan fill="#ffd000">[•]</tspan> <tspan fill="#f8fafc" font-weight="700">Harness</tspan> <tspan fill="#64748b">(python • /Users/anv./Development/Harness)</tspan></text>
-    <text x="12" y="49" class="mono-sm" fill="#64748b" xml:space="preserve">[ ] [+] Register an existing directory as project</text>
-    <text x="12" y="64" class="mono-sm" fill="#64748b" xml:space="preserve">[ ] [★] Initialize current directory (anv.) as project</text>
+    <!-- Stylized Circuit-Brick HEX AGENT Banner -->
+    <g id="hexAgentBanner" transform="translate(210, 36)">
+      <!-- Circuit background connector lines -->
+      <g stroke="#d97706" stroke-width="1.5" opacity="0.85" fill="none">
+        <!-- H -->
+        <path d="M14,14 H28 M14,36 H28 M42,26 H58"/>
+        <!-- E -->
+        <path d="M84,10 H96 M84,26 H92 M84,42 H96 M96,26 H112"/>
+        <!-- X -->
+        <path d="M124,10 L140,26 L156,42 M156,10 L140,26 L124,42 M156,26 H186"/>
+        <!-- A -->
+        <path d="M206,12 H222 M200,32 H228 M228,26 H244"/>
+        <!-- G -->
+        <path d="M260,10 H284 M260,42 H284 M284,30 H272 M284,26 H300"/>
+        <!-- E -->
+        <path d="M316,10 H336 M316,26 H330 M316,42 H336 M336,26 H352"/>
+        <!-- N -->
+        <path d="M368,14 L396,38 M396,26 H412"/>
+        <!-- T -->
+        <path d="M412,10 H452 M432,16 V48"/>
+      </g>
 
-    <!-- Did You Know Tip Header with Vertical Padding -->
-    <text x="16" y="90" class="mono-xs" fill="#94a3b8" xml:space="preserve"><tspan fill="#f59e0b" font-weight="700">did you know</tspan> · <tspan fill="#71717a">/memory recalls cross-session learnings, preferences, and architecture facts.</tspan></text>
+      <!-- Segmented glowing amber blocks -->
+      <!-- H -->
+      <rect x="0" y="2" width="15" height="20" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="0" y="28" width="15" height="20" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="13" y="19" width="16" height="12" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="27" y="2" width="15" height="20" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="27" y="28" width="15" height="20" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
 
-    <!-- Centered Retro-Block Title Banner (HEX-AGENT) -->
-    <g transform="translate(195, 114)" fill="url(#bannerGrad)" xml:space="preserve">
-      <text x="0" y="0" class="mono-bold" xml:space="preserve">██╗  ██╗███████╗██╗  ██╗          █████╗  ██████╗ ███████╗███╗   ██╗████████╗</text>
-      <text x="0" y="14" class="mono-bold" xml:space="preserve">██║  ██║██╔════╝╚██╗██╔╝         ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝</text>
-      <text x="0" y="28" class="mono-bold" xml:space="preserve">███████║█████╗   ╚███╔╝  █████╗  ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   </text>
-      <text x="0" y="42" class="mono-bold" xml:space="preserve">██╔══██║██╔══╝   ██╔██╗  ╚════╝  ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   </text>
-      <text x="0" y="56" class="mono-bold" xml:space="preserve">██║  ██║███████╗██╔╝ ██╗         ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   </text>
-      <text x="0" y="70" class="mono-bold" xml:space="preserve">╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝         ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   </text>
-      <!-- Subtitle Centered Under Banner -->
-      <text x="266" y="96" text-anchor="middle" class="mono-sm" fill="#f59e0b" font-weight="700" xml:space="preserve">anv.dev</text>
+      <!-- E -->
+      <rect x="56" y="2" width="15" height="46" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="71" y="2" width="25" height="12" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="71" y="19" width="20" height="12" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="71" y="36" width="25" height="12" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+
+      <!-- X -->
+      <rect x="110" y="2" width="15" height="15" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="142" y="2" width="15" height="15" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="123" y="18" width="21" height="14" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="110" y="33" width="15" height="15" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="142" y="33" width="15" height="15" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+
+      <!-- A -->
+      <rect x="184" y="16" width="14" height="32" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="214" y="16" width="14" height="32" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="194" y="2" width="24" height="14" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="197" y="23" width="18" height="11" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+
+      <!-- G -->
+      <rect x="242" y="2" width="14" height="46" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="255" y="2" width="28" height="12" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="255" y="36" width="28" height="12" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="271" y="22" width="14" height="20" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="263" y="22" width="12" height="10" rx="1" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+
+      <!-- E -->
+      <rect x="298" y="2" width="14" height="46" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="311" y="2" width="24" height="12" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="311" y="19" width="19" height="12" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="311" y="36" width="24" height="12" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+
+      <!-- N -->
+      <rect x="349" y="2" width="14" height="46" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="380" y="2" width="14" height="46" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="362" y="14" width="10" height="12" rx="1" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="371" y="25" width="10" height="12" rx="1" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+
+      <!-- T -->
+      <rect x="408" y="2" width="46" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+      <rect x="424" y="14" width="14" height="34" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
     </g>
 
-    <!-- Unboxed Hermes-Grade Two-Column Splash Layout -->
-    <g transform="translate(36, 232)" xml:space="preserve">
+    <!-- anv.dev centered branding -->
+    <text x="445" y="106" text-anchor="middle" class="mono-bold" fill="#ff9100" letter-spacing="1.5">anv.dev</text>
 
-      <!-- Left Column: Geometric 3D Isometric Hex-Core Emblem -->
-      <g transform="translate(0, 0)" fill="url(#emblemGrad)" xml:space="preserve">
-        <text x="0" y="0" class="mono-bold" xml:space="preserve">            ▄▄▀▀▀▀▀▀▄▄            </text>
-        <text x="0" y="14" class="mono-bold" xml:space="preserve">         ▄▀▀  ▄▄▄▄▄▄  ▀▀▄         </text>
-        <text x="0" y="28" class="mono-bold" xml:space="preserve">      ▄▀▀  ▄▀▀      ▀▀▄  ▀▀▄      </text>
-        <text x="0" y="42" class="mono-bold" xml:space="preserve">    ▄▀   ▄▀    ▄▄▄▄    ▀▄   ▀▄    </text>
-        <text x="0" y="56" class="mono-bold" xml:space="preserve">   ▐▌   ▐▌   ▄▀    ▀▄   ▐▌   ▐▌   </text>
-        <text x="0" y="70" class="mono-bold" xml:space="preserve">   ▐▌   ▐▌  ▐▌  ██  ▐▌  ▐▌   ▐▌   </text>
-        <text x="0" y="84" class="mono-bold" xml:space="preserve">   ▐▌   ▐▌  ▐▌ ████ ▐▌  ▐▌   ▐▌   </text>
-        <text x="0" y="98" class="mono-bold" xml:space="preserve">   ▐▌   ▐▌   ▀▄ ▀▀ ▄▀   ▐▌   ▐▌   </text>
-        <text x="0" y="112" class="mono-bold" xml:space="preserve">    ▀▄   ▀▄    ▀▀▀▀    ▄▀   ▄▀    </text>
-        <text x="0" y="126" class="mono-bold" xml:space="preserve">      ▀▄▄  ▀▄▄      ▄▄▀  ▄▄▀      </text>
-        <text x="0" y="140" class="mono-bold" xml:space="preserve">        ▐▌ ▀▀▄▄▀▀▀▀▄▄▀▀ ▐▌        </text>
-        <text x="0" y="154" class="mono-bold" xml:space="preserve">        ▐▌     ▀▀▀▀     ▐▌        </text>
-        <text x="0" y="168" class="mono-bold" xml:space="preserve">         ▀▄▄          ▄▄▀         </text>
-        <text x="0" y="182" class="mono-bold" xml:space="preserve">           ▀▀▄▄    ▄▄▀▀           </text>
-        <text x="0" y="196" class="mono-bold" xml:space="preserve">              ▀▀▀▀▀▀              </text>
-        <text x="0" y="210" class="mono-bold" xml:space="preserve">         ───═══╬═══───            </text>
-      </g>
+    <!-- Two-Column Workbench Layout -->
+    <g transform="translate(55, 126)">
+      <!-- Left Column: The Stylized Glowing Orange Circuit-Brick Ear/Profile Emblem -->
+      <g id="circuitEarEmblem" transform="translate(0, 0)">
+        <!-- Connecting Circuit Traces -->
+        <g stroke="#d97706" stroke-width="1.2" fill="none" opacity="0.75">
+          <path d="M24,20 H86 M14,48 H58 M14,76 H70 M14,104 H90 M14,132 H76 M14,160 H66 M14,188 H84 M24,216 H98"/>
+          <path d="M58,48 V104 M70,76 V160 M90,104 V132 M90,104 H134 M116,92 H142 M116,116 H142"/>
+        </g>
 
-      <!-- Right Column: Clean Dynamic Typography (Generously Spaced) -->
-      <g transform="translate(340, 2)" xml:space="preserve">
-        <text x="0" y="0" class="mono-bold" fill="#f8fafc" xml:space="preserve">HEX Autonomous AI Workbench  v0.1.0  <tspan fill="#64748b" font-weight="400">(upstream 864ebce)</tspan></text>
-        <text x="0" y="16" class="mono-bold" fill="#ffd000" xml:space="preserve">gemini-3.8-flash-tiered <tspan fill="#64748b" font-weight="400">·</tspan> <tspan fill="#38bdf8" font-weight="400">Google Antigravity</tspan></text>
-        <text x="0" y="32" class="mono-sm" fill="#94a3b8" xml:space="preserve">~/Development/Harness</text>
-        <text x="0" y="48" class="mono-sm" fill="#64748b" xml:space="preserve">Session: 5f64fe</text>
+        <!-- Segmented Orange Bricks Forming the Ear/Profile -->
+        <!-- Top Arch -->
+        <rect x="36" y="8" width="38" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="78" y="12" width="24" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="18" y="18" width="16" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="106" y="22" width="16" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
 
-        <text x="0" y="74" class="mono-bold" fill="#fbbf24" xml:space="preserve">tools</text>
-        <text x="14" y="90" class="mono-sm" fill="#94a3b8" xml:space="preserve"><tspan fill="#38bdf8">git_ops</tspan>: <tspan fill="#e2e8f0">git_push_remote</tspan></text>
-        <text x="14" y="106" class="mono-sm" fill="#94a3b8" xml:space="preserve"><tspan fill="#38bdf8">file</tspan>: <tspan fill="#e2e8f0">list_files, read_file, write_file</tspan></text>
-        <text x="14" y="122" class="mono-sm" fill="#94a3b8" xml:space="preserve"><tspan fill="#38bdf8">lsp_compiler</tspan>: <tspan fill="#e2e8f0">lsp_definition, lsp_diagnostics, lsp_hover, lsp_references</tspan></text>
-        <text x="14" y="138" class="mono-sm" fill="#94a3b8" xml:space="preserve"><tspan fill="#38bdf8">policy_guard</tspan>: <tspan fill="#e2e8f0">modify_system_policy</tspan></text>
-        <text x="14" y="154" class="mono-sm" fill="#94a3b8" xml:space="preserve"><tspan fill="#38bdf8">ast_graph</tspan>: <tspan fill="#e2e8f0">query_graphify</tspan></text>
-        <text x="14" y="170" class="mono-sm" fill="#94a3b8" xml:space="preserve"><tspan fill="#38bdf8">verification</tspan>: <tspan fill="#e2e8f0">run_tests</tspan></text>
-        <text x="14" y="186" class="mono-xs" fill="#64748b" xml:space="preserve">+1 more</text>
+        <!-- Upper Rim & Contour -->
+        <rect x="10" y="32" width="14" height="18" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="32" y="30" width="32" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="70" y="32" width="32" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="116" y="38" width="14" height="16" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
 
-        <text x="0" y="210" class="mono-sm" fill="#f59e0b" font-weight="700" xml:space="preserve">12 tools · 200 skills · /help</text>
-        <text x="0" y="226" class="mono-xs" fill="#64748b" xml:space="preserve">type a message   / for commands</text>
-      </g>
-    </g>
+        <rect x="10" y="54" width="14" height="20" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="34" y="58" width="16" height="24" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="124" y="58" width="14" height="20" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
 
-    <!-- Bottom Docked Area: Animated Interaction Flow (Plan -> Agent -> Exec -> Done) -->
-    <g transform="translate(0, 492)" xml:space="preserve">
+        <!-- Middle Core & Concha Swirl -->
+        <rect x="10" y="78" width="14" height="22" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="34" y="86" width="16" height="24" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="58" y="72" width="28" height="13" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="64" y="90" width="16" height="22" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="86" y="90" width="34" height="18" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="124" y="82" width="14" height="22" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
 
-      <!-- State 1: Idle Ghost Suggestion in 'plan' mode (0s - 3s) -->
-      <g class="anim-stage-idle" xml:space="preserve">
-        <text x="0" y="0" class="mono" fill="#d97706" xml:space="preserve">╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
-        <text x="0" y="17" class="mono" fill="#d97706" xml:space="preserve">│ <tspan fill="#ffd000" font-weight="700">❯</tspan> <tspan fill="#64748b">Ask me anything...</tspan><tspan class="cursor-blink" fill="#ffd000">█</tspan></text>
-        <text x="920" y="17" class="mono" fill="#d97706" xml:space="preserve">│</text>
-        <text x="0" y="34" class="mono" fill="#d97706" xml:space="preserve">╰─ <tspan fill="#ffd000" font-weight="700">plan</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#94a3b8">Harness</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#38bdf8">main</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#e2e8f0">gemini-3.8-flash-tiered</tspan> ────────────────────────────── <tspan fill="#64748b">enter send · tab mode · /help</tspan> ─╯</text>
-      </g>
+        <!-- Floating Data Packets (Dispersing Rightward) -->
+        <rect x="144" y="92" width="10" height="10" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="158" y="106" width="10" height="10" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="144" y="120" width="10" height="10" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="158" y="120" width="10" height="10" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="172" y="120" width="10" height="10" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="144" y="146" width="10" height="10" rx="1.5" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
 
-      <!-- State 2: Tab pressed -> 'agent' mode & typing prompt (3s - 5.5s) -->
-      <g class="anim-stage-typing" xml:space="preserve">
-        <text x="0" y="0" class="mono" fill="#d97706" xml:space="preserve">╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
-        <text x="0" y="17" class="mono" fill="#d97706" xml:space="preserve">│ <tspan fill="#ffd000" font-weight="700">❯</tspan> <tspan fill="#f8fafc">Refactor router to support cloud log compression &amp; run tests</tspan><tspan class="cursor-blink" fill="#ffd000">█</tspan></text>
-        <text x="920" y="17" class="mono" fill="#d97706" xml:space="preserve">│</text>
-        <text x="0" y="34" class="mono" fill="#d97706" xml:space="preserve">╰─ <tspan fill="#38bdf8" font-weight="700">agent</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#94a3b8">Harness</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#38bdf8">main</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#e2e8f0">gemini-3.8-flash-tiered</tspan> ───────────────────────────── <tspan fill="#64748b">enter send · tab mode · /help</tspan> ─╯</text>
-      </g>
+        <!-- Lower Arch & Lobe -->
+        <rect x="10" y="104" width="14" height="22" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="34" y="114" width="16" height="22" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="64" y="116" width="16" height="18" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="86" y="112" width="28" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="124" y="108" width="14" height="22" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
 
-      <!-- State 3: Execution / Autonomous Repair Stream (5.5s - 9.5s) -->
-      <g class="anim-stage-exec" transform="translate(12, 0)" xml:space="preserve">
-        <text x="0" y="0" class="mono-sm" fill="#ffd000" xml:space="preserve">⠋ <tspan fill="#f8fafc" font-weight="700">Thinking...</tspan> <tspan fill="#64748b">(0.8s)</tspan></text>
-        <text x="0" y="16" class="mono-xs" fill="#64748b" xml:space="preserve">┊ <tspan fill="#00f5d4">⚡</tspan> <tspan fill="#38bdf8">cow_snapshot</tspan>      cloned APFS worktree snap_0194f2 (0.8ms)</text>
-        <text x="0" y="30" class="mono-xs" fill="#64748b" xml:space="preserve">┊ <tspan fill="#a855f7">🕸️</tspan> <tspan fill="#e2e8f0">query_graphify</tspan>    router.py → 3 callers affected (orchestrator.py, cli.py, test_router.py)</text>
-        <text x="0" y="44" class="mono-xs" fill="#64748b" xml:space="preserve">┊ <tspan fill="#10b981">✍️</tspan> <tspan fill="#e2e8f0">write_file</tspan>        applied AST-verified patch (+22 / -4 lines)</text>
-        <text x="0" y="58" class="mono-xs" fill="#64748b" xml:space="preserve">┊ <tspan fill="#10b981">🧪</tspan> <tspan fill="#e2e8f0">run_tests</tspan>         pytest tests/test_tui.py (34/34 passed in 0.18s)</text>
-      </g>
+        <rect x="10" y="130" width="14" height="22" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="34" y="140" width="16" height="20" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="56" y="138" width="36" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="104" y="136" width="24" height="14" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
 
-      <!-- State 4: Task Completed & Ready (9.5s - 12s) -->
-      <g class="anim-stage-done" transform="translate(12, 0)" xml:space="preserve">
-        <text x="0" y="0" class="mono-bold" fill="#10b981" xml:space="preserve">✔ Task #1 completed successfully!</text>
-        <text x="0" y="18" class="mono-xs" fill="#64748b" xml:space="preserve">  Proof bundle verified · 0 regressions · Working branch clean</text>
-        <g transform="translate(-12, 30)" xml:space="preserve">
-          <text x="0" y="0" class="mono" fill="#d97706" xml:space="preserve">╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮</text>
-          <text x="0" y="17" class="mono" fill="#d97706" xml:space="preserve">│ <tspan fill="#ffd000" font-weight="700">❯</tspan> <tspan fill="#64748b">Ask me anything...</tspan><tspan class="cursor-blink" fill="#ffd000">█</tspan></text>
-          <text x="920" y="17" class="mono" fill="#d97706" xml:space="preserve">│</text>
-          <text x="0" y="34" class="mono" fill="#d97706" xml:space="preserve">╰─ <tspan fill="#38bdf8" font-weight="700">agent</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#94a3b8">Harness</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#38bdf8">main</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#e2e8f0">gemini-3.8-flash-tiered</tspan> ───────────────────────────── <tspan fill="#64748b">enter send · tab mode · /help</tspan> ─╯</text>
+        <!-- Tapering Base -->
+        <rect x="10" y="156" width="14" height="22" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="28" y="164" width="24" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="58" y="158" width="32" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+
+        <rect x="10" y="182" width="14" height="18" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="28" y="182" width="36" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+        <rect x="10" y="204" width="44" height="12" rx="2" fill="url(#brickFill)" stroke="#ffd54f" stroke-width="0.8" filter="url(#glow)"/>
+
+        <!-- Reticle Crosshair Base -->
+        <g transform="translate(10, 228)">
+          <line x1="0" y1="6" x2="100" y2="6" stroke="#d97706" stroke-width="1.5"/>
+          <line x1="50" y1="0" x2="50" y2="12" stroke="#ffd54f" stroke-width="2" filter="url(#glow)"/>
+          <line x1="44" y1="6" x2="56" y2="6" stroke="#ffd54f" stroke-width="2" filter="url(#glow)"/>
         </g>
       </g>
 
+      <!-- Right Column: Metadata, Active Tools & Skills -->
+      <g transform="translate(280, 0)">
+        <text x="0" y="14" class="mono-bold" fill="#f8fafc">HEX Autonomous AI Workbench v0.1.0 <tspan fill="#64748b">(upstream 145d6bf)</tspan></text>
+        <text x="0" y="32" class="mono-bold" fill="#ffd000">gemini-3.8-flash-tiered <tspan fill="#64748b">·</tspan> <tspan fill="#38bdf8">Google Antigravity</tspan></text>
+        <text x="0" y="50" class="mono" fill="#94a3b8">~/Development/Harness</text>
+        <text x="0" y="68" class="mono" fill="#64748b">Session: 5f64fe</text>
+
+        <!-- Tools List -->
+        <text x="0" y="102" class="mono-bold" fill="#ff9100">tools</text>
+        <text x="14" y="120" class="mono" fill="#38bdf8">file: <tspan fill="#cbd5e1">list_files, read_file, write_file</tspan></text>
+        <text x="14" y="136" class="mono" fill="#38bdf8">lsp: <tspan fill="#cbd5e1">lsp_definition, lsp_diagnostics, lsp_hover</tspan></text>
+        <text x="14" y="152" class="mono" fill="#38bdf8">search: <tspan fill="#cbd5e1">web_search</tspan></text>
+        <text x="14" y="168" class="mono" fill="#38bdf8">ast: <tspan fill="#cbd5e1">query_graphify</tspan></text>
+        <text x="14" y="184" class="mono" fill="#38bdf8">verification: <tspan fill="#cbd5e1">run_tests</tspan></text>
+        <text x="14" y="200" class="mono" fill="#64748b">+6 more</text>
+
+        <!-- Dynamic Live Stats -->
+        <text x="0" y="226" class="mono-bold" fill="#ff9100">12 tools <tspan fill="#64748b">·</tspan> 85 skills <tspan fill="#64748b">·</tspan> /help</text>
+        <text x="0" y="244" class="mono-sm" fill="#64748b">type a message   / for commands</text>
+      </g>
     </g>
 
+    <!-- Bottom Docked Interactive Input Frame & Multi-Stage Demo Stream -->
+    <g transform="translate(0, 396)">
+      <!-- State 1: Idle Prompt (0s - 3s) -->
+      <g class="anim-stage-idle">
+        <rect x="0" y="0" width="920" height="52" rx="6" fill="#0d1117" stroke="#d97706" stroke-width="1.2"/>
+        <text x="16" y="24" class="mono" fill="#d97706"><tspan fill="#ffd000" font-weight="700">❯</tspan> <tspan fill="#64748b">Ask me anything...</tspan><tspan class="cursor-blink" fill="#ffd000">█</tspan></text>
+        <text x="16" y="42" class="mono-xs" fill="#38bdf8" font-weight="700">agent <tspan fill="#64748b">·</tspan> <tspan fill="#94a3b8">Harness</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#38bdf8">main</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#e2e8f0">gemini-3.8-flash-tiered</tspan> <tspan fill="#64748b">────────────────────────── enter send · tab mode · /help</tspan></text>
+      </g>
+
+      <!-- State 2: User Input Typing (3s - 5.5s) -->
+      <g class="anim-stage-typing">
+        <rect x="0" y="0" width="920" height="52" rx="6" fill="#0d1117" stroke="#ff9100" stroke-width="1.4" filter="url(#glow)"/>
+        <text x="16" y="24" class="mono" fill="#f8fafc"><tspan fill="#ffd000" font-weight="700">❯</tspan> Refactor router to support cloud log compression &amp; run tests<tspan class="cursor-blink" fill="#ffd000">█</tspan></text>
+        <text x="16" y="42" class="mono-xs" fill="#38bdf8" font-weight="700">agent <tspan fill="#64748b">·</tspan> <tspan fill="#94a3b8">Harness</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#38bdf8">main</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#e2e8f0">gemini-3.8-flash-tiered</tspan> <tspan fill="#64748b">────────────────────────── enter send · tab mode · /help</tspan></text>
+      </g>
+
+      <!-- State 3: Execution & Repair Stream (5.5s - 9.5s) -->
+      <g class="anim-stage-exec" transform="translate(12, 4)">
+        <text x="0" y="0" class="mono-sm" fill="#ffd000">⠋ <tspan fill="#f8fafc" font-weight="700">Thinking...</tspan> <tspan fill="#64748b">(0.8s)</tspan></text>
+        <text x="0" y="18" class="mono-xs" fill="#64748b">┊ <tspan fill="#00f5d4">⚡</tspan> <tspan fill="#38bdf8">cow_snapshot</tspan>      cloned APFS worktree snap_0194f2 (0.8ms)</text>
+        <text x="0" y="34" class="mono-xs" fill="#64748b">┊ <tspan fill="#a855f7">🕸️</tspan> <tspan fill="#e2e8f0">query_graphify</tspan>    router.py → 3 callers affected (orchestrator.py, cli.py, test_router.py)</text>
+        <text x="0" y="50" class="mono-xs" fill="#64748b">┊ <tspan fill="#10b981">✍️</tspan> <tspan fill="#e2e8f0">write_file</tspan>        applied AST-verified patch (+22 / -4 lines)</text>
+        <text x="0" y="66" class="mono-xs" fill="#64748b">┊ <tspan fill="#10b981">🧪</tspan> <tspan fill="#e2e8f0">run_tests</tspan>         pytest tests/test_tui.py (34/34 passed in 0.18s)</text>
+      </g>
+
+      <!-- State 4: Task Completed (9.5s - 12s) -->
+      <g class="anim-stage-done" transform="translate(12, 4)">
+        <text x="0" y="0" class="mono-bold" fill="#10b981">✔ Task #1 completed successfully!</text>
+        <text x="0" y="18" class="mono-xs" fill="#64748b">  Proof bundle verified · 0 regressions · Working branch clean</text>
+        <g transform="translate(-12, 28)">
+          <rect x="0" y="0" width="920" height="52" rx="6" fill="#0d1117" stroke="#d97706" stroke-width="1.2"/>
+          <text x="16" y="24" class="mono" fill="#d97706"><tspan fill="#ffd000" font-weight="700">❯</tspan> <tspan fill="#64748b">Ask me anything...</tspan><tspan class="cursor-blink" fill="#ffd000">█</tspan></text>
+          <text x="16" y="42" class="mono-xs" fill="#38bdf8" font-weight="700">agent <tspan fill="#64748b">·</tspan> <tspan fill="#94a3b8">Harness</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#38bdf8">main</tspan> <tspan fill="#64748b">·</tspan> <tspan fill="#e2e8f0">gemini-3.8-flash-tiered</tspan> <tspan fill="#64748b">────────────────────────── enter send · tab mode · /help</tspan></text>
+        </g>
+      </g>
+    </g>
   </g>
 </svg>

@@ -1,6 +1,6 @@
 # Phase 11 Plan 01 Summary: Native Cron Scheduler, OS Daemon Installer & CLI Integration
 
-**Phase:** 11 (Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills)  
+**Phase:** 11 (Autonomous Background Automations & Autonomous Self-Synthesizing Skills)  
 **Plan:** 11-01  
 **Status:** Completed  
 **Tests:** 25/25 plan tests passing; 330/330 full regression tests passing  
@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Plan 11-01 delivers the continuous background scheduling and OS residency foundation of Pillar 5 (Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills). HEX can now parse standard 5-field cron expressions in pure Python without external dependencies, persist scheduled jobs atomically in `schedules.json`, execute due jobs via `HarnessOrchestrator`, dispatch failure alerts via `WebhookNotifier` (Telegram and Discord), install OS daemon services for both macOS `launchd` (LaunchAgent `.plist`) and Linux `systemd` (`.service`), and control automations directly through the `hex schedule` and `hex daemon` CLI subcommands.
+Plan 11-01 delivers the continuous background scheduling and OS residency foundation of Pillar 5 (Autonomous Background Automations & Autonomous Self-Synthesizing Skills). HEX can now parse standard 5-field cron expressions in pure Python without external dependencies, persist scheduled jobs atomically in `schedules.json`, execute due jobs via `HarnessOrchestrator`, dispatch failure alerts via `WebhookNotifier` (Telegram and Discord), install OS daemon services for both macOS `launchd` (LaunchAgent `.plist`) and Linux `systemd` (`.service`), and control automations directly through the `hex schedule` and `hex daemon` CLI subcommands.
 
 ---
 

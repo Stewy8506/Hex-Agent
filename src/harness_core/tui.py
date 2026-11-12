@@ -2,7 +2,7 @@
 
 Provides:
 - Rich / 24-bit TrueColor ANSI terminal compatibility with zero-dependency ANSI fallbacks.
-- Hermes/OpenCode-grade Retro-Block Gradient Banner + Framed Two-Column Capability Splash Card
+- HEX/OpenCode-grade Retro-Block Gradient Banner + Framed Two-Column Capability Splash Card
   (Braille Caduceus/Hex emblem + model/workspace/session info on left; categorized Available Tools
   & Available Skills with NVIDIA SkillSpector badges on right).
 - Data-Driven Skin / Theme Engine (`SKIN_REGISTRY`: `amber`, `cyberpunk`, `matrix`, `nord`, `mono`).
@@ -155,7 +155,7 @@ class TUISkin:
 SKIN_REGISTRY: dict[str, TUISkin] = {
     "amber": TUISkin(
         name="amber",
-        description="Hermes-style warm gold, amber, and burnished bronze gradient",
+        description="HEX-style warm gold, amber, and burnished bronze gradient",
         banner_gradient=(
             (255, 215, 0),    # Bright gold
             (245, 185, 15),   # Warm yellow-gold
@@ -279,7 +279,7 @@ SKIN_REGISTRY: dict[str, TUISkin] = {
 # Retro-Block Title Banner & Braille Caduceus/Hex Emblem
 # ==============================================================================
 
-HERMES_STYLE_BANNER_FULL: tuple[str, ...] = (
+HEX_BANNER_FULL: tuple[str, ...] = (
     "██╗  ██╗███████╗██╗  ██╗          █████╗  ██████╗ ███████╗███╗   ██╗████████╗",
     "██║  ██║██╔════╝╚██╗██╔╝         ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝",
     "███████║█████╗   ╚███╔╝  █████╗  ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ",
@@ -288,7 +288,7 @@ HERMES_STYLE_BANNER_FULL: tuple[str, ...] = (
     "╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝         ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ",
 )
 
-HERMES_STYLE_BANNER_COMPACT: tuple[str, ...] = HERMES_STYLE_BANNER_FULL
+HEX_BANNER_COMPACT: tuple[str, ...] = HEX_BANNER_FULL
 
 # Geometric 3D Isometric Hex-Core & Circuit Emblem (purpose-built for HEX)
 EMBLEM_ART: tuple[str, ...] = (
@@ -737,7 +737,7 @@ class ActivitySpinner:
 
 
 # ==============================================================================
-# Session Banners (Compact 78-col + Hermes-Style Full Two-Column Splash)
+# Session Banners (Compact 78-col + HEX-Style Full Two-Column Splash)
 # ==============================================================================
 
 
@@ -780,7 +780,7 @@ def render_session_banner(
     return "\n".join(out)
 
 
-HERMES_STYLE_TIPS: tuple[str, ...] = (
+HEX_TIPS: tuple[str, ...] = (
     "/mode switches between plan, agent, and code. Tab on empty prompt cycles.",
     "/diff inspects unified diffs of uncommitted changes across your workspace.",
     "/proof displays cryptographic Proof-Carrying Artifact bundles & verification hashes.",
@@ -821,7 +821,7 @@ def _resolve_provider_label(orchestrator: Any = None, model_id: str = "") -> str
     return "Google Antigravity"
 
 
-def render_hermes_splash(
+def render_hex_splash(
     orchestrator: Any = None,
     *,
     skin_name: str = "amber",
@@ -833,7 +833,7 @@ def render_hermes_splash(
     width: int = 108,
     enable_color: bool = True,
 ) -> str:
-    """Render the unboxed Hermes/OpenCode-style retro-block gradient banner and two-column splash card."""
+    """Render the unboxed HEX retro-block gradient banner and two-column splash card."""
     skin = SKIN_REGISTRY.get(skin_name.lower(), SKIN_REGISTRY["amber"])
     total_w = max(80, width)
 
@@ -841,12 +841,12 @@ def render_hermes_splash(
         return colorize_rgb(txt, fg=fg, bg=bg, bold=bold, enabled=enable_color)
 
     # 1. Subtle top 'did you know' tip
-    tip_idx = int(time.time() // 60) % len(HERMES_STYLE_TIPS)
-    tip_text = HERMES_STYLE_TIPS[tip_idx]
+    tip_idx = int(time.time() // 60) % len(HEX_TIPS)
+    tip_text = HEX_TIPS[tip_idx]
     tip_line = _c("did you know", fg=skin.category_rgb) + _c(" · ", fg=skin.muted_rgb) + _c(tip_text, fg=skin.muted_rgb)
 
     # 2. Centered Retro-Block Title Banner & Subtitle
-    art_lines = HERMES_STYLE_BANNER_FULL if total_w >= 108 else HERMES_STYLE_BANNER_COMPACT
+    art_lines = HEX_BANNER_FULL if total_w >= 108 else HEX_BANNER_COMPACT
     grad = skin.banner_gradient
     banner_rows = [
         _c(_pad_visible(line, total_w, align="center"), fg=grad[min(idx, len(grad) - 1)], bold=True)
@@ -1085,7 +1085,7 @@ def render_status_bar(
 
 
 # ==============================================================================
-# Hermes Docked Input Frame & Dynamic Ghost Suggestions
+# HEX Docked Input Frame & Dynamic Ghost Suggestions
 # ==============================================================================
 
 DEFAULT_PROMPT_SUGGESTIONS: tuple[str, ...] = (
@@ -1121,7 +1121,7 @@ def render_docked_input_frame(
     skin: TUISkin | None = None,
     enable_color: bool = True,
 ) -> tuple[str, str, str]:
-    """Render the Hermes-grade docked input frame with ghost suggestion and status footer."""
+    """Render the HEX-grade docked input frame with ghost suggestion and status footer."""
     sk = skin or SKIN_REGISTRY["amber"]
     w = max(60, min(120, width))
 
@@ -1299,7 +1299,7 @@ class HexConsole:
             pass
 
     def render_welcome_splash(self) -> str:
-        """Render the Hermes-grade full splash card."""
+        """Render the HEX-grade full splash card."""
         comp_mode = getattr(getattr(self.orchestrator, "router", None), "compressor_mode", "deterministic")
         active_model = (
             self.model_profile
@@ -1311,7 +1311,7 @@ class HexConsole:
             if self.voice_engine.is_muted()
             else ("ON" if self.voice_engine.config.tts_enabled else "OFF")
         )
-        return render_hermes_splash(
+        return render_hex_splash(
             self.orchestrator,
             skin_name=self.skin_name,
             model_id=active_model,
@@ -1354,7 +1354,7 @@ class HexConsole:
         return sugg
 
     def _read_docked_input(self, prompt: str = "hex> ") -> str:
-        """Hermes-grade docked input frame with ghost suggestions and live status pills."""
+        """HEX-grade docked input frame with ghost suggestions and live status pills."""
         if (
             not hasattr(sys.stdin, "isatty")
             or not sys.stdin.isatty()
@@ -1746,7 +1746,7 @@ class HexConsole:
             ("/skin [name]", "Switch TUI theme (amber, cyberpunk, matrix, nord, mono)"),
             ("/voice [on|off|mute]", "Toggle hands-free voice mode, mute, speech rate or audio status"),
             ("/project [list|switch]", "Inspect active project card, list workspaces, or switch context"),
-            ("/banner", "Re-render the Hermes-style startup splash screen and status bar"),
+            ("/banner", "Re-render the HEX-style startup splash screen and status bar"),
             ("/clear", "Clear the terminal screen"),
             ("/quit, /exit", "Exit interactive console session"),
         ]
@@ -2715,7 +2715,7 @@ class HexConsole:
                 print(f"{ANSI_YELLOW}Invalid choice: '{choice}'. Enter [y] Approve, [n] Reject, [d] Full Diff, [s] Sandbox Shell, or [q] Abort.{ANSI_RESET}")
 
     def render_activity_feed(self, task_id: str) -> str:
-        """Render Hermes-style `┊` vertical activity feed for tool calls and AST blast-radius checks."""
+        """Render HEX-style `┊` vertical activity feed for tool calls and AST blast-radius checks."""
         if not hasattr(self.orchestrator, "ledger"):
             return ""
         calls = self.orchestrator.ledger.list_tool_calls(task_id)

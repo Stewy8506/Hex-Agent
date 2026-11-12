@@ -13,7 +13,7 @@ Commands:
 - `hex scan-skill <dir>`: Run NVIDIA SkillSpector static + OSV + semantic scan on a SKILL.md bundle.
 - `hex harness2-demo`: Run a live Propose-Probe-Compose cycle through the gated `vendor/harness2` adapter.
 - `hex worker`: Start standalone distributed worker daemon.
-- `hex chat` / `hex tui`: Start interactive TUI pair-programming console with Hermes-style splash & skin engine.
+- `hex chat` / `hex tui`: Start interactive TUI pair-programming console with HEX-style splash & skin engine.
 - `hex voice`: Start interactive hands-free voice pair-programming console.
 """
 

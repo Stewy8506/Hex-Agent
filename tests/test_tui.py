@@ -5,7 +5,7 @@ Validates:
 2. Active Graphify AST blast-radius tree renderer with hierarchical branches and risk badges.
 3. Streaming token renderer with progressive chunks and code block syntax detection.
 4. Session banner generation with model profile and backend indicators.
-5. Hermes-grade 24-bit TrueColor Retro-Block Banner, Two-Column Capability Splash Card,
+5. HEX-grade 24-bit TrueColor Retro-Block Banner, Two-Column Capability Splash Card,
    Data-Driven Skin Engine (`SKIN_REGISTRY`), and Persistent Status Bar (`render_status_bar`).
 6. HexConsole REPL prompt loop, history, and all 20+ slash command handlers.
 7. Natural language prompt submission, `┊` activity feed, and Proof-Carrying Artifact display.
@@ -35,7 +35,8 @@ from harness_core.tui import (
     HexConsole,
     StreamingTokenRenderer,
     render_blast_radius_tree,
-    render_hermes_splash,
+    render_hex_splash,
+    render_hex_splash,
     render_session_banner,
     render_side_by_side_diff,
     render_status_bar,
@@ -179,8 +180,8 @@ class TestStreamingTokenRenderer(unittest.TestCase):
         self.assertEqual(renderer.flush(), "token1 token2")
 
 
-class TestSessionBannerAndHermesSplash(unittest.TestCase):
-    """Verifies session header banner, Hermes two-column splash card, skins, and status bar."""
+class TestSessionBannerAndHEXSplash(unittest.TestCase):
+    """Verifies session header banner, HEX two-column splash card, skins, and status bar."""
 
     def test_session_banner_contents_and_borders(self):
         with patch.dict(os.environ, {"HEX_MODEL_SOURCE": ""}):
@@ -203,9 +204,9 @@ class TestSessionBannerAndHermesSplash(unittest.TestCase):
             stripped = strip_ansi(line)
             self.assertEqual(len(stripped), 78)
 
-    def test_hermes_splash_two_column_box_and_skins(self):
+    def test_hex_splash_two_column_box_and_skins(self):
         for skin_name in SKIN_REGISTRY:
-            splash = render_hermes_splash(
+            splash = render_hex_splash(
                 skin_name=skin_name,
                 model_id="gemini-3.5-pro",
                 compressor_mode="local",
@@ -465,7 +466,7 @@ class TestHexConsoleSlashCommands(unittest.TestCase):
 
 
 class TestDockedInputFrameAndGhostSuggestions(unittest.TestCase):
-    """Verifies Hermes-grade docked input frame and dynamic ghost suggestions."""
+    """Verifies HEX-grade docked input frame and dynamic ghost suggestions."""
 
     def test_default_prompt_suggestions_pool(self):
         from harness_core.tui import DEFAULT_PROMPT_SUGGESTIONS

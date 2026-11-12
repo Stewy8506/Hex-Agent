@@ -10,7 +10,7 @@ Successfully delivered interactive real-time hands-free voice mode and CLI ergon
 - **Commit:** `8095f8c` (`feat(phase-17): implement tui voice mode status badges and spoken commentary`)
 - **Key Deliverables:**
   - Integrated `VoiceEngine` into `HexConsole.__init__` with configurable `voice_enabled`, `voice_name`, and `speech_rate`.
-  - Added live voice status indicator badges (`🎙️ ON`, `🔇 MUTED`, `🎙️ OFF`) in `render_status_bar()`, `render_session_banner()`, and `render_hermes_splash()`.
+  - Added live voice status indicator badges (`🎙️ ON`, `🔇 MUTED`, `🎙️ OFF`) in `render_status_bar()`, `render_session_banner()`, and `render_hex_splash()`.
   - Implemented `/voice` slash command suite in `HexConsole.handle_slash_command`:
     - `/voice on`: Enables TTS & STT, announces voice mode, prints confirmation.
     - `/voice off`: Disables voice mode and halts active playback.

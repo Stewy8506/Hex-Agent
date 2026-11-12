@@ -1,4 +1,4 @@
-"""Hermes-Style Self-Synthesizing Skills Engine with Mandatory NVIDIA SkillSpector Gate.
+"""HEX-Style Self-Synthesizing Skills Engine with Mandatory NVIDIA SkillSpector Gate.
 
 Inspects completed engineering workflows (tool journal, Proof-Carrying Artifacts, AST diffs),
 distills reusable patterns into structured SKILL.md bundles, and enforces static, OSV, and
@@ -110,7 +110,7 @@ def _slugify(text: str) -> str:
 
 
 class SkillSynthesizer:
-    """Hermes-style learning loop engine that synthesizes reusable SKILL.md bundles from tasks."""
+    """HEX-style learning loop engine that synthesizes reusable SKILL.md bundles from tasks."""
 
     def __init__(
         self,

@@ -180,7 +180,7 @@
     - Wired `hex schedule` (add, list, remove, run-due) and `hex daemon` (install, status) subcommands into `src/harness_core/cli.py`.
     - Authored 25 unit and integration tests in `tests/test_scheduler_and_daemon.py` (330/330 total repository tests passing with zero regressions).
 
-25. **Phase 11 Hermes-Style Learning Loop & Skill Synthesizer Complete (Plan 11-02):**
+25. **Phase 11 Autonomous Learning Loop & Skill Synthesizer Complete (Plan 11-02):**
     - Implemented `SynthesizedSkill` and `SkillSynthesizer` in `src/harness_core/skill_synthesizer.py` extracting task execution context, tool call journals, git diffs, AST impact, and test verification standards.
     - Implemented structured `SKILL.md` generator with YAML frontmatter (`name`, `purpose`, `risk_class`, `allowed_tools`, `trigger`) and markdown workflow body.
     - Integrated **Mandatory NVIDIA SkillSpector Gate** (`SkillSecurityScanner`) validating static rules, prompt injection (`SS-INJ-`), shell exfiltration (`SS-EXF-`), and semantic alignment before registry writes.
@@ -286,13 +286,13 @@
 
 ## 3. Product Status: PRODUCTION-READY (All 8 Milestones Complete)
 
-All 5 Product Pillars, Hermes Parity, and Deep Upstream Integrations are delivered, empirically tested, and shipping:
+All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are delivered, empirically tested, and shipping:
 - **Pillar 1 (Zero-Friction Onboarding):** `hex onboard`, `hex init`, hardware auto-profiling, repository stack detection.
 - **Pillar 2 (Interactive TUI Pair Programming):** `hex chat` / `hex tui` with live token streaming, side-by-side diffs, one-key approvals (`[y/n/d/s/q]`), and 20+ slash commands.
 - **Pillar 3 (Bidirectional Chat Gateways):** `hex gateway start` supporting Telegram and Discord bots with inline approval buttons and conversational task delegation.
 - **Pillar 4 (Git & GitHub Autopilot):** `hex run --pr`, auto-branching (`hex/task-<id>-<slug>`), conventional commits, rich PR summaries, and `hex gh-action` bot responder.
 - **Pillar 5 (Autonomous Background Automations & Self-Synthesizing Skills):** `hex schedule`, `hex daemon install`, and `hex skill synthesize` with the mandatory NVIDIA SkillSpector supply-chain malware gate.
-- **Hermes Parity & Graphify Ergonomics (Milestone M4):**
+- **Advanced Autonomy & Graphify Ergonomics (Milestone M4):**
   - `hex doctor` diagnostic suite with `--fix` self-healing and `--live` pings.
   - Multi-framework recipe auto-detection (`hex recipe`) across Python, Node.js, Rust, Go, Makefile, and Docker.
   - SQLite FTS5 full-text transcript search (`hex search "<query>"`).

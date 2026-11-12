@@ -1,4 +1,4 @@
-# Phase 11 Plan 02: Hermes-Style Learning Loop & Skill Synthesizer with NVIDIA SkillSpector Summary
+# Phase 11 Plan 02: Autonomous Learning Loop & Skill Synthesizer with NVIDIA SkillSpector Summary
 
 **Execution Date:** 2026-11-03  
 **Status:** Complete  
@@ -9,7 +9,7 @@
 
 ## 1. Overview & Objectives Delivered
 
-Plan 11-02 delivers the self-synthesizing skills learning loop of **Pillar 5 (Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills)**, enabling HEX to autonomously compound engineering knowledge across completed tasks while maintaining a strict supply-chain security boundary.
+Plan 11-02 delivers the self-synthesizing skills learning loop of **Pillar 5 (Autonomous Background Automations & Autonomous Self-Synthesizing Skills)**, enabling HEX to autonomously compound engineering knowledge across completed tasks while maintaining a strict supply-chain security boundary.
 
 Key capabilities delivered:
 1. **Task Execution Trace Extraction:** Inspects completed tasks in `LedgerStore`, extracting tool call journals, git diffs, modified files, AST impact summaries, and verification assertion standards.

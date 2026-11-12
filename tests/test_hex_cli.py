@@ -110,7 +110,7 @@ class TestHexCLI(unittest.TestCase):
         self.assertTrue(res["proof"]["ledger_signature"].startswith("ed25519-hmac-sha256:"))
 
     def test_hex_bare_invocation_starts_tui(self) -> None:
-        """Running 'hex' with no subcommands immediately launches the interactive TUI console like Hermes."""
+        """Running 'hex' with no subcommands immediately launches the interactive TUI console like HEX."""
         from unittest.mock import patch
 
         with patch("harness_core.tui.HexConsole.start", return_value=0) as mock_start:

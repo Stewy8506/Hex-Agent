@@ -18,7 +18,7 @@ from harness_core.providers.cloud_provider import (
     CloudProviderType,
     ProviderUnavailableError,
 )
-from harness_core.tui import render_hermes_splash
+from harness_core.tui import render_hex_splash, render_hex_splash
 
 
 class TestAutoSetupAndPolish(unittest.TestCase):
@@ -92,7 +92,7 @@ class TestAutoSetupAndPolish(unittest.TestCase):
             self.assertIn("ram_gb", worker["capabilities"])
 
     def test_tui_splash_contains_dynamic_version_and_tools(self) -> None:
-        splash = render_hermes_splash(
+        splash = render_hex_splash(
             model_id="claude-3-5-sonnet",
             compressor_mode="local",
             workspace_root=Path.cwd(),

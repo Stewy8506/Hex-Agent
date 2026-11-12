@@ -1,4 +1,4 @@
-"""Comprehensive unit and integration tests for SkillSynthesizer, Hermes learning loop,
+"""Comprehensive unit and integration tests for SkillSynthesizer, HEX learning loop,
 Mandatory NVIDIA SkillSpector Gate, and CLI 'hex skill' subcommands.
 
 Tests cover:

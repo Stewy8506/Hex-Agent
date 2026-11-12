@@ -2,14 +2,14 @@
 name: ponytail-review
 description: Use when reviewing for over-engineering.
 version: 0.1.0
-author: Stewy8506 (Stewy8506), Hermes Agent
+author: Stewy8506 (Stewy8506), HEX Agent
 license: MIT
 platforms:
 - linux
 - macos
 - windows
 metadata:
-  hermes:
+  hex:
     tags:
     - ponytail
     - yagni

@@ -31,21 +31,21 @@
 [x] Phase 08: Interactive Terminal UI (`hex chat`) & Onboarding Polish (Pillars 1 & 2)
 [x] Phase 09: Bidirectional Multi-Platform Chat Gateways (Telegram & Discord Bots) (Pillar 3)
 [x] Phase 10: Git & GitHub Autopilot (Auto-PRs, Conventional Commits & Webhook Bot) (Pillar 4)
-[x] Phase 11: Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills (Pillar 5)
+[x] Phase 11: Autonomous Background Automations & Autonomous Self-Synthesizing Skills (Pillar 5)
 ```
 
 ---
 
-## Milestone M4: Hermes Parity & Advanced Graphify Ergonomics
+## Milestone M4: Advanced Autonomy & Advanced Graphify Ergonomics
 
 ```
-[x] Phase 12: Hermes Ergonomics & Full-Text Search Parity (Doctor, Recipes, FTS5 Search, Backup/Dump & Graphify Cache)
+[x] Phase 12: Developer Ergonomics & Full-Text Search Parity (Doctor, Recipes, FTS5 Search, Backup/Dump & Graphify Cache)
 ```
 
 ---
 
-### Phase 12: Hermes Ergonomics & Full-Text Search Parity
-- **Goal:** Incorporate top developer ergonomics identified from reverse-engineering Nous Research Hermes Agent: `hex doctor` diagnostic suite, deep multi-framework recipe detection, SQLite FTS5 full-text transcript search, single-command state backup and diagnostic dump, and optimized multi-language Graphify caching.
+### Phase 12: Developer Ergonomics & Full-Text Search Parity
+- **Goal:** Incorporate top developer ergonomics identified from reverse-engineering Nous Research HEX Agent: `hex doctor` diagnostic suite, deep multi-framework recipe detection, SQLite FTS5 full-text transcript search, single-command state backup and diagnostic dump, and optimized multi-language Graphify caching.
 - **Must-haves:**
   - `hex doctor` with `--fix` and `--live` diagnosing Python runtime, M4/GPU acceleration, CoW drivers, sandboxes, and API keys.
   - Multi-framework recipe detector in `src/harness_core/recipes.py` discovering bootstrap/build/test commands across Python, Node.js, Rust, Go, Makefile, and Docker.
@@ -84,12 +84,12 @@
   - GitHub Action / issue comment responder triggered by `@hex-bot fix ...`.
 - **Verification:** Tests verifying branch naming, commit formatting, GitHub API/CLI command generation, and PR markdown body compilation.
 
-### Phase 11: Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills (Pillar 5)
-- **Goal:** Enable 24/7 autonomous background operation via native cron scheduler (`hex schedule`), systemd/launchd daemon installation (`hex daemon install`), and a Hermes-style learning loop synthesizing verified solutions into reusable skills gated by NVIDIA SkillSpector.
+### Phase 11: Autonomous Background Automations & Autonomous Self-Synthesizing Skills (Pillar 5)
+- **Goal:** Enable 24/7 autonomous background operation via native cron scheduler (`hex schedule`), systemd/launchd daemon installation (`hex daemon install`), and a autonomous learning loop synthesizing verified solutions into reusable skills gated by NVIDIA SkillSpector.
 - **Must-haves:**
   - `hex schedule add <cron> --goal <goal>` cron scheduler running tasks in isolated CoW sandboxes.
   - `hex daemon install` generating `LaunchAgent` plist (macOS) and `systemd` service unit (Linux).
-  - Hermes-style self-synthesizing skill creator extracting reusable patterns from successful executions.
+  - autonomous self-synthesizing skill creator extracting reusable patterns from successful executions.
   - Automated NVIDIA SkillSpector security gate verifying synthesized skills before registration.
 - **Verification:** Tests proving cron triggers, daemon unit generation, skill synthesis, and SkillSpector quarantine verification of untrusted or malformed synthesized skills.
 

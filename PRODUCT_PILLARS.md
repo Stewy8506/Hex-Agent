@@ -1,6 +1,6 @@
 # HEX Product Pillars: The Path to a Finished Autonomous Workbench
 
-> **Authoritative Specification:** This document establishes the **final 5 product pillars** required to transform the verified, enterprise-grade core engine into a polished, self-contained developer product named **HEX**, on par with **Hermes Agent** and **OpenClaw**.
+> **Authoritative Specification:** This document establishes the **final 5 product pillars** required to transform the verified, enterprise-grade core engine into a polished, self-contained developer product named **HEX**, on par with **HEX Agent** and **OpenClaw**.
 >
 > **Scope Closure Guarantee:** These 5 pillars represent the **complete and exhaustive scope** of user-facing capabilities. There are **no additional steps, layers, or milestones needed** beyond these 5 pillars to deliver the finished product.
 
@@ -10,7 +10,7 @@
 
 The codebase has achieved **100% architectural and security compliance** (verified across all 18 sections of `PRD.md` with 186/186 passing tests, true Copy-on-Write durability, default-deny R0–R4 Tool Gateway, 0ms call journal replay, Active Graphify AST blast-radius calculation, and NVIDIA SkillSpector supply-chain scanning).
 
-The engine is bulletproof. The final transformation brings the **interaction layer, distribution layer, and developer workflow autopilot** to match the seamless user experiences of Hermes Agent and OpenClaw under the unified brand **HEX**:
+The engine is bulletproof. The final transformation brings the **interaction layer, distribution layer, and developer workflow autopilot** to match the seamless user experiences of Claude Code, Codex, and OpenClaw under the unified brand **HEX**:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -20,7 +20,7 @@ The engine is bulletproof. The final transformation brings the **interaction lay
 │ Zero-Friction│ Interactive  │ Bidirectional│ Git & GitHub │    Autonomous    │
 │ Onboarding & │ Terminal UI  │ Multi-Channel│  Autopilot   │ Automations &    │
 │ Distribution │ (TUI / REPL) │ Bot Gateways │ (Auto-PRs &  │ Self-Synthesizing│
-│  (`onboard`) │   (`chat`)   │(TG & Discord)│   Review)    │  Skills (Hermes) │
+│  (`onboard`) │   (`chat`)   │(TG & Discord)│   Review)    │  Skills (Autonomous) │
 ├──────────────┴──────────────┴──────────────┴──────────────┴──────────────────┤
 │                    VERIFIED HEX ENGINE (PHASES 01–07)                        │
 │ CoW APFS/OverlayFS │ 16-Table Ledger │ SkillSpector │ Two-Tier Router │ ASGI │
@@ -203,7 +203,7 @@ hex run "Refactor database query parameter translation to use prepared statement
 
 ---
 
-## Pillar 5: Autonomous Background Automations & Hermes-Style Self-Synthesizing Skills
+## Pillar 5: Autonomous Background Automations & Autonomous Self-Synthesizing Skills
 
 ### 5.1 Objective
 Enable HEX to operate continuously as an autonomous background resident that executes scheduled automations and synthesizes its own reusable, verified skills over time.
@@ -228,7 +228,7 @@ hex daemon install
 2. **OS Service Auto-Installer (`hex daemon install`):**
    - **macOS:** Generates and loads `~/Library/LaunchAgents/ai.hex.daemon.plist` with automatic reboot persistence.
    - **Linux:** Generates and activates `/etc/systemd/system/hex.service` with graceful `SIGTERM` draining.
-3. **Hermes-Style Learning Loop & Self-Synthesizing Skills:**
+3. **Autonomous Learning Loop & Self-Synthesizing Skills:**
    - When HEX successfully resolves a complex, multi-step engineering task (e.g., configuring an unfamiliar framework or solving a multi-file dependency issue), the orchestrator triggers skill synthesis:
      - Distills the execution trace, tool calls, and verified solutions into a structured `SKILL.md` bundle.
      - **Mandatory NVIDIA SkillSpector Gate:** The newly synthesized skill is automatically scanned by `SkillSecurityScanner` for malicious AST patterns, prompt injection, and unauthorized network calls *before* saving.

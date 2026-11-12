@@ -290,14 +290,14 @@ MUST-HAVE 5: PASSED
 ```bash
 .venv/bin/python -c "
 from pathlib import Path
-from harness_core.tui import render_hermes_splash
+from harness_core.tui import render_hex_splash
 from harness_core.orchestrator import HarnessOrchestrator
 from harness_core.providers.cloud_provider import CloudModelProvider, CloudProviderType, ProviderUnavailableError
 import tempfile, os
 from unittest.mock import patch
 
 # Verify TUI splash
-splash = render_hermes_splash(model_id='claude-3-5-sonnet', compressor_mode='local', workspace_root=Path.cwd())
+splash = render_hex_splash(model_id='claude-3-5-sonnet', compressor_mode='local', workspace_root=Path.cwd())
 assert 'v1.3.0' not in splash
 
 # Verify dynamic worker
