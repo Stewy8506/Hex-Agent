@@ -202,6 +202,11 @@ class ProjectRegistry:
 
         return None
 
+    def find_name_matches(self, name: str) -> list[ProjectRecord]:
+        """Return display-name matches so callers can explain ambiguous selection."""
+        needle = name.strip().lower()
+        return [p for p in self._projects.values() if p.name.lower() == needle]
+
     def register_project(
         self,
         path: Path | str,
@@ -276,6 +281,16 @@ class ProjectRegistry:
             self._save()
         else:
             self.register_project(path)
+
+    def record_task_submission(self, project_id: str) -> None:
+        """Increment the registry cache only after a ledger task was created."""
+        for rec in self._projects.values():
+            if rec.id == project_id:
+                rec.task_count += 1
+                rec.last_active = datetime.now(timezone.utc).isoformat()
+                self._projects[rec.path] = rec
+                self._save()
+                return
 
     def detect_enclosing_project(self, start_dir: Path | str) -> ProjectRecord | None:
         curr = Path(os.path.abspath(str(start_dir)))

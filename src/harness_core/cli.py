@@ -462,6 +462,13 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
         if project_cmd in ("use", "switch"):
             rec = registry.get_project(args.target)
+            matches = registry.find_name_matches(args.target)
+            if not rec and len(matches) > 1:
+                choices = [{"id": p.id, "path": p.path} for p in matches]
+                err_msg = f"Project name '{args.target}' is ambiguous; use its path or ID."
+                payload = {"status": "ambiguous", "error": err_msg, "matches": choices}
+                print(json.dumps(payload, indent=2) if getattr(args, "json", False) else err_msg + "\n" + "\n".join(f"  {p['id']}  {p['path']}" for p in choices), file=sys.stderr)
+                return 1
             if not rec:
                 cand = Path(args.target).resolve()
                 if cand.is_dir():
@@ -778,7 +785,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
         ws_root = Path(args.workspace).resolve() if getattr(args, "workspace", None) else ws_root
         if active_project:
-            registry.touch_active(ws_root, increment_tasks=True)
+            registry.touch_active(ws_root)
         task_project_id = active_project.id if active_project and args.project == "default" else args.project
         req = TaskSubmitRequest(
             goal=args.goal,
@@ -877,7 +884,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
     if args.cmd == "submit":
         if active_project:
-            registry.touch_active(ws_root, increment_tasks=True)
+            registry.touch_active(ws_root)
         task_project_id = active_project.id if active_project and args.project == "default" else args.project
         req = TaskSubmitRequest(
             goal=args.goal,

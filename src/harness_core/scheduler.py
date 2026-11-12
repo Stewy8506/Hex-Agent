@@ -201,6 +201,8 @@ class ScheduledJob:
     enabled: bool = True
     last_run: str | None = None
     next_run: str | None = None
+    last_status: str | None = None
+    last_error: str | None = None
     created_at: str = field(default_factory=utcnow_iso)
 
     def to_dict(self) -> dict[str, Any]:
@@ -212,6 +214,8 @@ class ScheduledJob:
             "enabled": self.enabled,
             "last_run": self.last_run,
             "next_run": self.next_run,
+            "last_status": self.last_status,
+            "last_error": self.last_error,
             "created_at": self.created_at,
         }
 
@@ -225,6 +229,8 @@ class ScheduledJob:
             enabled=data.get("enabled", True),
             last_run=data.get("last_run"),
             next_run=data.get("next_run"),
+            last_status=data.get("last_status"),
+            last_error=data.get("last_error"),
             created_at=data.get("created_at") or utcnow_iso(),
         )
 
@@ -378,6 +384,8 @@ class TaskScheduler:
 
             # Advance next_run to prevent infinite retry loops
             job.last_run = exec_start.isoformat()
+            job.last_status = "FAILED" if error_msg else str(task_result.get("status") or "COMPLETED")
+            job.last_error = error_msg
             try:
                 parser = CronParser(job.cron_expr)
                 job.next_run = parser.next_run_after(exec_start).isoformat()

@@ -1008,6 +1008,24 @@ class LedgerStore:
             seq = int(c_row[0]) if c_row and c_row[0] is not None else 1
             return max(1, seq)
 
+    def count_project_tasks(self, project_id: str) -> int:
+        """Return the authoritative task count for a stable project ID."""
+        if self.backend_type == "postgres":
+            return self._run_sync(self.count_project_tasks_async, project_id)
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    async def count_project_tasks_async(self, project_id: str) -> int:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.count_project_tasks, project_id)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM tasks WHERE project_id = $1", project_id)
+            return int(count or 0)
+
     async def get_project_task_sequence_async(self, task_id: str, project_id: str | None = None) -> int:
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(self.get_project_task_sequence, task_id, project_id)

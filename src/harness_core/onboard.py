@@ -142,15 +142,17 @@ def update_config_yaml_model(
     cloud_provider: str,
     cloud_model_id: str,
     profile: str,
-) -> None:
+) -> bool:
     """Safely update model section in config.yaml without requiring third-party PyYAML."""
-    if not config_path.is_file():
-        return
     try:
         def _clean_val(v: str) -> str:
             return v.strip(' \t\n\r"\'\\')
 
-        content = config_path.read_text(encoding="utf-8")
+        if config_path.is_file():
+            content = config_path.read_text(encoding="utf-8")
+        else:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            content = "# HEX Project Configuration\nmodel:\n"
         content = re.sub(
             r'(\bcloud_provider:\s*)[^\n]+',
             rf'\g<1>"{_clean_val(cloud_provider)}"',
@@ -166,9 +168,16 @@ def update_config_yaml_model(
             rf'\g<1>"{_clean_val(profile)}"',
             content,
         )
+        if "cloud_provider:" not in content:
+            content += f'  cloud_provider: "{_clean_val(cloud_provider)}"\n'
+        if "cloud_model_id:" not in content:
+            content += f'  cloud_model_id: "{_clean_val(cloud_model_id)}"\n'
+        if "profile:" not in content:
+            content += f'  profile: "{_clean_val(profile)}"\n'
         config_path.write_text(content, encoding="utf-8")
+        return True
     except Exception:
-        pass
+        return False
 
 
 def run_onboard_wizard(

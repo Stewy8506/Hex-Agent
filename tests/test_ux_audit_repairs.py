@@ -211,6 +211,66 @@ class TestUXAuditRepairs(unittest.TestCase):
         self.assertEqual(observed, [task["task_id"]])
         self.assertEqual(orch.ledger.get_task(observed[0])["status"], "QUEUED")
 
+    def test_switch_project_resets_managed_environment_to_prevent_model_leak(self):
+        """Switching projects resets previous project's managed environment."""
+        proj_a = self.root / "proj_alpha"
+        proj_b = self.root / "proj_beta"
+        proj_a.mkdir(parents=True, exist_ok=True)
+        proj_b.mkdir(parents=True, exist_ok=True)
+
+        hex_a = proj_a / ".hex"
+        hex_a.mkdir(parents=True, exist_ok=True)
+        (hex_a / "config.yaml").write_text(
+            'model:\n  cloud_provider: "anthropic"\n  cloud_model_id: "claude-3-7-sonnet"\n',
+            encoding="utf-8",
+        )
+
+        orch = HarnessOrchestrator(self.data_dir, default_workspace=proj_a)
+        orch.switch_project(proj_a)
+        self.assertEqual(os.environ.get("HEX_CLOUD_PROVIDER"), "anthropic")
+
+        # Switch to project B which has no model configuration; managed env must be cleared of proj_a's model
+        orch.switch_project(proj_b)
+        self.assertNotEqual(os.environ.get("HEX_CLOUD_PROVIDER"), "anthropic")
+
+    def test_ledger_count_project_tasks_authoritative(self):
+        """Authoritative task count reflects SQLite ledger tasks for stable project ID."""
+        orch = HarnessOrchestrator(self.data_dir, default_workspace=self.ws_dir)
+        stable_id = "proj_test_counter_123"
+        self.assertEqual(orch.ledger.count_project_tasks(stable_id), 0)
+
+        orch.ledger.submit_task(TaskSubmitRequest(goal="Task 1", project_id=stable_id))
+        orch.ledger.submit_task(TaskSubmitRequest(goal="Task 2", project_id=stable_id))
+        self.assertEqual(orch.ledger.count_project_tasks(stable_id), 2)
+
+    def test_find_name_matches_detects_ambiguous_projects(self):
+        """Project registry surfaces all matching records for ambiguous project names."""
+        reg = ProjectRegistry()
+        p1 = self.root / "tenant1" / "core"
+        p2 = self.root / "tenant2" / "core"
+        p1.mkdir(parents=True, exist_ok=True)
+        p2.mkdir(parents=True, exist_ok=True)
+
+        rec1 = reg.register_project(p1, name="core")
+        rec2 = reg.register_project(p2, name="core")
+
+        matches = reg.find_name_matches("core")
+        self.assertEqual(len(matches), 2)
+        match_ids = {m.id for m in matches}
+        self.assertIn(rec1.id, match_ids)
+        self.assertIn(rec2.id, match_ids)
+
+    def test_durable_model_save_creates_config_file_and_reports_path(self):
+        """set_active_model creates missing .hex/config.yaml and returns non-empty path."""
+        empty_ws = self.root / "empty_proj"
+        empty_ws.mkdir(parents=True, exist_ok=True)
+        orch = HarnessOrchestrator(self.data_dir, default_workspace=empty_ws)
+
+        prov, model_id, saved_path = orch.set_active_model("gemini-3-flash", durable=True)
+        self.assertIsNotNone(saved_path)
+        self.assertTrue(Path(saved_path).is_file())
+        self.assertIn("gemini-3-flash", Path(saved_path).read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

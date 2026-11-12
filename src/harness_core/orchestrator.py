@@ -164,12 +164,14 @@ class HarnessOrchestrator:
             try:
                 from .onboard import update_config_yaml_model
 
-                update_config_yaml_model(
+                saved = update_config_yaml_model(
                     saved_path,
                     cloud_provider=prov if prov != "google_antigravity" else "antigravity",
                     cloud_model_id=clean_id,
                     profile=getattr(getattr(self, "router", None), "profile", "antigravity_hybrid"),
                 )
+                if not saved:
+                    saved_path = None
             except Exception:
                 saved_path = None
 
@@ -189,7 +191,7 @@ class HarnessOrchestrator:
         try:
             from .config_loader import load_hex_environment
 
-            load_hex_environment(workspace_root=new_ws, override=True)
+            load_hex_environment(workspace_root=new_ws, override=True, reset_managed=True)
         except Exception:
             pass
 
@@ -399,6 +401,13 @@ class HarnessOrchestrator:
         task = self.ledger.submit_task(req)
         if on_submitted is not None:
             on_submitted(task)
+        if task.get("task_id"):
+            try:
+                from .project_registry import ProjectRegistry
+
+                ProjectRegistry().record_task_submission(task.get("project_id") or req.project_id or "default")
+            except Exception:
+                pass
         if task["status"] != TaskState.SUBMITTED.value:
             return task
         task_id = task["task_id"]

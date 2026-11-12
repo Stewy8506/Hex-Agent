@@ -1521,7 +1521,7 @@ class HexConsole:
             return
         if hasattr(self.orchestrator, "router"):
             self.orchestrator.router.compressor_mode = mode
-        print(f"{ANSI_GREEN}Compressor mode updated to: {mode} (sensitive/secret logs remain auto-pinned to local){ANSI_RESET}")
+        print(f"{ANSI_GREEN}Compressor mode updated to: {mode} (session-only; sensitive/secret logs remain auto-pinned to local){ANSI_RESET}")
 
     def _cmd_budget(self) -> None:
         print(f"\n{ANSI_BOLD}{ANSI_CYAN}Session Budget & Token Telemetry:{ANSI_RESET}")
@@ -1913,7 +1913,7 @@ class HexConsole:
             print(f"{ANSI_RED}Unknown skin '{name}'. Choose from: {', '.join(SKIN_REGISTRY.keys())}{ANSI_RESET}")
             return
         self.skin_name = name
-        print(f"{ANSI_GREEN}Skin updated to: {name} ({self.skin.description}){ANSI_RESET}")
+        print(f"{ANSI_GREEN}Skin updated to: {name} (session-only; {self.skin.description}){ANSI_RESET}")
 
     def _cmd_project(self, arg: str = "") -> None:
         from .project_registry import ProjectRegistry
@@ -1959,12 +1959,24 @@ class HexConsole:
                 print("  " + "-" * 78)
                 for p in projects:
                     active_marker = " *" if str(Path(p.path).resolve()) == str(self.workspace_root.resolve()) else "  "
-                    print(f"{active_marker}{p.name:<20} {p.stack:<10} {p.task_count:<8} {p.last_active:<24} {p.path}")
+                    count = p.task_count
+                    if hasattr(self.orchestrator, "ledger") and hasattr(self.orchestrator.ledger, "count_project_tasks"):
+                        try:
+                            count = self.orchestrator.ledger.count_project_tasks(p.id)
+                        except Exception:
+                            pass
+                    print(f"{active_marker}{p.name:<20} {p.stack:<10} {count:<8} {p.last_active:<24} {p.path}")
             print()
             return
 
         switch_target = target[7:].strip() if target.startswith("switch ") else target
         rec = registry.get_project(switch_target)
+        matches = registry.find_name_matches(switch_target)
+        if not rec and len(matches) > 1:
+            print(f"{ANSI_YELLOW}Project name '{switch_target}' is ambiguous. Use one of these paths or IDs:{ANSI_RESET}")
+            for match in matches:
+                print(f"  • {match.id}  {match.path}")
+            return
         if not rec and (Path(switch_target).exists() or Path(switch_target).is_dir()):
             rec = registry.register_project(Path(switch_target).resolve())
 
@@ -2201,13 +2213,6 @@ class HexConsole:
             execution_mode="auto",
         )
 
-        try:
-            from .project_registry import ProjectRegistry
-
-            ProjectRegistry().touch_active(self.workspace_root or Path.cwd(), increment_tasks=True)
-        except Exception:
-            pass
-
         spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
         spinner.start(f"Executing: {_truncate_visible(prompt, 44)}")
         try:
@@ -2219,12 +2224,19 @@ class HexConsole:
         except KeyboardInterrupt:
             spinner.stop()
             print()
+            canceled = False
+            cancel_error = ""
             if getattr(self, "active_task_id", None) and hasattr(self.orchestrator, "cancel_task"):
                 try:
-                    self.orchestrator.cancel_task(self.active_task_id, actor="owner")
-                except Exception:
-                    pass
-            print(f"{ANSI_YELLOW}⚡ Task cancelled by operator (Ctrl+C).{ANSI_RESET}\n")
+                    result = self.orchestrator.cancel_task(self.active_task_id, actor="owner")
+                    canceled = result.get("status") == "CANCELED" if isinstance(result, dict) else False
+                except Exception as exc:
+                    cancel_error = str(exc)
+            if canceled:
+                print(f"{ANSI_YELLOW}⚡ Task cancellation confirmed.{ANSI_RESET}\n")
+            else:
+                detail = f": {cancel_error}" if cancel_error else ""
+                print(f"{ANSI_YELLOW}⚡ Cancellation requested but not confirmed for {self.active_task_id or 'the task'}{detail}{ANSI_RESET}\n")
             return
         except ApprovalRequiredInterrupt as apr_int:
             spinner.stop()

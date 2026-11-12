@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+_managed_environment: dict[str, str] = {}
+
 try:
     import yaml  # type: ignore
 except ImportError:
@@ -89,12 +91,20 @@ def load_hex_environment(
     workspace_root: Path | None = None,
     *,
     override: bool = False,
+    reset_managed: bool = False,
 ) -> dict[str, str]:
     """Load ~/.hex/credentials.env and config.yaml into os.environ.
 
     Returns:
         Dictionary of all loaded environment variables.
     """
+    global _managed_environment
+    if reset_managed:
+        for key, value in _managed_environment.items():
+            if os.environ.get(key) == value:
+                os.environ.pop(key, None)
+        _managed_environment = {}
+
     discovered: dict[str, str] = {}
     global_dir = config_dir or (Path.home() / ".hex")
     local_dir = (workspace_root or Path.cwd()) / ".hex"
@@ -143,10 +153,12 @@ def load_hex_environment(
                     cfg_props["HEX_WEB_SEARCH_PROVIDER"] = str(web_search_section["provider"])
 
     for k, v in cfg_props.items():
-        if k not in discovered and (override or k not in os.environ):
+        if override or k not in os.environ:
             os.environ[k] = v
-        elif k not in os.environ:
-            os.environ[k] = v
+
+    for k, v in {**discovered, **cfg_props}.items():
+        if os.environ.get(k) == v:
+            _managed_environment[k] = v
 
     return discovered
 
