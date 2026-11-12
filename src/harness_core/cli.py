@@ -668,6 +668,9 @@ def main(argv: list[str] | None = None) -> int:
     if ws_root and (ws_root / ".hex" / "data").is_dir() and args.data_dir == default_dir:
         bound_data_dir = str(ws_root / ".hex" / "data")
 
+    if ws_root:
+        load_hex_environment(workspace_root=ws_root, override=True)
+
     orch = HarnessOrchestrator(bound_data_dir, default_workspace=ws_root)
 
     if getattr(args, "provider", None):
@@ -678,7 +681,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.provider,
                 model_id=getattr(args, "model", None) or orch.router.cloud_model_id,
             )
-    elif getattr(args, "model", None) and getattr(args, "cmd", None) in ("run", "exec"):
+    elif getattr(args, "model", None):
         orch.router.cloud_model_id = args.model
         if hasattr(orch.router.cloud_provider, "model_id"):
             orch.router.cloud_provider.model_id = args.model  # type: ignore[attr-defined]

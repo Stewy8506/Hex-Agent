@@ -23,7 +23,17 @@ from pathlib import Path
 from typing import Protocol
 
 
-IGNORE_DIRS = frozenset({".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache", "node_modules", ".harness_data"})
+IGNORE_DIRS = frozenset({
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    "node_modules",
+    ".harness_data",
+    ".hex",
+})
 
 
 @dataclass(frozen=True)
@@ -221,32 +231,46 @@ def compute_workspace_diff(base_dir: Path | str, target_dir: Path | str) -> str:
 
 
 def _cow_copy_tree(src: Path, dst: Path, apfs_supported: bool = False) -> None:
-    """Copies directory tree using APFS clone if supported, or standard recursive copy."""
+    """Copies directory tree using APFS clone if supported, or standard recursive copy.
+
+    Excludes IGNORE_DIRS upfront so nested .hex / .venv / .git are never cloned into snapshots.
+    """
     src = src.resolve()
     dst = dst.resolve()
     if dst.exists():
         shutil.rmtree(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.mkdir(parents=True, exist_ok=True)
 
     if apfs_supported:
-        res = subprocess.run(
-            ["/bin/cp", "-c", "-R", str(src), str(dst)],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if res.returncode == 0:
-            for ign in IGNORE_DIRS:
-                ign_path = dst / ign
-                if ign_path.exists():
-                    shutil.rmtree(ign_path, ignore_errors=True)
+        try:
+            for entry in os.scandir(src):
+                if entry.name in IGNORE_DIRS or entry.name.startswith(".DS_Store"):
+                    continue
+                target_item = dst / entry.name
+                subprocess.run(
+                    ["/bin/cp", "-c", "-R", entry.path, str(target_item)],
+                    capture_output=True,
+                    check=True,
+                    timeout=15,
+                )
+            # Post-cleanup any nested ignored dirs that might exist deep inside subtrees (e.g. __pycache__)
+            for dirpath, dirnames, _ in os.walk(dst, topdown=True):
+                to_remove = [d for d in dirnames if d in IGNORE_DIRS]
+                for d in to_remove:
+                    shutil.rmtree(Path(dirpath) / d, ignore_errors=True)
+                dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
             return
+        except Exception:
+            if dst.exists():
+                shutil.rmtree(dst)
+            dst.mkdir(parents=True, exist_ok=True)
 
     shutil.copytree(
         src,
         dst,
         symlinks=True,
-        ignore=shutil.ignore_patterns(*IGNORE_DIRS, ".DS_Store"),
+        ignore=shutil.ignore_patterns(*IGNORE_DIRS, ".DS_Store", "*.pyc"),
+        dirs_exist_ok=True,
     )
 
 

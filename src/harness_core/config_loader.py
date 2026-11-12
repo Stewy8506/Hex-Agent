@@ -120,23 +120,31 @@ def load_hex_environment(
         global_dir / "config.yaml",
         local_dir / "config.yaml",
     ]
+    cfg_props: dict[str, str] = {}
     for cfg_file in candidate_config_files:
         if cfg_file.is_file():
             cfg_data = parse_config_yaml(cfg_file)
             model_section = cfg_data.get("model", {})
             if isinstance(model_section, dict):
-                provider = model_section.get("cloud_provider")
-                if provider and (override or "HEX_CLOUD_PROVIDER" not in os.environ):
-                    os.environ["HEX_CLOUD_PROVIDER"] = str(provider)
-                model_id = model_section.get("cloud_model_id")
-                if model_id and (override or "HEX_CLOUD_MODEL_ID" not in os.environ):
-                    os.environ["HEX_CLOUD_MODEL_ID"] = str(model_id)
+                if model_section.get("profile"):
+                    cfg_props["HEX_MODEL_PROFILE"] = str(model_section["profile"])
+                if model_section.get("cloud_provider"):
+                    cfg_props["HEX_CLOUD_PROVIDER"] = str(model_section["cloud_provider"])
+                if model_section.get("cloud_model_id"):
+                    cfg_props["HEX_CLOUD_MODEL_ID"] = str(model_section["cloud_model_id"])
+                if model_section.get("local_model_id"):
+                    cfg_props["HEX_LOCAL_MODEL_ID"] = str(model_section["local_model_id"])
+                if model_section.get("compressor_mode"):
+                    cfg_props["HEX_COMPRESSOR_MODE"] = str(model_section["compressor_mode"])
 
             web_search_section = cfg_data.get("web_search", {})
             if isinstance(web_search_section, dict):
-                provider = web_search_section.get("provider")
-                if provider and (override or "HEX_WEB_SEARCH_PROVIDER" not in os.environ):
-                    os.environ["HEX_WEB_SEARCH_PROVIDER"] = str(provider)
+                if web_search_section.get("provider"):
+                    cfg_props["HEX_WEB_SEARCH_PROVIDER"] = str(web_search_section["provider"])
+
+    for k, v in cfg_props.items():
+        if override or k not in os.environ:
+            os.environ[k] = v
 
     return discovered
 

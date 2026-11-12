@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .cow import WorkspaceSnapshotProvider
+from .cow import IGNORE_DIRS, WorkspaceSnapshotProvider
 from .db import LedgerStore, canonical_json, sha256_hex, utcnow_iso
 from .gateway import ToolGateway
 from .graphify import ActiveGraphifyAdapter
@@ -50,8 +50,12 @@ class VerificationAndProofService:
 
     def compute_git_diff(self, base_dir: Path | str, head_dir: Path | str) -> tuple[str, str]:
         """Computes unified diff and its SHA-256 between base snapshot and modified workspace."""
+        cmd = ["/usr/bin/diff", "-ruN"]
+        for ign in sorted(IGNORE_DIRS):
+            cmd.extend(["-x", ign])
+        cmd.extend(["-x", ".DS_Store", "-x", "*.pyc", str(base_dir), str(head_dir)])
         res = subprocess.run(
-            ["/usr/bin/diff", "-ruN", "-x", ".git", "-x", "__pycache__", str(base_dir), str(head_dir)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=15,

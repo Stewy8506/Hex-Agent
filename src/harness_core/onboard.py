@@ -559,6 +559,9 @@ def init_project(repo_root: Path | str, *, name: str | None = None, force: bool 
 
     proj_name = name or repo.name
 
+    global_model = os.environ.get("HEX_CLOUD_MODEL_ID", "claude-opus-4-6-thinking")
+    global_provider = os.environ.get("HEX_CLOUD_PROVIDER", "antigravity")
+
     created = False
     if not config_file.exists() or force:
         config_yaml = f"""# HEX Project Configuration
@@ -567,8 +570,8 @@ project:
   name: "{proj_name}"
   stack: "{stack_info['stack']}"
 model:
-  cloud_provider: "antigravity"
-  cloud_model_id: "gemini-2.5-pro"
+  cloud_provider: "{global_provider}"
+  cloud_model_id: "{global_model}"
   compressor_mode: "local"
 verification:
   test_command: "{stack_info['test_cmd']}"

@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import os
+import platform
 import re
+import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,6 +68,19 @@ class RouteDecision:
         }
 
 
+def _detect_default_local_model() -> str:
+    """Dynamically determine sensible default local model based on host platform and hardware."""
+    env_local = os.getenv("HEX_LOCAL_MODEL_ID") or os.getenv("HARNESS_LOCAL_MODEL_ID")
+    if env_local:
+        return env_local
+
+    # Hardware detection on Apple Silicon Darwin
+    if sys.platform == "darwin" and platform.machine().lower() in ("arm64", "aarch64"):
+        return "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+    # Non-Apple Silicon host (Linux, Intel, Windows, Cloud VMs)
+    return "local_deterministic_compressor"
+
+
 class TwoTierModelRouter:
     """Routes between Tier-1 Local M4 MLX Gatekeeper/Compressor and Tier-2 Heavy Reasoner.
 
@@ -81,13 +96,19 @@ class TwoTierModelRouter:
         self,
         local_provider: ModelProvider | None = None,
         cloud_provider: ModelProvider | None = None,
-        local_model_id: str = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
-        cloud_model_id: str = "gemini-2.5-pro",
+        local_model_id: str | None = None,
+        cloud_model_id: str | None = None,
         cloud_provider_type: str | None = None,
         compressor_mode: str | None = None,
         compressor_provider: ModelProvider | None = None,
     ):
-        self.local_provider = local_provider or LocalMLXModelProvider(model_id=local_model_id)
+        resolved_local_model = (
+            local_model_id
+            or os.getenv("HEX_LOCAL_MODEL_ID")
+            or os.getenv("HARNESS_LOCAL_MODEL_ID")
+            or _detect_default_local_model()
+        )
+        self.local_provider = local_provider or LocalMLXModelProvider(model_id=resolved_local_model)
 
         resolved_provider_type = (
             cloud_provider_type
@@ -96,12 +117,19 @@ class TwoTierModelRouter:
             or ""
         ).strip().lower()
 
+        resolved_cloud_model = (
+            cloud_model_id
+            or os.getenv("HEX_CLOUD_MODEL_ID")
+            or os.getenv("HARNESS_CLOUD_MODEL_ID")
+            or "gemini-2.5-pro"
+        )
+
         if cloud_provider is not None:
             self.cloud_provider = cloud_provider
         elif resolved_provider_type in ("antigravity", "google-antigravity", "google_antigravity", "agy") or (
-            cloud_model_id.lower().startswith(("antigravity/", "google/antigravity-"))
+            resolved_cloud_model.lower().startswith(("antigravity/", "google/antigravity-"))
         ):
-            self.cloud_provider = AntigravityModelProvider(model_id=cloud_model_id)
+            self.cloud_provider = AntigravityModelProvider(model_id=resolved_cloud_model)
         else:
             # Auto-detect local Antigravity OAuth session if no paid raw API key is explicitly set
             has_raw_api_key = bool(
@@ -110,21 +138,21 @@ class TwoTierModelRouter:
                 or os.getenv("ANTHROPIC_API_KEY")
                 or os.getenv("OPENAI_API_KEY")
             )
-            ag_probe = AntigravityModelProvider(model_id=cloud_model_id)
+            ag_probe = AntigravityModelProvider(model_id=resolved_cloud_model)
             if not has_raw_api_key and ag_probe.is_available():
                 self.cloud_provider = ag_probe
             else:
                 self.cloud_provider = CloudModelProvider(
                     provider_type=resolved_provider_type or "gemini",
-                    model_id=cloud_model_id,
+                    model_id=resolved_cloud_model,
                 )
 
         self.compressor_provider = compressor_provider or self.cloud_provider
         self.compressor_mode = (
             compressor_mode or os.getenv("HARNESS_COMPRESSOR_MODE") or "local"
         ).strip().lower()
-        self.local_model_id = getattr(self.local_provider, "model_id", local_model_id)
-        self.cloud_model_id = getattr(self.cloud_provider, "model_id", cloud_model_id)
+        self.local_model_id = getattr(self.local_provider, "model_id", resolved_local_model)
+        self.cloud_model_id = getattr(self.cloud_provider, "model_id", resolved_cloud_model)
 
     def switch_cloud_provider(self, provider_type: str, model_id: str | None = None) -> ModelProvider:
         """Switch the Tier-2 cloud reasoner backend dynamically (e.g., to 'antigravity')."""
