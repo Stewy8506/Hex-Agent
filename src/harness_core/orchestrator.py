@@ -71,6 +71,12 @@ class HarnessOrchestrator:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.default_workspace = Path(default_workspace or self.data_dir / "default_project").resolve()
         self.default_workspace.mkdir(parents=True, exist_ok=True)
+        try:
+            from .config_loader import load_hex_environment
+
+            load_hex_environment(workspace_root=self.default_workspace, override=True)
+        except Exception:
+            pass
         self.repair_patch_generator = repair_patch_generator
         self.webhook_notifier = (
             webhook_notifier if webhook_notifier is not None else WebhookNotifier(WebhookConfig.from_env())

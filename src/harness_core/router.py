@@ -85,7 +85,8 @@ def _detect_default_local_model() -> str:
 
                 with open(cfg_candidate, "r") as f:
                     cfg = yaml.safe_load(f) or {}
-                m = cfg.get("models", {}).get("local_model_id")
+                model_sec = cfg.get("model") or cfg.get("models") or {}
+                m = model_sec.get("local_model_id")
                 if m and isinstance(m, str) and m.strip():
                     return m.strip()
             except Exception:
@@ -160,7 +161,8 @@ class TwoTierModelRouter:
 
                         with open(cfg_candidate, "r") as f:
                             cfg = yaml.safe_load(f) or {}
-                        m = cfg.get("models", {}).get("cloud_model_id")
+                        model_sec = cfg.get("model") or cfg.get("models") or {}
+                        m = model_sec.get("cloud_model_id")
                         if m and isinstance(m, str) and m.strip():
                             resolved_cloud_model = m.strip()
                             break
