@@ -147,8 +147,8 @@ class TUISkin:
     warn_rgb: tuple[int, int, int]
     danger_rgb: tuple[int, int, int]
     status_bg_rgb: tuple[int, int, int]
-    spinner_faces: tuple[str, ...] = ("✦", "✧", "✶", "✷", "✸", "✹", "✸", "✷", "✶", "✧")
-    spinner_verbs: tuple[str, ...] = ("Reasoning", "Inspecting AST", "Verifying CoW", "Scanning", "Synthesizing")
+    spinner_faces: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    spinner_verbs: tuple[str, ...] = ("Thinking", "Analyzing", "Exploring", "Formulating", "Reflecting", "Synthesizing")
     prompt_symbol: str = "⚕"
 
 
@@ -554,8 +554,11 @@ class StreamingTokenRenderer:
         return "".join(self._tokens)
 
 
+BRAILLE_SHIMMER: tuple[str, ...] = ("⠴", "⠦", "⠧", "⠇", "⠏", "⠋", "⠙", "⠹", "⠸", "⠼")
+
+
 class ActivitySpinner:
-    """Animated terminal activity spinner with skin-customizable faces and verbs."""
+    """Animated Claude-style terminal activity spinner with smooth braille morphing transitions."""
 
     def __init__(self, skin: TUISkin | None = None, out: TextIO = sys.stdout, enabled: bool = True) -> None:
         self.skin = skin or SKIN_REGISTRY["amber"]
@@ -563,10 +566,10 @@ class ActivitySpinner:
         self.enabled = enabled and hasattr(out, "isatty") and out.isatty()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._label: str = "Working"
+        self._label: str = ""
         self._start_ts: float = 0.0
 
-    def start(self, label: str = "Executing task") -> None:
+    def start(self, label: str = "") -> None:
         self._label = label
         self._start_ts = time.perf_counter()
         if not self.enabled:
@@ -577,17 +580,44 @@ class ActivitySpinner:
 
     def _spin_loop(self) -> None:
         idx = 0
-        faces = self.skin.spinner_faces
-        verbs = self.skin.spinner_verbs
+        faces = self.skin.spinner_faces or ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+        verbs = self.skin.spinner_verbs or ("Thinking", "Analyzing", "Exploring", "Formulating", "Reflecting", "Synthesizing")
+        phrases = [v if v.endswith("...") else f"{v}..." for v in verbs]
+
+        phrase_duration = 3.5
+        transition_duration = 0.35
+        cycle_duration = phrase_duration + transition_duration
+
         while not self._stop_event.is_set():
             elapsed = time.perf_counter() - self._start_ts
             face = faces[idx % len(faces)]
-            verb = verbs[(idx // 4) % len(verbs)]
+
+            cycle_idx = int(elapsed // cycle_duration)
+            curr_phrase = phrases[cycle_idx % len(phrases)]
+            next_phrase = phrases[(cycle_idx + 1) % len(phrases)]
+            phase_time = elapsed % cycle_duration
+
+            if phase_time < phrase_duration:
+                text = curr_phrase
+            else:
+                t = (phase_time - phrase_duration) / transition_duration
+                max_len = max(len(curr_phrase), len(next_phrase))
+                chars = []
+                for i in range(max_len):
+                    cp = t * (max_len + 4) - 2 - i
+                    if cp < 0:
+                        chars.append(curr_phrase[i] if i < len(curr_phrase) else " ")
+                    elif cp < 3:
+                        chars.append(BRAILLE_SHIMMER[(idx + i) % len(BRAILLE_SHIMMER)])
+                    else:
+                        chars.append(next_phrase[i] if i < len(next_phrase) else " ")
+                text = "".join(chars).rstrip()
+
+            extra = f" {self._label}" if self._label else ""
             line = (
                 f"\r  {colorize_rgb(face, fg=self.skin.heading_rgb, bold=True)} "
-                f"{colorize_rgb(verb + '...', fg=self.skin.accent_rgb, bold=True)} "
-                f"{colorize_rgb(self._label, fg=self.skin.text_rgb)} "
-                f"{colorize_rgb(f'({elapsed:.1f}s)', fg=self.skin.muted_rgb)}   "
+                f"{colorize_rgb(text, fg=self.skin.accent_rgb, bold=True)}{extra} "
+                f"{colorize_rgb(f'({elapsed:.1f}s)', fg=self.skin.muted_rgb)}   \033[K"
             )
             try:
                 self.out.write(line)
@@ -604,7 +634,7 @@ class ActivitySpinner:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.5)
         try:
-            self.out.write("\r" + (" " * 96) + "\r")
+            self.out.write("\r" + (" " * 96) + "\r\033[K")
             self.out.flush()
         except Exception:
             pass
@@ -2214,7 +2244,7 @@ class HexConsole:
         )
 
         spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
-        spinner.start(f"Executing: {_truncate_visible(prompt, 44)}")
+        spinner.start()
         try:
             task = self.orchestrator.submit_and_run(
                 req,
