@@ -241,9 +241,11 @@ def extract_tokens_from_blob(raw_value: str | bytes) -> tuple[str, str]:
 
 
 ANTIGRAVITY_FALLBACK_MODELS: list[tuple[str, str]] = [
+    ("claude-opus-4-6-thinking", "claude-opus-4-6-thinking [offline fallback]"),
+    ("claude-sonnet-4-6", "claude-sonnet-4-6 [offline fallback]"),
     ("gemini-2.5-pro", "gemini-2.5-pro [offline fallback]"),
     ("gemini-2.5-flash", "gemini-2.5-flash [offline fallback]"),
-    ("claude-3-5-sonnet", "claude-3-5-sonnet [offline fallback]"),
+    ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite [offline fallback]"),
 ]
 
 

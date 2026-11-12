@@ -2136,16 +2136,6 @@ class HexConsole:
         """Submit natural language coding prompt to orchestrator."""
         from .models import TaskSubmitRequest
 
-        # Fast conversational short-circuit for greetings and light conversational queries
-        conv_greetings = {"hey", "hi", "hello", "yo", "greetings", "good morning", "good evening", "good afternoon", "sup", "howdy", "hola"}
-        clean_prompt = prompt.strip().lower().rstrip("!.,?")
-        if clean_prompt in conv_greetings:
-            active_model = self.model_profile or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", "claude-opus-4-6-thinking")
-            print(f"\n{ANSI_BOLD}HEX Assistant{ANSI_RESET} ({active_model}):")
-            print(f"Hey! I'm ready to work on {self.project_id}. What would you like to build or inspect today?")
-            print(f"{ANSI_DIM}Tip: You can ask me to inspect code, run tests, implement features, or type /help for commands.{ANSI_RESET}\n")
-            return
-
         print(f"{ANSI_CYAN}⚡ Submitting task to HEX orchestrator...{ANSI_RESET}")
         req = TaskSubmitRequest(
             goal=prompt,
@@ -2233,6 +2223,19 @@ class HexConsole:
                 v_badge = f"{ANSI_GREEN}[VERIFIED]{ANSI_RESET}" if verified else f"{ANSI_YELLOW}[UNVERIFIED]{ANSI_RESET}"
                 sha = str(proof.get("workspace_tree_sha", ""))[:12]
                 print(f"  Proof-Carrying Artifact: {v_badge} Merkle SHA: {sha}...")
+
+            # Render assistant's synthesized response / deliverable
+            result_text = (
+                task.get("result")
+                or task.get("deliverable")
+                or (task.get("payload") or {}).get("result")
+                or (proof.get("summary") if proof else None)
+            )
+            if result_text:
+                active_model = self.model_profile or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", "model")
+                print(f"\n{ANSI_BOLD}HEX Assistant{ANSI_RESET} ({active_model}):\n")
+                print(result_text.strip())
+                print()
             if hasattr(self, "voice_engine") and self.voice_engine.config.tts_enabled and not self.voice_engine.is_muted():
                 raw_summary = (
                     task.get("summary")

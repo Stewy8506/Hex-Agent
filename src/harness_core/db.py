@@ -575,15 +575,16 @@ class LedgerStore:
             now = utcnow_iso()
             new_tree_sha = workspace_tree_sha or row["active_workspace_tree_sha"]
             term_reason = terminal_reason if (target.is_terminal or terminal_reason is not None) else row["terminal_reason"]
+            new_deliverable = (payload or {}).get("result") or (payload or {}).get("deliverable") or row["deliverable"]
 
             cursor = self.conn.execute(
                 """
                 UPDATE tasks
                 SET status = ?, version = version + 1, active_workspace_tree_sha = ?,
-                    terminal_reason = ?, updated_at = ?
+                    terminal_reason = ?, updated_at = ?, deliverable = ?
                 WHERE task_id = ? AND version = ?
                 """,
-                (target.value, new_tree_sha, term_reason, now, task_id, cur_version),
+                (target.value, new_tree_sha, term_reason, now, new_deliverable, task_id, cur_version),
             )
             if cursor.rowcount != 1:
                 raise ConcurrencyFenceError(f"Concurrent update race detected on task {task_id}")
@@ -670,18 +671,20 @@ class LedgerStore:
                 now = utcnow_iso()
                 new_tree_sha = workspace_tree_sha or row["active_workspace_tree_sha"]
                 term_reason = terminal_reason if (target.is_terminal or terminal_reason is not None) else row["terminal_reason"]
+                new_deliverable = (payload or {}).get("result") or (payload or {}).get("deliverable") or row["deliverable"]
 
                 res = await conn.execute(
                     """
                     UPDATE tasks
                     SET status = $1, version = version + 1, active_workspace_tree_sha = $2,
-                        terminal_reason = $3, updated_at = $4
-                    WHERE task_id = $5 AND version = $6
+                        terminal_reason = $3, updated_at = $4, deliverable = $5
+                    WHERE task_id = $6 AND version = $7
                     """,
                     target.value,
                     new_tree_sha,
                     term_reason,
                     now,
+                    new_deliverable,
                     task_id,
                     cur_version,
                 )
@@ -966,7 +969,10 @@ class LedgerStore:
             return self._run_sync(self.get_task_async, task_id)
         with self._lock:
             row = self.conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-            return self._row_to_dict(row)
+            d = self._row_to_dict(row)
+            if d and d.get("deliverable") and not d.get("result"):
+                d["result"] = d["deliverable"]
+            return d
 
     async def get_task_async(self, task_id: str) -> dict[str, Any] | None:
         if self.backend_type == "sqlite":
@@ -974,7 +980,10 @@ class LedgerStore:
         pool = await self.get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM tasks WHERE task_id = $1", task_id)
-            return self._row_to_dict(row)
+            d = self._row_to_dict(row)
+            if d and d.get("deliverable") and not d.get("result"):
+                d["result"] = d["deliverable"]
+            return d
 
     def list_tasks(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         if self.backend_type == "postgres":

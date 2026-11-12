@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config_loader import load_hex_environment
+from .config_loader import load_hex_environment, parse_env_file
 from .cow import get_default_snapshot_provider
 from .orchestrator import HarnessOrchestrator
 from .providers.antigravity_provider import AntigravityOAuthManager
@@ -140,6 +140,7 @@ def run_onboard_wizard(
     config_dir: Path | None = None,
     non_interactive: bool = False,
     defaults_only: bool = False,
+    target_stage: str | None = None,
 ) -> dict[str, Any]:
     """Execute the interactive or automated onboarding sequence for HEX."""
     cfg_dir = config_dir or (Path.home() / ".hex")
@@ -175,222 +176,433 @@ def run_onboard_wizard(
     print("=" * 64)
     print()
 
-    # Default configuration state
-    model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
-    cloud_provider = "antigravity"
-    cloud_model_id = "gemini-2.5-pro"
+    # Discover existing configuration and credentials if already configured
+    existing_config: dict[str, Any] = {}
+    if config_file.is_file():
+        try:
+            import yaml
 
-    anthropic_key = os.environ.get("HEX_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
-    openai_key = os.environ.get("HEX_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
-    gemini_key = os.environ.get("HEX_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
-    antigravity_token = (
-        os.environ.get("HEX_ANTIGRAVITY_TOKEN")
-        or os.environ.get("ANTIGRAVITY_OAUTH_TOKEN")
+            loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing_config = loaded
+        except Exception:
+            pass
+
+    # Also inspect local project .hex/config.yaml if running in a project workspace without custom config_dir
+    if config_dir is None:
+        local_proj_cfg = Path.cwd() / ".hex" / "config.yaml"
+        if local_proj_cfg.is_file() and local_proj_cfg.resolve() != config_file.resolve():
+            try:
+                import yaml
+
+                loaded_p = yaml.safe_load(local_proj_cfg.read_text(encoding="utf-8"))
+                if isinstance(loaded_p, dict) and "model" in loaded_p:
+                    existing_config.setdefault("model", {}).update(loaded_p["model"])
+            except Exception:
+                pass
+
+    creds_files = [credentials_file]
+    if config_dir is None:
+        p_cred = Path.cwd() / ".hex" / "credentials.env"
+        if p_cred.is_file() and p_cred.resolve() != credentials_file.resolve():
+            creds_files.append(p_cred)
+
+    existing_creds: dict[str, str] = {}
+    for cf in creds_files:
+        if cf.is_file():
+            try:
+                for k, v in parse_env_file(cf).items():
+                    existing_creds[k] = v
+            except Exception:
+                pass
+
+    is_already_configured = bool(existing_creds or existing_config)
+
+    existing_provider = (
+        existing_creds.get("HEX_CLOUD_PROVIDER")
+        or (existing_config.get("model") or {}).get("cloud_provider")
+    )
+    existing_model_id = (
+        existing_creds.get("HEX_CLOUD_MODEL_ID")
+        or (existing_config.get("model") or {}).get("cloud_model_id")
+    )
+    existing_profile = (
+        (existing_config.get("model") or {}).get("profile")
+    )
+    existing_search = (
+        existing_creds.get("HEX_WEB_SEARCH_PROVIDER")
+        or (existing_config.get("web_search") or {}).get("provider")
+    )
+    existing_telegram = existing_creds.get("HEX_TELEGRAM_BOT_TOKEN")
+    existing_telegram_users = existing_creds.get("HEX_TELEGRAM_ALLOWED_USERS")
+    existing_discord = existing_creds.get("HEX_DISCORD_BOT_TOKEN")
+    existing_discord_hook = existing_creds.get("HEX_DISCORD_WEBHOOK_URL")
+    existing_antigravity_token = (
+        existing_creds.get("HEX_ANTIGRAVITY_TOKEN")
         or (ag_cred.access_token if ag_cred else "")
     )
+    existing_anthropic_key = existing_creds.get("ANTHROPIC_API_KEY", "")
+    existing_openai_key = existing_creds.get("OPENAI_API_KEY", "")
+    existing_gemini_key = existing_creds.get("GEMINI_API_KEY", "")
+    existing_tavily_key = existing_creds.get("TAVILY_API_KEY", "")
+    existing_brave_key = existing_creds.get("BRAVE_API_KEY", "")
 
-    web_search_provider = "duckduckgo"
-    tavily_key = os.environ.get("HEX_TAVILY_API_KEY") or os.environ.get("TAVILY_API_KEY", "")
-    brave_key = os.environ.get("HEX_BRAVE_API_KEY") or os.environ.get("BRAVE_API_KEY", "")
+    norm_stage = (target_stage or "").lower().strip()
+    is_model_stage = norm_stage in ("model", "models", "provider", "brain")
+    is_search_stage = norm_stage in ("search", "web_search", "web")
+    is_messaging_stage = norm_stage in ("messaging", "msg", "telegram", "discord", "gateway", "gateways")
 
-    telegram_token = os.environ.get("HEX_TELEGRAM_BOT_TOKEN", "")
-    telegram_allowed = os.environ.get("HEX_TELEGRAM_ALLOWED_USERS", "")
-    discord_token = os.environ.get("HEX_DISCORD_BOT_TOKEN", "")
-    discord_webhook = os.environ.get("HEX_DISCORD_WEBHOOK_URL", "")
+    if norm_stage and not (is_model_stage or is_search_stage or is_messaging_stage or norm_stage == "all"):
+        print(f"\n✖ Unrecognized setup target: '{target_stage}'")
+        print("  Available targets:")
+        print("    • hex setup model      (Configure model provider, brain & active model)")
+        print("    • hex setup search     (Configure autonomous web search engine)")
+        print("    • hex setup messaging  (Configure remote Telegram & Discord bot gateways)")
+        print("    • hex setup            (Run complete end-to-end setup wizard)\n")
+        return {"status": "error", "error": f"Unrecognized setup target: {target_stage}"}
+
+    should_run_model = not (is_search_stage or is_messaging_stage)
+    should_run_search = not (is_model_stage or is_messaging_stage)
+    should_run_messaging = not (is_model_stage or is_search_stage)
+
+    # Initial state resolving existing settings first
+    cloud_provider = existing_provider or "antigravity"
+    cloud_model_id = existing_model_id or ("claude-opus-4-6-thinking" if cloud_provider == "antigravity" else "gemini-2.5-pro")
+    model_profile = existing_profile or (
+        "antigravity_hybrid" if profile.is_apple_silicon and cloud_provider == "antigravity" else ("hybrid" if profile.is_apple_silicon else "cloud")
+    )
+
+    anthropic_key = existing_anthropic_key
+    openai_key = existing_openai_key
+    gemini_key = existing_gemini_key
+    antigravity_token = existing_antigravity_token
+
+    web_search_provider = existing_search or "duckduckgo"
+    tavily_key = existing_tavily_key
+    brave_key = existing_brave_key
+
+    telegram_token = existing_telegram or ""
+    telegram_allowed = existing_telegram_users or ""
+    discord_token = existing_discord or ""
+    discord_webhook = existing_discord_hook or ""
+
+    provider_name_map = {
+        "antigravity": "Google Antigravity",
+        "anthropic": "Anthropic",
+        "openai": "OpenAI",
+        "gemini": "Google Gemini",
+        "local": "Local Offline Model",
+    }
 
     if not non_interactive and not defaults_only:
         # Step 1: Model Provider Selection
-        provider_options = [
-            ("antigravity", "Connect Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detect IDE session)"),
-            ("anthropic", "Enter Anthropic API Key (Claude 3.5 Sonnet / Opus)"),
-            ("openai", "Enter OpenAI API Key (GPT-4o / o1 / o3-mini)"),
-            ("gemini", "Enter Google Gemini API Key (Gemini 2.5 Pro / Flash)"),
-            ("local", "Use Local Offline Model (Apple Silicon MLX / Ollama — Zero egress)"),
-        ]
-        p_idx = select_option(
-            "Select Primary Model Provider & Brain:",
-            provider_options,
-            default_index=0,
-        )
-        selected_provider_key = provider_options[p_idx][0]
+        if should_run_model:
+            provider_options: list[tuple[str, str]] = []
+            if is_already_configured and existing_provider and existing_model_id:
+                disp_prov = provider_name_map.get(existing_provider, existing_provider)
+                provider_options.append(("keep", f"Use currently configured ({disp_prov} • {existing_model_id})"))
 
-        if selected_provider_key == "antigravity":
-            cloud_provider = "antigravity"
-            model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
-            provider_title = "Google Antigravity"
+            provider_options.extend([
+                ("antigravity", "Connect Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detect IDE session)"),
+                ("anthropic", "Enter Anthropic API Key (Claude 3.5 Sonnet / Opus)"),
+                ("openai", "Enter OpenAI API Key (GPT-4o / o1 / o3-mini)"),
+                ("gemini", "Enter Google Gemini API Key (Gemini 2.5 Pro / Flash)"),
+                ("local", "Use Local Offline Model (Apple Silicon MLX / Ollama — Zero egress)"),
+            ])
+            p_idx = select_option(
+                "Select Primary Model Provider & Brain:",
+                provider_options,
+                default_index=0,
+            )
+            selected_provider_key = provider_options[p_idx][0]
 
-            is_valid_token = _probe_antigravity_token(antigravity_token)
-            if is_valid_token:
-                print("  ✓ Active Google Antigravity session verified ($0 Day-1 Free Tier)")
-            else:
-                auth_options = [
-                    ("browser", "Sign in with Google in browser (Browser PKCE OAuth 2.0)"),
-                    ("manual", "Enter OAuth token manually (ya29... / 1//...)"),
-                    ("skip", "Skip for now (configure later)"),
-                ]
-                a_idx = select_option("Google Antigravity Authentication:", auth_options, default_index=0)
-                chosen_auth = auth_options[a_idx][0]
+            if selected_provider_key == "keep":
+                cloud_provider = existing_provider
+                cloud_model_id = existing_model_id
+                model_profile = existing_profile or (
+                    "antigravity_hybrid" if profile.is_apple_silicon and cloud_provider == "antigravity" else ("hybrid" if profile.is_apple_silicon else "cloud")
+                )
+                disp_prov = provider_name_map.get(cloud_provider, cloud_provider)
+                print(f"  ✓ Using currently configured model: {disp_prov} ({cloud_model_id})\n")
 
-                if chosen_auth == "browser":
-                    pkce = ag_mgr.generate_pkce_pair()
-                    auth_url = ag_mgr.build_authorization_url(pkce["challenge"])
-                    print("\n  1. Opening Google Antigravity Sign-In in your browser...")
-                    print(f"     URL: {auth_url}\n")
-                    try:
-                        import webbrowser
+            elif selected_provider_key == "antigravity":
+                cloud_provider = "antigravity"
+                model_profile = "antigravity_hybrid" if profile.is_apple_silicon else "antigravity"
+                provider_title = "Google Antigravity"
 
-                        webbrowser.open(auth_url)
-                    except Exception:
-                        pass
-                    print("  2. After signing in, copy the redirected URL from your browser address bar")
-                    print("     (e.g., http://localhost:8420/?code=... or just the code parameter).")
-                    code_in = input("  Paste redirected URL or authorization code: ").strip()
-                    if code_in:
+                is_valid_token = _probe_antigravity_token(antigravity_token)
+                if is_valid_token:
+                    print("  ✓ Active Google Antigravity session verified ($0 Day-1 Free Tier)")
+                else:
+                    auth_options: list[tuple[str, str]] = []
+                    if antigravity_token:
+                        tok_preview = antigravity_token[:12] if len(antigravity_token) > 12 else antigravity_token
+                        auth_options.append(("keep", f"Use currently configured token ({tok_preview}...)"))
+                    auth_options.extend([
+                        ("browser", "Sign in with Google in browser (Browser PKCE OAuth 2.0)"),
+                        ("manual", "Enter OAuth token manually (ya29... / 1//...)"),
+                        ("skip", "Skip for now (configure later)"),
+                    ])
+                    a_idx = select_option("Google Antigravity Authentication:", auth_options, default_index=0)
+                    chosen_auth = auth_options[a_idx][0]
+
+                    if chosen_auth == "keep":
+                        print("  ✓ Keeping currently configured Antigravity token.")
+                    elif chosen_auth == "browser":
+                        pkce = ag_mgr.generate_pkce_pair()
+                        auth_url = ag_mgr.build_authorization_url(pkce["challenge"])
+                        print("\n  1. Opening Google Antigravity Sign-In in your browser...")
+                        print(f"     URL: {auth_url}\n")
                         try:
-                            cred = ag_mgr.exchange_code_for_tokens(code_in, pkce["verifier"])
-                            antigravity_token = cred.access_token
-                            print(f"\n  ✓ Successfully authenticated with Google Antigravity!\n")
-                        except Exception as exc:
-                            print(f"\n  ✖ OAuth exchange error: {exc}\n")
-                elif chosen_auth == "manual":
-                    k_ag = prompt_secret("  Enter Antigravity OAuth Token: ")
-                    if k_ag:
-                        antigravity_token = k_ag
+                            import webbrowser
 
-            print("  ◈ Querying available models from Google Antigravity...")
-            discovered_models = fetch_available_models("antigravity", api_key=antigravity_token)
-            if discovered_models:
-                m_idx = select_option(f"Select Primary {provider_title} Model:", discovered_models, default_index=0)
-                cloud_model_id = discovered_models[m_idx][0]
-            else:
-                cloud_model_id = "gemini-2.5-pro"
-            print()
+                            webbrowser.open(auth_url)
+                        except Exception:
+                            pass
+                        print("  2. After signing in, copy the redirected URL from your browser address bar")
+                        print("     (e.g., http://localhost:8420/?code=... or just the code parameter).")
+                        code_in = input("  Paste redirected URL or authorization code: ").strip()
+                        if code_in:
+                            try:
+                                cred = ag_mgr.exchange_code_for_tokens(code_in, pkce["verifier"])
+                                antigravity_token = cred.access_token
+                                print(f"\n  ✓ Successfully authenticated with Google Antigravity!\n")
+                            except Exception as exc:
+                                print(f"\n  ✖ OAuth exchange error: {exc}\n")
+                    elif chosen_auth == "manual":
+                        k_ag = prompt_secret("  Enter Antigravity OAuth Token: ")
+                        if k_ag:
+                            antigravity_token = k_ag
 
-        elif selected_provider_key == "anthropic":
-            cloud_provider = "anthropic"
-            model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
-            provider_title = "Anthropic"
+                print("  ◈ Querying available models from Google Antigravity...")
+                discovered_models = fetch_available_models("antigravity", api_key=antigravity_token)
+                model_options: list[tuple[str, str]] = []
+                if existing_model_id and existing_provider == "antigravity":
+                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                for mid, mlabel in (discovered_models or []):
+                    if mid != existing_model_id:
+                        model_options.append((mid, mlabel))
 
-            if not anthropic_key:
-                anthropic_key = prompt_secret("Enter Anthropic API Key (sk-ant-...): ")
+                if model_options:
+                    m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
+                    chosen_mid = model_options[m_idx][0]
+                    cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                else:
+                    cloud_model_id = existing_model_id or "claude-opus-4-6-thinking"
+                print(f"  ✓ Active model selected: {cloud_model_id}\n")
 
-            print("  ◈ Querying available models from Anthropic...")
-            discovered_models = fetch_available_models("anthropic", api_key=anthropic_key)
-            if discovered_models:
-                m_idx = select_option(f"Select Primary {provider_title} Model:", discovered_models, default_index=0)
-                cloud_model_id = discovered_models[m_idx][0]
-            else:
-                cloud_model_id = "claude-3-5-sonnet"
-            print()
+            elif selected_provider_key == "anthropic":
+                cloud_provider = "anthropic"
+                model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+                provider_title = "Anthropic"
 
-        elif selected_provider_key == "openai":
-            cloud_provider = "openai"
-            model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
-            provider_title = "OpenAI"
+                if not anthropic_key:
+                    anthropic_key = prompt_secret("Enter Anthropic API Key (sk-ant-...): ")
+                else:
+                    k_prev = f"...{anthropic_key[-4:]}" if len(anthropic_key) >= 4 else "configured"
+                    new_key = prompt_secret(f"Enter Anthropic API Key (Press Enter to keep currently configured {k_prev}): ")
+                    if new_key.strip():
+                        anthropic_key = new_key.strip()
 
-            if not openai_key:
-                openai_key = prompt_secret("Enter OpenAI API Key (sk-...): ")
+                print("  ◈ Querying available models from Anthropic...")
+                discovered_models = fetch_available_models("anthropic", api_key=anthropic_key)
+                model_options = []
+                if existing_model_id and existing_provider == "anthropic":
+                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                for mid, mlabel in (discovered_models or []):
+                    if mid != existing_model_id:
+                        model_options.append((mid, mlabel))
 
-            print("  ◈ Querying available models from OpenAI...")
-            discovered_models = fetch_available_models("openai", api_key=openai_key)
-            if discovered_models:
-                m_idx = select_option(f"Select Primary {provider_title} Model:", discovered_models, default_index=0)
-                cloud_model_id = discovered_models[m_idx][0]
-            else:
-                cloud_model_id = "gpt-4o"
-            print()
+                if model_options:
+                    m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
+                    chosen_mid = model_options[m_idx][0]
+                    cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                else:
+                    cloud_model_id = existing_model_id or "claude-3-5-sonnet"
+                print(f"  ✓ Active model selected: {cloud_model_id}\n")
 
-        elif selected_provider_key == "gemini":
-            cloud_provider = "gemini"
-            model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
-            provider_title = "Google Gemini"
+            elif selected_provider_key == "openai":
+                cloud_provider = "openai"
+                model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+                provider_title = "OpenAI"
 
-            if not gemini_key:
-                gemini_key = prompt_secret("Enter Gemini API Key (AIza...): ")
+                if not openai_key:
+                    openai_key = prompt_secret("Enter OpenAI API Key (sk-...): ")
+                else:
+                    k_prev = f"...{openai_key[-4:]}" if len(openai_key) >= 4 else "configured"
+                    new_key = prompt_secret(f"Enter OpenAI API Key (Press Enter to keep currently configured {k_prev}): ")
+                    if new_key.strip():
+                        openai_key = new_key.strip()
 
-            print("  ◈ Querying available models from Google Gemini...")
-            discovered_models = fetch_available_models("gemini", api_key=gemini_key)
-            if discovered_models:
-                m_idx = select_option(f"Select Primary {provider_title} Model:", discovered_models, default_index=0)
-                cloud_model_id = discovered_models[m_idx][0]
-            else:
-                cloud_model_id = "gemini-2.5-pro"
-            print()
+                print("  ◈ Querying available models from OpenAI...")
+                discovered_models = fetch_available_models("openai", api_key=openai_key)
+                model_options = []
+                if existing_model_id and existing_provider == "openai":
+                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                for mid, mlabel in (discovered_models or []):
+                    if mid != existing_model_id:
+                        model_options.append((mid, mlabel))
 
-        elif selected_provider_key == "local":
-            cloud_provider = "local"
-            model_profile = "local"
-            provider_title = "Local"
+                if model_options:
+                    m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
+                    chosen_mid = model_options[m_idx][0]
+                    cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                else:
+                    cloud_model_id = existing_model_id or "gpt-4o"
+                print(f"  ✓ Active model selected: {cloud_model_id}\n")
 
-            print("  ◈ Checking local model runtimes...")
-            discovered_models = fetch_available_models("local")
-            if profile.is_apple_silicon:
-                mlx_models = [
-                    ("mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit (Apple Silicon MLX)"),
-                    ("mlx-community/Llama-3.2-3B-Instruct-4bit", "mlx-community/Llama-3.2-3B-Instruct-4bit (Fast MLX)"),
-                ]
-                all_local = mlx_models + discovered_models
-            else:
-                all_local = discovered_models
+            elif selected_provider_key == "gemini":
+                cloud_provider = "gemini"
+                model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
+                provider_title = "Google Gemini"
 
-            if all_local:
-                m_idx = select_option(f"Select Primary {provider_title} Model:", all_local, default_index=0)
-                cloud_model_id = all_local[m_idx][0]
-            else:
-                cloud_model_id = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
-            print("  ✓ Local offline profile configured. Zero external network egress.")
-            print()
+                if not gemini_key:
+                    gemini_key = prompt_secret("Enter Gemini API Key (AIza...): ")
+                else:
+                    k_prev = f"...{gemini_key[-4:]}" if len(gemini_key) >= 4 else "configured"
+                    new_key = prompt_secret(f"Enter Gemini API Key (Press Enter to keep currently configured {k_prev}): ")
+                    if new_key.strip():
+                        gemini_key = new_key.strip()
 
-        print()
+                print("  ◈ Querying available models from Google Gemini...")
+                discovered_models = fetch_available_models("gemini", api_key=gemini_key)
+                model_options = []
+                if existing_model_id and existing_provider == "gemini":
+                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                for mid, mlabel in (discovered_models or []):
+                    if mid != existing_model_id:
+                        model_options.append((mid, mlabel))
+
+                if model_options:
+                    m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
+                    chosen_mid = model_options[m_idx][0]
+                    cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                else:
+                    cloud_model_id = existing_model_id or "gemini-2.5-pro"
+                print(f"  ✓ Active model selected: {cloud_model_id}\n")
+
+            elif selected_provider_key == "local":
+                cloud_provider = "local"
+                model_profile = "local"
+                provider_title = "Local"
+
+                print("  ◈ Checking local model runtimes...")
+                discovered_models = fetch_available_models("local")
+                if profile.is_apple_silicon:
+                    mlx_models = [
+                        ("mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit (Apple Silicon MLX)"),
+                        ("mlx-community/Llama-3.2-3B-Instruct-4bit", "mlx-community/Llama-3.2-3B-Instruct-4bit (Fast MLX)"),
+                    ]
+                    all_local = mlx_models + discovered_models
+                else:
+                    all_local = discovered_models
+
+                model_options = []
+                if existing_model_id and existing_provider == "local":
+                    model_options.append(("keep", f"Use currently configured ({existing_model_id})"))
+                for mid, mlabel in all_local:
+                    if mid != existing_model_id:
+                        model_options.append((mid, mlabel))
+
+                if model_options:
+                    m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
+                    chosen_mid = model_options[m_idx][0]
+                    cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                else:
+                    cloud_model_id = existing_model_id or "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+                print("  ✓ Local offline profile configured. Zero external network egress.\n")
 
         # Step 2: Web Search Provider Selection
-        search_options = [
-            ("duckduckgo", "DuckDuckGo Search (100% Free, zero API key required, instant ready)"),
-            ("tavily", "Tavily Search API (Optimized for AI agents & clean markdown extraction)"),
-            ("brave", "Brave Search API (Fast, independent web search index)"),
-            ("none", "Disabled"),
-        ]
-        s_idx = select_option(
-            "Select Web Search Engine for Autonomous Research:",
-            search_options,
-            default_index=0,
-        )
-        web_search_provider = search_options[s_idx][0]
-
-        if web_search_provider == "tavily" and not tavily_key:
-            tavily_key = prompt_secret("  Enter Tavily API Key (tvly-...): ")
-        elif web_search_provider == "brave" and not brave_key:
-            brave_key = prompt_secret("  Enter Brave Search API Key (BSA...): ")
-
-        print()
+        if should_run_search:
+            search_options: list[tuple[str, str]] = []
+            if is_already_configured and existing_search:
+                search_options.append(("keep", f"Use currently configured ({existing_search})"))
+            search_options.extend([
+                ("duckduckgo", "DuckDuckGo Search (100% Free, zero API key required, instant ready)"),
+                ("tavily", "Tavily Search API (Optimized for AI agents & clean markdown extraction)"),
+                ("brave", "Brave Search API (Fast, independent web search index)"),
+                ("none", "Disabled"),
+            ])
+            s_idx = select_option(
+                "Select Web Search Engine for Autonomous Research:",
+                search_options,
+                default_index=0,
+            )
+            chosen_search = search_options[s_idx][0]
+            if chosen_search == "keep":
+                web_search_provider = existing_search
+                print(f"  ✓ Using currently configured search engine: {existing_search}\n")
+            else:
+                web_search_provider = chosen_search
+                if web_search_provider == "tavily":
+                    if not tavily_key:
+                        tavily_key = prompt_secret("  Enter Tavily API Key (tvly-...): ")
+                    else:
+                        k_prev = f"...{tavily_key[-4:]}" if len(tavily_key) >= 4 else "configured"
+                        new_t = prompt_secret(f"  Enter Tavily API Key (Press Enter to keep currently configured {k_prev}): ")
+                        if new_t.strip():
+                            tavily_key = new_t.strip()
+                elif web_search_provider == "brave":
+                    if not brave_key:
+                        brave_key = prompt_secret("  Enter Brave Search API Key (BSA...): ")
+                    else:
+                        k_prev = f"...{brave_key[-4:]}" if len(brave_key) >= 4 else "configured"
+                        new_b = prompt_secret(f"  Enter Brave Search API Key (Press Enter to keep currently configured {k_prev}): ")
+                        if new_b.strip():
+                            brave_key = new_b.strip()
+                print()
 
         # Step 3: Remote Messaging & Bot Gateways
-        messaging_options = [
-            ("skip", "Skip for now (Terminal Cockpit and Web Surface only)"),
-            ("telegram", "Configure Telegram Bot (Telegram bot token + allowed user IDs)"),
-            ("discord", "Configure Discord Bot (Discord bot token + channel webhook)"),
-            ("both", "Configure Both (Telegram + Discord)"),
-        ]
-        m_idx = select_option(
-            "Configure Remote Messaging Gateways (Control HEX from Phone):",
-            messaging_options,
-            default_index=0,
-        )
-        chosen_msg = messaging_options[m_idx][0]
+        if should_run_messaging:
+            messaging_options: list[tuple[str, str]] = []
+            has_existing_msg = is_already_configured and bool(existing_telegram or existing_discord or (existing_config.get("messaging")))
+            if has_existing_msg:
+                cfg_parts = []
+                if existing_telegram:
+                    cfg_parts.append("Telegram")
+                if existing_discord:
+                    cfg_parts.append("Discord")
+                m_summary = " + ".join(cfg_parts) if cfg_parts else "Disabled / Skip"
+                messaging_options.append(("keep", f"Use currently configured ({m_summary})"))
 
-        if chosen_msg in ("telegram", "both") and not telegram_token:
-            telegram_token = prompt_secret("  Enter Telegram Bot Token: ")
-            raw_users = input("  Allowed Telegram User IDs / Names (comma-separated, or Enter for all): ").strip()
-            if raw_users:
-                telegram_allowed = raw_users
-
-        if chosen_msg in ("discord", "both") and not discord_token:
-            discord_token = prompt_secret("  Enter Discord Bot Token: ")
-            raw_hook = input("  Discord Webhook URL (optional, press Enter to skip): ").strip()
-            if raw_hook:
-                discord_webhook = raw_hook
-
-        print()
+            messaging_options.extend([
+                ("skip", "Skip for now (Terminal Cockpit and Web Surface only)"),
+                ("telegram", "Configure Telegram Bot (Telegram bot token + allowed user IDs)"),
+                ("discord", "Configure Discord Bot (Discord bot token + channel webhook)"),
+                ("both", "Configure Both (Telegram + Discord)"),
+            ])
+            m_idx = select_option(
+                "Configure Remote Messaging Gateways (Control HEX from Phone):",
+                messaging_options,
+                default_index=0,
+            )
+            chosen_msg = messaging_options[m_idx][0]
+            if chosen_msg == "keep":
+                print(f"  ✓ Using currently configured messaging gateways.\n")
+            else:
+                if chosen_msg in ("telegram", "both"):
+                    if not telegram_token:
+                        telegram_token = prompt_secret("  Enter Telegram Bot Token: ")
+                    else:
+                        k_prev = f"...{telegram_token[-4:]}" if len(telegram_token) >= 4 else "configured"
+                        new_tg = prompt_secret(f"  Enter Telegram Bot Token (Press Enter to keep currently configured {k_prev}): ")
+                        if new_tg.strip():
+                            telegram_token = new_tg.strip()
+                    raw_users = input(f"  Allowed Telegram User IDs / Names (Press Enter to keep '{telegram_allowed}'): ").strip()
+                    if raw_users:
+                        telegram_allowed = raw_users
+                if chosen_msg in ("discord", "both"):
+                    if not discord_token:
+                        discord_token = prompt_secret("  Enter Discord Bot Token: ")
+                    else:
+                        k_prev = f"...{discord_token[-4:]}" if len(discord_token) >= 4 else "configured"
+                        new_dc = prompt_secret(f"  Enter Discord Bot Token (Press Enter to keep currently configured {k_prev}): ")
+                        if new_dc.strip():
+                            discord_token = new_dc.strip()
+                    raw_hook = input(f"  Discord Webhook URL (Press Enter to keep '{discord_webhook}'): ").strip()
+                    if raw_hook:
+                        discord_webhook = raw_hook
+                print()
 
     # Write credentials securely
     creds_content = [
@@ -415,10 +627,21 @@ def run_onboard_wizard(
     except Exception:
         pass
 
+    # Also update project-level .hex/credentials.env if present in current working directory and not using custom config_dir
+    local_creds = Path.cwd() / ".hex" / "credentials.env"
+    if config_dir is None and local_creds.is_file() and local_creds.resolve() != credentials_file.resolve():
+        try:
+            local_creds.write_text("\n".join(creds_content) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
     # Storage configuration
-    db_backend = "sqlite"
-    data_dir = cfg_dir / "data"
+    db_backend = (existing_config.get("storage") or {}).get("backend") or "sqlite"
+    data_dir_str = (existing_config.get("storage") or {}).get("data_dir") or str(cfg_dir / "data")
+    data_dir = Path(data_dir_str)
     data_dir.mkdir(parents=True, exist_ok=True)
+    cow_backend = (existing_config.get("cow") or {}).get("backend") or profile.cow_backend
+    sandbox_backend = (existing_config.get("sandbox") or {}).get("backend") or profile.sandbox_backend
 
     # Write config.yaml
     config_yaml = f"""# HEX Autonomous AI Workbench Configuration
@@ -438,19 +661,85 @@ storage:
   backend: "{db_backend}"
   data_dir: "{data_dir}"
 cow:
-  backend: "{profile.cow_backend}"
+  backend: "{cow_backend}"
 sandbox:
-  backend: "{profile.sandbox_backend}"
+  backend: "{sandbox_backend}"
 webhooks:
   dry_run: true
   public_base_url: "http://127.0.0.1:8420"
 """
     config_file.write_text(config_yaml, encoding="utf-8")
 
+    # If current working directory has a project-scoped .hex/config.yaml, synchronize model settings
+    local_proj_cfg = Path.cwd() / ".hex" / "config.yaml"
+    if config_dir is None and local_proj_cfg.is_file() and local_proj_cfg.resolve() != config_file.resolve():
+        try:
+            import yaml
+
+            p_data = yaml.safe_load(local_proj_cfg.read_text(encoding="utf-8")) or {}
+            if isinstance(p_data, dict):
+                p_data.setdefault("model", {})
+                p_data["model"]["cloud_provider"] = cloud_provider
+                p_data["model"]["cloud_model_id"] = cloud_model_id
+                p_data["model"]["profile"] = model_profile
+                local_proj_cfg.write_text(yaml.dump(p_data, sort_keys=False), encoding="utf-8")
+        except Exception:
+            pass
+
     # Hydrate current running process environment immediately
     load_hex_environment(config_dir=cfg_dir, override=True)
 
-    # Initialize ledger and seed built-in skills with SkillSpector
+    # Return early if specific component stage was targeted
+    if is_model_stage:
+        print("=" * 64)
+        print("✓ Model setup completed successfully!")
+        print(f"  • Primary Provider: {cloud_provider}")
+        print(f"  • Selected Model:   {cloud_model_id}")
+        print(f"  • Profile:          {model_profile}")
+        print(f"  • Configuration:    {config_file}")
+        print("=" * 64)
+        print()
+        return {
+            "status": "ready",
+            "stage": "model",
+            "config_file": str(config_file),
+            "credentials_file": str(credentials_file),
+            "cloud_provider": cloud_provider,
+            "cloud_model_id": cloud_model_id,
+            "model": cloud_model_id,
+        }
+
+    if is_search_stage:
+        print("=" * 64)
+        print("✓ Web search setup completed successfully!")
+        print(f"  • Search Engine:    {web_search_provider}")
+        print(f"  • Configuration:    {config_file}")
+        print("=" * 64)
+        print()
+        return {
+            "status": "ready",
+            "stage": "search",
+            "config_file": str(config_file),
+            "credentials_file": str(credentials_file),
+            "web_search_provider": web_search_provider,
+        }
+
+    if is_messaging_stage:
+        print("=" * 64)
+        print("✓ Messaging gateways setup completed successfully!")
+        print(f"  • Telegram Bot:     {'Configured' if telegram_token else 'Disabled'}")
+        print(f"  • Discord Bot:      {'Configured' if discord_token else 'Disabled'}")
+        print(f"  • Configuration:    {config_file}")
+        print("=" * 64)
+        print()
+        return {
+            "status": "ready",
+            "stage": "messaging",
+            "config_file": str(config_file),
+            "credentials_file": str(credentials_file),
+        }
+
+    # Initialize ledger and seed built-in skills with SkillSpector for full setup
     repo_candidate = Path(__file__).resolve().parents[2]
     workspace_root = repo_candidate if (repo_candidate / "pyproject.toml").is_file() else Path.cwd()
     orch = HarnessOrchestrator(data_dir=data_dir, default_workspace=workspace_root)

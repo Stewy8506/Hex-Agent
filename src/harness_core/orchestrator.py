@@ -380,9 +380,10 @@ class HarnessOrchestrator:
             {"step_id": "fp_graph", "tool_id": "query_graphify", "args": {}, "risk_class": "R1"},
         ]
 
+        tool_results: list[dict[str, Any]] = []
         try:
             for idx, st in enumerate(steps, start=1):
-                self.gateway.invoke(
+                inv_res = self.gateway.invoke(
                     task_id=task_id,
                     attempt_id=attempt_id,
                     step_id=st.get("step_id", f"fp_{idx}"),
@@ -391,6 +392,11 @@ class HarnessOrchestrator:
                     args=st.get("args", {}),
                     workspace_dir=source_ws,
                 )
+                tool_results.append({
+                    "step_id": st.get("step_id", f"fp_{idx}"),
+                    "tool_id": st["tool_id"],
+                    "result": inv_res,
+                })
         except PolicyBlockedError as exc:
             self.ledger.update_attempt(attempt_id, status="FAILED", failure_class="POLICY_BLOCKED")
             return self.ledger.transition_task(
@@ -401,6 +407,37 @@ class HarnessOrchestrator:
                 fencing_token=fencing_token,
                 terminal_reason=str(exc),
             )
+
+        # Synthesize model response using active LLM / router if available
+        synthesized_text = ""
+        if hasattr(self, "router") and self.router is not None:
+            try:
+                findings_blocks = []
+                for tr in tool_results:
+                    tid = tr["tool_id"]
+                    r_dict = tr.get("result") or {}
+                    if isinstance(r_dict, dict):
+                        clean_dict = {k: v for k, v in r_dict.items() if not k.startswith("_")}
+                    else:
+                        clean_dict = r_dict
+                    findings_blocks.append(f"Tool `{tid}` output:\n{json.dumps(clean_dict, default=str)[:3000]}")
+
+                context_str = "\n\n".join(findings_blocks)
+                prompt = (
+                    f"User Request / Goal: {task.get('goal', '')}\n\n"
+                    f"Workspace Context & Findings:\n{context_str}\n\n"
+                    "Synthesize a direct, helpful, and concise response to the user's prompt based on the workspace findings."
+                )
+                decision, model_resp = self.router.execute_routed_request(
+                    prompt=prompt,
+                    task_class="fast_path",
+                    budget_remaining=1.0,
+                    workspace_dir=source_ws,
+                )
+                if model_resp and getattr(model_resp, "text", None):
+                    synthesized_text = model_resp.text.strip()
+            except Exception:
+                pass
 
         self.ledger.transition_task(
             task_id,
@@ -417,7 +454,11 @@ class HarnessOrchestrator:
             modified_files=[],
             run_tests=False,
         )
-        self.ledger.update_attempt(attempt_id, status="SUCCEEDED", head_tree_sha=base_tree_sha)
+        self.ledger.update_attempt(
+            attempt_id,
+            status="SUCCEEDED",
+            head_tree_sha=base_tree_sha,
+        )
         return self.ledger.transition_task(
             task_id,
             TaskState.SUCCEEDED,
@@ -425,6 +466,7 @@ class HarnessOrchestrator:
             attempt_id=attempt_id,
             workspace_tree_sha=base_tree_sha,
             fencing_token=fencing_token,
+            payload={"result": synthesized_text} if synthesized_text else {},
         )
 
     def generate_repair_patch(

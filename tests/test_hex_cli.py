@@ -131,5 +131,54 @@ class TestHexCLI(unittest.TestCase):
             self.assertTrue(kwargs["quiet"])
 
 
+    def test_hex_setup_model_subcommand(self) -> None:
+        """Verify 'hex setup model' runs only model setup stage and updates configuration."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["setup", "model", "--config-dir", str(self.config_dir), "--defaults"])
+        self.assertEqual(code, 0)
+        self.assertTrue((self.config_dir / "config.yaml").is_file())
+        output = buf.getvalue()
+        self.assertIn("Model setup completed successfully!", output)
+
+    def test_hex_setup_invalid_stage_exits_with_error(self) -> None:
+        """Verify 'hex setup invalid_stage' fails cleanly with exit code 1."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["setup", "invalid_target_xyz", "--config-dir", str(self.config_dir)])
+        self.assertEqual(code, 1)
+        self.assertIn("Unrecognized setup target: 'invalid_target_xyz'", buf.getvalue())
+
+    def test_hex_setup_use_currently_configured_stage_options(self) -> None:
+        """Verify all setup stages offer 'Use currently configured' when previous config exists."""
+        from unittest.mock import patch
+
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        (self.config_dir / "credentials.env").write_text(
+            "HEX_CLOUD_PROVIDER=anthropic\nHEX_CLOUD_MODEL_ID=claude-3-5-sonnet\nHEX_WEB_SEARCH_PROVIDER=tavily\nTAVILY_API_KEY=tvly-test\n"
+        )
+        (self.config_dir / "config.yaml").write_text(
+            "model:\n  cloud_provider: anthropic\n  cloud_model_id: claude-3-5-sonnet\nweb_search:\n  provider: tavily\n"
+        )
+
+        with patch("harness_core.onboard.select_option") as mock_sel:
+            # Select 0 ("Use currently configured") for model, 0 for search, 0 for messaging
+            mock_sel.side_effect = [0, 0, 0]
+            res = run_onboard_wizard(config_dir=self.config_dir, non_interactive=False)
+            self.assertEqual(res["cloud_provider"], "anthropic")
+            self.assertEqual(res["cloud_model_id"], "claude-3-5-sonnet")
+            self.assertEqual(res["web_search_provider"], "tavily")
+
+            # Check that option 0 in model stage was 'keep'
+            model_options = mock_sel.call_args_list[0][0][1]
+            self.assertEqual(model_options[0][0], "keep")
+            self.assertIn("currently configured", model_options[0][1])
+
+            # Check that option 0 in search stage was 'keep'
+            search_options = mock_sel.call_args_list[1][0][1]
+            self.assertEqual(search_options[0][0], "keep")
+            self.assertIn("currently configured", search_options[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()

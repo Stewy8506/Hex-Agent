@@ -182,13 +182,14 @@ model:
             detected = _detect_default_local_model()
             self.assertEqual(detected, "local_deterministic_compressor")
 
-    def test_conversational_greeting_short_circuit(self):
+    def test_user_prompt_submits_to_orchestrator(self):
         from harness_core.tui import HexConsole
         orch = MagicMock()
+        orch.submit_and_run.return_value = {"status": "SUCCEEDED", "result": "Hello! How can I help you today?"}
         console = HexConsole(orch, project_id="test_proj", quiet=True)
-        # Verify that greeting doesn't call submit_and_run
+        # Verify that prompts (including greetings) are submitted to the orchestrator/model
         console.handle_user_prompt("hey")
-        orch.submit_and_run.assert_not_called()
+        orch.submit_and_run.assert_called_once()
 
     def test_ctrl_c_handled_gracefully_in_repl(self):
         from harness_core.tui import HexConsole

@@ -27,7 +27,7 @@ from .db import LedgerStore, canonical_json, utcnow_iso
 from .gateway import redact_secrets
 from .models import TaskBudget
 from .providers.antigravity_provider import AntigravityModelProvider
-from .providers.base import ModelProvider, ModelResponse, PolicyBlockedError
+from .providers.base import ModelProvider, ModelResponse, PolicyBlockedError, ProviderUnavailableError
 from .providers.cloud_provider import CloudModelProvider
 from .providers.mlx_provider import LocalMLXModelProvider
 
@@ -372,12 +372,31 @@ class TwoTierModelRouter:
                     f"Cloud egress forbidden for data classification '{data_classification}'. "
                     "Data must remain within 100% local boundary."
                 )
-            response = self.cloud_provider.generate(
-                prompt=effective_prompt,
-                data_classification=data_classification,
-                budget=budget,
-                **kwargs,
-            )
+            try:
+                response = self.cloud_provider.generate(
+                    prompt=effective_prompt,
+                    data_classification=data_classification,
+                    budget=budget,
+                    **kwargs,
+                )
+            except ProviderUnavailableError as pue:
+                # Fail over to Tier-1 Local M4 if in hybrid profile and local provider is initialized
+                if self.profile in ("hybrid", "antigravity_hybrid") and self.local_provider is not None:
+                    try:
+                        response = self.local_provider.generate(
+                            prompt=effective_prompt,
+                            data_classification=data_classification,
+                            budget=budget,
+                            **kwargs,
+                        )
+                        decision.tier = "tier1_local_m4"
+                        decision.provider = self.local_provider.provider_id
+                        decision.model_id = self.local_provider.model_id
+                        decision.reason = f"Cloud unavailable ({pue}); failed over to Tier 1 Local M4."
+                    except Exception:
+                        raise pue
+                else:
+                    raise pue
             decision.latency_ms = response.latency_ms
             decision.cost_usd = response.usage.cost_usd
             decision.input_tokens = response.usage.input_tokens

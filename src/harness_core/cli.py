@@ -110,6 +110,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=False)
 
     p_setup = sub.add_parser("setup", aliases=["onboard"], help="Run interactive setup wizard for hardware & configuration (alias: hex onboard)")
+    p_setup.add_argument("stage", nargs="?", default=None, help="Specific component to configure (e.g. 'model', 'search', 'messaging', or omit for full setup)")
     p_setup.add_argument("--config-dir", default=None, help="Custom configuration directory (defaults to ~/.hex)")
     p_setup.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode using hardware defaults")
     p_setup.add_argument("--defaults", dest="defaults_only", action="store_true", help="Accept all hardware auto-detected defaults")
@@ -419,11 +420,14 @@ def _main_impl(argv: list[str] | None = None) -> int:
         from .onboard import run_onboard_wizard
 
         cfg_dir = Path(args.config_dir) if getattr(args, "config_dir", None) else None
-        run_onboard_wizard(
+        res = run_onboard_wizard(
             config_dir=cfg_dir,
             non_interactive=getattr(args, "non_interactive", False),
             defaults_only=getattr(args, "defaults_only", False),
+            target_stage=getattr(args, "stage", None),
         )
+        if isinstance(res, dict) and res.get("status") == "error":
+            return 1
         return 0
 
     if args.cmd == "project":
