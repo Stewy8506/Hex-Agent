@@ -212,12 +212,14 @@ class TestSessionBannerAndHermesSplash(unittest.TestCase):
                 width=110,
             )
             plain = strip_ansi(splash)
-            self.assertIn("HEX Autonomous AI Workbench v", plain)
-            self.assertIn("Available Tools", plain)
-            self.assertIn("Available Skills", plain)
+            self.assertIn("HEX Autonomous AI Workbench", plain)
+            self.assertIn("anv.dev", plain)
+            self.assertIn("did you know", plain)
+            self.assertIn("tools", plain)
+            self.assertIn("skills", plain)
             self.assertIn("query_graphify", plain)
-            self.assertIn("nvidia-skillspector-static", plain)
-            self.assertIn("Welcome to HEX Autonomous AI Workbench!", plain)
+            self.assertNotIn("Apple Silicon", plain)
+            self.assertNotIn("Apple M4", plain)
 
     def test_persistent_status_bar_rendering(self):
         bar = render_status_bar(

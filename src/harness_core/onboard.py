@@ -310,6 +310,11 @@ def run_onboard_wizard(
     model_profile = existing_profile or (
         "antigravity_hybrid" if profile.is_apple_silicon and cloud_provider == "antigravity" else ("hybrid" if profile.is_apple_silicon else "cloud")
     )
+    compressor_mode = (
+        existing_creds.get("HEX_COMPRESSOR_MODE")
+        or (existing_config.get("model") or {}).get("compressor_mode")
+        or "deterministic"
+    )
 
     anthropic_key = existing_anthropic_key
     openai_key = existing_openai_key
@@ -758,6 +763,9 @@ def run_onboard_wizard(
     # Write credentials securely
     creds_content = [
         "# HEX Secure Credentials Environment File",
+        f"HEX_CLOUD_PROVIDER={cloud_provider}",
+        f"HEX_CLOUD_MODEL_ID={cloud_model_id}",
+        f"HEX_COMPRESSOR_MODE={compressor_mode}",
         f"HEX_ANTIGRAVITY_TOKEN={antigravity_token}",
         f"HEX_ANTIGRAVITY_REFRESH_TOKEN={ag_cred.refresh_token if ag_cred and ag_cred.refresh_token else existing_creds.get('HEX_ANTIGRAVITY_REFRESH_TOKEN', '')}",
         f"ANTHROPIC_API_KEY={anthropic_key}",

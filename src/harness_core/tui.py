@@ -780,6 +780,47 @@ def render_session_banner(
     return "\n".join(out)
 
 
+HERMES_STYLE_TIPS: tuple[str, ...] = (
+    "/mode switches between plan, agent, and code. Tab on empty prompt cycles.",
+    "/diff inspects unified diffs of uncommitted changes across your workspace.",
+    "/proof displays cryptographic Proof-Carrying Artifact bundles & verification hashes.",
+    "/plan runs fast-path read-only architecture planning without mutating files.",
+    "/blast visualizes Active Graphify AST blast-radius trees and callers.",
+    "/memory recalls cross-session learnings, preferences, and architecture facts.",
+    "/doctor verifies compiler toolchains, sandboxes, CoW stores, and models.",
+)
+
+
+def _resolve_provider_label(orchestrator: Any = None, model_id: str = "") -> str:
+    router = getattr(orchestrator, "router", None) if orchestrator else None
+    if router is not None:
+        c_prov = getattr(router, "cloud_provider", None)
+        if c_prov is not None:
+            pid = getattr(c_prov, "provider_id", "") or ""
+            ptype = str(getattr(c_prov, "provider_type", "") or "")
+            cls_name = type(c_prov).__name__.lower()
+            if "antigravity" in pid or "antigravity" in ptype or "antigravity" in cls_name:
+                return "Google Antigravity"
+            if "anthropic" in pid or "anthropic" in ptype:
+                return "Anthropic"
+            if "openai" in pid or "openai" in ptype:
+                return "OpenAI"
+            if "gemini" in pid or "gemini" in ptype:
+                return "Google Gemini"
+            if "local" in pid or "mlx" in pid or "ollama" in pid:
+                return "Local AI"
+    mid = (model_id or "").lower()
+    if "claude" in mid or "sonnet" in mid or "haiku" in mid:
+        return "Anthropic"
+    if "gpt" in mid or mid.startswith("o1") or mid.startswith("o3") or mid.startswith("o4"):
+        return "OpenAI"
+    if "gemini" in mid:
+        if (Path.home() / ".gemini" / "antigravity").exists():
+            return "Google Antigravity"
+        return "Google Gemini"
+    return "Google Antigravity"
+
+
 def render_hermes_splash(
     orchestrator: Any = None,
     *,
@@ -792,27 +833,30 @@ def render_hermes_splash(
     width: int = 108,
     enable_color: bool = True,
 ) -> str:
-    """Render the full Hermes/OpenCode-style retro-block gradient banner and two-column framed splash card."""
+    """Render the unboxed Hermes/OpenCode-style retro-block gradient banner and two-column splash card."""
     skin = SKIN_REGISTRY.get(skin_name.lower(), SKIN_REGISTRY["amber"])
     total_w = max(80, width)
-    inner_w = total_w - 2
-    left_w = max(32, min(38, inner_w // 3))
-    right_w = inner_w - left_w - 3
 
     def _c(txt: str, fg: tuple[int, int, int] | None = None, bg: tuple[int, int, int] | None = None, bold: bool = False) -> str:
         return colorize_rgb(txt, fg=fg, bg=bg, bold=bold, enabled=enable_color)
 
-    # 1. Retro-block gradient title art
+    # 1. Subtle top 'did you know' tip
+    tip_idx = int(time.time() // 60) % len(HERMES_STYLE_TIPS)
+    tip_text = HERMES_STYLE_TIPS[tip_idx]
+    tip_line = _c("did you know", fg=skin.category_rgb) + _c(" · ", fg=skin.muted_rgb) + _c(tip_text, fg=skin.muted_rgb)
+
+    # 2. Centered Retro-Block Title Banner & Subtitle
     art_lines = HERMES_STYLE_BANNER_FULL if total_w >= 108 else HERMES_STYLE_BANNER_COMPACT
     grad = skin.banner_gradient
     banner_rows = [
         _c(_pad_visible(line, total_w, align="center"), fg=grad[min(idx, len(grad) - 1)], bold=True)
         for idx, line in enumerate(art_lines)
     ]
+    sub_title = _c(_pad_visible("anv.dev", total_w, align="center"), fg=skin.category_rgb, bold=True)
 
-    # 2. Top border with version + upstream git commit SHA
+    # 3. Dynamic metadata resolution
     ws_path = Path(workspace_root or (getattr(orchestrator, "default_workspace", None) or Path.cwd())).resolve()
-    git_sha = "local-cow"
+    git_sha = "local"
     try:
         res = subprocess.run(
             ["git", "rev-parse", "--short=7", "HEAD"],
@@ -832,123 +876,124 @@ def render_hermes_splash(
     except Exception:
         pkg_version = "0.1.0"
 
-    title_plain = f" HEX Autonomous AI Workbench v{pkg_version} · upstream {git_sha} "
-    dash_total = max(2, inner_w - len(title_plain))
-    left_d = dash_total // 2
-    right_d = dash_total - left_d
-    top_border = (
-        _c("┌" + ("─" * left_d), fg=skin.border_rgb)
-        + _c(title_plain, fg=skin.heading_rgb, bold=True)
-        + _c(("─" * right_d) + "┐", fg=skin.border_rgb)
-    )
-    sub_underline = (
-        _c("│", fg=skin.border_rgb)
-        + (" " * left_d)
-        + _c("╌" * len(title_plain), fg=skin.muted_rgb)
-        + (" " * right_d)
-        + _c("│", fg=skin.border_rgb)
-    )
-
-    # 3. Left column: Stipple Caduceus/Hex Emblem + Model + Workspace + Session ID
-    left_lines: list[str] = [""]
-    for idx, eline in enumerate(EMBLEM_ART):
-        rgb = grad[min(idx // 3, len(grad) - 1)]
-        left_lines.append(_c(_pad_visible(eline.strip(), left_w, align="center"), fg=rgb, bold=True))
-    left_lines.append("")
-
-    from .onboard import HardwareProfile
-    prof = HardwareProfile.detect()
-    hw_label = f"Apple Silicon ({prof.machine_model})" if prof.is_apple_silicon else (f"NVIDIA CUDA ({prof.machine_model})" if prof.has_cuda else "Host CPU")
-    comp_display = "local AI" if compressor_mode == "local" else compressor_mode
-    mdl_line = f"{_c(model_id, fg=skin.heading_rgb, bold=True)}{_c(' · ', fg=skin.muted_rgb)}{_c(f'{hw_label} ({comp_display})', fg=skin.category_rgb)}"
-    left_lines.append(_pad_visible(mdl_line, left_w, align="center"))
+    active_model = model_id or getattr(getattr(orchestrator, "router", None), "cloud_model_id", None) or "gemini-3.8-flash-tiered"
+    provider_label = _resolve_provider_label(orchestrator, active_model)
 
     home_str = str(Path.home())
     ws_disp = str(ws_path)
     if ws_disp.startswith(home_str):
         ws_disp = "~" + ws_disp[len(home_str):]
-    ws_disp = _truncate_visible(ws_disp, left_w - 2)
-    left_lines.append(_pad_visible(_c(ws_disp, fg=skin.category_rgb), left_w, align="center"))
 
-    sess = session_id or f"Session: {time.strftime('%Y%m%d_%H%M%S')}"
-    left_lines.append(_pad_visible(_c(_truncate_visible(sess, left_w - 2), fg=skin.muted_rgb), left_w, align="center"))
-    if voice_status:
-        v_upper = voice_status.strip().upper()
-        v_icon = "🎙️" if v_upper == "ON" else ("🔇" if v_upper == "MUTED" else "🎙️")
-        v_badge = f"{v_icon} Voice: {v_upper}"
-        v_fg = skin.accent_rgb if v_upper == "ON" else (skin.warn_rgb if v_upper == "MUTED" else skin.muted_rgb)
-        left_lines.append(_pad_visible(_c(v_badge, fg=v_fg, bold=(v_upper == "ON")), left_w, align="center"))
+    sess_val = session_id or f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    if sess_val.startswith("Session: "):
+        sess_val = sess_val[len("Session: "):]
+    short_sess = sess_val.split("_")[-1] if "_" in sess_val else sess_val[:8]
 
-    # 4. Right column: Categorized Available Tools & Available Skills
-    right_lines: list[str] = [_c("Available Tools", fg=skin.heading_rgb, bold=True)]
+    # 4. Left Column: Emblem Art
+    left_w = 34
+    left_lines: list[str] = []
+    for idx, eline in enumerate(EMBLEM_ART):
+        rgb = grad[min(idx // 3, len(grad) - 1)]
+        left_lines.append(_c(_pad_visible(eline.strip(), left_w, align="center"), fg=rgb, bold=True))
+
+    # 5. Right Column: Dynamic Tools & Stats
     tools_dict = getattr(getattr(orchestrator, "gateway", None), "tools", {}) or {}
     grouped_tools: dict[str, list[str]] = {}
     if tools_dict:
         for tid in sorted(tools_dict.keys()):
-            cat = f"mcp:{tid.split('__', 1)[0]}" if "__" in tid else TOOL_CATEGORY_MAP.get(tid, "general")
-            grouped_tools.setdefault(cat, []).append(tid)
+            if "__" in tid:
+                srv, tname = tid.split("__", 1)
+                grouped_tools.setdefault(f"mcp:{srv}", []).append(tname)
+            else:
+                cat = TOOL_CATEGORY_MAP.get(tid, "general")
+                grouped_tools.setdefault(cat, []).append(tid)
     else:
         grouped_tools = {
             "file": ["list_files", "read_file", "write_file"],
-            "lsp_compiler": ["lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover"],
+            "lsp": ["lsp_diagnostics", "lsp_definition", "lsp_hover"],
             "search": ["web_search"],
-            "ast_graph": ["query_graphify"],
-            "verification": ["run_tests"],
-            "git_ops": ["git_push_remote"],
-            "policy_guard": ["modify_system_policy"],
+            "ast": ["query_graphify"],
+            "test": ["run_tests"],
+            "git": ["git_push_remote"],
         }
 
-    for cat, tnames in grouped_tools.items():
-        prefix = _c(f"{cat}: ", fg=skin.category_rgb)
-        avail = max(12, right_w - len(strip_ansi(prefix)) - 1)
-        right_lines.append(f"{prefix}{_c(_truncate_visible(', '.join(tnames), avail), fg=skin.text_rgb)}")
-    right_lines.append(_c("(0ms Call-Level Journal & R0-R4 Default-Deny Policy active)", fg=skin.muted_rgb))
-    right_lines.append("")
+    total_tools = sum(len(v) for v in grouped_tools.values())
 
-    right_lines.append(_c("Available Skills", fg=skin.heading_rgb, bold=True))
-    db_skills: list[str] = []
+    db_skills_count = 0
     if orchestrator is not None and hasattr(orchestrator, "ledger"):
         try:
             with orchestrator.ledger._lock:
                 if orchestrator.ledger.conn is not None:
-                    rows = orchestrator.ledger.conn.execute(
-                        "SELECT name, status FROM skills ORDER BY created_at DESC"
-                    ).fetchall()
-                    db_skills = [f"{r['name']} ({r['status']})" for r in rows]
+                    row = orchestrator.ledger.conn.execute("SELECT COUNT(*) FROM skills").fetchone()
+                    if row and row[0]:
+                        db_skills_count = row[0]
         except Exception:
-            db_skills = []
+            pass
+    builtin_skills_count = sum(len(g[1]) for g in BUILTIN_SKILL_GROUPS)
+    total_skills = max(db_skills_count, builtin_skills_count)
 
-    if db_skills:
-        prefix = _c("registered: ", fg=skin.category_rgb)
-        avail = max(12, right_w - len(strip_ansi(prefix)) - 1)
-        right_lines.append(f"{prefix}{_c(_truncate_visible(', '.join(db_skills), avail), fg=skin.text_rgb)}")
-
-    for g_name, g_items in BUILTIN_SKILL_GROUPS:
-        prefix = _c(f"{g_name}: ", fg=skin.category_rgb)
-        avail = max(12, right_w - len(strip_ansi(prefix)) - 1)
-        right_lines.append(f"{prefix}{_c(_truncate_visible(', '.join(g_items), avail), fg=skin.text_rgb)}")
-
-    right_lines.append("")
-    total_t = sum(len(v) for v in grouped_tools.values())
-    total_s = len(db_skills) + sum(len(g[1]) for g in BUILTIN_SKILL_GROUPS)
-    right_lines.append(_c(f"{total_t} tools · {total_s} skills · /help for commands", fg=skin.category_rgb))
-
-    # 5. Assemble Two-Column Box
-    max_rows = max(len(left_lines), len(right_lines))
-    vert = _c("│", fg=skin.border_rgb)
-    box_rows = [top_border, sub_underline]
-    for i in range(max_rows):
-        l_cell = _pad_visible(left_lines[i] if i < len(left_lines) else "", left_w)
-        r_cell = _pad_visible(right_lines[i] if i < len(right_lines) else "", right_w)
-        box_rows.append(f"{vert} {l_cell}  {r_cell}{vert}")
-    box_rows.append(_c("└" + ("─" * inner_w) + "┘", fg=skin.border_rgb))
-
-    welcome_lines = [
-        _c("Welcome to HEX Autonomous AI Workbench! Type your message or /help for commands.", fg=skin.text_rgb, bold=True),
-        _c("✦ Tip: hex chat -Q enables quiet mode for programmatic use — suppresses banner and spinner.", fg=skin.category_rgb),
+    right_lines: list[str] = [
+        _c(f"HEX Autonomous AI Workbench  v{pkg_version}", fg=skin.heading_rgb, bold=True) + _c(f"  (upstream {git_sha})", fg=skin.muted_rgb),
+        _c(active_model, fg=skin.accent_rgb, bold=True) + _c(" · ", fg=skin.muted_rgb) + _c(provider_label, fg=skin.category_rgb),
+        _c(ws_disp, fg=skin.muted_rgb),
+        _c(f"Session: {short_sess}", fg=skin.muted_rgb),
     ]
 
-    return "\n".join(banner_rows + [""] + box_rows + [""] + welcome_lines)
+    if voice_status and voice_status.strip().upper() in ("ON", "MUTED"):
+        v_upper = voice_status.strip().upper()
+        v_icon = "🎙️" if v_upper == "ON" else "🔇"
+        right_lines.append(_c(f"{v_icon} Voice: {v_upper}", fg=skin.accent_rgb))
+    else:
+        right_lines.append("")
+
+    right_lines.append(_c("tools", fg=skin.category_rgb, bold=True))
+    disp_count = 0
+    cat_items = list(grouped_tools.items())[:6]
+    for cat, tnames in cat_items:
+        disp_tools = tnames[:4]
+        disp_count += len(disp_tools)
+        names_str = ", ".join(disp_tools)
+        right_lines.append(
+            _c(f"  {cat}: ", fg=skin.category_rgb) + _c(names_str, fg=skin.text_rgb)
+        )
+
+    rem_tools = max(0, total_tools - disp_count)
+    if rem_tools > 0:
+        right_lines.append(_c(f"  +{rem_tools} more", fg=skin.muted_rgb))
+
+    right_lines.append("")
+    right_lines.append(_c(f"{total_tools} tools · {total_skills} skills · /help", fg=skin.category_rgb, bold=True))
+    right_lines.append("")
+    right_lines.append(_c("type a message   / for commands", fg=skin.muted_rgb))
+
+    # 6. Compose floating two-column layout (no border box)
+    gap = 4
+    right_w = max(44, min(62, total_w - left_w - gap - 8))
+    block_w = left_w + gap + right_w
+    margin_l = max(4, (total_w - block_w) // 2)
+    margin_str = " " * margin_l
+    gap_str = " " * gap
+
+    max_rows = max(len(left_lines), len(right_lines))
+    v_offset = max(0, (max_rows - len(left_lines)) // 2)
+
+    body_rows: list[str] = []
+    for r in range(max_rows):
+        l_idx = r - v_offset
+        if 0 <= l_idx < len(left_lines):
+            l_cell = _pad_visible(left_lines[l_idx], left_w)
+        else:
+            l_cell = " " * left_w
+
+        if r < len(right_lines):
+            r_cell = right_lines[r]
+        else:
+            r_cell = ""
+
+        body_rows.append(f"{margin_str}{l_cell}{gap_str}{r_cell}".rstrip())
+
+    tip_padded = " " * margin_l + tip_line
+    return "\n".join([tip_padded, ""] + banner_rows + [sub_title, ""] + body_rows)
 
 
 def render_status_bar(
