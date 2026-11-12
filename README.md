@@ -6,7 +6,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.3.0-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-422%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](AUDIT_REPORT.md)
+[![Tests](https://img.shields.io/badge/tests-542%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](AUDIT_REPORT.md)
 [![Antigravity Quota](https://img.shields.io/badge/day--1%20quota-Google%20Antigravity%20OAuth-4285F4?style=flat-square&logo=google&logoColor=white)](src/harness_core/providers/antigravity_provider.py)
 [![Security Gate](https://img.shields.io/badge/security-NVIDIA%20SkillSpector-76b900?style=flat-square&logo=nvidia&logoColor=white)](vendor/skillspector/README.md)
 [![AST & Memory](https://img.shields.io/badge/AST%20%2B%20memory-Graphify%20(71.5x%20compression)-00f5d4?style=flat-square)](vendor/graphify/README.md)
@@ -269,13 +269,14 @@ Launch the interactive terminal interface with `hex tui` (or `hex chat`):
 
 ## 🛠️ Complete CLI & Self-Healing Diagnostics Surface
 
-HEX ships a unified 27-subcommand CLI (`hex` and `harness`):
+HEX ships a unified 28-subcommand CLI (`hex` and `harness`):
 
 ```text
 hex
 ├── setup        # Interactive hardware auto-profiling, live model discovery & config wizard (alias: onboard)
 ├── project      # Manage persistent workspace registry and switch projects (list, add, use, switch)
 ├── lsp          # Polyglot Language Server Protocol gateway (status, diagnostics, definition, hover)
+├── graphify     # Polyglot tree-sitter AST runner, graph ingestion, affected blast-radius & D3 tree
 ├── auth         # Manage Google Antigravity OAuth credentials (--import-ide, --auth-url, --status)
 ├── quota        # Inspect live Google Antigravity per-model quota windows and reset timers
 ├── doctor       # 9-category system diagnostics, environment auditing, and self-healing (--fix, --live)
@@ -405,7 +406,7 @@ harness/
 │       ├── base.py                # ModelProvider protocol & cached token accounting
 │       ├── cloud_provider.py      # Antigravity, Anthropic, OpenAI & Gemini provider with 90% prefix caching
 │       └── mlx_provider.py        # Apple Silicon M4 MLX local runner & >70% log compressor
-├── tests/                         # 32 test modules (513 unit, stage, concurrency, LSP, voice, harness2 & parity tests)
+├── tests/                         # 36 test modules (542 unit, stage, concurrency, LSP, voice, harness2, skillspector & polyglot graphify tests)
 ├── vendor/                        # Detached upstream engines (graphify, harness2, skillspector)
 ├── AUDIT_REPORT.md                # Principal Systems Architect & Security Compliance Verdict
 ├── HERMES_ANALYSIS.md             # Reverse-Engineering Hermes Agent & Parity Architecture Report
