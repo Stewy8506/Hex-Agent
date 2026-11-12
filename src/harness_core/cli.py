@@ -680,6 +680,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
                     ws_root = Path(active_project.path) if active_project else Path(chosen_key)
                     if active_project:
                         registry.touch_active(active_project.path)
+                print()
             else:
                 ws_root = repo_root
 

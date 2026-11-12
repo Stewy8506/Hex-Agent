@@ -962,9 +962,9 @@ def render_hermes_splash(
         right_lines.append(_c(f"  +{rem_tools} more", fg=skin.muted_rgb))
 
     right_lines.append("")
-    right_lines.append(_c(f"{total_tools} tools · {total_skills} skills · /help", fg=skin.category_rgb, bold=True))
+    right_lines.append(_c(f"{total_tools} tools · {total_skills} skills", fg=skin.category_rgb, bold=True))
     right_lines.append("")
-    right_lines.append(_c("type a message   / for commands", fg=skin.muted_rgb))
+    right_lines.append(_c("type a message   /help for commands", fg=skin.muted_rgb))
 
     # 6. Compose floating two-column layout (no border box)
     gap = 4
@@ -993,7 +993,7 @@ def render_hermes_splash(
         body_rows.append(f"{margin_str}{l_cell}{gap_str}{r_cell}".rstrip())
 
     tip_padded = " " * margin_l + tip_line
-    return "\n".join([tip_padded, ""] + banner_rows + [sub_title, ""] + body_rows)
+    return "\n".join(["", tip_padded, ""] + banner_rows + [sub_title, ""] + body_rows)
 
 
 def render_status_bar(

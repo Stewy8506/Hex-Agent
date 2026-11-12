@@ -56,7 +56,7 @@ class TestHexCLI(unittest.TestCase):
 
         cfg_text = cfg_path.read_text(encoding="utf-8")
         self.assertIn("HEX Autonomous AI Workbench Configuration", cfg_text)
-        self.assertIn("compressor_mode: \"local\"", cfg_text)
+        self.assertIn("compressor_mode: \"deterministic\"", cfg_text)
 
         # Check credentials file permissions on POSIX
         if os.name == "posix":
@@ -167,9 +167,10 @@ class TestHexCLI(unittest.TestCase):
             mock_fetch.return_value = [("claude-3-5-sonnet", "Claude 3.5 Sonnet"), ("claude-3-7-sonnet", "Claude 3.7 Sonnet")]
             # Provider selection: index 1 (Anthropic, which is default index)
             # Model selection: index 0 ("Use currently configured")
+            # Compressor: index 0 ("Use currently configured")
             # Search: index 0 ("Use currently configured")
             # Messaging: index 0 ("Keep currently configured")
-            mock_sel.side_effect = [1, 0, 0, 0]
+            mock_sel.side_effect = [1, 0, 0, 0, 0]
             res = run_onboard_wizard(config_dir=self.config_dir, non_interactive=False)
             self.assertEqual(res["cloud_provider"], "anthropic")
             self.assertEqual(res["cloud_model_id"], "claude-3-5-sonnet")
@@ -184,7 +185,7 @@ class TestHexCLI(unittest.TestCase):
             self.assertIn("currently configured", model_options[0][1])
 
             # Check that option 0 in search stage was 'keep'
-            search_options = mock_sel.call_args_list[2][0][1]
+            search_options = mock_sel.call_args_list[3][0][1]
             self.assertEqual(search_options[0][0], "keep")
             self.assertIn("currently configured", search_options[0][1])
 

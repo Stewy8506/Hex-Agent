@@ -18,6 +18,10 @@ class LocalMLXModelProvider(LocalModelProvider):
 
     provider_id: str = "local_mlx"
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._compressor = Tier1LogCompressor(mlx_available=True)
+
     def get_unified_memory_bytes(self) -> int | None:
         """Detect unified memory size in bytes on Darwin via sysctl, or None if unavailable."""
         if sys.platform != "darwin":
