@@ -245,9 +245,9 @@
 [x] Phase 18: Google Research Harness² Deep Wiring
     [x] 18-01: Experience Library (INDEX.md / EXPERIENCE.md) integration into HarnessOrchestrator
     [x] 18-02: OrchestratorBenchmarkAdapter & Propose-Probe-Compose task sweep runner
-[ ] Phase 19: NVIDIA SkillSpector Upstream Behavioral AST & Live OSV Scanner
-    [ ] 19-01: Python AST dangerous call analyzer & taint tracking integration
-    [ ] 19-02: Live OSV.dev batch client with offline cache fallback
+[x] Phase 19: NVIDIA SkillSpector Upstream Behavioral AST & Live OSV Scanner
+    [x] 19-01: Python AST dangerous call analyzer & taint tracking integration
+    [x] 19-02: Live OSV.dev batch client with offline cache fallback
 [ ] Phase 20: Graphify Upstream CLI & Tree-Sitter Adapter
     [ ] 20-01: Upstream graphify CLI runner & graphify-out/graph.json ingest adapter
     [ ] 20-02: Polyglot graph unification & multi-language blast-radius verification

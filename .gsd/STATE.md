@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
-**Date:** 2026-11-11  
+**Date:** 2026-11-12  
 **Current Milestone:** M8 (Deep Upstream Vendor Integration)  
-**Status:** In Progress — Phase 18 Complete; Planning Phase 19  
-**Active Phase:** Phase 19 (NVIDIA SkillSpector Upstream Behavioral AST & Live OSV Scanner)  
-**Completed Plans:** Plans 01-01 through 18-02 Complete (508/508 tests green)  
+**Status:** In Progress — Phase 19 Complete; Planning Phase 20  
+**Active Phase:** Phase 20 (Graphify Upstream CLI & Tree-Sitter Adapter)  
+**Completed Plans:** Plans 01-01 through 19-02 Complete (529/529 tests green)  
 
 ---
 

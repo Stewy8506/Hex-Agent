@@ -92,6 +92,20 @@ except Exception:
     UPSTREAM_EXPLANATIONS = {}
     UPSTREAM_AVAILABLE = False
 
+try:
+    from skillspector.python_ast import get_python_ast
+    from skillspector.nodes.analyzers.behavioral_ast import _analyze_python
+    UPSTREAM_AST_AVAILABLE = True
+except Exception:
+    UPSTREAM_AST_AVAILABLE = False
+
+try:
+    from skillspector.nodes.analyzers.osv_client import query_batch as osv_query_batch
+    UPSTREAM_OSV_AVAILABLE = True
+except Exception:
+    osv_query_batch = None  # type: ignore[assignment]
+    UPSTREAM_OSV_AVAILABLE = False
+
 
 RISK_ORDER = {"R0": 0, "R1": 1, "R2": 2, "R3": 3, "R4": 4}
 
@@ -468,18 +482,73 @@ class SkillSpectorScanner:
                         })
                         max_score = max(max_score, r.score)
 
-                # Check requirements/manifest for OSV vulnerabilities
-                if fname in ("requirements.txt", "manifest.yaml", "SKILL.md"):
-                    for pkg_spec, vuln_info in KNOWN_OSV_VULNS.items():
-                        if pkg_spec.lower() in content.lower():
-                            osv_vulns.append({
-                                "package": pkg_spec,
-                                "osv_id": vuln_info["id"],
-                                "severity": vuln_info["severity"],
-                                "summary": vuln_info["summary"],
+                # 2a. Upstream NVIDIA SkillSpector Behavioral AST Dangerous Code & Taint Analysis
+                if fpath.suffix == ".py" and UPSTREAM_AST_AVAILABLE:
+                    try:
+                        parsed_ast = get_python_ast(None, content, rel)
+                        ast_findings = _analyze_python(parsed_ast, rel)
+                        for f in ast_findings:
+                            sev_str = f.severity.value.lower() if hasattr(f.severity, "value") else str(f.severity).lower()
+                            score_map = {"critical": 95, "high": 80, "medium": 55, "low": 25}
+                            ast_score = score_map.get(sev_str, 70)
+                            matched_rules.append({
+                                "rule_id": f"SS-AST-{f.rule_id}",
+                                "category": "behavioral_ast_dangerous_code",
+                                "severity": sev_str,
+                                "score": ast_score,
                                 "file": rel,
+                                "line": f.location.start_line if f.location else None,
+                                "detail": f.message,
+                                "matched_text": getattr(f, "matched_text", "")[:160],
                             })
-                            max_score = max(max_score, 85 if vuln_info["severity"] == "critical" else 70)
+                            max_score = max(max_score, ast_score)
+                    except Exception:
+                        pass
+
+                # 2b. Check requirements/manifest for OSV vulnerabilities (Live batch query + offline fallback)
+                if fname in ("requirements.txt", "manifest.yaml", "SKILL.md"):
+                    parsed_pkgs: list[tuple[str, str | None]] = []
+                    for line in content.splitlines():
+                        c_line = line.strip()
+                        if not c_line or c_line.startswith("#"):
+                            continue
+                        m = re.match(r"^([a-zA-Z0-9_\-\.]+)(?:([=><!~]+)\s*([a-zA-Z0-9_\-\.]+))?", c_line)
+                        if m:
+                            parsed_pkgs.append((m.group(1).strip(), m.group(3).strip() if m.group(3) else None))
+
+                    osv_queried = False
+                    if UPSTREAM_OSV_AVAILABLE and osv_query_batch and parsed_pkgs:
+                        try:
+                            batch_results = osv_query_batch(parsed_pkgs, ecosystem="PyPI", timeout_seconds=5.0)
+                            osv_queried = True
+                            for (p_name, p_ver), vulns in zip(parsed_pkgs, batch_results):
+                                for v in vulns:
+                                    v_sev = str(getattr(v, "severity", "high")).lower()
+                                    v_score = 90 if v_sev == "critical" else (75 if v_sev == "high" else 50)
+                                    osv_vulns.append({
+                                        "package": f"{p_name}=={p_ver}" if p_ver else p_name,
+                                        "osv_id": getattr(v, "vuln_id", "OSV-UNKNOWN"),
+                                        "severity": v_sev,
+                                        "summary": getattr(v, "summary", "") or "Known vulnerability reported by OSV.dev",
+                                        "file": rel,
+                                    })
+                                    max_score = max(max_score, v_score)
+                        except Exception:
+                            osv_queried = False
+
+                    # Fallback to local KNOWN_OSV_VULNS table if OSV was not queried or returned nothing
+                    if not osv_queried or not osv_vulns:
+                        for pkg_spec, vuln_info in KNOWN_OSV_VULNS.items():
+                            if pkg_spec.lower() in content.lower():
+                                if not any(v["osv_id"] == vuln_info["id"] for v in osv_vulns):
+                                    osv_vulns.append({
+                                        "package": pkg_spec,
+                                        "osv_id": vuln_info["id"],
+                                        "severity": vuln_info["severity"],
+                                        "summary": vuln_info["summary"],
+                                        "file": rel,
+                                    })
+                                    max_score = max(max_score, 85 if vuln_info["severity"] == "critical" else 70)
 
         # 3. Tier-1 Local M4 Semantic Alignment Analysis (declared purpose & risk vs body/scripts)
         semantic_passed, semantic_notes, sem_score = self._evaluate_semantic_alignment(
