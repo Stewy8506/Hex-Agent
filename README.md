@@ -12,7 +12,7 @@
 
 ### The Autonomous AI Terminal Workbench That Tests Before It Touches Your Code
 
-[![Version](https://img.shields.io/badge/version-0.1.0-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.20.1-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blueviolet?style=flat-square)](install.sh)
 [![Tests Passing](https://img.shields.io/badge/tests-passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](tests/)
@@ -138,7 +138,7 @@ HEX separates developer intent into three focused interaction modes. Press **`Ta
            ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝         ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝               
                                               anv.dev                                               
 
-                ▄▄▀▀▀▀▀▀▄▄                HEX Autonomous AI Workbench  v0.1.0  (upstream 864ebce)
+                ▄▄▀▀▀▀▀▀▄▄                HEX Autonomous AI Workbench  v0.20.1  (upstream 97a6ff2)
              ▄▀▀  ▄▄▄▄▄▄  ▀▀▄             gemini-3.8-flash-tiered · Google Antigravity
           ▄▀▀  ▄▀▀      ▀▀▄  ▀▀▄          ~/Development/Harness
         ▄▀   ▄▀    ▄▄▄▄    ▀▄   ▀▄        Session: 5f64fe

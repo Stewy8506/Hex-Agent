@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .models import TaskSubmitRequest
 from .orchestrator import HarnessOrchestrator
 from .server import run_http_server
@@ -80,7 +81,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
         prog="hex",
         description="HEX: Autonomous AI Workbench & Interactive TUI (Run 'hex' to launch interactive console)",
     )
-    parser.add_argument("-v", "--version", action="version", version="hex 0.1.0")
+    parser.add_argument("-v", "--version", action="version", version=f"hex {__version__}")
     parser.add_argument(
         "--data-dir",
         default=default_dir,

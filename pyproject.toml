@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hex-ai"
-version = "0.1.0"
+version = "0.20.1"
 description = "HEX: Autonomous AI Workbench with CoW durability, Call-Level Journaling, Active Graphify, SkillSpector gate, and Two-Tier model routing"
 readme = "README.md"
 license = "Apache-2.0"

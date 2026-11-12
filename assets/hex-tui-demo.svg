@@ -222,7 +222,7 @@
 
       <!-- Right Column: Metadata, Active Tools & Skills -->
       <g transform="translate(280, 0)">
-        <text x="0" y="14" class="mono-bold" fill="#f8fafc">HEX Autonomous AI Workbench v0.1.0 <tspan fill="#64748b">(upstream 145d6bf)</tspan></text>
+        <text x="0" y="14" class="mono-bold" fill="#f8fafc">HEX Autonomous AI Workbench v0.20.1 <tspan fill="#64748b">(upstream 97a6ff2)</tspan></text>
         <text x="0" y="32" class="mono-bold" fill="#ffd000">gemini-3.8-flash-tiered <tspan fill="#64748b">·</tspan> <tspan fill="#38bdf8">Google Antigravity</tspan></text>
         <text x="0" y="50" class="mono" fill="#94a3b8">~/Development/Harness</text>
         <text x="0" y="68" class="mono" fill="#64748b">Session: 5f64fe</text>

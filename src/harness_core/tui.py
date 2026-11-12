@@ -886,10 +886,13 @@ def render_hex_splash(
         pass
 
     try:
-        import importlib.metadata
-        pkg_version = importlib.metadata.version("hex-ai")
+        from . import __version__ as pkg_version
     except Exception:
-        pkg_version = "0.1.0"
+        try:
+            import importlib.metadata
+            pkg_version = importlib.metadata.version("hex-ai")
+        except Exception:
+            pkg_version = "0.20.1"
 
     active_model = model_id or getattr(getattr(orchestrator, "router", None), "cloud_model_id", None) or "gemini-3.8-flash-tiered"
     provider_label = _resolve_provider_label(orchestrator, active_model)
