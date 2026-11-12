@@ -40,6 +40,7 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         mock_urlopen.side_effect = Exception("HTTP 401 Unauthorized")
         self.assertFalse(_probe_antigravity_token("expired_token_123"))
 
+    @patch("harness_core.onboard.fetch_available_models", return_value=[("gemini-2.5-pro", "Gemini 2.5 Pro"), ("gemini-2.5-flash", "Gemini 2.5 Flash")])
     @patch("harness_core.onboard.prompt_secret")
     @patch("harness_core.onboard.select_option")
     @patch("harness_core.onboard._probe_antigravity_token", return_value=True)
@@ -48,12 +49,14 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         mock_probe: MagicMock,
         mock_select: MagicMock,
         mock_prompt: MagicMock,
+        mock_fetch: MagicMock,
     ) -> None:
         # Step 1: Antigravity provider (0)
+        # Step 1a: Auth -> Keep (0)
         # Step 1b: Model selection -> gemini-2.5-flash (1)
         # Step 2: Search -> Disabled (3)
         # Step 3: Messaging -> Skip (0)
-        mock_select.side_effect = [0, 1, 3, 0]
+        mock_select.side_effect = [0, 0, 1, 3, 0]
 
         result = run_onboard_wizard(
             config_dir=self.cfg_dir,
@@ -69,6 +72,8 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         cfg_text = (self.cfg_dir / "config.yaml").read_text(encoding="utf-8")
         self.assertIn('cloud_model_id: "gemini-2.5-flash"', cfg_text)
 
+    @patch("harness_core.providers.antigravity_provider.AntigravityOAuthManager.resolve_credential", return_value=None)
+    @patch("harness_core.onboard.fetch_available_models", return_value=[("gemini-2.5-pro", "Gemini 2.5 Pro")])
     @patch("builtins.input", return_value="http://localhost:8420/?code=auth_code_999")
     @patch("webbrowser.open")
     @patch("harness_core.providers.antigravity_provider.AntigravityOAuthManager.exchange_code_for_tokens")
@@ -83,6 +88,8 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         mock_exchange: MagicMock,
         mock_browser: MagicMock,
         mock_input: MagicMock,
+        mock_fetch: MagicMock,
+        mock_resolve: MagicMock,
     ) -> None:
         mock_cred = AntigravityCredential(
             access_token="new_browser_access_token_777",

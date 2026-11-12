@@ -94,6 +94,16 @@ def select_option(
             marker = "[•]" if i == current else "[ ]"
             out_stream.write(f"  {marker} {i + 1}. {lbl}\n")
         out_stream.flush()
+        try:
+            line = in_stream.readline()
+            if line:
+                val = line.strip()
+                if val.isdigit():
+                    num = int(val)
+                    if 1 <= num <= total:
+                        return num - 1
+        except Exception:
+            pass
         return current
 
     # Interactive TTY loop
@@ -112,6 +122,8 @@ def select_option(
                 current = (current - 1) % total
             elif key in ("\x1b[B", "j", "J"):  # Down
                 current = (current + 1) % total
+            elif key.isdigit() and 1 <= int(key) <= total:
+                current = int(key) - 1
             elif key in ("\r", "\n"):  # Enter
                 break
             elif key in ("\x03", "q", "Q"):  # Ctrl+C or q

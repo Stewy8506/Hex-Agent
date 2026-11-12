@@ -152,7 +152,7 @@ def load_hex_environment(
 def has_active_credentials(config_dir: Path | None = None) -> bool:
     """Check if any model provider or credential is valid and active."""
     # Ensure env is hydrated first
-    load_hex_environment(config_dir=config_dir)
+    load_hex_environment(config_dir=config_dir, workspace_root=config_dir if config_dir else None)
 
     # 1. Check direct environment keys
     if (

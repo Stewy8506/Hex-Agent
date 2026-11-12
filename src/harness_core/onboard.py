@@ -157,7 +157,7 @@ def run_onboard_wizard(
 
     profile = HardwareProfile.detect()
     ag_mgr = AntigravityOAuthManager(auth_file=cfg_dir / "antigravity_auth.json")
-    ag_cred = ag_mgr.resolve_credential(auto_refresh=False)
+    ag_cred = ag_mgr.resolve_credential(auto_refresh=True)
 
     print(HEX_BANNER)
     print("Welcome to HEX — The Autonomous AI Workbench.")
@@ -238,8 +238,8 @@ def run_onboard_wizard(
     existing_discord = existing_creds.get("HEX_DISCORD_BOT_TOKEN")
     existing_discord_hook = existing_creds.get("HEX_DISCORD_WEBHOOK_URL")
     existing_antigravity_token = (
-        existing_creds.get("HEX_ANTIGRAVITY_TOKEN")
-        or (ag_cred.access_token if ag_cred else "")
+        (ag_cred.access_token if ag_cred and ag_cred.access_token else "")
+        or existing_creds.get("HEX_ANTIGRAVITY_TOKEN", "")
     )
     existing_anthropic_key = existing_creds.get("ANTHROPIC_API_KEY", "")
     existing_openai_key = existing_creds.get("OPENAI_API_KEY", "")
@@ -329,6 +329,8 @@ def run_onboard_wizard(
                 provider_title = "Google Antigravity"
 
                 if antigravity_token:
+                    if ag_cred and ag_cred.access_token:
+                        antigravity_token = ag_cred.access_token
                     tok_preview = antigravity_token[:12] if len(antigravity_token) > 12 else antigravity_token
                     auth_options: list[tuple[str, str]] = [
                         ("keep", f"Use currently configured Antigravity session ({tok_preview}...)"),
@@ -339,6 +341,13 @@ def run_onboard_wizard(
                     chosen_auth = auth_options[a_idx][0]
 
                     if chosen_auth == "keep":
+                        if ag_mgr:
+                            try:
+                                refreshed = ag_mgr.resolve_credential(auto_refresh=True)
+                                if refreshed and refreshed.access_token:
+                                    antigravity_token = refreshed.access_token
+                            except Exception:
+                                pass
                         print("  ✓ Keeping currently configured Antigravity session.\n")
                     elif chosen_auth == "browser":
                         pkce = ag_mgr.generate_pkce_pair()
@@ -678,6 +687,7 @@ def run_onboard_wizard(
         f"HEX_CLOUD_PROVIDER={cloud_provider}",
         f"HEX_CLOUD_MODEL_ID={cloud_model_id}",
         f"HEX_ANTIGRAVITY_TOKEN={antigravity_token}",
+        f"HEX_ANTIGRAVITY_REFRESH_TOKEN={ag_cred.refresh_token if ag_cred and ag_cred.refresh_token else existing_creds.get('HEX_ANTIGRAVITY_REFRESH_TOKEN', '')}",
         f"ANTHROPIC_API_KEY={anthropic_key}",
         f"OPENAI_API_KEY={openai_key}",
         f"GEMINI_API_KEY={gemini_key}",
@@ -712,6 +722,7 @@ def run_onboard_wizard(
     sandbox_backend = (existing_config.get("sandbox") or {}).get("backend") or profile.sandbox_backend
 
     # Write config.yaml
+    local_model_id = cloud_model_id if cloud_provider == "local" else (existing_config.get("model") or {}).get("local_model_id", "")
     config_yaml = f"""# HEX Autonomous AI Workbench Configuration
 version: "1.0"
 model:
@@ -719,7 +730,7 @@ model:
   cloud_provider: "{cloud_provider}"
   compressor_mode: "local"
   cloud_model_id: "{cloud_model_id}"
-  local_model_id: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+  local_model_id: "{local_model_id}"
 web_search:
   provider: "{web_search_provider}"
 messaging:

@@ -262,7 +262,7 @@ def fetch_available_models(
                 or ""
             ).strip()
             if not tok:
-                cred = AntigravityOAuthManager().resolve_credential(auto_refresh=False)
+                cred = AntigravityOAuthManager().resolve_credential(auto_refresh=True)
                 if cred and cred.access_token:
                     tok = cred.access_token.strip()
                     proj = cred.project_id or proj
@@ -315,11 +315,12 @@ def fetch_available_models(
         except Exception:
             pass
 
-    body = json.dumps({"project": proj}).encode("utf-8")
-    req = urllib.request.Request(models_url, data=body, headers=headers, method="POST")
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+    def _execute_fetch(target_tok: str, target_proj: str) -> list[tuple[str, str]]:
+        req_headers = dict(headers)
+        req_headers["Authorization"] = f"Bearer {target_tok}"
+        req_body = json.dumps({"project": target_proj}).encode("utf-8")
+        req_obj = urllib.request.Request(models_url, data=req_body, headers=req_headers, method="POST")
+        with urllib.request.urlopen(req_obj, timeout=timeout) as resp:
             if resp.status in (200, 201):
                 raw = resp.read().decode("utf-8")
                 data = json.loads(raw)
@@ -369,6 +370,32 @@ def fetch_available_models(
                         return parsed
                 raise ProviderUnavailableError("Google Antigravity returned empty model inventory.")
             raise ProviderUnavailableError(f"Google Antigravity returned HTTP status {resp.status}.")
+
+    try:
+        return _execute_fetch(tok, proj)
+    except urllib.error.HTTPError as http_err:
+        if http_err.code == 401:
+            try:
+                mgr = AntigravityOAuthManager()
+                refreshed = mgr.resolve_credential(auto_refresh=True)
+                if not refreshed or not refreshed.refresh_token:
+                    aux = (
+                        mgr._from_hex_auth_file()
+                        or mgr._from_external_auth_files()
+                        or mgr._from_ide_state_vscdb()
+                    )
+                    if aux and aux.refresh_token:
+                        refreshed = mgr.refresh_access_token(aux)
+                if refreshed and refreshed.access_token and refreshed.access_token != tok:
+                    try:
+                        mgr._sync_to_credentials_env(refreshed)
+                    except Exception:
+                        pass
+                    refreshed_proj = refreshed.project_id or proj
+                    return _execute_fetch(refreshed.access_token, refreshed_proj)
+            except Exception:
+                pass
+        raise ProviderUnavailableError(f"Failed to live-fetch models from Google Antigravity: {http_err}") from http_err
     except Exception as exc:
         if isinstance(exc, ProviderUnavailableError):
             raise
@@ -570,7 +597,51 @@ class AntigravityOAuthManager:
             cred.refresh_token = str(data["refresh_token"])
         cred.expires_at_ms = int((time.time() + expires_in - 300) * 1000)
         self.save_credential(cred)
+        self._sync_to_credentials_env(cred)
         return cred
+
+    def _sync_to_credentials_env(self, cred: AntigravityCredential) -> None:
+        """Propagate refreshed Antigravity token to credentials.env files and os.environ."""
+        if not cred or not cred.access_token:
+            return
+        os.environ["HEX_ANTIGRAVITY_TOKEN"] = cred.access_token
+        if cred.refresh_token:
+            os.environ["HEX_ANTIGRAVITY_REFRESH_TOKEN"] = cred.refresh_token
+
+        target_paths = [
+            Path.home() / ".hex" / "credentials.env",
+            Path.cwd() / ".hex" / "credentials.env",
+        ]
+        if self.auth_file:
+            cand = self.auth_file.parent / "credentials.env"
+            if cand not in target_paths:
+                target_paths.append(cand)
+
+        for cp in target_paths:
+            if not cp.is_file():
+                continue
+            try:
+                content = cp.read_text(encoding="utf-8")
+                lines = content.splitlines()
+                new_lines = []
+                has_token = False
+                has_refresh = False
+                for line in lines:
+                    if line.startswith("HEX_ANTIGRAVITY_TOKEN="):
+                        new_lines.append(f"HEX_ANTIGRAVITY_TOKEN={cred.access_token}")
+                        has_token = True
+                    elif line.startswith("HEX_ANTIGRAVITY_REFRESH_TOKEN="):
+                        new_lines.append(f"HEX_ANTIGRAVITY_REFRESH_TOKEN={cred.refresh_token or ''}")
+                        has_refresh = True
+                    else:
+                        new_lines.append(line)
+                if not has_token:
+                    new_lines.append(f"HEX_ANTIGRAVITY_TOKEN={cred.access_token}")
+                if not has_refresh and cred.refresh_token:
+                    new_lines.append(f"HEX_ANTIGRAVITY_REFRESH_TOKEN={cred.refresh_token}")
+                cp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Multi-Source Credential Discovery
@@ -597,6 +668,28 @@ class AntigravityOAuthManager:
         if cred is None:
             return None
 
+        # Augment missing refresh_token, project_id, or active token from other persistent sources
+        for source_fn in (
+            self._from_hex_auth_file,
+            self._from_external_auth_files,
+            self._from_ide_state_vscdb,
+        ):
+            aux = source_fn()
+            if not aux:
+                continue
+            if not cred.refresh_token and aux.refresh_token:
+                cred.refresh_token = aux.refresh_token
+            if not cred.project_id and aux.project_id:
+                cred.project_id = aux.project_id
+            if cred.expires_at_ms <= 0 and aux.expires_at_ms > 0:
+                cred.expires_at_ms = aux.expires_at_ms
+            # If aux has a fresher unexpired access token, adopt it over unverified env token
+            if aux.access_token and not aux.is_expired() and aux.access_token != cred.access_token:
+                cred.access_token = aux.access_token
+                cred.expires_at_ms = aux.expires_at_ms
+            if cred.refresh_token and cred.project_id:
+                break
+
         if auto_refresh and cred.is_expired() and cred.refresh_token:
             try:
                 cred = self.refresh_access_token(cred)
@@ -604,6 +697,11 @@ class AntigravityOAuthManager:
                 # If offline or mock environment without refresh server, retain if access_token exists
                 if not cred.access_token:
                     raise
+        elif cred and cred.access_token and not cred.is_expired():
+            try:
+                self._sync_to_credentials_env(cred)
+            except Exception:
+                pass
         return cred
 
     def _from_env(self) -> AntigravityCredential | None:
@@ -1109,22 +1207,31 @@ class AntigravityModelProvider(ModelProvider):
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         # Handle HTTP 401 unauthenticated with automatic refresh token retry
-        if status_code == 401 and cred.refresh_token:
+        if status_code == 401:
             try:
-                refreshed_cred = self.oauth_manager.refresh_access_token(cred)
-                self.oauth_manager.save_credential(refreshed_cred)
-                self._explicit_cred = refreshed_cred
-                new_url, new_headers, new_body = self._build_request(
-                    clean_prompt,
-                    access_token=refreshed_cred.access_token,
-                    project_id=project_id,
-                    system_prompt=clean_system,
-                    cacheable_prefix=clean_prefix,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    stop_sequences=stop_sequences,
-                )
-                status_code, resp_bytes = self._execute_http(new_url, new_headers, new_body)
+                if not cred.refresh_token:
+                    aux = (
+                        self.oauth_manager._from_hex_auth_file()
+                        or self.oauth_manager._from_external_auth_files()
+                        or self.oauth_manager._from_ide_state_vscdb()
+                    )
+                    if aux and aux.refresh_token:
+                        cred.refresh_token = aux.refresh_token
+                if cred.refresh_token:
+                    refreshed_cred = self.oauth_manager.refresh_access_token(cred)
+                    self.oauth_manager.save_credential(refreshed_cred)
+                    self._explicit_cred = refreshed_cred
+                    new_url, new_headers, new_body = self._build_request(
+                        clean_prompt,
+                        access_token=refreshed_cred.access_token,
+                        project_id=refreshed_cred.project_id or project_id,
+                        system_prompt=clean_system,
+                        cacheable_prefix=clean_prefix,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        stop_sequences=stop_sequences,
+                    )
+                    status_code, resp_bytes = self._execute_http(new_url, new_headers, new_body)
             except Exception:
                 pass
 

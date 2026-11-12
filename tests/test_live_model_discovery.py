@@ -100,6 +100,42 @@ class TestAntigravityLiveModelDiscovery(unittest.TestCase):
         self.assertEqual(models_prov[0][0], "gemini-2.5-flash")
 
     @patch("urllib.request.urlopen")
+    def test_antigravity_401_triggers_auto_refresh_retry(self, mock_urlopen: MagicMock) -> None:
+        import time
+        from harness_core.providers.antigravity_provider import AntigravityCredential
+        payload = {
+            "models": {
+                "claude-opus-4-6-thinking": {
+                    "displayName": "Claude Opus 4.6 (Thinking)",
+                    "quotaInfo": {"remainingFraction": 1.0},
+                }
+            }
+        }
+        err_401 = urllib.error.HTTPError(
+            url="https://antigravity-service/v1internal:fetchAvailableModels",
+            code=401,
+            msg="Unauthorized",
+            hdrs={},
+            fp=io.BytesIO(b'{"error": "invalid_token"}'),
+        )
+        success_resp = MockHTTPResponse(json.dumps(payload).encode("utf-8"))
+        mock_urlopen.side_effect = [err_401, success_resp]
+
+        fake_cred = AntigravityCredential(
+            access_token="ya29.refreshed_fresh_token",
+            refresh_token="1//mock_refresh",
+            expires_at_ms=int(time.time() * 1000) + 3600000,
+            project_id="test-proj",
+        )
+
+        with patch("harness_core.providers.antigravity_provider.AntigravityOAuthManager.resolve_credential", return_value=fake_cred):
+            models = ag_fetch_available_models(access_token="ya29.stale_expired_token")
+            self.assertEqual(len(models), 1)
+            self.assertEqual(models[0][0], "claude-opus-4-6-thinking")
+            self.assertIn("100% quota remaining", models[0][1])
+            self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch("urllib.request.urlopen")
     def test_antigravity_error_on_network_failure(self, mock_urlopen: MagicMock) -> None:
         mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
         with self.assertRaises(ProviderUnavailableError):
