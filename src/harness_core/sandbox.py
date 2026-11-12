@@ -273,6 +273,10 @@ class BubblewrapSandbox:
     def is_available(cls) -> bool:
         if platform.system() != "Linux":
             return False
+        # In CI container runners (e.g. GitHub Actions), nested namespaces and dynamic mounts
+        # cause restricted user sandboxes to lack virtualenv packages. Fall back to RestrictedSubprocessSandbox.
+        if os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true":
+            return False
         bwrap = shutil.which("bwrap")
         if not bwrap:
             return False
@@ -405,6 +409,8 @@ class DockerPodmanSandbox:
 
     @classmethod
     def is_available(cls, cli_binary: str | None = None) -> bool:
+        if os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true":
+            return False
         cli = cli_binary or shutil.which("docker") or shutil.which("podman")
         if not cli:
             return False

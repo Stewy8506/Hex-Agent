@@ -45,11 +45,14 @@ from harness_core.router import TwoTierModelRouter
 
 class TestAntigravityOAuthAndProvider(unittest.TestCase):
     def setUp(self) -> None:
+        self._orig_env = dict(os.environ)
         self.tmp_dir = tempfile.TemporaryDirectory(prefix="hex_ag_test_")
         self.root = Path(self.tmp_dir.name)
 
     def tearDown(self) -> None:
         self.tmp_dir.cleanup()
+        os.environ.clear()
+        os.environ.update(self._orig_env)
 
     def test_extract_tokens_from_nested_base64_vscdb_blob(self) -> None:
         """Verify nested base64 decoding matches Antigravity IDE state.vscdb format."""
