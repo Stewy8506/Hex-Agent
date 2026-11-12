@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config_loader import load_hex_environment, parse_env_file
+from .config_loader import load_hex_environment, parse_config_yaml, parse_env_file
 from .cow import get_default_snapshot_provider
 from .orchestrator import HarnessOrchestrator
 from .providers.antigravity_provider import AntigravityOAuthManager
@@ -135,6 +136,41 @@ def _probe_antigravity_token(token: str) -> bool:
         return False
 
 
+def update_config_yaml_model(
+    config_path: Path,
+    *,
+    cloud_provider: str,
+    cloud_model_id: str,
+    profile: str,
+) -> None:
+    """Safely update model section in config.yaml without requiring third-party PyYAML."""
+    if not config_path.is_file():
+        return
+    try:
+        def _clean_val(v: str) -> str:
+            return v.strip(' \t\n\r"\'\\')
+
+        content = config_path.read_text(encoding="utf-8")
+        content = re.sub(
+            r'(\bcloud_provider:\s*)[^\n]+',
+            rf'\g<1>"{_clean_val(cloud_provider)}"',
+            content,
+        )
+        content = re.sub(
+            r'(\bcloud_model_id:\s*)[^\n]+',
+            rf'\g<1>"{_clean_val(cloud_model_id)}"',
+            content,
+        )
+        content = re.sub(
+            r'(\bprofile:\s*)[^\n]+',
+            rf'\g<1>"{_clean_val(profile)}"',
+            content,
+        )
+        config_path.write_text(content, encoding="utf-8")
+    except Exception:
+        pass
+
+
 def run_onboard_wizard(
     *,
     config_dir: Path | None = None,
@@ -179,27 +215,15 @@ def run_onboard_wizard(
     # Discover existing configuration and credentials if already configured
     existing_config: dict[str, Any] = {}
     if config_file.is_file():
-        try:
-            import yaml
-
-            loaded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                existing_config = loaded
-        except Exception:
-            pass
+        existing_config = parse_config_yaml(config_file)
 
     # Also inspect local project .hex/config.yaml if running in a project workspace without custom config_dir
     if config_dir is None:
         local_proj_cfg = Path.cwd() / ".hex" / "config.yaml"
         if local_proj_cfg.is_file() and local_proj_cfg.resolve() != config_file.resolve():
-            try:
-                import yaml
-
-                loaded_p = yaml.safe_load(local_proj_cfg.read_text(encoding="utf-8"))
-                if isinstance(loaded_p, dict) and "model" in loaded_p:
-                    existing_config.setdefault("model", {}).update(loaded_p["model"])
-            except Exception:
-                pass
+            loaded_p = parse_config_yaml(local_proj_cfg)
+            if isinstance(loaded_p, dict) and "model" in loaded_p:
+                existing_config.setdefault("model", {}).update(loaded_p["model"])
 
     creds_files = [credentials_file]
     if config_dir is None:
@@ -752,18 +776,12 @@ webhooks:
     # If current working directory has a project-scoped .hex/config.yaml, synchronize model settings
     local_proj_cfg = Path.cwd() / ".hex" / "config.yaml"
     if config_dir is None and local_proj_cfg.is_file() and local_proj_cfg.resolve() != config_file.resolve():
-        try:
-            import yaml
-
-            p_data = yaml.safe_load(local_proj_cfg.read_text(encoding="utf-8")) or {}
-            if isinstance(p_data, dict):
-                p_data.setdefault("model", {})
-                p_data["model"]["cloud_provider"] = cloud_provider
-                p_data["model"]["cloud_model_id"] = cloud_model_id
-                p_data["model"]["profile"] = model_profile
-                local_proj_cfg.write_text(yaml.dump(p_data, sort_keys=False), encoding="utf-8")
-        except Exception:
-            pass
+        update_config_yaml_model(
+            local_proj_cfg,
+            cloud_provider=cloud_provider,
+            cloud_model_id=cloud_model_id,
+            profile=model_profile,
+        )
 
     # Synchronize model settings and credentials across all registered projects in ProjectRegistry
     try:
@@ -788,18 +806,12 @@ webhooks:
                 p_cfg = p_hex / "config.yaml"
                 p_cr = p_hex / "credentials.env"
                 if p_cfg.is_file() and p_cfg.resolve() != config_file.resolve():
-                    try:
-                        import yaml
-
-                        p_data = yaml.safe_load(p_cfg.read_text(encoding="utf-8")) or {}
-                        if isinstance(p_data, dict):
-                            p_data.setdefault("model", {})
-                            p_data["model"]["cloud_provider"] = cloud_provider
-                            p_data["model"]["cloud_model_id"] = cloud_model_id
-                            p_data["model"]["profile"] = model_profile
-                            p_cfg.write_text(yaml.dump(p_data, sort_keys=False), encoding="utf-8")
-                    except Exception:
-                        pass
+                    update_config_yaml_model(
+                        p_cfg,
+                        cloud_provider=cloud_provider,
+                        cloud_model_id=cloud_model_id,
+                        profile=model_profile,
+                    )
                 if p_cr.is_file() and p_cr.resolve() != credentials_file.resolve():
                     try:
                         p_cr.write_text("\n".join(creds_content) + "\n", encoding="utf-8")

@@ -115,7 +115,7 @@ def load_hex_environment(
         if override or k not in os.environ:
             os.environ[k] = v
 
-    # Also extract default provider / model from config.yaml if not set
+    # Also extract default provider / model from config.yaml if not set in environment or env files
     candidate_config_files = [
         global_dir / "config.yaml",
         local_dir / "config.yaml",
@@ -124,7 +124,7 @@ def load_hex_environment(
     for cfg_file in candidate_config_files:
         if cfg_file.is_file():
             cfg_data = parse_config_yaml(cfg_file)
-            model_section = cfg_data.get("model", {})
+            model_section = cfg_data.get("model") or cfg_data.get("models") or {}
             if isinstance(model_section, dict):
                 if model_section.get("profile"):
                     cfg_props["HEX_MODEL_PROFILE"] = str(model_section["profile"])
@@ -143,7 +143,9 @@ def load_hex_environment(
                     cfg_props["HEX_WEB_SEARCH_PROVIDER"] = str(web_search_section["provider"])
 
     for k, v in cfg_props.items():
-        if override or k not in os.environ:
+        if k not in discovered and (override or k not in os.environ):
+            os.environ[k] = v
+        elif k not in os.environ:
             os.environ[k] = v
 
     return discovered
