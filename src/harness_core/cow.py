@@ -640,7 +640,11 @@ class OverlayFSSnapshotProvider:
         cmd = self.build_unmount_command(ws)
         self.command_history.append(cmd)
         if not self.simulate:
-            subprocess.run(cmd, capture_output=True, text=True)
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0 and self._mode == "fuse":
+                subprocess.run(["fusermount", "-u", "-z", ws_str], capture_output=True, text=True)
+            elif res.returncode != 0:
+                subprocess.run(["umount", "-l", ws_str], capture_output=True, text=True)
         self._active_mounts.pop(ws_str, None)
 
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str:

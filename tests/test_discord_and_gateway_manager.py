@@ -50,8 +50,8 @@ class TestDiscordConfigAndWhitelisting(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        if hasattr(self, "orch") and getattr(self.orch, "_temp_mem_dir", None):
-            self.orch._temp_mem_dir.cleanup()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_discord_config_from_env(self) -> None:
@@ -165,8 +165,8 @@ class TestDiscordInteractionsAndCommands(unittest.TestCase):
         self.gw = DiscordBotGateway(self.orch, self.cfg, transport=self.transport)
 
     def tearDown(self) -> None:
-        if hasattr(self, "orch") and getattr(self.orch, "_temp_mem_dir", None):
-            self.orch._temp_mem_dir.cleanup()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_ping_pong_interaction(self) -> None:
@@ -345,8 +345,8 @@ class TestDiscordInteractiveButtons(unittest.TestCase):
         self.gw = DiscordBotGateway(self.orch, self.cfg, transport=self.transport)
 
     def tearDown(self) -> None:
-        if hasattr(self, "orch") and getattr(self.orch, "_temp_mem_dir", None):
-            self.orch._temp_mem_dir.cleanup()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def _create_pending_approval_task(self) -> tuple[dict, str]:
@@ -530,8 +530,8 @@ class TestGatewayManagerAndSupervision(unittest.TestCase):
     def tearDown(self) -> None:
         if self.mgr.is_running:
             self.mgr.stop()
-        if hasattr(self, "orch") and getattr(self.orch, "_temp_mem_dir", None):
-            self.orch._temp_mem_dir.cleanup()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_gateway_manager_start_and_stop(self) -> None:

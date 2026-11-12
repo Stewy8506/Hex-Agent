@@ -271,7 +271,20 @@ class BubblewrapSandbox:
 
     @classmethod
     def is_available(cls) -> bool:
-        return platform.system() == "Linux" and bool(shutil.which("bwrap"))
+        if platform.system() != "Linux":
+            return False
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            return False
+        try:
+            res = subprocess.run(
+                [bwrap, "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--proc", "/proc", "--dev", "/dev", "--", "true"],
+                capture_output=True,
+                timeout=2,
+            )
+            return res.returncode == 0
+        except Exception:
+            return False
 
     def build_bwrap_args(
         self,
@@ -291,9 +304,14 @@ class BubblewrapSandbox:
             "--ro-bind", "/bin", "/bin",
             "--ro-bind", "/etc", "/etc",
         ]
-        for lib in ("/lib", "/lib64"):
+        for lib in ("/lib", "/lib64", "/opt"):
             if Path(lib).exists():
                 bwrap_cmd.extend(["--ro-bind", lib, lib])
+
+        prefix = str(Path(sys.prefix).resolve())
+        if not any(prefix.startswith(base) for base in ("/usr", "/bin", "/lib", "/lib64", "/opt")):
+            if Path(prefix).exists():
+                bwrap_cmd.extend(["--ro-bind", prefix, prefix])
 
         bwrap_cmd.extend([
             "--proc", "/proc",

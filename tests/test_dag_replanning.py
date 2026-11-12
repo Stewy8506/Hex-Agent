@@ -33,6 +33,8 @@ class TestDAGReplanning(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     # ------------------------------------------------------------------
@@ -291,17 +293,21 @@ class TestDAGReplanning(unittest.TestCase):
         snap = self.orch.cow.create_snapshot(self.source_ws, label=f"base_{task_id}")
         attempt_ws = self.orch.workspaces_root / f"ws_{task_id}_test"
         self.orch.cow.clone_to_workspace(snap.snapshot_path, attempt_ws)
-        ver_outcome = self.orch.proof_service.run_verification_and_build_proof(
-            task_id=task_id,
-            attempt_id="att_test_pinning",
-            base_snapshot_path=snap.snapshot_path,
-            workspace_dir=attempt_ws,
-            modified_files=["core_lib.py"],
-            run_tests=True,
-        )
-        self.assertTrue(ver_outcome["passed"])
-        ver_results = ver_outcome.get("verification_results") or {}
-        self.assertIn("test_core_callers.py", ver_results.get("pinned_blast_radius_targets", []))
+        try:
+            ver_outcome = self.orch.proof_service.run_verification_and_build_proof(
+                task_id=task_id,
+                attempt_id="att_test_pinning",
+                base_snapshot_path=snap.snapshot_path,
+                workspace_dir=attempt_ws,
+                modified_files=["core_lib.py"],
+                run_tests=True,
+            )
+            self.assertTrue(ver_outcome["passed"])
+            ver_results = ver_outcome.get("verification_results") or {}
+            self.assertIn("test_core_callers.py", ver_results.get("pinned_blast_radius_targets", []))
+        finally:
+            if hasattr(self.orch.cow, "_unmount"):
+                self.orch.cow._unmount(attempt_ws)
 
     # ------------------------------------------------------------------
     # Test 4: End-to-End Task Execution with Dynamic Replanning

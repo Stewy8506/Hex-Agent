@@ -40,8 +40,8 @@ class TestTelegramConfigAndWhitelisting(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        if hasattr(self, "orch") and getattr(self.orch, "_temp_mem_dir", None):
-            self.orch._temp_mem_dir.cleanup()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_telegram_config_from_env(self) -> None:
@@ -142,8 +142,8 @@ class TestTelegramCommandsAndTaskDelegation(unittest.TestCase):
         self.gw = TelegramBotGateway(self.orch, self.cfg, transport=self.transport)
 
     def tearDown(self) -> None:
-        if hasattr(self, "orch") and getattr(self.orch, "_temp_mem_dir", None):
-            self.orch._temp_mem_dir.cleanup()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_help_and_start_commands(self) -> None:
@@ -343,8 +343,8 @@ class TestTelegramInteractiveCallbacks(unittest.TestCase):
         self.gw = TelegramBotGateway(self.orch, self.cfg, transport=self.transport)
 
     def tearDown(self) -> None:
-        if hasattr(self, "orch") and getattr(self.orch, "_temp_mem_dir", None):
-            self.orch._temp_mem_dir.cleanup()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def _create_pending_approval_task(self) -> tuple[dict, str]:
@@ -580,8 +580,8 @@ class TestTelegramE2EWorkflow(unittest.TestCase):
         self.gw = TelegramBotGateway(self.orch, self.cfg, transport=self.transport)
 
     def tearDown(self) -> None:
-        if hasattr(self, "orch") and getattr(self.orch, "_temp_mem_dir", None):
-            self.orch._temp_mem_dir.cleanup()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_e2e_telegram_task_lifecycle(self) -> None:

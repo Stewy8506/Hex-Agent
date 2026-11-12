@@ -113,14 +113,14 @@ class TestUISelector(unittest.TestCase):
 
 class TestConfigLoader(unittest.TestCase):
     def setUp(self) -> None:
+        self._orig_env = dict(os.environ)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.cfg_dir = Path(self.temp_dir.name)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
-        os.environ.pop("TEST_KEY_ALPHA", None)
-        os.environ.pop("HEX_CLOUD_PROVIDER", None)
-        os.environ.pop("HEX_CLOUD_MODEL_ID", None)
+        os.environ.clear()
+        os.environ.update(self._orig_env)
 
     def test_parse_env_file(self) -> None:
         env_file = self.cfg_dir / "test.env"

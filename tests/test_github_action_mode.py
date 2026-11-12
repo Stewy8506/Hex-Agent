@@ -432,7 +432,7 @@ class TestCLIIntegration(unittest.TestCase):
                     "verification_results": {"passed": True},
                 }):
                     with patch("sys.stdout", out):
-                        code = cli_main(["gh-action", "--event-path", event_path, "--dry-run"])
+                        code = cli_main(["gh-action", "--event-path", event_path, "--event-name", "issue_comment", "--dry-run"])
 
             self.assertEqual(code, 0)
             data = json.loads(out.getvalue())

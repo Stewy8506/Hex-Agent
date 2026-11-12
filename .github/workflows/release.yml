@@ -45,7 +45,16 @@ jobs:
 
       - name: Run unit test suite
         run: |
-          python -m unittest discover -v tests
+          set -o pipefail
+          python -m unittest discover -v tests 2>&1 | tee test_run.log || {
+            echo "### ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 100 test_run.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail_err=$(tail -n 25 test_run.log | tr '\n' ' ')
+            echo "::error title=Test Failure::$tail_err"
+            exit 1
+          }
 
   build-and-release:
     name: Build Wheel & Create GitHub Release

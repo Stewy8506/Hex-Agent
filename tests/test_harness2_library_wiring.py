@@ -33,6 +33,8 @@ class TestHarness2LibraryWiring(unittest.TestCase):
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self) -> None:
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     # ------------------------------------------------------------------

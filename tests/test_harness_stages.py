@@ -80,6 +80,8 @@ class TestAutonomousHarnessStages(unittest.TestCase):
         self.api = HarnessAPIApp(self.orch)
 
     def tearDown(self) -> None:
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     # ------------------------------------------------------------------

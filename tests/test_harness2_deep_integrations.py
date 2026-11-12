@@ -53,6 +53,8 @@ class TestHarness2DeepIntegrations(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_runmark_rollout_caching_and_invalidation(self) -> None:

@@ -18,11 +18,14 @@ from harness_core.tui import HexConsole
 
 class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
     def setUp(self) -> None:
+        self._orig_env = dict(os.environ)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.cfg_dir = Path(self.temp_dir.name)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+        os.environ.clear()
+        os.environ.update(self._orig_env)
 
     def test_probe_antigravity_token_empty(self) -> None:
         self.assertFalse(_probe_antigravity_token(""))
@@ -40,6 +43,7 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         mock_urlopen.side_effect = Exception("HTTP 401 Unauthorized")
         self.assertFalse(_probe_antigravity_token("expired_token_123"))
 
+    @patch("harness_core.providers.antigravity_provider.AntigravityOAuthManager.resolve_credential")
     @patch("harness_core.onboard.fetch_available_models", return_value=[("gemini-2.5-pro", "Gemini 2.5 Pro"), ("gemini-2.5-flash", "Gemini 2.5 Flash")])
     @patch("harness_core.onboard.prompt_secret")
     @patch("harness_core.onboard.select_option")
@@ -50,7 +54,13 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         mock_select: MagicMock,
         mock_prompt: MagicMock,
         mock_fetch: MagicMock,
+        mock_resolve: MagicMock,
     ) -> None:
+        mock_resolve.return_value = AntigravityCredential(
+            access_token="ya29.existing_token_abc",
+            refresh_token="1//existing_refresh_abc",
+            expires_at_ms=9999999999000,
+        )
         # Step 1: Antigravity provider (0)
         # Step 1a: Auth -> Keep (0)
         # Step 1b: Model selection -> gemini-2.5-flash (1)

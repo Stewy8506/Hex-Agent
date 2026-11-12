@@ -107,7 +107,7 @@ class TestWorkerDaemon(unittest.TestCase):
         """Verifies host profiling detects CPU/RAM/OS/CoW and registers worker in ledger."""
         prof = inspect_machine_profile()
         self.assertIn(prof["machine_class"], ("m4_air", "desktop_gpu", "server"))
-        self.assertIn(prof["cow_backend"], ("apfs_clone", "btrfs_subvolume", "overlayfs", "portable_copy"))
+        self.assertIn(prof["cow_backend"], ("apfs_clone", "btrfs_subvolume", "overlayfs", "linux_overlayfs", "fuse_overlayfs", "portable_copy"))
         self.assertIn("cpu_cores", prof["capabilities"])
         self.assertIn("memory_bytes", prof["capabilities"])
         self.assertGreaterEqual(prof["capabilities"]["cpu_cores"], 1)

@@ -284,6 +284,8 @@ class TestCompilerPreflightInterceptor(unittest.TestCase):
 
     def tearDown(self):
         self.orch.lsp_manager.close_all()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         self.temp_dir.cleanup()
 
     def test_preflight_detects_compiler_errors(self):
@@ -322,6 +324,8 @@ class TestAutonomousRepairWithLSPPreflight(unittest.TestCase):
 
     def tearDown(self):
         self.orch.lsp_manager.close_all()
+        if hasattr(self, "orch") and self.orch is not None:
+            self.orch.shutdown()
         self.temp_dir.cleanup()
 
     def test_repair_short_circuits_and_logs_event(self):

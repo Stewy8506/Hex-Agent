@@ -144,6 +144,26 @@ class HarnessOrchestrator:
             trust_level="trusted_local",
         )
 
+    def shutdown(self) -> None:
+        """Clean up active mounts and release temporary directories."""
+        if hasattr(self, "cow") and hasattr(self.cow, "_cleanup_all_mounts"):
+            try:
+                self.cow._cleanup_all_mounts()
+            except Exception:
+                pass
+        if self._temp_mem_dir is not None:
+            try:
+                self._temp_mem_dir.cleanup()
+            except Exception:
+                pass
+            self._temp_mem_dir = None
+
+    def __del__(self) -> None:
+        try:
+            self.shutdown()
+        except Exception:
+            pass
+
     def set_active_model(self, model_id: str, durable: bool = True) -> tuple[str, str, Path | None]:
         """Synchronously switch active model on router, provider, and durable config."""
         clean_id = model_id.strip()

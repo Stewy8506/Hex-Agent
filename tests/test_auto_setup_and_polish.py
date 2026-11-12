@@ -23,11 +23,14 @@ from harness_core.tui import render_hex_splash, render_hex_splash
 
 class TestAutoSetupAndPolish(unittest.TestCase):
     def setUp(self) -> None:
+        self._orig_env = dict(os.environ)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.cfg_dir = Path(self.temp_dir.name)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+        os.environ.clear()
+        os.environ.update(self._orig_env)
 
     def test_onboard_wizard_defaults_only(self) -> None:
         result = run_onboard_wizard(
