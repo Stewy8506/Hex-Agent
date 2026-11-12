@@ -1232,10 +1232,8 @@ class HexConsole:
             pass
 
     def render_welcome_splash(self) -> str:
-        """Render both the Hermes-grade full splash card and session banner."""
-        cow_backend = getattr(getattr(self.orchestrator, "cow", None), "backend_name", "apfs")
-        sandbox_backend = getattr(getattr(self.orchestrator, "sandbox", None), "backend_name", "bwrap")
-        comp_mode = getattr(getattr(self.orchestrator, "router", None), "compressor_mode", "local")
+        """Render the Hermes-grade full splash card."""
+        comp_mode = getattr(getattr(self.orchestrator, "router", None), "compressor_mode", "deterministic")
         active_model = (
             self.model_profile
             or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", None)
@@ -1246,7 +1244,7 @@ class HexConsole:
             if self.voice_engine.is_muted()
             else ("ON" if self.voice_engine.config.tts_enabled else "OFF")
         )
-        splash = render_hermes_splash(
+        return render_hermes_splash(
             self.orchestrator,
             skin_name=self.skin_name,
             model_id=active_model,
@@ -1255,19 +1253,6 @@ class HexConsole:
             session_id=f"Session: {self.session_id}",
             voice_status=v_stat,
         )
-        from .onboard import HardwareProfile
-
-        prof = HardwareProfile.detect()
-        hw_comp = f"{prof.machine_model} MLX ({comp_mode})" if prof.is_apple_silicon else f"CPU ({comp_mode})"
-        compact = render_session_banner(
-            model_id=active_model,
-            compressor_mode=hw_comp,
-            sandbox_backend=sandbox_backend,
-            cow_backend=cow_backend,
-            voice_status=v_stat,
-        )
-        status_bar = self.get_status_bar()
-        return f"{splash}\n\n{compact}\n{status_bar}"
 
     def get_status_bar(self) -> str:
         cow_backend = getattr(getattr(self.orchestrator, "cow", None), "backend_name", "apfs")
