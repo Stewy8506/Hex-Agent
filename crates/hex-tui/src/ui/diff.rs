@@ -3,7 +3,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use hex_protocol::diff::DiffLineType;
@@ -26,6 +26,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             title,

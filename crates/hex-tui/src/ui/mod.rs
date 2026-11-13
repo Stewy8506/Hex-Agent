@@ -10,7 +10,7 @@ pub mod status_bar;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
@@ -75,6 +75,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
             " ◈ HEX WORKBENCH HELP & KEYBINDINGS ◈ ",

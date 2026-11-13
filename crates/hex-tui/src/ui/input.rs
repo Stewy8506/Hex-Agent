@@ -3,7 +3,7 @@
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, Focus};
@@ -17,33 +17,41 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let title = if is_focused {
-        " Command Prompt [FOCUSED - Enter to Send, / for Commands] "
+        " Command Prompt [Enter to Send, / for Commands] "
     } else {
         " Command Prompt "
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             title,
             Style::default()
-                .fg(if is_focused { Color::Yellow } else { Color::White })
+                .fg(if is_focused { Color::Yellow } else { Color::DarkGray })
                 .add_modifier(if is_focused { Modifier::BOLD } else { Modifier::empty() }),
         ));
 
-    let prefix = "hex> ";
-    let input_line = Line::from(vec![
-        Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::raw(&app.input_buffer),
-    ]);
+    let prefix = "❯ ";
+    let input_line = if app.input_buffer.is_empty() && is_focused {
+        Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled("Type your objective, or / for commands...", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
+        ])
+    };
 
     let paragraph = Paragraph::new(input_line).block(block);
     frame.render_widget(paragraph, area);
 
     // Render cursor if input is focused
     if is_focused {
-        let cursor_x = area.x + 1 + (prefix.len() as u16) + (app.cursor_pos as u16);
+        let cursor_x = area.x + 1 + (prefix.chars().count() as u16) + (app.cursor_pos as u16);
         let cursor_y = area.y + 1;
         if cursor_x < area.x + area.width - 1 {
             frame.set_cursor_position(Position::new(cursor_x, cursor_y));
@@ -96,6 +104,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         let list = List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan))
                 .title(Span::styled(
                     " Commands [Tab / ↑↓ to select] ",

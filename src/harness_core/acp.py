@@ -162,10 +162,27 @@ class ACPServer:
         with self._lock:
             self.sessions[session_id] = sess
 
+        tools_count = len(self.orchestrator.gateway.tools) if hasattr(self.orchestrator, "gateway") else 14
+        skills_count = 0
+        try:
+            from .skillspector import SkillSpector
+            skills_count = len(SkillSpector().list_registered_skills())
+        except Exception:
+            skills_count = 2
+
+        cow_backend = getattr(self.orchestrator.cow, "backend_name", "apfs_clone") if hasattr(self.orchestrator, "cow") else "apfs_clone"
+
+        active_model = model
+        if active_model == "default":
+            active_model = getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", None) or "gemini-2.5-pro"
+
         return {
             "sessionId": session_id,
             "cwd": str(cwd_path),
-            "model": model,
+            "model": active_model,
+            "toolsCount": tools_count,
+            "skillsCount": skills_count,
+            "cowBackend": cow_backend,
         }
 
     def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:

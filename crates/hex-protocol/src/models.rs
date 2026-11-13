@@ -387,6 +387,12 @@ pub struct SessionNewResponse {
     pub session_id: String,
     pub cwd: String,
     pub model: String,
+    #[serde(default)]
+    pub tools_count: Option<usize>,
+    #[serde(default)]
+    pub skills_count: Option<usize>,
+    #[serde(default)]
+    pub cow_backend: Option<String>,
 }
 
 /// Parameters for `session/load`.

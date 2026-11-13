@@ -12,43 +12,33 @@ use crate::app::{App, DialogueItem, Focus};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == Focus::Dialogue;
-    let border_color = if is_focused {
-        Color::Cyan
-    } else {
-        Color::DarkGray
-    };
 
-    let title = if is_focused {
-        " Dialogue History [FOCUSED - ↑/↓ to Scroll] "
-    } else {
-        " Dialogue History "
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(if is_focused { Color::Cyan } else { Color::White })
-                .add_modifier(if is_focused { Modifier::BOLD } else { Modifier::empty() }),
-        ));
+    let block = Block::default().borders(Borders::NONE);
 
     let mut lines: Vec<Line> = Vec::new();
+
+    // Top status guide line when focused or scrolling
+    if is_focused {
+        lines.push(Line::from(vec![
+            Span::styled("─ Transcript ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("[FOCUSED · ↑/↓ to Scroll · 'c' to toggle tools] ", Style::default().fg(Color::DarkGray)),
+            Span::styled("─".repeat(area.width.saturating_sub(58) as usize), Style::default().fg(Color::DarkGray)),
+        ]));
+        lines.push(Line::raw(""));
+    }
 
     for item in &app.dialogue_items {
         match item {
             DialogueItem::Message(msg) => {
                 let (badge_text, badge_style) = match msg.role {
-                    Role::User => ("[USER]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                    Role::Assistant => ("[ASSISTANT]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                    Role::System => ("[SYSTEM]", Style::default().fg(Color::Yellow)),
-                    Role::Tool => ("[TOOL]", Style::default().fg(Color::Magenta)),
+                    Role::User => ("❯ User  ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Role::Assistant => ("◈ Assistant  ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Role::System => ("◈ System  ", Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
+                    Role::Tool => ("▶ Tool  ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
                 };
 
                 let header_line = Line::from(vec![
                     Span::styled(badge_text, badge_style),
-                    Span::raw("  "),
                     Span::styled(&msg.timestamp, Style::default().fg(Color::DarkGray)),
                 ]);
                 lines.push(header_line);
@@ -59,14 +49,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     if raw_line.trim_start().starts_with("```") {
                         in_code_block = !in_code_block;
                         lines.push(Line::from(vec![
-                            Span::styled(format!("  {}", raw_line), Style::default().fg(Color::DarkGray)),
+                            Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                            Span::styled(raw_line.trim(), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
                         ]));
                         continue;
                     }
 
                     if in_code_block {
                         lines.push(Line::from(vec![
-                            Span::styled(format!("    {}", raw_line), Style::default().fg(Color::LightCyan)),
+                            Span::styled("  │ ", Style::default().fg(Color::Cyan)),
+                            Span::styled(raw_line, Style::default().fg(Color::LightCyan)),
                         ]));
                     } else if raw_line.trim_start().starts_with('#') {
                         lines.push(Line::from(vec![
@@ -88,12 +80,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
             DialogueItem::ToolCall(tc) => {
                 let arrow = if tc.collapsed { "▶" } else { "▼" };
-                let status_style = match tc.exit_status.as_deref() {
-                    Some("OK") => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                    Some("ERROR") => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                    _ => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                let (status_text, status_style) = match tc.exit_status.as_deref() {
+                    Some("OK") => ("OK", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Some("ERROR") => ("ERROR", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    _ => ("RUNNING", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 };
-                let status_text = tc.exit_status.as_deref().unwrap_or("PENDING");
                 let duration_text = tc
                     .duration_ms
                     .map(|d| format!(" ({}ms)", d))
@@ -101,7 +92,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
                 let header_line = Line::from(vec![
                     Span::styled(format!("  {} [TOOL CALL] ", arrow), Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-                    Span::styled(&tc.tool, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                    Span::styled(&tc.tool, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::styled(&tc.args, Style::default().fg(Color::DarkGray)),
                     Span::styled(duration_text, Style::default().fg(Color::DarkGray)),
                     Span::raw("  "),
                     Span::styled(format!("[{}]", status_text), status_style),
@@ -114,23 +107,25 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 lines.push(header_line);
 
                 if !tc.collapsed {
-                    // Show arguments
-                    lines.push(Line::from(vec![
-                        Span::styled("     Args: ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(&tc.args, Style::default().fg(Color::Gray)),
-                    ]));
+                    // Show arguments if not fully rendered in title
+                    if !tc.args.is_empty() {
+                        lines.push(Line::from(vec![
+                            Span::styled("      Args: ", Style::default().fg(Color::DarkGray)),
+                            Span::styled(&tc.args, Style::default().fg(Color::Gray)),
+                        ]));
+                    }
 
                     // Show result if available
                     if let Some(res) = &tc.result {
-                        for res_line in res.lines().take(8) {
+                        for res_line in res.lines().take(12) {
                             lines.push(Line::from(vec![
-                                Span::styled("     │ ", Style::default().fg(Color::DarkGray)),
+                                Span::styled("      │ ", Style::default().fg(Color::DarkGray)),
                                 Span::styled(res_line, Style::default().fg(Color::LightGreen)),
                             ]));
                         }
-                        if res.lines().count() > 8 {
+                        if res.lines().count() > 12 {
                             lines.push(Line::from(vec![
-                                Span::styled(format!("     │ ... ({} lines omitted)", res.lines().count() - 8), Style::default().fg(Color::DarkGray)),
+                                Span::styled(format!("      │ ... ({} lines omitted)", res.lines().count() - 12), Style::default().fg(Color::DarkGray)),
                             ]));
                         }
                     }

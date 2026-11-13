@@ -20,7 +20,7 @@ fn test_full_tui_layout_rendering() {
     assert!(content.contains("HEX"), "Buffer must contain ASCII banner");
     assert!(content.contains("test_proj"), "Buffer must contain project name");
     assert!(content.contains("gemini-2.5-pro"), "Buffer must contain model name");
-    assert!(content.contains("Dialogue History"), "Buffer must contain dialogue history block");
+    assert!(content.contains("Welcome to HEX"), "Buffer must contain welcome message");
     assert!(content.contains("Command Prompt"), "Buffer must contain input prompt");
     assert!(content.contains("[INPUT]"), "Buffer status bar must display active focus");
 }

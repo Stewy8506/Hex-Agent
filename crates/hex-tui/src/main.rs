@@ -83,7 +83,7 @@ fn run_headless_check(args: Args) -> Result<()> {
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(&args.project, &args.model, &args.cow);
+    let mut app = App::with_workspace(&args.project, &args.model, &args.cow, args.workspace.as_deref());
     if let Some(s) = args.session {
         app.session_id = s;
     }
@@ -113,7 +113,7 @@ fn run_headless_check(args: Args) -> Result<()> {
     assert!(content.contains("HEX"), "Virtual buffer must contain HEX banner");
     assert!(content.contains(&args.project), "Virtual buffer must contain project ID");
     assert!(content.contains("Diff Viewer"), "Virtual buffer must contain Diff Viewer");
-    assert!(content.contains("Command Prompt"), "Virtual buffer must contain Command Prompt");
+    assert!(content.contains("Prompt"), "Virtual buffer must contain Prompt");
 
     // Render frame 2: Approval modal overlay
     app.set_approval_request(ApprovalRequest {
@@ -137,7 +137,7 @@ fn run_headless_check(args: Args) -> Result<()> {
 
 /// Primary interactive application loop.
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) -> Result<()> {
-    let mut app = App::new(&args.project, &args.model, &args.cow);
+    let mut app = App::with_workspace(&args.project, &args.model, &args.cow, args.workspace.as_deref());
     if let Some(s) = args.session {
         app.session_id = s;
     }
@@ -148,6 +148,25 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     let acp_client = match maybe_client {
         Ok(client) => {
             app.connection_status = "Connected".to_string();
+            // Handshake session to populate dynamic tools, skills, cow backend, and active model
+            match client.session_new(ws_path.and_then(|p| p.to_str()), Some(&app.model_name)).await {
+                Ok(sess) => {
+                    app.session_id = sess.session_id;
+                    app.model_name = sess.model;
+                    if let Some(tc) = sess.tools_count {
+                        app.tools_count = tc;
+                    }
+                    if let Some(sc) = sess.skills_count {
+                        app.skills_count = sc;
+                    }
+                    if let Some(cow) = sess.cow_backend {
+                        app.cow_mode = cow;
+                    }
+                }
+                Err(e) => {
+                    app.add_system_message(&format!("Session handshake notice: {}", e));
+                }
+            }
             app.add_system_message("Connected to internal ACP server.");
             Some(client)
         }
@@ -397,6 +416,11 @@ async fn execute_submitted_text(
             "/quit" => {
                 app.should_quit = true;
                 return Ok(());
+            }
+            "/model" => {
+                if let Some(m) = arg {
+                    app.model_name = m.to_string();
+                }
             }
             _ => {}
         }

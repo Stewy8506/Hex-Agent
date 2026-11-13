@@ -186,7 +186,13 @@ pub struct App {
     pub session_id: String,
     pub project_id: String,
     pub model_name: String,
+    pub provider_name: String,
     pub cow_mode: String,
+    pub git_branch: String,
+    pub git_sha: String,
+    pub workspace_path: String,
+    pub tools_count: usize,
+    pub skills_count: usize,
     pub fencing_token: u64,
     pub connection_status: String,
 
@@ -222,13 +228,57 @@ pub struct App {
     pub active_approval: Option<ApprovalRequest>,
 }
 
+pub fn detect_git_info(dir: &std::path::Path) -> (String, String) {
+    let branch = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "main".to_string());
+
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "clean".to_string());
+
+    (branch, sha)
+}
+
 impl App {
     pub fn new(project_id: impl Into<String>, model_name: impl Into<String>, cow_mode: impl Into<String>) -> Self {
+        Self::with_workspace(project_id, model_name, cow_mode, None)
+    }
+
+    pub fn with_workspace(
+        project_id: impl Into<String>,
+        model_name: impl Into<String>,
+        cow_mode: impl Into<String>,
+        workspace: Option<&std::path::Path>,
+    ) -> Self {
+        let ws = workspace
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        let (branch, sha) = detect_git_info(&ws);
+
         let mut app = Self {
             session_id: "ses_default".to_string(),
             project_id: project_id.into(),
             model_name: model_name.into(),
+            provider_name: "Google Antigravity".to_string(),
             cow_mode: cow_mode.into(),
+            git_branch: branch,
+            git_sha: sha,
+            workspace_path: ws.to_string_lossy().to_string(),
+            tools_count: 14,
+            skills_count: 2,
             fencing_token: 1,
             connection_status: "Connected".to_string(),
 
@@ -259,7 +309,7 @@ impl App {
         };
 
         // Seed with welcome messages
-        app.add_system_message("◈ Welcome to HEX Autonomous AI Workbench Cockpit");
+        app.add_system_message("◈ Welcome to HEX Autonomous AI Workbench");
         app.add_system_message("Type your goal or /help for interactive commands.");
         app
     }
@@ -591,8 +641,22 @@ impl App {
     }
 
     pub fn scroll_dialogue_to_bottom(&mut self) {
-        // Approximate total height
-        self.dialogue_scroll = self.dialogue_items.len().saturating_mul(4);
+        let estimated_lines: usize = self.dialogue_items.iter().map(|item| match item {
+            DialogueItem::Message(m) => m.content.lines().count() + 2,
+            DialogueItem::ToolCall(tc) => {
+                if tc.collapsed {
+                    2
+                } else {
+                    tc.result.as_ref().map(|r| r.lines().count().min(12) + 3).unwrap_or(3)
+                }
+            }
+        }).sum();
+        let viewport_height = 24;
+        if estimated_lines > viewport_height {
+            self.dialogue_scroll = estimated_lines.saturating_sub(viewport_height);
+        } else {
+            self.dialogue_scroll = 0;
+        }
     }
 }
 
