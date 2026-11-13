@@ -214,15 +214,17 @@ class ACPServer:
         # Submit task
         from .models import TaskSubmitRequest
         task_req = TaskSubmitRequest(
-            task_id=task_id,
             goal=prompt_text,
             project_id="acp_session",
             execution_mode="fast_path",
+            workspace_root=str(sess.workspace_root),
         )
-        self.orchestrator.submit_task(task_req)
-        exec_res = self.orchestrator.run_task(task_id, workspace_dir=sess.workspace_root)
+        sub_res = self.orchestrator.submit_task(task_req)
+        task_id = sub_res["task_id"]
+        exec_res = self.orchestrator.execute_task(task_id)
 
-        status_str = exec_res.get("status", "COMPLETED").lower()
+        raw_status = exec_res.get("status", "COMPLETED")
+        status_str = "completed" if raw_status in ("SUCCEEDED", "COMPLETED") else raw_status.lower()
         terminal_reason = exec_res.get("terminal_reason") or exec_res.get("model_response") or "Task completed."
 
         sess.history.append({
@@ -279,19 +281,11 @@ class ACPServer:
         if not name:
             raise ValueError("Tool call missing 'name' parameter")
 
-        task_id = args.get("task_id", f"tsk_tool_{uuid.uuid4().hex[:8]}")
-        attempt_id = f"att_{uuid.uuid4().hex[:8]}"
-        step_id = f"stp_{uuid.uuid4().hex[:8]}"
+        spec = self.orchestrator.gateway.tools.get(name)
+        if spec is None:
+            raise KeyError(f"Unknown tool: {name}")
 
-        inv_res = self.orchestrator.gateway.invoke(
-            task_id=task_id,
-            attempt_id=attempt_id,
-            step_id=step_id,
-            sequence_in_step=1,
-            tool_id=name,
-            args=args,
-            workspace_dir=self.workspace_root,
-        )
+        inv_res = spec.handler(self.workspace_root, args)
 
         return {
             "content": [
