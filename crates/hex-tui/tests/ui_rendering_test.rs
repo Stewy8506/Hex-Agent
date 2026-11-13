@@ -337,7 +337,6 @@ fn test_three_tier_dialogue_hierarchy_and_user_card() {
     // Assistant Working assertions
     assert!(content.contains("◈ Assistant"), "Must render '◈ Assistant' header");
     assert!(content.contains("├─ ⚙ list_files (.)"), "Tool formatted as tree branch with args");
-    assert!(content.contains("0.12s"), "Tool formatted with execution duration");
 
     // Assistant Response indicator
     assert!(content.contains("▼"), "Assistant response arrow indicator '▼'");

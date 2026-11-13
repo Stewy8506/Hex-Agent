@@ -280,28 +280,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 had_tool_in_turn = true;
 
                 let (status_icon, status_style) = match tc.exit_status.as_deref() {
-                    Some("OK") | Some("SUCCEEDED") => (
-                        "⚙",
-                        Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
-                    ),
                     Some("ERROR") | Some("FAILED") => (
                         "✖",
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     ),
-                    Some("RUNNING") => {
-                        let spin = SPINNER[(app.animation_frame as usize / 2) % SPINNER.len()];
-                        (spin, Style::default().fg(skin.accent).add_modifier(Modifier::BOLD))
-                    }
                     _ => (
                         "⚙",
-                        Style::default().fg(skin.heading).add_modifier(Modifier::BOLD),
+                        Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
                     ),
                 };
                 let formatted_args = format_tool_args(&tc.args);
-                let duration_text = tc
-                    .duration_ms
-                    .map(|d| format!(" ── {:.2}s", d as f64 / 1000.0))
-                    .unwrap_or_default();
 
                 let mut spans = vec![
                     Span::styled("  ├─ ", Style::default().fg(skin.muted)),
@@ -314,9 +302,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     ),
                     Span::styled(formatted_args, Style::default().fg(skin.muted)),
                 ];
-                if !duration_text.is_empty() {
-                    spans.push(Span::styled(duration_text, Style::default().fg(skin.muted)));
-                }
                 if tc.collapsed {
                     spans.push(Span::styled(" [collapsed]", Style::default().fg(skin.muted)));
                 }
