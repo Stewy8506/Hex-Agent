@@ -71,6 +71,53 @@ class ReActSessionResult:
     termination_reason: str = "finish"  # "finish", "max_turns", "error", "no_tool_calls"
 
 
+def _safe_json_loads(raw: str) -> Any:
+    """Load JSON with fallback recovery for common Python-like formatting."""
+    clean = raw.strip()
+    try:
+        return json.loads(clean)
+    except Exception:
+        pass
+    # Quick normalization for Python booleans/None
+    normalized = re.sub(r"\bTrue\b", "true", clean)
+    normalized = re.sub(r"\bFalse\b", "false", normalized)
+    normalized = re.sub(r"\bNone\b", "null", normalized)
+    return json.loads(normalized)
+
+
+def _find_json_objects(text: str) -> list[tuple[int, int, str]]:
+    """Scan text and locate all balanced JSON objects accounting for strings and escapes."""
+    results: list[tuple[int, int, str]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == "{":
+            start = i
+            depth = 1
+            in_str = False
+            escape = False
+            i += 1
+            while i < n and depth > 0:
+                c = text[i]
+                if escape:
+                    escape = False
+                elif c == "\\":
+                    escape = True
+                elif c == '"':
+                    in_str = not in_str
+                elif not in_str:
+                    if c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                i += 1
+            if depth == 0:
+                results.append((start, i, text[start:i]))
+                continue
+        i += 1
+    return results
+
+
 class ReActLoop:
     """Continuous Multi-Turn ReAct tool-calling engine.
 
@@ -108,7 +155,7 @@ class ReActLoop:
                 return str(response["text"])
             if "content" in response:
                 return str(response["content"])
-            return json.dumps(response)
+            return json.dumps(response, default=str)
         if hasattr(response, "text"):
             return str(response.text)
         if hasattr(response, "content"):
@@ -137,7 +184,7 @@ class ReActLoop:
                     args = tc.get("arguments") or tc.get("args") or tc.get("function", {}).get("arguments", {})
                     if isinstance(args, str):
                         try:
-                            args = json.loads(args)
+                            args = _safe_json_loads(args)
                         except Exception:
                             args = {"raw": args}
                     cid = tc.get("call_id") or tc.get("id") or f"call_{uuid.uuid4().hex[:8]}_{idx}"
@@ -151,7 +198,7 @@ class ReActLoop:
                 args = response.get("arguments") or response.get("args") or {}
                 if isinstance(args, str):
                     try:
-                        args = json.loads(args)
+                        args = _safe_json_loads(args)
                     except Exception:
                         args = {"raw": args}
                 cid = response.get("call_id") or response.get("id") or f"call_{uuid.uuid4().hex[:8]}"
@@ -175,13 +222,20 @@ class ReActLoop:
                 body = match.group("body").strip()
                 cid = f"call_{uuid.uuid4().hex[:8]}_{idx}"
                 try:
-                    parsed = json.loads(body)
+                    parsed = _safe_json_loads(body)
                     if isinstance(parsed, dict):
                         name = parsed.get("name") or parsed.get("tool") or tag_name
-                        args = parsed.get("arguments") or parsed.get("args") or {}
+                        # If args explicitly present, use them; otherwise if tag_name exists or parsed is dict of args
+                        if "arguments" in parsed or "args" in parsed:
+                            args = parsed.get("arguments") or parsed.get("args") or {}
+                        elif tag_name or ("name" not in parsed and "tool" not in parsed):
+                            args = parsed
+                        else:
+                            args = {}
+
                         if isinstance(args, str):
                             try:
-                                args = json.loads(args)
+                                args = _safe_json_loads(args)
                             except Exception:
                                 args = {"raw": args}
                         if name:
@@ -193,7 +247,7 @@ class ReActLoop:
                                 args = item.get("arguments") or item.get("args") or {}
                                 if isinstance(args, str):
                                     try:
-                                        args = json.loads(args)
+                                        args = _safe_json_loads(args)
                                     except Exception:
                                         args = {"raw": args}
                                 if name:
@@ -207,7 +261,7 @@ class ReActLoop:
                         args: dict[str, Any] = {}
                         if args_m:
                             try:
-                                args = json.loads(args_m.group(1).strip())
+                                args = _safe_json_loads(args_m.group(1).strip())
                             except Exception:
                                 args = {"raw": args_m.group(1).strip()}
                         requests.append(ToolCallRequest(call_id=cid, name=str(name), arguments=args))
@@ -229,7 +283,7 @@ class ReActLoop:
         code_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
         for idx, block in enumerate(code_blocks):
             try:
-                parsed = json.loads(block.strip())
+                parsed = _safe_json_loads(block.strip())
                 block_requests: list[ToolCallRequest] = []
                 if isinstance(parsed, dict):
                     if "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
@@ -238,7 +292,7 @@ class ReActLoop:
                             args = tc.get("arguments") or tc.get("args") or {}
                             if isinstance(args, str):
                                 try:
-                                    args = json.loads(args)
+                                    args = _safe_json_loads(args)
                                 except Exception:
                                     args = {"raw": args}
                             cid = tc.get("call_id") or tc.get("id") or f"call_{uuid.uuid4().hex[:8]}_{idx}_{j}"
@@ -249,7 +303,7 @@ class ReActLoop:
                         args = parsed.get("arguments") or parsed.get("args") or {}
                         if isinstance(args, str):
                             try:
-                                args = json.loads(args)
+                                args = _safe_json_loads(args)
                             except Exception:
                                 args = {"raw": args}
                         cid = parsed.get("call_id") or parsed.get("id") or f"call_{uuid.uuid4().hex[:8]}_{idx}"
@@ -262,7 +316,7 @@ class ReActLoop:
                             args = item.get("arguments") or item.get("args") or {}
                             if isinstance(args, str):
                                 try:
-                                    args = json.loads(args)
+                                    args = _safe_json_loads(args)
                                 except Exception:
                                     args = {"raw": args}
                             cid = item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex[:8]}_{idx}_{j}"
@@ -285,7 +339,7 @@ class ReActLoop:
         stripped = text.strip()
         if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
             try:
-                parsed = json.loads(stripped)
+                parsed = _safe_json_loads(stripped)
                 if isinstance(parsed, dict):
                     thought = str(parsed.get("thought") or parsed.get("reasoning") or "")
                     if "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
@@ -295,7 +349,7 @@ class ReActLoop:
                             args = tc.get("arguments") or tc.get("args") or {}
                             if isinstance(args, str):
                                 try:
-                                    args = json.loads(args)
+                                    args = _safe_json_loads(args)
                                 except Exception:
                                     args = {"raw": args}
                             cid = tc.get("call_id") or tc.get("id") or f"call_{uuid.uuid4().hex[:8]}_{j}"
@@ -307,7 +361,7 @@ class ReActLoop:
                         args = parsed.get("arguments") or parsed.get("args") or {}
                         if isinstance(args, str):
                             try:
-                                args = json.loads(args)
+                                args = _safe_json_loads(args)
                             except Exception:
                                 args = {"raw": args}
                         cid = parsed.get("call_id") or parsed.get("id") or f"call_{uuid.uuid4().hex[:8]}"
@@ -321,7 +375,7 @@ class ReActLoop:
                             args = item.get("arguments") or item.get("args") or {}
                             if isinstance(args, str):
                                 try:
-                                    args = json.loads(args)
+                                    args = _safe_json_loads(args)
                                 except Exception:
                                     args = {"raw": args}
                             cid = item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex[:8]}_{j}"
@@ -332,23 +386,22 @@ class ReActLoop:
             except Exception:
                 pass
 
-        # Case 5: Embedded JSON search in text
-        json_matches = re.finditer(r"(\{[\s\S]*?\})", text)
-        for match in json_matches:
-            candidate = match.group(1).strip()
+        # Case 5: Embedded JSON search in text with balanced brace scanning
+        json_objs = _find_json_objects(text)
+        for start_idx, end_idx, candidate in json_objs:
             try:
-                parsed = json.loads(candidate)
+                parsed = _safe_json_loads(candidate)
                 if isinstance(parsed, dict) and ("tool" in parsed or ("name" in parsed and ("args" in parsed or "arguments" in parsed))):
                     name = parsed.get("name") or parsed.get("tool")
                     args = parsed.get("arguments") or parsed.get("args") or {}
                     if isinstance(args, str):
                         try:
-                            args = json.loads(args)
+                            args = _safe_json_loads(args)
                         except Exception:
                             args = {"raw": args}
                     cid = parsed.get("call_id") or parsed.get("id") or f"call_{uuid.uuid4().hex[:8]}"
                     if name:
-                        thought = (text[:match.start()] + " " + text[match.end():]).strip()
+                        thought = (text[:start_idx] + " " + text[end_idx:]).strip()
                         return thought, [ToolCallRequest(call_id=str(cid), name=str(name), arguments=args or {})]
             except Exception:
                 continue
@@ -410,52 +463,62 @@ class ReActLoop:
         workspace_dir = Path(self.workspace_root) if self.workspace_root else Path.cwd()
 
         # Gateway with .tools dictionary (standard HEX ToolGateway)
-        if hasattr(self.gateway, "tools") and isinstance(self.gateway.tools, dict) and call.name in self.gateway.tools:
-            spec = self.gateway.tools[call.name]
-            handler = getattr(spec, "handler", None)
-            if not callable(handler) and isinstance(spec, dict):
-                handler = spec.get("handler")
-            elif not callable(handler) and callable(spec):
-                handler = spec
+        if hasattr(self.gateway, "tools") and isinstance(self.gateway.tools, dict):
+            if call.name in self.gateway.tools:
+                spec = self.gateway.tools[call.name]
+                handler = getattr(spec, "handler", None)
+                if not callable(handler) and isinstance(spec, dict):
+                    handler = spec.get("handler")
+                elif not callable(handler) and callable(spec):
+                    handler = spec
 
-            if not callable(handler):
+                if not callable(handler):
+                    duration_ms = (time.perf_counter() - start_t) * 1000
+                    return ToolCallResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        output=f"Error: Tool '{call.name}' has no callable handler",
+                        is_error=True,
+                        duration_ms=duration_ms,
+                    )
+
+                try:
+                    # Check parameters: some handlers take (workspace_dir, args), others take (args)
+                    sig = inspect.signature(handler)
+                    if len(sig.parameters) == 1:
+                        result = handler(call.arguments)
+                    else:
+                        result = handler(workspace_dir, call.arguments)
+
+                    duration_ms = (time.perf_counter() - start_t) * 1000
+                    is_error = False
+                    if isinstance(result, dict):
+                        if result.get("status") in ("error", "failed", "DENIED") or (
+                            "error" in result and bool(result["error"])
+                        ):
+                            is_error = True
+                    return ToolCallResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        output=result,
+                        is_error=is_error,
+                        duration_ms=duration_ms,
+                    )
+                except Exception as e:
+                    duration_ms = (time.perf_counter() - start_t) * 1000
+                    return ToolCallResult(
+                        call_id=call.call_id,
+                        name=call.name,
+                        output=f"Error: {e}",
+                        is_error=True,
+                        duration_ms=duration_ms,
+                    )
+            else:
                 duration_ms = (time.perf_counter() - start_t) * 1000
                 return ToolCallResult(
                     call_id=call.call_id,
                     name=call.name,
-                    output=f"Error: Tool '{call.name}' has no callable handler",
-                    is_error=True,
-                    duration_ms=duration_ms,
-                )
-
-            try:
-                # Check parameters: some handlers take (workspace_dir, args), others take (args)
-                sig = inspect.signature(handler)
-                if len(sig.parameters) == 1:
-                    result = handler(call.arguments)
-                else:
-                    result = handler(workspace_dir, call.arguments)
-
-                duration_ms = (time.perf_counter() - start_t) * 1000
-                is_error = False
-                if isinstance(result, dict):
-                    if result.get("status") in ("error", "failed", "DENIED") or (
-                        "error" in result and bool(result["error"])
-                    ):
-                        is_error = True
-                return ToolCallResult(
-                    call_id=call.call_id,
-                    name=call.name,
-                    output=result,
-                    is_error=is_error,
-                    duration_ms=duration_ms,
-                )
-            except Exception as e:
-                duration_ms = (time.perf_counter() - start_t) * 1000
-                return ToolCallResult(
-                    call_id=call.call_id,
-                    name=call.name,
-                    output=f"Error: {e}",
+                    output=f"Error: Tool '{call.name}' not found in gateway",
                     is_error=True,
                     duration_ms=duration_ms,
                 )
@@ -696,7 +759,7 @@ class ReActLoop:
                 obs_payload = (
                     tool_res.output
                     if isinstance(tool_res.output, str)
-                    else json.dumps(tool_res.output, ensure_ascii=False)
+                    else json.dumps(tool_res.output, default=str, ensure_ascii=False)
                 )
                 if tool_res.is_error:
                     obs_content = f"<observation tool=\"{tool_res.name}\">\nError: {obs_payload}\n</observation>"
