@@ -27,9 +27,9 @@ class TestGatewayTools(unittest.TestCase):
         self.ledger.close()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def test_total_tool_count_is_24(self) -> None:
-        """Verify exactly 24 tools are registered in the gateway."""
-        self.assertEqual(len(self.gateway.tools), 24)
+    def test_total_tool_count_is_26(self) -> None:
+        """Verify exactly 26 tools are registered in the gateway."""
+        self.assertEqual(len(self.gateway.tools), 26)
         expected_tools = {
             "read_file",
             "list_files",
@@ -55,6 +55,8 @@ class TestGatewayTools(unittest.TestCase):
             "delegate",
             "subagent_status",
             "subagent_wait",
+            "browser",
+            "image_inspect",
         }
         self.assertEqual(set(self.gateway.tools.keys()), expected_tools)
 
