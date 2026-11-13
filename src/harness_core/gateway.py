@@ -495,6 +495,26 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["action"],
         },
     },
+    {
+        "id": "image_inspect",
+        "name": "image_inspect",
+        "description": "Inspect local image files or remote URLs using multimodal vision analysis (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "image_path": {"type": "string", "description": "Local path or HTTP/HTTPS URL of image"},
+                "prompt": {"type": "string", "description": "Specific query or instruction for visual analysis"},
+                "detail": {
+                    "type": "string",
+                    "enum": ["auto", "low", "high"],
+                    "description": "Visual inspection fidelity",
+                    "default": "auto",
+                },
+            },
+            "required": ["image_path", "prompt"],
+        },
+    },
 ]
 
 
@@ -510,6 +530,7 @@ class ToolGateway:
         lsp_manager: LSPManager | None = None,
         subagent_manager: SubagentManager | None = None,
         browser_manager: Any | None = None,
+        vision_engine: Any | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
@@ -519,6 +540,7 @@ class ToolGateway:
         self.lsp_manager = lsp_manager
         self.subagent_manager = subagent_manager
         self.browser_manager = browser_manager
+        self.vision_engine = vision_engine
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
         self._register_builtin_tools()
@@ -796,6 +818,14 @@ class ToolGateway:
                 description="Interactive headless browser for navigation, DOM inspection, element interaction, and screenshots (R2).",
                 risk_class=RiskClass.R2,
                 handler=self._tool_browser,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="image_inspect",
+                description="Inspect local image files or remote URLs using multimodal vision analysis (R1).",
+                risk_class=RiskClass.R1,
+                handler=self._tool_image_inspect,
             )
         )
 
@@ -1994,3 +2024,18 @@ class ToolGateway:
             return {"ok": True, "message": "Browser session closed"}
         else:
             return {"ok": False, "error": f"Unknown browser action: {action}"}
+
+    def _get_vision_engine(self) -> Any:
+        if self.vision_engine is None:
+            from .vision import VisionEngine
+            self.vision_engine = VisionEngine()
+        return self.vision_engine
+
+    def _tool_image_inspect(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        engine = self._get_vision_engine()
+        img_p = args.get("image_path")
+        prompt = args.get("prompt")
+        if not img_p or not prompt:
+            return {"ok": False, "error": "Missing required 'image_path' or 'prompt' parameter"}
+        detail = args.get("detail", "auto")
+        return engine.inspect_image(img_p, prompt, detail=detail, workspace_dir=workspace_dir)
