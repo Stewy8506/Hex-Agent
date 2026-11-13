@@ -228,7 +228,10 @@ fn test_transcript_design_language_and_badges() {
     let content = format!("{:?}", buffer);
 
     // 1. Badges
-    assert!(content.contains("❯ User"), "Must render ❯ User badge");
+    assert!(
+        content.contains("❯ You") || content.contains("❯ User"),
+        "Must render ❯ You or ❯ User badge"
+    );
     assert!(
         content.contains("◈ Assistant"),
         "Must render ◈ Assistant badge"
@@ -296,4 +299,47 @@ fn test_animation_changes_busy_telemetry_and_rotates_prompt() {
         first, second,
         "shared animation clock must change a visible frame"
     );
+}
+
+#[test]
+fn test_three_tier_dialogue_hierarchy_and_user_card() {
+    let backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
+
+    let mut app = App::new("test_proj", "gemini-3.8-flash-tiered", "apfs_clone");
+    app.dialogue_items.clear();
+    app.dialogue_scroll = 0;
+
+    // 1. User message
+    app.add_user_message("hey what can you do?");
+
+    // 2. Assistant tool execution
+    app.add_tool_call(
+        "tc_files",
+        "list_files",
+        "{\"path\": \".\"}",
+        Some(120),
+        Some("OK"),
+    );
+
+    // 3. Assistant response
+    app.add_assistant_message("I am HEX, an autonomous engineering agent.");
+
+    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
+    let buffer = terminal.backend().buffer().clone();
+    let content = format!("{:?}", buffer);
+
+    // User Card assertions
+    assert!(content.contains("╭─ ❯ You"), "User card top border with '╭─ ❯ You'");
+    assert!(content.contains("hey what can you do?"), "User card contains query content");
+    assert!(content.contains("╰"), "User card contains bottom rounded corner '╰'");
+
+    // Assistant Working assertions
+    assert!(content.contains("◈ Assistant"), "Must render '◈ Assistant' header");
+    assert!(content.contains("├─ ⚙ list_files (.)"), "Tool formatted as tree branch with args");
+    assert!(content.contains("0.12s"), "Tool formatted with execution duration");
+
+    // Assistant Response indicator
+    assert!(content.contains("▼"), "Assistant response arrow indicator '▼'");
+    assert!(content.contains("I am HEX"), "Assistant response content");
 }
