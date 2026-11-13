@@ -39,10 +39,10 @@ _PYTHON_SHEBANG_RE = re.compile(
 # the ownership parse serializes its block.
 _PYTHON_OWNERSHIP_PARSE_LOCK = Lock()
 _PYTHON_TEMPLATE_STRING_STARTS = frozenset(
-    {tokenize.FSTRING_START, getattr(tokenize, "TSTRING_START", tokenize.FSTRING_START)}
+    {getattr(tokenize, "FSTRING_START", -1), getattr(tokenize, "TSTRING_START", -1)} - {-1}
 )
 _PYTHON_TEMPLATE_STRING_ENDS = frozenset(
-    {tokenize.FSTRING_END, getattr(tokenize, "TSTRING_END", tokenize.FSTRING_END)}
+    {getattr(tokenize, "FSTRING_END", -1), getattr(tokenize, "TSTRING_END", -1)} - {-1}
 )
 
 # Start offsets and matching end offsets of a module's outermost string and

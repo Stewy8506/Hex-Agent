@@ -41,6 +41,13 @@ VENDOR_SKILLSPECTOR = get_skillspector_dir()
 if str(VENDOR_SKILLSPECTOR) not in sys.path and VENDOR_SKILLSPECTOR.is_dir():
     sys.path.insert(0, str(VENDOR_SKILLSPECTOR))
 
+# Provide tokenize.FSTRING_START / FSTRING_END shims for Python <3.12
+import tokenize
+if not hasattr(tokenize, "FSTRING_START"):
+    tokenize.FSTRING_START = -100  # type: ignore[attr-defined]
+if not hasattr(tokenize, "FSTRING_END"):
+    tokenize.FSTRING_END = -101  # type: ignore[attr-defined]
+
 # Provide typing_extensions alias if not installed
 if "typing_extensions" not in sys.modules:
     sys.modules["typing_extensions"] = typing

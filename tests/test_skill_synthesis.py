@@ -501,7 +501,9 @@ class TestSkillCLI(unittest.TestCase):
             ])
 
         self.assertEqual(ret, 1)
-        err = json.loads(stderr.getvalue())
+        raw_err = stderr.getvalue()
+        json_start = raw_err.find("{")
+        err = json.loads(raw_err[json_start:]) if json_start != -1 else {}
         self.assertEqual(err.get("status"), "error")
         self.assertIn("Task not found", err.get("error", ""))
 

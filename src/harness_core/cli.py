@@ -80,6 +80,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="hex",
         description="HEX: Autonomous AI Workbench & Interactive TUI (Run 'hex' to launch interactive console)",
+        allow_abbrev=False,
     )
     parser.add_argument("-v", "--version", action="version", version=f"hex {__version__}")
     parser.add_argument(
