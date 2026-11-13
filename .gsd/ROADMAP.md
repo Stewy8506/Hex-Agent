@@ -310,15 +310,18 @@
 [x] Phase 24: Continuous Multi-Turn ReAct Tool Loop (Hermes Parity Pillar 1)
     [x] 24-01: ReActLoop Engine Core & Tool Execution Dispatcher
     [x] 24-02: Orchestrator Integration, Streaming Events & TUI Loop Mode
-[ ] Phase 25: 4-Phase Context Compactor & Prompt Cache Locking (Hermes Parity Pillar 2)
-    [ ] 25-01: Stale Tool Demotion & Atomic Tool-Boundary Preservation
-    [ ] 25-02: Middle-Turn Summarizer & Immutable Prompt-Cache Prefixing
-[ ] Phase 26: PTY Background Process Supervisor & Stream Registry (Hermes Parity Pillar 3)
-    [ ] 26-01: PTY ProcessRegistry & Circular Ring Buffer
-    [ ] 26-02: Gateway Process Tools (start_process, read_terminal, kill_process)
-[ ] Phase 27: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 4)
-    [ ] 27-01: Persistent In-Memory Python Kernel & State Isolation
-    [ ] 27-02: Gateway code_kernel Tool & Workspace File Sync
+[x] Phase 25: Native Rust Terminal Cockpit (Ratatui + Crossterm) & Protocol Crate (Hermes Parity Pillar 2)
+    [x] 25-01: Cargo Workspace & `crates/hex-protocol` (ACP JSON-RPC Engine & Models)
+    [x] 25-02: `crates/hex-tui` (Ratatui Alt-Screen Cockpit, Differential Renderer & CLI Launcher)
+[ ] Phase 26: 4-Phase Context Compactor & Prompt Cache Locking (Hermes Parity Pillar 3)
+    [ ] 26-01: Stale Tool Demotion & Atomic Tool-Boundary Preservation
+    [ ] 26-02: Middle-Turn Summarizer & Immutable Prompt-Cache Prefixing
+[ ] Phase 27: PTY Background Process Supervisor & Stream Registry (Hermes Parity Pillar 4)
+    [ ] 27-01: PTY ProcessRegistry & Circular Ring Buffer
+    [ ] 27-02: Gateway Process Tools (start_process, read_terminal, kill_process)
+[ ] Phase 28: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 5)
+    [ ] 28-01: Persistent In-Memory Python Kernel & State Isolation
+    [ ] 28-02: Gateway code_kernel Tool & Workspace File Sync
 ```
 
 ### Phase 24: Continuous Multi-Turn ReAct Tool Loop (Hermes Parity Pillar 1)
@@ -329,7 +332,16 @@
   - Call journal integration ensuring every turn in the ReAct loop is sealed into SQLite/PostgreSQL `LedgerStore`.
 - **Verification:** Comprehensive unit and integration tests verifying multi-turn cycles, tool call handling, termination conditions, and error recovery.
 
-### Phase 25: 4-Phase Context Compactor & Prompt Cache Locking (Hermes Parity Pillar 2)
+### Phase 25: Native Rust Terminal Cockpit (Ratatui + Crossterm) & Protocol Crate (Hermes Parity Pillar 2)
+- **Goal:** Build a blazing-fast, 60 FPS, differential-rendered terminal cockpit in Rust using Ratatui and Crossterm, sharing protocol types and ACP client logic in `crates/hex-protocol` that directly bridges to our future GPUI desktop app.
+- **Must-haves:**
+  - Cargo workspace with `crates/hex-protocol` (shared domain models, JSON-RPC 2.0 ACP client, diff parser) and `crates/hex-tui` (Ratatui binary).
+  - Instant $<2\text{ ms}$ startup, dual-buffer zero-flicker differential rendering on alt-screen.
+  - Interactive multi-pane cockpit layout: sticky header with CoW status and model, active streaming dialogue viewport with collapsible tool call accordions, colorized unified/side-by-side git diff pane, and interactive text composer with command autocompletion.
+  - Python launcher integration: `hex tui` or `hex chat --ratatui` launching the native binary connected over stdio to `src/harness_core/acp.py`.
+- **Verification:** `cargo test --workspace` unit tests for JSON-RPC message serialization/deserialization, state transitions, and integration tests running `hex-tui --check`.
+
+### Phase 26: 4-Phase Context Compactor & Prompt Cache Locking (Hermes Parity Pillar 3)
 - **Goal:** Implement a production-grade 4-phase context compactor in `src/harness_core/context_compressor.py` matching `agent/context_compressor.py` in Hermes: stale tool output demotion, atomic tool-pair boundary protection, middle-turn compression, and static prompt-cache prefix locking.
 - **Must-haves:**
   - `ContextCompactor` with `compact_messages(messages, budget_tokens)` preserving system prompt head and recent turn tail.
@@ -338,7 +350,7 @@
   - Prompt cache prefix alignment to ensure static system instructions and tool definitions remain unchanged across turns for >90% KV cache hit rates.
 - **Verification:** Unit tests verifying token budget adherence, atomic pair preservation, stale tool pruning, and cache prefix stability.
 
-### Phase 26: PTY Background Process Supervisor & Stream Registry (Hermes Parity Pillar 3)
+### Phase 27: PTY Background Process Supervisor & Stream Registry (Hermes Parity Pillar 4)
 - **Goal:** Implement an asynchronous pseudo-terminal (PTY) process registry in `src/harness_core/process_registry.py` matching `tools/process_registry.py` in Hermes, allowing long-running background tasks (e.g. dev servers, build processes) to run and be inspected.
 - **Must-haves:**
   - `ProcessRegistry` supporting process creation, PTY allocation, circular ring buffer for stdout/stderr, and graceful termination.
@@ -346,7 +358,7 @@
   - Automatic cleanup and exit hook on session shutdown.
 - **Verification:** Unit tests verifying background process startup, non-blocking tail reads from ring buffer, process listing, and safe termination.
 
-### Phase 27: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 4)
+### Phase 28: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 5)
 - **Goal:** Implement an interactive persistent Python code kernel in `src/harness_core/code_kernel.py` matching `tools/code_kernel.py` in Hermes, enabling persistent variables, functions, and imports across consecutive turns within the task CoW workspace.
 - **Must-haves:**
   - `PersistentCodeKernel` executing code snippets with state preservation, capturing stdout/stderr and expression values.

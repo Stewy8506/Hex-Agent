@@ -164,6 +164,27 @@ HEX separates developer intent into three focused interaction modes. Press **`Ta
 - **Dynamic Ghost Suggestions**: Rotating prompt ideas that clear the moment you start typing.
 - **5 Terminal Themes**: Switch anytime with `/skin <name>` (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`).
 
+### 🦀 Native Rust Ratatui Cockpit (`hex tui` / `hex chat --ratatui`)
+
+For an ultra-responsive 60 FPS alt-screen terminal experience with dual-buffer differential rendering:
+
+```bash
+# Launch native Ratatui cockpit (builds on-demand with cargo if not compiled)
+hex tui
+
+# Or start chat with the native Ratatui backend
+hex chat --ratatui
+
+# Headless verification / self-check (exits 0)
+hex tui --check
+```
+
+- **Sticky Status Telemetry**: Live model routing, CoW snapshot mode, monotonic fencing token, and ACP connection status.
+- **Scrollable Dialogue & Collapsible Tool Calls**: Role badges (`[USER]`, `[ASSISTANT]`, `[SYSTEM]`, `[TOOL]`), expandable tool invocations with millisecond execution durations and status indicators.
+- **Unified Diff Viewer**: Colorized split view rendering added, deleted, and context lines alongside conversation history.
+- **Interactive Slash Commands**: Dynamic floating popup menu above input prompt when typing `/`.
+- **R3/R4 Policy Approval Intercepts**: Centered modal overlay for operator approvals with risk classifications and action buttons (`[y] Approve`, `[n] Reject`, `[d] Diff`, `[Esc] Dismiss`).
+
 ---
 
 ## 💡 Why HEX Feels Different

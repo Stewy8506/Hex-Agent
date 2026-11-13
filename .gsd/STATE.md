@@ -2,9 +2,9 @@
 
 **Date:** 2026-11-13  
 **Current Milestone:** M10 (Finished Product Parity & Execution Excellence) — IN PROGRESS  
-**Status:** Milestones M1 through M9 100% Delivered; Milestone M10 Initiated  
-**Active Phase:** Phase 24 (Continuous Multi-Turn ReAct Tool Loop) — COMPLETE  
-**Completed Plans:** Plans 01-01 through 24-02 Complete (646/646 tests green)  
+**Status:** Phase 25 Delivered & Verified; Phase 26 Initiated  
+**Active Phase:** Phase 26 (4-Phase Context Compactor & Prompt Cache Locking)  
+**Completed Plans:** Plans 01-01 through 25-02 Complete (654/654 Python tests green, 26/26 Rust workspace tests green)  
 
 ---
 
@@ -280,6 +280,25 @@
     - Added `/react` slash command, live tool invocation/observation terminal progress cards, and `react_mode` to `HexConsole` in `src/harness_core/tui.py`.
     - Added `--react` flag to root `hex`, `hex run`, and `hex chat` in `src/harness_core/cli.py`.
     - Authored 31 unit and integration tests in `tests/test_react_loop.py` (646/646 full repository tests passing with zero regressions).
+
+37. **Phase 25: Native Rust Terminal Cockpit & Protocol Crate Complete (Plans 25-01 & 25-02):**
+    - Established Cargo workspace root with `crates/hex-protocol` and `crates/hex-tui`.
+    - Implemented `crates/hex-protocol` with strongly typed JSON-RPC 2.0 ACP client (`AcpClient`), models (`Role`, `ContentBlock`, `Message`, `SessionUpdateNotification`, etc.), and unified/side-by-side diff parser (`UnifiedDiff`, `DiffHunk`, `DiffFile`, `SideBySideRow`).
+    - Implemented `crates/hex-tui` in Rust using Ratatui 0.29 and Crossterm 0.28:
+      - Sticky header with styled ASCII banner, model routing, CoW snapshot mode, monotonic fencing token, and ACP connection status.
+      - Scrollable dialogue history viewport with markdown styles, role badges (`[USER]`, `[ASSISTANT]`, `[SYSTEM]`, `[TOOL]`), and collapsible tool call blocks showing arguments, duration in milliseconds, and exit status.
+      - Colorized unified diff viewer rendering added lines in green, deleted lines in red, context lines, and file headers.
+      - Multi-line interactive command prompt with cursor position, history navigation (`↑`/`↓`), and slash-command suggestion popup (`/help`, `/status`, `/diff`, `/rollback`, `/fork`, `/skills`, `/model`, `/budget`, `/react`, `/clear`, `/quit`).
+      - Bottom status bar with keybinding hints (`[Enter] Submit`, `[Tab] Focus`, `[F1] Help`, `[Ctrl+C] Quit`, `[y/n] Approve/Reject`).
+      - Centered modal dialog for R3/R4 operator approval interrupts.
+      - Headless verification `--check` flag rendering a virtual test frame into `ratatui::backend::TestBackend` and exiting 0.
+    - Built Python integration in `src/harness_core/cli.py` and `src/harness_core/tui_launcher.py`:
+      - Registered `hex tui` subcommand and `--ratatui` flag to `hex chat`.
+      - Binary resolver checking `HEX_TUI_BIN`, build targets, PATH, and on-demand `cargo build -p hex-tui`.
+    - Authored comprehensive test suites:
+      - 26 Rust tests across `hex-protocol` and `hex-tui` (`cargo test --workspace`).
+      - 8 Python launcher integration tests in `tests/test_rust_tui_launcher.py`.
+      - 654/654 Python repository tests passing cleanly with zero regressions.
 
 ---
 
