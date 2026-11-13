@@ -17,7 +17,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let title = if is_focused {
-        " Command Prompt [Enter to Send, / for Commands] "
+        if app.is_busy {
+            " Command Prompt [Reasoning...] "
+        } else {
+            " Command Prompt [Enter to Send, / for Commands] "
+        }
     } else {
         " Command Prompt "
     };
@@ -28,6 +32,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         _ => (Color::Black, Color::Cyan, " agent "),
     };
 
+    let action_span = if app.is_busy {
+        Span::styled(format!("── [{}] ", app.status_message), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled("── enter send · tab mode · /help ", Style::default().fg(Color::DarkGray))
+    };
+
     let footer = Line::from(vec![
         Span::styled(mode_text, Style::default().fg(mode_fg).bg(mode_bg).add_modifier(Modifier::BOLD)),
         Span::styled(" · ", Style::default().fg(Color::DarkGray)),
@@ -36,7 +46,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("{} ", app.git_branch), Style::default().fg(Color::Cyan)),
         Span::styled("· ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{} ", app.model_name), Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
-        Span::styled("── enter send · tab mode · /help ", Style::default().fg(Color::DarkGray)),
+        action_span,
     ]);
 
     let block = Block::default()

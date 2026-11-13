@@ -213,8 +213,10 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     match mouse.kind {
                         crossterm::event::MouseEventKind::ScrollUp => {
                             app.scroll_up();
+                            app.scroll_up();
                         }
                         crossterm::event::MouseEventKind::ScrollDown => {
+                            app.scroll_down();
                             app.scroll_down();
                         }
                         _ => {}
@@ -222,6 +224,22 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 }
                 AppEvent::Notification(notif) => {
                     handle_notification(&mut app, notif);
+                }
+                AppEvent::AssistantResponse(msg) => {
+                    let already_populated = if let Some(hex_tui::app::DialogueItem::Message(m)) = app.dialogue_items.last() {
+                        m.role == hex_protocol::models::Role::Assistant && (m.content == msg || m.content.contains(&msg[..msg.len().min(40)]))
+                    } else {
+                        false
+                    };
+                    if !already_populated {
+                        app.add_assistant_message(&msg);
+                    }
+                    app.is_busy = false;
+                    app.status_message = "Ready".to_string();
+                }
+                AppEvent::Ready => {
+                    app.is_busy = false;
+                    app.status_message = "Ready".to_string();
                 }
                 AppEvent::AcpMessage(msg) => {
                     app.add_system_message(&msg);
@@ -562,13 +580,33 @@ async fn execute_submitted_text(
     app.is_busy = true;
     app.status_message = "Reasoning...".to_string();
 
+    // Mode-specific prompt framing matching tui.py
+    let effective_prompt = match app.mode.as_str() {
+        "plan" | "ask" => format!("[MODE: PLAN - READ-ONLY ARCHITECTURE PLANNING & SPECIFICATION / DO NOT MODIFY FILES OR RUN MUTATING TOOLS]\n{}", text),
+        "code" => format!("[MODE: CODE - DIRECT CODE SYNTHESIS & TARGETED FILE EDITS]\n{}", text),
+        _ => text.clone(),
+    };
+
     if let Some(client) = acp_client {
         // Send to ACP server
         let sess_id = app.session_id.clone();
-        let prompt_text = text.clone();
+        let prompt_text = effective_prompt;
         let client_clone = client.clone();
+        let tx = event_tx.clone();
         tokio::spawn(async move {
-            let _ = client_clone.session_prompt(&sess_id, &prompt_text).await;
+            match client_clone.session_prompt(&sess_id, &prompt_text).await {
+                Ok(resp) => {
+                    let txt = resp.text_content();
+                    if !txt.is_empty() {
+                        let _ = tx.send(AppEvent::AssistantResponse(txt));
+                    } else {
+                        let _ = tx.send(AppEvent::Ready);
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(AppEvent::Error(format!("Prompt failed: {}", err)));
+                }
+            }
         });
     } else {
         // Standalone simulated assistant response
@@ -590,8 +628,12 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                     app.append_assistant_delta(&delta);
                     app.is_busy = false;
                     app.status_message = "Ready".to_string();
-                } else if let Some(st) = update.status {
-                    app.status_message = st;
+                }
+                if let Some(st) = update.status {
+                    app.status_message = st.clone();
+                    if st.eq_ignore_ascii_case("ready") || st.eq_ignore_ascii_case("completed") {
+                        app.is_busy = false;
+                    }
                 }
             }
         }

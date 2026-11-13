@@ -16,6 +16,8 @@ pub enum AppEvent {
     Tick,
     Notification(JsonRpcNotification),
     AcpMessage(String),
+    AssistantResponse(String),
+    Ready,
     Error(String),
 }
 

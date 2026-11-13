@@ -672,7 +672,8 @@ impl App {
     }
 
     pub fn scroll_dialogue_to_bottom(&mut self) {
-        let estimated_lines: usize = self.dialogue_items.iter().map(|item| match item {
+        let splash_lines = self.splash_text.as_ref().map(|s| s.lines().count() + 1).unwrap_or(0);
+        let items_lines: usize = self.dialogue_items.iter().map(|item| match item {
             DialogueItem::Message(m) => m.content.lines().count() + 2,
             DialogueItem::ToolCall(tc) => {
                 if tc.collapsed {
@@ -682,9 +683,10 @@ impl App {
                 }
             }
         }).sum();
+        let total_lines = splash_lines + items_lines;
         let viewport_height = 24;
-        if estimated_lines > viewport_height {
-            self.dialogue_scroll = estimated_lines.saturating_sub(viewport_height);
+        if total_lines > viewport_height {
+            self.dialogue_scroll = total_lines.saturating_sub(viewport_height);
         } else {
             self.dialogue_scroll = 0;
         }

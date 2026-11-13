@@ -259,7 +259,31 @@ class ACPServer:
 
         raw_status = exec_res.get("status", "COMPLETED")
         status_str = "completed" if raw_status in ("SUCCEEDED", "COMPLETED") else raw_status.lower()
-        terminal_reason = exec_res.get("terminal_reason") or exec_res.get("model_response") or "Task completed."
+
+        # Extract synthesized response or deliverable from task
+        deliverable = (
+            exec_res.get("payload", {}).get("result")
+            or exec_res.get("deliverable")
+            or exec_res.get("result")
+        )
+        if not deliverable and hasattr(self.orchestrator, "ledger"):
+            try:
+                db_task = self.orchestrator.ledger.get_task(task_id)
+                if db_task:
+                    deliverable = (
+                        db_task.get("deliverable")
+                        or (db_task.get("payload") or {}).get("result")
+                        or db_task.get("result")
+                    )
+            except Exception:
+                pass
+
+        terminal_reason = (
+            deliverable
+            or exec_res.get("terminal_reason")
+            or exec_res.get("model_response")
+            or "Task completed."
+        )
 
         sess.history.append({
             "task_id": task_id,
@@ -268,6 +292,20 @@ class ACPServer:
             "response": terminal_reason,
             "duration": time.time() - start_t,
         })
+
+        # Send session/update notification with synthesized response delta
+        update_notif = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": sess.session_id,
+                "updateType": "agent_response",
+                "delta": str(terminal_reason),
+                "status": "Ready",
+            },
+        }
+        sys.stdout.write(json.dumps(update_notif, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
 
         return {
             "sessionId": sess.session_id,

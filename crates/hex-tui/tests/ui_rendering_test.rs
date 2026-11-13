@@ -22,7 +22,7 @@ fn test_full_tui_layout_rendering() {
     assert!(content.contains("gemini-2.5-pro"), "Buffer must contain model name");
     assert!(content.contains("Welcome to HEX"), "Buffer must contain welcome message");
     assert!(content.contains("Command Prompt"), "Buffer must contain input prompt");
-    assert!(content.contains("[AGENT]"), "Buffer status bar must display active mode");
+    assert!(content.contains("agent"), "Buffer prompt footer must display active mode");
 }
 
 #[test]

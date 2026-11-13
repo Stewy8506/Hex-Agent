@@ -24,8 +24,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(6),    // Main viewport (Dialogue and/or Diff)
-            Constraint::Length(3), // Command input prompt
-            Constraint::Length(1), // Bottom status bar
+            Constraint::Length(3), // Command input prompt (fixed at bottom)
         ])
         .split(size);
 
@@ -51,10 +50,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // 2. Command Prompt
     input::render(frame, app, root_chunks[1]);
 
-    // 3. Status Bar
-    status_bar::render(frame, app, root_chunks[2]);
-
-    // 5. Help Modal Overlay
+    // 3. Help Modal Overlay
     if app.show_help {
         render_help_overlay(frame, size);
     }

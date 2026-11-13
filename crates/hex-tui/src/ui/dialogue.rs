@@ -27,44 +27,51 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::raw(""));
     }
 
-    let has_user_message = app.dialogue_items.iter().any(|item| {
-        matches!(item, DialogueItem::Message(m) if m.role == Role::User)
-    });
+    // 1. Render splash banner at top of transcript history if available
+    if let Some(splash) = &app.splash_text {
+        for line in splash.lines() {
+            if line.trim().starts_with("did you know") {
+                lines.push(Line::from(vec![
+                    Span::styled("did you know", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line["did you know".len()..].trim_start_matches(|c| c == ' ' || c == '·'), Style::default().fg(Color::DarkGray)),
+                ]));
+            } else if line.contains("██") {
+                lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))));
+            } else if line.contains("anv.dev") {
+                lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Yellow))));
+            } else if line.contains("gemini-") || line.contains("claude-") {
+                lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))));
+            } else if line.contains("tools") || line.contains("skills") {
+                lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
+            } else if line.contains("▄") || line.contains("▀") || line.contains("▐") {
+                lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Yellow))));
+            } else {
+                lines.push(Line::from(Span::styled(line, Style::default().fg(Color::White))));
+            }
+        }
+        lines.push(Line::raw(""));
+    }
 
-    if !has_user_message && app.splash_text.is_some() {
-        if let Some(splash) = &app.splash_text {
-            for line in splash.lines() {
-                if line.trim().starts_with("did you know") {
-                    lines.push(Line::from(vec![
-                        Span::styled("did you know", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(line["did you know".len()..].trim_start_matches(|c| c == ' ' || c == '·'), Style::default().fg(Color::DarkGray)),
-                    ]));
-                } else if line.contains("██") {
-                    lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))));
-                } else if line.contains("anv.dev") {
-                    lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Yellow))));
-                } else if line.contains("gemini-") || line.contains("claude-") {
-                    lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))));
-                } else if line.contains("tools") || line.contains("skills") {
-                    lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
-                } else if line.contains("▄") || line.contains("▀") || line.contains("▐") {
-                    lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Yellow))));
-                } else {
-                    lines.push(Line::from(Span::styled(line, Style::default().fg(Color::White))));
+    // 2. Render dialogue conversation items
+    for (idx, item) in app.dialogue_items.iter().enumerate() {
+        // Skip initial generic welcome messages if splash banner is already rendered
+        if app.splash_text.is_some() && idx < 2 {
+            if let DialogueItem::Message(m) = item {
+                if m.role == Role::System && (m.content.contains("Welcome to HEX") || m.content.contains("Type your goal")) {
+                    continue;
                 }
             }
         }
-    } else {
-        for item in &app.dialogue_items {
-            match item {
-                DialogueItem::Message(msg) => {
-                    let (badge_text, badge_style) = match msg.role {
-                        Role::User => ("❯ User  ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                        Role::Assistant => ("◈ Assistant  ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                        Role::System => ("◈ System  ", Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
-                        Role::Tool => ("▶ Tool  ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-                    };
+
+        match item {
+            DialogueItem::Message(msg) => {
+                let (badge_text, badge_style) = match msg.role {
+                    Role::User => ("❯ User  ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Role::Assistant => ("◈ Assistant  ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Role::System => ("◈ System  ", Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
+                    Role::Tool => ("▶ Tool  ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+                };
 
                     let header_line = Line::from(vec![
                         Span::styled(badge_text, badge_style),
@@ -163,7 +170,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 }
             }
         }
-    }
 
     let paragraph = Paragraph::new(lines)
         .block(block)
