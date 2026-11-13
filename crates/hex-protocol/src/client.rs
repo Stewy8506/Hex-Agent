@@ -179,15 +179,65 @@ impl AcpClient {
 
     /// Spawn the Python backend ACP server (`python3 -m harness_core.cli acp`).
     pub async fn spawn_acp_server(workspace_root: Option<&Path>) -> Result<Self, AcpError> {
+        let repo_root = if let Some(root) = workspace_root {
+            root.to_path_buf()
+        } else {
+            let mut curr = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            loop {
+                if curr.join(".venv").exists() || curr.join("pyproject.toml").exists() || curr.join(".git").exists() {
+                    break curr;
+                }
+                if let Some(parent) = curr.parent() {
+                    curr = parent.to_path_buf();
+                } else {
+                    break std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                }
+            }
+        };
+
         let py_bin = if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
             format!("{}/bin/python", venv)
-        } else if Path::new(".venv/bin/python").exists() {
-            ".venv/bin/python".to_string()
+        } else if repo_root.join(".venv/bin/python").exists() {
+            repo_root.join(".venv/bin/python").to_string_lossy().to_string()
         } else {
             "python3".to_string()
         };
 
-        Self::spawn(&py_bin, &["-m", "harness_core.cli", "acp"], workspace_root).await
+        let mut cmd = Command::new(&py_bin);
+        cmd.args(["-m", "harness_core.cli", "acp"])
+            .current_dir(&repo_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+
+        let src_dir = repo_root.join("src");
+        if src_dir.exists() {
+            let current_pythonpath = std::env::var("PYTHONPATH").unwrap_or_default();
+            let new_pythonpath = if current_pythonpath.is_empty() {
+                src_dir.to_string_lossy().to_string()
+            } else {
+                format!("{}:{}", src_dir.to_string_lossy(), current_pythonpath)
+            };
+            cmd.env("PYTHONPATH", new_pythonpath);
+        }
+
+        let mut child = cmd.spawn()?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            AcpError::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Failed to capture child stdout",
+            ))
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            AcpError::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Failed to capture child stdin",
+            ))
+        })?;
+
+        let mut client = Self::from_streams(stdout, stdin);
+        client.child = Some(Arc::new(Mutex::new(child)));
+        Ok(client)
     }
 
     /// Set default request timeout.
