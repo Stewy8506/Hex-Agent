@@ -54,28 +54,9 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
-def _main_impl(argv: list[str] | None = None) -> int:
-    default_dir = os.environ.get("HEX_DATA_DIR") or os.environ.get("HARNESS_DATA_DIR")
-    if not default_dir:
-        cwd = Path.cwd()
-        cwd_hex = cwd / ".hex_data"
-        cwd_legacy = cwd / ".harness_data"
-        repo_data = Path(__file__).resolve().parents[2] / ".hex_data"
-        repo_legacy = Path(__file__).resolve().parents[2] / ".harness_data"
-        if cwd_hex.is_dir():
-            default_dir = str(cwd_hex)
-        elif cwd_legacy.is_dir():
-            default_dir = str(cwd_legacy)
-        elif repo_data.is_dir():
-            default_dir = str(repo_data)
-        elif repo_legacy.is_dir():
-            default_dir = str(repo_legacy)
-        elif (Path.home() / ".hex" / "data").is_dir():
-            default_dir = str(Path.home() / ".hex" / "data")
-        elif (Path(__file__).resolve().parents[2] / "pyproject.toml").is_file():
-            default_dir = str(repo_data)
-        else:
-            default_dir = str(Path.home() / ".hex" / "data")
+def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
+    if default_dir is None:
+        default_dir = str(Path.home() / ".hex" / "data")
 
     parser = argparse.ArgumentParser(
         prog="hex",
@@ -209,7 +190,9 @@ def _main_impl(argv: list[str] | None = None) -> int:
     p_wrk.add_argument("--token", default=None, help="Worker authentication token")
     p_wrk.add_argument("--once", action="store_true", help="Execute at most one claimed task and exit")
 
-    p_chat = sub.add_parser("chat", aliases=["tui"], help="Start interactive TUI pair-programming console (or run 'hex')")
+    p_chat = sub.add_parser("chat", help="Start interactive TUI pair-programming console (or run 'hex')")
+    p_chat.add_argument("--ratatui", action="store_true", default=False, help="Launch native Rust Ratatui terminal cockpit")
+    p_chat.add_argument("--check", action="store_true", default=False, help="Run headless virtual verification and exit 0")
     p_chat.add_argument("--project", default=argparse.SUPPRESS, help="Project ID")
     p_chat.add_argument("--workspace", default=argparse.SUPPRESS, help="Workspace path (defaults to repository root)")
     p_chat.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=argparse.SUPPRESS, help="Cloud reasoner provider override (e.g., antigravity)")
@@ -222,6 +205,16 @@ def _main_impl(argv: list[str] | None = None) -> int:
     p_chat.add_argument("--speech-rate", type=int, default=argparse.SUPPRESS, help="Speech rate in words per minute")
     p_chat.add_argument("--react", action="store_true", default=argparse.SUPPRESS, help="Enable autonomous multi-turn ReAct tool execution")
     p_chat.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
+
+    p_tui = sub.add_parser("tui", help="Start native Rust Ratatui terminal cockpit")
+    p_tui.add_argument("--check", action="store_true", default=False, help="Run headless virtual verification and exit 0")
+    p_tui.add_argument("--project", default="default", help="Project ID")
+    p_tui.add_argument("--workspace", default=None, help="Workspace path (defaults to repository root)")
+    p_tui.add_argument("--model", default="gemini-2.5-pro", help="Model routing profile override")
+    p_tui.add_argument("--cow", default="OverlayFS", help="CoW snapshot provider backend")
+    p_tui.add_argument("--session", default=None, help="Session ID to attach or resume")
+    p_tui.add_argument("--build", action="store_true", default=False, help="Force recompiling hex-tui before launching")
+    p_tui.add_argument("--release", action="store_true", default=False, help="Use release build of hex-tui")
 
     p_voice = sub.add_parser("voice", help="Start interactive hands-free voice pair-programming console")
     p_voice.add_argument("--project", default=argparse.SUPPRESS, help="Project ID")
@@ -420,6 +413,33 @@ def _main_impl(argv: list[str] | None = None) -> int:
     p_uninst.add_argument("--dry-run", action="store_true", help="Preview items to be removed without modifying disk")
     p_uninst.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
+    return parser
+
+
+def _main_impl(argv: list[str] | None = None) -> int:
+    default_dir = os.environ.get("HEX_DATA_DIR") or os.environ.get("HARNESS_DATA_DIR")
+    if not default_dir:
+        cwd = Path.cwd()
+        cwd_hex = cwd / ".hex_data"
+        cwd_legacy = cwd / ".harness_data"
+        repo_data = Path(__file__).resolve().parents[2] / ".hex_data"
+        repo_legacy = Path(__file__).resolve().parents[2] / ".harness_data"
+        if cwd_hex.is_dir():
+            default_dir = str(cwd_hex)
+        elif cwd_legacy.is_dir():
+            default_dir = str(cwd_legacy)
+        elif repo_data.is_dir():
+            default_dir = str(repo_data)
+        elif repo_legacy.is_dir():
+            default_dir = str(repo_legacy)
+        elif (Path.home() / ".hex" / "data").is_dir():
+            default_dir = str(Path.home() / ".hex" / "data")
+        elif (Path(__file__).resolve().parents[2] / "pyproject.toml").is_file():
+            default_dir = str(repo_data)
+        else:
+            default_dir = str(Path.home() / ".hex" / "data")
+
+    parser = build_parser(default_dir)
     args = parser.parse_args(argv)
 
     from .config_loader import load_hex_environment
@@ -609,6 +629,10 @@ def _main_impl(argv: list[str] | None = None) -> int:
     repo_candidate = Path(__file__).resolve().parents[2]
     repo_root = repo_candidate if (repo_candidate / "pyproject.toml").is_file() else Path.cwd()
 
+    if args.cmd == "tui" or (args.cmd == "chat" and getattr(args, "ratatui", False)):
+        from .tui_launcher import launch_hex_tui
+        return launch_hex_tui(args, repo_root)
+
     from .config_loader import has_active_credentials, load_hex_environment
 
     is_test_runner = (
@@ -621,7 +645,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
     )
 
     # Auto-intercept unconfigured launch when starting interactive console without credentials
-    if (args.cmd is None or args.cmd in ("chat", "tui", "voice")) and not has_active_credentials():
+    if (args.cmd is None or args.cmd in ("chat", "voice")) and not has_active_credentials():
         if sys.stdin.isatty() and not getattr(args, "quiet", False) and not is_test_runner:
             print("\n◈ Welcome to HEX. No model provider or API key was detected.")
             print("  Launching interactive auto-setup sequence...\n")
@@ -649,7 +673,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             registry.touch_active(active_project.path)
         else:
             if (
-                (args.cmd is None or args.cmd in ("chat", "tui", "voice"))
+                (args.cmd is None or args.cmd in ("chat", "voice"))
                 and sys.stdin.isatty()
                 and not getattr(args, "quiet", False)
                 and not is_test_runner
@@ -716,7 +740,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
         if hasattr(orch.router.cloud_provider, "model_id"):
             orch.router.cloud_provider.model_id = args.model  # type: ignore[attr-defined]
 
-    if args.cmd is None or args.cmd in ("chat", "tui", "voice"):
+    if args.cmd is None or args.cmd in ("chat", "voice"):
         from .tui import HexConsole
 
         active_proj_id = (
