@@ -23,8 +23,9 @@
   <a href="#-quickstart-in-3-steps"><strong>Quickstart</strong></a> ·
   <a href="#-the-3-modes-plan--agent--code"><strong>The 3 Modes</strong></a> ·
   <a href="#-the-terminal-cockpit"><strong>Terminal Cockpit</strong></a> ·
-  <a href="#-why-hex-feels-different"><strong>Why HEX</strong></a> ·
-  <a href="#-supported-models--local-ai"><strong>Models & Local AI</strong></a> ·
+  <a href="#-sub-agent-delegation-tier-c"><strong>Sub-Agents</strong></a> ·
+  <a href="#-headless-browser--multimodal-vision-tier-b"><strong>Browser & Vision</strong></a> ·
+  <a href="#-agent-client-protocol-acp-for-ides-tier-a"><strong>IDE Integration</strong></a> ·
   <a href="#-slash-command-reference"><strong>Commands</strong></a>
 </p>
 
@@ -152,7 +153,7 @@ HEX separates developer intent into three focused interaction modes. Press **`Ta
             ▐▌     ▀▀▀▀     ▐▌              verification: run_tests
              ▀▄▄          ▄▄▀               +6 more
                ▀▀▄▄    ▄▄▀▀           
-                  ▀▀▀▀▀▀                  21 tools · 83 skills · /help
+                  ▀▀▀▀▀▀                  26 tools · 83 skills · /help
               ───═══╬═══───           
                                           type a message   /help for commands
 ```
@@ -212,6 +213,90 @@ Run 100% air-gapped without data leaving your device:
 
 ---
 
+## 🤖 In-Flight Sub-Agent Delegation (Tier C)
+
+HEX can spawn focused, budget-bounded child agents on the fly to perform parallel research, specialized coding, or test verification without polluting your primary conversation history.
+
+```text
+Primary Agent (Task)
+   ├── 🔍 Researcher Subagent (read-only AST & web investigation)
+   ├── 💻 Coder Subagent (surgical implementation in isolated CoW workspace)
+   └── 🧪 Tester Subagent (test execution & diagnostic validation)
+```
+
+- **Least-Privilege Roles**: Subagents run under strict role-constrained tool boundaries:
+  - `researcher`: Read-only file inspection, Graphify AST queries, and web research.
+  - `coder`: Code editing, search/replace patching, and test execution.
+  - `tester`: Bounded test runners and compiler diagnostics.
+  - `reviewer`: Blast-radius analysis and code diff auditing.
+  - `planner`: Task decomposition and checklist management.
+  - `general`: Standard toolset with child delegation disabled.
+- **Copy-on-Write Workspace Isolation**: Each subagent gets its own instant CoW scratchpad at `.hex/subagents/<id>`. Experimental changes never touch your working directory until verified.
+- **Recursion Safety**: Depth-capped (default max depth = 2) to eliminate runaway infinite child spawning.
+- **Live TUI Observability**: Inspect in-flight and completed subagents with `/subagents`.
+
+---
+
+## 🌐 Interactive Headless Browser & Multimodal Vision (Tier B)
+
+Automate web applications, inspect UI layouts, and diagnose frontend visual regressions directly from your terminal.
+
+- **Headless Browser (`browser`)**:
+  - **Accessibility Snapshots (`ariaSnapshot`)**: Extracts compact, token-efficient DOM hierarchies with interactive element references (`@e1`, `@e2`, `@e3`).
+  - **Full Interaction**: Navigate to URLs, click elements, type into forms, take screenshots, and evaluate JavaScript expressions.
+  - **Zero-Dependency Fallback**: Works out of the box with zero external browser binaries required.
+- **Multimodal Visual Inspection (`image_inspect`)**:
+  - Analyzes local images (PNG, JPG, WEBP, GIF, SVG) and remote URLs.
+  - Automatic dimension detection, base64 encoding, and multimodal model reasoning for visual regression testing and UI mockup verification.
+
+```bash
+# Example tool calls executed by the agent
+browser(action="navigate", url="http://localhost:3000")
+browser(action="snapshot")
+browser(action="click", selector="@e3")
+browser(action="screenshot", output_path="login.png")
+image_inspect(image_path="login.png", prompt="Verify if the submit button is properly aligned")
+```
+
+---
+
+## 🔌 Agent Client Protocol (ACP) for Zed, Neovim & VSCode (Tier A)
+
+Use HEX directly inside your favorite code editor! HEX implements the **Agent Client Protocol (ACP)** over standard JSON-RPC 2.0 stdio transport.
+
+### 1. Zed Editor Configuration
+Add HEX as an external agent in your `.zed/settings.json`:
+
+```json
+{
+  "agent": {
+    "name": "HEX",
+    "command": "hex",
+    "args": ["acp"],
+    "protocol": "acp"
+  }
+}
+```
+
+### 2. Neovim (`avante.nvim` / `codecompanion`)
+```lua
+provider = "acp",
+acp_command = { "hex", "acp" },
+```
+
+### 3. Editor Setup Diagnostics
+Validate your editor bridge instantly:
+
+```bash
+# Verify ACP readiness and environment health
+hex acp --check
+
+# Generate ready-to-paste editor snippets
+hex acp --setup
+```
+
+---
+
 ## ⌨️ Daily Workflows & Slash Commands
 
 Inside the interactive console, type `/` to see available commands:
@@ -222,6 +307,7 @@ Inside the interactive console, type `/` to see available commands:
 | **`/diff`** | View unified colorized diff of uncommitted sandbox changes |
 | **`/sbs <file>`** | Open a side-by-side terminal diff for a specific file |
 | **`/proof`** | View the cryptographic verification proof and test results for a completed task |
+| **`/subagents`** | Inspect active and completed child subagents and delegation tree |
 | **`/rollback`** | Instantly discard changes and reset the scratchpad |
 | **`/model`** | Inspect active model profile or switch providers |
 | **`/compressor`** | Toggle log compressor mode (`deterministic`, `cloud`, `local`, `off`) |
@@ -240,6 +326,11 @@ HEX can also be run directly from scripts or your shell:
 ```bash
 # Run an autonomous task with automatic git branching and commit
 hex run "Refactor authentication flow to use refresh tokens" --branch
+
+# Start Agent Client Protocol (ACP) server for Zed, Neovim, and VSCode
+hex acp --check
+hex acp --setup
+hex acp
 
 # Launch TUI pair-programming console with specific theme
 hex --skin cyberpunk
