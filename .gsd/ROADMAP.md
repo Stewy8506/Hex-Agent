@@ -283,9 +283,9 @@
 ## Milestone M9: Parity & Next-Gen Capabilities (Tiers C, B, A)
 
 ```
-[ ] Phase 21: In-Flight Sub-Agent Delegation & Multi-Agent Swarm Coordinator (Tier C)
-    [ ] 21-01: SubagentManager Core & Role-Constrained CoW Sandboxing
-    [ ] 21-02: ToolGateway Delegate Tools & TUI /subagents Command
+[x] Phase 21: In-Flight Sub-Agent Delegation & Multi-Agent Swarm Coordinator (Tier C)
+    [x] 21-01: SubagentManager Core & Role-Constrained CoW Sandboxing
+    [x] 21-02: ToolGateway Delegate Tools & TUI /subagents Command
 [ ] Phase 22: Interactive Headless Browser & Multimodal Vision Engine (Tier B)
     [ ] 22-01: CDP Headless Browser Runner & Navigation Tools
     [ ] 22-02: Multimodal Image Inspection & Visual Testing Engine
