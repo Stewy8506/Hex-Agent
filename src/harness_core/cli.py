@@ -634,14 +634,14 @@ def _main_impl(argv: list[str] | None = None) -> int:
     repo_candidate = Path(__file__).resolve().parents[2]
     repo_root = repo_candidate if (repo_candidate / "pyproject.toml").is_file() else Path.cwd()
 
-    is_test_runner = (
-        (
-            bool(os.environ.get("HEX_TESTING"))
-            or any("unittest" in arg for arg in sys.argv)
-            or any("pytest" in arg for arg in sys.argv)
-        )
-        and not os.environ.get("HEX_FORCE_INTERACTIVE")
+    is_test_runner = bool(
+        os.environ.get("HEX_TESTING")
+        or "pytest" in sys.modules
+        or "unittest" in sys.modules
+        or any("unittest" in arg for arg in sys.argv)
+        or any("pytest" in arg for arg in sys.argv)
     )
+    force_interactive = bool(os.environ.get("HEX_FORCE_INTERACTIVE"))
 
     launch_rust = (
         args.cmd == "tui"
@@ -666,7 +666,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
     # Auto-intercept unconfigured launch when starting interactive console without credentials
     if (args.cmd is None or args.cmd in ("chat", "voice")) and not has_active_credentials():
-        if sys.stdin.isatty() and not getattr(args, "quiet", False) and not is_test_runner:
+        if (sys.stdin.isatty() or force_interactive) and not getattr(args, "quiet", False) and (not is_test_runner or force_interactive):
             print("\n◈ Welcome to HEX. No model provider or API key was detected.")
             print("  Launching interactive auto-setup sequence...\n")
             from .onboard import run_onboard_wizard
@@ -694,9 +694,9 @@ def _main_impl(argv: list[str] | None = None) -> int:
         else:
             if (
                 (args.cmd is None or args.cmd in ("chat", "voice"))
-                and sys.stdin.isatty()
+                and (sys.stdin.isatty() or force_interactive)
                 and not getattr(args, "quiet", False)
-                and not is_test_runner
+                and (not is_test_runner or force_interactive)
             ):
                 projects = registry.list_projects()
                 options = []

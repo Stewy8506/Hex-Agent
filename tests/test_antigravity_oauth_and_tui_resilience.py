@@ -169,6 +169,7 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
             project_id="test_proj",
             model_id="gemini-2.5-pro",
         )
+        provider.oauth_manager._from_hex_auth_file = MagicMock(return_value=None)
         provider.oauth_manager.refresh_access_token = MagicMock(return_value=refreshed_cred)
         provider.oauth_manager.save_credential = MagicMock()
 
@@ -187,7 +188,7 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
 
         call_count = 0
 
-        def fake_execute(url: str, headers: dict, body: bytes) -> tuple[int, bytes]:
+        def fake_execute(url: str, headers: dict, body: bytes, **kwargs) -> tuple[int, bytes]:
             nonlocal call_count
             call_count += 1
             if call_count == 1:

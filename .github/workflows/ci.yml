@@ -31,6 +31,9 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -e ".[full]"
 
+      - name: Build native Rust TUI
+        run: cargo build -p hex-tui
+
       - name: Configure Git Committer
         run: |
           git config --global user.name "github-actions[bot]"
@@ -38,6 +41,8 @@ jobs:
           git config --global --add safe.directory "*"
 
       - name: Run test suite
+        env:
+          HEX_TESTING: "1"
         run: |
           set -o pipefail
           python -m unittest discover -v tests 2>&1 | tee test_run.log || {
@@ -51,6 +56,8 @@ jobs:
           }
 
       - name: Verify CLI Entrypoint
+        env:
+          HEX_TESTING: "1"
         run: |
           which hex || echo "hex binary not found in PATH"
           hex --help
