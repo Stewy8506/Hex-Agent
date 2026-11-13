@@ -411,6 +411,7 @@ def run_onboard_wizard(
                             try:
                                 cred = ag_mgr.exchange_code_for_tokens(code_in, pkce["verifier"])
                                 antigravity_token = cred.access_token
+                                ag_cred = cred
                                 print(f"\n  ✓ Successfully authenticated with Google Antigravity!\n")
                             except Exception as exc:
                                 print(f"\n  ✖ OAuth exchange error: {exc}\n")
@@ -444,6 +445,7 @@ def run_onboard_wizard(
                             try:
                                 cred = ag_mgr.exchange_code_for_tokens(code_in, pkce["verifier"])
                                 antigravity_token = cred.access_token
+                                ag_cred = cred
                                 print(f"\n  ✓ Successfully authenticated with Google Antigravity!\n")
                             except Exception as exc:
                                 print(f"\n  ✖ OAuth exchange error: {exc}\n")
