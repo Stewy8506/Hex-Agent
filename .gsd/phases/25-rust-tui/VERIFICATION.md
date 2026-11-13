@@ -333,8 +333,102 @@ HEX TUI headless verification passed: 1 virtual frame rendered successfully.
 | 1 | Open flowing transcript design language (borderless canvas, badges, gutters, rounded input) | PASS |
 | 2 | 100% dynamic telemetry (Git branch+SHA, model, 26 tools, 83 skills, CoW provider) | PASS |
 | 3 | Zero child stderr leakage into prompt / terminal alternate screen | PASS |
-| 4 | Rust workspace unit & integration test suite (`cargo test --workspace`) | PASS (27/27) |
+| 4 | Rust workspace unit & integration test suite (`cargo test --workspace`) | PASS (31/31) |
 | 5 | Python launcher and ACP server test suite | PASS (17/17) |
 | 6 | Headless verification flags (`hex-tui --check` & `python -m harness_core.cli --check`) | PASS (exit 0) |
+
+---
+
+## 4. Verification of Specific User Feedback Fixes
+
+### Complaint 1: Splash banner disappears on user input
+- **Code Inspection (`crates/hex-tui/src/ui/dialogue.rs` lines 30-55):**
+  The splash banner (`app.splash_text`) is permanently rendered at index 0 of `lines` inside `crates/hex-tui/src/ui/dialogue.rs` before any dialogue items.
+  When user input is submitted (`app.submit_input()`), `app.splash_text` is never cleared.
+  `scroll_dialogue_to_bottom()` explicitly counts `splash_lines` when calculating scroll boundaries, so the splash banner remains permanently at the top of the transcript and scrollable in scrollback.
+- **Verification:** PASS.
+
+### Complaint 2: Model output missing / hangs on "Reasoning..."
+- **Code Inspection (`src/harness_core/acp.py` lines 263-309):**
+  `_handle_session_prompt` extracts synthesized deliverable/result from the task execution payload and ledger:
+  ```python
+  deliverable = (
+      exec_res.get("payload", {}).get("result")
+      or exec_res.get("deliverable")
+      or exec_res.get("result")
+  )
+  if not deliverable and hasattr(self.orchestrator, "ledger"):
+      try:
+          db_task = self.orchestrator.ledger.get_task(task_id)
+          if db_task:
+              deliverable = (
+                  db_task.get("deliverable")
+                  or (db_task.get("payload") or {}).get("result")
+                  or db_task.get("result")
+              )
+      except Exception:
+          pass
+  ```
+  It immediately broadcasts a JSON-RPC notification:
+  ```python
+  update_notif = {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+          "sessionId": sess.session_id,
+          "updateType": "agent_response",
+          "delta": str(terminal_reason),
+          "status": "Ready",
+      },
+  }
+  sys.stdout.write(json.dumps(update_notif, ensure_ascii=False) + "\n")
+  sys.stdout.flush()
+  ```
+- **Code Inspection (`crates/hex-tui/src/main.rs` lines 228-243, 596-610, 623-638):**
+  - Incoming `session/update` notifications stream into `app.append_assistant_delta(&delta)`, set `app.is_busy = false`, and set `app.status_message = "Ready"`.
+  - Final RPC responses send `AppEvent::AssistantResponse(txt)` which calls `app.add_assistant_message(&msg)` (deduped if delta already arrived), resets `app.is_busy = false`, and sets `app.status_message = "Ready"`.
+  - The UI prompt footer and dialogue canvas immediately transition from `[Reasoning...]` to `[Ready]` and render the response text.
+- **Verification:** PASS.
+
+### Complaint 3: Redundant bottom bar removed
+- **Code Inspection (`crates/hex-tui/src/ui/mod.rs` lines 23-30, 49-52):**
+  The top-level `draw` function defines `root_chunks` with exactly 2 constraints:
+  ```rust
+  let root_chunks = Layout::default()
+      .direction(Direction::Vertical)
+      .constraints([
+          Constraint::Min(6),    // Main viewport (Dialogue and/or Diff)
+          Constraint::Length(3), // Command input prompt (fixed at bottom)
+      ])
+      .split(size);
+  ```
+  `status_bar::render` is completely removed from the layout hierarchy. The 3-row command prompt box internally renders mode, branch, SHA, model, and status indicators in its border footer, eliminating the duplicate bottom status line.
+- **Verification:** PASS.
+
+### Empirical Test Execution Proof
+
+1. **Rust Workspace Tests:**
+   ```bash
+   cargo test --workspace
+   ```
+   Output:
+   ```
+   test result: ok. 13 passed; 0 failed (hex_protocol unit tests)
+   test result: ok. 1 passed; 0 failed (live_acp_test)
+   test result: ok. 3 passed; 0 failed (protocol_test)
+   test result: ok. 6 passed; 0 failed (hex_tui unit tests)
+   test result: ok. 8 passed; 0 failed (ui_rendering_test)
+   Total: 31 passed; 0 failed
+   ```
+
+2. **Python ACP & Launcher Tests:**
+   ```bash
+   PYTHONPATH=src .venv/bin/python -m unittest tests/test_acp_server.py tests/test_rust_tui_launcher.py
+   ```
+   Output:
+   ```
+   Ran 17 tests in 15.344s
+   OK
+   ```
 
 **Overall Status: PASS**
