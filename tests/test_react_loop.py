@@ -1,13 +1,16 @@
-"""Unit tests for Continuous Multi-Turn ReAct Tool Loop (Phase 24-01)."""
+"""Unit tests for Continuous Multi-Turn ReAct Tool Loop (Phase 24-01 & 24-02)."""
 
 import asyncio
 from pathlib import Path
 import tempfile
+from typing import Any
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+from harness_core.cli import main as cli_main
 from harness_core.db import LedgerStore
 from harness_core.gateway import RiskClass, ToolGateway, ToolSpec
+from harness_core.orchestrator import HarnessOrchestrator
 from harness_core.react_loop import (
     ReActConfig,
     ReActLoop,
@@ -16,6 +19,7 @@ from harness_core.react_loop import (
     ToolCallRequest,
     ToolCallResult,
 )
+from harness_core.tui import HexConsole
 
 
 class TestReActDataStructures(unittest.TestCase):
@@ -426,6 +430,196 @@ class TestAsyncAndRealGateway(unittest.TestCase):
                 self.assertIn("Hello HEX ReAct", str(read_output))
             finally:
                 ledger.close()
+
+
+class TestOrchestratorAgentLoop(unittest.TestCase):
+    """Test orchestrator.run_agent_loop with ReActLoop and deterministic fallback."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ws = Path(self.tmp.name) / "workspace"
+        self.ws.mkdir(parents=True, exist_ok=True)
+        self.data_dir = Path(self.tmp.name) / "data"
+        self.orch = HarnessOrchestrator(data_dir=self.data_dir, default_workspace=self.ws)
+
+    def tearDown(self) -> None:
+        if hasattr(self.orch, "ledger") and self.orch.ledger:
+            self.orch.ledger.close()
+        self.tmp.cleanup()
+
+    def test_run_agent_loop_deterministic_conversational(self) -> None:
+        """Verify conversational goal finishes cleanly via deterministic fallback."""
+        res = self.orch.run_agent_loop("Hello, what is your mission?")
+        self.assertTrue(res["success"])
+        self.assertGreaterEqual(res["turns_count"], 1)
+        self.assertIn("Hello", res["final_answer"])
+        self.assertIn("turns", res)
+        # Verify ledger has recorded the task as SUCCEEDED
+        task_id = res["task_id"]
+        t = self.orch.ledger.get_task(task_id)
+        self.assertIsNotNone(t)
+        self.assertEqual(t["status"], "SUCCEEDED")
+
+    def test_run_agent_loop_deterministic_tool_execution(self) -> None:
+        """Verify file reading tool is selected, executed, observed, and completed."""
+        doc = self.ws / "notes.txt"
+        doc.write_text("ReAct multi-turn loop verified.", encoding="utf-8")
+
+        res = self.orch.run_agent_loop("Read file notes.txt")
+        self.assertTrue(res["success"])
+        self.assertGreaterEqual(res["turns_count"], 2)
+        self.assertIn("notes.txt", res["final_answer"])
+        # Verify tool was read_file
+        first_turn = res["turns"][0]
+        tool_calls = first_turn.tool_calls if hasattr(first_turn, "tool_calls") else first_turn["tool_calls"]
+        self.assertEqual(len(tool_calls), 1)
+        name = getattr(tool_calls[0], "name", None) or tool_calls[0]["name"]
+        self.assertEqual(name, "read_file")
+
+    def test_run_agent_loop_custom_workspace(self) -> None:
+        """Verify custom workspace_root parameter routes tool execution to specified path."""
+        custom_ws = Path(self.tmp.name) / "custom_project"
+        custom_ws.mkdir(parents=True, exist_ok=True)
+        custom_file = custom_ws / "custom.txt"
+        custom_file.write_text("Data inside custom directory", encoding="utf-8")
+
+        res = self.orch.run_agent_loop("Read file custom.txt", workspace_root=custom_ws)
+        self.assertTrue(res["success"])
+        self.assertIn("custom.txt", res["final_answer"])
+
+    def test_run_agent_loop_with_active_router(self) -> None:
+        """Verify model router generation is invoked when cloud provider is available."""
+        step = 0
+        def fake_route(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
+            nonlocal step
+            dec = MagicMock()
+            if step == 0:
+                step += 1
+                resp = MagicMock(text='<thought>Check dir</thought><tool_call>{"name": "list_files", "arguments": {}}</tool_call>')
+            else:
+                resp = MagicMock(text='<finish>Router finished successfully</finish>')
+            return dec, resp
+
+        mock_provider = MagicMock()
+        mock_provider.is_available.return_value = True
+
+        with patch.object(self.orch.router, "cloud_provider", mock_provider), \
+             patch.object(self.orch.router, "execute_routed_request", side_effect=fake_route):
+            res = self.orch.run_agent_loop("List workspace directory with router")
+            self.assertTrue(res["success"])
+            self.assertEqual(res["final_answer"], "Router finished successfully")
+            self.assertEqual(res["turns_count"], 2)
+
+
+class TestTUIReActIntegration(unittest.TestCase):
+    """Test HexConsole /react slash command and prompt loop execution."""
+
+    def setUp(self) -> None:
+        self.mock_orch = MagicMock()
+        self.mock_orch.default_workspace = Path("/tmp/dummy")
+
+    def test_react_mode_default_and_toggle(self) -> None:
+        console = HexConsole(self.mock_orch, quiet=True)
+        self.assertFalse(console.react_mode)
+
+        # Toggle on
+        console.handle_slash_command("/react on")
+        self.assertTrue(console.react_mode)
+
+        # Toggle off
+        console.handle_slash_command("/react off")
+        self.assertFalse(console.react_mode)
+
+        # Bare toggle: toggles boolean
+        console.handle_slash_command("/react")
+        self.assertTrue(console.react_mode)
+
+        console.handle_slash_command("/react")
+        self.assertFalse(console.react_mode)
+
+    def test_react_mode_initialized_from_flag(self) -> None:
+        console = HexConsole(self.mock_orch, quiet=True, react_mode=True)
+        self.assertTrue(console.react_mode)
+
+    def test_handle_user_prompt_react_mode_invokes_agent_loop(self) -> None:
+        self.mock_orch.run_agent_loop.return_value = {
+            "success": True,
+            "final_answer": "Autonomous task executed with excellence",
+            "turns_count": 2,
+            "termination_reason": "finish",
+            "turns": [
+                ReActTurn(
+                    turn_index=1,
+                    thought="Checking files",
+                    tool_calls=[ToolCallRequest(call_id="c1", name="list_files", arguments={})],
+                    tool_results=[ToolCallResult(call_id="c1", name="list_files", output=["file1.txt"])],
+                    latency_ms=10.0,
+                ),
+                ReActTurn(
+                    turn_index=2,
+                    thought="Task complete",
+                    latency_ms=5.0,
+                ),
+            ],
+            "task_id": "tsk_react_123",
+        }
+
+        console = HexConsole(self.mock_orch, quiet=True, react_mode=True)
+        console.handle_user_prompt("Inspect the codebase and report")
+
+        self.mock_orch.run_agent_loop.assert_called_once_with(
+            goal="Inspect the codebase and report",
+            workspace_root=console.workspace_root,
+        )
+        self.mock_orch.submit_and_run.assert_not_called()
+        self.assertEqual(console.active_task_id, "tsk_react_123")
+
+
+class TestCLIReActFlags(unittest.TestCase):
+    """Test CLI argument parsing and dispatch with --react."""
+
+    def test_cli_top_level_react_flag(self) -> None:
+        with patch("harness_core.tui.HexConsole") as mock_console_cls, \
+             patch("harness_core.cli.HarnessOrchestrator"):
+            mock_inst = MagicMock()
+            mock_inst.start.return_value = 0
+            mock_console_cls.return_value = mock_inst
+
+            code = cli_main(["--react", "--quiet", "--no-stream"])
+            self.assertEqual(code, 0)
+            mock_console_cls.assert_called_once()
+            _, kwargs = mock_console_cls.call_args
+            self.assertTrue(kwargs.get("react_mode"))
+
+    def test_cli_chat_react_flag(self) -> None:
+        with patch("harness_core.tui.HexConsole") as mock_console_cls, \
+             patch("harness_core.cli.HarnessOrchestrator"):
+            mock_inst = MagicMock()
+            mock_inst.start.return_value = 0
+            mock_console_cls.return_value = mock_inst
+
+            code = cli_main(["chat", "--react", "--quiet", "--no-stream"])
+            self.assertEqual(code, 0)
+            mock_console_cls.assert_called_once()
+            _, kwargs = mock_console_cls.call_args
+            self.assertTrue(kwargs.get("react_mode"))
+
+    def test_cli_run_react_execution(self) -> None:
+        mock_orch = MagicMock()
+        mock_orch.run_agent_loop.return_value = {
+            "success": True,
+            "final_answer": "CLI ReAct run complete",
+            "turns_count": 1,
+            "termination_reason": "finish",
+            "turns": [],
+        }
+
+        with patch("harness_core.cli.HarnessOrchestrator", return_value=mock_orch):
+            code = cli_main(["run", "--react", "Test autonomous goal"])
+            self.assertEqual(code, 0)
+            mock_orch.run_agent_loop.assert_called_once()
+            call_kwargs = mock_orch.run_agent_loop.call_args[1]
+            self.assertEqual(call_kwargs["goal"], "Test autonomous goal")
 
 
 if __name__ == "__main__":

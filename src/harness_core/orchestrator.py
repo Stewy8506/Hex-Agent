@@ -441,6 +441,11 @@ class HarnessOrchestrator:
                 if hasattr(self.ledger, "transition_task"):
                     self.ledger.transition_task(
                         active_task_id,
+                        TaskState.VALIDATING,
+                        reason_code="REACT_LOOP_VALIDATE",
+                    )
+                    self.ledger.transition_task(
+                        active_task_id,
                         TaskState.RUNNING,
                         reason_code="REACT_LOOP_START",
                     )
@@ -567,12 +572,25 @@ class HarnessOrchestrator:
                 final_state = TaskState.SUCCEEDED if session_res.success else TaskState.FAILED
                 reason = "REACT_LOOP_SUCCESS" if session_res.success else "REACT_LOOP_TERMINATED"
                 if hasattr(self.ledger, "transition_task"):
-                    self.ledger.transition_task(
-                        active_task_id,
-                        final_state,
-                        reason_code=reason,
-                        terminal_reason=session_res.final_answer[:500] if session_res.final_answer else session_res.termination_reason,
-                    )
+                    if session_res.success:
+                        self.ledger.transition_task(
+                            active_task_id,
+                            TaskState.VERIFYING,
+                            reason_code="REACT_LOOP_VERIFY",
+                        )
+                        self.ledger.transition_task(
+                            active_task_id,
+                            TaskState.SUCCEEDED,
+                            reason_code="REACT_LOOP_SUCCESS",
+                            terminal_reason=session_res.final_answer[:500] if session_res.final_answer else "Completed",
+                        )
+                    else:
+                        self.ledger.transition_task(
+                            active_task_id,
+                            TaskState.FAILED,
+                            reason_code="REACT_LOOP_FAILED",
+                            terminal_reason=session_res.termination_reason,
+                        )
                 if hasattr(self.ledger, "record_event"):
                     self.ledger.record_event(
                         task_id=active_task_id,
