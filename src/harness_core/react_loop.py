@@ -59,6 +59,33 @@ class ReActTurn:
     tool_results: list[ToolCallResult] = field(default_factory=list)
     latency_ms: float = 0.0
 
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "turn_index": self.turn_index,
+            "thought": self.thought,
+            "tool_calls": [
+                {"call_id": c.call_id, "name": c.name, "arguments": c.arguments}
+                for c in self.tool_calls
+            ],
+            "tool_results": [
+                {
+                    "call_id": r.call_id,
+                    "name": r.name,
+                    "output": r.output,
+                    "is_error": r.is_error,
+                    "duration_ms": r.duration_ms,
+                }
+                for r in self.tool_results
+            ],
+            "latency_ms": self.latency_ms,
+        }
+
 
 @dataclass
 class ReActSessionResult:
