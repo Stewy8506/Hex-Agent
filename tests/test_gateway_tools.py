@@ -27,9 +27,9 @@ class TestGatewayTools(unittest.TestCase):
         self.ledger.close()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def test_total_tool_count_is_21(self) -> None:
-        """Verify exactly 21 tools are registered in the gateway."""
-        self.assertEqual(len(self.gateway.tools), 21)
+    def test_total_tool_count_is_24(self) -> None:
+        """Verify exactly 24 tools are registered in the gateway."""
+        self.assertEqual(len(self.gateway.tools), 24)
         expected_tools = {
             "read_file",
             "list_files",
@@ -52,8 +52,38 @@ class TestGatewayTools(unittest.TestCase):
             "process",
             "git_push_remote",
             "modify_system_policy",
+            "delegate",
+            "subagent_status",
+            "subagent_wait",
         }
         self.assertEqual(set(self.gateway.tools.keys()), expected_tools)
+
+    def test_subagent_tools_execution(self) -> None:
+        """Test delegate, subagent_status, and subagent_wait through the gateway."""
+        # 1. Delegate tool call
+        del_res = self.gateway._tool_delegate(
+            self.workspace_dir,
+            {"goal": "Research caching strategies", "role": "researcher", "wait": True},
+        )
+        self.assertTrue(del_res["ok"])
+        subagent_id = del_res["result"]["subagent_id"]
+        self.assertEqual(del_res["result"]["role"], "researcher")
+
+        # 2. Subagent status tool call
+        stat_res = self.gateway._tool_subagent_status(
+            self.workspace_dir,
+            {"subagent_id": subagent_id},
+        )
+        self.assertTrue(stat_res["ok"])
+        self.assertEqual(stat_res["subagent"]["subagent_id"], subagent_id)
+
+        # 3. Subagent wait tool call
+        wait_res = self.gateway._tool_subagent_wait(
+            self.workspace_dir,
+            {"subagent_id": subagent_id, "timeout": 5.0},
+        )
+        self.assertTrue(wait_res["ok"])
+        self.assertEqual(wait_res["result"]["subagent_id"], subagent_id)
 
     def test_patch_search_replace(self) -> None:
         """Test patching a file via search and replace blocks."""

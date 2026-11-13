@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from .webhooks import WebhookNotifier
+    from .subagent import SubagentManager
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,352 @@ class ActiveBlastRadiusInterceptor:
         )
 
 
+TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "id": "read_file",
+        "name": "read_file",
+        "description": "Read a file inside the task workspace (R0/R1 Fast-Path eligible).",
+        "risk_class": "R0",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative path to file"},
+                "offset": {"type": "integer", "description": "Line offset to start reading from", "default": 0},
+                "limit": {"type": "integer", "description": "Max lines to return", "default": 1000},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "id": "list_files",
+        "name": "list_files",
+        "description": "List files in the repository workspace (R0/R1 Fast-Path eligible).",
+        "risk_class": "R0",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Subdirectory to list (default: root)", "default": "."},
+                "recursive": {"type": "boolean", "description": "Whether to list recursively", "default": False},
+            },
+        },
+    },
+    {
+        "id": "search_files",
+        "name": "search_files",
+        "description": "Search workspace files using substring or regex matching (R0 Fast-Path eligible).",
+        "risk_class": "R0",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Search query pattern"},
+                "is_regex": {"type": "boolean", "description": "Whether pattern is regex", "default": False},
+                "path": {"type": "string", "description": "Subtree to search in", "default": "."},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "id": "todo",
+        "name": "todo",
+        "description": "Track and manage in-session execution tasks and checklist state (R0 Fast-Path eligible).",
+        "risk_class": "R0",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["add", "list", "complete", "clear"], "description": "Todo action"},
+                "task": {"type": "string", "description": "Task description for add/complete"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "id": "clarify",
+        "name": "clarify",
+        "description": "Request structured clarification from the user with optional choices (R0 Fast-Path eligible).",
+        "risk_class": "R0",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Question to prompt user"},
+                "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional multiple choice list"},
+            },
+            "required": ["question"],
+        },
+    },
+    {
+        "id": "session_search",
+        "name": "session_search",
+        "description": "Search past session execution ledgers, tool invocations, and resolutions (R0 Fast-Path eligible).",
+        "risk_class": "R0",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query for past sessions"},
+                "limit": {"type": "integer", "description": "Max sessions to inspect", "default": 5},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "id": "query_graphify",
+        "name": "query_graphify",
+        "description": "Query the repository AST/call graph for symbol definitions and callers (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Symbol name to query"},
+                "kind": {"type": "string", "description": "Symbol kind or relation", "default": "callers"},
+            },
+            "required": ["symbol"],
+        },
+    },
+    {
+        "id": "web_search",
+        "name": "web_search",
+        "description": "Search the live web for technical documentation, compiler error solutions, and API references (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query keywords"},
+                "max_results": {"type": "integer", "description": "Max search hits", "default": 5},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "id": "web_extract",
+        "name": "web_extract",
+        "description": "Extract readable text and markdown from web pages and API endpoints (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Web URL to fetch and convert to markdown"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "id": "memory",
+        "name": "memory",
+        "description": "Read, write, and persist project facts, conventions, and architectural notes (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["read", "write", "list"], "description": "Memory operation"},
+                "key": {"type": "string", "description": "Memory key identifier"},
+                "value": {"type": "string", "description": "Value to persist"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "id": "lsp_diagnostics",
+        "name": "lsp_diagnostics",
+        "description": "Query compiler syntax errors, type mismatches, and linter warnings from active language servers (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Optional file path to filter diagnostics"},
+            },
+        },
+    },
+    {
+        "id": "lsp_definition",
+        "name": "lsp_definition",
+        "description": "Find symbol definition URI, line, and column coordinates using language server (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "File path where symbol appears"},
+                "line": {"type": "integer", "description": "0-indexed line number"},
+                "character": {"type": "integer", "description": "0-indexed character offset"},
+            },
+            "required": ["file_path", "line", "character"],
+        },
+    },
+    {
+        "id": "lsp_references",
+        "name": "lsp_references",
+        "description": "Find all reference locations and call sites for a symbol across the workspace (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "File path where symbol appears"},
+                "line": {"type": "integer", "description": "0-indexed line number"},
+                "character": {"type": "integer", "description": "0-indexed character offset"},
+            },
+            "required": ["file_path", "line", "character"],
+        },
+    },
+    {
+        "id": "lsp_hover",
+        "name": "lsp_hover",
+        "description": "Retrieve type signatures and markdown docstrings for a symbol at coordinates (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "File path where symbol appears"},
+                "line": {"type": "integer", "description": "0-indexed line number"},
+                "character": {"type": "integer", "description": "0-indexed character offset"},
+            },
+            "required": ["file_path", "line", "character"],
+        },
+    },
+    {
+        "id": "write_file",
+        "name": "write_file",
+        "description": "Modify or create a file inside the isolated CoW workspace (R2).",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative file path to write"},
+                "content": {"type": "string", "description": "Full file content string"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "id": "patch",
+        "name": "patch",
+        "description": "Apply unified diff hunks or search/replace blocks to modify files in the isolated CoW workspace (R2).",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative file path to patch"},
+                "diff": {"type": "string", "description": "Unified diff hunk or search/replace blocks"},
+            },
+            "required": ["path", "diff"],
+        },
+    },
+    {
+        "id": "run_tests",
+        "name": "run_tests",
+        "description": "Run bounded deterministic pytest/unittest suite inside the CoW workspace (R2).",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "test_file": {"type": "string", "description": "Optional specific test file path"},
+                "extra_args": {"type": "array", "items": {"type": "string"}, "description": "Additional test flags"},
+            },
+        },
+    },
+    {
+        "id": "terminal",
+        "name": "terminal",
+        "description": "Execute a terminal shell command inside the sandboxed CoW workspace (R2).",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Bash command string to execute"},
+                "timeout": {"type": "number", "description": "Max execution time in seconds", "default": 30.0},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "id": "process",
+        "name": "process",
+        "description": "Inspect or terminate active background processes running in the workspace (R2).",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "kill"], "description": "Process management action"},
+                "pid": {"type": "integer", "description": "PID to kill if action is kill"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "id": "git_push_remote",
+        "name": "git_push_remote",
+        "description": "Push verified commits or publish external deliverables (R3 approval-gated).",
+        "risk_class": "R3",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "description": "Branch name to push", "default": "main"},
+                "remote": {"type": "string", "description": "Git remote name", "default": "origin"},
+            },
+        },
+    },
+    {
+        "id": "modify_system_policy",
+        "name": "modify_system_policy",
+        "description": "Modify system security policy or disable SkillSpector (R4 always denied).",
+        "risk_class": "R4",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "policy_key": {"type": "string", "description": "Target policy key"},
+            },
+            "required": ["policy_key"],
+        },
+    },
+    {
+        "id": "delegate",
+        "name": "delegate",
+        "description": "Spawn a role-constrained child subagent inside an isolated CoW workspace (R2).",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "Specific task or objective for the child subagent"},
+                "role": {
+                    "type": "string",
+                    "enum": ["researcher", "coder", "tester", "reviewer", "planner", "general"],
+                    "description": "Role specialization defining permitted tools",
+                    "default": "general",
+                },
+                "context": {"type": "string", "description": "Optional context or instructions for child"},
+                "wait": {"type": "boolean", "description": "Whether to wait synchronously for completion", "default": True},
+                "timeout": {"type": "number", "description": "Max execution time in seconds", "default": 120.0},
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "id": "subagent_status",
+        "name": "subagent_status",
+        "description": "Query the status and outputs of an in-flight or completed subagent (R0 Fast-Path eligible).",
+        "risk_class": "R0",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subagent_id": {"type": "string", "description": "ID of the subagent to query"},
+            },
+            "required": ["subagent_id"],
+        },
+    },
+    {
+        "id": "subagent_wait",
+        "name": "subagent_wait",
+        "description": "Block until a background subagent finishes execution (R1).",
+        "risk_class": "R1",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subagent_id": {"type": "string", "description": "ID of the subagent to wait for"},
+                "timeout": {"type": "number", "description": "Max wait time in seconds", "default": 60.0},
+            },
+            "required": ["subagent_id"],
+        },
+    },
+]
+
+
 class ToolGateway:
     """Policy-enforcing, call-journaling gateway for direct tools and Code Mode scripts."""
 
@@ -138,6 +485,7 @@ class ToolGateway:
         sandbox: ExecutionSandbox | None = None,
         notifier: WebhookNotifier | None = None,
         lsp_manager: LSPManager | None = None,
+        subagent_manager: SubagentManager | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
@@ -145,9 +493,15 @@ class ToolGateway:
         self.sandbox = sandbox or get_default_sandbox()
         self.notifier = notifier
         self.lsp_manager = lsp_manager
+        self.subagent_manager = subagent_manager
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
         self._register_builtin_tools()
+
+    @classmethod
+    def list_tool_definitions(cls) -> list[dict[str, Any]]:
+        """Return standardized schema list of all built-in tools."""
+        return [dict(t) for t in TOOL_DEFINITIONS]
 
     def _get_lsp_manager(self, workspace_dir: Path) -> LSPManager:
         if self.lsp_manager is None:
@@ -385,6 +739,30 @@ class ToolGateway:
                 description="Modify system security policy or disable SkillSpector (R4 always denied).",
                 risk_class=RiskClass.R4,
                 handler=self._tool_modify_policy,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="delegate",
+                description="Spawn a role-constrained child subagent inside an isolated CoW workspace (R2).",
+                risk_class=RiskClass.R2,
+                handler=self._tool_delegate,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="subagent_status",
+                description="Query the status and outputs of an in-flight or completed subagent (R0 Fast-Path eligible).",
+                risk_class=RiskClass.R0,
+                handler=self._tool_subagent_status,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="subagent_wait",
+                description="Block until a background subagent finishes execution (R1).",
+                risk_class=RiskClass.R1,
+                handler=self._tool_subagent_wait,
             )
         )
 
@@ -1472,3 +1850,63 @@ class ToolGateway:
 
     def _tool_modify_policy(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         raise PolicyBlockedError("R4 policy modification is prohibited")
+
+    def _get_subagent_manager(self) -> SubagentManager:
+        if self.subagent_manager is None:
+            from .subagent import SubagentManager
+            self.subagent_manager = SubagentManager(
+                ledger=self.ledger,
+                gateway=self,
+            )
+        return self.subagent_manager
+
+    def _tool_delegate(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        mgr = self._get_subagent_manager()
+        goal = args.get("goal")
+        if not goal:
+            return {"ok": False, "error": "Missing required 'goal' parameter"}
+        role = args.get("role", "general")
+        context = args.get("context")
+        wait = args.get("wait", True)
+        timeout = float(args.get("timeout", 120.0))
+        parent_task_id = args.get("task_id", "current_task")
+
+        try:
+            res = mgr.spawn_subagent(
+                parent_task_id=parent_task_id,
+                goal=goal,
+                role=role,
+                context=context,
+                parent_ws=workspace_dir,
+                current_depth=int(args.get("current_depth", 0)),
+                timeout=timeout,
+                wait=wait,
+            )
+            if isinstance(res, str):
+                return {"ok": True, "subagent_id": res, "status": "running", "mode": "async"}
+            return {"ok": True, "result": res.to_dict(), "status": res.status}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _tool_subagent_status(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        mgr = self._get_subagent_manager()
+        sid = args.get("subagent_id")
+        if not sid:
+            return {"ok": False, "error": "Missing 'subagent_id'"}
+        try:
+            status = mgr.get_subagent_status(sid)
+            return {"ok": True, "subagent": status}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _tool_subagent_wait(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        mgr = self._get_subagent_manager()
+        sid = args.get("subagent_id")
+        if not sid:
+            return {"ok": False, "error": "Missing 'subagent_id'"}
+        timeout = float(args.get("timeout", 60.0))
+        try:
+            res = mgr.wait_subagent(sid, timeout=timeout)
+            return {"ok": True, "result": res.to_dict()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
