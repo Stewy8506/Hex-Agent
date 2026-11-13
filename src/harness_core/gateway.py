@@ -472,6 +472,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["subagent_id"],
         },
     },
+    {
+        "id": "browser",
+        "name": "browser",
+        "description": "Interactive headless browser for navigating web pages, clicking elements, extracting accessibility trees, and taking screenshots.",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["navigate", "snapshot", "click", "type", "screenshot", "evaluate", "close"],
+                    "description": "Browser action to perform",
+                    "default": "snapshot",
+                },
+                "url": {"type": "string", "description": "URL to navigate to"},
+                "selector": {"type": "string", "description": "Element ref (@e1, @e2) or CSS selector"},
+                "text": {"type": "string", "description": "Text to type into input element"},
+                "script": {"type": "string", "description": "Expression or regex to evaluate in DOM"},
+                "output_path": {"type": "string", "description": "File path to save screenshot/snapshot"},
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
@@ -486,6 +509,7 @@ class ToolGateway:
         notifier: WebhookNotifier | None = None,
         lsp_manager: LSPManager | None = None,
         subagent_manager: SubagentManager | None = None,
+        browser_manager: Any | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
@@ -494,6 +518,7 @@ class ToolGateway:
         self.notifier = notifier
         self.lsp_manager = lsp_manager
         self.subagent_manager = subagent_manager
+        self.browser_manager = browser_manager
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
         self._register_builtin_tools()
@@ -763,6 +788,14 @@ class ToolGateway:
                 description="Block until a background subagent finishes execution (R1).",
                 risk_class=RiskClass.R1,
                 handler=self._tool_subagent_wait,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="browser",
+                description="Interactive headless browser for navigation, DOM inspection, element interaction, and screenshots (R2).",
+                risk_class=RiskClass.R2,
+                handler=self._tool_browser,
             )
         )
 
@@ -1910,3 +1943,54 @@ class ToolGateway:
             return {"ok": True, "result": res.to_dict()}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def _get_browser_manager(self) -> Any:
+        if self.browser_manager is None:
+            from .browser import BrowserManager
+            self.browser_manager = BrowserManager()
+        return self.browser_manager
+
+    def _tool_browser(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        mgr = self._get_browser_manager()
+        task_id = args.get("task_id", "default_browser_session")
+        session = mgr.get_or_create_session(task_id)
+        action = args.get("action", "snapshot").lower().strip()
+
+        if action == "navigate":
+            url = args.get("url")
+            if not url:
+                return {"ok": False, "error": "Missing 'url' for browser navigate"}
+            res = session.navigate(url)
+            return {"ok": res.ok, "result": res.to_dict(), "error": res.error}
+        elif action == "snapshot":
+            res = session.snapshot()
+            return {"ok": res.ok, "result": res.to_dict()}
+        elif action == "click":
+            sel = args.get("selector")
+            if not sel:
+                return {"ok": False, "error": "Missing 'selector' for browser click"}
+            res = session.click(sel)
+            return {"ok": res.ok, "result": res.to_dict(), "error": res.error}
+        elif action == "type":
+            sel = args.get("selector")
+            txt = args.get("text", "")
+            if not sel:
+                return {"ok": False, "error": "Missing 'selector' for browser type"}
+            res = session.type(sel, txt)
+            return {"ok": res.ok, "result": res.to_dict(), "error": res.error}
+        elif action == "screenshot":
+            out_p = args.get("output_path")
+            if out_p and not Path(out_p).is_absolute():
+                out_p = str(workspace_dir / out_p)
+            res = session.screenshot(out_p)
+            return {"ok": res.ok, "result": res.to_dict(), "screenshot_path": res.screenshot_path}
+        elif action == "evaluate":
+            script = args.get("script", "")
+            res = session.evaluate(script)
+            return {"ok": res.ok, "result": res.to_dict()}
+        elif action == "close":
+            session.close()
+            mgr.close_session(task_id)
+            return {"ok": True, "message": "Browser session closed"}
+        else:
+            return {"ok": False, "error": f"Unknown browser action: {action}"}
