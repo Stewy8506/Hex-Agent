@@ -109,6 +109,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
     parser.add_argument("--voice", action="store_true", help="Enable hands-free voice mode and spoken agent commentary")
     parser.add_argument("--voice-name", default=None, help="TTS voice name override")
     parser.add_argument("--speech-rate", type=int, default=190, help="Speech rate in words per minute (default: 190)")
+    parser.add_argument("--react", action="store_true", help="Enable autonomous multi-turn ReAct tool execution")
     sub = parser.add_subparsers(dest="cmd", required=False)
 
     p_setup = sub.add_parser("setup", aliases=["onboard"], help="Run interactive setup wizard for hardware & configuration (alias: hex onboard)")
@@ -173,6 +174,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
     p_run.add_argument("--pr", action="store_true", help="Automatically create GitHub Pull Request on success")
     p_run.add_argument("--base-branch", default="main", help="Base branch for Pull Request (default: main)")
     p_run.add_argument("--dry-run", action="store_true", help="Dry-run mode: do not create real git commits or remote PRs")
+    p_run.add_argument("--react", action="store_true", help="Enable autonomous multi-turn ReAct tool execution")
 
     p_sub = sub.add_parser("submit", help="Submit and execute a task")
     p_sub.add_argument("goal", help="Task goal description")
@@ -218,6 +220,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
     p_chat.add_argument("--voice", action="store_true", default=argparse.SUPPRESS, help="Enable hands-free voice mode and spoken agent commentary")
     p_chat.add_argument("--voice-name", default=argparse.SUPPRESS, help="TTS voice name override")
     p_chat.add_argument("--speech-rate", type=int, default=argparse.SUPPRESS, help="Speech rate in words per minute")
+    p_chat.add_argument("--react", action="store_true", default=argparse.SUPPRESS, help="Enable autonomous multi-turn ReAct tool execution")
     p_chat.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
     p_voice = sub.add_parser("voice", help="Start interactive hands-free voice pair-programming console")
@@ -739,6 +742,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             voice_enabled=voice_mode,
             voice_name=voice_name,
             speech_rate=speech_rate,
+            react_mode=bool(getattr(args, "react", False)),
         )
         if getattr(args, "muted", False):
             console.voice_engine.mute()
@@ -795,6 +799,15 @@ def _main_impl(argv: list[str] | None = None) -> int:
         if active_project:
             registry.touch_active(ws_root)
         task_project_id = active_project.id if active_project and args.project == "default" else args.project
+
+        if getattr(args, "react", False):
+            loop_res = orch.run_agent_loop(
+                goal=args.goal,
+                workspace_root=ws_root,
+            )
+            print(json.dumps(loop_res, indent=2, default=str))
+            return 0 if loop_res.get("success") else 1
+
         req = TaskSubmitRequest(
             goal=args.goal,
             project_id=task_project_id,

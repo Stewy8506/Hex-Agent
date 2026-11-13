@@ -1238,7 +1238,7 @@ class HexConsole:
         "/quota", "/antigravity", "/blast", "/proof", "/memory",
         "/remember", "/reflect", "/search", "/doctor", "/recipe",
         "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
-        "/voice", "/banner", "/clear", "/subagents", "/quit", "/exit",
+        "/voice", "/banner", "/clear", "/subagents", "/react", "/quit", "/exit",
     ]
 
     def __init__(
@@ -1253,6 +1253,7 @@ class HexConsole:
         voice_enabled: bool = False,
         voice_name: str | None = None,
         speech_rate: int = 190,
+        react_mode: bool = False,
     ):
         self.orchestrator = orchestrator
         self.project_id = project_id
@@ -1266,6 +1267,7 @@ class HexConsole:
         self.model_profile = model_profile
         self.skin_name = skin_name.lower() if skin_name.lower() in SKIN_REGISTRY else "amber"
         self.quiet = quiet
+        self.react_mode: bool = bool(react_mode)
         self.active_task_id: str | None = None
         self.history: list[str] = []
         self._suggestion_idx: int = 0
@@ -1715,6 +1717,8 @@ class HexConsole:
             print(self.render_welcome_splash())
         elif cmd in ("/subagents", "/subagent", "/delegates"):
             self._cmd_subagents(arg)
+        elif cmd in ("/react", "/react-loop", "/loop"):
+            self._cmd_react(arg)
         elif cmd == "/clear":
             self._cmd_clear()
         else:
@@ -1768,6 +1772,7 @@ class HexConsole:
             ("/dump", "Generate plain-text system diagnostic dump with secret redaction"),
             ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
             ("/subagents", "Inspect active and completed child subagents and delegation tree"),
+            ("/react [on|off]", "Toggle continuous multi-turn autonomous ReAct tool loop"),
             ("/harness2", "Run a gated Google Research Harness² Propose-Probe-Compose probe"),
             ("/skin [name]", "Switch TUI theme (amber, cyberpunk, matrix, nord, mono)"),
             ("/voice [on|off|mute]", "Toggle hands-free voice mode, mute, speech rate or audio status"),
@@ -1793,6 +1798,8 @@ class HexConsole:
             else ("ON" if self.voice_engine.config.tts_enabled else "OFF")
         )
         print(f"  Voice Mode:     {v_stat} (TTS:{self.voice_engine.config.tts_enabled}, STT:{self.voice_engine.config.stt_enabled})")
+        r_stat = f"{ANSI_GREEN}ON{ANSI_RESET}" if getattr(self, "react_mode", False) else f"{ANSI_YELLOW}OFF{ANSI_RESET}"
+        print(f"  ReAct Mode:     {r_stat}")
         print(f"  Active Task ID: {self.active_task_id or '(none)'}")
 
         workers = []
@@ -2502,6 +2509,22 @@ class HexConsole:
             )
         print()
 
+    def _cmd_react(self, arg: str = "") -> None:
+        """Toggle continuous multi-turn autonomous ReAct tool loop."""
+        val = arg.strip().lower()
+        if val in ("on", "1", "true", "enable", "enabled"):
+            self.react_mode = True
+            print(f"\n{ANSI_GREEN}✔ ReAct multi-turn autonomous tool loop enabled.{ANSI_RESET}\n")
+        elif val in ("off", "0", "false", "disable", "disabled"):
+            self.react_mode = False
+            print(f"\n{ANSI_YELLOW}○ ReAct multi-turn autonomous tool loop disabled.{ANSI_RESET}\n")
+        elif not val:
+            self.react_mode = not getattr(self, "react_mode", False)
+            state = f"{ANSI_GREEN}ON{ANSI_RESET}" if self.react_mode else f"{ANSI_YELLOW}OFF{ANSI_RESET}"
+            print(f"\nReAct multi-turn tool loop is now {state}.\n")
+        else:
+            print(f"\n{ANSI_RED}Usage: /react [on|off]{ANSI_RESET}\n")
+
     def _cmd_skin(self, arg: str = "") -> None:
         name = arg.strip().lower()
         if not name:
@@ -2799,8 +2822,85 @@ class HexConsole:
                     lines.append(f"  {ANSI_CYAN}┊{ANSI_RESET}   ↳ {ANSI_YELLOW}{warn_msg}{ANSI_RESET}")
         return "\n".join(lines)
 
+    def _handle_react_loop_prompt(self, prompt: str) -> None:
+        """Execute autonomous multi-turn ReAct tool loop and render live progress cards."""
+        print(f"\n{ANSI_BOLD}{ANSI_CYAN}◈ ReAct Autonomous Tool Loop{ANSI_RESET}")
+        print(f"{ANSI_DIM}Goal: {prompt}{ANSI_RESET}\n")
+
+        spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
+        spinner.start()
+        try:
+            loop_result = self.orchestrator.run_agent_loop(
+                goal=prompt,
+                workspace_root=self.workspace_root,
+            )
+        except KeyboardInterrupt:
+            spinner.stop()
+            print(f"\n{ANSI_YELLOW}⚡ ReAct loop cancelled by user (Ctrl+C).{ANSI_RESET}\n")
+            return
+        except Exception as exc:
+            spinner.stop()
+            print(f"\n{ANSI_RED}✖ ReAct execution error: {exc}{ANSI_RESET}\n")
+            return
+        finally:
+            spinner.stop()
+
+        self.active_task_id = loop_result.get("task_id") or getattr(self, "active_task_id", None)
+
+        turns = loop_result.get("turns") or []
+        for turn in turns:
+            t_idx = getattr(turn, "turn_index", None) or (turn.get("turn_index") if isinstance(turn, dict) else 1)
+            thought = getattr(turn, "thought", None) or (turn.get("thought") if isinstance(turn, dict) else "")
+            t_calls = getattr(turn, "tool_calls", None) or (turn.get("tool_calls") if isinstance(turn, dict) else [])
+            t_res = getattr(turn, "tool_results", None) or (turn.get("tool_results") if isinstance(turn, dict) else [])
+
+            if thought:
+                print(f"{ANSI_BOLD}Turn {t_idx} ─ Thought:{ANSI_RESET} {thought}")
+
+            for call in t_calls:
+                c_name = getattr(call, "name", None) or (call.get("name") if isinstance(call, dict) else "")
+                c_args = getattr(call, "arguments", None) or (call.get("arguments") if isinstance(call, dict) else {})
+                print(f"  {ANSI_CYAN}🔧 Tool Call:{ANSI_RESET} {ANSI_BOLD}{c_name}{ANSI_RESET}({json.dumps(c_args, default=str)})")
+
+            for res in t_res:
+                r_name = getattr(res, "name", None) or (res.get("name") if isinstance(res, dict) else "")
+                r_err = getattr(res, "is_error", None) or (res.get("is_error") if isinstance(res, dict) else False)
+                r_out = getattr(res, "output", None) or (res.get("output") if isinstance(res, dict) else "")
+                r_dur = getattr(res, "duration_ms", 0.0) or (res.get("duration_ms", 0.0) if isinstance(res, dict) else 0.0)
+                status_badge = f"{ANSI_RED}✖ Error{ANSI_RESET}" if r_err else f"{ANSI_GREEN}✓ Observation{ANSI_RESET}"
+                out_preview = str(r_out).strip()
+                if len(out_preview) > 300:
+                    out_preview = out_preview[:300] + "..."
+                print(f"  {status_badge} [{r_name}] ({r_dur:.1f}ms): {out_preview}")
+            print()
+
+        success = loop_result.get("success", False)
+        final_answer = loop_result.get("final_answer", "")
+        turns_count = loop_result.get("turns_count", len(turns))
+        term_reason = loop_result.get("termination_reason", "unknown")
+
+        if success:
+            print(f"{ANSI_GREEN}✔ ReAct Loop completed successfully in {turns_count} turn(s)! [{term_reason}]{ANSI_RESET}")
+        else:
+            print(f"{ANSI_YELLOW}⚠ ReAct Loop stopped: {term_reason} ({turns_count} turns){ANSI_RESET}")
+
+        if final_answer:
+            active_model = self.model_profile or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", "react-agent")
+            print(f"\n{ANSI_BOLD}HEX ReAct Result{ANSI_RESET} ({active_model}):\n")
+            print(format_terminal_markdown(final_answer.strip(), skin=self.skin))
+            print()
+            if hasattr(self, "voice_engine") and self.voice_engine.config.tts_enabled and not self.voice_engine.is_muted():
+                cleaned = clean_text_for_speech(final_answer)
+                sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned) if s.strip()]
+                speech_text = " ".join(sentences[:2]) if sentences else final_answer[:100]
+                self.voice_engine.speak(speech_text, clean=False)
+
     def handle_user_prompt(self, prompt: str) -> None:
         """Submit natural language coding prompt to orchestrator."""
+        if getattr(self, "react_mode", False):
+            self._handle_react_loop_prompt(prompt)
+            return
+
         from .models import TaskSubmitRequest
 
         mode_val = getattr(self, "mode", "agent")
