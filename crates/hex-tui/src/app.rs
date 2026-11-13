@@ -229,6 +229,9 @@ pub struct App {
     pub slash_suggestions: Vec<SlashCommand>,
     pub selected_slash_index: usize,
 
+    // Suggestion rotation (advances per submitted prompt)
+    pub suggestion_index: usize,
+
     // Approval interrupt modal
     pub active_approval: Option<ApprovalRequest>,
 
@@ -329,6 +332,7 @@ impl App {
 
             slash_suggestions: Vec::new(),
             selected_slash_index: 0,
+            suggestion_index: 0,
 
             active_approval: None,
             animation_frame: 0,
@@ -624,6 +628,7 @@ impl App {
             return None;
         }
 
+        self.suggestion_index = self.suggestion_index.wrapping_add(1);
         self.command_history.push(trimmed.clone());
         self.history_index = None;
         self.input_buffer.clear();

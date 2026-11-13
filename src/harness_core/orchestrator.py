@@ -677,6 +677,7 @@ class HarnessOrchestrator:
         task_id: str,
         worker_id: str | None = None,
         lease_info: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         task = self.ledger.get_task(task_id)
         if not task:
@@ -689,7 +690,7 @@ class HarnessOrchestrator:
 
         # Fast-Path Express Lane (FR-001a): bypasses DAG planning ceremony for R0/R1 tasks
         if task["execution_mode"] == "fast_path":
-            return self._execute_fast_path(task, source_ws, wrk, lease_info=lease_info)
+            return self._execute_fast_path(task, source_ws, wrk, lease_info=lease_info, **kwargs)
 
         return self._execute_standard_dag(task, source_ws, wrk, lease_info=lease_info)
 
@@ -699,6 +700,7 @@ class HarnessOrchestrator:
         source_ws: Path,
         worker_id: str,
         lease_info: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         task_id = task["task_id"]
         base_tree_sha = self.cow.compute_tree_sha(source_ws)
@@ -799,6 +801,7 @@ class HarnessOrchestrator:
                     budget_remaining=1.0,
                     workspace_dir=source_ws,
                     max_tokens=4096,
+                    stream_callback=kwargs.get("stream_callback"),
                 )
                 if model_resp and getattr(model_resp, "text", None):
                     synthesized_text = model_resp.text.strip()

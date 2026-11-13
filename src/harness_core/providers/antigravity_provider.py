@@ -1203,7 +1203,8 @@ class AntigravityModelProvider(ModelProvider):
         )
 
         t0 = time.perf_counter()
-        status_code, resp_bytes = self._execute_http(url, headers, body_bytes)
+        stream_cb = kwargs.get("stream_callback")
+        status_code, resp_bytes = self._execute_http(url, headers, body_bytes, stream_callback=stream_cb)
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         # Handle HTTP 401 unauthenticated with automatic refresh token retry
@@ -1469,14 +1470,45 @@ class AntigravityModelProvider(ModelProvider):
 
         return full_text, in_tokens, out_tokens, cached_tokens, finish_reason, last_obj
 
-    def _execute_http(self, url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+    def _execute_http(
+        self,
+        url: str,
+        headers: dict[str, str],
+        body: bytes,
+        stream_callback: Any = None,
+    ) -> tuple[int, bytes]:
         if self.http_transport is not None:
             return self.http_transport(url, headers, body)
 
+        def _read_body_stream(resp: Any) -> bytes:
+            if stream_callback is None:
+                return resp.read()
+            accumulated = bytearray()
+            for raw_line in resp:
+                accumulated.extend(raw_line)
+                line_str = raw_line.decode("utf-8", errors="replace").strip()
+                if line_str.startswith("data:"):
+                    data_part = line_str[5:].strip()
+                    if data_part and data_part != "[DONE]":
+                        try:
+                            payload = json.loads(data_part)
+                            cands = payload.get("candidates") or []
+                            for cand in cands:
+                                content = cand.get("content") or {}
+                                for part in content.get("parts") or []:
+                                    txt = part.get("text")
+                                    if txt:
+                                        stream_callback(txt)
+                            if isinstance(payload.get("text"), str) and payload["text"]:
+                                stream_callback(payload["text"])
+                        except Exception:
+                            pass
+            return bytes(accumulated)
+
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=30.0) as resp:
-                return resp.status, resp.read()
+            with urllib.request.urlopen(req, timeout=45.0) as resp:
+                return resp.status, _read_body_stream(resp)
         except urllib.error.HTTPError as e:
             # If 429 or 403 occurs on one endpoint, attempt fallback to alternate Antigravity endpoint
             if e.code in (403, 429):
@@ -1489,10 +1521,10 @@ class AntigravityModelProvider(ModelProvider):
                     alt_url = url.replace(ANTIGRAVITY_PROD_ENDPOINT, alt_base).replace(ANTIGRAVITY_DAILY_ENDPOINT, alt_base)
                     try:
                         alt_req = urllib.request.Request(alt_url, data=body, headers=headers, method="POST")
-                        with urllib.request.urlopen(alt_req, timeout=30.0) as alt_resp:
+                        with urllib.request.urlopen(alt_req, timeout=45.0) as alt_resp:
                             if alt_resp.status in (200, 201):
                                 self.base_url = alt_base
-                                return alt_resp.status, alt_resp.read()
+                                return alt_resp.status, _read_body_stream(alt_resp)
                     except Exception:
                         pass
             return e.code, e.read()
@@ -1506,10 +1538,10 @@ class AntigravityModelProvider(ModelProvider):
                 alt_url = url.replace(ANTIGRAVITY_PROD_ENDPOINT, alt_base).replace(ANTIGRAVITY_DAILY_ENDPOINT, alt_base)
                 try:
                     alt_req = urllib.request.Request(alt_url, data=body, headers=headers, method="POST")
-                    with urllib.request.urlopen(alt_req, timeout=30.0) as alt_resp:
+                    with urllib.request.urlopen(alt_req, timeout=45.0) as alt_resp:
                         if alt_resp.status in (200, 201):
                             self.base_url = alt_base
-                            return alt_resp.status, alt_resp.read()
+                            return alt_resp.status, _read_body_stream(alt_resp)
                 except Exception:
                     pass
             raise ProviderUnavailableError(f"Antigravity HTTP request failed: {e}") from e

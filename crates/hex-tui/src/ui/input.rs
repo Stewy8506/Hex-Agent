@@ -14,11 +14,49 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let skin = skin(&app.skin_name);
     let focused = app.focus == Focus::Input;
     let border = if focused { skin.border } else { skin.muted };
-    let title = if app.is_busy {
-        " Command Prompt · working "
+
+    let (mode_fg, mode_bg, mode_text) = match app.mode.as_str() {
+        "plan" => (skin.surface, skin.heading, " plan "),
+        "code" => (ratatui::style::Color::White, ratatui::style::Color::Magenta, " code "),
+        _ => (skin.surface, skin.accent, " agent "),
+    };
+
+    let action_span = if app.is_busy {
+        Span::styled(
+            format!("── [{}] ", app.status_message),
+            Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled("── enter send · tab mode · /help ", Style::default().fg(skin.muted))
+    };
+
+    let footer = Line::from(vec![
+        Span::styled(
+            mode_text,
+            Style::default().fg(mode_fg).bg(mode_bg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", Style::default().fg(skin.muted)),
+        Span::styled(format!("{} ", app.project_id), Style::default().fg(skin.text)),
+        Span::styled("· ", Style::default().fg(skin.muted)),
+        Span::styled(format!("{} ", app.git_branch), Style::default().fg(skin.accent)),
+        Span::styled("· ", Style::default().fg(skin.muted)),
+        Span::styled(
+            format!("{} ", app.model_name),
+            Style::default().fg(skin.heading).add_modifier(Modifier::BOLD),
+        ),
+        action_span,
+    ]);
+
+    let title = if focused {
+        if app.is_busy {
+            " Command Prompt [Reasoning...] "
+        } else {
+            " Command Prompt [Enter to Send, / for Commands] "
+        }
     } else {
         " Command Prompt "
     };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -28,7 +66,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Style::default()
                 .fg(if focused { skin.heading } else { skin.muted })
                 .add_modifier(Modifier::BOLD),
-        ));
+        ))
+        .title_bottom(footer);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 || inner.width == 0 {
@@ -42,7 +81,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let cursor_char = app.cursor_pos.min(app.input_buffer.chars().count());
     let (display, cursor_col) = input_window(&app.input_buffer, cursor_char, available);
     let line = if app.input_buffer.is_empty() {
-        let hint = PROMPTS[(app.animation_frame as usize / 24) % PROMPTS.len()];
+        let hint = PROMPTS[app.suggestion_index % PROMPTS.len()];
         Line::from(vec![
             Span::styled(
                 prefix,

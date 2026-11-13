@@ -24,8 +24,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let root_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // The transcript is the only flexible region.
-            Constraint::Length(1), // Persistent live telemetry, above the composer.
+            Constraint::Min(6),    // The transcript is the only flexible region.
             Constraint::Length(3), // Composer is permanently locked to terminal bottom.
         ])
         .split(size);
@@ -50,8 +49,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     // 2. Command Prompt
-    status_bar::render(frame, app, root_chunks[1]);
-    input::render(frame, app, root_chunks[2]);
+    input::render(frame, app, root_chunks[1]);
 
     // 3. Help Modal Overlay
     if app.show_help {

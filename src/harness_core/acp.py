@@ -255,7 +255,26 @@ class ACPServer:
         )
         sub_res = self.orchestrator.submit_task(task_req)
         task_id = sub_res["task_id"]
-        exec_res = self.orchestrator.execute_task(task_id)
+
+        streamed_chunks: list[str] = []
+
+        def stream_cb(chunk: str) -> None:
+            if not chunk:
+                return
+            streamed_chunks.append(chunk)
+            notif = {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": sess.session_id,
+                    "updateType": "agent_response",
+                    "delta": chunk,
+                },
+            }
+            sys.stdout.write(json.dumps(notif, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+
+        exec_res = self.orchestrator.execute_task(task_id, stream_callback=stream_cb)
 
         raw_status = exec_res.get("status", "COMPLETED")
         status_str = "completed" if raw_status in ("SUCCEEDED", "COMPLETED") else raw_status.lower()
@@ -293,17 +312,18 @@ class ACPServer:
             "duration": time.time() - start_t,
         })
 
-        # Send session/update notification with synthesized response delta
-        update_notif = {
+        # Send final ready notification (if no stream occurred, include delta)
+        update_notif: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": "session/update",
             "params": {
                 "sessionId": sess.session_id,
-                "updateType": "agent_response",
-                "delta": str(terminal_reason),
+                "updateType": "status",
                 "status": "Ready",
             },
         }
+        if not streamed_chunks:
+            update_notif["params"]["delta"] = str(terminal_reason)
         sys.stdout.write(json.dumps(update_notif, ensure_ascii=False) + "\n")
         sys.stdout.flush()
 

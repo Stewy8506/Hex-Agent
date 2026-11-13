@@ -9,9 +9,10 @@ use ratatui::Frame;
 use hex_protocol::models::Role;
 
 use crate::app::{App, DialogueItem, Focus};
-use crate::ui::design::{skin, BANNER, TIPS};
+use crate::ui::design::{skin, Skin, BANNER, SPINNER, TIPS, VERBS};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let skin = skin(&app.skin_name);
     let is_focused = app.focus == Focus::Dialogue;
 
     let block = Block::default().borders(Borders::NONE);
@@ -64,74 +65,140 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     Role::User => (
                         "❯ User  ",
                         Style::default()
-                            .fg(Color::Yellow)
+                            .fg(skin.accent)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Role::Assistant => (
                         "◈ Assistant  ",
                         Style::default()
-                            .fg(Color::Green)
+                            .fg(skin.heading)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Role::System => (
                         "◈ System  ",
                         Style::default()
-                            .fg(Color::DarkGray)
+                            .fg(skin.muted)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Role::Tool => (
                         "▶ Tool  ",
                         Style::default()
-                            .fg(Color::Magenta)
+                            .fg(skin.category)
                             .add_modifier(Modifier::BOLD),
                     ),
                 };
 
                 let header_line = Line::from(vec![
                     Span::styled(badge_text, badge_style),
-                    Span::styled(&msg.timestamp, Style::default().fg(Color::DarkGray)),
+                    Span::styled(&msg.timestamp, Style::default().fg(skin.muted)),
                 ]);
                 lines.push(header_line);
 
-                // Message body lines
+                // Message body lines with rich markdown formatting
                 let mut in_code_block = false;
                 for raw_line in msg.content.lines() {
-                    if raw_line.trim_start().starts_with("```") {
+                    let trimmed = raw_line.trim_start();
+
+                    if trimmed.starts_with("```") {
                         in_code_block = !in_code_block;
-                        lines.push(Line::from(vec![
-                            Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
-                            Span::styled(
-                                raw_line.trim(),
-                                Style::default()
-                                    .fg(Color::DarkGray)
-                                    .add_modifier(Modifier::ITALIC),
-                            ),
-                        ]));
+                        if in_code_block {
+                            let lang = trimmed.trim_start_matches('`').trim();
+                            lines.push(Line::from(vec![
+                                Span::styled("  ┌── ", Style::default().fg(skin.muted)),
+                                Span::styled(
+                                    if lang.is_empty() { "[code] ".to_string() } else { format!("[{}] ", lang) },
+                                    Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled("─".repeat(40), Style::default().fg(skin.muted)),
+                            ]));
+                        } else {
+                            lines.push(Line::from(vec![
+                                Span::styled(format!("  └──{}", "─".repeat(48)), Style::default().fg(skin.muted)),
+                            ]));
+                        }
                         continue;
                     }
 
                     if in_code_block {
                         lines.push(Line::from(vec![
-                            Span::styled("  │ ", Style::default().fg(Color::Cyan)),
-                            Span::styled(raw_line, Style::default().fg(Color::LightCyan)),
+                            Span::styled("  │ ", Style::default().fg(skin.muted)),
+                            Span::styled(raw_line.to_string(), Style::default().fg(skin.accent)),
                         ]));
-                    } else if raw_line.trim_start().starts_with('#') {
-                        lines.push(Line::from(vec![Span::styled(
-                            format!("  {}", raw_line),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        )]));
-                    } else if raw_line.trim_start().starts_with("- ")
-                        || raw_line.trim_start().starts_with("* ")
-                    {
-                        lines.push(Line::from(vec![
-                            Span::styled("  • ", Style::default().fg(Color::Cyan)),
-                            Span::raw(&raw_line.trim_start()[2..]),
-                        ]));
-                    } else {
-                        lines.push(Line::from(vec![Span::raw(format!("  {}", raw_line))]));
+                        continue;
                     }
+
+                    // Headings
+                    if trimmed.starts_with("### ") {
+                        let mut spans = vec![
+                            Span::styled("  ● ", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
+                        ];
+                        spans.extend(parse_inline_spans(trimmed[4..].trim(), &skin));
+                        lines.push(Line::from(spans));
+                        continue;
+                    } else if trimmed.starts_with("## ") {
+                        let mut spans = vec![
+                            Span::styled("  ◆ ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
+                        ];
+                        spans.extend(parse_inline_spans(trimmed[3..].trim(), &skin));
+                        lines.push(Line::from(spans));
+                        continue;
+                    } else if trimmed.starts_with("# ") {
+                        let mut spans = vec![
+                            Span::styled("  ■ ", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
+                        ];
+                        spans.extend(parse_inline_spans(trimmed[2..].trim(), &skin));
+                        lines.push(Line::from(spans));
+                        continue;
+                    }
+
+                    // Numbered list items (e.g. "1. ")
+                    let is_num_list = trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+                        && trimmed.find(". ").is_some();
+
+                    if is_num_list {
+                        if let Some(dot_idx) = trimmed.find(". ") {
+                            let num_str = &trimmed[..dot_idx];
+                            if num_str.chars().all(|c| c.is_ascii_digit()) {
+                                let rest = trimmed[dot_idx + 2..].trim();
+                                let mut spans = vec![
+                                    Span::styled(
+                                        format!("  {}. ", num_str),
+                                        Style::default().fg(skin.heading).add_modifier(Modifier::BOLD),
+                                    ),
+                                ];
+                                spans.extend(parse_inline_spans(rest, &skin));
+                                lines.push(Line::from(spans));
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Bullet list items
+                    if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+                        let rest = trimmed[2..].trim();
+                        let mut spans = vec![
+                            Span::styled("  • ", Style::default().fg(skin.accent)),
+                        ];
+                        spans.extend(parse_inline_spans(rest, &skin));
+                        lines.push(Line::from(spans));
+                        continue;
+                    }
+
+                    // Blockquotes
+                    if trimmed.starts_with("> ") {
+                        let rest = trimmed[2..].trim();
+                        let mut spans = vec![
+                            Span::styled("  │ ", Style::default().fg(skin.accent)),
+                        ];
+                        spans.extend(parse_inline_spans(rest, &skin));
+                        lines.push(Line::from(spans));
+                        continue;
+                    }
+
+                    // Normal prose
+                    let mut spans = vec![Span::raw("  ")];
+                    spans.extend(parse_inline_spans(raw_line, &skin));
+                    lines.push(Line::from(spans));
                 }
                 lines.push(Line::raw(""));
             }
@@ -214,6 +281,32 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 }
                 lines.push(Line::raw(""));
             }
+        }
+    }
+
+    // In-dialogue Thinking/Reasoning animation when busy
+    if app.is_busy {
+        let last_is_streaming = if let Some(DialogueItem::Message(m)) = app.dialogue_items.last() {
+            m.role == Role::Assistant && !m.content.is_empty()
+        } else {
+            false
+        };
+
+        if !last_is_streaming {
+            let spin_char = SPINNER[(app.animation_frame as usize / 2) % SPINNER.len()];
+            let verb_idx = (app.animation_frame as usize / 40) % VERBS.len();
+            let verb = VERBS[verb_idx];
+            let status_text = if !app.status_message.is_empty() && app.status_message != "Ready" {
+                &app.status_message
+            } else {
+                verb
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled("◈ Assistant  ", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{} {}...", spin_char, status_text), Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
+            ]));
+            lines.push(Line::raw(""));
         }
     }
 
@@ -310,4 +403,71 @@ fn render_hex_intro(app: &App, width: u16) -> Vec<Line<'static>> {
     )));
     out.push(Line::raw(""));
     out
+}
+
+fn parse_inline_spans(input: &str, skin: &Skin) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut current = String::new();
+
+    while i < len {
+        // Check for **bold**
+        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
+            if let Some(end) = (i + 2..len).find(|&j| j + 1 < len && chars[j] == '*' && chars[j + 1] == '*') {
+                if !current.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut current), Style::default().fg(skin.text)));
+                }
+                let bold_text: String = chars[i + 2..end].iter().collect();
+                spans.push(Span::styled(
+                    bold_text,
+                    Style::default().fg(skin.text).add_modifier(Modifier::BOLD),
+                ));
+                i = end + 2;
+                continue;
+            }
+        }
+
+        // Check for `code`
+        if chars[i] == '`' {
+            if let Some(end) = (i + 1..len).find(|&j| chars[j] == '`') {
+                if !current.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut current), Style::default().fg(skin.text)));
+                }
+                let code_text: String = chars[i + 1..end].iter().collect();
+                spans.push(Span::styled(
+                    code_text,
+                    Style::default().fg(skin.accent),
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+
+        // Check for *italic*
+        if chars[i] == '*' {
+            if let Some(end) = (i + 1..len).find(|&j| chars[j] == '*') {
+                if !current.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut current), Style::default().fg(skin.text)));
+                }
+                let italic_text: String = chars[i + 1..end].iter().collect();
+                spans.push(Span::styled(
+                    italic_text,
+                    Style::default().fg(skin.text).add_modifier(Modifier::ITALIC),
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+
+        current.push(chars[i]);
+        i += 1;
+    }
+
+    if !current.is_empty() {
+        spans.push(Span::styled(current, Style::default().fg(skin.text)));
+    }
+
+    spans
 }
