@@ -1,0 +1,16 @@
+[package]
+name = "hex-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Agent Client Protocol (ACP) JSON-RPC 2.0 client, models, and diff parser for HEX Autonomous AI Workbench"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+thiserror = "2.0"
+anyhow = "1.0"
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3.8"

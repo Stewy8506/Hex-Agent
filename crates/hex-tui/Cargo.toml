@@ -1,0 +1,11 @@
+[package]
+name = "hex-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hex-protocol = { path = "../hex-protocol" }
+
+[[bin]]
+name = "hex-tui"
+path = "src/main.rs"
