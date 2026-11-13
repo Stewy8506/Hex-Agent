@@ -134,8 +134,16 @@ fn run_headless_check(args: Args) -> Result<()> {
         content.contains("HEX"),
         "Virtual buffer must contain HEX banner"
     );
+    let ws_name = if args.project == "default" && !app.workspace_path.is_empty() {
+        std::path::Path::new(&app.workspace_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&args.project)
+    } else {
+        &args.project
+    };
     assert!(
-        content.contains(&args.project) || content.contains("Harness"),
+        content.contains(&args.project) || content.contains(ws_name),
         "Virtual buffer must contain project ID or workspace name"
     );
     assert!(
