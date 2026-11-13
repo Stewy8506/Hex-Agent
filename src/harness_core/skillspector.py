@@ -48,8 +48,10 @@ if not hasattr(tokenize, "FSTRING_START"):
 if not hasattr(tokenize, "FSTRING_END"):
     tokenize.FSTRING_END = -101  # type: ignore[attr-defined]
 
-# Provide typing_extensions alias if not installed
-if "typing_extensions" not in sys.modules:
+# Ensure typing_extensions is imported if available, or fall back to typing shim
+try:
+    import typing_extensions
+except ImportError:
     sys.modules["typing_extensions"] = typing
 
 # Provide lightweight langchain_core shim if not installed so upstream modules import cleanly
