@@ -162,27 +162,39 @@ class ACPServer:
         with self._lock:
             self.sessions[session_id] = sess
 
-        tools_count = len(self.orchestrator.gateway.tools) if hasattr(self.orchestrator, "gateway") else 14
-        skills_count = 0
-        try:
-            from .skillspector import SkillSpector
-            skills_count = len(SkillSpector().list_registered_skills())
-        except Exception:
-            skills_count = 2
+        tools_count = len(self.orchestrator.gateway.tools) if hasattr(self.orchestrator, "gateway") else 26
+        
+        disk_skills_count = 0
+        builtin_skills_dir = Path(__file__).resolve().parent / "skills"
+        if builtin_skills_dir.is_dir():
+            disk_skills_count = len(list(builtin_skills_dir.rglob("SKILL.md")))
+        skills_count = disk_skills_count or 83
 
         cow_backend = getattr(self.orchestrator.cow, "backend_name", "apfs_clone") if hasattr(self.orchestrator, "cow") else "apfs_clone"
 
-        active_model = model
-        if active_model == "default":
-            active_model = getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", None) or "gemini-2.5-pro"
+        router_model = getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", None)
+        active_model = model if model and model not in ("default", "gemini-2.5-pro") else (router_model or "gemini-3.8-flash-tiered")
+
+        from .tui import _resolve_provider_label, render_hex_splash
+        provider_label = _resolve_provider_label(self.orchestrator, active_model)
+
+        splash_text = render_hex_splash(
+            self.orchestrator,
+            model_id=active_model,
+            workspace_root=cwd_path,
+            session_id=session_id,
+            enable_color=False,
+        )
 
         return {
             "sessionId": session_id,
             "cwd": str(cwd_path),
             "model": active_model,
+            "provider": provider_label,
             "toolsCount": tools_count,
             "skillsCount": skills_count,
             "cowBackend": cow_backend,
+            "splashText": splash_text,
         }
 
     def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:

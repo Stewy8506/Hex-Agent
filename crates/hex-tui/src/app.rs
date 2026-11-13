@@ -193,6 +193,7 @@ pub struct App {
     pub workspace_path: String,
     pub tools_count: usize,
     pub skills_count: usize,
+    pub splash_text: Option<String>,
     pub fencing_token: u64,
     pub connection_status: String,
 
@@ -268,17 +269,25 @@ impl App {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
         let (branch, sha) = detect_git_info(&ws);
 
+        let model_str = model_name.into();
+        let resolved_model = if model_str.is_empty() || model_str == "default" {
+            "gemini-3.8-flash-tiered".to_string()
+        } else {
+            model_str
+        };
+
         let mut app = Self {
             session_id: "ses_default".to_string(),
             project_id: project_id.into(),
-            model_name: model_name.into(),
+            model_name: resolved_model,
             provider_name: "Google Antigravity".to_string(),
             cow_mode: cow_mode.into(),
             git_branch: branch,
             git_sha: sha,
             workspace_path: ws.to_string_lossy().to_string(),
-            tools_count: 14,
-            skills_count: 2,
+            tools_count: 26,
+            skills_count: 83,
+            splash_text: None,
             fencing_token: 1,
             connection_status: "Connected".to_string(),
 

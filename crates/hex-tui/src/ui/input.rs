@@ -22,6 +22,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         " Command Prompt "
     };
 
+    let footer = Line::from(vec![
+        Span::styled(" agent ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled("· ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", app.project_id), Style::default().fg(Color::White)),
+        Span::styled("· ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", app.git_branch), Style::default().fg(Color::Cyan)),
+        Span::styled("· ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", app.model_name), Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
+        Span::styled("── enter send · tab mode · /help ", Style::default().fg(Color::DarkGray)),
+    ]);
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -31,13 +42,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Style::default()
                 .fg(if is_focused { Color::Yellow } else { Color::DarkGray })
                 .add_modifier(if is_focused { Modifier::BOLD } else { Modifier::empty() }),
-        ));
+        ))
+        .title_bottom(footer);
 
     let prefix = "❯ ";
     let input_line = if app.input_buffer.is_empty() && is_focused {
         Line::from(vec![
             Span::styled(prefix, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled("Type your objective, or / for commands...", Style::default().fg(Color::DarkGray)),
+            Span::styled("Ask me anything... (/ for commands)", Style::default().fg(Color::DarkGray)),
         ])
     } else {
         Line::from(vec![

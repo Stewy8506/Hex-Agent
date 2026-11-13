@@ -35,8 +35,8 @@ struct Args {
     #[arg(short, long, help = "Workspace path override")]
     workspace: Option<PathBuf>,
 
-    #[arg(short, long, default_value = "gemini-2.5-pro", help = "Active model provider")]
-    model: String,
+    #[arg(short, long, help = "Active model provider override")]
+    model: Option<String>,
 
     #[arg(long, default_value = "OverlayFS", help = "CoW snapshot provider backend")]
     cow: String,
@@ -83,7 +83,8 @@ fn run_headless_check(args: Args) -> Result<()> {
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::with_workspace(&args.project, &args.model, &args.cow, args.workspace.as_deref());
+    let model_str = args.model.as_deref().unwrap_or("gemini-3.8-flash-tiered");
+    let mut app = App::with_workspace(&args.project, model_str, &args.cow, args.workspace.as_deref());
     if let Some(s) = args.session {
         app.session_id = s;
     }
@@ -137,7 +138,8 @@ fn run_headless_check(args: Args) -> Result<()> {
 
 /// Primary interactive application loop.
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) -> Result<()> {
-    let mut app = App::with_workspace(&args.project, &args.model, &args.cow, args.workspace.as_deref());
+    let model_str = args.model.as_deref().unwrap_or("gemini-3.8-flash-tiered");
+    let mut app = App::with_workspace(&args.project, model_str, &args.cow, args.workspace.as_deref());
     if let Some(s) = args.session {
         app.session_id = s;
     }
@@ -149,10 +151,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
         Ok(client) => {
             app.connection_status = "Connected".to_string();
             // Handshake session to populate dynamic tools, skills, cow backend, and active model
-            match client.session_new(ws_path.and_then(|p| p.to_str()), Some(&app.model_name)).await {
+            match client.session_new(ws_path.and_then(|p| p.to_str()), args.model.as_deref()).await {
                 Ok(sess) => {
                     app.session_id = sess.session_id;
                     app.model_name = sess.model;
+                    if let Some(prov) = sess.provider {
+                        app.provider_name = prov;
+                    }
                     if let Some(tc) = sess.tools_count {
                         app.tools_count = tc;
                     }
@@ -161,6 +166,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     }
                     if let Some(cow) = sess.cow_backend {
                         app.cow_mode = cow;
+                    }
+                    if let Some(splash) = sess.splash_text {
+                        app.splash_text = Some(splash);
                     }
                 }
                 Err(e) => {

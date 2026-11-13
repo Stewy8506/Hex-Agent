@@ -840,7 +840,7 @@ def render_hex_splash(
     orchestrator: Any = None,
     *,
     skin_name: str = "amber",
-    model_id: str = "gemini-2.5-pro",
+    model_id: str | None = None,
     compressor_mode: str = "deterministic",
     workspace_root: Path | str | None = None,
     session_id: str | None = None,

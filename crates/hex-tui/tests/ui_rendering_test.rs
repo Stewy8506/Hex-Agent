@@ -136,3 +136,45 @@ fn test_collapsible_tool_calls_rendering() {
     let buf2 = format!("{:?}", terminal.backend().buffer());
     assert!(buf2.contains("collapsed"), "Must indicate collapsed state");
 }
+
+#[test]
+fn test_transcript_design_language_and_badges() {
+    let backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
+
+    let mut app = App::new("test_proj", "gemini-3.8-flash-tiered", "apfs_clone");
+    app.dialogue_items.clear();
+    app.dialogue_scroll = 0;
+
+    // Add user message
+    app.add_user_message("Refactor the parser loop");
+
+    // Add assistant message with markdown code block
+    app.add_assistant_message("Here is the updated implementation:\n```rust\nfn parse_token() -> bool {\n    true\n}\n```");
+
+    // Add tool call
+    app.add_tool_call("tc_1", "run_tests", "suite=all", Some(45), Some("OK"));
+
+    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
+    let buffer = terminal.backend().buffer().clone();
+    let content = format!("{:?}", buffer);
+
+    // 1. Badges
+    assert!(content.contains("❯ User"), "Must render ❯ User badge");
+    assert!(content.contains("◈ Assistant"), "Must render ◈ Assistant badge");
+    assert!(content.contains("TOOL CALL"), "Must render tool call badge");
+
+    // 2. Code gutter
+    assert!(content.contains("│"), "Must render vertical code gutter line");
+
+    // 3. Prompt box with prefix and placeholder
+    assert!(content.contains("❯"), "Must render ❯ input prefix");
+    assert!(content.contains("Ask me anything") || content.contains("Type your objective"), "Must render placeholder text when input is empty");
+
+    // 4. Header dynamic telemetry
+    assert!(content.contains("Branch:"), "Must render git branch header");
+    assert!(content.contains("gemini-3.8-flash-tiered"), "Must render dynamic model");
+    assert!(content.contains("apfs_clone"), "Must render CoW backend");
+    assert!(content.contains("Tools:"), "Must render tools telemetry");
+    assert!(content.contains("Skills:"), "Must render skills telemetry");
+}
