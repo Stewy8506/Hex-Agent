@@ -1,7 +1,7 @@
 //! Asynchronous JSON-RPC 2.0 stdio client for ACP server communication.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -153,7 +153,7 @@ impl AcpClient {
         cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
 
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
@@ -178,25 +178,66 @@ impl AcpClient {
         Ok(client)
     }
 
-    /// Spawn the Python backend ACP server (`python3 -m harness_core.cli acp`).
-    pub async fn spawn_acp_server(workspace_root: Option<&Path>) -> Result<Self, AcpError> {
-        let repo_root = if let Some(root) = workspace_root {
-            root.to_path_buf()
-        } else {
-            let mut curr = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            loop {
-                if curr.join(".venv").exists() || curr.join("pyproject.toml").exists() || curr.join(".git").exists() {
-                    break curr;
-                }
-                if let Some(parent) = curr.parent() {
-                    curr = parent.to_path_buf();
-                } else {
-                    break std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    /// Helper to locate repository root containing Python virtual environment and src/
+    fn resolve_repo_root(workspace_root: Option<&Path>) -> PathBuf {
+        if let Ok(env_root) = std::env::var("HEX_REPO_ROOT") {
+            let p = PathBuf::from(env_root);
+            if p.exists() {
+                return p;
+            }
+        }
+
+        let start_path = workspace_root
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+        // 1. Walk up from start_path to find repository root with src/harness_core
+        let mut curr = start_path.clone();
+        loop {
+            if curr.join("src/harness_core").exists() || (curr.join("pyproject.toml").exists() && curr.join(".venv").exists()) {
+                return curr;
+            }
+            if let Some(parent) = curr.parent() {
+                curr = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+
+        // 2. Walk up from current_exe (e.g. repo/target/debug/hex-tui)
+        if let Ok(exe_path) = std::env::current_exe() {
+            let mut curr = exe_path;
+            while let Some(parent) = curr.parent() {
+                curr = parent.to_path_buf();
+                if curr.join("src/harness_core").exists() || (curr.join("pyproject.toml").exists() && curr.join(".venv").exists()) {
+                    return curr;
                 }
             }
-        };
+        }
 
-        let py_bin = if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
+        // 3. Fallback: check git root
+        let mut curr = start_path.clone();
+        loop {
+            if curr.join(".git").exists() || curr.join("pyproject.toml").exists() {
+                return curr;
+            }
+            if let Some(parent) = curr.parent() {
+                curr = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+
+        start_path
+    }
+
+    /// Spawn the Python backend ACP server (`python3 -m harness_core.cli acp`).
+    pub async fn spawn_acp_server(workspace_root: Option<&Path>) -> Result<Self, AcpError> {
+        let repo_root = Self::resolve_repo_root(workspace_root);
+
+        let py_bin = if let Ok(bin_env) = std::env::var("HEX_PYTHON_BIN") {
+            bin_env
+        } else if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
             format!("{}/bin/python", venv)
         } else if repo_root.join(".venv/bin/python").exists() {
             repo_root.join(".venv/bin/python").to_string_lossy().to_string()
@@ -209,7 +250,7 @@ impl AcpClient {
             .current_dir(&repo_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
 
         let src_dir = repo_root.join("src");
         if src_dir.exists() {
@@ -223,6 +264,17 @@ impl AcpClient {
         }
 
         let mut child = cmd.spawn()?;
+
+        // Capture child stderr quietly so it does not corrupt the alternate-screen terminal
+        if let Some(child_stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(child_stderr).lines();
+                while let Ok(Some(_line)) = lines.next_line().await {
+                    // Silently consume to prevent pipe buffer stalls
+                }
+            });
+        }
+
         let stdout = child.stdout.take().ok_or_else(|| {
             AcpError::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,

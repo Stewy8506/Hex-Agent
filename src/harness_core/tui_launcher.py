@@ -104,9 +104,8 @@ def build_tui_cmd_args(args: Any, bin_path: Path) -> List[str]:
     if project and project != "default":
         cmd.extend(["--project", str(project)])
 
-    workspace = getattr(args, "workspace", None)
-    if workspace:
-        cmd.extend(["--workspace", str(workspace)])
+    workspace = getattr(args, "workspace", None) or str(find_repo_root())
+    cmd.extend(["--workspace", str(workspace)])
 
     model = getattr(args, "model", None)
     if model:
@@ -132,6 +131,18 @@ def launch_hex_tui(args: Any, repo_root: Optional[Path] = None) -> int:
     bin_path = find_or_build_hex_tui(root, force_build=force_build, release=release_mode)
     cmd = build_tui_cmd_args(args, bin_path)
 
+    # Pass Python interpreter and repo root so hex-tui's ACP client knows how to launch the backend
+    env = os.environ.copy()
+    env["HEX_PYTHON_BIN"] = sys.executable
+    env["HEX_REPO_ROOT"] = str(root)
+    src_dir = str(root / "src")
+    if "PYTHONPATH" in env and env["PYTHONPATH"]:
+        env["PYTHONPATH"] = f"{src_dir}:{env['PYTHONPATH']}"
+    else:
+        env["PYTHONPATH"] = src_dir
+    if hasattr(sys, "base_prefix") and sys.prefix != sys.base_prefix:
+        env["VIRTUAL_ENV"] = sys.prefix
+
     # If --check is passed, print or forward exit code
-    result = subprocess.run(cmd, check=False)
+    result = subprocess.run(cmd, env=env, check=False)
     return result.returncode
