@@ -198,6 +198,7 @@ pub struct App {
     pub connection_status: String,
 
     // Navigation and layout
+    pub mode: String,
     pub focus: Focus,
     pub show_help: bool,
     pub show_diff: bool,
@@ -291,6 +292,7 @@ impl App {
             fencing_token: 1,
             connection_status: "Connected".to_string(),
 
+            mode: "agent".to_string(),
             focus: Focus::Input,
             show_help: false,
             show_diff: false,
@@ -461,6 +463,26 @@ impl App {
         self.active_approval = None;
         if self.focus == Focus::Approval {
             self.focus = Focus::Input;
+        }
+    }
+
+    /// Cycle agent execution mode: agent -> plan -> code -> agent
+    pub fn cycle_mode(&mut self) -> String {
+        self.mode = match self.mode.as_str() {
+            "agent" => "plan".to_string(),
+            "plan" => "code".to_string(),
+            "code" => "agent".to_string(),
+            _ => "agent".to_string(),
+        };
+        self.mode.clone()
+    }
+
+    /// Set mode directly.
+    pub fn set_mode(&mut self, m: &str) {
+        match m.to_lowercase().as_str() {
+            "plan" | "ask" => self.mode = "plan".to_string(),
+            "code" => self.mode = "code".to_string(),
+            _ => self.mode = "agent".to_string(),
         }
     }
 

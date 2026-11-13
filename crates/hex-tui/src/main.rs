@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
     setup_panic_hook();
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -209,6 +209,17 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 AppEvent::Key(key) => {
                     handle_key_event(&mut app, key, acp_client.as_ref(), event_tx.clone()).await?;
                 }
+                AppEvent::Mouse(mouse) => {
+                    match mouse.kind {
+                        crossterm::event::MouseEventKind::ScrollUp => {
+                            app.scroll_up();
+                        }
+                        crossterm::event::MouseEventKind::ScrollDown => {
+                            app.scroll_down();
+                        }
+                        _ => {}
+                    }
+                }
                 AppEvent::Notification(notif) => {
                     handle_notification(&mut app, notif);
                 }
@@ -228,7 +239,6 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 AppEvent::Resize(_, _) => {
                     // Handled on next draw
                 }
-                _ => {}
             }
         }
     }
@@ -319,13 +329,28 @@ async fn handle_key_event(
         return Ok(());
     }
 
-    // Focus switching
+    // Tab key: accept slash suggestion if active, otherwise cycle mode (agent -> plan -> code)
     if key.code == KeyCode::Tab {
-        if app.focus == Focus::Input && !app.slash_suggestions.is_empty() {
+        if !app.slash_suggestions.is_empty() {
             app.accept_slash_suggestion();
         } else {
-            app.switch_focus();
+            let next_mode = app.cycle_mode();
+            app.status_message = format!("Switched mode to: {}", next_mode.to_uppercase());
         }
+        return Ok(());
+    }
+
+    if key.code == KeyCode::PageUp {
+        app.scroll_up();
+        app.scroll_up();
+        app.scroll_up();
+        return Ok(());
+    }
+
+    if key.code == KeyCode::PageDown {
+        app.scroll_down();
+        app.scroll_down();
+        app.scroll_down();
         return Ok(());
     }
 
@@ -365,8 +390,20 @@ async fn handle_key_event(
                 KeyCode::Right => app.move_cursor_right(),
                 KeyCode::Home => app.move_cursor_start(),
                 KeyCode::End => app.move_cursor_end(),
-                KeyCode::Up => app.history_up(),
-                KeyCode::Down => app.history_down(),
+                KeyCode::Up => {
+                    if app.input_buffer.is_empty() {
+                        app.scroll_up();
+                    } else {
+                        app.history_up();
+                    }
+                }
+                KeyCode::Down => {
+                    if app.input_buffer.is_empty() {
+                        app.scroll_down();
+                    } else {
+                        app.history_down();
+                    }
+                }
                 _ => {}
             }
         }
@@ -429,6 +466,31 @@ async fn execute_submitted_text(
                 if let Some(m) = arg {
                     app.model_name = m.to_string();
                 }
+            }
+            "/mode" => {
+                if let Some(m) = arg {
+                    app.set_mode(m);
+                    app.add_system_message(&format!("Execution mode set to: {}", app.mode.to_uppercase()));
+                } else {
+                    let next = app.cycle_mode();
+                    app.add_system_message(&format!("Mode cycled to: {}", next.to_uppercase()));
+                }
+                return Ok(());
+            }
+            "/plan" => {
+                app.set_mode("plan");
+                app.add_system_message("Execution mode switched to: PLAN");
+                return Ok(());
+            }
+            "/agent" => {
+                app.set_mode("agent");
+                app.add_system_message("Execution mode switched to: AGENT");
+                return Ok(());
+            }
+            "/code" => {
+                app.set_mode("code");
+                app.add_system_message("Execution mode switched to: CODE");
+                return Ok(());
             }
             _ => {}
         }
@@ -552,14 +614,14 @@ fn setup_panic_hook() {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen);
+        let _ = execute!(stdout(), LeaveAlternateScreen, crossterm::event::DisableMouseCapture);
         original_hook(panic_info);
     }));
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, crossterm::event::DisableMouseCapture)?;
     terminal.show_cursor()?;
     Ok(())
 }

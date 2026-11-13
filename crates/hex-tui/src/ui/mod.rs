@@ -23,18 +23,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let root_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4), // Header
             Constraint::Min(6),    // Main viewport (Dialogue and/or Diff)
             Constraint::Length(3), // Command input prompt
             Constraint::Length(1), // Bottom status bar
         ])
         .split(size);
 
-    // 1. Top Header
-    header::render(frame, app, root_chunks[0]);
-
-    // 2. Main Viewport: Dialogue and Diff
-    let main_area = root_chunks[1];
+    // 1. Main Viewport: Dialogue and Diff
+    let main_area = root_chunks[0];
     let show_diff = app.show_diff && (app.active_diff.is_some() || app.raw_diff.is_some());
 
     if show_diff {
@@ -52,11 +48,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         dialogue::render(frame, app, main_area);
     }
 
-    // 3. Command Prompt
-    input::render(frame, app, root_chunks[2]);
+    // 2. Command Prompt
+    input::render(frame, app, root_chunks[1]);
 
-    // 4. Status Bar
-    status_bar::render(frame, app, root_chunks[3]);
+    // 3. Status Bar
+    status_bar::render(frame, app, root_chunks[2]);
 
     // 5. Help Modal Overlay
     if app.show_help {
@@ -91,11 +87,15 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  [Tab]            ", Style::default().fg(Color::Cyan)),
-            Span::raw("Cycle focus between Input, Dialogue, and Diff panes"),
+            Span::raw("Cycle execution mode: agent -> plan -> code"),
+        ]),
+        Line::from(vec![
+            Span::styled("  [Mouse / PgUp/Dn]", Style::default().fg(Color::Cyan)),
+            Span::raw("Scroll dialogue transcript naturally"),
         ]),
         Line::from(vec![
             Span::styled("  [↑ / ↓]          ", Style::default().fg(Color::Cyan)),
-            Span::raw("Scroll active pane or navigate command history"),
+            Span::raw("Navigate command history or scroll when empty"),
         ]),
         Line::from(vec![
             Span::styled("  [F1]             ", Style::default().fg(Color::Cyan)),

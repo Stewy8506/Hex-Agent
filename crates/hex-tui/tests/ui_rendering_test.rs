@@ -22,7 +22,7 @@ fn test_full_tui_layout_rendering() {
     assert!(content.contains("gemini-2.5-pro"), "Buffer must contain model name");
     assert!(content.contains("Welcome to HEX"), "Buffer must contain welcome message");
     assert!(content.contains("Command Prompt"), "Buffer must contain input prompt");
-    assert!(content.contains("[INPUT]"), "Buffer status bar must display active focus");
+    assert!(content.contains("[AGENT]"), "Buffer status bar must display active mode");
 }
 
 #[test]
@@ -92,6 +92,27 @@ fn test_help_modal_overlay_rendering() {
     assert!(content.contains("HELP & KEYBINDINGS"), "Must render help title");
     assert!(content.contains("/status"), "Must document slash commands");
     assert!(content.contains("[Tab]"), "Must document keybindings");
+}
+
+#[test]
+fn test_tab_mode_cycling() {
+    let mut app = App::new("test_proj", "gemini-3.8-flash-tiered", "apfs_clone");
+    assert_eq!(app.mode, "agent");
+
+    // Cycle to plan
+    let m1 = app.cycle_mode();
+    assert_eq!(m1, "plan");
+    assert_eq!(app.mode, "plan");
+
+    // Cycle to code
+    let m2 = app.cycle_mode();
+    assert_eq!(m2, "code");
+    assert_eq!(app.mode, "code");
+
+    // Cycle back to agent
+    let m3 = app.cycle_mode();
+    assert_eq!(m3, "agent");
+    assert_eq!(app.mode, "agent");
 }
 
 #[test]
@@ -171,10 +192,9 @@ fn test_transcript_design_language_and_badges() {
     assert!(content.contains("❯"), "Must render ❯ input prefix");
     assert!(content.contains("Ask me anything") || content.contains("Type your objective"), "Must render placeholder text when input is empty");
 
-    // 4. Header dynamic telemetry
-    assert!(content.contains("Branch:"), "Must render git branch header");
+    // 4. Composer footer dynamic telemetry
+    assert!(content.contains("main"), "Must render git branch");
     assert!(content.contains("gemini-3.8-flash-tiered"), "Must render dynamic model");
-    assert!(content.contains("apfs_clone"), "Must render CoW backend");
-    assert!(content.contains("Tools:"), "Must render tools telemetry");
-    assert!(content.contains("Skills:"), "Must render skills telemetry");
+    assert!(content.contains("agent"), "Must render active mode");
+    assert!(content.contains("enter send"), "Must render hotkey hint");
 }

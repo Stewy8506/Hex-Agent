@@ -22,9 +22,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         " Command Prompt "
     };
 
+    let (mode_fg, mode_bg, mode_text) = match app.mode.as_str() {
+        "plan" => (Color::Black, Color::Yellow, " plan "),
+        "code" => (Color::White, Color::Magenta, " code "),
+        _ => (Color::Black, Color::Cyan, " agent "),
+    };
+
     let footer = Line::from(vec![
-        Span::styled(" agent ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled("· ", Style::default().fg(Color::DarkGray)),
+        Span::styled(mode_text, Style::default().fg(mode_fg).bg(mode_bg).add_modifier(Modifier::BOLD)),
+        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{} ", app.project_id), Style::default().fg(Color::White)),
         Span::styled("· ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{} ", app.git_branch), Style::default().fg(Color::Cyan)),

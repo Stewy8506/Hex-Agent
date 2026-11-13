@@ -6,18 +6,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{App, Focus};
+use crate::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let focus_str = match app.focus {
-        Focus::Input => "INPUT",
-        Focus::Dialogue => "DIALOGUE",
-        Focus::Diff => "DIFF",
-        Focus::Approval => "APPROVAL",
+    let (mode_color, mode_str) = match app.mode.as_str() {
+        "plan" => (Color::Yellow, "PLAN"),
+        "code" => (Color::Magenta, "CODE"),
+        _ => (Color::Cyan, "AGENT"),
     };
 
     let mut spans = vec![
-        Span::styled(format!(" [{}] ", focus_str), Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" [{}] ", mode_str), Style::default().fg(Color::Black).bg(mode_color).add_modifier(Modifier::BOLD)),
         Span::raw(" "),
     ];
 
@@ -31,7 +30,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled("Send  ", Style::default().fg(Color::White)));
 
         spans.push(Span::styled("[Tab] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
-        spans.push(Span::styled("Focus  ", Style::default().fg(Color::White)));
+        spans.push(Span::styled("Mode  ", Style::default().fg(Color::White)));
+
+        spans.push(Span::styled("[Scroll] ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled("Transcript  ", Style::default().fg(Color::DarkGray)));
 
         spans.push(Span::styled("[F1] ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
         spans.push(Span::styled("Help  ", Style::default().fg(Color::White)));
