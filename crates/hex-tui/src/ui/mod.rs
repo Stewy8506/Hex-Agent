@@ -1,6 +1,7 @@
 //! Top-level UI orchestration and layout splits.
 
 pub mod approval;
+pub mod design;
 pub mod dialogue;
 pub mod diff;
 pub mod header;
@@ -23,8 +24,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let root_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(6),    // Main viewport (Dialogue and/or Diff)
-            Constraint::Length(3), // Command input prompt (fixed at bottom)
+            Constraint::Min(1),    // The transcript is the only flexible region.
+            Constraint::Length(1), // Persistent live telemetry, above the composer.
+            Constraint::Length(3), // Composer is permanently locked to terminal bottom.
         ])
         .split(size);
 
@@ -48,7 +50,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     // 2. Command Prompt
-    input::render(frame, app, root_chunks[1]);
+    status_bar::render(frame, app, root_chunks[1]);
+    input::render(frame, app, root_chunks[2]);
 
     // 3. Help Modal Overlay
     if app.show_help {
@@ -71,16 +74,21 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
             " ◈ HEX WORKBENCH HELP & KEYBINDINGS ◈ ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
     let lines = vec![
-        Line::from(vec![
-            Span::styled("Navigation & Focus:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Navigation & Focus:",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::styled("  [Tab]            ", Style::default().fg(Color::Cyan)),
             Span::raw("Cycle execution mode: agent -> plan -> code"),
@@ -106,9 +114,12 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::raw("Quit the HEX terminal cockpit"),
         ]),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("Operator Approvals (R3/R4 Policy):", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Operator Approvals (R3/R4 Policy):",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::styled("  [y]              ", Style::default().fg(Color::Green)),
             Span::raw("Approve tool execution and resume agent loop"),
@@ -122,9 +133,12 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::raw("Dismiss active dialog"),
         ]),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("Interactive Slash Commands:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Interactive Slash Commands:",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::styled("  /help            ", Style::default().fg(Color::White)),
             Span::raw("Show keybindings and commands"),
@@ -158,9 +172,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::raw("Exit application"),
         ]),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("Press [Esc] or [F1] to close help.", Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Press [Esc] or [F1] to close help.",
+            Style::default().fg(Color::DarkGray),
+        )]),
     ];
 
     let p = Paragraph::new(lines).wrap(Wrap { trim: false });

@@ -23,7 +23,7 @@ use hex_tui::ui;
     name = "hex-tui",
     author = "HEX Autonomous AI Workbench",
     version = "0.1.0",
-    about = "Native Ratatui Cockpit with 60 FPS differential rendering and ACP integration"
+    about = "Native Ratatui cockpit with animated HEX visual language and ACP integration"
 )]
 struct Args {
     #[arg(long, help = "Run headless virtual verification and exit 0")]
@@ -38,7 +38,14 @@ struct Args {
     #[arg(short, long, help = "Active model provider override")]
     model: Option<String>,
 
-    #[arg(long, default_value = "OverlayFS", help = "CoW snapshot provider backend")]
+    #[arg(long, default_value = "amber", value_parser = ["amber", "cyberpunk", "matrix", "nord", "mono"], help = "HEX visual skin")]
+    skin: String,
+
+    #[arg(
+        long,
+        default_value = "OverlayFS",
+        help = "CoW snapshot provider backend"
+    )]
     cow: String,
 
     #[arg(short, long, help = "Session ID to attach or resume")]
@@ -84,14 +91,26 @@ fn run_headless_check(args: Args) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let model_str = args.model.as_deref().unwrap_or("gemini-3.8-flash-tiered");
-    let mut app = App::with_workspace(&args.project, model_str, &args.cow, args.workspace.as_deref());
+    let mut app = App::with_workspace(
+        &args.project,
+        model_str,
+        &args.cow,
+        args.workspace.as_deref(),
+    );
     if let Some(s) = args.session {
         app.session_id = s;
     }
+    app.skin_name = args.skin.clone();
 
     // Add sample dialogue and tool calls
     app.add_user_message("Create a high-performance HTTP service");
-    app.add_tool_call("tc_check_1", "create_file", "path=src/server.rs", Some(32), Some("OK"));
+    app.add_tool_call(
+        "tc_check_1",
+        "create_file",
+        "path=src/server.rs",
+        Some(32),
+        Some("OK"),
+    );
     app.complete_tool_call("tc_check_1", "Created src/server.rs (128 bytes)", 32, false);
 
     // Add sample unified diff
@@ -111,10 +130,22 @@ fn run_headless_check(args: Args) -> Result<()> {
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(content.contains("HEX"), "Virtual buffer must contain HEX banner");
-    assert!(content.contains(&args.project), "Virtual buffer must contain project ID");
-    assert!(content.contains("Diff Viewer"), "Virtual buffer must contain Diff Viewer");
-    assert!(content.contains("Prompt"), "Virtual buffer must contain Prompt");
+    assert!(
+        content.contains("HEX"),
+        "Virtual buffer must contain HEX banner"
+    );
+    assert!(
+        content.contains(&args.project),
+        "Virtual buffer must contain project ID"
+    );
+    assert!(
+        content.contains("Diff Viewer"),
+        "Virtual buffer must contain Diff Viewer"
+    );
+    assert!(
+        content.contains("Prompt"),
+        "Virtual buffer must contain Prompt"
+    );
 
     // Render frame 2: Approval modal overlay
     app.set_approval_request(ApprovalRequest {
@@ -139,10 +170,16 @@ fn run_headless_check(args: Args) -> Result<()> {
 /// Primary interactive application loop.
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) -> Result<()> {
     let model_str = args.model.as_deref().unwrap_or("gemini-3.8-flash-tiered");
-    let mut app = App::with_workspace(&args.project, model_str, &args.cow, args.workspace.as_deref());
+    let mut app = App::with_workspace(
+        &args.project,
+        model_str,
+        &args.cow,
+        args.workspace.as_deref(),
+    );
     if let Some(s) = args.session {
         app.session_id = s;
     }
+    app.skin_name = args.skin.clone();
 
     // Try connecting to ACP server in background
     let ws_path = args.workspace.as_deref();
@@ -151,7 +188,10 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
         Ok(client) => {
             app.connection_status = "Connected".to_string();
             // Handshake session to populate dynamic tools, skills, cow backend, and active model
-            match client.session_new(ws_path.and_then(|p| p.to_str()), args.model.as_deref()).await {
+            match client
+                .session_new(ws_path.and_then(|p| p.to_str()), args.model.as_deref())
+                .await
+            {
                 Ok(sess) => {
                     app.session_id = sess.session_id;
                     app.model_name = sess.model;
@@ -209,25 +249,26 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 AppEvent::Key(key) => {
                     handle_key_event(&mut app, key, acp_client.as_ref(), event_tx.clone()).await?;
                 }
-                AppEvent::Mouse(mouse) => {
-                    match mouse.kind {
-                        crossterm::event::MouseEventKind::ScrollUp => {
-                            app.scroll_up();
-                            app.scroll_up();
-                        }
-                        crossterm::event::MouseEventKind::ScrollDown => {
-                            app.scroll_down();
-                            app.scroll_down();
-                        }
-                        _ => {}
+                AppEvent::Mouse(mouse) => match mouse.kind {
+                    crossterm::event::MouseEventKind::ScrollUp => {
+                        app.scroll_up();
+                        app.scroll_up();
                     }
-                }
+                    crossterm::event::MouseEventKind::ScrollDown => {
+                        app.scroll_down();
+                        app.scroll_down();
+                    }
+                    _ => {}
+                },
                 AppEvent::Notification(notif) => {
                     handle_notification(&mut app, notif);
                 }
                 AppEvent::AssistantResponse(msg) => {
-                    let already_populated = if let Some(hex_tui::app::DialogueItem::Message(m)) = app.dialogue_items.last() {
-                        m.role == hex_protocol::models::Role::Assistant && (m.content == msg || m.content.contains(&msg[..msg.len().min(40)]))
+                    let already_populated = if let Some(hex_tui::app::DialogueItem::Message(m)) =
+                        app.dialogue_items.last()
+                    {
+                        m.role == hex_protocol::models::Role::Assistant
+                            && (m.content == msg || m.content.contains(&msg[..msg.len().min(40)]))
                     } else {
                         false
                     };
@@ -252,7 +293,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::Tick => {
-                    // Periodic refresh / spinner tick
+                    app.advance_animation();
                 }
                 AppEvent::Resize(_, _) => {
                     // Handled on next draw
@@ -306,13 +347,18 @@ async fn handle_key_event(
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 if let Some(req) = app.active_approval.take() {
                     app.focus = Focus::Input;
-                    app.add_system_message(&format!("Approved execution of tool '{}'.", req.tool_name));
+                    app.add_system_message(&format!(
+                        "Approved execution of tool '{}'.",
+                        req.tool_name
+                    ));
                     app.status_message = "Tool execution approved".to_string();
                     if let Some(client) = acp_client {
                         let client_clone = client.clone();
                         let approval_id = req.id.clone();
                         tokio::spawn(async move {
-                            let _ = client_clone.session_approval_decision(&approval_id, "approve", None).await;
+                            let _ = client_clone
+                                .session_approval_decision(&approval_id, "approve", None)
+                                .await;
                         });
                     }
                 }
@@ -320,13 +366,18 @@ async fn handle_key_event(
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 if let Some(req) = app.active_approval.take() {
                     app.focus = Focus::Input;
-                    app.add_system_message(&format!("Rejected execution of tool '{}'. Rolled back.", req.tool_name));
+                    app.add_system_message(&format!(
+                        "Rejected execution of tool '{}'. Rolled back.",
+                        req.tool_name
+                    ));
                     app.status_message = "Tool execution rejected".to_string();
                     if let Some(client) = acp_client {
                         let client_clone = client.clone();
                         let approval_id = req.id.clone();
                         tokio::spawn(async move {
-                            let _ = client_clone.session_approval_decision(&approval_id, "reject", None).await;
+                            let _ = client_clone
+                                .session_approval_decision(&approval_id, "reject", None)
+                                .await;
                         });
                     }
                 }
@@ -341,7 +392,8 @@ async fn handle_key_event(
 
     // Help modal dismiss
     if app.show_help {
-        if key.code == KeyCode::Esc || key.code == KeyCode::Enter || key.code == KeyCode::Char('q') {
+        if key.code == KeyCode::Esc || key.code == KeyCode::Enter || key.code == KeyCode::Char('q')
+        {
             app.show_help = false;
         }
         return Ok(());
@@ -392,7 +444,10 @@ async fn handle_key_event(
 
             match key.code {
                 KeyCode::Enter => {
-                    if !app.slash_suggestions.is_empty() && app.input_buffer.starts_with('/') && !app.input_buffer.contains(' ') {
+                    if !app.slash_suggestions.is_empty()
+                        && app.input_buffer.starts_with('/')
+                        && !app.input_buffer.contains(' ')
+                    {
                         app.accept_slash_suggestion();
                         return Ok(());
                     }
@@ -425,24 +480,20 @@ async fn handle_key_event(
                 _ => {}
             }
         }
-        Focus::Dialogue => {
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
-                KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
-                KeyCode::Char('c') => app.toggle_all_tool_calls(),
-                KeyCode::Enter => app.focus = Focus::Input,
-                _ => {}
-            }
-        }
-        Focus::Diff => {
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
-                KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
-                KeyCode::Char('d') | KeyCode::Esc => app.toggle_diff_pane(),
-                KeyCode::Enter => app.focus = Focus::Input,
-                _ => {}
-            }
-        }
+        Focus::Dialogue => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
+            KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+            KeyCode::Char('c') => app.toggle_all_tool_calls(),
+            KeyCode::Enter => app.focus = Focus::Input,
+            _ => {}
+        },
+        Focus::Diff => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
+            KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+            KeyCode::Char('d') | KeyCode::Esc => app.toggle_diff_pane(),
+            KeyCode::Enter => app.focus = Focus::Input,
+            _ => {}
+        },
         Focus::Approval => {}
     }
 
@@ -488,7 +539,10 @@ async fn execute_submitted_text(
             "/mode" => {
                 if let Some(m) = arg {
                     app.set_mode(m);
-                    app.add_system_message(&format!("Execution mode set to: {}", app.mode.to_uppercase()));
+                    app.add_system_message(&format!(
+                        "Execution mode set to: {}",
+                        app.mode.to_uppercase()
+                    ));
                 } else {
                     let next = app.cycle_mode();
                     app.add_system_message(&format!("Mode cycled to: {}", next.to_uppercase()));
@@ -524,12 +578,18 @@ async fn execute_submitted_text(
             let tx = event_tx.clone();
 
             tokio::spawn(async move {
-                match client_clone.session_command(&sess_id, &cmd_str, arg_str.as_deref()).await {
+                match client_clone
+                    .session_command(&sess_id, &cmd_str, arg_str.as_deref())
+                    .await
+                {
                     Ok(resp) => {
                         let _ = tx.send(AppEvent::AcpMessage(resp.output));
                     }
                     Err(err) => {
-                        let _ = tx.send(AppEvent::Error(format!("Command {} failed: {}", cmd_str, err)));
+                        let _ = tx.send(AppEvent::Error(format!(
+                            "Command {} failed: {}",
+                            cmd_str, err
+                        )));
                     }
                 }
             });
@@ -566,10 +626,15 @@ async fn execute_submitted_text(
                 }
             }
             "/budget" => {
-                app.add_system_message("Budget Telemetry: 1,240 tokens used | $0.003 USD consumed | Limit: $5.00");
+                app.add_system_message(
+                    "Budget Telemetry: 1,240 tokens used | $0.003 USD consumed | Limit: $5.00",
+                );
             }
             other => {
-                app.add_system_message(&format!("Unknown slash command: {}. Type /help for available commands.", other));
+                app.add_system_message(&format!(
+                    "Unknown slash command: {}. Type /help for available commands.",
+                    other
+                ));
             }
         }
         return Ok(());
@@ -623,7 +688,9 @@ async fn execute_submitted_text(
 fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotification) {
     if notif.method == "session/update" {
         if let Some(params) = notif.params {
-            if let Ok(update) = serde_json::from_value::<hex_protocol::models::SessionUpdateNotification>(params) {
+            if let Ok(update) =
+                serde_json::from_value::<hex_protocol::models::SessionUpdateNotification>(params)
+            {
                 if let Some(delta) = update.delta {
                     app.append_assistant_delta(&delta);
                     app.is_busy = false;
@@ -639,10 +706,16 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
         }
     } else if notif.method == "session/approvalRequest" {
         if let Some(params) = notif.params {
-            if let Ok(appr) = serde_json::from_value::<hex_protocol::models::ApprovalRequestNotification>(params) {
+            if let Ok(appr) =
+                serde_json::from_value::<hex_protocol::models::ApprovalRequestNotification>(params)
+            {
                 app.set_approval_request(ApprovalRequest {
                     id: appr.approval_id,
-                    risk_level: if appr.risk_level.is_empty() { "R3 - ELEVATED".to_string() } else { appr.risk_level },
+                    risk_level: if appr.risk_level.is_empty() {
+                        "R3 - ELEVATED".to_string()
+                    } else {
+                        appr.risk_level
+                    },
                     tool_name: appr.tool_name,
                     parameters: appr.parameters,
                     reason: appr.reason,

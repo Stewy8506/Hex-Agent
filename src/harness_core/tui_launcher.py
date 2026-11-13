@@ -27,25 +27,16 @@ def find_hex_tui_binary(repo_root: Optional[Path] = None, release: bool = False)
 
     Resolution order:
     1. HEX_TUI_BIN environment variable.
-    2. Standard PATH lookup (shutil.which)
-    3. ~/.local/bin/hex-tui
-    4. repo_root / "target" / (release|debug) / "hex-tui"
-    5. repo_root / "crates" / "hex-tui" / "target" / (release|debug) / "hex-tui"
-    6. Alternate target profile (release or debug)
+    2. A binary built for this checkout (so source changes are never shadowed
+       by an unrelated globally installed older cockpit).
+    3. Standard PATH lookup and ~/.local/bin fallback.
+    4. Alternate target profile (release or debug).
     """
     env_bin = os.environ.get("HEX_TUI_BIN")
     if env_bin:
         env_path = Path(env_bin).resolve()
         if env_path.is_file() and os.access(env_path, os.X_OK):
             return env_path
-
-    which_path = shutil.which("hex-tui")
-    if which_path:
-        return Path(which_path).resolve()
-
-    local_bin = Path.home() / ".local" / "bin" / "hex-tui"
-    if local_bin.is_file() and os.access(local_bin, os.X_OK):
-        return local_bin
 
     root = repo_root or find_repo_root()
     profile = "release" if release else "debug"
@@ -61,6 +52,14 @@ def find_hex_tui_binary(repo_root: Optional[Path] = None, release: bool = False)
     for p in candidate_paths:
         if p.is_file() and os.access(p, os.X_OK):
             return p
+
+    which_path = shutil.which("hex-tui")
+    if which_path:
+        return Path(which_path).resolve()
+
+    local_bin = Path.home() / ".local" / "bin" / "hex-tui"
+    if local_bin.is_file() and os.access(local_bin, os.X_OK):
+        return local_bin
 
     return None
 
@@ -118,6 +117,10 @@ def build_tui_cmd_args(args: Any, bin_path: Path) -> List[str]:
     model = getattr(args, "model", None)
     if model:
         cmd.extend(["--model", str(model)])
+
+    skin = getattr(args, "skin", None)
+    if skin:
+        cmd.extend(["--skin", str(skin)])
 
     cow = getattr(args, "cow", None)
     if cow:

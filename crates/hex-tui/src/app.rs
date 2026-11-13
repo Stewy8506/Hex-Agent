@@ -2,6 +2,7 @@
 
 use hex_protocol::diff::UnifiedDiff;
 use hex_protocol::models::Role;
+use std::time::Instant;
 
 /// Focused viewport pane in the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +197,7 @@ pub struct App {
     pub splash_text: Option<String>,
     pub fencing_token: u64,
     pub connection_status: String,
+    pub skin_name: String,
 
     // Navigation and layout
     pub mode: String,
@@ -210,6 +212,7 @@ pub struct App {
     // Dialogue items and scrolling
     pub dialogue_items: Vec<DialogueItem>,
     pub dialogue_scroll: usize,
+    pub follow_dialogue: bool,
 
     // Diff inspection
     pub active_diff: Option<UnifiedDiff>,
@@ -228,6 +231,11 @@ pub struct App {
 
     // Approval interrupt modal
     pub active_approval: Option<ApprovalRequest>,
+
+    // One shared clock powers every animated surface.  Widgets never create
+    // timers of their own, which keeps redraw cost predictable.
+    pub animation_frame: u64,
+    pub session_started: Instant,
 }
 
 pub fn detect_git_info(dir: &std::path::Path) -> (String, String) {
@@ -255,7 +263,11 @@ pub fn detect_git_info(dir: &std::path::Path) -> (String, String) {
 }
 
 impl App {
-    pub fn new(project_id: impl Into<String>, model_name: impl Into<String>, cow_mode: impl Into<String>) -> Self {
+    pub fn new(
+        project_id: impl Into<String>,
+        model_name: impl Into<String>,
+        cow_mode: impl Into<String>,
+    ) -> Self {
         Self::with_workspace(project_id, model_name, cow_mode, None)
     }
 
@@ -265,9 +277,9 @@ impl App {
         cow_mode: impl Into<String>,
         workspace: Option<&std::path::Path>,
     ) -> Self {
-        let ws = workspace
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        let ws = workspace.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
         let (branch, sha) = detect_git_info(&ws);
 
         let model_str = model_name.into();
@@ -291,6 +303,7 @@ impl App {
             splash_text: None,
             fencing_token: 1,
             connection_status: "Connected".to_string(),
+            skin_name: "amber".to_string(),
 
             mode: "agent".to_string(),
             focus: Focus::Input,
@@ -303,6 +316,7 @@ impl App {
 
             dialogue_items: Vec::new(),
             dialogue_scroll: 0,
+            follow_dialogue: true,
 
             active_diff: None,
             raw_diff: None,
@@ -317,6 +331,8 @@ impl App {
             selected_slash_index: 0,
 
             active_approval: None,
+            animation_frame: 0,
+            session_started: Instant::now(),
         };
 
         // Seed with welcome messages
@@ -368,16 +384,26 @@ impl App {
     }
 
     /// Add a tool call block to dialogue history.
-    pub fn add_tool_call(&mut self, id: &str, tool: &str, args: &str, duration_ms: Option<u64>, status: Option<&str>) {
-        self.dialogue_items.push(DialogueItem::ToolCall(ToolCallItem {
-            id: id.to_string(),
-            tool: tool.to_string(),
-            args: args.to_string(),
-            result: None,
-            duration_ms,
-            exit_status: status.map(|s| s.to_string()).or_else(|| Some("RUNNING".to_string())),
-            collapsed: false,
-        }));
+    pub fn add_tool_call(
+        &mut self,
+        id: &str,
+        tool: &str,
+        args: &str,
+        duration_ms: Option<u64>,
+        status: Option<&str>,
+    ) {
+        self.dialogue_items
+            .push(DialogueItem::ToolCall(ToolCallItem {
+                id: id.to_string(),
+                tool: tool.to_string(),
+                args: args.to_string(),
+                result: None,
+                duration_ms,
+                exit_status: status
+                    .map(|s| s.to_string())
+                    .or_else(|| Some("RUNNING".to_string())),
+                collapsed: false,
+            }));
         self.scroll_dialogue_to_bottom();
     }
 
@@ -388,7 +414,11 @@ impl App {
                 if tc.id == id {
                     tc.result = Some(result.to_string());
                     tc.duration_ms = Some(duration_ms);
-                    tc.exit_status = Some(if is_err { "ERROR".to_string() } else { "OK".to_string() });
+                    tc.exit_status = Some(if is_err {
+                        "ERROR".to_string()
+                    } else {
+                        "OK".to_string()
+                    });
                     break;
                 }
             }
@@ -510,22 +540,25 @@ impl App {
     // -----------------------------------------------------------------------
 
     pub fn insert_char(&mut self, c: char) {
-        self.input_buffer.insert(self.cursor_pos, c);
+        let byte = char_to_byte(&self.input_buffer, self.cursor_pos);
+        self.input_buffer.insert(byte, c);
         self.cursor_pos += 1;
         self.update_slash_suggestions();
     }
 
     pub fn delete_char(&mut self) {
         if self.cursor_pos > 0 && !self.input_buffer.is_empty() {
-            self.input_buffer.remove(self.cursor_pos - 1);
+            let byte = char_to_byte(&self.input_buffer, self.cursor_pos - 1);
+            self.input_buffer.remove(byte);
             self.cursor_pos -= 1;
             self.update_slash_suggestions();
         }
     }
 
     pub fn delete_char_forward(&mut self) {
-        if self.cursor_pos < self.input_buffer.len() {
-            self.input_buffer.remove(self.cursor_pos);
+        if self.cursor_pos < self.input_buffer.chars().count() {
+            let byte = char_to_byte(&self.input_buffer, self.cursor_pos);
+            self.input_buffer.remove(byte);
             self.update_slash_suggestions();
         }
     }
@@ -537,7 +570,7 @@ impl App {
     }
 
     pub fn move_cursor_right(&mut self) {
-        if self.cursor_pos < self.input_buffer.len() {
+        if self.cursor_pos < self.input_buffer.chars().count() {
             self.cursor_pos += 1;
         }
     }
@@ -547,7 +580,7 @@ impl App {
     }
 
     pub fn move_cursor_end(&mut self) {
-        self.cursor_pos = self.input_buffer.len();
+        self.cursor_pos = self.input_buffer.chars().count();
     }
 
     pub fn history_up(&mut self) {
@@ -618,7 +651,8 @@ impl App {
 
     pub fn next_slash_suggestion(&mut self) {
         if !self.slash_suggestions.is_empty() {
-            self.selected_slash_index = (self.selected_slash_index + 1) % self.slash_suggestions.len();
+            self.selected_slash_index =
+                (self.selected_slash_index + 1) % self.slash_suggestions.len();
         }
     }
 
@@ -651,6 +685,7 @@ impl App {
         match self.focus {
             Focus::Dialogue => {
                 self.dialogue_scroll = self.dialogue_scroll.saturating_sub(1);
+                self.follow_dialogue = false;
             }
             Focus::Diff => {
                 self.diff_scroll = self.diff_scroll.saturating_sub(1);
@@ -672,25 +707,21 @@ impl App {
     }
 
     pub fn scroll_dialogue_to_bottom(&mut self) {
-        let splash_lines = self.splash_text.as_ref().map(|s| s.lines().count() + 1).unwrap_or(0);
-        let items_lines: usize = self.dialogue_items.iter().map(|item| match item {
-            DialogueItem::Message(m) => m.content.lines().count() + 2,
-            DialogueItem::ToolCall(tc) => {
-                if tc.collapsed {
-                    2
-                } else {
-                    tc.result.as_ref().map(|r| r.lines().count().min(12) + 3).unwrap_or(3)
-                }
-            }
-        }).sum();
-        let total_lines = splash_lines + items_lines;
-        let viewport_height = 24;
-        if total_lines > viewport_height {
-            self.dialogue_scroll = total_lines.saturating_sub(viewport_height);
-        } else {
-            self.dialogue_scroll = 0;
-        }
+        // Paragraph wrapping is width-dependent.  Let the renderer calculate
+        // the bottom offset from the real viewport instead of guessing 24 rows.
+        self.follow_dialogue = true;
     }
+
+    pub fn advance_animation(&mut self) {
+        self.animation_frame = self.animation_frame.wrapping_add(1);
+    }
+}
+
+fn char_to_byte(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len())
 }
 
 fn chrono_now() -> String {

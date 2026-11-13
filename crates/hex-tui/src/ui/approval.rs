@@ -17,7 +17,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let popup_area = centered_rect(65, 45, area);
     frame.render_widget(Clear, popup_area);
 
-    let is_r4 = req.risk_level.contains("R4") || req.risk_level.to_uppercase().contains("DESTRUCTIVE");
+    let is_r4 =
+        req.risk_level.contains("R4") || req.risk_level.to_uppercase().contains("DESTRUCTIVE");
     let border_color = if is_r4 { Color::Red } else { Color::Yellow };
 
     let block = Block::default()
@@ -26,7 +27,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             " ⚠️ OPERATOR APPROVAL REQUIRED ⚠️ ",
-            Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(popup_area);
@@ -46,15 +49,25 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // 1. Risk badge
     let risk_span = Span::styled(
         format!("Risk Level: [{}]", req.risk_level),
-        Style::default().fg(border_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(border_color)
+            .add_modifier(Modifier::BOLD),
     );
     frame.render_widget(Paragraph::new(Line::from(risk_span)), chunks[0]);
 
     // 2. Tool name
     let tool_spans = vec![
         Span::styled("Privileged Tool: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&req.tool_name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  (ID: {})", req.id), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            &req.tool_name,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  (ID: {})", req.id),
+            Style::default().fg(Color::DarkGray),
+        ),
     ];
     frame.render_widget(Paragraph::new(Line::from(tool_spans)), chunks[1]);
 
@@ -63,13 +76,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("Policy Warning: ", Style::default().fg(Color::Yellow)),
         Span::styled(&req.reason, Style::default().fg(Color::White)),
     ];
-    frame.render_widget(Paragraph::new(Line::from(reason_spans)).wrap(Wrap { trim: true }), chunks[2]);
+    frame.render_widget(
+        Paragraph::new(Line::from(reason_spans)).wrap(Wrap { trim: true }),
+        chunks[2],
+    );
 
     // 4. Parameters box
     let params_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(" Payload & Arguments ", Style::default().fg(Color::DarkGray)));
+        .title(Span::styled(
+            " Payload & Arguments ",
+            Style::default().fg(Color::DarkGray),
+        ));
     let params_p = Paragraph::new(req.parameters.as_str())
         .block(params_block)
         .wrap(Wrap { trim: false });
@@ -77,9 +96,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // 5. Action Buttons
     let actions = Line::from(vec![
-        Span::styled(" [y] Approve ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [y] Approve ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("   "),
-        Span::styled(" [n] Reject ", Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [n] Reject ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("   "),
         Span::styled(" [d] View Diff ", Style::default().fg(Color::Cyan)),
         Span::raw("   "),

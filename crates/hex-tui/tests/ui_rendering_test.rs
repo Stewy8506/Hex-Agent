@@ -18,11 +18,26 @@ fn test_full_tui_layout_rendering() {
     let content = format!("{:?}", buffer);
 
     assert!(content.contains("HEX"), "Buffer must contain ASCII banner");
-    assert!(content.contains("test_proj"), "Buffer must contain project name");
-    assert!(content.contains("gemini-2.5-pro"), "Buffer must contain model name");
-    assert!(content.contains("Welcome to HEX"), "Buffer must contain welcome message");
-    assert!(content.contains("Command Prompt"), "Buffer must contain input prompt");
-    assert!(content.contains("agent"), "Buffer prompt footer must display active mode");
+    assert!(
+        content.contains("test_proj"),
+        "Buffer must contain project name"
+    );
+    assert!(
+        content.contains("gemini-2.5-pro"),
+        "Buffer must contain model name"
+    );
+    assert!(
+        content.contains("did you know"),
+        "Buffer must contain native HEX intro"
+    );
+    assert!(
+        content.contains("Command Prompt"),
+        "Buffer must contain input prompt"
+    );
+    assert!(
+        content.contains("agent"),
+        "Buffer prompt footer must display active mode"
+    );
 }
 
 #[test]
@@ -46,8 +61,14 @@ fn test_diff_pane_split_rendering() {
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(content.contains("Diff Viewer"), "Must render diff pane header");
-    assert!(content.contains("src/lib.rs"), "Must render modified filename");
+    assert!(
+        content.contains("Diff Viewer"),
+        "Must render diff pane header"
+    );
+    assert!(
+        content.contains("src/lib.rs"),
+        "Must render modified filename"
+    );
     assert!(content.contains("42"), "Must render added diff content");
 }
 
@@ -70,11 +91,26 @@ fn test_approval_modal_overlay_rendering() {
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(content.contains("OPERATOR APPROVAL REQUIRED"), "Must render modal title");
-    assert!(content.contains("rm -rf"), "Must render privileged tool name");
-    assert!(content.contains("R4 - DESTRUCTIVE"), "Must render risk level");
-    assert!(content.contains("[y] Approve"), "Must render approve action button");
-    assert!(content.contains("[n] Reject"), "Must render reject action button");
+    assert!(
+        content.contains("OPERATOR APPROVAL REQUIRED"),
+        "Must render modal title"
+    );
+    assert!(
+        content.contains("rm -rf"),
+        "Must render privileged tool name"
+    );
+    assert!(
+        content.contains("R4 - DESTRUCTIVE"),
+        "Must render risk level"
+    );
+    assert!(
+        content.contains("[y] Approve"),
+        "Must render approve action button"
+    );
+    assert!(
+        content.contains("[n] Reject"),
+        "Must render reject action button"
+    );
 }
 
 #[test]
@@ -89,7 +125,10 @@ fn test_help_modal_overlay_rendering() {
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(content.contains("HELP & KEYBINDINGS"), "Must render help title");
+    assert!(
+        content.contains("HELP & KEYBINDINGS"),
+        "Must render help title"
+    );
     assert!(content.contains("/status"), "Must document slash commands");
     assert!(content.contains("[Tab]"), "Must document keybindings");
 }
@@ -129,7 +168,10 @@ fn test_slash_command_suggestion_rendering() {
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(content.contains("/rollback") || content.contains("/react"), "Must render slash suggestion popup");
+    assert!(
+        content.contains("/rollback") || content.contains("/react"),
+        "Must render slash suggestion popup"
+    );
 }
 
 #[test]
@@ -140,7 +182,13 @@ fn test_collapsible_tool_calls_rendering() {
     let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
     app.dialogue_items.clear();
     app.dialogue_scroll = 0;
-    app.add_tool_call("tc_render_1", "run_tests", "suite=unit", Some(120), Some("OK"));
+    app.add_tool_call(
+        "tc_render_1",
+        "run_tests",
+        "suite=unit",
+        Some(120),
+        Some("OK"),
+    );
     app.complete_tool_call("tc_render_1", "12 tests passed", 120, false);
     app.dialogue_scroll = 0;
 
@@ -182,19 +230,71 @@ fn test_transcript_design_language_and_badges() {
 
     // 1. Badges
     assert!(content.contains("❯ User"), "Must render ❯ User badge");
-    assert!(content.contains("◈ Assistant"), "Must render ◈ Assistant badge");
+    assert!(
+        content.contains("◈ Assistant"),
+        "Must render ◈ Assistant badge"
+    );
     assert!(content.contains("TOOL CALL"), "Must render tool call badge");
 
     // 2. Code gutter
-    assert!(content.contains("│"), "Must render vertical code gutter line");
+    assert!(
+        content.contains("│"),
+        "Must render vertical code gutter line"
+    );
 
     // 3. Prompt box with prefix and placeholder
     assert!(content.contains("❯"), "Must render ❯ input prefix");
-    assert!(content.contains("Ask me anything") || content.contains("Type your objective"), "Must render placeholder text when input is empty");
+    assert!(
+        content.contains("Ask me anything") || content.contains("Type your objective"),
+        "Must render placeholder text when input is empty"
+    );
 
     // 4. Composer footer dynamic telemetry
     assert!(content.contains("main"), "Must render git branch");
-    assert!(content.contains("gemini-3.8-flash-tiered"), "Must render dynamic model");
+    assert!(
+        content.contains("gemini-3.8-flash-tiered"),
+        "Must render dynamic model"
+    );
     assert!(content.contains("agent"), "Must render active mode");
     assert!(content.contains("enter send"), "Must render hotkey hint");
+}
+
+#[test]
+fn test_composer_is_locked_to_terminal_bottom() {
+    let backend = TestBackend::new(100, 28);
+    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
+    let app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
+
+    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
+    let buffer = terminal.backend().buffer();
+
+    // The final three rows are always the composer: its top rounded border,
+    // input row, and bottom border. This is the invariant that stops streamed
+    // content from moving the input away from the operator.
+    assert_eq!(buffer[(0, 25)].symbol(), "╭");
+    assert_eq!(buffer[(0, 27)].symbol(), "╰");
+    let input_row = (0..100).map(|x| buffer[(x, 26)].symbol()).collect::<String>();
+    assert!(input_row.contains('❯'));
+}
+
+#[test]
+fn test_animation_changes_busy_telemetry_and_rotates_prompt() {
+    let backend = TestBackend::new(120, 32);
+    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
+    let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
+    app.is_busy = true;
+    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
+    let first = format!("{:?}", terminal.backend().buffer());
+
+    for _ in 0..8 {
+        app.advance_animation();
+    }
+    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
+    let second = format!("{:?}", terminal.backend().buffer());
+
+    assert!(first.contains("Thinking") || first.contains("Analyzing"));
+    assert_ne!(
+        first, second,
+        "shared animation clock must change a visible frame"
+    );
 }

@@ -1,8 +1,8 @@
 //! Event handling and asynchronous multiplexing for terminal and backend protocol events.
 
-use std::time::Duration;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, MouseEvent};
 use futures::{FutureExt, StreamExt};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use hex_protocol::models::JsonRpcNotification;
