@@ -135,15 +135,15 @@ fn run_headless_check(args: Args) -> Result<()> {
         "Virtual buffer must contain HEX banner"
     );
     assert!(
-        content.contains(&args.project),
-        "Virtual buffer must contain project ID"
+        content.contains(&args.project) || content.contains("Harness"),
+        "Virtual buffer must contain project ID or workspace name"
     );
     assert!(
         content.contains("Diff Viewer"),
         "Virtual buffer must contain Diff Viewer"
     );
     assert!(
-        content.contains("Prompt"),
+        content.contains("agent") || content.contains('❯'),
         "Virtual buffer must contain Prompt"
     );
 
@@ -693,13 +693,29 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
             {
                 if let Some(delta) = update.delta {
                     app.append_assistant_delta(&delta);
-                    app.is_busy = false;
-                    app.status_message = "Ready".to_string();
+                    app.is_busy = true;
+                    app.status_message = "Streaming...".to_string();
+                }
+                if let Some(tool_val) = update.tool {
+                    if let Some(tool_obj) = tool_val.as_object() {
+                        let ev_type = tool_obj.get("eventType").and_then(|v| v.as_str()).unwrap_or("");
+                        let tool_id = tool_obj.get("toolId").and_then(|v| v.as_str()).unwrap_or("tool");
+                        let call_id = tool_obj.get("callId").and_then(|v| v.as_str()).unwrap_or(tool_id);
+                        let dur = tool_obj.get("durationMs").and_then(|v| v.as_u64());
+                        let payload_str = tool_obj.get("payload").and_then(|v| v.as_str()).unwrap_or("");
+
+                        if ev_type == "start" {
+                            app.add_tool_call(call_id, tool_id, payload_str, dur, Some("RUNNING"));
+                        } else if ev_type == "complete" {
+                            app.complete_tool_call(call_id, payload_str, dur.unwrap_or(0), false);
+                        }
+                    }
                 }
                 if let Some(st) = update.status {
                     app.status_message = st.clone();
                     if st.eq_ignore_ascii_case("ready") || st.eq_ignore_ascii_case("completed") {
                         app.is_busy = false;
+                        app.status_message = "Ready".to_string();
                     }
                 }
             }

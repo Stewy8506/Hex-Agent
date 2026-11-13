@@ -1522,15 +1522,18 @@ class AntigravityModelProvider(ModelProvider):
                     if data_part and data_part != "[DONE]":
                         try:
                             payload = json.loads(data_part)
-                            cands = payload.get("candidates") or []
+                            inner = payload.get("response") if isinstance(payload.get("response"), dict) else payload
+                            cands = inner.get("candidates") or []
                             for cand in cands:
                                 content = cand.get("content") or {}
                                 for part in content.get("parts") or []:
+                                    if part.get("thought") is True:
+                                        continue
                                     txt = part.get("text")
                                     if txt:
                                         stream_callback(txt)
-                            if isinstance(payload.get("text"), str) and payload["text"]:
-                                stream_callback(payload["text"])
+                            if isinstance(inner.get("text"), str) and inner["text"]:
+                                stream_callback(inner["text"])
                         except Exception:
                             pass
             return bytes(accumulated)

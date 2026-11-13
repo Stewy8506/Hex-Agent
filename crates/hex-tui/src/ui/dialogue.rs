@@ -61,6 +61,24 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
         match item {
             DialogueItem::Message(msg) => {
+                if msg.role == Role::User {
+                    lines.push(Line::raw(""));
+                    let header_line = Line::from(vec![
+                        Span::styled("▌ ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
+                        Span::styled("❯ User  ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
+                        Span::styled(&msg.timestamp, Style::default().fg(skin.muted)),
+                    ]);
+                    lines.push(header_line);
+                    for raw_line in msg.content.lines() {
+                        lines.push(Line::from(vec![
+                            Span::styled("▌   ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
+                            Span::styled(raw_line.to_string(), Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
+                        ]));
+                    }
+                    lines.push(Line::raw(""));
+                    continue;
+                }
+
                 let (badge_text, badge_style) = match msg.role {
                     Role::User => (
                         "❯ User  ",
@@ -205,77 +223,50 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
             DialogueItem::ToolCall(tc) => {
                 let arrow = if tc.collapsed { "▶" } else { "▼" };
-                let (status_text, status_style) = match tc.exit_status.as_deref() {
-                    Some("OK") => (
-                        "OK",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
+                let (status_icon, status_style) = match tc.exit_status.as_deref() {
+                    Some("OK") | Some("SUCCEEDED") => (
+                        "✓",
+                        Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
                     ),
-                    Some("ERROR") => (
-                        "ERROR",
+                    Some("ERROR") | Some("FAILED") => (
+                        "✖",
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     ),
                     _ => (
-                        "RUNNING",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
+                        "●",
+                        Style::default().fg(skin.heading).add_modifier(Modifier::BOLD),
                     ),
                 };
                 let duration_text = tc
                     .duration_ms
-                    .map(|d| format!(" ({}ms)", d))
+                    .map(|d| format!(" ({:.1}s)", d as f64 / 1000.0))
                     .unwrap_or_default();
 
                 let header_line = Line::from(vec![
+                    Span::styled(format!("  {} ├─ ", arrow), Style::default().fg(skin.muted)),
+                    Span::styled(format!("{} ", status_icon), status_style),
                     Span::styled(
-                        format!("  {} [TOOL CALL] ", arrow),
+                        format!("[{}] ", tc.tool),
                         Style::default()
-                            .fg(Color::Magenta)
+                            .fg(skin.category)
                             .add_modifier(Modifier::BOLD),
                     ),
+                    Span::styled(&tc.args, Style::default().fg(skin.muted)),
+                    Span::styled(duration_text, Style::default().fg(skin.muted)),
                     Span::styled(
-                        &tc.tool,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(&tc.args, Style::default().fg(Color::DarkGray)),
-                    Span::styled(duration_text, Style::default().fg(Color::DarkGray)),
-                    Span::raw("  "),
-                    Span::styled(format!("[{}]", status_text), status_style),
-                    Span::raw("  "),
-                    Span::styled(
-                        if tc.collapsed { "[collapsed]" } else { "" },
-                        Style::default().fg(Color::DarkGray),
+                        if tc.collapsed { " [collapsed]" } else { "" },
+                        Style::default().fg(skin.muted),
                     ),
                 ]);
                 lines.push(header_line);
 
                 if !tc.collapsed {
-                    // Show arguments if not fully rendered in title
-                    if !tc.args.is_empty() {
-                        lines.push(Line::from(vec![
-                            Span::styled("      Args: ", Style::default().fg(Color::DarkGray)),
-                            Span::styled(&tc.args, Style::default().fg(Color::Gray)),
-                        ]));
-                    }
-
-                    // Show result if available
                     if let Some(res) = &tc.result {
-                        for res_line in res.lines().take(12) {
+                        for res_line in res.lines().take(8) {
                             lines.push(Line::from(vec![
-                                Span::styled("      │ ", Style::default().fg(Color::DarkGray)),
-                                Span::styled(res_line, Style::default().fg(Color::LightGreen)),
+                                Span::styled("  │  └─ ", Style::default().fg(skin.muted)),
+                                Span::styled(res_line, Style::default().fg(skin.text)),
                             ]));
-                        }
-                        if res.lines().count() > 12 {
-                            lines.push(Line::from(vec![Span::styled(
-                                format!("      │ ... ({} lines omitted)", res.lines().count() - 12),
-                                Style::default().fg(Color::DarkGray),
-                            )]));
                         }
                     }
                 }

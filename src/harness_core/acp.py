@@ -274,7 +274,30 @@ class ACPServer:
             sys.stdout.write(json.dumps(notif, ensure_ascii=False) + "\n")
             sys.stdout.flush()
 
-        exec_res = self.orchestrator.execute_task(task_id, stream_callback=stream_cb)
+        def tool_cb(event_type: str, tool_id: str, payload: Any, dur_ms: int = 0) -> None:
+            notif = {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": sess.session_id,
+                    "updateType": "tool",
+                    "tool": {
+                        "eventType": event_type,
+                        "toolId": tool_id,
+                        "callId": f"{tool_id}_{int(time.time()*1000)}",
+                        "durationMs": dur_ms,
+                        "payload": json.dumps(payload, default=str)[:300] if isinstance(payload, (dict, list)) else str(payload)[:300],
+                    },
+                },
+            }
+            sys.stdout.write(json.dumps(notif, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+
+        exec_res = self.orchestrator.execute_task(
+            task_id,
+            stream_callback=stream_cb,
+            tool_callback=tool_cb,
+        )
 
         raw_status = exec_res.get("status", "COMPLETED")
         status_str = "completed" if raw_status in ("SUCCEEDED", "COMPLETED") else raw_status.lower()

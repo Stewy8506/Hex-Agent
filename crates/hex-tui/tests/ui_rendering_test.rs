@@ -31,8 +31,8 @@ fn test_full_tui_layout_rendering() {
         "Buffer must contain native HEX intro"
     );
     assert!(
-        content.contains("Command Prompt"),
-        "Buffer must contain input prompt"
+        content.contains("❯"),
+        "Buffer must contain input prompt prefix"
     );
     assert!(
         content.contains("agent"),
@@ -195,7 +195,6 @@ fn test_collapsible_tool_calls_rendering() {
     // Expanded state
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
     let buf1 = format!("{:?}", terminal.backend().buffer());
-    assert!(buf1.contains("TOOL CALL"), "Must render tool call label");
     assert!(buf1.contains("run_tests"), "Must render tool name");
     assert!(buf1.contains("12 tests passed"), "Must render tool result");
 
@@ -234,7 +233,7 @@ fn test_transcript_design_language_and_badges() {
         content.contains("◈ Assistant"),
         "Must render ◈ Assistant badge"
     );
-    assert!(content.contains("TOOL CALL"), "Must render tool call badge");
+    assert!(content.contains("run_tests"), "Must render tool call");
 
     // 2. Code gutter
     assert!(

@@ -15,10 +15,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::Input;
     let border = if focused { skin.border } else { skin.muted };
 
-    let (mode_fg, mode_bg, mode_text) = match app.mode.as_str() {
-        "plan" => (skin.surface, skin.heading, " plan "),
-        "code" => (ratatui::style::Color::White, ratatui::style::Color::Magenta, " code "),
-        _ => (skin.surface, skin.accent, " agent "),
+    let ws_name = if app.project_id == "default" && !app.workspace_path.is_empty() {
+        std::path::Path::new(&app.workspace_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&app.project_id)
+    } else {
+        &app.project_id
+    };
+
+    let mode_span = match app.mode.as_str() {
+        "plan" => Span::styled("plan", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
+        "code" => Span::styled("code", Style::default().fg(ratatui::style::Color::Magenta).add_modifier(Modifier::BOLD)),
+        _ => Span::styled("agent", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
     };
 
     let action_span = if app.is_busy {
@@ -31,42 +40,24 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let footer = Line::from(vec![
-        Span::styled(
-            mode_text,
-            Style::default().fg(mode_fg).bg(mode_bg).add_modifier(Modifier::BOLD),
-        ),
+        Span::raw(" "),
+        mode_span,
         Span::styled(" · ", Style::default().fg(skin.muted)),
-        Span::styled(format!("{} ", app.project_id), Style::default().fg(skin.text)),
+        Span::styled(format!("{} ", ws_name), Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
         Span::styled("· ", Style::default().fg(skin.muted)),
         Span::styled(format!("{} ", app.git_branch), Style::default().fg(skin.accent)),
         Span::styled("· ", Style::default().fg(skin.muted)),
         Span::styled(
             format!("{} ", app.model_name),
-            Style::default().fg(skin.heading).add_modifier(Modifier::BOLD),
+            Style::default().fg(skin.heading),
         ),
         action_span,
     ]);
-
-    let title = if focused {
-        if app.is_busy {
-            " Command Prompt [Reasoning...] "
-        } else {
-            " Command Prompt [Enter to Send, / for Commands] "
-        }
-    } else {
-        " Command Prompt "
-    };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(if focused { skin.heading } else { skin.muted })
-                .add_modifier(Modifier::BOLD),
-        ))
         .title_bottom(footer);
     let inner = block.inner(area);
     frame.render_widget(block, area);

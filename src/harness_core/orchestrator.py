@@ -741,20 +741,28 @@ class HarnessOrchestrator:
             ]
 
         tool_results: list[dict[str, Any]] = []
+        tool_cb = kwargs.get("tool_callback")
         try:
             for idx, st in enumerate(steps, start=1):
+                tid = st["tool_id"]
+                t0 = time.time()
+                if tool_cb:
+                    tool_cb("start", tid, st.get("args", {}))
                 inv_res = self.gateway.invoke(
                     task_id=task_id,
                     attempt_id=attempt_id,
                     step_id=st.get("step_id", f"fp_{idx}"),
                     sequence_in_step=idx,
-                    tool_id=st["tool_id"],
+                    tool_id=tid,
                     args=st.get("args", {}),
                     workspace_dir=source_ws,
                 )
+                dur_ms = int((time.time() - t0) * 1000)
+                if tool_cb:
+                    tool_cb("complete", tid, inv_res, dur_ms)
                 tool_results.append({
                     "step_id": st.get("step_id", f"fp_{idx}"),
-                    "tool_id": st["tool_id"],
+                    "tool_id": tid,
                     "result": inv_res,
                 })
         except PolicyBlockedError as exc:
