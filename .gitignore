@@ -22,7 +22,15 @@ wheels/
 .installed.cfg
 *.egg
 
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Benchmarks & reference repos
+benchmarks/
+
 # Virtual environments
+
 .venv/
 venv/
 ENV/

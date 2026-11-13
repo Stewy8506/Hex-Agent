@@ -159,14 +159,15 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     };
 
     let mut events = EventHandler::new(50);
+    let event_tx = events.sender();
 
     // If ACP client connected, forward notifications to event loop
     if let Some(client) = &acp_client {
         let mut notif_rx = client.subscribe();
-        let event_tx = events.sender();
+        let notif_tx = event_tx.clone();
         tokio::spawn(async move {
             while let Ok(notif) = notif_rx.recv().await {
-                if event_tx.send(AppEvent::Notification(notif)).is_err() {
+                if notif_tx.send(AppEvent::Notification(notif)).is_err() {
                     break;
                 }
             }
@@ -179,10 +180,20 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
         if let Some(event) = events.next().await {
             match event {
                 AppEvent::Key(key) => {
-                    handle_key_event(&mut app, key, acp_client.as_ref()).await?;
+                    handle_key_event(&mut app, key, acp_client.as_ref(), event_tx.clone()).await?;
                 }
                 AppEvent::Notification(notif) => {
                     handle_notification(&mut app, notif);
+                }
+                AppEvent::AcpMessage(msg) => {
+                    app.add_system_message(&msg);
+                    app.is_busy = false;
+                    app.status_message = "Ready".to_string();
+                }
+                AppEvent::Error(err) => {
+                    app.add_system_message(&format!("Error: {}", err));
+                    app.is_busy = false;
+                    app.status_message = "Ready".to_string();
                 }
                 AppEvent::Tick => {
                     // Periodic refresh / spinner tick
@@ -203,6 +214,7 @@ async fn handle_key_event(
     app: &mut App,
     key: crossterm::event::KeyEvent,
     acp_client: Option<&AcpClient>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) -> Result<()> {
     // Global hotkeys
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -241,6 +253,13 @@ async fn handle_key_event(
                     app.focus = Focus::Input;
                     app.add_system_message(&format!("Approved execution of tool '{}'.", req.tool_name));
                     app.status_message = "Tool execution approved".to_string();
+                    if let Some(client) = acp_client {
+                        let client_clone = client.clone();
+                        let approval_id = req.id.clone();
+                        tokio::spawn(async move {
+                            let _ = client_clone.session_approval_decision(&approval_id, "approve", None).await;
+                        });
+                    }
                 }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -248,6 +267,13 @@ async fn handle_key_event(
                     app.focus = Focus::Input;
                     app.add_system_message(&format!("Rejected execution of tool '{}'. Rolled back.", req.tool_name));
                     app.status_message = "Tool execution rejected".to_string();
+                    if let Some(client) = acp_client {
+                        let client_clone = client.clone();
+                        let approval_id = req.id.clone();
+                        tokio::spawn(async move {
+                            let _ = client_clone.session_approval_decision(&approval_id, "reject", None).await;
+                        });
+                    }
                 }
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -302,7 +328,7 @@ async fn handle_key_event(
                     }
 
                     if let Some(text) = app.submit_input() {
-                        execute_submitted_text(app, text, acp_client).await?;
+                        execute_submitted_text(app, text, acp_client, event_tx).await?;
                     }
                 }
                 KeyCode::Char(c) => app.insert_char(c),
@@ -346,10 +372,59 @@ async fn execute_submitted_text(
     app: &mut App,
     text: String,
     acp_client: Option<&AcpClient>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) -> Result<()> {
     if text.starts_with('/') {
         let parts: Vec<&str> = text.split_whitespace().collect();
         let cmd = parts.first().copied().unwrap_or("");
+        let arg = if parts.len() > 1 {
+            Some(text[cmd.len()..].trim())
+        } else {
+            None
+        };
+
+        // Local TUI interface commands
+        match cmd {
+            "/diff" => {
+                app.toggle_diff_pane();
+                return Ok(());
+            }
+            "/clear" => {
+                app.dialogue_items.clear();
+                app.add_system_message("Dialogue viewport cleared.");
+                return Ok(());
+            }
+            "/quit" => {
+                app.should_quit = true;
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // If ACP client connected, forward slash command to backend server
+        if let Some(client) = acp_client {
+            app.is_busy = true;
+            app.status_message = format!("Running {}...", cmd);
+            let sess_id = app.session_id.clone();
+            let cmd_str = cmd.to_string();
+            let arg_str = arg.map(|s| s.to_string());
+            let client_clone = client.clone();
+            let tx = event_tx.clone();
+
+            tokio::spawn(async move {
+                match client_clone.session_command(&sess_id, &cmd_str, arg_str.as_deref()).await {
+                    Ok(resp) => {
+                        let _ = tx.send(AppEvent::AcpMessage(resp.output));
+                    }
+                    Err(err) => {
+                        let _ = tx.send(AppEvent::Error(format!("Command {} failed: {}", cmd_str, err)));
+                    }
+                }
+            });
+            return Ok(());
+        }
+
+        // Standalone fallback handling for slash commands
         match cmd {
             "/help" => {
                 app.show_help = true;
@@ -359,16 +434,6 @@ async fn execute_submitted_text(
                     "Status: [Model: {}] [CoW: {}] [Fence: #{}] [Status: {}]",
                     app.model_name, app.cow_mode, app.fencing_token, app.connection_status
                 ));
-            }
-            "/diff" => {
-                app.toggle_diff_pane();
-            }
-            "/clear" => {
-                app.dialogue_items.clear();
-                app.add_system_message("Dialogue viewport cleared.");
-            }
-            "/quit" => {
-                app.should_quit = true;
             }
             "/rollback" => {
                 app.add_system_message("CoW workspace rolled back to clean checkpoint.");
@@ -381,8 +446,8 @@ async fn execute_submitted_text(
                 app.add_system_message("Toggled autonomous continuous ReAct loop.");
             }
             "/model" => {
-                if parts.len() > 1 {
-                    app.model_name = parts[1].to_string();
+                if let Some(m) = arg {
+                    app.model_name = m.to_string();
                     app.add_system_message(&format!("Model switched to {}", app.model_name));
                 } else {
                     app.add_system_message(&format!("Active Model: {}", app.model_name));
@@ -428,12 +493,24 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
         if let Some(params) = notif.params {
             if let Ok(update) = serde_json::from_value::<hex_protocol::models::SessionUpdateNotification>(params) {
                 if let Some(delta) = update.delta {
-                    app.add_assistant_message(&delta);
+                    app.append_assistant_delta(&delta);
                     app.is_busy = false;
                     app.status_message = "Ready".to_string();
                 } else if let Some(st) = update.status {
                     app.status_message = st;
                 }
+            }
+        }
+    } else if notif.method == "session/approvalRequest" {
+        if let Some(params) = notif.params {
+            if let Ok(appr) = serde_json::from_value::<hex_protocol::models::ApprovalRequestNotification>(params) {
+                app.set_approval_request(ApprovalRequest {
+                    id: appr.approval_id,
+                    risk_level: if appr.risk_level.is_empty() { "R3 - ELEVATED".to_string() } else { appr.risk_level },
+                    tool_name: appr.tool_name,
+                    parameters: appr.parameters,
+                    reason: appr.reason,
+                });
             }
         }
     }

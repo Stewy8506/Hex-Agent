@@ -219,6 +219,18 @@ impl App {
         self.scroll_dialogue_to_bottom();
     }
 
+    /// Append a streaming token delta to the active Assistant message, or create one if none exists.
+    pub fn append_assistant_delta(&mut self, delta: &str) {
+        if let Some(DialogueItem::Message(msg)) = self.dialogue_items.last_mut() {
+            if msg.role == Role::Assistant {
+                msg.content.push_str(delta);
+                self.scroll_dialogue_to_bottom();
+                return;
+            }
+        }
+        self.add_assistant_message(delta);
+    }
+
     /// Add a system notification message to dialogue history.
     pub fn add_system_message(&mut self, content: &str) {
         self.dialogue_items.push(DialogueItem::Message(MessageItem {
@@ -613,5 +625,22 @@ mod tests {
         app.clear_approval_request();
         assert_eq!(app.focus, Focus::Input);
         assert!(app.active_approval.is_none());
+    }
+
+    #[test]
+    fn test_append_assistant_delta() {
+        let mut app = App::new("p1", "m1", "cow");
+        app.append_assistant_delta("Hello");
+        app.append_assistant_delta(" world");
+        app.append_assistant_delta("!");
+
+        // Total items: 2 welcome messages + 1 assistant message (accumulated!)
+        assert_eq!(app.dialogue_items.len(), 3);
+        if let DialogueItem::Message(msg) = &app.dialogue_items[2] {
+            assert_eq!(msg.role, Role::Assistant);
+            assert_eq!(msg.content, "Hello world!");
+        } else {
+            panic!("Expected Message item");
+        }
     }
 }

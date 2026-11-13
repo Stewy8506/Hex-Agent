@@ -16,11 +16,12 @@ use tokio::time::timeout;
 
 use crate::error::AcpError;
 use crate::models::{
-    ClientInfo, InitializeParams, InitializeResponse, JsonRpcNotification, JsonRpcRequest,
-    RequestId, SessionCancelParams, SessionCancelResponse, SessionListItem, SessionListResponse,
-    SessionLoadParams, SessionLoadResponse, SessionNewParams, SessionNewResponse,
-    SessionPromptParams, SessionPromptResponse, ToolCallParams, ToolCallResponse, ToolDefinition,
-    ToolsListResponse,
+    ApprovalDecisionParams, ApprovalDecisionResponse, ClientInfo, InitializeParams,
+    InitializeResponse, JsonRpcNotification, JsonRpcRequest, RequestId, SessionCancelParams,
+    SessionCancelResponse, SessionCommandParams, SessionCommandResponse, SessionListItem,
+    SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
+    SessionNewResponse, SessionPromptParams, SessionPromptResponse, ToolCallParams,
+    ToolCallResponse, ToolDefinition, ToolsListResponse,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -401,6 +402,36 @@ impl AcpClient {
         self.send_request("tools/call", params).await
     }
 
+    /// Send an operator approval decision to the ACP server.
+    pub async fn session_approval_decision(
+        &self,
+        approval_id: &str,
+        decision: &str,
+        reason: Option<&str>,
+    ) -> Result<ApprovalDecisionResponse, AcpError> {
+        let params = ApprovalDecisionParams {
+            approval_id: approval_id.to_string(),
+            decision: decision.to_string(),
+            reason: reason.map(|s| s.to_string()),
+        };
+        self.send_request("session/approvalDecision", params).await
+    }
+
+    /// Forward a slash command to the ACP server for execution.
+    pub async fn session_command(
+        &self,
+        session_id: &str,
+        command: &str,
+        args: Option<&str>,
+    ) -> Result<SessionCommandResponse, AcpError> {
+        let params = SessionCommandParams {
+            session_id: session_id.to_string(),
+            command: command.to_string(),
+            args: args.map(|s| s.to_string()),
+        };
+        self.send_request("session/command", params).await
+    }
+
     /// Ping server for liveness check.
     pub async fn ping(&self) -> Result<bool, AcpError> {
         let resp: serde_json::Value = self
@@ -511,5 +542,74 @@ mod tests {
             }
             other => panic!("Expected AcpError::Rpc, got: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_client_approval_decision_rpc() {
+        let (client_read, mut server_write) = tokio::io::duplex(4096);
+        let (server_read, client_write) = tokio::io::duplex(4096);
+
+        let client = AcpClient::from_streams(client_read, client_write);
+
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            if let Ok(Some(line)) = lines.next_line().await {
+                let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+                assert_eq!(req.method, "session/approvalDecision");
+
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "result": {
+                        "approvalId": "appr_1",
+                        "status": "acknowledged",
+                        "decision": "approve"
+                    }
+                });
+                let resp_str = serde_json::to_string(&resp).unwrap() + "\n";
+                server_write.write_all(resp_str.as_bytes()).await.unwrap();
+            }
+        });
+
+        let res = client
+            .session_approval_decision("appr_1", "approve", Some("Safe command"))
+            .await
+            .unwrap();
+        assert_eq!(res.approval_id, "appr_1");
+        assert_eq!(res.decision, "approve");
+        assert_eq!(res.status, "acknowledged");
+    }
+
+    #[tokio::test]
+    async fn test_client_session_command_rpc() {
+        let (client_read, mut server_write) = tokio::io::duplex(4096);
+        let (server_read, client_write) = tokio::io::duplex(4096);
+
+        let client = AcpClient::from_streams(client_read, client_write);
+
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            if let Ok(Some(line)) = lines.next_line().await {
+                let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+                assert_eq!(req.method, "session/command");
+
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "result": {
+                        "sessionId": "ses_1",
+                        "command": "/doctor",
+                        "output": "Doctor check complete: System operational",
+                        "isError": false
+                    }
+                });
+                let resp_str = serde_json::to_string(&resp).unwrap() + "\n";
+                server_write.write_all(resp_str.as_bytes()).await.unwrap();
+            }
+        });
+
+        let res = client.session_command("ses_1", "/doctor", None).await.unwrap();
+        assert_eq!(res.command, "/doctor");
+        assert!(res.output.contains("Doctor check complete"));
     }
 }

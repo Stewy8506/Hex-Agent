@@ -539,6 +539,61 @@ pub struct SessionUpdateNotification {
     pub tool: Option<serde_json::Value>,
 }
 
+/// Parameters for `session/approvalRequest` notification sent from server to client.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalRequestNotification {
+    pub session_id: String,
+    pub approval_id: String,
+    pub tool_name: String,
+    #[serde(default)]
+    pub risk_level: String,
+    #[serde(default)]
+    pub parameters: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// Parameters for `session/approvalDecision` method request sent from client to server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalDecisionParams {
+    pub approval_id: String,
+    pub decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Response returned from `session/approvalDecision`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalDecisionResponse {
+    pub approval_id: String,
+    pub status: String,
+    pub decision: String,
+}
+
+/// Parameters for `session/command` method request sent from client to server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCommandParams {
+    pub session_id: String,
+    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+}
+
+/// Response returned from `session/command`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCommandResponse {
+    pub session_id: String,
+    pub command: String,
+    pub output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

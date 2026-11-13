@@ -190,6 +190,58 @@ class TestACPServer(unittest.TestCase):
         self.assertIn("error", resp)
         self.assertEqual(resp["error"]["code"], -32601)
 
+    def test_acp_approval_decision(self) -> None:
+        """Verify operator approval decisions can be recorded via session/approvalDecision."""
+        resp = self.server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "session/approvalDecision",
+            "params": {
+                "approvalId": "appr_test_123",
+                "decision": "approve",
+                "reason": "Operator verified safe command",
+            },
+        })
+        self.assertIn("result", resp)
+        self.assertEqual(resp["result"]["approvalId"], "appr_test_123")
+        self.assertEqual(resp["result"]["decision"], "approve")
+        self.assertEqual(resp["result"]["status"], "acknowledged")
+        self.assertIn("appr_test_123", self.server.pending_approvals)
+        self.assertEqual(self.server.pending_approvals["appr_test_123"]["decision"], "approve")
+
+    def test_acp_session_command_forwarding(self) -> None:
+        """Verify session/command executes slash commands and returns structured output."""
+        # /help
+        resp_help = self.server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "session/command",
+            "params": {"sessionId": "test_s1", "command": "/help"},
+        })
+        self.assertIn("result", resp_help)
+        self.assertIn("/status", resp_help["result"]["output"])
+        self.assertFalse(resp_help["result"]["isError"])
+
+        # /doctor
+        resp_doc = self.server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "session/command",
+            "params": {"sessionId": "test_s1", "command": "/doctor"},
+        })
+        self.assertIn("result", resp_doc)
+        self.assertIn("Doctor", resp_doc["result"]["output"])
+
+        # /model
+        resp_mod = self.server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 52,
+            "method": "session/command",
+            "params": {"sessionId": "test_s1", "command": "/model gemini-pro-test"},
+        })
+        self.assertIn("result", resp_mod)
+        self.assertIn("gemini-pro-test", resp_mod["result"]["output"])
+
     def test_acp_cli_check_and_setup(self) -> None:
         """Verify CLI 'hex acp --check' and 'hex acp --setup' exit cleanly."""
         out_check = io.StringIO()
