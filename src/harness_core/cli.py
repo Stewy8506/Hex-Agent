@@ -666,7 +666,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
     # Auto-intercept unconfigured launch when starting interactive console without credentials
     if (args.cmd is None or args.cmd in ("chat", "voice")) and not has_active_credentials():
-        if (sys.stdin.isatty() or force_interactive) and not getattr(args, "quiet", False) and (not is_test_runner or force_interactive):
+        if (sys.stdin.isatty() or force_interactive) and not getattr(args, "quiet", False):
             print("\n◈ Welcome to HEX. No model provider or API key was detected.")
             print("  Launching interactive auto-setup sequence...\n")
             from .onboard import run_onboard_wizard

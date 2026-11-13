@@ -441,6 +441,8 @@ class TestOrchestratorAgentLoop(unittest.TestCase):
         self.ws.mkdir(parents=True, exist_ok=True)
         self.data_dir = Path(self.tmp.name) / "data"
         self.orch = HarnessOrchestrator(data_dir=self.data_dir, default_workspace=self.ws)
+        if hasattr(self.orch, "router") and self.orch.router:
+            self.orch.router.cloud_provider = None
 
     def tearDown(self) -> None:
         if hasattr(self.orch, "ledger") and self.orch.ledger:
