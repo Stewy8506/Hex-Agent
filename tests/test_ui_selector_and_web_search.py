@@ -110,6 +110,73 @@ class TestUISelector(unittest.TestCase):
                         stream_out=fake_stdout,
                     )
 
+    def test_interactive_select_option_scroll_windowing(self) -> None:
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        fake_stdin.fileno.return_value = 0
+
+        fake_stdout = io.StringIO()
+        fake_stdout.isatty = lambda: True  # type: ignore
+
+        # 20 items, window size 5
+        items = [f"Item {i}" for i in range(20)]
+        # Key sequence:
+        # 1. Down arrow (\x1b[B) x 6 (scrolls past top 5 into items 5, 6)
+        # 2. PageDown (\x1b[6~)
+        # 3. Enter (\n)
+        key_sequence = (
+            ["\x1b", "[", "B"] * 6
+            + ["\x1b", "[", "6", "~"]
+            + ["\n"]
+        )
+
+        with patch("termios.tcgetattr", return_value=[]), patch("termios.tcsetattr"), patch("tty.setraw"):
+            with patch("sys.stdin.read", side_effect=key_sequence):
+                idx = select_option(
+                    "Long List",
+                    items,
+                    default_index=0,
+                    max_visible=5,
+                    stream_in=fake_stdin,
+                    stream_out=fake_stdout,
+                )
+        # 0 + 6 = 6; PageDown (+5) = 11
+        self.assertEqual(idx, 11)
+        output = fake_stdout.getvalue()
+        # Verify scroll indicators were rendered
+        self.assertIn("more below", output)
+        self.assertIn("more above", output)
+
+    def test_interactive_select_multiple_scroll_windowing(self) -> None:
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        fake_stdin.fileno.return_value = 0
+
+        fake_stdout = io.StringIO()
+        fake_stdout.isatty = lambda: True  # type: ignore
+
+        items = [f"Choice {i}" for i in range(15)]
+        # Keys:
+        # Space (toggle 0)
+        # Down (\x1b[B)
+        # Space (toggle 1)
+        # Down (\x1b[B)
+        # Enter (\n)
+        key_sequence = [" ", "\x1b", "[", "B", " ", "\x1b", "[", "B", "\n"]
+
+        with patch("termios.tcgetattr", return_value=[]), patch("termios.tcsetattr"), patch("tty.setraw"):
+            with patch("sys.stdin.read", side_effect=key_sequence):
+                chosen = select_multiple(
+                    "Multi Windowed",
+                    items,
+                    max_visible=4,
+                    stream_in=fake_stdin,
+                    stream_out=fake_stdout,
+                )
+        self.assertEqual(chosen, [0, 1])
+        output = fake_stdout.getvalue()
+        self.assertIn("more below", output)
+
 
 class TestConfigLoader(unittest.TestCase):
     def setUp(self) -> None:

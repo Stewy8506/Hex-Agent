@@ -79,6 +79,34 @@ class TestAutoSetupAndPolish(unittest.TestCase):
         self.assertEqual(creds.get("TAVILY_API_KEY"), "tvly-test-key-888")
         self.assertEqual(creds.get("HEX_CLOUD_PROVIDER"), "anthropic")
 
+    @patch("harness_core.onboard.fetch_available_models")
+    @patch("harness_core.onboard.prompt_secret")
+    @patch("harness_core.onboard.select_option")
+    def test_onboard_wizard_flat_provider_cerebras(
+        self,
+        mock_select: MagicMock,
+        mock_prompt: MagicMock,
+        mock_fetch: MagicMock,
+    ) -> None:
+        mock_fetch.return_value = [("llama3.1-70b", "Llama 3.1 70B (Cerebras Ultra-Fast)")]
+        # Step 1: Cerebras (idx 8 in flat provider list)
+        # Step 1b: Model selection (idx 0)
+        # Step 1c: Context compressor (idx 1 -> cloud)
+        # Step 2: Web search (idx 0 -> duckduckgo)
+        # Step 3: Messaging (idx 0 -> skip)
+        mock_select.side_effect = [8, 0, 1, 0, 0]
+        mock_prompt.side_effect = ["csk-cerebras-test-key"]
+
+        result = run_onboard_wizard(
+            config_dir=self.cfg_dir,
+            non_interactive=False,
+            defaults_only=False,
+        )
+        self.assertEqual(result["cloud_provider"], "cerebras")
+        creds = parse_env_file(self.cfg_dir / "credentials.env")
+        self.assertEqual(creds.get("CEREBRAS_API_KEY"), "csk-cerebras-test-key")
+        self.assertEqual(creds.get("HEX_CLOUD_PROVIDER"), "cerebras")
+
     def test_hardware_profile_detection(self) -> None:
         prof = HardwareProfile.detect()
         self.assertIn(prof.os_name, ("Darwin", "Linux", "Windows"))

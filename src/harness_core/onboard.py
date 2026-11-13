@@ -379,18 +379,30 @@ def run_onboard_wizard(
 
             provider_options: list[tuple[str, str]] = [
                 ("antigravity", _prov_label("antigravity", "Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detect IDE session)")),
-                ("anthropic", _prov_label("anthropic", "Anthropic API Key (Claude 3.5 Sonnet / Opus)")),
+                ("anthropic", _prov_label("anthropic", "Anthropic API Key (Claude 3.7 / 3.5 Sonnet / Opus)")),
                 ("openai", _prov_label("openai", "OpenAI API Key (GPT-4o / o1 / o3-mini)")),
                 ("gemini", _prov_label("gemini", "Google Gemini API Key (Gemini 2.5 Pro / Flash)")),
                 ("openrouter", _prov_label("openrouter", "OpenRouter (Unified Gateway • 300+ frontier & open-weight models)")),
                 ("deepseek", _prov_label("deepseek", "DeepSeek API Key (DeepSeek-V3 / R1)")),
                 ("groq", _prov_label("groq", "Groq Cloud API Key (Ultra-fast LPU inference • Llama 3.3)")),
                 ("xai", _prov_label("xai", "xAI API Key (Grok 2 / Grok 3)")),
+                ("cerebras", _prov_label("cerebras", "Cerebras API Key (Ultra-fast inference • 1800+ tok/s)")),
+                ("together", _prov_label("together", "Together AI API Key (Open-source model cloud)")),
+                ("mistral", _prov_label("mistral", "Mistral AI API Key (Mistral Large / Pixtral / Codestral)")),
+                ("fireworks", _prov_label("fireworks", "Fireworks AI API Key (Production open-weight inference)")),
+                ("nvidia", _prov_label("nvidia", "NVIDIA NIM API Key (Enterprise accelerated models)")),
+                ("alibaba", _prov_label("alibaba", "Alibaba Cloud / Qwen API Key (Qwen 2.5 series / DashScope)")),
+                ("minimax", _prov_label("minimax", "MiniMax API Key (MiniMax-01 series)")),
+                ("kimi", _prov_label("kimi", "Kimi / Moonshot API Key (Moonshot AI long-context)")),
+                ("zai", _prov_label("zai", "Z.AI / GLM API Key (GLM-4 frontier models)")),
+                ("ai-gateway", _prov_label("ai-gateway", "Vercel AI Gateway (Unified edge AI gateway)")),
+                ("huggingface", _prov_label("huggingface", "Hugging Face Serverless API Key (Open-access models)")),
+                ("azure", _prov_label("azure", "Azure OpenAI / Foundry (Enterprise cloud deployment)")),
+                ("bedrock", _prov_label("bedrock", "AWS Bedrock (Enterprise foundation models)")),
+                ("vertex", _prov_label("vertex", "Google Cloud Vertex AI (Enterprise Gemini on GCP)")),
+                ("ollama", _prov_label("ollama", "Ollama Local API (http://localhost:11434)")),
+                ("lmstudio", _prov_label("lmstudio", "LM Studio Local API (http://localhost:1234/v1)")),
                 ("local", _prov_label("local", "Local AI / Offline Models (Ollama / Local LLM / MLX — Zero egress)")),
-                ("category_fast_cloud", "▶ Fast Open-Weight Cloud (Cerebras, Fireworks, Mistral, Together, NVIDIA, Qwen...)"),
-                ("category_enterprise", "▶ Enterprise Cloud (Azure Foundry, AWS Bedrock, Google Vertex AI)"),
-                ("category_aggregators", "▶ Aggregators & Gateways (Vercel AI Gateway, Hugging Face)"),
-                ("category_local", "▶ Local & Self-Hosted Runtimes (Ollama, LM Studio, MLX)"),
                 ("custom", _prov_label("custom", "Custom OpenAI-Compatible Endpoint (vLLM / SGLang / LiteLLM / Proxy)")),
             ]
 
@@ -410,28 +422,6 @@ def run_onboard_wizard(
                 default_index=default_prov_idx,
             )
             selected_provider_key = provider_options[p_idx][0]
-
-            # If a category group was selected, show sub-picker
-            if selected_provider_key.startswith("category_"):
-                cat_key = selected_provider_key.replace("category_", "")
-                cat_map = {
-                    "fast_cloud": "fast_cloud",
-                    "enterprise": "enterprise",
-                    "aggregators": "aggregator",
-                    "local": "local",
-                }
-                actual_cat = cat_map.get(cat_key, "fast_cloud")
-                cat_providers = list_providers(category=actual_cat)
-                cat_options = [
-                    (p.id, f"{p.display_name} — {p.description}")
-                    for p in cat_providers
-                ]
-                sub_idx = select_option(
-                    f"Select {CATEGORY_LABELS.get(actual_cat, 'Provider')}:",
-                    cat_options,
-                    default_index=0,
-                )
-                selected_provider_key = cat_options[sub_idx][0]
 
             if selected_provider_key == "antigravity":
                 cloud_provider = "antigravity"
