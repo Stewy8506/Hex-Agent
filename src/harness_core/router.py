@@ -246,14 +246,20 @@ class TwoTierModelRouter:
                 pass
 
         if not resolved_cloud_model:
-            default_provider_models = {
-                "antigravity": "gemini-3-flash",
-                "anthropic": "claude-3-5-sonnet",
-                "openai": "gpt-4o",
-                "gemini": "gemini-2.5-pro",
-                "local": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
-            }
-            resolved_cloud_model = default_provider_models.get(resolved_provider_type, "gemini-3-flash")
+            from .providers.registry import get_provider_spec
+
+            spec = get_provider_spec(resolved_provider_type)
+            if spec and spec.default_model:
+                resolved_cloud_model = spec.default_model
+            else:
+                default_provider_models = {
+                    "antigravity": "gemini-3-flash",
+                    "anthropic": "claude-3-5-sonnet",
+                    "openai": "gpt-4o",
+                    "gemini": "gemini-2.5-pro",
+                    "local": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                }
+                resolved_cloud_model = default_provider_models.get(resolved_provider_type, "gemini-3-flash")
 
         if cloud_provider is not None:
             self.cloud_provider = cloud_provider
@@ -261,11 +267,12 @@ class TwoTierModelRouter:
             resolved_cloud_model.lower().startswith(("antigravity/", "google/antigravity-"))
         ):
             self.cloud_provider = AntigravityModelProvider(model_id=resolved_cloud_model)
-        elif resolved_provider_type in ("anthropic", "openai", "gemini"):
+        elif resolved_provider_type:
             # Explicit provider configured by user; respect authoritative choice
             self.cloud_provider = CloudModelProvider(
                 provider_type=resolved_provider_type,
                 model_id=resolved_cloud_model,
+                base_url=os.getenv("HEX_CLOUD_BASE_URL"),
             )
         else:
             # Auto-detect local Antigravity OAuth session if no provider is explicitly configured
@@ -282,6 +289,7 @@ class TwoTierModelRouter:
                 self.cloud_provider = CloudModelProvider(
                     provider_type=resolved_provider_type or "gemini",
                     model_id=resolved_cloud_model,
+                    base_url=os.getenv("HEX_CLOUD_BASE_URL"),
                 )
 
         self.compressor_provider = compressor_provider or self.cloud_provider
@@ -305,14 +313,24 @@ class TwoTierModelRouter:
         if hasattr(self.compressor_provider, "model_id") and self.compressor_mode == "cloud":
             self.compressor_provider.model_id = clean_id
 
-    def switch_cloud_provider(self, provider_type: str, model_id: str | None = None) -> ModelProvider:
+    def switch_cloud_provider(
+        self,
+        provider_type: str,
+        model_id: str | None = None,
+        base_url: str | None = None,
+    ) -> ModelProvider:
         """Switch the Tier-2 cloud reasoner backend dynamically (e.g., to 'antigravity')."""
         norm = provider_type.strip().lower()
         target_model = model_id or self.cloud_model_id
+        target_base_url = base_url or os.getenv("HEX_CLOUD_BASE_URL")
         if norm in ("antigravity", "google-antigravity", "google_antigravity", "agy"):
             self.cloud_provider = AntigravityModelProvider(model_id=target_model)
         else:
-            self.cloud_provider = CloudModelProvider(provider_type=norm, model_id=target_model)
+            self.cloud_provider = CloudModelProvider(
+                provider_type=norm,
+                model_id=target_model,
+                base_url=target_base_url,
+            )
         self.cloud_model_id = getattr(self.cloud_provider, "model_id", target_model)
         return self.cloud_provider
 

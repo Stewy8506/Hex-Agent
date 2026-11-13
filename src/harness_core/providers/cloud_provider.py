@@ -35,27 +35,55 @@ from .base import (
     ProviderCapabilities,
     ProviderUnavailableError,
 )
+from .registry import (
+    PROVIDER_REGISTRY,
+    ProviderSpec,
+    get_provider_spec,
+    list_provider_ids,
+)
 
 
 class CloudProviderType(str, Enum):
     """Supported cloud model provider backends."""
 
     ANTIGRAVITY = "antigravity"
+    OPENROUTER = "openrouter"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     GEMINI = "gemini"
+    DEEPSEEK = "deepseek"
+    XAI = "xai"
+    GROQ = "groq"
+    MISTRAL = "mistral"
+    TOGETHER = "together"
+    CEREBRAS = "cerebras"
+    FIREWORKS = "fireworks"
+    NVIDIA = "nvidia"
+    ALIBABA = "alibaba"
+    MINIMAX = "minimax"
+    KIMI = "kimi"
+    ZAI = "zai"
+    AI_GATEWAY = "ai-gateway"
+    HUGGINGFACE = "huggingface"
+    AZURE = "azure"
+    BEDROCK = "bedrock"
+    VERTEX = "vertex"
     LOCAL = "local"
     OLLAMA = "ollama"
+    LMSTUDIO = "lmstudio"
+    CUSTOM = "custom"
 
 
 def fetch_available_models(
     provider_type: CloudProviderType | str,
     api_key: str | None = None,
+    base_url: str | None = None,
     timeout: float = 3.0,
 ) -> list[tuple[str, str]]:
-    """Discover available models from live provider API without hardcoded fallbacks."""
+    """Discover available models from live provider API or curated provider fallback."""
     raw_type = getattr(provider_type, "value", provider_type)
     norm = str(raw_type).lower().strip()
+    spec = get_provider_spec(norm)
 
     if norm in ("antigravity", "google-antigravity", "cloudcode"):
         return ag_fetch_available_models(access_token=api_key, timeout=timeout)
@@ -125,7 +153,7 @@ def fetch_available_models(
             raise ProviderUnavailableError(f"Failed to live-fetch OpenAI models: {exc}") from exc
 
     elif norm in ("gemini", "google"):
-        key = (api_key or os.getenv("HEX_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+        key = (api_key or os.getenv("HEX_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
         if not key:
             raise ProviderUnavailableError("No Gemini API key found. Set HEX_GEMINI_API_KEY to live-fetch models.")
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
@@ -158,12 +186,13 @@ def fetch_available_models(
                 raise
             raise ProviderUnavailableError(f"Failed to live-fetch Gemini models: {exc}") from exc
 
-    elif norm in ("local", "ollama"):
+    elif norm in ("local", "ollama", "lmstudio"):
         results: list[tuple[str, str]] = []
         # 1. Probe local Ollama if running
-        url = "http://localhost:11434/api/tags"
+        ollama_base = os.getenv("OLLAMA_HOST") or "http://localhost:11434"
+        ollama_url = f"{ollama_base.rstrip('/')}/api/tags"
         headers = {"User-Agent": "HEX/0.1.0"}
-        req = urllib.request.Request(url, headers=headers, method="GET")
+        req = urllib.request.Request(ollama_url, headers=headers, method="GET")
         try:
             with urllib.request.urlopen(req, timeout=min(timeout, 1.5)) as resp:
                 if resp.status == 200:
@@ -207,6 +236,41 @@ def fetch_available_models(
 
         results.sort(key=lambda x: x[0].lower())
         return results
+
+    # -------------------------------------------------------------------------
+    # Generic / OpenAI-compatible / Registry-driven live discovery
+    # -------------------------------------------------------------------------
+    if spec:
+        resolved_key = (api_key or spec.resolve_api_key() or "").strip()
+        target_base = (base_url or spec.resolve_base_url()).rstrip("/")
+        models_url = f"{target_base}/models" if not target_base.endswith("/models") else target_base
+
+        if resolved_key or not spec.requires_api_key:
+            headers = {"User-Agent": "HEX/0.1.0"}
+            if resolved_key:
+                headers["Authorization"] = f"Bearer {resolved_key}"
+            headers.update(spec.extra_headers)
+
+            req = urllib.request.Request(models_url, headers=headers, method="GET")
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        items = data.get("data") or data.get("models")
+                        if isinstance(items, list) and items:
+                            results = []
+                            for m in items:
+                                if isinstance(m, dict) and "id" in m:
+                                    mid = str(m["id"])
+                                    disp = str(m.get("name") or m.get("display_name") or mid)
+                                    results.append((mid, f"{disp} ({spec.name})"))
+                            if results:
+                                results.sort(key=lambda x: (x[1].lower(), x[0].lower()))
+                                return results
+            except Exception as exc:
+                raise ProviderUnavailableError(f"Failed to fetch models for '{norm}': {exc}") from exc
+
+    raise ProviderUnavailableError(f"No models found or available for provider '{norm}'.")
 
     return []
 
@@ -333,6 +397,7 @@ class CloudModelProvider(ModelProvider):
         provider_type: CloudProviderType | str = CloudProviderType.GEMINI,
         model_id: str | None = None,
         api_key: str | None = None,
+        base_url: str | None = None,
         budget_tracker: TaskBudgetTracker | None = None,
         http_transport: Callable[[str, dict[str, str], bytes], tuple[int, bytes]] | None = None,
         enable_prompt_caching: bool = False,
@@ -344,7 +409,13 @@ class CloudModelProvider(ModelProvider):
             norm_p = str(provider_type).lower().strip()
             if norm_p in ("google-antigravity", "google_antigravity", "agy"):
                 norm_p = "antigravity"
-            self.provider_type = CloudProviderType(norm_p)
+            try:
+                self.provider_type = CloudProviderType(norm_p)
+            except ValueError:
+                self.provider_type = CloudProviderType.CUSTOM
+
+        self.spec = get_provider_spec(self.provider_type.value)
+        self.base_url = (base_url or (self.spec.resolve_base_url() if self.spec else "")).rstrip("/")
 
         if model_id:
             self.model_id = model_id
@@ -352,9 +423,11 @@ class CloudModelProvider(ModelProvider):
             resolved_env_model = os.getenv("HEX_CLOUD_MODEL_ID") or os.getenv("HARNESS_CLOUD_MODEL_ID")
             if resolved_env_model:
                 self.model_id = resolved_env_model
+            elif self.spec and self.spec.default_model:
+                self.model_id = self.spec.default_model
             else:
                 try:
-                    disc = fetch_available_models(self.provider_type, api_key=api_key)
+                    disc = fetch_available_models(self.provider_type, api_key=api_key, base_url=self.base_url)
                     self.model_id = disc[0][0] if disc else ""
                 except Exception:
                     self.model_id = ""
@@ -390,6 +463,10 @@ class CloudModelProvider(ModelProvider):
                 or os.getenv("ANTIGRAVITY_OAUTH_TOKEN")
                 or os.getenv("ANTIGRAVITY_ACCESS_TOKEN")
             )
+        if self.spec:
+            resolved = self.spec.resolve_api_key()
+            if resolved is not None:
+                return resolved
         if self.provider_type == CloudProviderType.ANTHROPIC:
             return os.getenv("ANTHROPIC_API_KEY") or os.getenv("HEX_ANTHROPIC_API_KEY")
         elif self.provider_type == CloudProviderType.OPENAI:
@@ -623,13 +700,45 @@ class CloudModelProvider(ModelProvider):
         temperature: float,
         stop_sequences: list[str] | None,
     ) -> tuple[str, dict[str, str], bytes]:
-        if not self.api_key and self.http_transport is None:
+        if (
+            (self.api_key is None or not str(self.api_key).strip())
+            and self.http_transport is None
+            and (not self.spec or self.spec.requires_api_key)
+        ):
             raise ProviderUnavailableError(
                 f"No API key provided for {self.provider_type.value}. Run 'hex setup' or set the appropriate environment variable."
             )
 
-        if self.provider_type == CloudProviderType.ANTHROPIC:
-            url = "https://api.anthropic.com/v1/messages"
+        transport = (
+            self.spec.transport
+            if self.spec
+            else ("anthropic_messages" if self.provider_type == CloudProviderType.ANTHROPIC else "openai_chat")
+        )
+
+        if self.provider_type == CloudProviderType.GEMINI:
+            api_key = self.api_key or "mock-key"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_id}:generateContent?key={api_key}"
+            headers = {"content-type": "application/json"}
+            parts: list[dict[str, str]] = []
+            if cacheable_prefix:
+                parts.append({"text": cacheable_prefix})
+            parts.append({"text": clean_prompt})
+            payload = {
+                "contents": [{"role": "user", "parts": parts}],
+                "generationConfig": {
+                    "maxOutputTokens": max_tokens,
+                    "temperature": temperature,
+                },
+            }
+            if system_prompt:
+                payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+            if stop_sequences:
+                payload["generationConfig"]["stopSequences"] = stop_sequences
+            return url, headers, json.dumps(payload).encode("utf-8")
+
+        elif transport == "anthropic_messages" or self.provider_type == CloudProviderType.ANTHROPIC:
+            base = self.base_url or "https://api.anthropic.com/v1"
+            url = base if base.endswith("/messages") else f"{base}/messages"
             headers = {
                 "x-api-key": self.api_key or "mock-key",
                 "anthropic-version": "2023-06-01",
@@ -637,6 +746,8 @@ class CloudModelProvider(ModelProvider):
             }
             if enable_prompt_caching:
                 headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+            if self.spec and self.spec.extra_headers:
+                headers.update(self.spec.extra_headers)
 
             if enable_prompt_caching and cacheable_prefix:
                 user_content: Any = [
@@ -674,12 +785,18 @@ class CloudModelProvider(ModelProvider):
                 payload["stop_sequences"] = stop_sequences
             return url, headers, json.dumps(payload).encode("utf-8")
 
-        elif self.provider_type == CloudProviderType.OPENAI:
-            url = "https://api.openai.com/v1/chat/completions"
+        else:
+            # Default to standard OpenAI-compatible chat completions transport
+            base = self.base_url or "https://api.openai.com/v1"
+            url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
             headers = {
-                "Authorization": f"Bearer {self.api_key or 'mock-key'}",
                 "content-type": "application/json",
             }
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            if self.spec and self.spec.extra_headers:
+                headers.update(self.spec.extra_headers)
+
             # Order strictly as stable (system) -> context (cacheable_prefix) -> volatile (prompt)
             messages: list[dict[str, str]] = []
             if system_prompt:
@@ -697,29 +814,6 @@ class CloudModelProvider(ModelProvider):
                 payload["stop"] = stop_sequences
             return url, headers, json.dumps(payload).encode("utf-8")
 
-        elif self.provider_type == CloudProviderType.GEMINI:
-            api_key = self.api_key or "mock-key"
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_id}:generateContent?key={api_key}"
-            headers = {"content-type": "application/json"}
-            parts: list[dict[str, str]] = []
-            if cacheable_prefix:
-                parts.append({"text": cacheable_prefix})
-            parts.append({"text": clean_prompt})
-            payload = {
-                "contents": [{"role": "user", "parts": parts}],
-                "generationConfig": {
-                    "maxOutputTokens": max_tokens,
-                    "temperature": temperature,
-                },
-            }
-            if system_prompt:
-                payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
-            if stop_sequences:
-                payload["generationConfig"]["stopSequences"] = stop_sequences
-            return url, headers, json.dumps(payload).encode("utf-8")
-
-        raise ModelProviderError(f"Unsupported cloud provider type: {self.provider_type}")
-
     def _parse_response(
         self, data: dict[str, Any], prompt: str
     ) -> tuple[str, int, int, int, str]:
@@ -729,7 +823,30 @@ class CloudModelProvider(ModelProvider):
         cached_tokens = 0
         finish_reason = "stop"
 
-        if self.provider_type == CloudProviderType.ANTHROPIC:
+        transport = (
+            self.spec.transport
+            if self.spec
+            else ("anthropic_messages" if self.provider_type == CloudProviderType.ANTHROPIC else "openai_chat")
+        )
+
+        if self.provider_type == CloudProviderType.GEMINI:
+            candidates = data.get("candidates", [])
+            if candidates and isinstance(candidates, list) and isinstance(candidates[0], dict):
+                cand = candidates[0]
+                content = cand.get("content", {})
+                if isinstance(content, dict):
+                    parts = content.get("parts", [])
+                    if parts and isinstance(parts, list):
+                        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+                finish_reason = str(cand.get("finishReason", "stop")).lower()
+            elif "text" in data:
+                text = str(data["text"])
+            usage_meta = data.get("usageMetadata", {})
+            in_tokens = int(usage_meta.get("promptTokenCount", 0))
+            out_tokens = int(usage_meta.get("candidatesTokenCount", 0))
+            cached_tokens = int(usage_meta.get("cachedContentTokenCount", 0))
+
+        elif transport == "anthropic_messages" or self.provider_type == CloudProviderType.ANTHROPIC:
             if "content" in data and isinstance(data["content"], list):
                 for item in data["content"]:
                     if isinstance(item, dict) and item.get("type") == "text":
@@ -747,7 +864,8 @@ class CloudModelProvider(ModelProvider):
             out_tokens = int(usage_dict.get("output_tokens", 0))
             finish_reason = data.get("stop_reason") or "stop"
 
-        elif self.provider_type == CloudProviderType.OPENAI:
+        else:
+            # Default to standard OpenAI-compatible response parsing
             choices = data.get("choices", [])
             if choices and isinstance(choices, list) and isinstance(choices[0], dict):
                 msg = choices[0].get("message", {})
@@ -764,23 +882,6 @@ class CloudModelProvider(ModelProvider):
             details = usage_dict.get("prompt_tokens_details") or {}
             if isinstance(details, dict):
                 cached_tokens = int(details.get("cached_tokens", 0))
-
-        elif self.provider_type == CloudProviderType.GEMINI:
-            candidates = data.get("candidates", [])
-            if candidates and isinstance(candidates, list) and isinstance(candidates[0], dict):
-                cand = candidates[0]
-                content = cand.get("content", {})
-                if isinstance(content, dict):
-                    parts = content.get("parts", [])
-                    if parts and isinstance(parts, list):
-                        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-                finish_reason = str(cand.get("finishReason", "stop")).lower()
-            elif "text" in data:
-                text = str(data["text"])
-            usage_meta = data.get("usageMetadata", {})
-            in_tokens = int(usage_meta.get("promptTokenCount", 0))
-            out_tokens = int(usage_meta.get("candidatesTokenCount", 0))
-            cached_tokens = int(usage_meta.get("cachedContentTokenCount", 0))
 
         # Fallback heuristic token count if provider didn't return usage
         if in_tokens <= 0:

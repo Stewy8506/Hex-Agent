@@ -20,9 +20,20 @@ from .cloud_provider import (
     calculate_cost_usd,
 )
 from .mlx_provider import LocalMLXModelProvider, Tier1LogCompressor
+from .registry import (
+    CATEGORY_LABELS,
+    PROVIDER_REGISTRY,
+    PROVIDER_SPECS,
+    ProviderSpec,
+    get_all_provider_env_vars,
+    get_provider_spec,
+    list_provider_ids,
+    list_providers,
+)
 
 __all__ = [
     "BudgetExceededError",
+    "CATEGORY_LABELS",
     "CloudModelProvider",
     "CloudProviderType",
     "LocalMLXModelProvider",
@@ -32,9 +43,16 @@ __all__ = [
     "ModelResponse",
     "ModelUsage",
     "PolicyBlockedError",
+    "PROVIDER_REGISTRY",
+    "PROVIDER_SPECS",
     "ProviderCapabilities",
+    "ProviderSpec",
     "ProviderUnavailableError",
     "TaskBudgetTracker",
     "Tier1LogCompressor",
     "calculate_cost_usd",
+    "get_all_provider_env_vars",
+    "get_provider_spec",
+    "list_provider_ids",
+    "list_providers",
 ]

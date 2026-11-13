@@ -173,6 +173,8 @@ def load_hex_environment(
                         cfg_props["HEX_LOCAL_MODEL_ID"] = str(model_section["local_model_id"])
                     if model_section.get("compressor_mode"):
                         cfg_props["HEX_COMPRESSOR_MODE"] = str(model_section["compressor_mode"])
+                    if model_section.get("cloud_base_url"):
+                        cfg_props["HEX_CLOUD_BASE_URL"] = str(model_section["cloud_base_url"])
                     cfg_props["HEX_MODEL_SOURCE"] = "project override" if is_project_file else "global default"
 
             web_search_section = cfg_data.get("web_search", {})
@@ -196,16 +198,26 @@ def has_active_credentials(config_dir: Path | None = None) -> bool:
     # Ensure env is hydrated first
     load_hex_environment(config_dir=config_dir, workspace_root=config_dir if config_dir else None)
 
-    # 1. Check direct environment keys
-    if (
-        os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("HEX_ANTHROPIC_API_KEY")
-        or os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("HEX_OPENAI_API_KEY")
-        or os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("HEX_GEMINI_API_KEY")
-    ):
-        return True
+    # 1. Check all provider environment keys
+    try:
+        from .providers.registry import get_all_provider_env_vars
+        for env_var in get_all_provider_env_vars():
+            if os.environ.get(env_var):
+                return True
+    except Exception:
+        # Fallback to standard core keys
+        if (
+            os.environ.get("ANTHROPIC_API_KEY")
+            or os.environ.get("HEX_ANTHROPIC_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("HEX_OPENAI_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("HEX_GEMINI_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY")
+            or os.environ.get("GROQ_API_KEY")
+            or os.environ.get("DEEPSEEK_API_KEY")
+        ):
+            return True
 
     # 2. Check Antigravity OAuth tokens
     if os.environ.get("HEX_ANTIGRAVITY_TOKEN") or os.environ.get("ANTIGRAVITY_OAUTH_TOKEN"):
@@ -224,8 +236,9 @@ def has_active_credentials(config_dir: Path | None = None) -> bool:
         except Exception:
             pass
 
-    # 4. Check if explicitly set to local-only mode
-    if os.environ.get("HEX_CLOUD_PROVIDER") in ("local", "offline"):
+    # 4. Check if explicitly set to local/offline mode
+    cloud_prov = (os.environ.get("HEX_CLOUD_PROVIDER") or "").strip().lower()
+    if cloud_prov in ("local", "offline", "ollama", "lmstudio"):
         return True
 
     return False

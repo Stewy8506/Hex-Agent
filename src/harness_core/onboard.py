@@ -21,6 +21,14 @@ from .cow import get_default_snapshot_provider
 from .orchestrator import HarnessOrchestrator
 from .providers.antigravity_provider import AntigravityOAuthManager
 from .providers.cloud_provider import fetch_available_models
+from .providers.registry import (
+    CATEGORY_LABELS,
+    PROVIDER_REGISTRY,
+    ProviderSpec,
+    get_all_provider_env_vars,
+    get_provider_spec,
+    list_providers,
+)
 from .sandbox import get_default_sandbox
 from .ui_selector import prompt_secret, select_option
 
@@ -142,6 +150,7 @@ def update_config_yaml_model(
     cloud_provider: str,
     cloud_model_id: str,
     profile: str,
+    cloud_base_url: str | None = None,
     project_override: bool = False,
 ) -> bool:
     """Safely update model section in config.yaml without requiring third-party PyYAML."""
@@ -173,6 +182,12 @@ def update_config_yaml_model(
         block = _set_field(block, "cloud_provider", f'"{_clean_val(cloud_provider)}"')
         block = _set_field(block, "cloud_model_id", f'"{_clean_val(cloud_model_id)}"')
         block = _set_field(block, "profile", f'"{_clean_val(profile)}"')
+        if cloud_base_url is not None:
+            if cloud_base_url.strip():
+                block = _set_field(block, "cloud_base_url", f'"{_clean_val(cloud_base_url)}"')
+            else:
+                pattern = r"(?m)^  cloud_base_url:\s*[^\n]*\n?"
+                block = re.sub(pattern, "", block)
         if project_override:
             block = _set_field(block, "project_override", "true")
         content = content[:header.end()] + block + content[block_end:]
@@ -188,6 +203,8 @@ def run_onboard_wizard(
     non_interactive: bool = False,
     defaults_only: bool = False,
     target_stage: str | None = None,
+    target_provider: str | None = None,
+    target_model: str | None = None,
 ) -> dict[str, Any]:
     """Execute the interactive or automated onboarding sequence for HEX."""
     cfg_dir = config_dir or (Path.home() / ".hex")
@@ -265,6 +282,11 @@ def run_onboard_wizard(
         existing_creds.get("HEX_CLOUD_MODEL_ID")
         or (existing_config.get("model") or {}).get("cloud_model_id")
     )
+    existing_base_url = (
+        existing_creds.get("HEX_CLOUD_BASE_URL")
+        or (existing_config.get("model") or {}).get("cloud_base_url")
+        or ""
+    )
     existing_profile = (
         (existing_config.get("model") or {}).get("profile")
     )
@@ -304,9 +326,18 @@ def run_onboard_wizard(
     should_run_search = not (is_model_stage or is_messaging_stage)
     should_run_messaging = not (is_model_stage or is_search_stage)
 
+    if target_provider:
+        existing_provider = target_provider.strip().lower()
+        should_run_model = True
+    if target_model:
+        existing_model_id = target_model.strip()
+
     # Initial state resolving existing settings first
     cloud_provider = existing_provider or "antigravity"
     cloud_model_id = existing_model_id or ("claude-opus-4-6-thinking" if cloud_provider == "antigravity" else "")
+    cloud_base_url = existing_base_url
+    active_provider_key = ""
+    active_provider_key_var = ""
     model_profile = existing_profile or (
         "antigravity_hybrid" if profile.is_apple_silicon and cloud_provider == "antigravity" else ("hybrid" if profile.is_apple_silicon else "cloud")
     )
@@ -341,8 +372,6 @@ def run_onboard_wizard(
     if not non_interactive and not defaults_only:
         # Step 1: Model Provider Selection
         if should_run_model:
-            provider_keys = ["antigravity", "anthropic", "openai", "gemini", "local"]
-
             def _prov_label(pkey: str, label: str) -> str:
                 if existing_provider == pkey:
                     return f"{label} [Currently Configured]"
@@ -353,12 +382,27 @@ def run_onboard_wizard(
                 ("anthropic", _prov_label("anthropic", "Anthropic API Key (Claude 3.5 Sonnet / Opus)")),
                 ("openai", _prov_label("openai", "OpenAI API Key (GPT-4o / o1 / o3-mini)")),
                 ("gemini", _prov_label("gemini", "Google Gemini API Key (Gemini 2.5 Pro / Flash)")),
+                ("openrouter", _prov_label("openrouter", "OpenRouter (Unified Gateway • 300+ frontier & open-weight models)")),
+                ("deepseek", _prov_label("deepseek", "DeepSeek API Key (DeepSeek-V3 / R1)")),
+                ("groq", _prov_label("groq", "Groq Cloud API Key (Ultra-fast LPU inference • Llama 3.3)")),
+                ("xai", _prov_label("xai", "xAI API Key (Grok 2 / Grok 3)")),
                 ("local", _prov_label("local", "Local AI / Offline Models (Ollama / Local LLM / MLX — Zero egress)")),
+                ("category_fast_cloud", "▶ Fast Open-Weight Cloud (Cerebras, Fireworks, Mistral, Together, NVIDIA, Qwen...)"),
+                ("category_enterprise", "▶ Enterprise Cloud (Azure Foundry, AWS Bedrock, Google Vertex AI)"),
+                ("category_aggregators", "▶ Aggregators & Gateways (Vercel AI Gateway, Hugging Face)"),
+                ("category_local", "▶ Local & Self-Hosted Runtimes (Ollama, LM Studio, MLX)"),
+                ("custom", _prov_label("custom", "Custom OpenAI-Compatible Endpoint (vLLM / SGLang / LiteLLM / Proxy)")),
             ]
 
+            provider_keys = [k for k, _ in provider_options]
             default_prov_idx = 0
             if existing_provider in provider_keys:
                 default_prov_idx = provider_keys.index(existing_provider)
+            elif existing_provider and get_provider_spec(existing_provider):
+                spec = get_provider_spec(existing_provider)
+                assert spec is not None
+                provider_options.insert(0, (spec.id, f"{spec.display_name} [Currently Configured]"))
+                default_prov_idx = 0
 
             p_idx = select_option(
                 "Select Primary Model Provider & Brain:",
@@ -366,6 +410,28 @@ def run_onboard_wizard(
                 default_index=default_prov_idx,
             )
             selected_provider_key = provider_options[p_idx][0]
+
+            # If a category group was selected, show sub-picker
+            if selected_provider_key.startswith("category_"):
+                cat_key = selected_provider_key.replace("category_", "")
+                cat_map = {
+                    "fast_cloud": "fast_cloud",
+                    "enterprise": "enterprise",
+                    "aggregators": "aggregator",
+                    "local": "local",
+                }
+                actual_cat = cat_map.get(cat_key, "fast_cloud")
+                cat_providers = list_providers(category=actual_cat)
+                cat_options = [
+                    (p.id, f"{p.display_name} — {p.description}")
+                    for p in cat_providers
+                ]
+                sub_idx = select_option(
+                    f"Select {CATEGORY_LABELS.get(actual_cat, 'Provider')}:",
+                    cat_options,
+                    default_index=0,
+                )
+                selected_provider_key = cat_options[sub_idx][0]
 
             if selected_provider_key == "antigravity":
                 cloud_provider = "antigravity"
@@ -484,135 +550,6 @@ def run_onboard_wizard(
                     cloud_model_id = manual_mid or default_mid
                     print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
 
-            elif selected_provider_key == "anthropic":
-                cloud_provider = "anthropic"
-                model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
-                provider_title = "Anthropic"
-
-                if not anthropic_key:
-                    anthropic_key = prompt_secret("Enter Anthropic API Key (sk-ant-...): ")
-                else:
-                    k_prev = f"...{anthropic_key[-4:]}" if len(anthropic_key) >= 4 else "configured"
-                    new_key = prompt_secret(f"Enter Anthropic API Key (Press Enter to keep currently configured {k_prev}): ")
-                    if new_key.strip():
-                        anthropic_key = new_key.strip()
-
-                print("  ◈ Querying available models from Anthropic...")
-                try:
-                    discovered_models = fetch_available_models("anthropic", api_key=anthropic_key)
-                except Exception as exc:
-                    print(f"  ⚠ Live model query failed: {exc}")
-                    discovered_models = []
-                model_options = []
-                if existing_model_id and existing_provider == "anthropic":
-                    curr_label = existing_model_id
-                    for mid, mlabel in (discovered_models or []):
-                        if mid == existing_model_id:
-                            curr_label = mlabel
-                            break
-                    model_options.append(("keep", f"Use currently configured ({curr_label})"))
-                for mid, mlabel in (discovered_models or []):
-                    if mid != existing_model_id:
-                        model_options.append((mid, mlabel))
-
-                if model_options:
-                    m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
-                    chosen_mid = model_options[m_idx][0]
-                    cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
-                    print(f"  ✓ Active model selected: {cloud_model_id}\n")
-                else:
-                    print(f"  ℹ [Offline/Manual Entry] Live model discovery was unavailable for {provider_title}.")
-                    default_mid = existing_model_id or "claude-3-5-sonnet"
-                    manual_mid = input(f"  Enter {provider_title} Model ID (default: {default_mid}): ").strip()
-                    cloud_model_id = manual_mid or default_mid
-                    print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
-
-            elif selected_provider_key == "openai":
-                cloud_provider = "openai"
-                model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
-                provider_title = "OpenAI"
-
-                if not openai_key:
-                    openai_key = prompt_secret("Enter OpenAI API Key (sk-...): ")
-                else:
-                    k_prev = f"...{openai_key[-4:]}" if len(openai_key) >= 4 else "configured"
-                    new_key = prompt_secret(f"Enter OpenAI API Key (Press Enter to keep currently configured {k_prev}): ")
-                    if new_key.strip():
-                        openai_key = new_key.strip()
-
-                print("  ◈ Querying available models from OpenAI...")
-                try:
-                    discovered_models = fetch_available_models("openai", api_key=openai_key)
-                except Exception as exc:
-                    print(f"  ⚠ Live model query failed: {exc}")
-                    discovered_models = []
-                model_options = []
-                if existing_model_id and existing_provider == "openai":
-                    curr_label = existing_model_id
-                    for mid, mlabel in (discovered_models or []):
-                        if mid == existing_model_id:
-                            curr_label = mlabel
-                            break
-                    model_options.append(("keep", f"Use currently configured ({curr_label})"))
-                for mid, mlabel in (discovered_models or []):
-                    if mid != existing_model_id:
-                        model_options.append((mid, mlabel))
-
-                if model_options:
-                    m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
-                    chosen_mid = model_options[m_idx][0]
-                    cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
-                    print(f"  ✓ Active model selected: {cloud_model_id}\n")
-                else:
-                    print(f"  ℹ [Offline/Manual Entry] Live model discovery was unavailable for {provider_title}.")
-                    default_mid = existing_model_id or "gpt-4o"
-                    manual_mid = input(f"  Enter {provider_title} Model ID (default: {default_mid}): ").strip()
-                    cloud_model_id = manual_mid or default_mid
-                    print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
-
-            elif selected_provider_key == "gemini":
-                cloud_provider = "gemini"
-                model_profile = "hybrid" if profile.is_apple_silicon else "cloud"
-                provider_title = "Google Gemini"
-
-                if not gemini_key:
-                    gemini_key = prompt_secret("Enter Gemini API Key (AIza...): ")
-                else:
-                    k_prev = f"...{gemini_key[-4:]}" if len(gemini_key) >= 4 else "configured"
-                    new_key = prompt_secret(f"Enter Gemini API Key (Press Enter to keep currently configured {k_prev}): ")
-                    if new_key.strip():
-                        gemini_key = new_key.strip()
-
-                print("  ◈ Querying available models from Google Gemini...")
-                try:
-                    discovered_models = fetch_available_models("gemini", api_key=gemini_key)
-                except Exception as exc:
-                    print(f"  ⚠ Live model query failed: {exc}")
-                    discovered_models = []
-                model_options = []
-                if existing_model_id and existing_provider == "gemini":
-                    curr_label = existing_model_id
-                    for mid, mlabel in (discovered_models or []):
-                        if mid == existing_model_id:
-                            curr_label = mlabel
-                            break
-                    model_options.append(("keep", f"Use currently configured ({curr_label})"))
-                for mid, mlabel in (discovered_models or []):
-                    if mid != existing_model_id:
-                        model_options.append((mid, mlabel))
-
-                if model_options:
-                    m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
-                    chosen_mid = model_options[m_idx][0]
-                    cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
-                    print(f"  ✓ Active model selected: {cloud_model_id}\n")
-                else:
-                    print(f"  ℹ [Offline/Manual Entry] Live model discovery was unavailable for {provider_title}.")
-                    default_mid = existing_model_id or "gemini-2.5-pro"
-                    manual_mid = input(f"  Enter {provider_title} Model ID (default: {default_mid}): ").strip()
-                    cloud_model_id = manual_mid or default_mid
-                    print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
-
             elif selected_provider_key == "local":
                 cloud_provider = "local"
                 model_profile = "local"
@@ -646,6 +583,100 @@ def run_onboard_wizard(
                     manual_model = input("  Enter Local Model Path or HuggingFace ID / Tag: ").strip()
                     cloud_model_id = manual_model if manual_model else (existing_model_id or "qwen2.5-coder:7b")
                 print("  ✓ Local offline profile configured. Zero external network egress.\n")
+
+            else:
+                spec = get_provider_spec(selected_provider_key) or ProviderSpec(
+                    id=selected_provider_key,
+                    display_name=selected_provider_key.title(),
+                    default_base_url="https://api.openai.com/v1",
+                    default_model="gpt-4o",
+                )
+                provider_title = spec.display_name
+                cloud_provider = spec.id
+                model_profile = "local" if spec.is_local else ("hybrid" if profile.is_apple_silicon else "cloud")
+
+                # Resolve existing key
+                current_key = spec.resolve_api_key()
+                if not current_key:
+                    for env_k in spec.env_vars:
+                        if existing_creds.get(env_k):
+                            current_key = existing_creds[env_k]
+                            break
+
+                # Handle API Key
+                if spec.is_local:
+                    api_key = current_key or ""
+                else:
+                    if spec.signup_url:
+                        print(f"  ℹ Get an API key at: {spec.signup_url}")
+                    if not current_key:
+                        api_key = prompt_secret(f"Enter {spec.display_name} API Key ({spec.env_vars[0]}): ")
+                    else:
+                        k_prev = f"...{current_key[-4:]}" if len(current_key) >= 4 else "configured"
+                        new_key = prompt_secret(
+                            f"Enter {spec.display_name} API Key (Press Enter to keep currently configured {k_prev}): "
+                        )
+                        api_key = new_key.strip() if new_key.strip() else current_key
+
+                active_provider_key = api_key
+                active_provider_key_var = spec.env_vars[0] if spec.env_vars else f"{spec.id.upper().replace('-', '_')}_API_KEY"
+                if spec.id == "anthropic":
+                    anthropic_key = api_key
+                elif spec.id == "openai":
+                    openai_key = api_key
+                elif spec.id == "gemini":
+                    gemini_key = api_key
+
+                # Handle Base URL
+                if spec.id in ("custom", "ollama", "lmstudio") or existing_base_url:
+                    def_url = existing_base_url or spec.default_base_url or ""
+                    if spec.id == "custom":
+                        entered_url = input(
+                            f"  Enter {spec.display_name} Base URL (default: {def_url or 'http://localhost:8000/v1'}): "
+                        ).strip()
+                        cloud_base_url = entered_url or def_url or "http://localhost:8000/v1"
+                    elif spec.is_local:
+                        entered_url = input(f"  Enter {spec.display_name} Base URL (Press Enter for '{def_url}'): ").strip()
+                        cloud_base_url = entered_url or def_url
+                    else:
+                        cloud_base_url = def_url
+                else:
+                    cloud_base_url = spec.default_base_url or ""
+
+                # Live / Curated Model Discovery
+                print(f"  ◈ Querying available models from {spec.display_name}...")
+                try:
+                    if cloud_base_url and cloud_base_url != spec.default_base_url:
+                        discovered_models = fetch_available_models(spec.id, api_key=api_key, base_url=cloud_base_url)
+                    else:
+                        discovered_models = fetch_available_models(spec.id, api_key=api_key)
+                except Exception as exc:
+                    print(f"  ⚠ Live model query failed: {exc}")
+                    discovered_models = list(spec.curated_models) if spec and spec.curated_models else []
+
+                model_options = []
+                if existing_model_id and existing_provider == spec.id:
+                    curr_label = existing_model_id
+                    for mid, mlabel in (discovered_models or []):
+                        if mid == existing_model_id:
+                            curr_label = mlabel
+                            break
+                    model_options.append(("keep", f"Use currently configured ({curr_label})"))
+                for mid, mlabel in (discovered_models or []):
+                    if mid != existing_model_id:
+                        model_options.append((mid, mlabel))
+
+                if model_options:
+                    m_idx = select_option(f"Select Primary {provider_title} Model:", model_options, default_index=0)
+                    chosen_mid = model_options[m_idx][0]
+                    cloud_model_id = existing_model_id if chosen_mid == "keep" else chosen_mid
+                    print(f"  ✓ Active model selected: {cloud_model_id}\n")
+                else:
+                    print(f"  ℹ [Offline/Manual Entry] Live model discovery was unavailable for {provider_title}.")
+                    default_mid = existing_model_id or spec.default_model
+                    manual_mid = input(f"  Enter {provider_title} Model ID (default: {default_mid}): ").strip()
+                    cloud_model_id = manual_mid or default_mid
+                    print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
 
         # Step 1b: Context & Log Compressor Strategy Selection
         existing_compressor = (existing_config.get("model") or {}).get("compressor_mode")
@@ -763,24 +794,44 @@ def run_onboard_wizard(
                 print()
 
     # Write credentials securely
-    creds_content = [
-        "# HEX Secure Credentials Environment File",
-        f"HEX_CLOUD_PROVIDER={cloud_provider}",
-        f"HEX_CLOUD_MODEL_ID={cloud_model_id}",
-        f"HEX_COMPRESSOR_MODE={compressor_mode}",
-        f"HEX_ANTIGRAVITY_TOKEN={antigravity_token}",
-        f"HEX_ANTIGRAVITY_REFRESH_TOKEN={ag_cred.refresh_token if ag_cred and ag_cred.refresh_token else existing_creds.get('HEX_ANTIGRAVITY_REFRESH_TOKEN', '')}",
-        f"ANTHROPIC_API_KEY={anthropic_key}",
-        f"OPENAI_API_KEY={openai_key}",
-        f"GEMINI_API_KEY={gemini_key}",
-        f"HEX_WEB_SEARCH_PROVIDER={web_search_provider}",
-        f"TAVILY_API_KEY={tavily_key}",
-        f"BRAVE_API_KEY={brave_key}",
-        f"HEX_TELEGRAM_BOT_TOKEN={telegram_token}",
-        f"HEX_TELEGRAM_ALLOWED_USERS={telegram_allowed}",
-        f"HEX_DISCORD_BOT_TOKEN={discord_token}",
-        f"HEX_DISCORD_WEBHOOK_URL={discord_webhook}",
-    ]
+    creds_dict = dict(existing_creds)
+    creds_dict["HEX_CLOUD_PROVIDER"] = cloud_provider
+    creds_dict["HEX_CLOUD_MODEL_ID"] = cloud_model_id
+    creds_dict["HEX_COMPRESSOR_MODE"] = compressor_mode
+    if cloud_base_url:
+        creds_dict["HEX_CLOUD_BASE_URL"] = cloud_base_url
+    if antigravity_token:
+        creds_dict["HEX_ANTIGRAVITY_TOKEN"] = antigravity_token
+    if ag_cred and ag_cred.refresh_token:
+        creds_dict["HEX_ANTIGRAVITY_REFRESH_TOKEN"] = ag_cred.refresh_token
+    if anthropic_key:
+        creds_dict["ANTHROPIC_API_KEY"] = anthropic_key
+    if openai_key:
+        creds_dict["OPENAI_API_KEY"] = openai_key
+    if gemini_key:
+        creds_dict["GEMINI_API_KEY"] = gemini_key
+    if active_provider_key and active_provider_key_var:
+        creds_dict[active_provider_key_var] = active_provider_key
+    creds_dict["HEX_WEB_SEARCH_PROVIDER"] = web_search_provider
+    if tavily_key:
+        creds_dict["TAVILY_API_KEY"] = tavily_key
+    if brave_key:
+        creds_dict["BRAVE_API_KEY"] = brave_key
+    if telegram_token:
+        creds_dict["HEX_TELEGRAM_BOT_TOKEN"] = telegram_token
+    if telegram_allowed:
+        creds_dict["HEX_TELEGRAM_ALLOWED_USERS"] = telegram_allowed
+    if discord_token:
+        creds_dict["HEX_DISCORD_BOT_TOKEN"] = discord_token
+    if discord_webhook:
+        creds_dict["HEX_DISCORD_WEBHOOK_URL"] = discord_webhook
+
+    creds_content = ["# HEX Secure Credentials Environment File"]
+    for k, v in creds_dict.items():
+        if v:
+            creds_content.append(f"{k}={v}")
+        else:
+            creds_content.append(f"{k}=")
     credentials_file.write_text("\n".join(creds_content) + "\n", encoding="utf-8")
     try:
         os.chmod(credentials_file, 0o600)
@@ -800,6 +851,7 @@ def run_onboard_wizard(
 
     # Write config.yaml
     local_model_id = cloud_model_id if cloud_provider == "local" else (existing_config.get("model") or {}).get("local_model_id", "")
+    cloud_base_url_line = f'  cloud_base_url: "{cloud_base_url}"\n' if cloud_base_url else ""
     config_yaml = f"""# HEX Autonomous AI Workbench Configuration
 version: "1.0"
 model:
@@ -807,7 +859,7 @@ model:
   cloud_provider: "{cloud_provider}"
   compressor_mode: "{compressor_mode}"
   cloud_model_id: "{cloud_model_id}"
-  local_model_id: "{local_model_id}"
+{cloud_base_url_line}  local_model_id: "{local_model_id}"
 web_search:
   provider: "{web_search_provider}"
 messaging:

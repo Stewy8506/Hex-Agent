@@ -74,11 +74,11 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--workspace", default=None, help="Workspace path (defaults to repository root)")
     parser.add_argument(
         "--provider",
-        choices=["antigravity", "gemini", "anthropic", "openai", "local"],
         default=None,
-        help="Cloud reasoner provider override (e.g., antigravity)",
+        help="Cloud reasoner provider override (e.g., antigravity, openrouter, anthropic, openai, gemini, deepseek, groq, local)",
     )
     parser.add_argument("--model", default=None, help="Model routing profile override (hybrid, local, cloud, or model ID)")
+    parser.add_argument("--base-url", default=None, help="Custom endpoint Base URL (e.g., http://localhost:8000/v1 for custom / vLLM)")
     parser.add_argument(
         "--skin",
         default="amber",
@@ -98,6 +98,9 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
 
     p_setup = sub.add_parser("setup", aliases=["onboard"], help="Run interactive setup wizard for hardware & configuration (alias: hex onboard)")
     p_setup.add_argument("stage", nargs="?", default=None, help="Specific component to configure (e.g. 'model', 'search', 'messaging', or omit for full setup)")
+    p_setup.add_argument("--provider", default=None, help="Target model provider to configure (e.g. openrouter, deepseek, groq, anthropic, openai)")
+    p_setup.add_argument("--model", default=None, help="Target model ID to configure")
+    p_setup.add_argument("--base-url", default=None, help="Custom endpoint Base URL")
     p_setup.add_argument("--config-dir", default=None, help="Custom configuration directory (defaults to ~/.hex)")
     p_setup.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode using hardware defaults")
     p_setup.add_argument("--defaults", dest="defaults_only", action="store_true", help="Accept all hardware auto-detected defaults")
@@ -151,8 +154,9 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_run.add_argument("goal", help="Task goal description")
     p_run.add_argument("--project", default="default")
     p_run.add_argument("--mode", choices=["auto", "fast_path", "standard"], default="auto")
-    p_run.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=None, help="Cloud reasoner provider override (e.g., antigravity)")
+    p_run.add_argument("--provider", default=None, help="Cloud reasoner provider override (e.g., antigravity, openrouter, deepseek, local)")
     p_run.add_argument("--model", default=None, help="Cloud model ID override (e.g., gemini-2.5-pro, gemini-2.5-flash)")
+    p_run.add_argument("--base-url", default=None, help="Custom endpoint Base URL override")
     p_run.add_argument("--workspace", default=None)
     p_run.add_argument("--branch", nargs="?", const=True, default=None, help="Custom branch name or flag to auto-branch (hex/task-<id>-<slug>)")
     p_run.add_argument("--pr", action="store_true", help="Automatically create GitHub Pull Request on success")
@@ -164,7 +168,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_sub.add_argument("goal", help="Task goal description")
     p_sub.add_argument("--project", default="default")
     p_sub.add_argument("--mode", choices=["auto", "fast_path", "standard"], default="auto")
-    p_sub.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=None, help="Cloud reasoner provider override")
+    p_sub.add_argument("--provider", default=None, help="Cloud reasoner provider override")
     p_sub.add_argument("--workspace", default=None)
 
     p_stat = sub.add_parser("status", help="Inspect task status, events, and Proof-Carrying Artifact")
@@ -199,8 +203,9 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_chat.add_argument("--check", action="store_true", default=False, help="Run headless virtual verification and exit 0")
     p_chat.add_argument("--project", default=argparse.SUPPRESS, help="Project ID")
     p_chat.add_argument("--workspace", default=argparse.SUPPRESS, help="Workspace path (defaults to repository root)")
-    p_chat.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=argparse.SUPPRESS, help="Cloud reasoner provider override (e.g., antigravity)")
+    p_chat.add_argument("--provider", default=argparse.SUPPRESS, help="Cloud reasoner provider override (e.g., antigravity, openrouter, deepseek, local)")
     p_chat.add_argument("--model", default=argparse.SUPPRESS, help="Model routing profile override (hybrid, local, cloud, or model ID)")
+    p_chat.add_argument("--base-url", default=argparse.SUPPRESS, help="Custom endpoint Base URL override")
     p_chat.add_argument("--skin", default=argparse.SUPPRESS, choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
     p_chat.add_argument("-Q", "--quiet", action="store_true", default=argparse.SUPPRESS, help="Quiet mode: suppress startup banner and spinner")
     p_chat.add_argument("--no-stream", action="store_true", default=argparse.SUPPRESS, help="Disable live token streaming")
@@ -224,7 +229,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_voice = sub.add_parser("voice", help="Start interactive hands-free voice pair-programming console")
     p_voice.add_argument("--project", default=argparse.SUPPRESS, help="Project ID")
     p_voice.add_argument("--workspace", default=argparse.SUPPRESS, help="Workspace path (defaults to repository root)")
-    p_voice.add_argument("--provider", choices=["antigravity", "gemini", "anthropic", "openai", "local"], default=argparse.SUPPRESS, help="Cloud reasoner provider override")
+    p_voice.add_argument("--provider", default=argparse.SUPPRESS, help="Cloud reasoner provider override")
     p_voice.add_argument("--model", default=argparse.SUPPRESS, help="Model routing profile override")
     p_voice.add_argument("--voice-name", default=None, help="TTS voice name (e.g., Samantha, Daniel)")
     p_voice.add_argument("--speech-rate", type=int, default=190, help="Speech rate in words per minute (default: 190)")
@@ -451,6 +456,9 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
     load_hex_environment(config_dir=Path(args.config_dir) if getattr(args, "config_dir", None) else None)
 
+    if getattr(args, "base_url", None):
+        os.environ["HEX_CLOUD_BASE_URL"] = str(args.base_url).strip().rstrip("/")
+
     if args.cmd in ("setup", "onboard"):
         from .onboard import run_onboard_wizard
 
@@ -460,6 +468,8 @@ def _main_impl(argv: list[str] | None = None) -> int:
             non_interactive=getattr(args, "non_interactive", False),
             defaults_only=getattr(args, "defaults_only", False),
             target_stage=getattr(args, "stage", None),
+            target_provider=getattr(args, "provider", None),
+            target_model=getattr(args, "model", None),
         )
         if isinstance(res, dict) and res.get("status") == "error":
             return 1
@@ -747,6 +757,9 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
     orch = HarnessOrchestrator(bound_data_dir, default_workspace=ws_root)
 
+    if getattr(args, "base_url", None):
+        os.environ["HEX_CLOUD_BASE_URL"] = str(args.base_url).strip().rstrip("/")
+
     if getattr(args, "provider", None):
         if args.provider == "local":
             orch.router.cloud_provider = orch.router.local_provider
@@ -754,6 +767,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             orch.router.switch_cloud_provider(
                 args.provider,
                 model_id=getattr(args, "model", None) or orch.router.cloud_model_id,
+                base_url=getattr(args, "base_url", None),
             )
     elif getattr(args, "model", None):
         orch.router.cloud_model_id = args.model
