@@ -38,6 +38,7 @@ from .providers.base import BudgetExceededError
 from .router import GovernedMemoryService, TwoTierModelRouter
 from .sandbox import ExecutionSandbox, get_default_sandbox
 from .skillspector import SkillSpectorScanner
+from .subagent import SubagentManager, SubagentRole
 from .vendor_paths import get_harness2_dir
 from .webhooks import WebhookConfig, WebhookNotifier
 
@@ -100,6 +101,13 @@ class HarnessOrchestrator:
         )
         self.scanner = SkillSpectorScanner(self.ledger)
         self.router = TwoTierModelRouter()
+        self.subagent_manager = SubagentManager(
+            ledger=self.ledger,
+            cow=self.cow,
+            router=self.router,
+            gateway=self.gateway,
+        )
+        self.gateway.subagent_manager = self.subagent_manager
         self.memory = GovernedMemoryService(self.ledger, graphify=self.graphify)
         self.proof_service = VerificationAndProofService(
             self.ledger,

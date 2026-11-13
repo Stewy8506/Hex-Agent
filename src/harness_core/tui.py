@@ -1232,6 +1232,15 @@ def render_docked_input_frame(
 class HexConsole:
     """Interactive pair-programming terminal REPL for HEX Autonomous AI Workbench."""
 
+    SLASH_COMMANDS: list[str] = [
+        "/help", "/status", "/diff", "/sbs", "/rollback", "/fork",
+        "/skills", "/scan", "/model", "/compressor", "/budget",
+        "/quota", "/antigravity", "/blast", "/proof", "/memory",
+        "/remember", "/reflect", "/search", "/doctor", "/recipe",
+        "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
+        "/voice", "/banner", "/clear", "/subagents", "/quit", "/exit",
+    ]
+
     def __init__(
         self,
         orchestrator: Any,
@@ -1289,14 +1298,7 @@ class HexConsole:
         try:
             import readline
 
-            slash_cmds = [
-                "/help", "/status", "/diff", "/sbs", "/rollback", "/fork",
-                "/skills", "/scan", "/model", "/compressor", "/budget",
-                "/quota", "/antigravity", "/blast", "/proof", "/memory",
-                "/remember", "/reflect", "/search", "/doctor", "/recipe",
-                "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
-                "/voice", "/banner", "/clear", "/quit", "/exit",
-            ]
+            slash_cmds = list(self.SLASH_COMMANDS)
             voice_cmds = ["/voice on", "/voice off", "/voice mute", "/voice status"]
             skin_cmds = [f"/skin {s}" for s in SKIN_REGISTRY]
             comp_cmds = ["/compressor local", "/compressor cloud"]
@@ -1711,6 +1713,8 @@ class HexConsole:
             self._cmd_voice(arg)
         elif cmd in ("/banner", "/splash"):
             print(self.render_welcome_splash())
+        elif cmd in ("/subagents", "/subagent", "/delegates"):
+            self._cmd_subagents(arg)
         elif cmd == "/clear":
             self._cmd_clear()
         else:
@@ -1763,6 +1767,7 @@ class HexConsole:
             ("/backup", "Create a quick zip backup of state, config, and ledger"),
             ("/dump", "Generate plain-text system diagnostic dump with secret redaction"),
             ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
+            ("/subagents", "Inspect active and completed child subagents and delegation tree"),
             ("/harness2", "Run a gated Google Research Harness² Propose-Probe-Compose probe"),
             ("/skin [name]", "Switch TUI theme (amber, cyberpunk, matrix, nord, mono)"),
             ("/voice [on|off|mute]", "Toggle hands-free voice mode, mute, speech rate or audio status"),
@@ -2472,6 +2477,31 @@ class HexConsole:
             f"Revision {res['revision_id']} ({res['status']}) · Eval {res['evaluation_id']}"
         )
 
+    def _cmd_subagents(self, arg: str = "") -> None:
+        """Display live and completed subagents."""
+        mgr = getattr(self.orchestrator, "subagent_manager", None)
+        if mgr is None:
+            print(f"\n{ANSI_YELLOW}⚠ Subagent Manager is not initialized on current orchestrator.{ANSI_RESET}\n")
+            return
+
+        active = mgr.list_active_subagents()
+        if not active:
+            print(f"\n{ANSI_CYAN}ℹ No active or historical subagents found in current session.{ANSI_RESET}\n")
+            return
+
+        print(f"\n{ANSI_BOLD}{ANSI_CYAN}HEX Sub-Agent Delegation Registry ({len(active)} agents):{ANSI_RESET}\n")
+        header = f"  {'ID':<18} {'ROLE':<12} {'DEPTH':<7} {'STATUS':<12} {'CALLS':<7} {'GOAL'}"
+        print(f"{ANSI_DIM}{header}{ANSI_RESET}")
+        print(f"  {'-' * 80}")
+        for sa in active:
+            status_color = ANSI_GREEN if sa['status'] == 'completed' else (ANSI_YELLOW if sa['status'] == 'running' else ANSI_RED)
+            goal_preview = sa['goal'][:35] + "..." if len(sa['goal']) > 35 else sa['goal']
+            print(
+                f"  {sa['subagent_id']:<18} {sa['role']:<12} {sa['depth']:<7} "
+                f"{status_color}{sa['status']:<12}{ANSI_RESET} {sa['tool_calls_count']:<7} {goal_preview}"
+            )
+        print()
+
     def _cmd_skin(self, arg: str = "") -> None:
         name = arg.strip().lower()
         if not name:
@@ -2923,3 +2953,4 @@ class HexConsole:
 
 # Alias for backward & forward compatibility
 HarnessTUI = HexConsole
+CockpitTUI = HexConsole
