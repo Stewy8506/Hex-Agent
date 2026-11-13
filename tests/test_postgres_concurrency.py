@@ -115,8 +115,15 @@ class TestConcurrentWorkerClaims(unittest.TestCase):
 
             # 5. Priority order: highest priorities claimed first
             claimed_priorities = [c["priority"] for c in all_claims]
-            self.assertEqual(claimed_priorities, sorted(claimed_priorities, reverse=True))
-            self.assertEqual(claimed_priorities, list(range(30, 0, -1)))
+            self.assertEqual(set(claimed_priorities), set(range(1, 31)))
+
+            # Verify exact atomic claim order in the database
+            with store._lock:
+                ordered_rows = store.conn.execute(
+                    "SELECT t.priority FROM attempts a JOIN tasks t ON a.task_id = t.task_id ORDER BY a.rowid ASC"
+                ).fetchall()
+                db_priorities = [r["priority"] for r in ordered_rows]
+                self.assertEqual(db_priorities, list(range(30, 0, -1)))
 
             # 6. Verify each claimed task state and metadata
             for claim in all_claims:
@@ -175,7 +182,15 @@ class TestConcurrentWorkerClaims(unittest.TestCase):
             self.assertEqual(set(claimed_task_ids), set(task_ids))
 
             claimed_priorities = [c["priority"] for c in all_claims]
-            self.assertEqual(claimed_priorities, sorted(claimed_priorities, reverse=True))
+            self.assertEqual(set(claimed_priorities), set(range(10, 310, 10)))
+
+            # Verify exact atomic claim order in the database
+            with store._lock:
+                ordered_rows = store.conn.execute(
+                    "SELECT t.priority FROM attempts a JOIN tasks t ON a.task_id = t.task_id ORDER BY a.rowid ASC"
+                ).fetchall()
+                db_priorities = [r["priority"] for r in ordered_rows]
+                self.assertEqual(db_priorities, list(range(300, 0, -10)))
 
             # Queue empty
             self.assertIsNone(await store.claim_next_task_async("worker-empty"))
