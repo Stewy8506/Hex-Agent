@@ -1,30 +1,29 @@
 # Current Project State: HEX Autonomous AI Workbench
 
-**Date:** 2026-11-12  
-**Current Milestone:** M8 (Deep Upstream Vendor Integration) — 100% COMPLETE  
-**Status:** All 8 Milestones (Phases 01 through 20) Delivered & Empirically Verified  
-**Active Phase:** None (Milestone M8 Concluded)  
-**Completed Plans:** Plans 01-01 through 20-02 Complete (542/542 tests green)  
+**Date:** 2026-11-13  
+**Current Milestone:** M9 (Parity & Next-Gen Capabilities: Tiers C, B, A) — 100% COMPLETE  
+**Status:** All 9 Milestones (Phases 01 through 23) Delivered & Empirically Verified  
+**Active Phase:** None (Milestone M9 Concluded)  
+**Completed Plans:** Plans 01-01 through 23-02 Complete (615/615 tests green)  
 
 ---
 
 ## 1. Accomplishments to Date
 
-1. **Clean Codebase Foundation:**
-   - Full 16-table PostgreSQL schema designed and implemented (`migrations/0001_initial_schema.sql`).
-   - Transactional `LedgerStore` with hash-chained task events, CAS lease fencing, and 0ms call journal (`src/harness_core/db.py`).
-   - Native macOS APFS Copy-on-Write workspace snapshots (`cp -c -R`) and Merkle tree hashing (`src/harness_core/cow.py`).
-   - Default-deny Tool Gateway with secret redaction and Code Mode composition (`src/harness_core/gateway.py`).
-   - Active Graphify AST indexer with 1-hop/2-hop blast-radius detection and test pinning (`src/harness_core/graphify.py`).
-   - Two-Tier model router & governed memory service (`src/harness_core/router.py`).
-   - Speculative execution branching (`fork`) with winner promotion and Proof-Carrying Artifacts (`src/harness_core/proof.py`).
-   - Core orchestrator, Fast-Path Express Lane, and state machine (`src/harness_core/orchestrator.py`).
-   - Local-first Web Control Surface UI (`src/harness_core/dashboard.py`), REST + SSE API server (`src/harness_core/server.py`), and CLI (`src/harness_core/cli.py`).
-   - Built-in Git-backed skills (`skills/repo_understanding`, `skills/technical_research`).
+1. **Clean Codebase Foundation & Prior Milestones (M1–M8):**
+   - Full 16-table PostgreSQL schema, transactional LedgerStore, CoW snapshots, Active Graphify, SkillSpector, Google Research Harness², real-time hands-free voice engine, and autonomous repair.
 
-2. **Upstream Integrations Vendored & Wired:**
-   - **Google Research Harness²:** Vendored in `vendor/harness2` and integrated in `src/harness_core/proof.py` behind an immutable revision registry and safety gate.
-   - **NVIDIA SkillSpector:** Cloned from `NVIDIA/SkillSpector` (v2.12.0) into `vendor/skillspector` (detached from git history) and directly wired into `src/harness_core/skillspector.py` with 64+ agent-native patterns, YARA rules, and local semantic alignment.
+2. **Milestone M9: Parity & Next-Gen Capabilities (Tiers C, B, A):**
+   - **Tier C (Phase 21: In-Flight Sub-Agent Delegation):**
+     - Role-constrained subagent lifecycle (`RESEARCHER`, `CODER`, `TESTER`, `REVIEWER`, `PLANNER`, `GENERAL`) with least-privilege tool filtering.
+     - Isolated CoW workspace branching (`.hex/subagents/<subagent_id>`).
+     - Gateway delegation tools (`delegate`, `subagent_status`, `subagent_wait`) and TUI `/subagents` registry view.
+   - **Tier B (Phase 22: Interactive Headless Browser & Multimodal Vision Engine):**
+     - Headless browser automation with accessibility trees (`ariaSnapshot` with `@e1`, `@e2` refs), click, type, screenshot, and evaluate.
+     - Multimodal `VisionEngine` and `image_inspect` tool for local image files and remote URLs.
+   - **Tier A (Phase 23: Agent Client Protocol (ACP) Server):**
+     - Standard JSON-RPC 2.0 ACP stdio server for Zed, Neovim, VSCode, and Cursor.
+     - CLI subcommand `hex acp` with `--check` diagnostics and `--setup` editor config generator.
 
 3. **Empirical Verification:**
    - Complete 10/10 acceptance test suite passing in `tests/test_harness_stages.py` covering all 5 stages.
