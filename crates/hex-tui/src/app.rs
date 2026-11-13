@@ -74,19 +74,39 @@ pub const AVAILABLE_SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/diff",
     },
     SlashCommand {
+        name: "/sbs",
+        description: "Render two-column side-by-side diff for modified file",
+        usage: "/sbs <path>",
+    },
+    SlashCommand {
+        name: "/blast",
+        description: "Render Active Graphify AST blast-radius tree",
+        usage: "/blast [sym|file]",
+    },
+    SlashCommand {
+        name: "/proof",
+        description: "Display cryptographic Proof-Carrying Artifact bundle",
+        usage: "/proof [task_id]",
+    },
+    SlashCommand {
         name: "/rollback",
         description: "Discard mutations and rollback CoW snapshot",
         usage: "/rollback",
     },
     SlashCommand {
         name: "/fork",
-        description: "Branch workspace snapshot",
+        description: "Branch workspace snapshot into speculative attempt",
         usage: "/fork",
     },
     SlashCommand {
         name: "/skills",
         description: "List active and scanned SkillSpector skills",
         usage: "/skills",
+    },
+    SlashCommand {
+        name: "/scan",
+        description: "Scan and register a SKILL.md bundle via SkillSpector",
+        usage: "/scan <dir>",
     },
     SlashCommand {
         name: "/model",
@@ -99,9 +119,54 @@ pub const AVAILABLE_SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/budget",
     },
     SlashCommand {
+        name: "/quota",
+        description: "Inspect Google Antigravity OAuth session & quota windows",
+        usage: "/quota",
+    },
+    SlashCommand {
+        name: "/memory",
+        description: "Search governed memories with AST code-hash staleness",
+        usage: "/memory [query]",
+    },
+    SlashCommand {
+        name: "/remember",
+        description: "Record a governed project memory linked to AST nodes",
+        usage: "/remember <k>: <v>",
+    },
+    SlashCommand {
+        name: "/reflect",
+        description: "Run Graphify deterministic work-memory reflection",
+        usage: "/reflect",
+    },
+    SlashCommand {
+        name: "/search",
+        description: "Run SQLite FTS5 BM25 search across tasks and logs",
+        usage: "/search <query>",
+    },
+    SlashCommand {
+        name: "/doctor",
+        description: "Run 8-category system diagnostics and self-healing",
+        usage: "/doctor [--fix]",
+    },
+    SlashCommand {
+        name: "/recipe",
+        description: "Auto-detect project bootstrap, build, and test recipes",
+        usage: "/recipe",
+    },
+    SlashCommand {
+        name: "/lsp",
+        description: "Inspect language servers and compiler diagnostics",
+        usage: "/lsp [status|diag]",
+    },
+    SlashCommand {
+        name: "/subagents",
+        description: "Inspect autonomous subagent swarm workers",
+        usage: "/subagents",
+    },
+    SlashCommand {
         name: "/react",
         description: "Toggle autonomous multi-turn ReAct mode",
-        usage: "/react",
+        usage: "/react [on|off]",
     },
     SlashCommand {
         name: "/clear",

@@ -91,6 +91,9 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--voice-name", default=None, help="TTS voice name override")
     parser.add_argument("--speech-rate", type=int, default=190, help="Speech rate in words per minute (default: 190)")
     parser.add_argument("--react", action="store_true", help="Enable autonomous multi-turn ReAct tool execution")
+    parser.add_argument("--legacy", action="store_true", default=False, help="Launch legacy Python console instead of native Rust Ratatui cockpit")
+    parser.add_argument("--ratatui", action="store_true", default=False, help="Launch native Rust Ratatui terminal cockpit")
+    parser.add_argument("--check", action="store_true", default=False, help="Run headless virtual verification and exit 0")
     sub = parser.add_subparsers(dest="cmd", required=False)
 
     p_setup = sub.add_parser("setup", aliases=["onboard"], help="Run interactive setup wizard for hardware & configuration (alias: hex onboard)")
@@ -191,6 +194,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_wrk.add_argument("--once", action="store_true", help="Execute at most one claimed task and exit")
 
     p_chat = sub.add_parser("chat", help="Start interactive TUI pair-programming console (or run 'hex')")
+    p_chat.add_argument("--legacy", action="store_true", default=False, help="Launch legacy Python console instead of native Rust Ratatui cockpit")
     p_chat.add_argument("--ratatui", action="store_true", default=False, help="Launch native Rust Ratatui terminal cockpit")
     p_chat.add_argument("--check", action="store_true", default=False, help="Run headless virtual verification and exit 0")
     p_chat.add_argument("--project", default=argparse.SUPPRESS, help="Project ID")
@@ -629,12 +633,6 @@ def _main_impl(argv: list[str] | None = None) -> int:
     repo_candidate = Path(__file__).resolve().parents[2]
     repo_root = repo_candidate if (repo_candidate / "pyproject.toml").is_file() else Path.cwd()
 
-    if args.cmd == "tui" or (args.cmd == "chat" and getattr(args, "ratatui", False)):
-        from .tui_launcher import launch_hex_tui
-        return launch_hex_tui(args, repo_root)
-
-    from .config_loader import has_active_credentials, load_hex_environment
-
     is_test_runner = (
         (
             bool(os.environ.get("HEX_TESTING"))
@@ -643,6 +641,27 @@ def _main_impl(argv: list[str] | None = None) -> int:
         )
         and not os.environ.get("HEX_FORCE_INTERACTIVE")
     )
+
+    launch_rust = (
+        args.cmd == "tui"
+        or getattr(args, "ratatui", False)
+        or (getattr(args, "check", False) and args.cmd in (None, "chat", "tui"))
+        or (
+            (args.cmd is None or args.cmd == "chat")
+            and not getattr(args, "legacy", False)
+            and not getattr(args, "voice", False)
+            and not is_test_runner
+        )
+    )
+
+    if launch_rust:
+        from .tui_launcher import launch_hex_tui
+        try:
+            return launch_hex_tui(args, repo_root)
+        except Exception as exc:
+            logger.warning("Could not launch native Rust TUI (%s); falling back to legacy Python console.", exc)
+
+    from .config_loader import has_active_credentials, load_hex_environment
 
     # Auto-intercept unconfigured launch when starting interactive console without credentials
     if (args.cmd is None or args.cmd in ("chat", "voice")) and not has_active_credentials():
