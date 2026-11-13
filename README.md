@@ -308,6 +308,7 @@ Inside the interactive console, type `/` to see available commands:
 | **`/sbs <file>`** | Open a side-by-side terminal diff for a specific file |
 | **`/proof`** | View the cryptographic verification proof and test results for a completed task |
 | **`/subagents`** | Inspect active and completed child subagents and delegation tree |
+| **`/react [on|off]`** | Toggle continuous multi-turn autonomous ReAct tool loop |
 | **`/rollback`** | Instantly discard changes and reset the scratchpad |
 | **`/model`** | Inspect active model profile or switch providers |
 | **`/compressor`** | Toggle log compressor mode (`deterministic`, `cloud`, `local`, `off`) |
@@ -326,6 +327,10 @@ HEX can also be run directly from scripts or your shell:
 ```bash
 # Run an autonomous task with automatic git branching and commit
 hex run "Refactor authentication flow to use refresh tokens" --branch
+
+# Run continuous multi-turn autonomous ReAct tool loop
+hex run "Audit repository security dependencies" --react
+hex chat --react
 
 # Start Agent Client Protocol (ACP) server for Zed, Neovim, and VSCode
 hex acp --check

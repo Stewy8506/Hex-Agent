@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-13  
-**Current Milestone:** M9 (Parity & Next-Gen Capabilities: Tiers C, B, A) — 100% COMPLETE  
-**Status:** All 9 Milestones (Phases 01 through 23) Delivered & Empirically Verified  
-**Active Phase:** None (Milestone M9 Concluded)  
-**Completed Plans:** Plans 01-01 through 23-02 Complete (615/615 tests green)  
+**Current Milestone:** M10 (Finished Product Parity & Execution Excellence) — IN PROGRESS  
+**Status:** Milestones M1 through M9 100% Delivered; Milestone M10 Initiated  
+**Active Phase:** Phase 24 (Continuous Multi-Turn ReAct Tool Loop) — COMPLETE  
+**Completed Plans:** Plans 01-01 through 24-02 Complete (646/646 tests green)  
 
 ---
 
@@ -273,6 +273,13 @@
     - Unified polyglot blast-radius tracking in `ActiveGraphifyAdapter.compute_blast_radius` across Python, TypeScript/JavaScript, Go, Rust, Java, and C/C++, with multi-language test detection (`_is_test_file`).
     - Wired `ActiveBlastRadiusInterceptor` and `ToolGateway.invoke` for `write_file` to intercept polyglot file writes and journal pinned tests into the active ledger plan.
     - Authored 10 unit and integration tests across `tests/test_graphify_upstream_wiring.py` and `tests/test_graphify_polyglot_blast_radius.py` (542/542 repository tests passing with zero regressions).
+
+36. **Phase 24: Continuous Multi-Turn ReAct Tool Loop Complete (Plans 24-01 & 24-02):**
+    - Implemented `ReActConfig`, `ToolCallRequest`, `ToolCallResult`, `ReActTurn`, `ReActSessionResult`, and `ReActLoop` in `src/harness_core/react_loop.py` with multi-format tool call parser (XML tags, markdown code blocks, JSON dictionaries, embedded JSON, and raw strings) and observation history chaining.
+    - Added `run_agent_loop` to `HarnessOrchestrator` in `src/harness_core/orchestrator.py` backed by router dispatch and deterministic fallback with valid `LedgerStore` CAS state transitions (`SUBMITTED -> VALIDATING -> RUNNING -> VERIFYING -> SUCCEEDED / FAILED`).
+    - Added `/react` slash command, live tool invocation/observation terminal progress cards, and `react_mode` to `HexConsole` in `src/harness_core/tui.py`.
+    - Added `--react` flag to root `hex`, `hex run`, and `hex chat` in `src/harness_core/cli.py`.
+    - Authored 31 unit and integration tests in `tests/test_react_loop.py` (646/646 full repository tests passing with zero regressions).
 
 ---
 

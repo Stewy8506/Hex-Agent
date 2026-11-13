@@ -112,4 +112,35 @@ Every implementation task must produce empirical verification output before mark
 - **Polyglot Graph Unification:**
   - Merge upstream tree-sitter extracted nodes and edges into `ActiveGraphifyAdapter`, combining 33+ language AST extraction with our 0ms active blast-radius and architecture analysis.
 
+---
+
+## 6. Milestone M10: Finished Product Parity & Execution Excellence (Phases 24–27)
+
+### 6.1 Continuous Multi-Turn ReAct Tool Loop (Phase 24)
+- **Autonomous Tool-Calling Engine (`src/harness_core/react_loop.py`):**
+  - Implements a continuous iterative ReAct loop (up to 50 configurable turns per session).
+  - Handles model tool calls, executes through `ToolGateway` (respecting R0–R4 risk gating), appends tool results, and re-prompts until task completion or explicit final response.
+  - Deeply integrated into `HarnessOrchestrator.run_agent_loop` and `HexConsole` for autonomous execution without human step-prompting.
+
+### 6.2 4-Phase Context Compactor & Prompt Cache Locking (Phase 25)
+- **Multi-Stage Compactor (`src/harness_core/context_compressor.py`):**
+  - 4-phase strategy:
+    1. *Stale Tool Output Demotion*: Truncate bulky terminal/file outputs older than $N$ turns while preserving status/error headers.
+    2. *Atomic Tool-Pair Protection*: Never split a `<tool_call>` / `<tool_result>` pair across compaction boundaries.
+    3. *Middle-Turn Summarization*: Auxiliary local MLX/deterministic summarizer replaces bloated turns with a concise summary block.
+    4. *Prompt Cache Pinning*: Guarantees static system instructions, tool schemas, and environment headers occupy an immutable prefix to achieve >90% KV prompt cache hit rate across Anthropic, Gemini, and OpenAI.
+
+### 6.3 PTY Background Process Supervisor & Stream Registry (Phase 26)
+- **Process Supervisor (`src/harness_core/process_registry.py`):**
+  - Manages long-running background processes (dev servers, file watchers, test daemons, build pipelines) with PTY allocation.
+  - Circular stream buffers for stdout/stderr with non-blocking tail reads.
+  - Gateway tools: `start_process`, `read_terminal`, `kill_process`, `list_processes`.
+
+### 6.4 Persistent REPL Code Kernel (Phase 27)
+- **In-Memory Code Kernel (`src/harness_core/code_kernel.py`):**
+  - Persistent interactive Python session maintaining variables, imported modules, and runtime state across turns inside the task CoW workspace.
+  - Captures stdout, stderr, and rich evaluation results.
+  - Gateway tool: `code_kernel` with timeout protection and memory fences.
+
+
 

@@ -302,6 +302,59 @@
   - TUI `/subagents` slash command in `hex chat`.
 - **Verification:** Unit and integration tests in `tests/test_subagent_delegation.py` demonstrating role isolation, synchronous and asynchronous execution, budget inheritance, and depth guards.
 
+---
+
+## Milestone M10: Finished Product Parity & Execution Excellence (Hermes Parity)
+
+```
+[x] Phase 24: Continuous Multi-Turn ReAct Tool Loop (Hermes Parity Pillar 1)
+    [x] 24-01: ReActLoop Engine Core & Tool Execution Dispatcher
+    [x] 24-02: Orchestrator Integration, Streaming Events & TUI Loop Mode
+[ ] Phase 25: 4-Phase Context Compactor & Prompt Cache Locking (Hermes Parity Pillar 2)
+    [ ] 25-01: Stale Tool Demotion & Atomic Tool-Boundary Preservation
+    [ ] 25-02: Middle-Turn Summarizer & Immutable Prompt-Cache Prefixing
+[ ] Phase 26: PTY Background Process Supervisor & Stream Registry (Hermes Parity Pillar 3)
+    [ ] 26-01: PTY ProcessRegistry & Circular Ring Buffer
+    [ ] 26-02: Gateway Process Tools (start_process, read_terminal, kill_process)
+[ ] Phase 27: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 4)
+    [ ] 27-01: Persistent In-Memory Python Kernel & State Isolation
+    [ ] 27-02: Gateway code_kernel Tool & Workspace File Sync
+```
+
+### Phase 24: Continuous Multi-Turn ReAct Tool Loop (Hermes Parity Pillar 1)
+- **Goal:** Implement an autonomous multi-turn ReAct loop in `src/harness_core/react_loop.py` capable of executing up to 50 continuous turns per session, invoking tools iteratively through `ToolGateway`, appending outputs to dialogue history, and running until task completion or error boundary.
+- **Must-haves:**
+  - `ReActLoop` class with cycle limits, token budget monitoring, and early-termination guards (`<finish>` or no remaining tool calls).
+  - Integration with `HarnessOrchestrator.run_agent_loop` and `HexConsole`.
+  - Call journal integration ensuring every turn in the ReAct loop is sealed into SQLite/PostgreSQL `LedgerStore`.
+- **Verification:** Comprehensive unit and integration tests verifying multi-turn cycles, tool call handling, termination conditions, and error recovery.
+
+### Phase 25: 4-Phase Context Compactor & Prompt Cache Locking (Hermes Parity Pillar 2)
+- **Goal:** Implement a production-grade 4-phase context compactor in `src/harness_core/context_compressor.py` matching `agent/context_compressor.py` in Hermes: stale tool output demotion, atomic tool-pair boundary protection, middle-turn compression, and static prompt-cache prefix locking.
+- **Must-haves:**
+  - `ContextCompactor` with `compact_messages(messages, budget_tokens)` preserving system prompt head and recent turn tail.
+  - Strict preservation of `<tool_call>` and corresponding `<tool_result>` pairs (never splitting an atomic pair).
+  - Stale tool output truncation (replacing verbose stdout with summarized head+tail and line count).
+  - Prompt cache prefix alignment to ensure static system instructions and tool definitions remain unchanged across turns for >90% KV cache hit rates.
+- **Verification:** Unit tests verifying token budget adherence, atomic pair preservation, stale tool pruning, and cache prefix stability.
+
+### Phase 26: PTY Background Process Supervisor & Stream Registry (Hermes Parity Pillar 3)
+- **Goal:** Implement an asynchronous pseudo-terminal (PTY) process registry in `src/harness_core/process_registry.py` matching `tools/process_registry.py` in Hermes, allowing long-running background tasks (e.g. dev servers, build processes) to run and be inspected.
+- **Must-haves:**
+  - `ProcessRegistry` supporting process creation, PTY allocation, circular ring buffer for stdout/stderr, and graceful termination.
+  - Gateway tools: `start_process`, `read_terminal`, `kill_process`, `list_processes`.
+  - Automatic cleanup and exit hook on session shutdown.
+- **Verification:** Unit tests verifying background process startup, non-blocking tail reads from ring buffer, process listing, and safe termination.
+
+### Phase 27: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 4)
+- **Goal:** Implement an interactive persistent Python code kernel in `src/harness_core/code_kernel.py` matching `tools/code_kernel.py` in Hermes, enabling persistent variables, functions, and imports across consecutive turns within the task CoW workspace.
+- **Must-haves:**
+  - `PersistentCodeKernel` executing code snippets with state preservation, capturing stdout/stderr and expression values.
+  - Gateway tool: `code_kernel` with timeout protection and memory isolation.
+  - Direct integration with CoW workspace path resolution.
+- **Verification:** Unit tests verifying cross-execution variable persistence, exception formatting, stdout capture, and kernel reset.
+
+
 
 
 
