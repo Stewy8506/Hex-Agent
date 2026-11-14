@@ -58,10 +58,16 @@ Most AI coding assistants edit your files in place. If they get stuck in a hallu
 
 ### 1. Install HEX
 
-Run the one-line universal installer (macOS & Linux):
+**macOS & Linux (bash):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Stewy8506/Harness/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/Stewy8506/Harness/main/install.ps1 | iex
 ```
 
 *Or install with `pipx` or `uv tool` (isolated, zero dependency conflicts):*
@@ -162,7 +168,8 @@ HEX separates developer intent into three focused interaction modes. Press **`Ta
 - **No Clutter, No Cages**: Floating negative space without rigid double boxes.
 - **Docked Input Frame**: Visual status pills for active mode, project directory, git branch, and active model.
 - **Dynamic Ghost Suggestions**: Rotating prompt ideas that clear the moment you start typing.
-- **5 Terminal Themes**: Switch anytime with `/skin <name>` (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`).
+- **6 Terminal Themes**: Switch anytime with `/skin <name>` (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`). Automatically selects high-contrast `light` skin on light-background terminals via `COLORFGBG`.
+- **Fuzzy Slash Command Autocomplete**: Subsequence matching with prefix prioritization (`/ast` matches `/blast`, `/rb` matches `/rollback`).
 
 ### 🦀 Native Rust Ratatui Cockpit (`hex tui` / `hex chat --ratatui`)
 
@@ -181,8 +188,9 @@ hex tui --check
 
 - **Sticky Status Telemetry**: Live model routing, CoW snapshot mode, monotonic fencing token, and ACP connection status.
 - **Scrollable Dialogue & Collapsible Tool Calls**: Role badges (`[USER]`, `[ASSISTANT]`, `[SYSTEM]`, `[TOOL]`), expandable tool invocations with millisecond execution durations and status indicators.
-- **Unified Diff Viewer**: Colorized split view rendering added, deleted, and context lines alongside conversation history.
-- **Interactive Slash Commands**: Dynamic floating popup menu above input prompt when typing `/`.
+- **Natural History Navigation**: `PageUp` / `PageDown` and arrows scroll dialogue history directly without losing input focus.
+- **Tab Mode Cycling**: Press `Tab` on an empty prompt line to cycle modes (`agent` → `plan` → `code`), or press `Tab` to accept slash command autocompletions.
+- **Side-by-Side Split Diff View (`/sbs`)**: Toggle synchronized two-column split diff or unified diff side-by-side with conversation history.
 - **R3/R4 Policy Approval Intercepts**: Centered modal overlay for operator approvals with risk classifications and action buttons (`[y] Approve`, `[n] Reject`, `[d] Diff`, `[Esc] Dismiss`).
 
 ---
@@ -212,6 +220,12 @@ Instead of blindly shoving entire 1,500-line files into the prompt, HEX’s code
 
 ### 4. Zero-Friction Antigravity Integration
 HEX was designed from Day 1 to connect to **Google Antigravity OAuth**. If you have an active Antigravity session, you get full access to leading frontier reasoning with zero marginal API charges.
+
+### 5. Thinking Signature Protection & Transient Resilience
+HEX preserves Anthropic Claude thinking block signatures on conversational replay and automatically suppresses unsigned blocks to prevent HTTP 400 crashes. Transient failures (HTTP 429 rate limits, 503 gateway outages, network timeouts) trigger jitter-decorrelated exponential backoff so autonomous tasks never stall midway.
+
+### 6. Shadow Summary Deduplication & Pre-Flight Session Hygiene
+In long 30+ turn sessions, HEX automatically detects and prunes historical shadow compaction summaries and runs pre-flight sanitization on oversized message histories before Turn 1, ensuring prompt tokens remain clean and bounded.
 
 ---
 
@@ -324,9 +338,9 @@ Inside the interactive console, type `/` to see available commands:
 
 | Command | Action |
 | :--- | :--- |
-| **`/mode`** | Cycle or switch interaction mode (`plan`, `agent`, `code`) |
+| **`/mode`** | Cycle or switch interaction mode (`plan`, `agent`, `code`) — or press `Tab` on empty line |
 | **`/diff`** | View unified colorized diff of uncommitted sandbox changes |
-| **`/sbs <file>`** | Open a side-by-side terminal diff for a specific file |
+| **`/sbs`** | Toggle side-by-side terminal split diff view |
 | **`/proof`** | View the cryptographic verification proof and test results for a completed task |
 | **`/subagents`** | Inspect active and completed child subagents and delegation tree |
 | **`/react [on|off]`** | Toggle continuous multi-turn autonomous ReAct tool loop |
@@ -336,7 +350,7 @@ Inside the interactive console, type `/` to see available commands:
 | **`/project`** | Switch between registered projects in your global registry |
 | **`/doctor`** | Run system health diagnostics and auto-repair broken dependencies |
 | **`/voice`** | Toggle hands-free voice mode and audio feedback |
-| **`/skin`** | Change color theme (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`) |
+| **`/skin`** | Change color theme (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) |
 | **`/help`** | Display full table of slash commands |
 
 ---
@@ -353,10 +367,20 @@ hex run "Refactor authentication flow to use refresh tokens" --branch
 hex run "Audit repository security dependencies" --react
 hex chat --react
 
+# Run benchmark evaluations across test suites with formatted summary table
+hex eval --suite core
+hex eval --suite all --json
+
+# Verify cryptographic event chain integrity and database migration parity
+python scripts/verify_event_chain.py
+
 # Start Agent Client Protocol (ACP) server for Zed, Neovim, and VSCode
 hex acp --check
 hex acp --setup
 hex acp
+
+# Launch native Rust Ratatui cockpit (60 FPS dual-buffer rendering)
+hex tui
 
 # Launch TUI pair-programming console with specific theme
 hex --skin cyberpunk
