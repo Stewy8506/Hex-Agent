@@ -2,9 +2,9 @@
 
 **Date:** 2026-11-14  
 **Current Milestone:** M11 (Next-Gen Cognition & Self-Evolution Engine) — ACTIVE  
-**Status:** Phase 30 Planning Complete; Pre-implementation Analysis Finalized  
-**Active Phase:** Phase 30: Multi-Tier Soul Engine & Dynamic Mode Modulators  
-**Completed Milestones:** M1 through M10 Complete & Verified (700+ Python tests green, 34/34 Rust workspace tests green)  
+**Status:** Phase 30 Complete & Verified; Ready for Phase 31  
+**Active Phase:** Phase 31: AST-Scoped Curated Memory, Negative Guardrails & Lifecycle Engine  
+**Completed Milestones:** M1 through M10 Complete & Verified; Phase 30 Complete (720+ Python tests green, 34/34 Rust workspace tests green)  
 
 ---
 
