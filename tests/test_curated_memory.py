@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from harness_core.memory import (
     ENTRY_DELIMITER,
@@ -216,6 +217,143 @@ class TestFrozenSnapshot(unittest.TestCase):
         snap2 = store.build_frozen_snapshot()
         self.assertEqual(snap1, snap2)
         self.assertNotIn("Mid-session added fact", snap2)
+
+
+class TestGuardrailsMemory(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.workspace = Path(self.temp_dir) / "workspace"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.mgr = GuardrailsManager(workspace_root=self.workspace)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_guardrails_record_and_list(self):
+        self.mgr.record_avoid_invariant("Do not use synchronous exec in async loop")
+        rules = self.mgr.list_guardrails()
+        self.assertEqual(len(rules), 1)
+        self.assertTrue(rules[0].startswith("- [AVOID] "))
+        self.assertIn("synchronous exec", rules[0])
+
+        formatted = self.mgr.format_guardrails()
+        self.assertIn("## Negative Constraints", formatted)
+        self.assertIn("- [AVOID]", formatted)
+
+    def test_guardrails_deduplication(self):
+        self.mgr.record_avoid_invariant("- [AVOID] Do not delete database tables directly")
+        self.mgr.record_avoid_invariant("Do not delete database tables directly")
+        rules = self.mgr.list_guardrails()
+        self.assertEqual(len(rules), 1)
+
+    def test_guardrails_fifo_eviction(self):
+        small_mgr = GuardrailsManager(workspace_root=self.workspace, char_limit=180)
+        for i in range(10):
+            small_mgr.record_avoid_invariant(f"Rule number {i}: never do action {i}")
+
+        rules = small_mgr.list_guardrails()
+        # Ensure FIFO dropped older rules
+        self.assertNotIn("Rule number 0", " ".join(rules))
+        self.assertIn("Rule number 9", " ".join(rules))
+        total_chars = len(ENTRY_DELIMITER.join(rules))
+        self.assertLessEqual(total_chars, 180)
+
+
+class TestReActLoopGuardrailsIntegration(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.workspace = Path(self.temp_dir) / "workspace"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_guardrails_auto_capture_on_repeat_failure(self):
+        from harness_core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
+
+        guardrails_mgr = GuardrailsManager(workspace_root=self.workspace)
+
+        class MockGateway:
+            def invoke(self, name: str, args: dict, context: Any = None):
+                return {
+                    "ok": False,
+                    "error": "TypeError: unsupported operand type(s) for +: 'int' and 'str'",
+                }
+
+        turn_count = 0
+
+        def mock_model(messages: list[dict]) -> str:
+            nonlocal turn_count
+            turn_count += 1
+            if turn_count <= 2:
+                return (
+                    '<thought>Calling test tool</thought>\n'
+                    '<tool_call>{"name": "broken_tool", "arguments": {"command": "calc"}}</tool_call>'
+                )
+            return "<finish>Done after failure</finish>"
+
+        loop = ReActLoop(
+            model_caller=mock_model,
+            gateway=MockGateway(),
+            workspace_root=self.workspace,
+            guardrails_manager=guardrails_mgr,
+            config=ReActConfig(max_turns=5),
+        )
+
+        res = loop.run("Test repeated failure")
+        self.assertTrue(res.success)
+
+        # Check that GUARDRAILS.md contains the synthesized invariant
+        guardrails = guardrails_mgr.list_guardrails()
+        self.assertGreaterEqual(len(guardrails), 1)
+        self.assertTrue(any("broken_tool" in r and "TypeError" in r for r in guardrails))
+
+    def test_guardrails_ignore_transient_errors(self):
+        from harness_core.react_loop import ReActConfig, ReActLoop
+
+        guardrails_mgr = GuardrailsManager(workspace_root=self.workspace)
+
+        class TransientGateway:
+            def invoke(self, name: str, args: dict, context: Any = None):
+                return {
+                    "ok": False,
+                    "error": "HTTP 429: Rate limit exceeded, retry in 30 seconds",
+                }
+
+        turn_count = 0
+
+        def mock_model(messages: list[dict]) -> str:
+            nonlocal turn_count
+            turn_count += 1
+            if turn_count <= 2:
+                return '<tool_call>{"name": "cloud_api", "arguments": {}}</tool_call>'
+            return "<finish>Done</finish>"
+
+        loop = ReActLoop(
+            model_caller=mock_model,
+            gateway=TransientGateway(),
+            workspace_root=self.workspace,
+            guardrails_manager=guardrails_mgr,
+            config=ReActConfig(max_turns=5),
+        )
+
+        loop.run("Test transient errors")
+        guardrails = guardrails_mgr.list_guardrails()
+        self.assertEqual(len(guardrails), 0, "Transient errors must not be saved into guardrails")
+
+    def test_guardrails_rejected_diff_and_rollback(self):
+        from harness_core.react_loop import ReActLoop
+
+        guardrails_mgr = GuardrailsManager(workspace_root=self.workspace)
+        loop = ReActLoop(workspace_root=self.workspace, guardrails_manager=guardrails_mgr)
+
+        loop.record_rejected_diff("src/auth.py", "breaks existing JWT signature format")
+        loop.record_rollback("snap_forensic_01", "corrupted migration file")
+
+        guardrails = guardrails_mgr.list_guardrails()
+        self.assertEqual(len(guardrails), 2)
+        self.assertTrue(any("Rejected change on src/auth.py" in r for r in guardrails))
+        self.assertTrue(any("Rolled back workspace from snap_forensic_01" in r for r in guardrails))
 
 
 if __name__ == "__main__":

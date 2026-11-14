@@ -181,6 +181,7 @@ class ReActLoop:
         ledger: Any | None = None,
         context_compactor: ContextCompactor | None = None,
         session_id: str | None = None,
+        guardrails_manager: Any | None = None,
     ) -> None:
         self.model_caller = model_caller
         self.gateway = gateway
@@ -193,6 +194,14 @@ class ReActLoop:
         self.turns: list[ReActTurn] = []
         self.last_compaction_result: Any | None = None
         self.retry_count: int = 0
+        if guardrails_manager is not None:
+            self.guardrails_manager = guardrails_manager
+        elif self.workspace_root:
+            from .memory import GuardrailsManager
+            self.guardrails_manager = GuardrailsManager(workspace_root=self.workspace_root)
+        else:
+            self.guardrails_manager = None
+        self._consecutive_tool_failures: dict[str, int] = {}
 
     # -------------------------------------------------------------------------
     # Response and Tool Parsing
@@ -722,6 +731,47 @@ class ReActLoop:
                     duration_ms=duration_ms,
                 )
 
+        # Fallback for gateways exposing .invoke(name, arguments, ...)
+        if hasattr(self.gateway, "invoke") and callable(self.gateway.invoke):
+            try:
+                sig = inspect.signature(self.gateway.invoke)
+                if len(sig.parameters) >= 3:
+                    result = self.gateway.invoke(call.name, call.arguments, None)
+                elif len(sig.parameters) == 2:
+                    result = self.gateway.invoke(call.name, call.arguments)
+                else:
+                    result = self.gateway.invoke(call.name)
+
+                duration_ms = (time.perf_counter() - start_t) * 1000
+                is_error = False
+                if isinstance(result, dict):
+                    if result.get("ok") is False:
+                        is_error = True
+                    elif "error" in result and bool(result["error"]):
+                        is_error = True
+                    elif result.get("status") in ("error", "DENIED"):
+                        is_error = True
+                    elif result.get("status") == "failed" and call.name not in (
+                        "read_terminal", "start_process", "kill_process", "list_processes"
+                    ):
+                        is_error = True
+                return ToolCallResult(
+                    call_id=call.call_id,
+                    name=call.name,
+                    output=result,
+                    is_error=is_error,
+                    duration_ms=duration_ms,
+                )
+            except Exception as e:
+                duration_ms = (time.perf_counter() - start_t) * 1000
+                return ToolCallResult(
+                    call_id=call.call_id,
+                    name=call.name,
+                    output=f"Error: {e}",
+                    is_error=True,
+                    duration_ms=duration_ms,
+                )
+
         duration_ms = (time.perf_counter() - start_t) * 1000
         return ToolCallResult(
             call_id=call.call_id,
@@ -829,6 +879,66 @@ class ReActLoop:
                 cb(event_type, data)
             except Exception:
                 pass
+
+    def _handle_tool_failure_guardrail(
+        self, call: ToolCallRequest, tool_res: ToolCallResult
+    ) -> None:
+        """Capture deterministic repeat failures and record actionable [AVOID] invariants."""
+        if not self.guardrails_manager:
+            return
+
+        from .memory import is_transient_error
+
+        sig = self.guardrails_manager.extract_error_signature(tool_res.output)
+        if not sig or is_transient_error(sig):
+            return
+
+        key = f"{tool_res.name}:{sig}"
+        count = self._consecutive_tool_failures.get(key, 0) + 1
+        self._consecutive_tool_failures[key] = count
+
+        if count >= 2:
+            arg_summary = ""
+            if isinstance(call.arguments, dict):
+                arg_val = (
+                    call.arguments.get("command")
+                    or call.arguments.get("path")
+                    or call.arguments.get("file_path")
+                    or call.arguments.get("target")
+                    or ""
+                )
+                if arg_val:
+                    arg_summary = str(arg_val)[:60]
+
+            if arg_summary:
+                rule = f"- [AVOID] Do not run '{arg_summary}' with {tool_res.name} — repeatedly fails with: {sig}"
+            else:
+                rule = f"- [AVOID] Do not repeat failed invocation of {tool_res.name} — error: {sig}"
+
+            self.guardrails_manager.record_avoid_invariant(rule)
+
+    def _reset_tool_failures_on_success(self, tool_name: str) -> None:
+        """Reset consecutive error count when tool executes successfully."""
+        prefix = f"{tool_name}:"
+        to_del = [k for k in self._consecutive_tool_failures if k.startswith(prefix)]
+        for k in to_del:
+            self._consecutive_tool_failures.pop(k, None)
+
+    def record_rejected_diff(self, file_path: str, reason: str = "") -> None:
+        """Record a negative guardrail when a proposed diff or edit is rejected by operator."""
+        if not self.guardrails_manager:
+            return
+        desc = f" — reason: {reason}" if reason else ""
+        rule = f"- [AVOID] Rejected change on {file_path}{desc}. Propose an alternative approach."
+        self.guardrails_manager.record_avoid_invariant(rule)
+
+    def record_rollback(self, snapshot_id: str, reason: str = "") -> None:
+        """Record a negative guardrail when an execution state is rolled back."""
+        if not self.guardrails_manager:
+            return
+        desc = f" — {reason}" if reason else ""
+        rule = f"- [AVOID] Rolled back workspace from {snapshot_id}{desc}. Do not re-attempt identical modification."
+        self.guardrails_manager.record_avoid_invariant(rule)
 
     def _apply_preflight_session_hygiene(self, budget_tokens: int) -> None:
         """Run initial sanitization and pre-compaction pass on oversized inputs before Turn 1."""
@@ -1057,6 +1167,11 @@ class ReActLoop:
                     "is_error": tool_res.is_error,
                     "duration_ms": tool_res.duration_ms,
                 })
+
+                if tool_res.is_error:
+                    self._handle_tool_failure_guardrail(call, tool_res)
+                else:
+                    self._reset_tool_failures_on_success(tool_res.name)
 
                 # Format observation back into message history
                 if tool_res.name == "code_kernel" and isinstance(tool_res.output, dict):

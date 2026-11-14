@@ -765,6 +765,26 @@ class MemorySnapshot:
         cls._cached_snapshots.clear()
 
 
+_TRANSIENT_ERROR_PATTERNS = [
+    re.compile(r"429", re.IGNORECASE),
+    re.compile(r"rate[_\s-]?limit", re.IGNORECASE),
+    re.compile(r"too many requests", re.IGNORECASE),
+    re.compile(r"quota", re.IGNORECASE),
+    re.compile(r"503", re.IGNORECASE),
+    re.compile(r"service unavailable", re.IGNORECASE),
+    re.compile(r"timed?\s*out|timeout", re.IGNORECASE),
+    re.compile(r"connection\s*(?:reset|refused|closed)", re.IGNORECASE),
+    re.compile(r"network\s*(?:unreachable|error)", re.IGNORECASE),
+]
+
+
+def is_transient_error(error_text: str) -> bool:
+    """Check if an error string represents a temporary network/rate-limit failure."""
+    if not error_text:
+        return False
+    return any(p.search(error_text) for p in _TRANSIENT_ERROR_PATTERNS)
+
+
 class GuardrailsManager:
     """Manages negative constraint memory ([AVOID] invariants) in .hex/memories/GUARDRAILS.md."""
 
@@ -780,6 +800,21 @@ class GuardrailsManager:
         self.store = CuratedMemoryStore(
             workspace_root=self.workspace_root, guardrail_char_limit=char_limit
         )
+
+    @staticmethod
+    def extract_error_signature(error_payload: Any) -> str:
+        """Extract a deterministic error signature line from error output."""
+        if isinstance(error_payload, dict):
+            raw = str(
+                error_payload.get("error")
+                or error_payload.get("output")
+                or error_payload
+            )
+        else:
+            raw = str(error_payload or "")
+        clean = re.sub(r"^(?:Error:\s*)+", "", raw.strip(), flags=re.IGNORECASE)
+        first_line = clean.split("\n")[0].strip()
+        return first_line[:120]
 
     def record_avoid_invariant(self, rule: str) -> bool:
         """Record a negative [AVOID] invariant rule.
