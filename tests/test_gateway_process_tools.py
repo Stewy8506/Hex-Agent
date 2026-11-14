@@ -11,19 +11,26 @@ Covers:
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from harness_core.cli import main as cli_main
 from harness_core.db import LedgerStore
 from harness_core.gateway import PolicyBlockedError, ToolGateway
 from harness_core.models import RiskClass, TaskSubmitRequest
-from harness_core.process_registry import ProcessRegistry, ProcessStatus, reset_process_registry
+from harness_core.process_registry import ProcessRegistry, ProcessStatus, get_process_registry, reset_process_registry
 from harness_core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
+from harness_core.tui import HexConsole
 
 
 class TestGatewayProcessTools(unittest.TestCase):
@@ -253,6 +260,166 @@ class TestGatewayProcessTools(unittest.TestCase):
         kill_result = loop._execute_tool_call(kill_call)
         self.assertFalse(kill_result.is_error)
         self.assertEqual(kill_result.output["status"], ProcessStatus.KILLED.value)
+
+    def test_react_loop_end_to_end_multi_turn_session(self) -> None:
+        """Test full multi-turn autonomous ReAct loop session managing background process lifecycle."""
+        created_proc_ids: list[str] = []
+
+        def mock_model(messages: list[dict[str, Any]], **kwargs: Any) -> str:
+            tool_names = [m.get("tool_name") for m in messages if isinstance(m, dict)]
+            if "start_process" not in tool_names:
+                cmd = f'{sys.executable} -u -c "import time; print(\'WORKER_RUNNING\', flush=True); time.sleep(5)"'
+                payload = json.dumps({"name": "start_process", "arguments": {"command": cmd, "pty": False}})
+                return f"Thought: Starting the background worker task.\n<tool_call>\n{payload}\n</tool_call>"
+
+            if "list_processes" not in tool_names:
+                for m in messages:
+                    if m.get("tool_name") == "start_process":
+                        content = m.get("content", "")
+                        match = re.search(r'"process_id":\s*"([^"]+)"', content)
+                        if match:
+                            created_proc_ids.append(match.group(1))
+                payload = json.dumps({"name": "list_processes", "arguments": {"status": "all"}})
+                return f"Thought: Checking process list to confirm background task is running.\n<tool_call>\n{payload}\n</tool_call>"
+
+            if "read_terminal" not in tool_names:
+                proc_id = created_proc_ids[0] if created_proc_ids else "proc_unknown"
+                payload = json.dumps({"name": "read_terminal", "arguments": {"process_id": proc_id, "offset": 0, "limit": 2000}})
+                return f"Thought: Polling terminal output from the worker process.\n<tool_call>\n{payload}\n</tool_call>"
+
+            if "kill_process" not in tool_names:
+                proc_id = created_proc_ids[0] if created_proc_ids else "proc_unknown"
+                payload = json.dumps({"name": "kill_process", "arguments": {"process_id": proc_id, "force": True}})
+                return f"Thought: Job complete. Terminating background process cleanly.\n<tool_call>\n{payload}\n</tool_call>"
+
+            return "Thought: All tasks verified. Background process lifecycle concluded.\n<finish>Autonomous process supervision completed successfully.</finish>"
+
+        loop = ReActLoop(
+            model_caller=mock_model,
+            gateway=self.gateway,
+            workspace_root=self.workspace_dir,
+            config=ReActConfig(max_turns=6),
+        )
+
+        res = loop.run("Execute and supervise the worker lifecycle")
+        self.assertTrue(res.success)
+        self.assertEqual(res.termination_reason, "finish")
+        self.assertIn("Autonomous process supervision completed successfully", res.final_answer)
+        self.assertEqual(len(res.turns), 5)
+
+        if created_proc_ids:
+            proc_dict = self.registry.get(created_proc_ids[0]).to_dict()
+            self.assertEqual(proc_dict["status"], ProcessStatus.KILLED.value)
+
+    def test_tui_ps_slash_command(self) -> None:
+        """Test HexConsole /ps slash command output formatting across modes."""
+        mock_orch = MagicMock()
+        mock_orch.gateway = self.gateway
+        console = HexConsole(mock_orch, quiet=True)
+
+        # 1. Empty state
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            console.handle_slash_command("/ps")
+        out_empty = buf.getvalue()
+        self.assertIn("No background processes", out_empty)
+
+        # 2. Active process state
+        cmd = f'{sys.executable} -u -c "import time; print(\'TUI_PS_TEST_OUT\', flush=True); time.sleep(10)"'
+        session = self.registry.spawn(command=cmd, use_pty=False)
+        proc_id = session.id
+        time.sleep(0.3)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            console.handle_slash_command("/ps")
+        out_table = buf.getvalue()
+        self.assertIn(proc_id, out_table)
+        self.assertIn("RUNNING", out_table)
+
+        # 3. Specific process inspection /ps <proc_id>
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            console.handle_slash_command(f"/ps {proc_id}")
+        out_detail = buf.getvalue()
+        self.assertIn("Background Process Details", out_detail)
+        self.assertIn(proc_id, out_detail)
+        self.assertIn("Terminal Tail", out_detail)
+        self.assertIn("TUI_PS_TEST_OUT", out_detail)
+
+        # 4. Terminate via /ps kill <proc_id>
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            console.handle_slash_command(f"/ps kill {proc_id}")
+        out_kill = buf.getvalue()
+        self.assertIn(f"Terminated process {proc_id}", out_kill)
+        self.assertEqual(session.status, ProcessStatus.KILLED)
+
+    def test_cli_ps_subcommand(self) -> None:
+        """Test hex ps CLI subcommand listing, filtering, and killing."""
+        global_reg = get_process_registry()
+        global_reg.cleanup_all()
+
+        # 1. Empty ps
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ret = cli_main(["ps"])
+        self.assertEqual(ret, 0)
+        self.assertIn("No background processes found", buf.getvalue())
+
+        # 2. Empty ps --json
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ret = cli_main(["ps", "--json"])
+        self.assertEqual(ret, 0)
+        self.assertEqual(json.loads(buf.getvalue().strip()), [])
+
+        # 3. Spawn a background process in global registry
+        cmd = f'{sys.executable} -u -c "import time; print(\'CLI_OUTPUT_LINE\', flush=True); time.sleep(10)"'
+        session = global_reg.spawn(command=cmd, use_pty=False)
+        proc_id = session.id
+        time.sleep(0.3)
+
+        # Table listing
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ret = cli_main(["ps"])
+        self.assertEqual(ret, 0)
+        out = buf.getvalue()
+        self.assertIn(proc_id, out)
+        self.assertIn("RUNNING", out)
+
+        # JSON listing
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ret = cli_main(["ps", "--json"])
+        self.assertEqual(ret, 0)
+        json_data = json.loads(buf.getvalue().strip())
+        self.assertIsInstance(json_data, list)
+        self.assertTrue(any(p["id"] == proc_id for p in json_data))
+
+        # Filter option
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ret = cli_main(["ps", "--filter", "running", "--json"])
+        self.assertEqual(ret, 0)
+        filtered_data = json.loads(buf.getvalue().strip())
+        self.assertTrue(any(p["id"] == proc_id for p in filtered_data))
+
+        # Kill option
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ret = cli_main(["ps", "--kill", proc_id, "--force"])
+        self.assertEqual(ret, 0)
+        self.assertIn(f"Terminated process {proc_id}", buf.getvalue())
+        self.assertEqual(session.status, ProcessStatus.KILLED)
+
+        # Kill non-existent process
+        buf_err = io.StringIO()
+        with contextlib.redirect_stderr(buf_err):
+            ret = cli_main(["ps", "--kill", "proc_nonexistent_xyz"])
+        self.assertEqual(ret, 1)
+        self.assertIn("Process not found", buf_err.getvalue())
 
 
 if __name__ == "__main__":

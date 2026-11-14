@@ -416,6 +416,12 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_acp.add_argument("--setup", action="store_true", help="Print editor configuration snippets for Zed (.zed/settings.json) and Neovim")
     p_acp.add_argument("--workspace", default=None, help="Root workspace directory path")
 
+    p_ps = sub.add_parser("ps", help="List and manage background processes managed by ProcessRegistry")
+    p_ps.add_argument("--json", action="store_true", help="Output raw JSON list")
+    p_ps.add_argument("--kill", type=str, default=None, help="Terminate specified process ID")
+    p_ps.add_argument("--force", action="store_true", help="Force kill with SIGKILL")
+    p_ps.add_argument("--filter", type=str, default=None, choices=["running", "completed", "failed", "killed"], help="Filter by process status")
+
     p_uninst = sub.add_parser("uninstall", help="Uninstall HEX CLI, unload background daemons, and optionally purge data")
     p_uninst.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
     p_uninst.add_argument("--purge", action="store_true", help="Permanently delete user configuration and ledger database (~/.hex)")
@@ -1775,6 +1781,62 @@ def _main_impl(argv: list[str] | None = None) -> int:
         ws = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd().resolve()
         server = ACPServer(workspace_root=ws)
         server.run_stdio()
+        return 0
+
+    if args.cmd == "ps":
+        from .process_registry import get_process_registry
+        registry = get_process_registry()
+
+        if getattr(args, "kill", None):
+            proc_id = str(args.kill).strip()
+            force = bool(getattr(args, "force", False))
+            try:
+                res = registry.kill(proc_id, force=force)
+                if getattr(args, "json", False):
+                    print(json.dumps(res, indent=2))
+                else:
+                    sig_name = "SIGKILL" if force else "SIGTERM"
+                    print(f"Terminated process {proc_id} with {sig_name} (status: {res.get('status')})")
+                return 0
+            except KeyError:
+                if getattr(args, "json", False):
+                    print(json.dumps({"ok": False, "error": f"Process not found: {proc_id}"}))
+                else:
+                    print(f"Error: Process not found: {proc_id}", file=sys.stderr)
+                return 1
+            except Exception as e:
+                if getattr(args, "json", False):
+                    print(json.dumps({"ok": False, "error": str(e)}))
+                else:
+                    print(f"Error terminating process {proc_id}: {e}", file=sys.stderr)
+                return 1
+
+        status_filter = getattr(args, "filter", None)
+        procs = registry.list_processes(status_filter=status_filter)
+
+        if getattr(args, "json", False):
+            print(json.dumps(procs, indent=2))
+            return 0
+
+        if not procs:
+            print("No background processes found.")
+            return 0
+
+        header = f"{'ID':<16} {'PID':<8} {'STATUS':<12} {'UPTIME':<9} {'PTY':<5} {'COMMAND':<30} {'TAIL'}"
+        print(header)
+        print("-" * 90)
+        for p in procs:
+            st = str(p.get("status", "")).upper()
+            tail = registry.get_tail_output(p["id"], n=30, strip_ansi_codes=True).replace("\n", " ").strip()
+            if len(tail) > 25:
+                tail = tail[-22:] + "..."
+            cmd = p.get("command", "")
+            if len(cmd) > 28:
+                cmd = cmd[:25] + "..."
+            pty_s = "YES" if p.get("pty_enabled") else "NO"
+            uptime_s = f"{p.get('uptime', 0.0):.1f}s"
+            pid_s = str(p.get("pid") or "-")
+            print(f"{p.get('id', ''):<16} {pid_s:<8} {st:<12} {uptime_s:<9} {pty_s:<5} {cmd:<30} {tail or '-'}")
         return 0
 
     if args.cmd == "uninstall":

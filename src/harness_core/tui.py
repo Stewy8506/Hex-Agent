@@ -1238,7 +1238,7 @@ class HexConsole:
         "/quota", "/antigravity", "/blast", "/proof", "/memory",
         "/remember", "/reflect", "/search", "/doctor", "/recipe",
         "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
-        "/voice", "/banner", "/clear", "/subagents", "/react", "/quit", "/exit",
+        "/voice", "/banner", "/clear", "/subagents", "/react", "/ps", "/processes", "/quit", "/exit",
     ]
 
     def __init__(
@@ -1719,6 +1719,8 @@ class HexConsole:
             print(self.render_welcome_splash())
         elif cmd in ("/subagents", "/subagent", "/delegates"):
             self._cmd_subagents(arg)
+        elif cmd in ("/ps", "/processes", "/proc"):
+            self._cmd_ps(arg)
         elif cmd in ("/react", "/react-loop", "/loop"):
             self._cmd_react(arg)
         elif cmd in ("/compress", "/compact", "/compaction"):
@@ -1779,6 +1781,7 @@ class HexConsole:
             ("/dump", "Generate plain-text system diagnostic dump with secret redaction"),
             ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
             ("/subagents", "Inspect active and completed child subagents and delegation tree"),
+            ("/ps [id|kill <id>]", "List and manage PTY background processes or view stream tail"),
             ("/react [on|off]", "Toggle continuous multi-turn autonomous ReAct tool loop"),
             ("/harness2", "Run a gated Google Research Harness² Propose-Probe-Compose probe"),
             ("/skin [name]", "Switch TUI theme (amber, cyberpunk, matrix, nord, mono)"),
@@ -2565,6 +2568,133 @@ class HexConsole:
                 f"{status_color}{sa['status']:<12}{ANSI_RESET} {sa['tool_calls_count']:<7} {goal_preview}"
             )
         print()
+
+    def _cmd_ps(self, arg: str = "") -> None:
+        """Display background supervised processes or manage/view specific process."""
+        from .process_registry import get_process_registry
+
+        registry = getattr(getattr(self.orchestrator, "gateway", None), "process_registry", None) or get_process_registry()
+        arg_str = arg.strip()
+
+        if arg_str.startswith("kill "):
+            proc_id = arg_str[5:].strip()
+            if not proc_id:
+                print(f"\n{ANSI_RED}Usage: /ps kill <proc_id>{ANSI_RESET}\n")
+                return
+            try:
+                res = registry.kill(proc_id)
+                print(f"\n{ANSI_GREEN}✔ Terminated process {proc_id} (status: {res.get('status')}){ANSI_RESET}\n")
+            except KeyError:
+                print(f"\n{ANSI_RED}✖ Process not found: {proc_id}{ANSI_RESET}\n")
+            except Exception as e:
+                print(f"\n{ANSI_RED}✖ Failed killing process {proc_id}: {e}{ANSI_RESET}\n")
+            return
+
+        # If arg is a specific process ID
+        if arg_str:
+            try:
+                session = registry.get(arg_str)
+            except KeyError:
+                session = None
+
+            if session:
+                s_dict = session.to_dict()
+                st_val = str(s_dict.get("status", "")).lower()
+                st_color = (
+                    ANSI_GREEN if st_val == "running"
+                    else (ANSI_BLUE if st_val == "completed"
+                          else (ANSI_RED if st_val == "failed" else ANSI_YELLOW))
+                )
+                print(f"\n{ANSI_BOLD}{ANSI_CYAN}Background Process Details:{ANSI_RESET}")
+                print(f"  ID:          {s_dict.get('id')}")
+                print(f"  PID:         {s_dict.get('pid') or '-'}")
+                print(f"  Status:      {st_color}{st_val.upper()}{ANSI_RESET}")
+                print(f"  Uptime:      {s_dict.get('uptime')}s")
+                print(f"  PTY:         {'YES' if s_dict.get('pty_enabled') else 'NO'}")
+                print(f"  Exit Code:   {s_dict.get('exit_code') if s_dict.get('exit_code') is not None else '-'}")
+                print(f"  CWD:         {s_dict.get('cwd')}")
+                print(f"  Command:     {s_dict.get('command')}")
+                tail = registry.get_tail_output(session.id, n=2000, strip_ansi_codes=False)
+                print(f"\n{ANSI_BOLD}Terminal Tail ({len(tail)} chars):{ANSI_RESET}")
+                print(f"{ANSI_DIM}{'─' * 60}{ANSI_RESET}")
+                print(tail if tail else "(no output recorded)")
+                print(f"{ANSI_DIM}{'─' * 60}{ANSI_RESET}\n")
+                return
+            else:
+                print(f"\n{ANSI_RED}Process not found: {arg_str}. Showing all processes:{ANSI_RESET}\n")
+
+        # Otherwise, query list_processes
+        procs = registry.list_processes()
+        if not procs:
+            print(f"\n{ANSI_CYAN}ℹ No background processes currently tracked by ProcessRegistry.{ANSI_RESET}\n")
+            return
+
+        if HAS_RICH:
+            table = RichTable(title=f"HEX PTY Background Process Supervisor ({len(procs)} processes)")
+            table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("PID", style="magenta", justify="right")
+            table.add_column("STATUS", justify="center")
+            table.add_column("UPTIME", justify="right")
+            table.add_column("PTY", justify="center")
+            table.add_column("COMMAND", style="white")
+            table.add_column("OUTPUT TAIL", style="dim")
+
+            for p in procs:
+                status_str = str(p.get("status", "")).upper()
+                if status_str == "RUNNING":
+                    status_styled = "[green]RUNNING[/green]"
+                elif status_str == "COMPLETED":
+                    status_styled = "[blue]COMPLETED[/blue]"
+                elif status_str == "FAILED":
+                    status_styled = "[red]FAILED[/red]"
+                elif status_str == "KILLED":
+                    status_styled = "[yellow]KILLED[/yellow]"
+                else:
+                    status_styled = status_str
+
+                tail = registry.get_tail_output(p["id"], n=50, strip_ansi_codes=True).replace("\n", " ").strip()
+                if len(tail) > 40:
+                    tail = tail[-37:] + "..."
+                cmd = p.get("command", "")
+                if len(cmd) > 30:
+                    cmd = cmd[:27] + "..."
+
+                table.add_row(
+                    p.get("id", ""),
+                    str(p.get("pid") or "-"),
+                    status_styled,
+                    f"{p.get('uptime', 0.0):.1f}s",
+                    "✓" if p.get("pty_enabled") else "✗",
+                    cmd,
+                    tail or "-",
+                )
+            console = RichConsole()
+            console.print(table)
+            print()
+        else:
+            print(f"\n{ANSI_BOLD}{ANSI_CYAN}HEX PTY Background Process Supervisor ({len(procs)} processes):{ANSI_RESET}\n")
+            header = f"  {'ID':<16} {'PID':<8} {'STATUS':<12} {'UPTIME':<9} {'PTY':<5} {'COMMAND':<25} {'OUTPUT TAIL'}"
+            print(f"{ANSI_DIM}{header}{ANSI_RESET}")
+            print(f"  {'-' * 85}")
+            for p in procs:
+                st = str(p.get("status", "")).upper()
+                color = (
+                    ANSI_GREEN if st == "RUNNING"
+                    else (ANSI_BLUE if st == "COMPLETED"
+                          else (ANSI_RED if st == "FAILED" else ANSI_YELLOW))
+                )
+                tail = registry.get_tail_output(p["id"], n=40, strip_ansi_codes=True).replace("\n", " ").strip()
+                if len(tail) > 30:
+                    tail = tail[-27:] + "..."
+                cmd = p.get("command", "")
+                if len(cmd) > 23:
+                    cmd = cmd[:20] + "..."
+                pty_str = "YES" if p.get("pty_enabled") else "NO"
+                uptime_str = f"{p.get('uptime', 0.0):.1f}s"
+                pid_str = str(p.get("pid") or "-")
+                status_field = f"{color}{st:<12}{ANSI_RESET}"
+                print(f"  {p.get('id', ''):<16} {pid_str:<8} {status_field} {uptime_str:<9} {pty_str:<5} {cmd:<25} {tail or '-'}")
+            print()
 
     def _cmd_react(self, arg: str = "") -> None:
         """Toggle continuous multi-turn autonomous ReAct tool loop."""

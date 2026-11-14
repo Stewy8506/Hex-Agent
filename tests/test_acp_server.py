@@ -116,7 +116,11 @@ class TestACPServer(unittest.TestCase):
         self.assertIn("delegate", tool_ids)
         self.assertIn("browser", tool_ids)
         self.assertIn("image_inspect", tool_ids)
-        self.assertEqual(len(tools), 26)
+        self.assertIn("start_process", tool_ids)
+        self.assertIn("read_terminal", tool_ids)
+        self.assertIn("kill_process", tool_ids)
+        self.assertIn("list_processes", tool_ids)
+        self.assertEqual(len(tools), 30)
 
         # 2. tools/call read_file
         call_req = {
