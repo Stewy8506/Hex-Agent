@@ -7,9 +7,10 @@ matching production agent standards.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 # Non-imitable elision markers preventing model reproduction
 HEX_COMPRESSION_MARKER_PREFIX = "⟪HEX-CONTEXT-COMPRESSION:"
@@ -538,4 +539,442 @@ def validate_atomic_boundaries(messages: list[dict[str, Any]]) -> bool:
         i += 1
 
     return True
+
+
+# ==============================================================================
+# Phase 3: Middle-Turn Summarizer & ContextCompactor Core Engine
+# ==============================================================================
+
+SUMMARY_HEADER = "## CONTEXT COMPACTION SUMMARY"
+SUMMARY_END_MARKER = "--- END OF CONTEXT SUMMARY ---"
+
+_INFLIGHT_TASK_REPLAY_HEADER = (
+    "[STILL IN PROGRESS — this is the active request, restated after the "
+    "compaction boundary because it was not finished yet. Continue it; do not "
+    "start over.]"
+)
+
+
+def is_context_summary_message(msg: dict[str, Any]) -> bool:
+    """Detect whether a message represents a compacted summary block."""
+    if not isinstance(msg, dict):
+        return False
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return (
+            SUMMARY_HEADER in content
+            or "[CONTEXT COMPACTION" in content
+            or SUMMARY_END_MARKER in content
+        )
+    return False
+
+
+@dataclass
+class CompactionConfig:
+    """Configuration governing context window compaction behavior."""
+
+    max_context_tokens: int = 100_000
+    trigger_threshold: float = 0.8
+    protect_first_n: int = 1
+    protect_last_n: int = 6
+    tail_token_budget: int = 25_000
+    keep_tool_rounds: int = 4
+    min_demote_chars: int = 1000
+    pin_task_turn: bool = False
+
+
+@dataclass
+class CompactionResult:
+    """Telemetry and outcome of a context compaction execution."""
+
+    compacted_messages: list[dict[str, Any]]
+    original_tokens: int
+    compacted_tokens: int
+    compression_ratio: float
+    phase1_demoted_tools: int
+    phase3_summarized_turns: int
+    used_fallback: bool
+
+
+class ContextCompactor:
+    """4-Phase Context Compactor Engine.
+
+    Compacts conversational history while protecting the static system head
+    and active tail to stay within context budgets and maximize KV cache hits.
+    """
+
+    def __init__(
+        self,
+        config: CompactionConfig | None = None,
+        model_caller: Callable[..., Any] | None = None,
+    ) -> None:
+        self.config = config or CompactionConfig()
+        self.model_caller = model_caller
+        self.compression_count: int = 0
+
+    def _effective_protect_first_n(
+        self, messages: list[dict[str, Any]] | None = None
+    ) -> int:
+        """Return effective protect_first_n, decaying to 0 after first compaction.
+
+        If pin_task_turn is set, does not decay.
+        """
+        if self.config.pin_task_turn:
+            return self.config.protect_first_n
+        if self.compression_count >= 1:
+            return 0
+        if messages and len(messages) > 1:
+            # Check if an earlier turn is already a compaction summary
+            for m in messages[1: min(len(messages), 4)]:
+                if is_context_summary_message(m):
+                    return 0
+        return self.config.protect_first_n
+
+    def _protect_head_size(self, messages: list[dict[str, Any]]) -> int:
+        """Head messages to protect: system message (if present) plus decaying protect_first_n."""
+        head = 1 if messages and messages[0].get("role") == "system" else 0
+        return head + self._effective_protect_first_n(messages)
+
+    def _find_tail_cut(self, messages: list[dict[str, Any]], compress_start: int) -> int:
+        """Calculate compress_end backward from tail using token budget and protect_last_n."""
+        n = len(messages)
+        if n <= compress_start:
+            return compress_start
+
+        available = n - compress_start
+        if available <= 1:
+            return compress_start
+
+        # Scale tail token budget if max_context_tokens is small
+        effective_tail_budget = min(
+            self.config.tail_token_budget,
+            max(100, int(self.config.max_context_tokens * 0.4)),
+        )
+
+        tokens_acc = 0
+        cut_idx = n
+        for i in range(n - 1, compress_start - 1, -1):
+            msg_tok = estimate_message_tokens(messages[i])
+            tail_count = n - i
+            # Stop walking back if we have met protect_last_n and adding this message exceeds budget,
+            # OR if adding this message would leave less than 1 message in the middle.
+            if (
+                tail_count >= self.config.protect_last_n
+                and tokens_acc + msg_tok > effective_tail_budget
+            ) or (i <= compress_start):
+                cut_idx = i + 1 if i > compress_start else compress_start + 1
+                break
+            tokens_acc += msg_tok
+            cut_idx = i
+
+        cut_idx = min(max(compress_start, cut_idx), n)
+        aligned = align_boundary_backward(messages, cut_idx)
+        if aligned <= compress_start:
+            aligned = align_boundary_forward(messages, cut_idx)
+            if aligned >= n:
+                aligned = cut_idx
+
+        return min(max(compress_start, aligned), n)
+
+    def _plan_compaction_window(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], int, int, int]:
+        """Phases 1-2 of compaction: returns (working, demoted_count, compress_start, compress_end)."""
+        working, demoted_count = demote_stale_tail_tools(
+            messages,
+            keep_tool_rounds=self.config.keep_tool_rounds,
+            min_demote_chars=self.config.min_demote_chars,
+        )
+        head_size = self._protect_head_size(working)
+        compress_start = align_boundary_forward(working, head_size)
+        compress_end = self._find_tail_cut(working, compress_start)
+        return working, demoted_count, compress_start, compress_end
+
+    def _extract_user_text(self, msg: dict[str, Any]) -> str:
+        """Extract user request text, stripping any prior in-flight replay header."""
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            parts = []
+            for b in content:
+                if isinstance(b, dict) and (b.get("type") == "text" or "text" in b):
+                    parts.append(str(b.get("text", "")))
+                elif isinstance(b, str):
+                    parts.append(b)
+            content = " ".join(parts)
+        text = str(content).strip()
+        if _INFLIGHT_TASK_REPLAY_HEADER in text:
+            text = text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
+        return text
+
+    def _generate_deterministic_summary(self, turns: list[dict[str, Any]]) -> str:
+        """Generate a clean, deterministic markdown summary of turns without an LLM call."""
+        user_intents: list[str] = []
+        actions_taken: list[str] = []
+        findings_errors: list[str] = []
+        working_state: list[str] = []
+
+        for msg in turns:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    b.get("text", "") if isinstance(b, dict) else str(b)
+                    for b in content
+                )
+            content_str = str(content).strip()
+
+            if role == "user":
+                if (
+                    "<observation" not in content_str
+                    and "<tool_result" not in content_str
+                    and msg.get("name") != "observation"
+                ):
+                    clean = content_str.split("\n")[0][:120].strip()
+                    if clean and clean not in user_intents:
+                        user_intents.append(clean)
+                else:
+                    match = _XML_OBSERVATION_RE.search(content_str)
+                    tool_n = match.group("tool_name") if match and match.group("tool_name") else "tool"
+                    body = match.group("body").strip() if match else content_str
+                    if _is_tool_error(msg, body):
+                        findings_errors.append(f"{tool_n} error: {body[:100]}...")
+                    else:
+                        findings_errors.append(f"{tool_n} observed: {body[:80]}...")
+            elif role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tc in tool_calls:
+                        if isinstance(tc, dict):
+                            fn = tc.get("function") or {}
+                            fn_name = tc.get("name") or fn.get("name") or "tool"
+                            actions_taken.append(f"Executed {fn_name}")
+                for m in re.finditer(r"<tool_call>(.*?)</tool_call>", content_str, re.DOTALL):
+                    try:
+                        tc_dict = json.loads(m.group(1))
+                        t_name = tc_dict.get("name", "tool")
+                        actions_taken.append(f"Executed {t_name}")
+                    except Exception:
+                        actions_taken.append("Executed tool call")
+                if content_str and not content_str.startswith("<tool_call"):
+                    first_line = content_str.split("\n")[0][:100].strip()
+                    if first_line and not first_line.startswith("<"):
+                        working_state.append(first_line)
+            elif role == "tool":
+                t_name = msg.get("name") or "tool"
+                if _is_tool_error(msg, content_str):
+                    findings_errors.append(f"{t_name} error: {content_str[:100]}...")
+                else:
+                    findings_errors.append(f"{t_name} result: {content_str[:80]}...")
+
+        lines = [
+            SUMMARY_HEADER,
+            "Earlier turns were compacted into this structured summary reference.",
+            "",
+            "### Active Goals & User Intent",
+        ]
+        if user_intents:
+            for ui in user_intents[:5]:
+                lines.append(f"- {ui}")
+        else:
+            lines.append("- Execute task instructions from previous turns.")
+
+        lines.extend(["", "### Actions Taken & Files Modified"])
+        if actions_taken:
+            for act in actions_taken[:8]:
+                lines.append(f"- {act}")
+        else:
+            lines.append("- Processed multi-turn conversational context.")
+
+        lines.extend(["", "### Key Findings, Errors & Tool Results"])
+        if findings_errors:
+            for fe in findings_errors[:8]:
+                lines.append(f"- {fe}")
+        else:
+            lines.append("- Intermediate tool operations executed successfully.")
+
+        lines.extend(["", "### Current Working State"])
+        if working_state:
+            lines.append(f"- {working_state[-1]}")
+        else:
+            lines.append(f"- Compacted {len(turns)} intermediate turns.")
+
+        lines.extend(["", SUMMARY_END_MARKER])
+        return "\n".join(lines)
+
+    def _generate_model_summary(self, turns: list[dict[str, Any]]) -> str | None:
+        """Invoke configured model_caller to produce structured compaction summary."""
+        if not self.model_caller or not callable(self.model_caller):
+            return None
+
+        transcript_parts: list[str] = []
+        for m in turns:
+            r = m.get("role", "unknown")
+            c = m.get("content", "")
+            if isinstance(c, list):
+                c = str(c)
+            transcript_parts.append(f"[{r.upper()}]: {str(c)[:500]}")
+        transcript_text = "\n".join(transcript_parts)
+
+        prompt = (
+            "You are a context compaction engine. Summarize the following middle turns of a conversation between a user and an AI assistant.\n"
+            "Produce a concise, factual summary strictly adhering to the following structure:\n\n"
+            f"{SUMMARY_HEADER}\n"
+            "### Active Goals & User Intent\n"
+            "<key goals>\n\n"
+            "### Actions Taken & Files Modified\n"
+            "<actions>\n\n"
+            "### Key Findings, Errors & Tool Results\n"
+            "<findings>\n\n"
+            "### Current Working State\n"
+            "<state>\n\n"
+            f"{SUMMARY_END_MARKER}\n\n"
+            f"Conversation to summarize:\n{transcript_text}"
+        )
+
+        try:
+            res = None
+            try:
+                res = self.model_caller([{"role": "user", "content": prompt}])
+            except TypeError:
+                res = self.model_caller(prompt)
+            text = ""
+            if isinstance(res, str):
+                text = res
+            elif isinstance(res, dict):
+                text = str(res.get("text") or res.get("content") or "")
+            elif hasattr(res, "text"):
+                text = str(res.text)
+            elif hasattr(res, "content"):
+                text = str(res.content)
+            text = text.strip()
+            if not text or len(text) < 20:
+                return None
+            if SUMMARY_HEADER not in text:
+                text = f"{SUMMARY_HEADER}\n{text}"
+            if SUMMARY_END_MARKER not in text:
+                text = f"{text}\n\n{SUMMARY_END_MARKER}"
+            return text
+        except Exception:
+            return None
+
+    def should_compact(self, messages: list[dict[str, Any]]) -> bool:
+        """Check whether messages exceed compaction trigger token budget."""
+        tokens = estimate_messages_tokens(messages)
+        threshold = int(self.config.max_context_tokens * self.config.trigger_threshold)
+        return tokens >= threshold
+
+    def compact_messages(
+        self, messages: list[dict[str, Any]], force: bool = True
+    ) -> CompactionResult:
+        """Run full context compaction pipeline over `messages`.
+
+        1. Phase 1: Demote bulky stale tool execution outputs.
+        2. Phase 2: Compute atomic tool-pair cut boundaries.
+        3. Phase 3: Summarize middle turns (model-assisted or deterministic fallback)
+           and restate in-flight tasks.
+        4. Anti-thrashing validation: if compacted >= original, revert.
+        """
+        if not messages:
+            return CompactionResult(
+                compacted_messages=[],
+                original_tokens=0,
+                compacted_tokens=0,
+                compression_ratio=1.0,
+                phase1_demoted_tools=0,
+                phase3_summarized_turns=0,
+                used_fallback=False,
+            )
+
+        original_tokens = estimate_messages_tokens(messages)
+
+        if not force and not self.should_compact(messages):
+            return CompactionResult(
+                compacted_messages=list(messages),
+                original_tokens=original_tokens,
+                compacted_tokens=original_tokens,
+                compression_ratio=1.0,
+                phase1_demoted_tools=0,
+                phase3_summarized_turns=0,
+                used_fallback=False,
+            )
+
+        # 1-2. Plan window and demote stale tools
+        working, demoted_count, compress_start, compress_end = (
+            self._plan_compaction_window(messages)
+        )
+
+        middle_turns = working[compress_start:compress_end]
+        phase3_turns = len(middle_turns)
+        used_fallback = False
+
+        if phase3_turns > 0:
+            summary_text = self._generate_model_summary(middle_turns)
+            if not summary_text:
+                summary_text = self._generate_deterministic_summary(middle_turns)
+                used_fallback = True
+
+            # In-flight task restatement: check if tail has active user prompt
+            tail_has_user = any(
+                m.get("role") == "user" and not _is_tool_result_message(m)
+                for m in working[compress_end:]
+            )
+            inflight_task_text = ""
+            if not tail_has_user:
+                for m in reversed(working[:compress_end]):
+                    if m.get("role") == "user" and not _is_tool_result_message(m):
+                        inflight_task_text = self._extract_user_text(m)
+                        break
+
+            head = list(working[:compress_start])
+            tail = list(working[compress_end:])
+
+            last_head_role = head[-1].get("role") if head else None
+            summary_role = "assistant" if last_head_role == "user" else "user"
+
+            if inflight_task_text:
+                if summary_role == "user":
+                    carrier_content = (
+                        f"{summary_text}\n\n"
+                        f"{_INFLIGHT_TASK_REPLAY_HEADER}\n"
+                        f"{inflight_task_text}"
+                    )
+                    compacted = head + [{"role": "user", "content": carrier_content}] + tail
+                else:
+                    compacted = (
+                        head
+                        + [{"role": "assistant", "content": summary_text}]
+                        + [{"role": "user", "content": f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{inflight_task_text}"}]
+                        + tail
+                    )
+            else:
+                compacted = head + [{"role": summary_role, "content": summary_text}] + tail
+        else:
+            compacted = working
+
+        compacted_tokens = estimate_messages_tokens(compacted)
+
+        # Anti-thrashing checks: if compaction did not reduce tokens, revert to original
+        if compacted_tokens >= original_tokens:
+            return CompactionResult(
+                compacted_messages=list(messages),
+                original_tokens=original_tokens,
+                compacted_tokens=original_tokens,
+                compression_ratio=1.0,
+                phase1_demoted_tools=demoted_count,
+                phase3_summarized_turns=0,
+                used_fallback=used_fallback,
+            )
+
+        self.compression_count += 1
+        ratio = compacted_tokens / max(1, original_tokens)
+
+        return CompactionResult(
+            compacted_messages=compacted,
+            original_tokens=original_tokens,
+            compacted_tokens=compacted_tokens,
+            compression_ratio=ratio,
+            phase1_demoted_tools=demoted_count,
+            phase3_summarized_turns=phase3_turns,
+            used_fallback=used_fallback,
+        )
 
