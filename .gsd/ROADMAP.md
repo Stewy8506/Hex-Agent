@@ -313,9 +313,9 @@
 [x] Phase 25: Native Rust Terminal Cockpit (Ratatui + Crossterm) & Protocol Crate (Hermes Parity Pillar 2)
     [x] 25-01: Cargo Workspace & `crates/hex-protocol` (ACP JSON-RPC Engine & Models)
     [x] 25-02: `crates/hex-tui` (Ratatui Alt-Screen Cockpit, Differential Renderer & CLI Launcher)
-[ ] Phase 26: 4-Phase Context Compactor & Prompt Cache Locking (Hermes Parity Pillar 3)
-    [ ] 26-01: Stale Tool Demotion & Atomic Tool-Boundary Preservation
-    [ ] 26-02: Middle-Turn Summarizer & Immutable Prompt-Cache Prefixing
+[x] Phase 26: 4-Phase Context Compactor & Prompt Cache Locking (Hermes Parity Pillar 3)
+    [x] 26-01: Stale Tool Demotion & Atomic Tool-Boundary Preservation
+    [x] 26-02: Middle-Turn Summarizer & Immutable Prompt-Cache Prefixing
 [ ] Phase 27: PTY Background Process Supervisor & Stream Registry (Hermes Parity Pillar 4)
     [ ] 27-01: PTY ProcessRegistry & Circular Ring Buffer
     [ ] 27-02: Gateway Process Tools (start_process, read_terminal, kill_process)
