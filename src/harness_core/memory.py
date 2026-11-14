@@ -2384,10 +2384,18 @@ class HistorySnapshotManager:
         matching_snap: Optional[dict[str, Any]] = None
 
         clean_ts = timestamp.strip()
+        # 1. Exact timestamp match
         for s in snaps:
-            if s["timestamp"] == clean_ts or s["timestamp"].startswith(clean_ts):
+            if s["timestamp"] == clean_ts:
                 matching_snap = s
                 break
+
+        # 2. Prefix timestamp match
+        if not matching_snap:
+            for s in snaps:
+                if s["timestamp"].startswith(clean_ts):
+                    matching_snap = s
+                    break
 
         if not matching_snap:
             for s in snaps:
