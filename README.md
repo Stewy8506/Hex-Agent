@@ -13,21 +13,19 @@
 ### The Autonomous AI Terminal Workbench That Tests Before It Touches Your Code
 
 [![Version](https://img.shields.io/badge/version-0.20.1-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blueviolet?style=flat-square)](install.sh)
-[![Tests Passing](https://img.shields.io/badge/tests-passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](tests/)
-[![Day-1 Antigravity](https://img.shields.io/badge/quota-Google%20Antigravity%20OAuth-4285F4?style=flat-square&logo=google&logoColor=white)](src/harness_core/providers/antigravity_provider.py)
+[![Tests Passing](https://img.shields.io/badge/tests-265%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
 
 <p align="center">
-  <a href="#-quickstart-in-3-steps"><strong>Quickstart</strong></a> ·
-  <a href="#-the-3-modes-plan--agent--code"><strong>The 3 Modes</strong></a> ·
-  <a href="#-the-terminal-cockpit"><strong>Terminal Cockpit</strong></a> ·
-  <a href="#-sub-agent-delegation-tier-c"><strong>Sub-Agents</strong></a> ·
-  <a href="#-headless-browser--multimodal-vision-tier-b"><strong>Browser & Vision</strong></a> ·
-  <a href="#-agent-client-protocol-acp-for-ides-tier-a"><strong>IDE Integration</strong></a> ·
-  <a href="#-daily-workflows--slash-commands"><strong>Commands</strong></a> ·
-  <a href="#-comprehensive-harness-comparison-hex-vs-the-ecosystem"><strong>Comparison</strong></a>
+  <a href="#-quick-install"><strong>Quick Install</strong></a> ·
+  <a href="#-getting-started-in-3-steps"><strong>Getting Started</strong></a> ·
+  <a href="#-the-3-modes-agent--plan--code"><strong>The 3 Modes</strong></a> ·
+  <a href="#-terminal-cockpit"><strong>Terminal Cockpit</strong></a> ·
+  <a href="#-supported-models"><strong>Models</strong></a> ·
+  <a href="#-daily-commands"><strong>Commands</strong></a> ·
+  <a href="#-documentation-library"><strong>Documentation</strong></a>
 </p>
 
 </div>
@@ -36,36 +34,35 @@
 
 ### What is HEX?
 
-**HEX** is a developer's autonomous AI pair-programmer in the terminal.
+**HEX** is an autonomous AI pair-programmer in your terminal designed to make AI coding reliable, fast, and safe.
 
-Most AI coding assistants edit your files in place. If they get stuck in a hallucination loop, your working branch is trashed, uncommitted changes are mixed up, and you spend the next hour cleaning up git diffs.
+Most AI coding assistants edit your files in place. If an agent hallucinates or produces broken syntax, your working branch is trashed, git history is cluttered with dirty diffs, and you spend valuable time cleaning up.
 
 **HEX does the opposite:**
-1. **Isolated Sandboxing**: Every edit and test runs in an instant copy-on-write scratchpad.
-2. **Proof Before Commit**: HEX runs your actual test suite. If the patch passes, it applies cleanly. If it fails, your code is never touched.
-3. **Multi-Model Freedom**: Connect your existing Google Antigravity OAuth quota ($0 marginal billing), frontier cloud models (Claude 3.7 Sonnet, GPT-4o), or run completely offline with Local AI (Apple Metal, NVIDIA CUDA, Ollama).
+- **Zero-Risk Scratchpad**: Every code change and test runs inside a high-speed, isolated sandbox.
+- **Proof Before Commit**: HEX executes your project's test suite. Only when tests pass are patches applied to your code.
+- **Model Freedom**: Connect directly to your existing Google Antigravity OAuth quota ($0 marginal billing), frontier cloud models (Claude 3.7 Sonnet, GPT-4o, Gemini 2.5 Pro), or run 100% offline with local models (Ollama, Apple Metal, NVIDIA CUDA).
+
+<table>
+<tr><td><b>Isolated Sandboxing</b></td><td>Instant Copy-on-Write staging (macOS APFS / Linux OverlayFS in &lt;10ms). Broken patches are discarded with zero host pollution.</td></tr>
+<tr><td><b>Proof Before Commit</b></td><td>Verifies tests and diagnostics inside the sandbox before touching a single line of your working branch.</td></tr>
+<tr><td><b>Native Rust Cockpit</b></td><td>Ultra-responsive 60 FPS Ratatui terminal interface with multiline editing, fuzzy slash autocomplete, and side-by-side split diffs.</td></tr>
+<tr><td><b>Model Independence</b></td><td>Use any cloud provider or local offline LLM. Switch anytime with <code>/model</code>—no code changes, zero lock-in.</td></tr>
+<tr><td><b>Editor Integration</b></td><td>Built-in Agent Client Protocol (ACP) server for seamless use inside Zed, Neovim, and VS Code.</td></tr>
+<tr><td><b>Headless Browser & Vision</b></td><td>Automate web testing, inspect DOM accessibility hierarchies, and evaluate visual UI regressions directly from the CLI.</td></tr>
+</table>
 
 ---
 
-## ⚡ See It in Action
+## ⚡ Quick Install
 
-<div align="center">
-  <img src="assets/hex-tui-demo.svg" alt="HEX Interactive Terminal TUI Demo" width="100%" />
-</div>
-
----
-
-## 🚀 Quickstart in 3 Steps
-
-### 1. Install HEX
-
-**macOS & Linux (bash):**
+### macOS & Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Stewy8506/Harness/main/install.sh | bash
 ```
 
-**Windows (PowerShell):**
+### Windows (Native PowerShell)
 
 ```powershell
 irm https://raw.githubusercontent.com/Stewy8506/Harness/main/install.ps1 | iex
@@ -81,20 +78,18 @@ uv tool install "git+https://github.com/Stewy8506/Harness.git[tui]"
 
 ---
 
-### 2. Launch in Any Repository
+## 🚀 Getting Started in 3 Steps
 
-Navigate to any codebase and launch HEX:
+### 1. Launch in Any Repository
+Navigate to any codebase on your machine and launch HEX:
 
 ```bash
 cd your-project
 hex
 ```
 
----
-
-### 3. Connect Your Model (One-Time Setup)
-
-On your very first run, HEX automatically opens an interactive terminal menu:
+### 2. Choose Your Model (One-Time Setup)
+On your very first run, HEX opens an interactive terminal setup menu:
 
 ```text
 ◈ Welcome to HEX — Autonomous AI Workbench
@@ -107,350 +102,94 @@ On your very first run, HEX automatically opens an interactive terminal menu:
   [ ] Local Offline Model (Ollama / Apple Metal / NVIDIA CUDA / CPU)
 ```
 
-> **Tip:** If you already use Google Antigravity, HEX auto-detects your active session with zero API keys required.
+> **Tip:** If you already use Google Antigravity, HEX auto-detects your active credentials with zero API keys required.
+
+### 3. Ask Anything or Assign a Task
+Type your request or task goal:
+
+```text
+❯ Add rate-limiting middleware to our FastAPI authentication router and verify tests pass
+```
+
+HEX will clone an isolated scratchpad, implement the code, run your test runner, and show you the clean diff once verified.
 
 ---
 
-## 🎯 The 3 Modes: `plan`, `agent`, `code`
+## 🎯 The 3 Modes: `agent`, `plan`, `code`
 
 HEX separates developer intent into three focused interaction modes. Press **`Tab`** on an empty prompt line to cycle between them instantly:
 
 ```text
 ╭─────────────────────────────────────────────────────────────────────────────╮
 │ ❯ Ask me anything...                                                        │
-╰─ plan · Harness · main · gemini-3.8-flash-tiered ── enter send · Tab mode ──╯
+╰─ agent · my-project · main · claude-3-7-sonnet ────── enter send · Tab mode ╯
 ```
 
 | Mode | Visual Badge | Best For | What Happens |
 | :--- | :--- | :--- | :--- |
-| **`plan`** | **Golden / Amber** | Architecture, design reviews, code explanations, refactoring specs | **Read-Only Guardrails**. Fast-path analysis. Inspects files, AST, and dependencies without modifying a single line of code. |
-| **`agent`** | **Cyan / White** | Bug fixing, new features, multi-file refactoring, autonomous repair | **Full Autonomy**. Edits code inside isolated sandboxes, runs your test suites, inspects diagnostics, and iterates until tests pass. |
-| **`code`** | **Purple** | Direct code generation, targeted snippets, surgical patch creation | **Direct Synthesis**. Fast targeted code edits without conversational overhead. |
+| **`agent`** | **Cyan / White** | Bug fixes, new features, multi-file refactoring | **Full Autonomy**. Edits code inside isolated sandboxes, runs tests, inspects diagnostics, and iterates until passing. |
+| **`plan`** | **Golden / Amber** | Architecture, design reviews, code explanations | **Read-Only Guardrails**. Inspects files and AST relationships without modifying a single line of code. |
+| **`code`** | **Purple** | Direct code snippets, targeted patch creation | **Direct Synthesis**. Fast targeted code generation without conversational overhead. |
 
-> **Mode Commands:** You can also switch modes anytime using `/plan`, `/agent`, `/code`, or `/mode`.
-
----
-
-## 🖥️ The Terminal Cockpit
-
- HEX features an unboxed, distraction-free terminal layout:
-
-```text
-    did you know · Press Tab on an empty line to cycle between plan, agent, and code modes.
-
-           ██╗  ██╗███████╗██╗  ██╗          █████╗  ██████╗ ███████╗███╗   ██╗████████╗            
-           ██║  ██║██╔════╝╚██╗██╔╝         ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝            
-           ███████║█████╗   ╚███╔╝  █████╗  ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║               
-           ██╔══██║██╔══╝   ██╔██╗  ╚════╝  ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║               
-           ██║  ██║███████╗██╔╝ ██╗         ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║               
-           ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝         ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝               
-                                              anv.dev                                               
-
-                ▄▄▀▀▀▀▀▀▄▄                HEX Autonomous AI Workbench  v0.20.1  (upstream 97a6ff2)
-             ▄▀▀  ▄▄▄▄▄▄  ▀▀▄             gemini-3.8-flash-tiered · Google Antigravity
-          ▄▀▀  ▄▀▀      ▀▀▄  ▀▀▄          ~/Development/Harness
-        ▄▀   ▄▀    ▄▄▄▄    ▀▄   ▀▄        Session: 5f64fe
-       ▐▌   ▐▌   ▄▀    ▀▄   ▐▌   ▐▌
-       ▐▌   ▐▌  ▐▌  ██  ▐▌  ▐▌   ▐▌       tools
-       ▐▌   ▐▌  ▐▌ ████ ▐▌  ▐▌   ▐▌         file: list_files, patch, read_file, write_file
-       ▐▌   ▐▌   ▀▄ ▀▀ ▄▀   ▐▌   ▐▌         search: search_files, web_extract, web_search
-        ▀▄   ▀▄    ▀▀▀▀    ▄▀   ▄▀          lsp_compiler: lsp_definition, lsp_diagnostics, lsp_hover, lsp_references
-          ▀▄▄  ▀▄▄      ▄▄▀  ▄▄▀            ast_graph: query_graphify
-            ▐▌ ▀▀▄▄▀▀▀▀▄▄▀▀ ▐▌              shell_exec: process, terminal
-            ▐▌     ▀▀▀▀     ▐▌              verification: run_tests
-             ▀▄▄          ▄▄▀               +6 more
-               ▀▀▄▄    ▄▄▀▀           
-                  ▀▀▀▀▀▀                  26 tools · 83 skills · /help
-              ───═══╬═══───           
-                                          type a message   /help for commands
-```
-
-### Highlights:
-- **No Clutter, No Cages**: Floating negative space without rigid double boxes.
-- **Docked Input Frame**: Visual status pills for active mode, project directory, git branch, and active model.
-- **Dynamic Ghost Suggestions**: Rotating prompt ideas that clear the moment you start typing.
-- **6 Terminal Themes**: Switch anytime with `/skin <name>` (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`). Automatically selects high-contrast `light` skin on light-background terminals via `COLORFGBG`.
-- **Fuzzy Slash Command Autocomplete**: Subsequence matching with prefix prioritization (`/ast` matches `/blast`, `/rb` matches `/rollback`).
-
-### 🦀 Native Rust Ratatui Cockpit (`hex tui` / `hex chat --ratatui`)
-
-For an ultra-responsive 60 FPS alt-screen terminal experience with dual-buffer differential rendering:
-
-```bash
-# Launch native Ratatui cockpit (builds on-demand with cargo if not compiled)
-hex tui
-
-# Or start chat with the native Ratatui backend
-hex chat --ratatui
-
-# Headless verification / self-check (exits 0)
-hex tui --check
-```
-
-- **Sticky Status Telemetry**: Live model routing, CoW snapshot mode, monotonic fencing token, and ACP connection status.
-- **Scrollable Dialogue & Collapsible Tool Calls**: Role badges (`[USER]`, `[ASSISTANT]`, `[SYSTEM]`, `[TOOL]`), expandable tool invocations with millisecond execution durations and status indicators.
-- **Natural History Navigation**: `PageUp` / `PageDown` and arrows scroll dialogue history directly without losing input focus.
-- **Tab Mode Cycling**: Press `Tab` on an empty prompt line to cycle modes (`agent` → `plan` → `code`), or press `Tab` to accept slash command autocompletions.
-- **Side-by-Side Split Diff View (`/sbs`)**: Toggle synchronized two-column split diff or unified diff side-by-side with conversation history.
-- **R3/R4 Policy Approval Intercepts**: Centered modal overlay for operator approvals with risk classifications and action buttons (`[y] Approve`, `[n] Reject`, `[d] Diff`, `[Esc] Dismiss`).
+> **Mode Commands:** You can also switch modes anytime using `/agent`, `/plan`, `/code`, or `/mode`.
 
 ---
 
-## 💡 Why HEX Feels Different
+## 🖥️ Terminal Cockpit
 
-```
-┌───────────────────────────────┐      ┌───────────────────────────────┐
-│     Typical AI Agents         │      │      HEX AI Workbench         │
-├───────────────────────────────┤      ├───────────────────────────────┤
-│ ❌ Edits live files in place   │      │  Edits in Copy-on-Write CoW   │
-│ ❌ Dumps 50KB test error logs │      │  Compresses logs to core diff │
-│ ❌ Locks you to one provider   │      │  Antigravity, Claude, Local   │
-│ ❌ Context rots as code moves  │      │  AST memory staleness checks  │
-│ ❌ Re-runs crashed tool calls │      │ ⚡ 0ms replay from journal     │
-└───────────────────────────────┘      └───────────────────────────────┘
-```
+HEX includes a native Rust Ratatui cockpit (`hex tui`) designed for high-performance terminal workflows:
 
-### 1. Copy-on-Write Sandbox (Your Repo Stays Safe)
-When you ask HEX to fix a bug or add a feature, it clones your repository state in **<10ms** using native filesystem Copy-on-Write (APFS on macOS, OverlayFS on Linux). It writes changes and executes your test runner inside the sandbox. Only when verification succeeds are the changes applied to your actual workspace.
-
-### 2. Smart Log & Context Compression
-Nothing burns tokens faster than a 500-line pytest traceback or large build logs. HEX’s deterministic log compressor extracts the exact failing assertions and line diffs while dropping redundant system trace noise—saving **75% to 88%** of your context window.
-
-### 3. AST-Aware Precision
-Instead of blindly shoving entire 1,500-line files into the prompt, HEX’s code graph indexes functions, classes, and cross-file imports. It extracts only the relevant function bodies and their direct callers, keeping prompts laser-focused and responses accurate.
-
-### 4. Zero-Friction Antigravity Integration
-HEX was designed from Day 1 to connect to **Google Antigravity OAuth**. If you have an active Antigravity session, you get full access to leading frontier reasoning with zero marginal API charges.
-
-### 5. Thinking Signature Protection & Transient Resilience
-HEX preserves Anthropic Claude thinking block signatures on conversational replay and automatically suppresses unsigned blocks to prevent HTTP 400 crashes. Transient failures (HTTP 429 rate limits, 503 gateway outages, network timeouts) trigger jitter-decorrelated exponential backoff so autonomous tasks never stall midway.
-
-### 6. Shadow Summary Deduplication & Pre-Flight Session Hygiene
-In long 30+ turn sessions, HEX automatically detects and prunes historical shadow compaction summaries and runs pre-flight sanitization on oversized message histories before Turn 1, ensuring prompt tokens remain clean and bounded.
+- **60 FPS Dual-Buffer Rendering**: Ultra-responsive alt-screen terminal experience consuming <20MB of RAM.
+- **Natural History Scrolling**: Use `PageUp` / `PageDown` or arrow keys to scroll conversation history directly without leaving your input prompt.
+- **Fuzzy Slash Autocomplete**: Type `/` to open fuzzy command suggestions (`/ast` matches `/blast`, `/rb` matches `/rollback`). Press `Tab` to accept suggestions.
+- **Side-by-Side Split Diff (`/sbs`)**: Toggle synchronized two-column split diff views alongside unified diffs.
+- **Light & Dark Terminal Skins**: 6 themes (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) with automatic background luminance detection.
+- **Policy Approvals**: Centered modal overlay for high-risk operations (e.g. git pushes) with action keys (`[y] Approve`, `[n] Reject`, `[d] Diff`).
 
 ---
 
-## ⚖️ Comprehensive Harness Comparison: HEX vs. The Ecosystem
-
-How does HEX compare against other prominent autonomous engineering agents and harnesses?
-
-| Feature / Dimension | HEX AI Workbench | Hermes Agent (Nous Research) | OpenClaw | Claude Code (Anthropic) | Aider |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Workspace Sandbox** | **Copy-on-Write (CoW)**<br>APFS / OverlayFS in <10ms | Host execution / Docker container | In-place repo edits | In-place repo edits | In-place repo edits |
-| **Verification Gate** | **Proof-Before-Commit**<br>0ms instant rollback on failure | Manual or agent self-check | Post-edit git commits | Prompt confirmation | Git commit prompts |
-| **Terminal / UI Client** | **Native Rust Cockpit (Ratatui)**<br>60 FPS, <20MB RAM, 15MB binary | Electron Desktop (~400MB) or Python CLI | Terminal CLI | Terminal CLI | Terminal CLI |
-| **Model Freedom** | **Universal Model Routing**<br>Antigravity ($0), Claude, OpenAI, Gemini, Local | Universal (Nous, OpenRouter, local) | Model API keys | Anthropic Only (Claude 3.7/Opus) | Any LLM via litellm/API keys |
-| **Subagent Architecture** | **Hierarchical CoW Sandboxes**<br>Bounded budgets & role least-privilege | Subprocess worker pools | Linear single-pass execution | Single agent session | Single agent session |
-| **Context Compaction** | **Two-Tier AST + Log Compressor**<br>75–88% reduction + shadow dedup | Summarization buffer | History truncation | Sliding context window | Tree-sitter repo map |
-| **IDE Integration** | **Dual-Stack ACP Server & Client**<br>(Zed, Neovim, VS Code) | Custom messaging bots | CLI only | Terminal only | Editor integrations |
-| **Audit Ledger & State** | **Cryptographic SHA-256 Chain**<br>PostgreSQL 16 + SQLite WAL + Alembic | SQLite history tables | JSON state files | Local session files | Git commit logs |
-| **Browser & Vision** | **Built-in Headless Browser**<br>Compact `ariaSnapshot` DOM + multimodal | Python Playwright tools | External browser skills | Image attachments only | Web scrape tools |
-
----
-
-### Deep Dive: HEX vs. Key Platforms
-
-#### 1. HEX vs. Hermes Agent (Nous Research)
-- **Filesystem Isolation**: Hermes executes commands directly against your host environment or inside Docker containers. HEX utilizes kernel-level Copy-on-Write snapshots (APFS clone on macOS, OverlayFS on Linux) allowing sub-second branch cloning with instant, zero-cost rollback if a patch fails tests.
-- **Client Footprint**: Hermes packages an Electron app consuming ~400MB RAM. HEX's compiled Rust Ratatui terminal cockpit weighs ~15MB on disk and consumes <20MB RAM with 60 FPS dual-buffer rendering.
-- **Resilience & Tool Schemas**: Both engines feature native `role: "tool"` schemas, Anthropic thinking block signature preservation, and jitter-decorrelated exponential retry backoff.
-- **Ledger & Durability**: Hermes logs to standalone SQLite. HEX maintains an immutable cryptographic SHA-256 event hash chain with dual-driver PostgreSQL 16 (`asyncpg` + `SKIP LOCKED` worker queues) and SQLite WAL engines with verified Alembic migrations.
-
-#### 2. HEX vs. OpenClaw
-- **Safety & State Management**: OpenClaw operates directly within your working directory, writing changes immediately to disk. HEX enforces strict Copy-on-Write isolation and runs verification tests before any changes touch your active repository.
-- **Code Intelligence**: OpenClaw relies primarily on ripgrep text searches. HEX leverages active Graphify tree-sitter AST queries to understand function definitions, caller/callee graphs, and blast radius before modifying code.
-- **Migration Path**: HEX includes a zero-loss migration tool (`scripts/openclaw_to_hex.py`) that imports OpenClaw personas, long-term memory stores, user profiles, and custom skill bundles seamlessly into HEX.
-
-#### 3. HEX vs. Claude Code & Aider
-- **Proof-Before-Commit vs. In-Place Editing**: Tools like Claude Code and Aider edit repository files in place. If an agent loops, hallucinates, or produces broken syntax, developers must manually discard git diffs. HEX only applies changes to your working branch once your test suite passes inside the CoW sandbox.
-- **Vendor Lock-In**: Claude Code is exclusively locked to Anthropic models. HEX is completely model-agnostic, enabling developers to route tasks across Google Antigravity ($0 Day-1 marginal billing), Claude 3.7 Sonnet, OpenAI o3-mini, Gemini 2.5 Pro, or fully offline local LLMs (Ollama / Apple Metal / CUDA).
-- **IDE Extensibility**: Aider and Claude Code run as standalone terminal CLIs. HEX ships a production Agent Client Protocol (ACP) server over JSON-RPC 2.0 stdio, integrating seamlessly into Zed, Neovim, and VS Code.
-
----
-
-## 🤖 Supported Models & Local AI
+## 🤖 Supported Models
 
 HEX is completely model-agnostic. Switch models on the fly with `/model`:
 
-### Cloud Frontiers
 - **Google Antigravity**: Included quota routing ($0 marginal billing).
 - **Anthropic**: Claude 3.7 Sonnet, Claude 3.5 Sonnet, Claude 3.5 Haiku, Claude 3 Opus.
 - **OpenAI**: GPT-4o, GPT-4o-mini, o1, o3-mini.
 - **Google Gemini**: Gemini 2.5 Pro, Gemini 2.5 Flash.
-
-### Cross-Platform Local AI
-Run 100% air-gapped without data leaving your device:
-- **Ollama**: Connects directly to local models (`llama3.2`, `qwen2.5-coder`, `deepseek-r1`) on `localhost:11434`.
-- **Apple Silicon (Metal)**: High-throughput local acceleration.
-- **NVIDIA GPUs (CUDA)**: Native GPU inference on Linux and Windows.
-- **Host CPU Fallback**: Universal POSIX CPU execution.
+- **Local Offline Models**: Direct connection to Ollama, Apple Silicon (Metal), NVIDIA GPUs (CUDA), or host CPU.
 
 ---
 
-## 🤖 In-Flight Sub-Agent Delegation (Tier C)
+## ⌨️ Daily Commands
 
-HEX can spawn focused, budget-bounded child agents on the fly to perform parallel research, specialized coding, or test verification without polluting your primary conversation history.
-
-```text
-Primary Agent (Task)
-   ├── 🔍 Researcher Subagent (read-only AST & web investigation)
-   ├── 💻 Coder Subagent (surgical implementation in isolated CoW workspace)
-   └── 🧪 Tester Subagent (test execution & diagnostic validation)
-```
-
-- **Least-Privilege Roles**: Subagents run under strict role-constrained tool boundaries:
-  - `researcher`: Read-only file inspection, Graphify AST queries, and web research.
-  - `coder`: Code editing, search/replace patching, and test execution.
-  - `tester`: Bounded test runners and compiler diagnostics.
-  - `reviewer`: Blast-radius analysis and code diff auditing.
-  - `planner`: Task decomposition and checklist management.
-  - `general`: Standard toolset with child delegation disabled.
-- **Copy-on-Write Workspace Isolation**: Each subagent gets its own instant CoW scratchpad at `.hex/subagents/<id>`. Experimental changes never touch your working directory until verified.
-- **Recursion Safety**: Depth-capped (default max depth = 2) to eliminate runaway infinite child spawning.
-- **Live TUI Observability**: Inspect in-flight and completed subagents with `/subagents`.
-
----
-
-## 🌐 Interactive Headless Browser & Multimodal Vision (Tier B)
-
-Automate web applications, inspect UI layouts, and diagnose frontend visual regressions directly from your terminal.
-
-- **Headless Browser (`browser`)**:
-  - **Accessibility Snapshots (`ariaSnapshot`)**: Extracts compact, token-efficient DOM hierarchies with interactive element references (`@e1`, `@e2`, `@e3`).
-  - **Full Interaction**: Navigate to URLs, click elements, type into forms, take screenshots, and evaluate JavaScript expressions.
-  - **Zero-Dependency Fallback**: Works out of the box with zero external browser binaries required.
-- **Multimodal Visual Inspection (`image_inspect`)**:
-  - Analyzes local images (PNG, JPG, WEBP, GIF, SVG) and remote URLs.
-  - Automatic dimension detection, base64 encoding, and multimodal model reasoning for visual regression testing and UI mockup verification.
-
-```bash
-# Example tool calls executed by the agent
-browser(action="navigate", url="http://localhost:3000")
-browser(action="snapshot")
-browser(action="click", selector="@e3")
-browser(action="screenshot", output_path="login.png")
-image_inspect(image_path="login.png", prompt="Verify if the submit button is properly aligned")
-```
-
----
-
-## 🔌 Agent Client Protocol (ACP) for Zed, Neovim & VSCode (Tier A)
-
-Use HEX directly inside your favorite code editor! HEX implements the **Agent Client Protocol (ACP)** over standard JSON-RPC 2.0 stdio transport.
-
-### 1. Zed Editor Configuration
-Add HEX as an external agent in your `.zed/settings.json`:
-
-```json
-{
-  "agent": {
-    "name": "HEX",
-    "command": "hex",
-    "args": ["acp"],
-    "protocol": "acp"
-  }
-}
-```
-
-### 2. Neovim (`avante.nvim` / `codecompanion`)
-```lua
-provider = "acp",
-acp_command = { "hex", "acp" },
-```
-
-### 3. Editor Setup Diagnostics
-Validate your editor bridge instantly:
-
-```bash
-# Verify ACP readiness and environment health
-hex acp --check
-
-# Generate ready-to-paste editor snippets
-hex acp --setup
-```
-
----
-
-## ⌨️ Daily Workflows & Slash Commands
-
-Inside the interactive console, type `/` to see available commands:
+Inside the interactive console, type `/` to access commands:
 
 | Command | Action |
 | :--- | :--- |
-| **`/mode`** | Cycle or switch interaction mode (`plan`, `agent`, `code`) — or press `Tab` on empty line |
+| **`/mode`** | Cycle interaction mode (`agent`, `plan`, `code`) — or press `Tab` on empty line |
 | **`/diff`** | View unified colorized diff of uncommitted sandbox changes |
 | **`/sbs`** | Toggle side-by-side terminal split diff view |
-| **`/proof`** | View the cryptographic verification proof and test results for a completed task |
-| **`/subagents`** | Inspect active and completed child subagents and delegation tree |
-| **`/react [on|off]`** | Toggle continuous multi-turn autonomous ReAct tool loop |
-| **`/rollback`** | Instantly discard changes and reset the scratchpad |
-| **`/model`** | Inspect active model profile or switch providers |
-| **`/compressor`** | Toggle log compressor mode (`deterministic`, `cloud`, `local`, `off`) |
-| **`/project`** | Switch between registered projects in your global registry |
-| **`/doctor`** | Run system health diagnostics and auto-repair broken dependencies |
-| **`/voice`** | Toggle hands-free voice mode and audio feedback |
-| **`/skin`** | Change color theme (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) |
+| **`/proof`** | View test results and cryptographic proof for the completed task |
+| **`/subagents`** | Inspect active and completed child subagents |
+| **`/react [on\|off]`** | Toggle continuous multi-turn autonomous ReAct tool loop |
+| **`/rollback`** | Discard sandbox changes and reset to active branch state |
+| **`/model`** | Inspect active model routing profile or switch providers |
+| **`/doctor`** | Run system health diagnostics and repair configurations |
+| **`/skin`** | Switch color theme (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) |
 | **`/help`** | Display full table of slash commands |
 
 ---
 
-## 🛠️ CLI Quick Reference
+## 📚 Documentation Library
 
-HEX can also be run directly from scripts or your shell:
+For comprehensive guides, architecture deep-dives, and production integrations:
 
-```bash
-# Run an autonomous task with automatic git branching and commit
-hex run "Refactor authentication flow to use refresh tokens" --branch
-
-# Run continuous multi-turn autonomous ReAct tool loop
-hex run "Audit repository security dependencies" --react
-hex chat --react
-
-# Run benchmark evaluations across test suites with formatted summary table
-hex eval --suite core
-hex eval --suite all --json
-
-# Verify cryptographic event chain integrity and database migration parity
-python scripts/verify_event_chain.py
-
-# Start Agent Client Protocol (ACP) server for Zed, Neovim, and VSCode
-hex acp --check
-hex acp --setup
-hex acp
-
-# Launch native Rust Ratatui cockpit (60 FPS dual-buffer rendering)
-hex tui
-
-# Launch TUI pair-programming console with specific theme
-hex --skin cyberpunk
-
-# Inspect system health and repair misconfigurations automatically
-hex doctor --fix
-
-# Manage workspace projects
-hex project list
-hex project add /path/to/my-repo
-hex project switch
-
-# Polyglot Language Server diagnostics
-hex lsp status
-hex lsp diagnostics
-```
-
----
-
-## 🤝 Contributing & Community
-
-Contributions are warmly welcome! Whether fixing a bug, adding a new language parser, or designing a skin:
-
-```bash
-git clone https://github.com/Stewy8506/Harness.git
-cd Harness
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[tui,test]"
-python -m unittest discover -s tests
-```
+- 🏗️ **[System Architecture](docs/ARCHITECTURE.md)** — Copy-on-Write sandboxing, PostgreSQL/SQLite dual-driver storage, cryptographic hash chaining, and AST code intelligence.
+- ⚖️ **[Harness Comparison](docs/COMPARISON.md)** — In-depth architectural comparison against Hermes Agent, OpenClaw, Claude Code, and Aider.
+- 🤖 **[Sub-Agent Delegation](docs/SUBAGENTS.md)** — Hierarchical child workers, role-based tool gating, and sandbox scratchpads.
+- 🌐 **[Browser & Vision](docs/BROWSER_AND_VISION.md)** — Headless browser automation, `ariaSnapshot` semantic DOM trees, and visual regression testing.
+- 🔌 **[IDE Integration (ACP)](docs/ACP_INTEGRATION.md)** — Configure HEX inside Zed, Neovim (`avante.nvim`), and VS Code via the Agent Client Protocol.
+- 🤝 **[Contributing Guide](docs/CONTRIBUTING.md)** — Development setup, running benchmark evaluations (`hex eval`), and pre-commit checks.
 
 ---
 
