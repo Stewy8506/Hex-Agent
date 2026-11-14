@@ -493,7 +493,7 @@ class CloudModelProvider(ModelProvider):
 
     def generate(
         self,
-        prompt: str,
+        prompt: str = "",
         *,
         system_prompt: str | None = None,
         cacheable_prefix: str | None = None,
@@ -503,6 +503,7 @@ class CloudModelProvider(ModelProvider):
         stop_sequences: list[str] | None = None,
         data_classification: str = "internal",
         budget: Any = None,
+        messages: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> ModelResponse:
         """Generate response from frontier cloud provider with privacy, prefix caching, and budget enforcement."""
@@ -552,6 +553,7 @@ class CloudModelProvider(ModelProvider):
             max_tokens=max_tokens,
             temperature=temperature,
             stop_sequences=stop_sequences,
+            messages=messages,
         )
 
         t0 = time.perf_counter()
@@ -691,14 +693,15 @@ class CloudModelProvider(ModelProvider):
 
     def _build_request(
         self,
-        clean_prompt: str,
+        clean_prompt: str | list[dict[str, Any]] = "",
         *,
-        system_prompt: str | None,
+        system_prompt: str | None = None,
         cacheable_prefix: str | None = None,
         enable_prompt_caching: bool = False,
-        max_tokens: int,
-        temperature: float,
-        stop_sequences: list[str] | None,
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        stop_sequences: list[str] | None = None,
+        messages: list[dict[str, Any]] | None = None,
     ) -> tuple[str, dict[str, str], bytes]:
         if (
             (self.api_key is None or not str(self.api_key).strip())
@@ -708,6 +711,21 @@ class CloudModelProvider(ModelProvider):
             raise ProviderUnavailableError(
                 f"No API key provided for {self.provider_type.value}. Run 'hex setup' or set the appropriate environment variable."
             )
+
+        messages_to_use: list[dict[str, Any]] | None = (
+            messages
+            if messages is not None
+            else (clean_prompt if isinstance(clean_prompt, list) else None)
+        )
+        if messages_to_use is None and isinstance(clean_prompt, str):
+            s = clean_prompt.strip()
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list) and all(isinstance(x, dict) and "role" in x for x in parsed):
+                        messages_to_use = parsed
+                except Exception:
+                    pass
 
         transport = (
             self.spec.transport
@@ -722,14 +740,30 @@ class CloudModelProvider(ModelProvider):
             parts: list[dict[str, str]] = []
             if cacheable_prefix:
                 parts.append({"text": cacheable_prefix})
-            parts.append({"text": clean_prompt})
-            payload = {
-                "contents": [{"role": "user", "parts": parts}],
-                "generationConfig": {
-                    "maxOutputTokens": max_tokens,
-                    "temperature": temperature,
-                },
-            }
+            if messages_to_use is not None:
+                contents: list[dict[str, Any]] = []
+                for msg in messages_to_use:
+                    if not isinstance(msg, dict):
+                        continue
+                    m_role = "model" if msg.get("role") == "assistant" else "user"
+                    m_text = str(msg.get("content", ""))
+                    contents.append({"role": m_role, "parts": [{"text": m_text}]})
+                payload = {
+                    "contents": contents,
+                    "generationConfig": {
+                        "maxOutputTokens": max_tokens,
+                        "temperature": temperature,
+                    },
+                }
+            else:
+                parts.append({"text": str(clean_prompt)})
+                payload = {
+                    "contents": [{"role": "user", "parts": parts}],
+                    "generationConfig": {
+                        "maxOutputTokens": max_tokens,
+                        "temperature": temperature,
+                    },
+                }
             if system_prompt:
                 payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
             if stop_sequences:
@@ -749,6 +783,115 @@ class CloudModelProvider(ModelProvider):
             if self.spec and self.spec.extra_headers:
                 headers.update(self.spec.extra_headers)
 
+            if messages_to_use is not None:
+                formatted_messages: list[dict[str, Any]] = []
+                extracted_system: list[str] = []
+
+                for msg in messages_to_use:
+                    if not isinstance(msg, dict):
+                        continue
+                    m_role = str(msg.get("role", "user")).lower()
+                    if m_role == "system":
+                        extracted_system.append(str(msg.get("content", "")))
+                        continue
+                    elif m_role == "tool":
+                        call_id = msg.get("tool_call_id") or msg.get("tool_use_id") or msg.get("id") or ""
+                        tool_content = str(msg.get("content", ""))
+                        formatted_messages.append({
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": str(call_id),
+                                    "content": tool_content,
+                                }
+                            ],
+                        })
+                    elif m_role == "assistant":
+                        raw_content = msg.get("content")
+                        if isinstance(raw_content, list):
+                            new_blocks: list[dict[str, Any]] = []
+                            for block in raw_content:
+                                if isinstance(block, dict) and block.get("type") == "thinking":
+                                    sig = block.get("signature")
+                                    if sig and isinstance(sig, str) and sig.strip():
+                                        new_blocks.append({
+                                            "type": "thinking",
+                                            "thinking": block.get("thinking", ""),
+                                            "signature": sig.strip(),
+                                        })
+                                    # Lacks signature or empty signature -> suppress/strip to prevent HTTP 400
+                                elif isinstance(block, dict):
+                                    new_blocks.append(block)
+                                else:
+                                    new_blocks.append({"type": "text", "text": str(block)})
+                            formatted_messages.append({"role": "assistant", "content": new_blocks})
+                        else:
+                            # Inspect separate thinking / signature fields if present
+                            sig = msg.get("signature") or (
+                                msg.get("thinking_block", {}).get("signature")
+                                if isinstance(msg.get("thinking_block"), dict)
+                                else None
+                            )
+                            thinking_val = msg.get("thinking") or (
+                                msg.get("thinking_block", {}).get("thinking")
+                                if isinstance(msg.get("thinking_block"), dict)
+                                else None
+                            )
+                            if thinking_val is not None:
+                                if sig and isinstance(sig, str) and sig.strip():
+                                    blocks = [
+                                        {
+                                            "type": "thinking",
+                                            "thinking": str(thinking_val),
+                                            "signature": sig.strip(),
+                                        },
+                                        {
+                                            "type": "text",
+                                            "text": str(raw_content or ""),
+                                        },
+                                    ]
+                                    formatted_messages.append({"role": "assistant", "content": blocks})
+                                else:
+                                    # Missing/empty signature -> strip thinking block, leave only text
+                                    formatted_messages.append({
+                                        "role": "assistant",
+                                        "content": [{"type": "text", "text": str(raw_content or "")}],
+                                    })
+                            else:
+                                formatted_messages.append({
+                                    "role": "assistant",
+                                    "content": str(raw_content or ""),
+                                })
+                    else:
+                        # User message
+                        formatted_messages.append({
+                            "role": "user",
+                            "content": msg.get("content", ""),
+                        })
+
+                eff_system = system_prompt or ("\n\n".join(extracted_system) if extracted_system else None)
+                payload: dict[str, Any] = {
+                    "model": self.model_id,
+                    "messages": formatted_messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+                if eff_system:
+                    if enable_prompt_caching:
+                        payload["system"] = [
+                            {
+                                "type": "text",
+                                "text": eff_system,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ]
+                    else:
+                        payload["system"] = eff_system
+                if stop_sequences:
+                    payload["stop_sequences"] = stop_sequences
+                return url, headers, json.dumps(payload).encode("utf-8")
+
             if enable_prompt_caching and cacheable_prefix:
                 user_content: Any = [
                     {
@@ -758,11 +901,11 @@ class CloudModelProvider(ModelProvider):
                     },
                     {
                         "type": "text",
-                        "text": clean_prompt,
+                        "text": str(clean_prompt),
                     },
                 ]
             else:
-                user_content = clean_prompt
+                user_content = str(clean_prompt)
 
             payload: dict[str, Any] = {
                 "model": self.model_id,
@@ -797,16 +940,46 @@ class CloudModelProvider(ModelProvider):
             if self.spec and self.spec.extra_headers:
                 headers.update(self.spec.extra_headers)
 
+            if messages_to_use is not None:
+                openai_messages: list[dict[str, Any]] = []
+                if system_prompt and not any(m.get("role") == "system" for m in messages_to_use if isinstance(m, dict)):
+                    openai_messages.append({"role": "system", "content": system_prompt})
+                for msg in messages_to_use:
+                    if not isinstance(msg, dict):
+                        continue
+                    m_role = str(msg.get("role", "user")).lower()
+                    if m_role == "tool":
+                        call_id = msg.get("tool_call_id") or msg.get("tool_use_id") or msg.get("id") or ""
+                        tool_item: dict[str, Any] = {
+                            "role": "tool",
+                            "tool_call_id": str(call_id),
+                            "content": str(msg.get("content", "")),
+                        }
+                        if msg.get("name"):
+                            tool_item["name"] = str(msg["name"])
+                        openai_messages.append(tool_item)
+                    else:
+                        openai_messages.append(dict(msg))
+                payload = {
+                    "model": self.model_id,
+                    "messages": openai_messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+                if stop_sequences:
+                    payload["stop"] = stop_sequences
+                return url, headers, json.dumps(payload).encode("utf-8")
+
             # Order strictly as stable (system) -> context (cacheable_prefix) -> volatile (prompt)
-            messages: list[dict[str, str]] = []
+            messages_list: list[dict[str, str]] = []
             if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
+                messages_list.append({"role": "system", "content": system_prompt})
             if cacheable_prefix:
-                messages.append({"role": "user", "content": cacheable_prefix})
-            messages.append({"role": "user", "content": clean_prompt})
+                messages_list.append({"role": "user", "content": cacheable_prefix})
+            messages_list.append({"role": "user", "content": str(clean_prompt)})
             payload = {
                 "model": self.model_id,
-                "messages": messages,
+                "messages": messages_list,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
@@ -847,14 +1020,24 @@ class CloudModelProvider(ModelProvider):
             cached_tokens = int(usage_meta.get("cachedContentTokenCount", 0))
 
         elif transport == "anthropic_messages" or self.provider_type == CloudProviderType.ANTHROPIC:
+            thinking_blocks: list[dict[str, Any]] = []
             if "content" in data and isinstance(data["content"], list):
                 for item in data["content"]:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        text += item.get("text", "")
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            text += item.get("text", "")
+                        elif item.get("type") == "thinking":
+                            thinking_blocks.append(item)
                     elif isinstance(item, str):
                         text += item
             elif "text" in data:
                 text = str(data["text"])
+
+            if thinking_blocks:
+                data["thinking_blocks"] = thinking_blocks
+                data["thinking"] = thinking_blocks[0].get("thinking", "")
+                data["signature"] = thinking_blocks[0].get("signature", "")
+
             usage_dict = data.get("usage", {})
             raw_in = int(usage_dict.get("input_tokens", 0))
             cache_read = int(usage_dict.get("cache_read_input_tokens", 0))
