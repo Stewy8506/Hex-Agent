@@ -199,11 +199,17 @@ def detect_recipe(root: Path | str) -> Recipe | None:
             "pip install -r requirements.txt" if (ws / "requirements.txt").is_file() else None
         )
 
-        test_str = "pytest"
-        test_args = ["pytest"]
+        if has_pytest_marker:
+            test_str = "pytest"
+            test_args = ["pytest"]
+            recipe_name = "Python (pytest)"
+        else:
+            test_str = f"{py_exe} -m unittest discover -s . -p 'test_*.py'"
+            test_args = [py_exe, "-m", "unittest"]
+            recipe_name = "Python (unittest)"
 
         return Recipe(
-            name="Python (pytest)",
+            name=recipe_name,
             kind="python",
             bootstrap=bootstrap,
             build="python -m build" if (ws / "pyproject.toml").is_file() else None,
