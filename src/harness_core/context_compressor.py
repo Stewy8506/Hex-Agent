@@ -8,6 +8,7 @@ matching production agent standards.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import re
 from typing import Any, Callable
@@ -977,4 +978,126 @@ class ContextCompactor:
             phase3_summarized_turns=phase3_turns,
             used_fallback=used_fallback,
         )
+
+
+# ==============================================================================
+# Phase 4: Immutable Prompt-Cache Prefixing & Provider Cache Breakpoints
+# ==============================================================================
+
+def stabilize_prompt_cache_prefix(
+    messages: list[dict[str, Any]],
+    system_prompt: str,
+    tools_schema: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Enforce byte-for-byte immutable prompt-cache prefix for high KV hit rates.
+
+    Ensures that the system prompt message occupies index 0 with canonical,
+    deterministic text, dynamic runtime stamps are excluded from the static prefix,
+    and subsequent conversational turns are cleanly preserved.
+    """
+    clean_messages: list[dict[str, Any]] = []
+
+    # 1. Canonical system message at index 0
+    canonical_system = str(system_prompt).strip()
+    clean_messages.append({"role": "system", "content": canonical_system})
+
+    # 2. Add non-system messages from input
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "system":
+            # Strip redundant internal system messages to avoid cache churn
+            continue
+        clean_messages.append(dict(msg))
+
+    return clean_messages
+
+
+def compute_cache_signature(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    prefix_turns: int = 2,
+) -> str:
+    """Compute deterministic SHA-256 hex digest of the static prompt-cache prefix.
+
+    Covers the sorted canonical tool schemas and the first `prefix_turns`
+    messages (typically system instructions and initial task turn).
+    """
+    hasher = hashlib.sha256()
+
+    # Tool schemas deterministic serialization
+    if tools:
+        canonical_tools = json.dumps(tools, sort_keys=True, separators=(",", ":"))
+        hasher.update(canonical_tools.encode("utf-8"))
+
+    # First `prefix_turns` messages
+    prefix_slice = messages[:prefix_turns]
+    for msg in prefix_slice:
+        # Canonical message representation ignoring ephemeral internal keys
+        msg_copy = {k: v for k, v in msg.items() if not k.startswith("_")}
+        canonical_msg = json.dumps(msg_copy, sort_keys=True, separators=(",", ":"))
+        hasher.update(canonical_msg.encode("utf-8"))
+
+    return hasher.hexdigest()
+
+
+def apply_cache_control_breakpoints(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    provider: str = "anthropic",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
+    """Inject provider-specific ephemeral cache control breakpoints.
+
+    For Anthropic: injects `"cache_control": {"type": "ephemeral"}` onto:
+      1. The last tool definition in `tools` (caches tools schema).
+      2. The system prompt message (caches static system instructions).
+      3. The latest context summary checkpoint in middle history (if present).
+      4. The second-to-last turn in the active tail (caches conversation prefix).
+    Respects Anthropic maximum of 4 cache breakpoints per request.
+
+    For Gemini and OpenAI: preserves exact byte stability without injecting breakpoints.
+    """
+    tagged_msgs: list[dict[str, Any]] = [dict(m) for m in messages]
+    tagged_tools: list[dict[str, Any]] | None = [dict(t) for t in tools] if tools is not None else None
+
+    prov = provider.lower()
+    if "anthropic" not in prov and "claude" not in prov:
+        return tagged_msgs, tagged_tools
+
+    breakpoints_used = 0
+    max_breakpoints = 4
+
+    # 1. Last tool definition
+    if tagged_tools and len(tagged_tools) > 0 and breakpoints_used < max_breakpoints:
+        tagged_tools[-1] = dict(tagged_tools[-1])
+        tagged_tools[-1]["cache_control"] = {"type": "ephemeral"}
+        breakpoints_used += 1
+
+    # 2. System prompt message (index 0)
+    if tagged_msgs and tagged_msgs[0].get("role") == "system" and breakpoints_used < max_breakpoints:
+        tagged_msgs[0] = dict(tagged_msgs[0])
+        tagged_msgs[0]["cache_control"] = {"type": "ephemeral"}
+        breakpoints_used += 1
+
+    # 3. Latest context summary checkpoint in middle history
+    summary_idx = -1
+    for idx in range(len(tagged_msgs) - 1, 0, -1):
+        if is_context_summary_message(tagged_msgs[idx]):
+            summary_idx = idx
+            break
+
+    if summary_idx > 0 and breakpoints_used < max_breakpoints:
+        tagged_msgs[summary_idx] = dict(tagged_msgs[summary_idx])
+        tagged_msgs[summary_idx]["cache_control"] = {"type": "ephemeral"}
+        breakpoints_used += 1
+
+    # 4. Second-to-last turn in active tail (or last turn if >= 2 messages and not already tagged)
+    if len(tagged_msgs) >= 2 and breakpoints_used < max_breakpoints:
+        tail_target_idx = len(tagged_msgs) - 2 if len(tagged_msgs) > 2 else len(tagged_msgs) - 1
+        if tail_target_idx != summary_idx and tail_target_idx != 0:
+            tagged_msgs[tail_target_idx] = dict(tagged_msgs[tail_target_idx])
+            tagged_msgs[tail_target_idx]["cache_control"] = {"type": "ephemeral"}
+            breakpoints_used += 1
+
+    return tagged_msgs, tagged_tools
 
