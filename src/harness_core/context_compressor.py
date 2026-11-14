@@ -636,7 +636,12 @@ class ContextCompactor:
         head = 1 if messages and messages[0].get("role") == "system" else 0
         return head + self._effective_protect_first_n(messages)
 
-    def _find_tail_cut(self, messages: list[dict[str, Any]], compress_start: int) -> int:
+    def _find_tail_cut(
+        self,
+        messages: list[dict[str, Any]],
+        compress_start: int,
+        budget_tokens: int | None = None,
+    ) -> int:
         """Calculate compress_end backward from tail using token budget and protect_last_n."""
         n = len(messages)
         if n <= compress_start:
@@ -646,10 +651,11 @@ class ContextCompactor:
         if available <= 1:
             return compress_start
 
+        effective_max = budget_tokens if budget_tokens is not None else self.config.max_context_tokens
         # Scale tail token budget if max_context_tokens is small
         effective_tail_budget = min(
             self.config.tail_token_budget,
-            max(100, int(self.config.max_context_tokens * 0.4)),
+            max(100, int(effective_max * 0.4)),
         )
 
         tokens_acc = 0
@@ -678,7 +684,7 @@ class ContextCompactor:
         return min(max(compress_start, aligned), n)
 
     def _plan_compaction_window(
-        self, messages: list[dict[str, Any]]
+        self, messages: list[dict[str, Any]], budget_tokens: int | None = None
     ) -> tuple[list[dict[str, Any]], int, int, int]:
         """Phases 1-2 of compaction: returns (working, demoted_count, compress_start, compress_end)."""
         working, demoted_count = demote_stale_tail_tools(
@@ -688,7 +694,7 @@ class ContextCompactor:
         )
         head_size = self._protect_head_size(working)
         compress_start = align_boundary_forward(working, head_size)
-        compress_end = self._find_tail_cut(working, compress_start)
+        compress_end = self._find_tail_cut(working, compress_start, budget_tokens=budget_tokens)
         return working, demoted_count, compress_start, compress_end
 
     def _extract_user_text(self, msg: dict[str, Any]) -> str:
@@ -858,14 +864,20 @@ class ContextCompactor:
         except Exception:
             return None
 
-    def should_compact(self, messages: list[dict[str, Any]]) -> bool:
+    def should_compact(
+        self, messages: list[dict[str, Any]], budget_tokens: int | None = None
+    ) -> bool:
         """Check whether messages exceed compaction trigger token budget."""
         tokens = estimate_messages_tokens(messages)
-        threshold = int(self.config.max_context_tokens * self.config.trigger_threshold)
+        max_tokens = budget_tokens if budget_tokens is not None else self.config.max_context_tokens
+        threshold = int(max_tokens * self.config.trigger_threshold)
         return tokens >= threshold
 
     def compact_messages(
-        self, messages: list[dict[str, Any]], force: bool = True
+        self,
+        messages: list[dict[str, Any]],
+        budget_tokens: int | None = None,
+        force: bool = True,
     ) -> CompactionResult:
         """Run full context compaction pipeline over `messages`.
 
@@ -875,6 +887,11 @@ class ContextCompactor:
            and restate in-flight tasks.
         4. Anti-thrashing validation: if compacted >= original, revert.
         """
+        # If budget_tokens was passed as a boolean (e.g. force positionally), swap
+        if isinstance(budget_tokens, bool):
+            force = budget_tokens
+            budget_tokens = None
+
         if not messages:
             return CompactionResult(
                 compacted_messages=[],
@@ -888,7 +905,7 @@ class ContextCompactor:
 
         original_tokens = estimate_messages_tokens(messages)
 
-        if not force and not self.should_compact(messages):
+        if not force and not self.should_compact(messages, budget_tokens=budget_tokens):
             return CompactionResult(
                 compacted_messages=list(messages),
                 original_tokens=original_tokens,
@@ -901,7 +918,7 @@ class ContextCompactor:
 
         # 1-2. Plan window and demote stale tools
         working, demoted_count, compress_start, compress_end = (
-            self._plan_compaction_window(messages)
+            self._plan_compaction_window(messages, budget_tokens=budget_tokens)
         )
 
         middle_turns = working[compress_start:compress_end]
