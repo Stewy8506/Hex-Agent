@@ -2288,29 +2288,104 @@ class HexConsole:
             print(render_unified_diff(diff_txt, title=f"Proof Diff ({tid})"))
 
     def _cmd_memory(self, arg: str = "") -> None:
-        if not hasattr(self.orchestrator, "memory"):
-            print(f"{ANSI_DIM}Memory service unavailable.{ANSI_RESET}")
-            return
-        mems = self.orchestrator.memory.retrieve_memories(
-            project_id=self.project_id,
-            query=arg.strip(),
-            include_personal=True,
-            include_episodic=True,
-            workspace_dir=self.workspace_root,
+        from .memory import (
+            CuratedMemoryStore,
+            AMEMController,
+            MemoryLifecycleManager,
+            HistorySnapshotManager,
+            GuardrailsManager,
         )
-        if not mems:
-            print(f"{ANSI_DIM}No matching governed memories found.{ANSI_RESET}")
+        ws = getattr(self, "workspace_root", None) or Path.cwd()
+        store = CuratedMemoryStore(workspace_root=ws)
+        controller = AMEMController(workspace_root=ws, store=store)
+        lifecycle = MemoryLifecycleManager(workspace_root=ws, controller=controller)
+        history_mgr = HistorySnapshotManager(workspace_root=ws)
+
+        parts = arg.strip().split(maxsplit=1)
+        subcmd = parts[0].lower() if parts else ""
+        subarg = parts[1].strip() if len(parts) > 1 else ""
+
+        if subcmd == "history":
+            target = subarg or "memory"
+            snaps = history_mgr.list_history(target)
+            if not snaps:
+                print(f"{ANSI_DIM}No history snapshots found for {target}.{ANSI_RESET}")
+                return
+            print(f"\n{ANSI_BOLD}{ANSI_CYAN}Memory History ({target}, {len(snaps)} snapshots):{ANSI_RESET}")
+            for s in snaps:
+                print(f"  • {ANSI_BOLD}{s['timestamp']}{ANSI_RESET} ({s['size']} bytes) — {s.get('created_iso', '')}")
+            print()
             return
-        print(f"\n{ANSI_BOLD}{ANSI_CYAN}Governed Memories ({len(mems)}):{ANSI_RESET}")
-        for m in mems:
-            stale_tag = f" {ANSI_YELLOW}[STALE - CODE CHANGED]{ANSI_RESET}" if m.get("is_stale") else ""
-            outcome_tag = f" [{m.get('outcome', 'useful')}]" if m.get("outcome") else ""
-            nodes_str = f" (nodes: {', '.join(m['source_nodes'])})" if m.get("source_nodes") else ""
-            print(
-                f"  • [{m['scope']}]{outcome_tag}{stale_tag} {ANSI_BOLD}{m['subject']}{ANSI_RESET}: "
-                f"{m['content']}{nodes_str} (conf={m['confidence']})"
-            )
-        print()
+
+        elif subcmd == "rollback":
+            if not subarg:
+                print(f"{ANSI_YELLOW}Usage: /memory rollback <timestamp>{ANSI_RESET}")
+                return
+            ok = history_mgr.rollback("memory", subarg)
+            if ok:
+                print(f"{ANSI_GREEN}✓ Successfully rolled back memory to snapshot {subarg}.{ANSI_RESET}")
+            else:
+                print(f"{ANSI_RED}✗ Failed to rollback: snapshot {subarg} not found.{ANSI_RESET}")
+            return
+
+        elif not arg.strip():
+            # Summary of active memory tokens and guardrails
+            entries_info = store.list_entries("all")
+            targets_data = entries_info.get("targets", {})
+            print(f"\n{ANSI_BOLD}{ANSI_CYAN}Governed Curated Memory Summary:{ANSI_RESET}")
+            for t_name, data in targets_data.items():
+                print(f"  • {ANSI_BOLD}{t_name.upper()}{ANSI_RESET}: {data['usage']} chars ({data['count']} entries)")
+            guardrails_mgr = GuardrailsManager(workspace_root=ws)
+            rules = guardrails_mgr.list_guardrails()
+            print(f"  • {ANSI_BOLD}GUARDRAILS{ANSI_RESET}: {len(rules)} active [AVOID] invariants")
+            print()
+            return
+
+        else:
+            # Query active memory, legacy orchestrator memory, and FTS5 cold archive
+            query = arg.strip()
+            legacy_mems = []
+            if hasattr(self.orchestrator, "memory") and hasattr(self.orchestrator.memory, "retrieve_memories"):
+                try:
+                    legacy_mems = self.orchestrator.memory.retrieve_memories(
+                        project_id=getattr(self, "project_id", "default"),
+                        query=query,
+                        include_personal=True,
+                        include_episodic=True,
+                        workspace_dir=ws,
+                    )
+                except Exception:
+                    legacy_mems = []
+
+            active_matches = []
+            for item in controller.list_memories("all"):
+                if query.lower() in item.text.lower() or any(query.lower() in t.lower() for t in item.tags):
+                    active_matches.append(item)
+
+            archived = lifecycle.search_archived_memories(query, limit=5)
+
+            if not legacy_mems and not active_matches and not archived:
+                print(f"{ANSI_DIM}No matching governed memories found.{ANSI_RESET}")
+                return
+
+            if legacy_mems:
+                print(f"\n{ANSI_BOLD}{ANSI_CYAN}Governed Memories ({len(legacy_mems)}):{ANSI_RESET}")
+                for m in legacy_mems:
+                    stale_tag = f" {ANSI_YELLOW}[STALE - CODE CHANGED]{ANSI_RESET}" if m.get("is_stale") else ""
+                    outcome_tag = f" [{m.get('outcome', 'useful')}]" if m.get("outcome") else ""
+                    nodes_str = f" (nodes: {', '.join(m['source_nodes'])})" if m.get("source_nodes") else ""
+                    print(
+                        f"  • [{m['scope']}]{outcome_tag}{stale_tag} {ANSI_BOLD}{m['subject']}{ANSI_RESET}: "
+                        f"{m['content']}{nodes_str} (conf={m['confidence']})"
+                    )
+
+            if active_matches or archived:
+                print(f"\n{ANSI_BOLD}{ANSI_CYAN}Memory Results for '{query}':{ANSI_RESET}")
+                for m in active_matches:
+                    print(f"  • [{m.scope}] {ANSI_BOLD}{m.text}{ANSI_RESET} (hits: {m.hit_counter})")
+                for a in archived:
+                    print(f"  • {ANSI_DIM}[archived:{a['target']}]{ANSI_RESET} {a['content']} ({a['reason']})")
+            print()
 
     def _cmd_remember(self, arg: str = "") -> None:
         if ":" not in arg:

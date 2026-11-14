@@ -4,15 +4,20 @@ import shutil
 import tempfile
 import time
 import unittest
+from io import StringIO
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from harness_core.cli import main as cli_main
 from harness_core.memory import (
     AMEMController,
     CuratedMemoryStore,
+    HistorySnapshotManager,
     MemoryItem,
     MemoryLifecycleManager,
     extract_wiki_tags,
 )
+from harness_core.tui import HexConsole
 
 
 class TestAMEMController(unittest.TestCase):
@@ -256,4 +261,186 @@ class TestMemoryLifecycleManager(unittest.TestCase):
         # Search with wildcards / all
         all_archived = self.lifecycle.search_archived_memories("*")
         self.assertGreaterEqual(len(all_archived), 1)
+
+
+class TestHistoryAndRollback(unittest.TestCase):
+    """Test lightweight .history/ timestamped snapshots and rollback engine."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.workspace = Path(self.temp_dir) / "workspace"
+        self.global_home = Path(self.temp_dir) / "global_home"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.global_home.mkdir(parents=True, exist_ok=True)
+
+        self.store = CuratedMemoryStore(
+            workspace_root=self.workspace,
+            global_home=self.global_home,
+        )
+        self.history_mgr = HistorySnapshotManager(
+            workspace_root=self.workspace,
+            global_home=self.global_home,
+            max_snapshots=20,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_history_snapshots_and_rollback(self):
+        # 1. First write creates initial entry
+        self.store.add("Version 1: Initial architecture note [[arch]]", target="memory")
+        initial_entries = self.store.read_entries("memory")
+        self.assertEqual(initial_entries[0], "Version 1: Initial architecture note [[arch]]")
+
+        # 2. Second write captures a snapshot of Version 1
+        self.store.replace(
+            "Version 1: Initial architecture note [[arch]]",
+            "Version 2: Upgraded architecture note [[arch]]",
+            target="memory",
+        )
+        snaps = self.history_mgr.list_history("memory")
+        self.assertGreaterEqual(len(snaps), 1)
+        snap_ts = snaps[0]["timestamp"]
+
+        # Check content is currently Version 2
+        self.assertEqual(self.store.read_entries("memory")[0], "Version 2: Upgraded architecture note [[arch]]")
+
+        # 3. Rollback to Version 1 snapshot
+        ok = self.history_mgr.rollback("memory", snap_ts)
+        self.assertTrue(ok)
+        rolled_back_entries = self.store.read_entries("memory")
+        self.assertEqual(rolled_back_entries[0], "Version 1: Initial architecture note [[arch]]")
+
+        # 4. Test pruning: create 25 snapshots, verify capped at max_snapshots (20)
+        mem_file = self.store.get_path_for_target("memory")
+        for i in range(25):
+            mem_file.write_text(f"Note variant {i}", encoding="utf-8")
+            self.history_mgr.create_snapshot("memory", mem_file)
+
+        snaps_after = self.history_mgr.list_history("memory")
+        self.assertLessEqual(len(snaps_after), 20)
+
+
+class TestCliAndTuiMemory(unittest.TestCase):
+    """Test CLI subcommands and TUI slash commands for memory inspection and rollback."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.workspace = Path(self.temp_dir) / "workspace"
+        self.global_home = Path(self.temp_dir) / "global_home"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.global_home.mkdir(parents=True, exist_ok=True)
+
+        self.store = CuratedMemoryStore(
+            workspace_root=self.workspace,
+            global_home=self.global_home,
+        )
+        self.controller = AMEMController(
+            workspace_root=self.workspace,
+            global_home=self.global_home,
+            store=self.store,
+        )
+        self.lifecycle = MemoryLifecycleManager(
+            workspace_root=self.workspace,
+            global_home=self.global_home,
+            controller=self.controller,
+        )
+        self.history_mgr = HistorySnapshotManager(
+            workspace_root=self.workspace,
+            global_home=self.global_home,
+        )
+
+        # Seed memories
+        self.controller.add_memory("PostgreSQL 16 connection pooling configured [[database]]", target="memory")
+        self.controller.add_memory("Preferred language is Python 3.14 [[lang]]", target="user")
+
+        # Mock orchestrator for TUI
+        self.orch = MagicMock()
+        self.orch.workspace_root = self.workspace
+        self.console = HexConsole(orchestrator=self.orch)
+        self.console.workspace_root = self.workspace
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_cli_memory_list_and_search(self):
+        # 1. hex memory list --json
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            code = cli_main(["memory", "list", "--workspace", str(self.workspace), "--json"])
+        self.assertEqual(code, 0)
+        self.assertIn("targets", buf.getvalue())
+        self.assertIn("database", buf.getvalue())
+
+        # 2. hex memory search
+        buf_srch = StringIO()
+        with patch("sys.stdout", buf_srch):
+            code_srch = cli_main(["memory", "search", "PostgreSQL", "--workspace", str(self.workspace)])
+        self.assertEqual(code_srch, 0)
+        self.assertIn("PostgreSQL", buf_srch.getvalue())
+
+    def test_cli_memory_history_and_rollback(self):
+        # Mutate to create history snapshot
+        self.store.replace(
+            "PostgreSQL 16 connection pooling configured [[database]]",
+            "PostgreSQL 17 connection pooling configured [[database]]",
+            target="memory",
+        )
+
+        # hex memory history --json
+        buf_hist = StringIO()
+        with patch("sys.stdout", buf_hist):
+            code_hist = cli_main(["memory", "history", "--workspace", str(self.workspace), "--json"])
+        self.assertEqual(code_hist, 0)
+        self.assertIn("timestamp", buf_hist.getvalue())
+
+        snaps = self.history_mgr.list_history("memory")
+        self.assertTrue(len(snaps) > 0)
+        ts = snaps[0]["timestamp"]
+
+        # hex memory rollback
+        buf_rb = StringIO()
+        with patch("sys.stdout", buf_rb):
+            code_rb = cli_main(["memory", "rollback", "memory", ts, "--workspace", str(self.workspace)])
+        self.assertEqual(code_rb, 0)
+        self.assertIn("Rolled back", buf_rb.getvalue())
+
+    def test_tui_memory_slash_commands(self):
+        # 1. /memory (summary)
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            self.console.handle_slash_command("/memory")
+        out = buf.getvalue()
+        self.assertIn("Governed Curated Memory Summary", out)
+        self.assertIn("MEMORY", out)
+
+        # Mutate memory to produce a history snapshot
+        self.store.replace(
+            "PostgreSQL 16 connection pooling configured [[database]]",
+            "PostgreSQL 17 connection pooling configured [[database]]",
+            target="memory",
+        )
+        snaps = self.history_mgr.list_history("memory")
+        self.assertGreaterEqual(len(snaps), 1)
+        ts = snaps[0]["timestamp"]
+
+        # 2. /memory history
+        buf_hist = StringIO()
+        with patch("sys.stdout", buf_hist):
+            self.console.handle_slash_command("/memory history")
+        self.assertIn("Memory History", buf_hist.getvalue())
+        self.assertIn(ts, buf_hist.getvalue())
+
+        # 3. /memory rollback
+        buf_rb = StringIO()
+        with patch("sys.stdout", buf_rb):
+            self.console.handle_slash_command(f"/memory rollback {ts}")
+        self.assertIn("Successfully rolled back memory", buf_rb.getvalue())
+
+        # 4. /memory <query>
+        buf_query = StringIO()
+        with patch("sys.stdout", buf_query):
+            self.console.handle_slash_command("/memory PostgreSQL")
+        self.assertIn("Memory Results for 'PostgreSQL'", buf_query.getvalue())
+
 

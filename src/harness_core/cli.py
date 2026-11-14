@@ -368,6 +368,30 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_ref.add_argument("--workspace", default=None, help="Custom project workspace root")
     p_ref.add_argument("--json", action="store_true", help="Output raw JSON reflection aggregate")
 
+    p_mem = sub.add_parser("memory", help="Curated memory stores, lifecycle & rollback")
+    p_mem_sub = p_mem.add_subparsers(dest="mem_cmd", help="Memory subcommands")
+
+    p_mem_list = p_mem_sub.add_parser("list", help="List active memory entries and token usage")
+    p_mem_list.add_argument("--target", default="all", choices=["all", "user", "memory", "guardrails"], help="Memory target scope")
+    p_mem_list.add_argument("--workspace", default=None, help="Workspace directory")
+    p_mem_list.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_mem_srch = p_mem_sub.add_parser("search", help="Search active memory stores and FTS5 cold archive")
+    p_mem_srch.add_argument("query", help="Search query string")
+    p_mem_srch.add_argument("--limit", type=int, default=10, help="Maximum results to return")
+    p_mem_srch.add_argument("--workspace", default=None, help="Workspace directory")
+    p_mem_srch.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_mem_hist = p_mem_sub.add_parser("history", help="List timestamped memory history snapshots")
+    p_mem_hist.add_argument("--target", default="memory", choices=["user", "memory", "guardrails"], help="Memory target scope")
+    p_mem_hist.add_argument("--workspace", default=None, help="Workspace directory")
+    p_mem_hist.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_mem_rb = p_mem_sub.add_parser("rollback", help="Rollback memory store to a previous snapshot")
+    p_mem_rb.add_argument("target", choices=["user", "memory", "guardrails"], help="Memory target scope")
+    p_mem_rb.add_argument("timestamp", help="Snapshot timestamp to rollback to")
+    p_mem_rb.add_argument("--workspace", default=None, help="Workspace directory")
+
     p_lsp = sub.add_parser("lsp", help="Language Server Protocol (LSP) diagnostics and symbol inspection")
     p_lsp_sub = p_lsp.add_subparsers(dest="lsp_cmd", help="LSP subcommands")
 
@@ -1484,6 +1508,76 @@ def _main_impl(argv: list[str] | None = None) -> int:
         else:
             print(res.get("lessons_markdown") or "No work-memory lessons recorded yet.")
         return 0
+
+    if args.cmd == "memory":
+        from .memory import (
+            CuratedMemoryStore,
+            AMEMController,
+            MemoryLifecycleManager,
+            HistorySnapshotManager,
+        )
+        ws_dir = Path(getattr(args, "workspace", None) or repo_root).resolve()
+        subcmd = getattr(args, "mem_cmd", None) or "list"
+        store = CuratedMemoryStore(workspace_root=ws_dir)
+        controller = AMEMController(workspace_root=ws_dir, store=store)
+        lifecycle = MemoryLifecycleManager(workspace_root=ws_dir, controller=controller)
+        history_mgr = HistorySnapshotManager(workspace_root=ws_dir)
+
+        if subcmd == "list":
+            target = getattr(args, "target", "all")
+            entries_info = store.list_entries(target)
+            if getattr(args, "json", False):
+                print(json.dumps(entries_info, indent=2))
+            else:
+                for t_name, data in entries_info.get("targets", {}).items():
+                    print(f"\n◈ {t_name.upper()} ({data['usage']} chars, {data['count']} entries):")
+                    for e in data.get("entries", []):
+                        print(f"  • {e}")
+            return 0
+
+        elif subcmd == "search":
+            query = getattr(args, "query", "")
+            limit = getattr(args, "limit", 10)
+            active_matches = []
+            for item in controller.list_memories("all"):
+                if query.lower() in item.text.lower() or any(query.lower() in t.lower() for t in item.tags):
+                    active_matches.append(item.to_dict())
+
+            archived_matches = lifecycle.search_archived_memories(query, limit=limit)
+
+            if getattr(args, "json", False):
+                print(json.dumps({"active": active_matches, "archived": archived_matches}, indent=2))
+            else:
+                print(f"\n◈ Memory Search for '{query}':")
+                print(f"  Active Entries ({len(active_matches)}):")
+                for it in active_matches:
+                    print(f"    • [{it['scope']}] {it['text']}")
+                print(f"  Archived Entries ({len(archived_matches)}):")
+                for ar in archived_matches:
+                    print(f"    • [{ar['target']}] {ar['content']} (reason: {ar['reason']})")
+            return 0
+
+        elif subcmd == "history":
+            target = getattr(args, "target", "memory")
+            snaps = history_mgr.list_history(target)
+            if getattr(args, "json", False):
+                print(json.dumps(snaps, indent=2))
+            else:
+                print(f"\n◈ History Snapshots for {target.upper()} ({len(snaps)} available):")
+                for s in snaps:
+                    print(f"  • {s['timestamp']} ({s['size']} bytes) - {s.get('created_iso', '')}")
+            return 0
+
+        elif subcmd == "rollback":
+            target = getattr(args, "target", "memory")
+            ts = getattr(args, "timestamp", "")
+            ok = history_mgr.rollback(target, ts)
+            if ok:
+                print(f"✓ Rolled back {target.upper()} to snapshot {ts}")
+                return 0
+            else:
+                print(f"✗ Failed to rollback {target.upper()}: snapshot '{ts}' not found", file=sys.stderr)
+                return 1
 
     if args.cmd == "lsp":
         from .lsp.manager import LSPManager

@@ -334,6 +334,7 @@ class CuratedMemoryStore:
         user_char_limit: int = USER_CHAR_LIMIT,
         memory_char_limit: int = MEMORY_CHAR_LIMIT,
         guardrail_char_limit: int = GUARDRAIL_CHAR_LIMIT,
+        history_manager: Optional[Any] = None,
     ) -> None:
         self.workspace_root = (
             Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
@@ -345,6 +346,29 @@ class CuratedMemoryStore:
             "guardrails": guardrail_char_limit,
         }
         self._frozen_snapshot: Optional[str] = None
+        self._history_manager = history_manager
+
+    @property
+    def history_manager(self) -> Any:
+        if self._history_manager is None:
+            self._history_manager = HistorySnapshotManager(
+                workspace_root=self.workspace_root,
+                global_home=self.global_home,
+            )
+        return self._history_manager
+
+    @history_manager.setter
+    def history_manager(self, mgr: Any) -> None:
+        self._history_manager = mgr
+
+    def _write_with_history(self, target: str, path: Path, content: str) -> None:
+        """Atomically write content to path while capturing a lightweight timestamped snapshot."""
+        try:
+            if self.history_manager and path.is_file() and path.stat().st_size > 0:
+                self.history_manager.create_snapshot(target, path)
+        except Exception as e:
+            logger.warning("Failed to take history snapshot for %s: %s", path, e)
+        _atomic_write_text(path, content)
 
     def get_path_for_target(self, target: str) -> Path:
         """Resolve physical file path for target store."""
@@ -461,7 +485,7 @@ class CuratedMemoryStore:
                     "limit": limit,
                 }
 
-            _atomic_write_text(path, ENTRY_DELIMITER.join(new_entries))
+            self._write_with_history(target, path, ENTRY_DELIMITER.join(new_entries))
             return {
                 "ok": True,
                 "success": True,
@@ -520,7 +544,7 @@ class CuratedMemoryStore:
                     "limit": limit,
                 }
 
-            _atomic_write_text(path, ENTRY_DELIMITER.join(new_entries))
+            self._write_with_history(target, path, ENTRY_DELIMITER.join(new_entries))
             return {
                 "ok": True,
                 "success": True,
@@ -592,7 +616,7 @@ class CuratedMemoryStore:
                     "limit": limit,
                 }
 
-            _atomic_write_text(path, ENTRY_DELIMITER.join(new_entries))
+            self._write_with_history(target, path, ENTRY_DELIMITER.join(new_entries))
             return {
                 "ok": True,
                 "success": True,
@@ -634,7 +658,7 @@ class CuratedMemoryStore:
             total_chars = len(ENTRY_DELIMITER.join(new_entries))
             limit = self.get_limit(target)
 
-            _atomic_write_text(path, ENTRY_DELIMITER.join(new_entries))
+            self._write_with_history(target, path, ENTRY_DELIMITER.join(new_entries))
             return {
                 "ok": True,
                 "success": True,
@@ -855,7 +879,7 @@ class GuardrailsManager:
             while entries and len(ENTRY_DELIMITER.join(entries)) > self.char_limit:
                 entries.pop(0)
 
-            _atomic_write_text(path, ENTRY_DELIMITER.join(entries))
+            self.store._write_with_history("guardrails", path, ENTRY_DELIMITER.join(entries))
             return True
 
     def list_guardrails(self) -> List[str]:
@@ -2232,5 +2256,165 @@ class MemoryLifecycleManager:
                 conn.close()
 
         return results
+
+
+# ============================================================================
+# Lightweight .history/ Snapshots & Rollback Ergonomics (Plan 31-03 Task 3)
+# ============================================================================
+
+class HistorySnapshotManager:
+    """Manages lightweight timestamped snapshots in .hex/memories/.history/."""
+
+    def __init__(
+        self,
+        workspace_root: Optional[Path | str] = None,
+        global_home: Optional[Path | str] = None,
+        history_dir: Optional[Path | str] = None,
+        max_snapshots: int = 20,
+    ) -> None:
+        self.workspace_root = (
+            Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+        )
+        self.global_home = Path(global_home).resolve() if global_home else get_hex_home()
+        self.history_dir = (
+            Path(history_dir).resolve()
+            if history_dir
+            else self.workspace_root / ".hex" / "memories" / ".history"
+        )
+        self.max_snapshots = max_snapshots
+
+    def _get_target_path(self, target: str) -> Path:
+        clean = str(target or "memory").strip().lower()
+        if clean == "user":
+            return self.global_home / "USER.md"
+        elif clean == "guardrails":
+            return self.workspace_root / ".hex" / "memories" / "GUARDRAILS.md"
+        else:
+            return self.workspace_root / ".hex" / "memories" / "MEMORY.md"
+
+    def create_snapshot(self, target: str, source_path: Optional[Path] = None) -> Optional[Path]:
+        """Atomically save <filename>.<timestamp>.bak and prune snapshots to max_snapshots."""
+        src = Path(source_path).resolve() if source_path else self._get_target_path(target)
+        if not src.is_file():
+            return None
+
+        try:
+            content = src.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed to read %s for snapshot: %s", src, e)
+            return None
+
+        if not content.strip():
+            return None
+
+        self.history_dir.mkdir(parents=True, exist_ok=True)
+        filename = src.name
+        ts = int(time.time())
+        snap_path = self.history_dir / f"{filename}.{ts}.bak"
+        counter = 1
+        while snap_path.exists():
+            snap_path = self.history_dir / f"{filename}.{ts}_{counter}.bak"
+            counter += 1
+
+        with _file_lock(snap_path):
+            tmp_snap = snap_path.with_suffix(".tmp")
+            try:
+                tmp_snap.write_text(content, encoding="utf-8")
+                tmp_snap.replace(snap_path)
+            finally:
+                if tmp_snap.exists():
+                    try:
+                        tmp_snap.unlink()
+                    except OSError:
+                        pass
+
+        # Prune snapshots beyond max_snapshots
+        self._prune_snapshots(filename)
+        return snap_path
+
+    def _prune_snapshots(self, filename: str) -> None:
+        """Keep last max_snapshots for filename; remove oldest."""
+        if not self.history_dir.is_dir():
+            return
+        snaps = [
+            f for f in self.history_dir.glob(f"{filename}.*.bak") if f.is_file()
+        ]
+        if len(snaps) > self.max_snapshots:
+            snaps.sort(key=lambda p: p.stat().st_mtime)
+            to_remove = snaps[: len(snaps) - self.max_snapshots]
+            for p in to_remove:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
+    def list_history(self, target: str = "memory") -> list[dict[str, Any]]:
+        """List snapshots for target sorted newest first."""
+        src = self._get_target_path(target)
+        filename = src.name
+        if not self.history_dir.is_dir():
+            return []
+
+        snaps = [
+            f for f in self.history_dir.glob(f"{filename}.*.bak") if f.is_file()
+        ]
+        snaps.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        results: list[dict[str, Any]] = []
+        for p in snaps:
+            parts = p.name.split(".")
+            ts_str = parts[-2] if len(parts) >= 3 else str(int(p.stat().st_mtime))
+            results.append({
+                "target": target,
+                "filename": filename,
+                "timestamp": ts_str,
+                "path": str(p),
+                "size": p.stat().st_size,
+                "created_at": p.stat().st_mtime,
+                "created_iso": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(p.stat().st_mtime)
+                ),
+            })
+        return results
+
+    def rollback(self, target: str, timestamp: str) -> bool:
+        """Rollback target file to the snapshot matching timestamp."""
+        src = self._get_target_path(target)
+        snaps = self.list_history(target)
+        matching_snap: Optional[dict[str, Any]] = None
+
+        clean_ts = timestamp.strip()
+        for s in snaps:
+            if s["timestamp"] == clean_ts or s["timestamp"].startswith(clean_ts):
+                matching_snap = s
+                break
+
+        if not matching_snap:
+            for s in snaps:
+                if clean_ts in s["path"] or clean_ts == Path(s["path"]).name:
+                    matching_snap = s
+                    break
+
+        if not matching_snap:
+            return False
+
+        snap_path = Path(matching_snap["path"])
+        if not snap_path.is_file():
+            return False
+
+        try:
+            content = snap_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.error("Failed to read snapshot %s: %s", snap_path, e)
+            return False
+
+        # Save a pre-rollback snapshot of current file first
+        if src.is_file() and src.stat().st_size > 0:
+            self.create_snapshot(target, src)
+
+        _atomic_write_text(src, content)
+        MemorySnapshot.reset_cache()
+        return True
+
 
 
