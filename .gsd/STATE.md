@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
-**Date:** 2026-11-14  
-**Current Milestone:** M11 (Next-Gen Cognition & Self-Evolution Engine) — ACTIVE  
-**Status:** Phase 30 & Phase 31 Complete & Verified; Ready for Phase 32  
-**Active Phase:** Phase 32: Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks  
-**Completed Milestones:** M1 through M10 Complete & Verified; Phases 30 & 31 Complete (810+ Python tests green, 34/34 Rust workspace tests green)  
+**Date:** 2026-11-15  
+**Current Milestone:** M11 (Next-Gen Cognition & Self-Evolution Engine) — COMPLETE & VERIFIED  
+**Status:** Phases 30, 31, and 32 100% Complete & Verified  
+**Active Phase:** All Phases Complete (Milestone M11 Signed Off)  
+**Completed Milestones:** M1 through M11 Complete & Verified (848/848 Python tests green, 1 skipped, 34/34 Rust workspace tests green)  
 
 ---
 
@@ -350,7 +350,7 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
   - NVIDIA SkillSpector upstream Python behavioral AST analyzer (`get_python_ast`, `_analyze_python`) and real-time live OSV.dev batch client (`osv_client.query_batch`).
   - Graphify Upstream CLI Runner (`GraphifyUpstreamRunner`), tree-sitter artifact ingestion (`ingest_upstream_graph`), `hex graphify` CLI commands, and polyglot blast-radius tracking.
 
-- **Milestone M11 (Next-Gen Cognition & Self-Evolution Engine) [IN PROGRESS]:**
+- **Milestone M11 (Next-Gen Cognition & Self-Evolution Engine) [COMPLETE & VERIFIED]:**
   - **Phase 30 (Multi-Tier Soul Engine & Dynamic Mode Modulators) [COMPLETE & VERIFIED]:**
     - `SoulManager` in `src/harness_core/soul.py` with global/workspace hierarchy (`~/.hex/SOUL.md` vs `.hex/SOUL.md`), Developer DNA (`USER.md`), compact budget discipline (~300–500 tokens), atomic seeding, and `/rename` command.
     - 5-slot prompt pipeline in `src/harness_core/prompt_builder.py` with punchy 3–4 line mode overrides (`plan`, `agent`, `code`) and heuristic injection threat scanner.
@@ -365,16 +365,21 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
     - Memory lifecycle with hit counters, reflection promotion ($\ge 3$ hits) to `MEMORY.md`, and sweep demotion of >30d stale notes into cold SQLite FTS5 archival table (`archived_memories`).
     - Bounded `.history/` rolling backups with instant rollback and CLI/TUI ergonomics (`hex memory`, `/memory`).
     - Verified by independent `gsd-verifier` (`.gsd/phases/31-ast-scoped-curated-memory/VERIFICATION.md`).
-  - **Phase 32 (Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks) [NEXT]:**
-    - Authoring phase plans via `gsd-planner` subagent.
+  - **Phase 32 (Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks) [COMPLETE & VERIFIED]:**
+    - `SkillCompiler` in `src/harness_core/skills/compiler.py` enforcing Hermes hardline authoring standards (name, <=60 char single-sentence description ending with `.`, `author: "HEX"`, standard 8 sections) and knowledge-base directory structures (`references/`, `scripts/`).
+    - Deterministic executable `verify:` frontmatter assertions and `SkillExecutionEngine` in `src/harness_core/skills/executor.py` executing shell commands, enforcing timeouts, and validating AST invariants.
+    - Unconditional pre-persistence validation through upstream NVIDIA `SkillSpectorScanner.scan_bundle()`, quarantining high-risk/malicious bundles to `.hex/quarantine/` with `audit.json`.
+    - Multi-step autonomous friction sensor in `ReActLoop` (triggering on $\ge 3$ repair attempts, repeat tool failures, or compiler errors) synthesizing structured post-mortem lessons into `.hex/reflections/LESSONS.md` and syncing negative constraints to `GUARDRAILS.md`.
+    - Hardware gating policy engine (`auto_reflect = "cloud_only" | "idle" | "off"`) in `config_loader.py` protecting Apple Silicon unified memory (M-series / local runners) from background starvation, queuing candidates to `.hex/reflections/pending_reflections.json`.
+    - Cross-session `HybridLearningRetriever` in `src/harness_core/skills/retrieval.py` fusing SQLite FTS5 BM25 lexical ranking with Active Graphify AST 1-hop caller/callee traversal (+2.5 direct, +1.8 1-hop boost).
+    - Full CLI `hex learn <target>` and TUI `/learn <target>` commands with preview, dry-run, and `[VERIFY: <cmd>]` status tags in `/skills`.
+    - Verified by independent `gsd-verifier` (`.gsd/phases/32-autonomous-learning-loop/VERIFICATION.md`): 55/55 phase tests passed, 108/108 M11 tests passed, 848/848 repository tests passed (zero regressions).
 
 ---
 
 ## 4. Next Actions
 
-- Dispatch `gsd-planner` subagent to decompose Phase 32 into atomic plans (`.gsd/phases/32-autonomous-learning-loop/PLAN.md`).
-- Execute Phase 32 plans using dedicated `gsd-executor` subagents with atomic commits.
-- Dispatch independent `gsd-verifier` subagent to audit Phase 32 against Nous Research Hermes Agent self-learning loop.
+- Milestone M11 is 100% Complete & Empirically Verified. Ready for user feedback and next milestone planning.
 
 
 

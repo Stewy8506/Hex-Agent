@@ -384,7 +384,7 @@
 ```
 [x] Phase 30: Multi-Tier Soul Engine & Dynamic Mode Modulators
 [x] Phase 31: AST-Scoped Curated Memory, Negative Guardrails & Lifecycle Engine
-[ ] Phase 32: Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks
+[x] Phase 32: Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks
 ```
 
 ---

@@ -12,10 +12,10 @@
 
 ### The Autonomous AI Terminal Workbench That Tests Before It Touches Your Code
 
-[![Version](https://img.shields.io/badge/version-0.20.1-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.21.0-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blueviolet?style=flat-square)](install.sh)
-[![Tests Passing](https://img.shields.io/badge/tests-265%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-848%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
 
 <p align="center">
@@ -172,6 +172,7 @@ Beyond conversational coding, HEX includes production engineering superpowers bu
 - **Polyglot Language Server Diagnostics**: Real-time compiler syntax errors, type mismatches, and hover documentation (`hex lsp diagnostics`).
 - **Hands-Free Voice Console**: Interactive spoken pair-programming with real-time vocal feedback (`hex voice` or `hex --voice`).
 - **Self-Healing Diagnostics**: Inspect system health, verify virtual environment integrity, and automatically repair configurations (`hex doctor --fix`).
+- **Closed-Loop Autonomous Learning & Memory**: Synthesize reusable skills with deterministic `verify:` hooks (`hex learn <target>`), detect repair friction to auto-generate post-mortems in `.hex/reflections/LESSONS.md`, inject symbol invariants via AST-scoped memory, and enforce negative guardrails (`GUARDRAILS.md`).
 
 ---
 
@@ -188,6 +189,9 @@ Inside the interactive console, type `/` to access commands:
 | **`/subagents`** | Inspect active and completed child subagents |
 | **`/react [on\|off]`** | Toggle continuous multi-turn autonomous ReAct tool loop |
 | **`/rollback`** | Discard sandbox changes and reset to active branch state |
+| **`/learn [target]`** | Compile reusable verified `SKILL.md` bundle with regression test hooks |
+| **`/memory`** | Inspect active notes, negative guardrails, and rolling snapshot history |
+| **`/rename <name>`** | Set persona or agent name across session and global `SOUL.md` |
 | **`/model`** | Inspect active model routing profile or switch providers |
 | **`/doctor`** | Run system health diagnostics and repair configurations |
 | **`/skin`** | Switch color theme (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) |
