@@ -336,6 +336,12 @@ async fn handle_key_event(
         return Ok(());
     }
 
+    if key.code == KeyCode::F(3) {
+        let next_mode = app.cycle_mode();
+        app.status_message = format!("Switched mode to: {}", next_mode.to_uppercase());
+        return Ok(());
+    }
+
     // Modal dismiss / help dismiss
     if key.code == KeyCode::Esc {
         if app.show_help {
@@ -407,28 +413,19 @@ async fn handle_key_event(
         return Ok(());
     }
 
-    // Tab key: accept slash suggestion if active, otherwise cycle mode (agent -> plan -> code)
+    // Tab key: accept slash suggestion if active, otherwise cycle focus (Input -> Dialogue -> Diff)
     if key.code == KeyCode::Tab {
-        if !app.slash_suggestions.is_empty() {
-            app.accept_slash_suggestion();
-        } else {
-            let next_mode = app.cycle_mode();
-            app.status_message = format!("Switched mode to: {}", next_mode.to_uppercase());
-        }
+        app.handle_tab();
         return Ok(());
     }
 
     if key.code == KeyCode::PageUp {
-        app.scroll_up();
-        app.scroll_up();
-        app.scroll_up();
+        app.handle_page_up();
         return Ok(());
     }
 
     if key.code == KeyCode::PageDown {
-        app.scroll_down();
-        app.scroll_down();
-        app.scroll_down();
+        app.handle_page_down();
         return Ok(());
     }
 

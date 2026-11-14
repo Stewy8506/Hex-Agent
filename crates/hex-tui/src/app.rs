@@ -539,6 +539,16 @@ impl App {
         };
     }
 
+    /// Handle Tab key: accept slash suggestion if active, otherwise cycle focus pane.
+    pub fn handle_tab(&mut self) {
+        if !self.slash_suggestions.is_empty() {
+            self.accept_slash_suggestion();
+        } else {
+            self.switch_focus();
+            self.status_message = format!("Focus: {:?}", self.focus);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Text input & cursor management
     // -----------------------------------------------------------------------
@@ -688,7 +698,7 @@ impl App {
 
     pub fn scroll_up(&mut self) {
         match self.focus {
-            Focus::Dialogue => {
+            Focus::Dialogue | Focus::Input => {
                 self.dialogue_scroll = self.dialogue_scroll.saturating_sub(1);
                 self.follow_dialogue = false;
             }
@@ -701,13 +711,25 @@ impl App {
 
     pub fn scroll_down(&mut self) {
         match self.focus {
-            Focus::Dialogue => {
+            Focus::Dialogue | Focus::Input => {
                 self.dialogue_scroll = self.dialogue_scroll.saturating_add(1);
             }
             Focus::Diff => {
                 self.diff_scroll = self.diff_scroll.saturating_add(1);
             }
             _ => {}
+        }
+    }
+
+    pub fn handle_page_up(&mut self) {
+        for _ in 0..5 {
+            self.scroll_up();
+        }
+    }
+
+    pub fn handle_page_down(&mut self) {
+        for _ in 0..5 {
+            self.scroll_down();
         }
     }
 

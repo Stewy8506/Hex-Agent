@@ -101,6 +101,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         )]),
         Line::from(vec![
             Span::styled("  [Tab]            ", Style::default().fg(Color::Cyan)),
+            Span::raw("Cycle viewport focus (Input -> Dialogue -> Diff)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  [F3]             ", Style::default().fg(Color::Cyan)),
             Span::raw("Cycle execution mode: agent -> plan -> code"),
         ]),
         Line::from(vec![
