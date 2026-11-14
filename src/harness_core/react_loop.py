@@ -526,8 +526,14 @@ class ReActLoop:
                     duration_ms = (time.perf_counter() - start_t) * 1000
                     is_error = False
                     if isinstance(result, dict):
-                        if result.get("status") in ("error", "failed", "DENIED") or (
-                            "error" in result and bool(result["error"])
+                        if result.get("ok") is False:
+                            is_error = True
+                        elif "error" in result and bool(result["error"]):
+                            is_error = True
+                        elif result.get("status") in ("error", "DENIED"):
+                            is_error = True
+                        elif result.get("status") == "failed" and call.name not in (
+                            "read_terminal", "start_process", "kill_process", "list_processes"
                         ):
                             is_error = True
                     return ToolCallResult(
@@ -562,8 +568,17 @@ class ReActLoop:
                 result = self.gateway.execute(call.name, call.arguments)
                 duration_ms = (time.perf_counter() - start_t) * 1000
                 is_error = False
-                if isinstance(result, dict) and (result.get("status") in ("error", "failed") or "error" in result):
-                    is_error = True
+                if isinstance(result, dict):
+                    if result.get("ok") is False:
+                        is_error = True
+                    elif "error" in result and bool(result["error"]):
+                        is_error = True
+                    elif result.get("status") in ("error", "DENIED"):
+                        is_error = True
+                    elif result.get("status") == "failed" and call.name not in (
+                        "read_terminal", "start_process", "kill_process", "list_processes"
+                    ):
+                        is_error = True
                 return ToolCallResult(
                     call_id=call.call_id,
                     name=call.name,

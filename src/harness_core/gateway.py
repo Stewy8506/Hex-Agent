@@ -42,6 +42,7 @@ from .graphify import (
 from .lsp.manager import LSPManager
 from .mcp_client import MCPClientAdapter, MCPToolDefinition
 from .models import PolicyDecisionType, RiskClass
+from .process_registry import ProcessRegistry, get_process_registry
 from .sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
 from .skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
 
@@ -515,6 +516,66 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["image_path", "prompt"],
         },
     },
+    {
+        "id": "start_process",
+        "name": "start_process",
+        "description": "Spawn a background command in an asynchronous pseudo-terminal (PTY) or pipe (R2).",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command string to spawn in background"},
+                "cwd": {"type": "string", "description": "Working directory relative to workspace root", "default": ""},
+                "pty": {"type": "boolean", "description": "Whether to request pseudo-terminal (PTY) allocation", "default": True},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "id": "read_terminal",
+        "name": "read_terminal",
+        "description": "Read output slice from a running or completed background process buffer (R0).",
+        "risk_class": "R0",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "process_id": {"type": "string", "description": "Process ID returned from start_process"},
+                "offset": {"type": "integer", "description": "Character stream offset to read from", "default": 0},
+                "limit": {"type": "integer", "description": "Max characters to read in this slice", "default": 2000},
+            },
+            "required": ["process_id"],
+        },
+    },
+    {
+        "id": "kill_process",
+        "name": "kill_process",
+        "description": "Terminate an active background process by process_id (R2).",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "process_id": {"type": "string", "description": "Process ID to terminate"},
+                "force": {"type": "boolean", "description": "Send SIGKILL immediately instead of graceful SIGTERM", "default": False},
+            },
+            "required": ["process_id"],
+        },
+    },
+    {
+        "id": "list_processes",
+        "name": "list_processes",
+        "description": "List all background processes and their current status (R0).",
+        "risk_class": "R0",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["running", "completed", "failed", "killed", "all"],
+                    "description": "Optional filter by process status",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -531,6 +592,7 @@ class ToolGateway:
         subagent_manager: SubagentManager | None = None,
         browser_manager: Any | None = None,
         vision_engine: Any | None = None,
+        process_registry: ProcessRegistry | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
@@ -541,6 +603,7 @@ class ToolGateway:
         self.subagent_manager = subagent_manager
         self.browser_manager = browser_manager
         self.vision_engine = vision_engine
+        self.process_registry = process_registry or get_process_registry()
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
         self._register_builtin_tools()
@@ -826,6 +889,38 @@ class ToolGateway:
                 description="Inspect local image files or remote URLs using multimodal vision analysis (R1).",
                 risk_class=RiskClass.R1,
                 handler=self._tool_image_inspect,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="start_process",
+                description="Spawn a background command in an asynchronous pseudo-terminal (PTY) or pipe (R2).",
+                risk_class=RiskClass.R2,
+                handler=self._tool_start_process,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="read_terminal",
+                description="Read output slice from a running or completed background process buffer (R0).",
+                risk_class=RiskClass.R0,
+                handler=self._tool_read_terminal,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="kill_process",
+                description="Terminate an active background process by process_id (R2).",
+                risk_class=RiskClass.R2,
+                handler=self._tool_kill_process,
+            )
+        )
+        self.register_tool(
+            ToolSpec(
+                tool_id="list_processes",
+                description="List all background processes and their current status (R0).",
+                risk_class=RiskClass.R0,
+                handler=self._tool_list_processes,
             )
         )
 
@@ -1849,9 +1944,89 @@ class ToolGateway:
             "sandbox_backend": result.sandbox_backend,
         }
 
+    def _tool_start_process(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        command = str(args.get("command", "")).strip()
+        if not command:
+            return {"ok": False, "error": "Command parameter is required"}
+
+        cwd_arg = str(args.get("cwd", "")).strip()
+        if cwd_arg:
+            target_cwd = self._resolve_confined_path(workspace_dir, cwd_arg)
+        else:
+            target_cwd = workspace_dir
+
+        pty_enabled = bool(args.get("pty", True))
+
+        try:
+            session = self.process_registry.spawn(
+                command=command,
+                cwd=str(target_cwd),
+                use_pty=pty_enabled,
+            )
+            data = session.to_dict()
+            initial_output = redact_secrets(
+                self.process_registry.get_tail_output(session.id, n=2000, strip_ansi_codes=False)
+            )
+            res: dict[str, Any] = {
+                "ok": True,
+                "process_id": session.id,
+                "initial_output": initial_output,
+                **data,
+            }
+            return redact_secrets(res)
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed spawning process: {exc}"}
+
+    def _tool_read_terminal(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        process_id = str(args.get("process_id", "")).strip()
+        if not process_id:
+            return {"ok": False, "error": "process_id parameter is required"}
+
+        offset = int(args.get("offset", 0))
+        limit = int(args.get("limit", 2000))
+
+        try:
+            res = self.process_registry.read_output(process_id, offset=offset, limit=limit)
+            res["ok"] = True
+            res["output"] = redact_secrets(res.get("output", ""))
+            return redact_secrets(res)
+        except KeyError:
+            return {"ok": False, "error": f"Process not found: {process_id}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed reading terminal output: {exc}"}
+
+    def _tool_kill_process(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        process_id = str(args.get("process_id", "")).strip()
+        if not process_id:
+            return {"ok": False, "error": "process_id parameter is required"}
+
+        force = bool(args.get("force", False))
+
+        try:
+            res = self.process_registry.kill(process_id, force=force)
+            return {"ok": True, "process_id": process_id, **res}
+        except KeyError:
+            return {"ok": False, "error": f"Process not found: {process_id}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed killing process: {exc}"}
+
+    def _tool_list_processes(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        status_filter = args.get("status")
+        if status_filter == "all" or not status_filter:
+            status_filter = None
+
+        try:
+            procs = self.process_registry.list_processes(status_filter=status_filter)
+            return {"ok": True, "processes": redact_secrets(procs), "count": len(procs)}
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed listing processes: {exc}", "processes": [], "count": 0}
+
     def _tool_process(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         action = str(args.get("action", "list")).lower()
         if action == "list":
+            supervised = self.process_registry.list_processes()
+            if supervised:
+                return {"ok": True, "processes": redact_secrets(supervised), "count": len(supervised)}
             procs: list[dict[str, Any]] = []
             try:
                 ps_res = subprocess.run(
@@ -1882,25 +2057,39 @@ class ToolGateway:
             return {"ok": True, "processes": procs, "count": len(procs)}
 
         elif action == "kill":
-            pid_val = args.get("pid")
-            if pid_val is None:
-                return {"ok": False, "error": "PID parameter required to kill process"}
-            try:
-                target_pid = int(pid_val)
-            except ValueError:
-                return {"ok": False, "error": f"Invalid PID: {pid_val}"}
+            target_pid = args.get("pid")
+            proc_id = args.get("process_id")
 
-            if target_pid <= 1 or target_pid == os.getpid():
-                raise PolicyBlockedError(f"Cannot terminate protected system or current process (PID {target_pid})")
+            if target_pid is not None:
+                try:
+                    target_pid_int = int(target_pid)
+                except ValueError:
+                    return {"ok": False, "error": f"Invalid PID: {target_pid}"}
 
-            sig_val = int(args.get("signal", signal.SIGTERM))
-            try:
-                os.kill(target_pid, sig_val)
-                return {"ok": True, "killed_pid": target_pid, "signal": sig_val}
-            except ProcessLookupError:
-                return {"ok": False, "error": f"Process {target_pid} not found"}
-            except PermissionError as pe:
-                return {"ok": False, "error": f"Permission denied killing PID {target_pid}: {pe}"}
+                if target_pid_int <= 1 or target_pid_int == os.getpid():
+                    raise PolicyBlockedError(f"Cannot terminate protected system or current process (PID {target_pid_int})")
+
+                for s in self.process_registry.list_processes():
+                    if s.get("pid") == target_pid_int:
+                        res = self.process_registry.kill(s["id"], force=bool(args.get("force", False)))
+                        return {"ok": True, "killed_pid": target_pid_int, **res}
+
+                sig_val = int(args.get("signal", signal.SIGTERM))
+                try:
+                    os.kill(target_pid_int, sig_val)
+                    return {"ok": True, "killed_pid": target_pid_int, "signal": sig_val}
+                except ProcessLookupError:
+                    return {"ok": False, "error": f"Process {target_pid_int} not found"}
+                except PermissionError as pe:
+                    return {"ok": False, "error": f"Permission denied killing PID {target_pid_int}: {pe}"}
+            elif proc_id is not None:
+                try:
+                    res = self.process_registry.kill(str(proc_id), force=bool(args.get("force", False)))
+                    return {"ok": True, "process_id": proc_id, **res}
+                except KeyError:
+                    return {"ok": False, "error": f"Process {proc_id} not found"}
+            else:
+                return {"ok": False, "error": "PID or process_id parameter required to kill process"}
         else:
             return {"ok": False, "error": f"Unknown process action: {action}"}
 
