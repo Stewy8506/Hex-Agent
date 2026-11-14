@@ -38,8 +38,12 @@ struct Args {
     #[arg(short, long, help = "Active model provider override")]
     model: Option<String>,
 
-    #[arg(long, default_value = "amber", value_parser = ["amber", "cyberpunk", "matrix", "nord", "mono"], help = "HEX visual skin")]
-    skin: String,
+    #[arg(
+        long,
+        value_parser = ["amber", "cyberpunk", "matrix", "nord", "mono", "light"],
+        help = "HEX visual skin"
+    )]
+    skin: Option<String>,
 
     #[arg(
         long,
@@ -100,7 +104,9 @@ fn run_headless_check(args: Args) -> Result<()> {
     if let Some(s) = args.session {
         app.session_id = s;
     }
-    app.skin_name = args.skin.clone();
+    if let Some(s) = args.skin {
+        app.skin_name = s;
+    }
 
     // Add sample dialogue and tool calls
     app.add_user_message("Create a high-performance HTTP service");
@@ -187,7 +193,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     if let Some(s) = args.session {
         app.session_id = s;
     }
-    app.skin_name = args.skin.clone();
+    if let Some(s) = args.skin {
+        app.skin_name = s;
+    }
 
     // Try connecting to ACP server in background
     let ws_path = args.workspace.as_deref();
@@ -527,6 +535,15 @@ async fn execute_submitted_text(
                 app.toggle_diff_pane();
                 return Ok(());
             }
+            "/sbs" => {
+                app.toggle_side_by_side();
+                if app.side_by_side && (app.active_diff.is_some() || app.raw_diff.is_some()) {
+                    app.show_diff = true;
+                }
+                let mode_str = if app.side_by_side { "side-by-side" } else { "unified" };
+                app.add_system_message(&format!("Diff viewer mode: {}", mode_str));
+                return Ok(());
+            }
             "/clear" => {
                 app.dialogue_items.clear();
                 app.add_system_message("Dialogue viewport cleared.");
@@ -615,6 +632,14 @@ async fn execute_submitted_text(
             "/rollback" => {
                 app.add_system_message("CoW workspace rolled back to clean checkpoint.");
                 app.clear_diff();
+            }
+            "/sbs" => {
+                app.toggle_side_by_side();
+                if app.side_by_side && (app.active_diff.is_some() || app.raw_diff.is_some()) {
+                    app.show_diff = true;
+                }
+                let mode_str = if app.side_by_side { "side-by-side" } else { "unified" };
+                app.add_system_message(&format!("Diff viewer mode: {}", mode_str));
             }
             "/skills" => {
                 app.add_system_message("Active Skills: [Python AST Analyzer, OSV CVE Scanner, Graphify Blast-Radius, Shell Gateway]");

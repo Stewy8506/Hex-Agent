@@ -1,16 +1,24 @@
-//! Colorized unified diff viewer widget rendering added, deleted, and context lines.
+//! Colorized unified and side-by-side diff viewer widget rendering added, deleted, and context lines.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use hex_protocol::diff::DiffLineType;
+use hex_protocol::diff::{DiffLineType, UnifiedDiff};
 
 use crate::app::{App, Focus};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    if app.side_by_side {
+        render_side_by_side(frame, app, area);
+    } else {
+        render_unified(frame, app, area);
+    }
+}
+
+fn render_unified(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == Focus::Diff;
     let border_color = if is_focused {
         Color::Green
@@ -160,4 +168,166 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .scroll((app.diff_scroll as u16, 0));
 
     frame.render_widget(paragraph, area);
+}
+
+fn render_side_by_side(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.focus == Focus::Diff;
+    let border_color = if is_focused {
+        Color::Green
+    } else {
+        Color::DarkGray
+    };
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    let left_title = if is_focused {
+        " Diff Viewer (Old) [FOCUSED - ↑/↓ to Scroll] "
+    } else {
+        " Diff Viewer (Old) "
+    };
+    let right_title = " Diff Viewer (New) ";
+
+    let left_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(
+            left_title,
+            Style::default()
+                .fg(if is_focused {
+                    Color::Green
+                } else {
+                    Color::White
+                })
+                .add_modifier(if is_focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ));
+
+    let right_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(
+            right_title,
+            Style::default()
+                .fg(if is_focused {
+                    Color::Green
+                } else {
+                    Color::White
+                })
+                .add_modifier(if is_focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ));
+
+    let mut left_lines: Vec<Line> = Vec::new();
+    let mut right_lines: Vec<Line> = Vec::new();
+
+    let parsed_diff: Option<UnifiedDiff> = app.active_diff.clone().or_else(|| {
+        app.raw_diff.as_deref().map(UnifiedDiff::parse)
+    });
+
+    if let Some(diff) = &parsed_diff {
+        if diff.files.is_empty() {
+            left_lines.push(Line::from(vec![Span::styled(
+                "No file changes in current diff.",
+                Style::default().fg(Color::DarkGray),
+            )]));
+            right_lines.push(Line::from(vec![Span::styled(
+                "No file changes in current diff.",
+                Style::default().fg(Color::DarkGray),
+            )]));
+        }
+
+        for (file_idx, file) in diff.files.iter().enumerate() {
+            let old_str = file.old_path.as_deref().unwrap_or("/dev/null");
+            let new_str = file.new_path.as_deref().unwrap_or("/dev/null");
+
+            left_lines.push(Line::from(vec![Span::styled(
+                format!("--- a/{}", old_str),
+                Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+            right_lines.push(Line::from(vec![Span::styled(
+                format!("+++ b/{}", new_str),
+                Style::default()
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+
+            let rows = diff.side_by_side(file_idx);
+            for row in rows {
+                // Left side (Old / Deletion / Context)
+                if let Some(content) = &row.left_content {
+                    let lineno_str = row
+                        .left_lineno
+                        .map(|n| format!("{:4} ", n))
+                        .unwrap_or_else(|| "     ".to_string());
+                    let (marker, fg) = match row.left_type {
+                        Some(DiffLineType::Deleted) => ("- ", Color::LightRed),
+                        Some(DiffLineType::Context) => ("  ", Color::DarkGray),
+                        _ => ("  ", Color::DarkGray),
+                    };
+                    left_lines.push(Line::from(vec![
+                        Span::styled(lineno_str, Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{}{}", marker, content), Style::default().fg(fg)),
+                    ]));
+                } else {
+                    left_lines.push(Line::raw(""));
+                }
+
+                // Right side (New / Addition / Context)
+                if let Some(content) = &row.right_content {
+                    let lineno_str = row
+                        .right_lineno
+                        .map(|n| format!("{:4} ", n))
+                        .unwrap_or_else(|| "     ".to_string());
+                    let (marker, fg) = match row.right_type {
+                        Some(DiffLineType::Added) => ("+ ", Color::LightGreen),
+                        Some(DiffLineType::Context) => ("  ", Color::DarkGray),
+                        _ => ("  ", Color::DarkGray),
+                    };
+                    right_lines.push(Line::from(vec![
+                        Span::styled(lineno_str, Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{}{}", marker, content), Style::default().fg(fg)),
+                    ]));
+                } else {
+                    right_lines.push(Line::raw(""));
+                }
+            }
+            left_lines.push(Line::raw(""));
+            right_lines.push(Line::raw(""));
+        }
+    } else {
+        left_lines.push(Line::from(vec![Span::styled(
+            "No diff available. Propose changes or execute a task to view unified diff.",
+            Style::default().fg(Color::DarkGray),
+        )]));
+        right_lines.push(Line::from(vec![Span::styled(
+            "No diff available. Propose changes or execute a task to view unified diff.",
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
+
+    let left_paragraph = Paragraph::new(left_lines)
+        .block(left_block)
+        .wrap(Wrap { trim: false })
+        .scroll((app.diff_scroll as u16, 0));
+
+    let right_paragraph = Paragraph::new(right_lines)
+        .block(right_block)
+        .wrap(Wrap { trim: false })
+        .scroll((app.diff_scroll as u16, 0));
+
+    frame.render_widget(left_paragraph, cols[0]);
+    frame.render_widget(right_paragraph, cols[1]);
 }
