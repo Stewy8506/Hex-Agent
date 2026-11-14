@@ -1308,3 +1308,525 @@ def format_jit_memories_block(memories: list[dict[str, Any]], rel_path: str) -> 
         if fmt:
             lines.append(fmt)
     return "\n".join(lines)
+
+
+# ============================================================================
+# Zettelkasten A-MEM Controller & Wiki-Links (Phase 31 Plan 31-03)
+# ============================================================================
+
+_WIKI_LINK_RE = re.compile(r"\[\[([\w\-\.:/]+)\]\]")
+
+_TRANSITION_PATTERNS = [
+    # "instead of X", "rather than X"
+    re.compile(
+        r"(?:use|prefer)\s+(?P<new>[^,\.]+?)\s+(?:instead of|rather than)\s+(?P<old>[^,\.]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:instead of|rather than)\s+(?P<old>[^,\.]+?)[,\s]+(?:use|prefer)\s+(?P<new>[^,\.]+)",
+        re.IGNORECASE,
+    ),
+    # "migrated from X to Y" / "migrated to Y from X"
+    re.compile(
+        r"migrated\s+from\s+(?P<old>[^,\.]+?)\s+to\s+(?P<new>[^,\.]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"migrated\s+to\s+(?P<new>[^,\.]+?)\s+from\s+(?P<old>[^,\.]+)",
+        re.IGNORECASE,
+    ),
+    # "switched (X) from A to B" / "switched (X) to B"
+    re.compile(
+        r"switched\s+(?:(?:db|database|test\s+runner|runner|engine|framework|library)\s+)?from\s+(?P<old>[^,\.]+?)\s+to\s+(?P<new>[^,\.]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"switched\s+(?:(?:db|database|test\s+runner|runner|engine|framework|library)\s+)?to\s+(?P<new>[^,\.]+)",
+        re.IGNORECASE,
+    ),
+    # "replaced X with Y"
+    re.compile(r"replaced?\s+(?P<old>[^,\.]+?)\s+with\s+(?P<new>[^,\.]+)", re.IGNORECASE),
+    re.compile(r"replaces?\s+(?P<old>[^,\.]+)", re.IGNORECASE),
+    # "deprecated X", "removed X", "no longer use X"
+    re.compile(r"(?:deprecated|abandoned|dropped|no longer use|removed)\s+(?P<old>[^,\.]+)", re.IGNORECASE),
+]
+
+_STOPWORDS = {
+    "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "of", "with",
+    "is", "are", "was", "were", "be", "been", "by", "as", "it", "this", "that",
+    "all", "use", "using", "from", "into", "our", "we", "not", "do",
+}
+
+
+def extract_wiki_tags(text: str) -> list[str]:
+    """Parse [[concept-tag]] tokens from markdown text into normalized list."""
+    if not text:
+        return []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for match in _WIKI_LINK_RE.finditer(text):
+        tag = match.group(1).strip().lower()
+        if tag and tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+    return tags
+
+
+@dataclass
+class MemoryItem:
+    """Structured memory entry with wiki concept links and lifecycle metadata."""
+
+    id: str
+    text: str
+    tags: list[str] = field(default_factory=list)
+    scope: str = "memory"  # "memory" | "user" | "guardrails"
+    hit_counter: int = 0
+    created_at: float = field(default_factory=time.time)
+    last_referenced_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "text": self.text,
+            "tags": list(self.tags),
+            "scope": self.scope,
+            "hit_counter": self.hit_counter,
+            "created_at": self.created_at,
+            "last_referenced_at": self.last_referenced_at,
+            "last_referenced_iso": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.last_referenced_at)
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemoryItem:
+        return cls(
+            id=str(data.get("id", "")),
+            text=str(data.get("text", "")),
+            tags=list(data.get("tags") or []),
+            scope=str(data.get("scope", "memory")),
+            hit_counter=int(data.get("hit_counter", 0)),
+            created_at=float(data.get("created_at", time.time())),
+            last_referenced_at=float(data.get("last_referenced_at", time.time())),
+        )
+
+
+class AMEMController:
+    """Zettelkasten-style Adaptive Memory (A-MEM) Controller with automated contradiction resolution.
+
+    Executes CRUD operations:
+    - ADD: Appends non-conflicting new memory items.
+    - UPDATE: Replaces superseded or contradictory existing memory items with updated facts.
+    - DELETE: Removes invalidated or deprecated notes.
+    - NOOP: Detects duplicate facts and avoids unnecessary writes.
+
+    Maintains inverted index of [[wiki-links]] for localized conceptual neighborhood retrieval.
+    """
+
+    def __init__(
+        self,
+        workspace_root: Optional[Path | str] = None,
+        global_home: Optional[Path | str] = None,
+        store: Optional[CuratedMemoryStore] = None,
+    ) -> None:
+        self.workspace_root = (
+            Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+        )
+        self.global_home = Path(global_home).resolve() if global_home else get_hex_home()
+        self.store = store or CuratedMemoryStore(
+            workspace_root=self.workspace_root,
+            global_home=self.global_home,
+        )
+        self.meta_dir = self.workspace_root / ".hex" / "memories"
+        self.meta_file = self.meta_dir / "amem_metadata.json"
+        self._tag_index: dict[str, set[str]] = {}
+        self._items: dict[str, MemoryItem] = {}
+        self._load_and_sync()
+
+    def _load_and_sync(self) -> None:
+        """Load stored metadata and synchronize with current files in CuratedMemoryStore."""
+        self.meta_dir.mkdir(parents=True, exist_ok=True)
+        raw_meta: dict[str, Any] = {}
+        if self.meta_file.is_file():
+            try:
+                raw_meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning("Failed to read AMEM metadata %s: %s", self.meta_file, e)
+
+        stored_items: dict[str, MemoryItem] = {}
+        for entry_dict in raw_meta.get("entries", []):
+            item = MemoryItem.from_dict(entry_dict)
+            if item.id and item.text:
+                stored_items[item.id] = item
+
+        # Re-sync against physical disk files
+        self._items.clear()
+        self._tag_index.clear()
+
+        for scope in ("memory", "user", "guardrails"):
+            entries = self.store.read_entries(scope)
+            for entry_text in entries:
+                norm_entry = _normalize_for_match(entry_text)
+                # Find matching stored item
+                matching_id = None
+                for sid, sitem in stored_items.items():
+                    if sitem.scope == scope and _normalize_for_match(sitem.text) == norm_entry:
+                        matching_id = sid
+                        break
+
+                if matching_id:
+                    item = stored_items[matching_id]
+                    item.text = entry_text
+                    item.tags = extract_wiki_tags(entry_text)
+                else:
+                    item = MemoryItem(
+                        id=f"mem_{uuid.uuid4().hex[:10]}",
+                        text=entry_text,
+                        tags=extract_wiki_tags(entry_text),
+                        scope=scope,
+                        hit_counter=1,
+                        created_at=time.time(),
+                        last_referenced_at=time.time(),
+                    )
+
+                self._items[item.id] = item
+                for t in item.tags:
+                    self._tag_index.setdefault(t, set()).add(item.id)
+
+        self._save_metadata()
+
+    def _save_metadata(self) -> None:
+        """Persist metadata to amem_metadata.json."""
+        self.meta_dir.mkdir(parents=True, exist_ok=True)
+        with _file_lock(self.meta_file):
+            payload = {
+                "version": 1,
+                "updated_at": time.time(),
+                "entries": [item.to_dict() for item in self._items.values()],
+            }
+            tmp = self.meta_file.with_suffix(".tmp")
+            try:
+                tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(self.meta_file)
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+
+    def get_memory(self, entry_id: str) -> Optional[MemoryItem]:
+        """Retrieve memory item by unique id."""
+        return self._items.get(entry_id)
+
+    def list_memories(self, target: str = "all") -> list[MemoryItem]:
+        """List active memory items filtered by target scope."""
+        clean = str(target or "all").strip().lower()
+        if clean == "all":
+            return list(self._items.values())
+        return [item for item in self._items.values() if item.scope == clean]
+
+    def get_linked_neighborhood(self, tag: str) -> list[MemoryItem]:
+        """Retrieve all notes sharing the specified concept tag [[concept-tag]]."""
+        clean_tag = tag.strip().lower()
+        if clean_tag.startswith("[[") and clean_tag.endswith("]]"):
+            clean_tag = clean_tag[2:-2].strip()
+
+        matching_ids = self._tag_index.get(clean_tag, set())
+        results: list[MemoryItem] = []
+        for mid in sorted(matching_ids):
+            if mid in self._items:
+                results.append(self._items[mid])
+        return results
+
+    def detect_contradiction(
+        self, new_text: str, target: str = "memory"
+    ) -> Tuple[Optional[MemoryItem], str, str]:
+        """Detect if incoming new_text contradicts or duplicates existing entries in target.
+
+        Returns: (conflicting_item, suggested_action, reason)
+        where suggested_action in ("NOOP", "UPDATE", "DELETE", "ADD").
+        """
+        clean_new = str(new_text or "").strip()
+        norm_new = _normalize_for_match(clean_new)
+        scope = str(target or "memory").strip().lower()
+
+        existing_items = [it for it in self._items.values() if it.scope == scope]
+
+        # 1. Exact or normalized duplicate check -> NOOP
+        for it in existing_items:
+            if _normalize_for_match(it.text) == norm_new:
+                return it, "NOOP", "Duplicate fact already recorded."
+
+        new_tags = set(extract_wiki_tags(clean_new))
+
+        # 2. Check semantic transition markers
+        for pattern in _TRANSITION_PATTERNS:
+            m = pattern.search(clean_new)
+            if not m:
+                continue
+
+            gd = m.groupdict()
+            old_kw = (gd.get("old") or "").strip().lower()
+            new_kw = (gd.get("new") or "").strip().lower()
+
+            if old_kw:
+                # Check which existing item mentions old_kw
+                for it in existing_items:
+                    it_norm = it.text.lower()
+                    if old_kw in it_norm or any(
+                        word in it_norm for word in old_kw.split() if word not in _STOPWORDS
+                    ):
+                        if not new_kw and any(
+                            kw in clean_new.lower()
+                            for kw in ("deprecated", "removed", "abandoned", "dropped", "no longer use")
+                        ):
+                            return (
+                                it,
+                                "DELETE",
+                                f"Existing fact invalidated/deprecated by: '{clean_new}'",
+                            )
+                        else:
+                            return (
+                                it,
+                                "UPDATE",
+                                f"Existing fact superseded by transition '{old_kw}' -> '{new_kw}': '{it.text}'",
+                            )
+
+        # 3. Check shared concept tag semantic conflict
+        if new_tags:
+            for it in existing_items:
+                common_tags = new_tags.intersection(set(it.tags))
+                if not common_tags:
+                    continue
+
+                # Same tag: analyze token overlap and polarity shift
+                it_tokens = {
+                    w.lower().strip(".:,;()[]'\"")
+                    for w in it.text.split()
+                    if len(w) > 2 and w.lower() not in _STOPWORDS
+                }
+                new_tokens = {
+                    w.lower().strip(".:,;()[]'\"")
+                    for w in clean_new.split()
+                    if len(w) > 2 and w.lower() not in _STOPWORDS
+                }
+                overlap = it_tokens.intersection(new_tokens)
+
+                # High topic overlap with conflicting statement
+                if len(overlap) >= 1:
+                    # Check opposing words (dark/light, sqlite/postgres, unittest/pytest, etc.)
+                    is_opposing = (
+                        ("prefer" in it.text.lower() and "prefer" in clean_new.lower() and it_tokens != new_tokens)
+                        or ("use " in it.text.lower() and "use " in clean_new.lower() and it_tokens != new_tokens)
+                        or ("switched" in clean_new.lower())
+                        or ("migrated" in clean_new.lower())
+                        or ("instead of" in clean_new.lower())
+                    )
+                    if is_opposing:
+                        return (
+                            it,
+                            "UPDATE",
+                            f"Contradictory fact under concept tags {list(common_tags)}: '{it.text}'",
+                        )
+
+        # 4. Default: non-conflicting addition
+        return None, "ADD", "No contradiction detected."
+
+    def process_memory(self, text: str, target: str = "memory") -> dict[str, Any]:
+        """Execute A-MEM CRUD decision (ADD, UPDATE, DELETE, NOOP) on incoming memory text."""
+        clean_text = str(text or "").strip()
+        if not clean_text:
+            return {"ok": False, "success": False, "error": "Memory text cannot be empty"}
+
+        scope = str(target or "memory").strip().lower()
+        conflicting_item, action, reason = self.detect_contradiction(clean_text, target=scope)
+
+        if action == "NOOP":
+            if conflicting_item:
+                conflicting_item.hit_counter += 1
+                conflicting_item.last_referenced_at = time.time()
+                self._save_metadata()
+            return {
+                "ok": True,
+                "success": True,
+                "action": "NOOP",
+                "item": conflicting_item.to_dict() if conflicting_item else None,
+                "reason": reason,
+            }
+
+        elif action == "UPDATE":
+            if not conflicting_item:
+                action = "ADD"
+            else:
+                old_text = conflicting_item.text
+                res = self.store.replace(old_text=old_text, new_text=clean_text, target=scope)
+                if not res.get("ok"):
+                    # Fallback to remove and add if replace fails on whitespace matching
+                    self.store.remove(old_text=old_text, target=scope)
+                    res = self.store.add(content=clean_text, target=scope)
+                    if not res.get("ok"):
+                        return {"ok": False, "success": False, "error": res.get("error")}
+
+                # Update item in-place
+                old_tags = set(conflicting_item.tags)
+                conflicting_item.text = clean_text
+                conflicting_item.tags = extract_wiki_tags(clean_text)
+                conflicting_item.last_referenced_at = time.time()
+                conflicting_item.hit_counter += 1
+
+                # Re-index tags
+                for ot in old_tags:
+                    if ot in self._tag_index and conflicting_item.id in self._tag_index[ot]:
+                        self._tag_index[ot].remove(conflicting_item.id)
+                for nt in conflicting_item.tags:
+                    self._tag_index.setdefault(nt, set()).add(conflicting_item.id)
+
+                self._save_metadata()
+                return {
+                    "ok": True,
+                    "success": True,
+                    "action": "UPDATE",
+                    "item": conflicting_item.to_dict(),
+                    "superseded_text": old_text,
+                    "reason": reason,
+                }
+
+        if action == "DELETE":
+            if conflicting_item:
+                old_text = conflicting_item.text
+                self.store.remove(old_text=old_text, target=scope)
+                del_id = conflicting_item.id
+                if del_id in self._items:
+                    del self._items[del_id]
+                for t in conflicting_item.tags:
+                    if t in self._tag_index and del_id in self._tag_index[t]:
+                        self._tag_index[t].remove(del_id)
+                self._save_metadata()
+                return {
+                    "ok": True,
+                    "success": True,
+                    "action": "DELETE",
+                    "item": conflicting_item.to_dict(),
+                    "deleted_text": old_text,
+                    "reason": reason,
+                }
+            return {"ok": True, "success": True, "action": "NOOP", "reason": "No item to delete"}
+
+        # action == "ADD"
+        res = self.store.add(content=clean_text, target=scope)
+        if not res.get("ok"):
+            return {"ok": False, "success": False, "error": res.get("error")}
+
+        new_item = MemoryItem(
+            id=f"mem_{uuid.uuid4().hex[:10]}",
+            text=clean_text,
+            tags=extract_wiki_tags(clean_text),
+            scope=scope,
+            hit_counter=1,
+            created_at=time.time(),
+            last_referenced_at=time.time(),
+        )
+        self._items[new_item.id] = new_item
+        for t in new_item.tags:
+            self._tag_index.setdefault(t, set()).add(new_item.id)
+        self._save_metadata()
+
+        return {
+            "ok": True,
+            "success": True,
+            "action": "ADD",
+            "item": new_item.to_dict(),
+            "reason": reason,
+        }
+
+    def add_memory(self, text: str, target: str = "memory") -> dict[str, Any]:
+        """Convenience alias for process_memory enforcing automated contradiction resolution."""
+        return self.process_memory(text=text, target=target)
+
+    def update_memory(
+        self, entry_id_or_old_text: str, new_text: str, target: str = "memory"
+    ) -> dict[str, Any]:
+        """Explicitly update a memory entry by ID or text match."""
+        scope = str(target or "memory").strip().lower()
+        target_item = self.get_memory(entry_id_or_old_text)
+        if not target_item:
+            for it in self._items.values():
+                if it.scope == scope and (
+                    it.text == entry_id_or_old_text
+                    or _normalize_for_match(it.text) == _normalize_for_match(entry_id_or_old_text)
+                ):
+                    target_item = it
+                    break
+
+        if not target_item:
+            return {
+                "ok": False,
+                "success": False,
+                "error": f"Memory item not found: '{entry_id_or_old_text}'",
+            }
+
+        old_text = target_item.text
+        res = self.store.replace(old_text=old_text, new_text=new_text, target=scope)
+        if not res.get("ok"):
+            return res
+
+        old_tags = set(target_item.tags)
+        target_item.text = new_text
+        target_item.tags = extract_wiki_tags(new_text)
+        target_item.last_referenced_at = time.time()
+        target_item.hit_counter += 1
+
+        for ot in old_tags:
+            if ot in self._tag_index and target_item.id in self._tag_index[ot]:
+                self._tag_index[ot].remove(target_item.id)
+        for nt in target_item.tags:
+            self._tag_index.setdefault(nt, set()).add(target_item.id)
+
+        self._save_metadata()
+        return {
+            "ok": True,
+            "success": True,
+            "action": "UPDATE",
+            "item": target_item.to_dict(),
+            "superseded_text": old_text,
+        }
+
+    def delete_memory(self, entry_id_or_text: str, target: str = "memory") -> dict[str, Any]:
+        """Explicitly delete a memory entry by ID or text match."""
+        scope = str(target or "memory").strip().lower()
+        target_item = self.get_memory(entry_id_or_text)
+        if not target_item:
+            for it in self._items.values():
+                if it.scope == scope and (
+                    it.text == entry_id_or_text
+                    or _normalize_for_match(it.text) == _normalize_for_match(entry_id_or_text)
+                ):
+                    target_item = it
+                    break
+
+        if not target_item:
+            return {
+                "ok": False,
+                "success": False,
+                "error": f"Memory item not found: '{entry_id_or_text}'",
+            }
+
+        old_text = target_item.text
+        self.store.remove(old_text=old_text, target=scope)
+        del_id = target_item.id
+        if del_id in self._items:
+            del self._items[del_id]
+        for t in target_item.tags:
+            if t in self._tag_index and del_id in self._tag_index[t]:
+                self._tag_index[t].remove(del_id)
+
+        self._save_metadata()
+        return {
+            "ok": True,
+            "success": True,
+            "action": "DELETE",
+            "item": target_item.to_dict(),
+            "deleted_text": old_text,
+        }
+
