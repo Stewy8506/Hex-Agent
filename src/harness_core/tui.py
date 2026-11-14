@@ -1233,7 +1233,7 @@ class HexConsole:
     """Interactive pair-programming terminal REPL for HEX Autonomous AI Workbench."""
 
     SLASH_COMMANDS: list[str] = [
-        "/help", "/status", "/diff", "/sbs", "/rollback", "/fork",
+        "/help", "/mode", "/rename", "/status", "/diff", "/sbs", "/rollback", "/fork",
         "/skills", "/scan", "/model", "/compressor", "/compress", "/budget",
         "/quota", "/antigravity", "/blast", "/proof", "/memory",
         "/remember", "/reflect", "/search", "/doctor", "/recipe",
@@ -1661,6 +1661,8 @@ class HexConsole:
             self._cmd_mode("agent")
         elif cmd == "/code":
             self._cmd_mode("code")
+        elif cmd in ("/rename", "/identity"):
+            self._cmd_rename(arg)
         elif cmd in ("/status", "/tasks"):
             self._cmd_status()
         elif cmd == "/diff":
@@ -1754,10 +1756,25 @@ class HexConsole:
         self.mode = target
         print(f"\n{ANSI_GREEN}✓ Switched mode to: {self.mode.upper()}{ANSI_RESET}\n")
 
+    def _cmd_rename(self, arg: str = "") -> None:
+        new_name = arg.strip()
+        if not new_name:
+            active_name = "HEX"
+            if hasattr(self.orchestrator, "soul_manager"):
+                active_name = self.orchestrator.soul_manager.get_active_name(workspace_root=self.workspace_root)
+            print(f"\n{ANSI_CYAN}Current agent persona name: {active_name}{ANSI_RESET} (Usage: /rename <new_name>)\n")
+            return
+        if hasattr(self.orchestrator, "soul_manager"):
+            self.orchestrator.soul_manager.rename_identity(new_name, scope="global")
+            print(f"\n{ANSI_GREEN}✓ Agent identity renamed to: {new_name}{ANSI_RESET}\n")
+        else:
+            print(f"\n{ANSI_YELLOW}Soul manager not available on orchestrator.{ANSI_RESET}\n")
+
     def _cmd_help(self) -> None:
         commands = [
             ("/help", "Show table of all available slash commands"),
             ("/mode [mode]", "Switch mode: plan (architecture & read-only spec), agent (autonomous execution), code (direct synthesis)"),
+            ("/rename <name>", "Rename agent persona identity (e.g. /rename Jarvis or Athena)"),
             ("/status", "Display active/recent tasks, proof bundle, and worker state"),
             ("/diff", "Inspect uncommitted changes in active workspace via unified diff"),
             ("/sbs <file>", "Render two-column side-by-side diff for a modified workspace file"),
@@ -3175,10 +3192,13 @@ class HexConsole:
         spinner = ActivitySpinner(self.skin, enabled=not self.quiet)
         spinner.start()
         try:
-            loop_result = self.orchestrator.run_agent_loop(
-                goal=prompt,
-                workspace_root=self.workspace_root,
-            )
+            loop_kwargs: dict[str, Any] = {
+                "goal": prompt,
+                "workspace_root": self.workspace_root,
+            }
+            if getattr(self, "mode", "agent") != "agent":
+                loop_kwargs["mode"] = self.mode
+            loop_result = self.orchestrator.run_agent_loop(**loop_kwargs)
         except KeyboardInterrupt:
             spinner.stop()
             print(f"\n{ANSI_YELLOW}⚡ ReAct loop cancelled by user (Ctrl+C).{ANSI_RESET}\n")

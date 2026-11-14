@@ -35,11 +35,13 @@ from .graphify import ActiveGraphifyAdapter
 from .lsp.manager import LSPManager
 from .models import PlanNode, TaskBudget, TaskState, TaskSubmitRequest
 from .proof import Harness2ControlledAdapter, VerificationAndProofService
+from .prompt_builder import PromptBuilder
 from .providers.base import BudgetExceededError
 from .react_loop import ReActConfig, ReActLoop, ReActSessionResult, ReActTurn
 from .router import GovernedMemoryService, TwoTierModelRouter
 from .sandbox import ExecutionSandbox, get_default_sandbox
 from .skillspector import SkillSpectorScanner
+from .soul import SoulManager
 from .subagent import SubagentManager, SubagentRole
 from .vendor_paths import get_harness2_dir
 from .webhooks import WebhookConfig, WebhookNotifier
@@ -65,6 +67,7 @@ class HarnessOrchestrator:
         repair_patch_generator: Callable[..., list[dict[str, Any]]] | None = None,
         webhook_notifier: WebhookNotifier | None = None,
         library_root: Path | str | None = None,
+        soul_manager: SoulManager | None = None,
     ):
         if str(data_dir) == ":memory:":
             self._temp_mem_dir = tempfile.TemporaryDirectory(prefix="harness_mem_")
@@ -111,6 +114,8 @@ class HarnessOrchestrator:
         )
         self.gateway.subagent_manager = self.subagent_manager
         self.memory = GovernedMemoryService(self.ledger, graphify=self.graphify)
+        self.soul_manager = soul_manager or SoulManager()
+        self.prompt_builder = PromptBuilder(soul_manager=self.soul_manager)
         self.proof_service = VerificationAndProofService(
             self.ledger,
             self.cow,
@@ -415,6 +420,9 @@ class HarnessOrchestrator:
         workspace_root: Path | str | None = None,
         max_turns: int = 30,
         task_id: str | None = None,
+        mode: str = "agent",
+        extra_rules: str = "",
+        curated_memory: str = "",
     ) -> dict[str, Any]:
         """Execute an autonomous continuous multi-turn ReAct tool loop (Hermes Parity Pillar 1).
 
@@ -424,6 +432,13 @@ class HarnessOrchestrator:
         """
         effective_ws = Path(workspace_root or self.default_workspace).resolve()
         effective_ws.mkdir(parents=True, exist_ok=True)
+
+        system_directive = self.prompt_builder.build_system_prompt(
+            workspace_root=effective_ws,
+            mode=mode,
+            extra_rules=extra_rules,
+            curated_memory=curated_memory,
+        )
 
         # Submit task into ledger if available
         active_task_id = task_id or f"task_react_{uuid.uuid4().hex[:8]}"
@@ -467,12 +482,6 @@ class HarnessOrchestrator:
                 if cloud_avail:
                     try:
                         prompt_str = ReActLoop._format_messages_to_prompt(messages)
-                        system_directive = (
-                            "You are HEX ReAct Agent, an autonomous coding workbench. "
-                            "You reason step-by-step and call tools to achieve the user's goal. "
-                            "To call a tool, output: <tool_call>{\"name\": \"tool_name\", \"arguments\": {...}}</tool_call>. "
-                            "When finished, wrap your final response in <finish>...</finish>."
-                        )
                         decision, model_resp = self.router.execute_routed_request(
                             prompt=prompt_str,
                             task_class="agent_loop",
@@ -549,12 +558,7 @@ class HarnessOrchestrator:
 
         react_cfg = ReActConfig(
             max_turns=max_turns,
-            system_prompt=(
-                "You are HEX ReAct Agent, an autonomous coding workbench. "
-                "Execute the requested goal by taking step-by-step actions with available tools. "
-                "Output <tool_call>{\"name\": \"...\", \"arguments\": {...}}</tool_call> to call tools. "
-                "Output <finish>...</finish> when finished."
-            ),
+            system_prompt=system_directive,
         )
 
         # Wire ContextCompactor from router if available
