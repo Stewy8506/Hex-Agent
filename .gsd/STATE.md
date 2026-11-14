@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
-**Date:** 2026-11-13  
+**Date:** 2026-11-14  
 **Current Milestone:** M10 (Finished Product Parity & Execution Excellence) — IN PROGRESS  
-**Status:** Phase 25 Delivered & Verified; Phase 26 Initiated  
-**Active Phase:** Phase 26 (4-Phase Context Compactor & Prompt Cache Locking)  
-**Completed Plans:** Plans 01-01 through 25-02 Complete (654/654 Python tests green, 26/26 Rust workspace tests green)  
+**Status:** Phase 26 Delivered & Verified; Phase 27 Ready for Planning  
+**Active Phase:** Phase 27 (PTY Background Process Supervisor & Stream Registry)  
+**Completed Plans:** Plans 01-01 through 26-02 Complete (685/685 Python tests green, 34/34 Rust workspace tests green)  
 
 ---
 
@@ -299,6 +299,22 @@
       - 26 Rust tests across `hex-protocol` and `hex-tui` (`cargo test --workspace`).
       - 8 Python launcher integration tests in `tests/test_rust_tui_launcher.py`.
       - 654/654 Python repository tests passing cleanly with zero regressions.
+
+38. **Phase 26: 4-Phase Context Compactor & Prompt Cache Locking Complete (Plans 26-01 & 26-02):**
+    - Implemented production-grade 4-phase context compactor matching Hermes Agent (`src/harness_core/context_compressor.py`):
+      - **Phase 1 (Stale Tool Demotion):** Truncates bulky tool outputs older than protected recent rounds (`keep_tool_rounds=4`) exceeding `min_demote_chars=1000`, inserting non-imitable elision markers (`⟪HEX-CONTEXT-COMPRESSION: ...⟫`), head+tail previews, and exact omitted line/char metrics. Tool failure outputs (`is_error=True`, `Traceback`, `Error:`) are strictly preserved.
+      - **Phase 2 (Atomic Tool-Pair Boundary Protection):** Discovers atomic call-and-response clusters across structured JSON tool calls and XML tags (`<tool_call>` <-> `<observation>`). Forward and backward boundary alignments (`align_boundary_forward`, `align_boundary_backward`) ensure no cut index splits an assistant tool invocation from its responses, preventing provider HTTP 400 Bad Request errors.
+      - **Phase 3 (Middle-Turn Summarization & Core Engine):** Dynamically plans compaction windows between protected system instructions and recent tail turns, summarizing intermediate turns using a structured model prompt or zero-dependency deterministic fallback digest. Still-active user objectives are restated past the summary boundary so the agent never abandons work. Anti-thrashing guards revert to original history if compaction fails to reduce tokens.
+      - **Phase 4 (Immutable Prompt-Cache Prefixing & Provider Breakpoints):** Enforces byte-for-byte prefix stability (`stabilize_prompt_cache_prefix`) with canonical system instructions at index 0 and deterministic tool schema JSON serialization, achieving 100% constant SHA-256 signatures across turns (>90% KV cache hit rate). Automatically injects Anthropic ephemeral cache control breakpoints (`"cache_control": {"type": "ephemeral"}`) onto the last tool, system prompt, middle summary, and tail turn within the 4-breakpoint limit.
+    - Integrated across the runtime:
+      - `ReActLoop`: Automatic compaction when token usage reaches 80% of budget.
+      - `TwoTierModelRouter`: `get_context_compactor()` and `compact_context()`.
+      - `HarnessOrchestrator`: Wired into `run_agent_loop`.
+      - `HexConsole` TUI: `/compress` slash command and compaction status indicators.
+    - Authored comprehensive test suites:
+      - 8 unit tests in `tests/test_context_compressor_tail_pruning.py`.
+      - 6 integration tests in `tests/test_context_compressor_integration.py`.
+      - Verified 685 Python tests and 34 Rust tests passing cleanly with zero regressions.
 
 ---
 
