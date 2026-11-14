@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from .code_kernel import KernelRegistry, get_kernel_registry, stale_modules_warning
 from .db import LedgerStore, canonical_json, sha256_hex
 from .graphify import (
     ActiveGraphifyAdapter,
@@ -576,6 +577,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "id": "code_kernel",
+        "name": "code_kernel",
+        "description": "Execute Python code in a persistent interactive REPL kernel that maintains variables and state across turns (R2).",
+        "risk_class": "R2",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Python code snippet or statements to execute."},
+                "reset": {"type": "boolean", "description": "Whether to reset kernel state and clear all variables before execution.", "default": False},
+                "timeout": {"type": "number", "description": "Max execution time in seconds before terminating the cell.", "default": 30.0},
+            },
+            "required": ["code"],
+        },
+    },
 ]
 
 
@@ -593,6 +609,7 @@ class ToolGateway:
         browser_manager: Any | None = None,
         vision_engine: Any | None = None,
         process_registry: ProcessRegistry | None = None,
+        kernel_registry: KernelRegistry | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
@@ -604,6 +621,8 @@ class ToolGateway:
         self.browser_manager = browser_manager
         self.vision_engine = vision_engine
         self.process_registry = process_registry or get_process_registry()
+        self.kernel_registry = kernel_registry or get_kernel_registry()
+        self._active_session_key: str = ""
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
         self._register_builtin_tools()
@@ -923,6 +942,32 @@ class ToolGateway:
                 handler=self._tool_list_processes,
             )
         )
+        self.register_tool(
+            ToolSpec(
+                tool_id="code_kernel",
+                description="Execute Python code in a persistent interactive REPL kernel that maintains variables and state across turns (R2).",
+                risk_class=RiskClass.R2,
+                handler=self._tool_code_kernel,
+            )
+        )
+
+    def execute_tool(
+        self,
+        tool_id: str,
+        args: dict[str, Any] | None = None,
+        workspace_dir: Path | str | None = None,
+    ) -> dict[str, Any]:
+        """Directly invoke a registered tool handler for interactive or REPL use."""
+        if tool_id not in self.tools:
+            raise KeyError(f"Unknown or unregistered tool: {tool_id}")
+        spec = self.tools[tool_id]
+        ws = Path(workspace_dir) if workspace_dir is not None else Path.cwd()
+        call_args = args or {}
+        import inspect
+        sig = inspect.signature(spec.handler)
+        if len(sig.parameters) == 1:
+            return spec.handler(call_args)
+        return spec.handler(ws, call_args)
 
     # ------------------------------------------------------------------
     # Policy Evaluation & Call-Level Memoized Execution (FR-015, FR-040)
@@ -2228,3 +2273,90 @@ class ToolGateway:
             return {"ok": False, "error": "Missing required 'image_path' or 'prompt' parameter"}
         detail = args.get("detail", "auto")
         return engine.inspect_image(img_p, prompt, detail=detail, workspace_dir=workspace_dir)
+
+    def _tool_code_kernel(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        """Execute Python code in a persistent interactive REPL kernel."""
+        code = str(args.get("code", "")).strip()
+        if not code:
+            return {
+                "ok": False,
+                "status": "error",
+                "error": "Missing or empty required 'code' parameter",
+                "output": "Error: Missing or empty 'code' parameter",
+                "stdout": "",
+                "stderr": "Error: Missing or empty 'code' parameter",
+                "execution_count": 0,
+                "state_reset": False,
+                "duration_seconds": 0.0,
+            }
+
+        reset = bool(args.get("reset", False))
+        timeout = float(args.get("timeout", 30.0))
+        owner = str(
+            args.get("owner")
+            or args.get("session_id")
+            or getattr(self, "_active_session_key", "")
+            or getattr(self, "_active_task_id", "")
+            or "default"
+        )
+
+        ws_str = str(workspace_dir) if workspace_dir else None
+        kernel, state_reset = self.kernel_registry.get_or_create(
+            owner=owner, cwd=ws_str, reset=reset
+        )
+
+        raw_res = kernel.execute(code=code, timeout=timeout)
+
+        # Redact secrets from output streams
+        stdout_text = redact_secrets(raw_res.get("stdout", ""))
+        stderr_text = redact_secrets(raw_res.get("stderr", ""))
+        traceback_text = redact_secrets(raw_res.get("traceback", ""))
+
+        # Format warnings
+        warning_msg = raw_res.get("warning", "")
+        if raw_res.get("stale_modules"):
+            stale_warn = stale_modules_warning(raw_res["stale_modules"])
+            if stale_warn and stale_warn not in warning_msg:
+                warning_msg = f"{warning_msg} {stale_warn}".strip() if warning_msg else stale_warn
+        if warning_msg:
+            warning_msg = redact_secrets(warning_msg)
+
+        # Format combined output
+        combined_stderr = stderr_text
+        if traceback_text:
+            if combined_stderr:
+                combined_stderr = f"{combined_stderr}\n{traceback_text}"
+            else:
+                combined_stderr = traceback_text
+
+        output_parts: list[str] = []
+        if stdout_text:
+            output_parts.append(stdout_text)
+        if combined_stderr:
+            if output_parts:
+                output_parts.append(f"--- stderr ---\n{combined_stderr}")
+            else:
+                output_parts.append(combined_stderr)
+
+        combined_output = "\n".join(output_parts)
+        is_ok = raw_res.get("status") == "ok"
+
+        res: dict[str, Any] = {
+            "ok": is_ok,
+            "status": "success" if is_ok else raw_res.get("status", "error"),
+            "output": combined_output,
+            "stdout": stdout_text,
+            "stderr": combined_stderr,
+            "execution_count": raw_res.get("execution_count", 1),
+            "state_reset": state_reset,
+            "duration_seconds": raw_res.get("duration_seconds", 0.0),
+        }
+        if warning_msg:
+            res["warning"] = warning_msg
+        if traceback_text:
+            res["traceback"] = traceback_text
+        if raw_res.get("stdout_spill_path"):
+            res["stdout_spill_path"] = raw_res["stdout_spill_path"]
+
+        return res
+

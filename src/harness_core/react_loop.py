@@ -163,6 +163,7 @@ class ReActLoop:
         config: ReActConfig | None = None,
         ledger: Any | None = None,
         context_compactor: ContextCompactor | None = None,
+        session_id: str | None = None,
     ) -> None:
         self.model_caller = model_caller
         self.gateway = gateway
@@ -170,6 +171,7 @@ class ReActLoop:
         self.config = config or ReActConfig()
         self.ledger = ledger
         self.context_compactor = context_compactor
+        self.session_id = session_id or f"session_{uuid.uuid4().hex[:12]}"
         self.messages: list[dict[str, Any]] = []
         self.turns: list[ReActTurn] = []
         self.last_compaction_result: Any | None = None
@@ -495,6 +497,16 @@ class ReActLoop:
 
         workspace_dir = Path(self.workspace_root) if self.workspace_root else Path.cwd()
 
+        if self.session_id and hasattr(self.gateway, "_active_session_key"):
+            try:
+                self.gateway._active_session_key = self.session_id
+            except Exception:
+                pass
+
+        if call.name == "code_kernel" and isinstance(call.arguments, dict):
+            if "owner" not in call.arguments and "session_id" not in call.arguments and self.session_id:
+                call.arguments["owner"] = self.session_id
+
         # Gateway with .tools dictionary (standard HEX ToolGateway)
         if hasattr(self.gateway, "tools") and isinstance(self.gateway.tools, dict):
             if call.name in self.gateway.tools:
@@ -704,8 +716,11 @@ class ReActLoop:
         prompt: str,
         task_id: str = "task_react",
         initial_messages: list[dict[str, Any]] | None = None,
+        session_id: str | None = None,
     ) -> ReActSessionResult:
         """Execute the multi-turn ReAct loop synchronously."""
+        if session_id:
+            self.session_id = session_id
         self.messages = []
         if self.config.system_prompt:
             self.messages.append({"role": "system", "content": self.config.system_prompt})
@@ -826,11 +841,23 @@ class ReActLoop:
                 self._seal_tool_call_in_ledger(task_id, turn_index, seq, call, tool_res)
 
                 # Format observation back into message history
-                obs_payload = (
-                    tool_res.output
-                    if isinstance(tool_res.output, str)
-                    else json.dumps(tool_res.output, default=str, ensure_ascii=False)
-                )
+                if tool_res.name == "code_kernel" and isinstance(tool_res.output, dict):
+                    out_str = str(tool_res.output.get("output", ""))
+                    warn_str = str(tool_res.output.get("warning", ""))
+                    parts = []
+                    if out_str:
+                        parts.append(out_str)
+                    elif not tool_res.is_error:
+                        parts.append("(execution completed with no output)")
+                    if warn_str:
+                        parts.append(f"[Warning: {warn_str}]")
+                    obs_payload = "\n\n".join(parts) if parts else ""
+                else:
+                    obs_payload = (
+                        tool_res.output
+                        if isinstance(tool_res.output, str)
+                        else json.dumps(tool_res.output, default=str, ensure_ascii=False)
+                    )
                 if tool_res.is_error:
                     obs_content = f"<observation tool=\"{tool_res.name}\">\nError: {obs_payload}\n</observation>"
                 else:
@@ -872,8 +899,9 @@ class ReActLoop:
         prompt: str,
         task_id: str = "task_react",
         initial_messages: list[dict[str, Any]] | None = None,
+        session_id: str | None = None,
     ) -> ReActSessionResult:
         """Execute the multi-turn ReAct loop asynchronously."""
         # Run sync run in default loop executor to support asyncio call sites
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.run, prompt, task_id, initial_messages)
+        return await loop.run_in_executor(None, self.run, prompt, task_id, initial_messages, session_id)
