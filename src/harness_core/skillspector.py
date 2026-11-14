@@ -362,8 +362,33 @@ class SkillScanReport:
         }
 
 
+def _parse_scalar(val: str) -> Any:
+    v = val.strip()
+    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+        return v[1:-1]
+    low = v.lower()
+    if low in ("true", "yes", "on"):
+        return True
+    if low in ("false", "no", "off"):
+        return False
+    if low in ("none", "null", "~"):
+        return None
+    if v.startswith("[") and v.endswith("]"):
+        return [x.strip().strip("'\"") for x in v[1:-1].split(",") if x.strip()]
+    try:
+        if "." in v:
+            return float(v)
+        return int(v)
+    except ValueError:
+        return v
+
+
 def parse_skill_frontmatter(md_text: str) -> tuple[dict[str, Any], str]:
-    """Parses YAML-style frontmatter from SKILL.md without external dependencies."""
+    """Parses YAML-style frontmatter from SKILL.md without external dependencies.
+    
+    Supports nested dictionaries (e.g. verify: hooks, metadata blocks),
+    lists, scalar booleans/ints/floats, and clean body separation.
+    """
     text = md_text.lstrip("\ufeff")
     if not text.startswith("---"):
         return {}, md_text
@@ -371,20 +396,46 @@ def parse_skill_frontmatter(md_text: str) -> tuple[dict[str, Any], str]:
     if len(parts) < 3:
         return {}, md_text
     raw_fm, body = parts[1], parts[2]
-    meta: dict[str, Any] = {}
-    for line in raw_fm.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or ":" not in line:
+    
+    root: dict[str, Any] = {}
+    # stack of (indent, container, parent_container, parent_key)
+    stack: list[tuple[int, Any, Any, Any]] = [(-1, root, None, None)]
+    
+    for raw_line in raw_fm.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
             continue
-        k, v = line.split(":", 1)
-        k = k.strip()
-        v = v.strip()
-        if v.startswith("[") and v.endswith("]"):
-            items = [x.strip().strip("'\"") for x in v[1:-1].split(",") if x.strip()]
-            meta[k] = items
-        else:
-            meta[k] = v.strip("'\"")
-    return meta, body.strip()
+        indent = len(raw_line) - len(raw_line.lstrip())
+        
+        while len(stack) > 1 and indent <= stack[-1][0]:
+            stack.pop()
+            
+        cur_indent, cur_container, parent, parent_key = stack[-1]
+        
+        if stripped.startswith("- "):
+            item_val = _parse_scalar(stripped[2:])
+            if isinstance(cur_container, dict):
+                if parent is not None and parent_key is not None and cur_container == {}:
+                    new_list = [item_val]
+                    parent[parent_key] = new_list
+                    stack[-1] = (cur_indent, new_list, parent, parent_key)
+            elif isinstance(cur_container, list):
+                cur_container.append(item_val)
+        elif ":" in stripped:
+            k, v = stripped.split(":", 1)
+            k = k.strip()
+            v = v.strip()
+            if not v:
+                placeholder: dict[str, Any] = {}
+                if isinstance(cur_container, dict):
+                    cur_container[k] = placeholder
+                    stack.append((indent, placeholder, cur_container, k))
+            else:
+                parsed_val = _parse_scalar(v)
+                if isinstance(cur_container, dict):
+                    cur_container[k] = parsed_val
+                    
+    return root, body.strip()
 
 
 def compute_mcp_manifest_sha256(manifest_data: dict[str, Any]) -> str:
@@ -403,7 +454,7 @@ class SkillSpectorScanner:
 
     scanner_version = f"nvidia-skillspector-{UPSTREAM_VERSION}-integrated"
 
-    def __init__(self, ledger: LedgerStore, semantic_model_id: str = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"):
+    def __init__(self, ledger: LedgerStore | None = None, semantic_model_id: str = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"):
         self.ledger = ledger
         self.semantic_model_id = semantic_model_id
         self.rules = STATIC_RULES_REGISTRY
@@ -521,9 +572,17 @@ class SkillSpectorScanner:
                         c_line = line.strip()
                         if not c_line or c_line.startswith("#"):
                             continue
-                        m = re.match(r"^([a-zA-Z0-9_\-\.]+)(?:([=><!~]+)\s*([a-zA-Z0-9_\-\.]+))?", c_line)
-                        if m:
-                            parsed_pkgs.append((m.group(1).strip(), m.group(3).strip() if m.group(3) else None))
+                        if fname == "SKILL.md":
+                            m_pip = re.search(r"pip\s+install\s+([a-zA-Z0-9_\-\.]+)(?:([=><!~]+)\s*([a-zA-Z0-9_\-\.]+))?", c_line)
+                            m_ver = re.match(r"^([a-zA-Z0-9_\-\.]+)\s*([=><!~]+)\s*([a-zA-Z0-9_\-\.]+)", c_line)
+                            if m_pip:
+                                parsed_pkgs.append((m_pip.group(1).strip(), m_pip.group(3).strip() if m_pip.group(3) else None))
+                            elif m_ver:
+                                parsed_pkgs.append((m_ver.group(1).strip(), m_ver.group(3).strip()))
+                        else:
+                            m = re.match(r"^([a-zA-Z0-9_\-\.]+)(?:([=><!~]+)\s*([a-zA-Z0-9_\-\.]+))?", c_line)
+                            if m:
+                                parsed_pkgs.append((m.group(1).strip(), m.group(3).strip() if m.group(3) else None))
 
                     osv_queried = False
                     if UPSTREAM_OSV_AVAILABLE and osv_query_batch and parsed_pkgs:
@@ -732,6 +791,8 @@ class SkillSpectorScanner:
         status: str,
         report: SkillScanReport,
     ) -> None:
+        if not self.ledger:
+            raise ValueError("LedgerStore is required to persist and register skills in the database.")
         now = utcnow_iso()
         with self.ledger._lock:
             self.ledger.conn.execute(
@@ -790,6 +851,8 @@ class SkillSpectorScanner:
 
     def verify_skill_runtime_integrity(self, skill_id: str) -> dict[str, Any]:
         """FR-039e / Section 12.2: Verifies on-disk SHA-256 matches the passing skill_scans record."""
+        if not self.ledger:
+            raise ValueError("LedgerStore is required to verify skill runtime integrity.")
         with self.ledger._lock:
             row = self.ledger.conn.execute(
                 "SELECT * FROM skills WHERE skill_id = ? ORDER BY created_at DESC LIMIT 1",
