@@ -324,3 +324,218 @@ def demote_stale_tail_tools(
         demoted_count += 1
 
     return result, demoted_count
+
+
+# ==============================================================================
+# Phase 2: Atomic Tool-Pair Boundary Protection & Alignment
+# ==============================================================================
+
+def find_tool_call_groups(messages: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    """Return list of (start_idx, end_idx) spans representing atomic call-and-response clusters.
+
+    A group begins with an assistant message initiating tool calls (either via
+    structured ``tool_calls`` or XML ``<tool_call>`` tags) and encompasses all
+    corresponding tool result or observation messages that follow it.
+    """
+    groups: list[tuple[int, int]] = []
+    n = len(messages)
+    i = 0
+    while i < n:
+        msg = messages[i]
+        role = msg.get("role")
+        if role == "assistant":
+            # Check structured tool calls
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                call_ids = {
+                    str(tc.get("id") or tc.get("call_id") or "")
+                    for tc in tool_calls
+                    if isinstance(tc, dict)
+                }
+                call_ids.discard("")
+                j = i + 1
+                last_tool_idx = i
+                while j < n and messages[j].get("role") == "tool":
+                    tc_id = str(messages[j].get("tool_call_id") or "")
+                    if not call_ids or tc_id in call_ids:
+                        last_tool_idx = j
+                    j += 1
+                if last_tool_idx > i:
+                    groups.append((i, last_tool_idx))
+                    i = last_tool_idx + 1
+                    continue
+
+            # Check XML tool calls
+            content = msg.get("content")
+            if isinstance(content, str) and ("<tool_call" in content or "</tool_call>" in content):
+                j = i + 1
+                last_tool_idx = i
+                while j < n:
+                    cand = messages[j]
+                    cand_role = cand.get("role")
+                    cand_content = cand.get("content", "")
+                    if cand_role == "tool" or (
+                        cand_role == "user"
+                        and (
+                            isinstance(cand_content, str)
+                            and ("<observation" in cand_content or "<tool_result" in cand_content)
+                            or cand.get("name") == "observation"
+                        )
+                    ):
+                        last_tool_idx = j
+                        j += 1
+                    else:
+                        break
+                if last_tool_idx > i:
+                    groups.append((i, last_tool_idx))
+                    i = last_tool_idx + 1
+                    continue
+        i += 1
+    return groups
+
+
+def align_boundary_forward(messages: list[dict[str, Any]], cut_idx: int) -> int:
+    """Push a compaction cut index forward so tool groups are never split.
+
+    If ``cut_idx`` falls inside any tool call group, advances ``cut_idx`` past
+    the group's end index (``end_idx + 1``) so all matching tool results remain
+    in the prior segment. Also advances past any orphaned tool messages at the boundary.
+    """
+    if cut_idx <= 0:
+        return 0
+    if cut_idx >= len(messages):
+        return len(messages)
+
+    groups = find_tool_call_groups(messages)
+    for start_idx, end_idx in groups:
+        if start_idx < cut_idx <= end_idx:
+            cut_idx = end_idx + 1
+            break
+
+    # Advance past any subsequent or orphaned tool messages
+    while cut_idx < len(messages) and _is_tool_result_message(messages[cut_idx]):
+        cut_idx += 1
+
+    return min(cut_idx, len(messages))
+
+
+def align_boundary_backward(messages: list[dict[str, Any]], cut_idx: int) -> int:
+    """Pull a compaction cut index backward so tool groups are never split.
+
+    If ``cut_idx`` falls inside any tool call group, retreats ``cut_idx`` to
+    the group's start index (``start_idx``) so the initiating assistant call and all
+    its results remain together in the subsequent segment.
+    """
+    if cut_idx <= 0:
+        return 0
+    if cut_idx >= len(messages):
+        return len(messages)
+
+    groups = find_tool_call_groups(messages)
+    for start_idx, end_idx in groups:
+        if start_idx < cut_idx <= end_idx:
+            cut_idx = start_idx
+            break
+
+    # If landed on a tool message (e.g. without assistant), scan backward
+    while cut_idx > 0 and _is_tool_result_message(messages[cut_idx]):
+        cut_idx -= 1
+
+    return max(0, cut_idx)
+
+
+def validate_atomic_boundaries(messages: list[dict[str, Any]]) -> bool:
+    """Validate that tool calls and tool results are atomically paired without orphans.
+
+    Returns False if:
+      - Any tool result message exists without a preceding assistant tool call.
+      - Any assistant tool call is severed from its corresponding tool results.
+      - Any tool_call_id in a tool result does not match the preceding assistant's tool_calls.
+      - Any tool call declared in an assistant message has no matching tool result.
+    """
+    if not messages:
+        return True
+
+    n = len(messages)
+    i = 0
+    while i < n:
+        msg = messages[i]
+        role = msg.get("role")
+
+        # 1. Orphaned tool result at top or unexpected position
+        if role == "tool":
+            return False
+
+        # 2. XML observation without preceding assistant XML tool call
+        if role == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str) and ("<observation" in content or "<tool_result" in content):
+                return False
+            if msg.get("name") == "observation":
+                return False
+
+        # 3. Assistant message with structured tool calls
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                expected_ids = [
+                    str(tc.get("id") or tc.get("call_id") or "")
+                    for tc in tool_calls
+                    if isinstance(tc, dict)
+                ]
+                expected_set = set(expected_ids)
+                expected_set.discard("")
+
+                # Check following messages
+                j = i + 1
+                received_ids: list[str] = []
+                while j < n and messages[j].get("role") == "tool":
+                    t_id = str(messages[j].get("tool_call_id") or "")
+                    received_ids.append(t_id)
+                    j += 1
+
+                # If no tool results followed, or if any expected id is missing
+                if not received_ids:
+                    return False
+
+                if expected_set:
+                    # Every expected call must have a matching response
+                    if set(received_ids) != expected_set:
+                        return False
+                else:
+                    if len(received_ids) != len(tool_calls):
+                        return False
+
+                i = j
+                continue
+
+            # Check XML tool calls
+            content = msg.get("content", "")
+            if isinstance(content, str) and ("<tool_call" in content or "</tool_call>" in content):
+                j = i + 1
+                obs_count = 0
+                while j < n:
+                    cand = messages[j]
+                    cand_role = cand.get("role")
+                    cand_content = cand.get("content", "")
+                    if cand_role == "tool" or (
+                        cand_role == "user"
+                        and (
+                            isinstance(cand_content, str)
+                            and ("<observation" in cand_content or "<tool_result" in cand_content)
+                            or cand.get("name") == "observation"
+                        )
+                    ):
+                        obs_count += 1
+                        j += 1
+                    else:
+                        break
+                if obs_count == 0:
+                    return False
+                i = j
+                continue
+
+        i += 1
+
+    return True
+
