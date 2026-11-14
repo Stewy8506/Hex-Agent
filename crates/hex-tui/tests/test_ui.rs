@@ -77,49 +77,30 @@ fn test_dialogue_scrolling_with_input_focus() {
 }
 
 #[test]
-fn test_tab_key_focus_cycling() {
+fn test_tab_key_mode_cycling() {
     let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
-    assert_eq!(app.focus, Focus::Input);
+    assert_eq!(app.mode, "agent");
 
-    // Tab without suggestions cycles to Dialogue
+    // Tab without suggestions cycles mode: agent -> plan -> code -> agent
     app.handle_tab();
-    assert_eq!(app.focus, Focus::Dialogue);
-    assert_eq!(app.status_message, "Focus: Dialogue");
-
-    // Tab from Dialogue without diff cycles back to Input
-    app.handle_tab();
-    assert_eq!(app.focus, Focus::Input);
-    assert_eq!(app.status_message, "Focus: Input");
-
-    // Now open diff viewer
-    let sample_diff = "\
---- a/src/test.rs
-+++ b/src/test.rs
-@@ -1 +1 @@
--old
-+new";
-    app.load_diff(sample_diff);
-    assert!(app.show_diff);
-
-    // Focus cycles: Input -> Dialogue -> Diff -> Input
-    app.handle_tab();
-    assert_eq!(app.focus, Focus::Dialogue);
+    assert_eq!(app.mode, "plan");
+    assert_eq!(app.status_message, "Switched mode to: PLAN");
 
     app.handle_tab();
-    assert_eq!(app.focus, Focus::Diff);
-    assert_eq!(app.status_message, "Focus: Diff");
+    assert_eq!(app.mode, "code");
+    assert_eq!(app.status_message, "Switched mode to: CODE");
 
     app.handle_tab();
-    assert_eq!(app.focus, Focus::Input);
-    assert_eq!(app.status_message, "Focus: Input");
+    assert_eq!(app.mode, "agent");
+    assert_eq!(app.status_message, "Switched mode to: AGENT");
 
-    // If slash suggestions are open, Tab accepts suggestion instead of switching focus
+    // If slash suggestions are open, Tab accepts suggestion instead of switching mode
     app.insert_char('/');
     app.insert_char('d');
     assert!(!app.slash_suggestions.is_empty());
     app.handle_tab();
     assert_eq!(app.input_buffer, "/diff ");
-    assert_eq!(app.focus, Focus::Input);
+    assert_eq!(app.mode, "agent");
 }
 
 #[test]

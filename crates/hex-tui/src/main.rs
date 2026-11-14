@@ -421,7 +421,7 @@ async fn handle_key_event(
         return Ok(());
     }
 
-    // Tab key: accept slash suggestion if active, otherwise cycle focus (Input -> Dialogue -> Diff)
+    // Tab key: accept slash suggestion if active, otherwise cycle mode (agent -> plan -> code)
     if key.code == KeyCode::Tab {
         app.handle_tab();
         return Ok(());

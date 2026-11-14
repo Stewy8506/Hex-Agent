@@ -572,13 +572,13 @@ impl App {
         };
     }
 
-    /// Handle Tab key: accept slash suggestion if active, otherwise cycle focus pane.
+    /// Handle Tab key: accept slash suggestion if active, otherwise cycle mode (agent -> plan -> code).
     pub fn handle_tab(&mut self) {
         if !self.slash_suggestions.is_empty() {
             self.accept_slash_suggestion();
         } else {
-            self.switch_focus();
-            self.status_message = format!("Focus: {:?}", self.focus);
+            let next_mode = self.cycle_mode();
+            self.status_message = format!("Switched mode to: {}", next_mode.to_uppercase());
         }
     }
 
