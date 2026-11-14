@@ -410,6 +410,72 @@ class TestContextCompressorTailPruning(unittest.TestCase):
             )
         )
 
+    def test_sanitize_tool_pairs(self):
+        """Verify sanitize_tool_pairs removes orphan tool results and unresolved tool_calls."""
+        from harness_core.context_compressor import sanitize_tool_pairs
+
+        dirty_messages = [
+            # 1. Orphan tool result at very beginning (should be dropped)
+            {"role": "tool", "tool_call_id": "stray_0", "content": "stray"},
+            # 2. Assistant with 2 calls, but only c1 responded
+            {
+                "role": "assistant",
+                "content": "Running tools",
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": "tool_1"}},
+                    {"id": "c2", "function": {"name": "tool_2"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "result 1"},
+            # 3. Orphan tool result for non-existent call c99
+            {"role": "tool", "tool_call_id": "c99", "content": "stray result"},
+            # 4. Normal user message
+            {"role": "user", "content": "continue"},
+        ]
+
+        cleaned = sanitize_tool_pairs(dirty_messages)
+        # Should drop stray_0 and c99, and remove c2 from tool_calls
+        self.assertEqual(len(cleaned), 3)
+        self.assertEqual(cleaned[0]["role"], "assistant")
+        self.assertEqual(len(cleaned[0]["tool_calls"]), 1)
+        self.assertEqual(cleaned[0]["tool_calls"][0]["id"], "c1")
+        self.assertEqual(cleaned[1]["role"], "tool")
+        self.assertEqual(cleaned[1]["tool_call_id"], "c1")
+        self.assertEqual(cleaned[2]["role"], "user")
+        self.assertTrue(validate_atomic_boundaries(cleaned))
+
+    def test_strip_historical_media(self):
+        """Verify strip_historical_media replaces base64 images before tail_start."""
+        from harness_core.context_compressor import strip_historical_media
+
+        messages = [
+            {"role": "user", "content": "inspect screen"},
+            # Historical image
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Screenshot 1:"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}},
+                ],
+            },
+            {"role": "assistant", "content": "I see the button"},
+            # Recent tail image (should remain untouched)
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"data": "recent_base64_blob"}},
+                ],
+            },
+        ]
+
+        stripped, count = strip_historical_media(messages, tail_start=3)
+        self.assertEqual(count, 1)
+        # First image replaced with text placeholder
+        self.assertEqual(stripped[1]["content"][1]["type"], "text")
+        self.assertIn("historical image omitted", stripped[1]["content"][1]["text"])
+        # Tail image untouched
+        self.assertEqual(stripped[3]["content"][0]["type"], "image")
+
 
 if __name__ == "__main__":
     unittest.main()

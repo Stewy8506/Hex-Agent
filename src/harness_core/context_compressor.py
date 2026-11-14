@@ -299,7 +299,7 @@ def demote_stale_tail_tools(
             tail = body[total_chars - tail_chars:].lstrip()
             omitted_chars = total_chars - len(head) - len(tail)
             omitted_lines = body[len(head): total_chars - len(tail)].count("\n")
-            marker = f"{HEX_COMPRESSION_MARKER_PREFIX} {omitted_chars} chars omitted⟫"
+            marker = f"{HEX_COMPRESSION_MARKER_PREFIX} {omitted_chars:,} chars omitted⟫"
             stub = (
                 f"[{tool_name} output demoted at compaction — {omitted_chars:,} chars "
                 f"({omitted_lines} lines) omitted; head and tail preserved]\n"
@@ -312,7 +312,7 @@ def demote_stale_tail_tools(
             tail = content[total_chars - tail_chars:].lstrip()
             omitted_chars = total_chars - len(head) - len(tail)
             omitted_lines = content[len(head): total_chars - len(tail)].count("\n")
-            marker = f"{HEX_COMPRESSION_MARKER_PREFIX} {omitted_chars} chars omitted⟫"
+            marker = f"{HEX_COMPRESSION_MARKER_PREFIX} {omitted_chars:,} chars omitted⟫"
             stub = (
                 f"[{tool_name} output demoted at compaction — {omitted_chars:,} chars "
                 f"({omitted_lines} lines) omitted; head and tail preserved]\n"
@@ -540,6 +540,123 @@ def validate_atomic_boundaries(messages: list[dict[str, Any]]) -> bool:
         i += 1
 
     return True
+
+
+def sanitize_tool_pairs(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sanitize message sequence to strip severed or orphaned tool calls and responses.
+
+    Removes orphan role='tool' messages lacking a preceding assistant tool_call,
+    and removes unresolved tool_calls from assistant messages if no matching tool response exists.
+    """
+    if not messages:
+        return []
+
+    cleaned: list[dict[str, Any]] = []
+    n = len(messages)
+    i = 0
+
+    while i < n:
+        msg = messages[i]
+        role = msg.get("role")
+
+        # 1. Skip orphan tool messages at start or without preceding assistant call
+        if role == "tool":
+            i += 1
+            continue
+
+        # 2. Assistant message with tool calls: verify matching tool results follow
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                j = i + 1
+                tool_msgs: list[dict[str, Any]] = []
+                while j < n and messages[j].get("role") == "tool":
+                    tool_msgs.append(messages[j])
+                    j += 1
+
+                received_map = {
+                    str(tm.get("tool_call_id") or ""): tm
+                    for tm in tool_msgs
+                }
+                valid_calls: list[dict[str, Any]] = []
+                matched_tool_msgs: list[dict[str, Any]] = []
+
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        tc_id = str(tc.get("id") or tc.get("call_id") or "")
+                        if tc_id in received_map:
+                            valid_calls.append(tc)
+                            matched_tool_msgs.append(received_map[tc_id])
+
+                new_asst = dict(msg)
+                if valid_calls:
+                    new_asst["tool_calls"] = valid_calls
+                    cleaned.append(new_asst)
+                    cleaned.extend(matched_tool_msgs)
+                else:
+                    new_asst.pop("tool_calls", None)
+                    if new_asst.get("content"):
+                        cleaned.append(new_asst)
+
+                i = j
+                continue
+
+        cleaned.append(msg)
+        i += 1
+
+    return cleaned
+
+
+def strip_historical_media(
+    messages: list[dict[str, Any]],
+    tail_start: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Evict bulky historical base64 image blocks prior to tail_start.
+
+    Replaces historical images with a lightweight placeholder text block,
+    preventing HTTP 413 (Payload Too Large) in long visual sessions.
+    """
+    stripped_count = 0
+    result: list[dict[str, Any]] = [dict(m) for m in messages]
+    limit = max(0, min(tail_start, len(result)))
+
+    for idx in range(limit):
+        msg = result[idx]
+        content = msg.get("content")
+        if isinstance(content, list):
+            new_blocks: list[Any] = []
+            modified = False
+            for b in content:
+                if isinstance(b, dict):
+                    b_type = b.get("type", "")
+                    if b_type in ("image", "image_url") or "image_url" in b:
+                        new_blocks.append({
+                            "type": "text",
+                            "text": "[historical image omitted at compaction]",
+                        })
+                        stripped_count += 1
+                        modified = True
+                    else:
+                        new_blocks.append(b)
+                else:
+                    new_blocks.append(b)
+            if modified:
+                new_msg = dict(msg)
+                new_msg["content"] = new_blocks
+                result[idx] = new_msg
+        elif isinstance(content, str) and ("data:image/" in content and ";base64," in content):
+            new_content = re.sub(
+                r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+",
+                "[historical base64 image omitted at compaction]",
+                content,
+            )
+            if new_content != content:
+                new_msg = dict(msg)
+                new_msg["content"] = new_content
+                result[idx] = new_msg
+                stripped_count += 1
+
+    return result, stripped_count
 
 
 # ==============================================================================
@@ -824,14 +941,17 @@ class ContextCompactor:
 
         prompt = (
             "You are a context compaction engine. Summarize the following middle turns of a conversation between a user and an AI assistant.\n"
+            "EPISTEMIC STANCE: Distinguish verified facts from unverified hypotheses or suspicions. Do not present assumptions as confirmed facts.\n"
             "Produce a concise, factual summary strictly adhering to the following structure:\n\n"
             f"{SUMMARY_HEADER}\n"
             "### Active Goals & User Intent\n"
             "<key goals>\n\n"
             "### Actions Taken & Files Modified\n"
-            "<actions>\n\n"
+            "<actions in past tense with exact file paths>\n\n"
             "### Key Findings, Errors & Tool Results\n"
-            "<findings>\n\n"
+            "<findings and specific errors encountered>\n\n"
+            "### Unverified / Working Hypotheses\n"
+            "<unverified assumptions if any, else None>\n\n"
             "### Current Working State\n"
             "<state>\n\n"
             f"{SUMMARY_END_MARKER}\n\n"
@@ -916,10 +1036,16 @@ class ContextCompactor:
                 used_fallback=False,
             )
 
+        # Sanitize any severed or orphaned tool pairs in input
+        messages = sanitize_tool_pairs(messages)
+
         # 1-2. Plan window and demote stale tools
         working, demoted_count, compress_start, compress_end = (
             self._plan_compaction_window(messages, budget_tokens=budget_tokens)
         )
+
+        # Evict bulky historical images before the active tail
+        working, stripped_media_count = strip_historical_media(working, tail_start=compress_end)
 
         middle_turns = working[compress_start:compress_end]
         phase3_turns = len(middle_turns)
@@ -1058,6 +1184,33 @@ def compute_cache_signature(
     return hasher.hexdigest()
 
 
+def _inject_cache_control_into_message(msg: dict[str, Any]) -> dict[str, Any]:
+    """Inject ephemeral cache_control into a message dictionary.
+
+    Supports native Anthropic Messages API by injecting cache_control into
+    content block parts, while preserving top-level cache_control for proxies.
+    """
+    new_msg = dict(msg)
+    content = new_msg.get("content")
+    if isinstance(content, str):
+        new_msg["content"] = [
+            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+        ]
+    elif isinstance(content, list) and content:
+        new_content = [dict(b) if isinstance(b, dict) else b for b in content]
+        if isinstance(new_content[-1], dict):
+            new_content[-1]["cache_control"] = {"type": "ephemeral"}
+        else:
+            new_content[-1] = {
+                "type": "text",
+                "text": str(new_content[-1]),
+                "cache_control": {"type": "ephemeral"},
+            }
+        new_msg["content"] = new_content
+    new_msg["cache_control"] = {"type": "ephemeral"}
+    return new_msg
+
+
 def apply_cache_control_breakpoints(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -1092,8 +1245,7 @@ def apply_cache_control_breakpoints(
 
     # 2. System prompt message (index 0)
     if tagged_msgs and tagged_msgs[0].get("role") == "system" and breakpoints_used < max_breakpoints:
-        tagged_msgs[0] = dict(tagged_msgs[0])
-        tagged_msgs[0]["cache_control"] = {"type": "ephemeral"}
+        tagged_msgs[0] = _inject_cache_control_into_message(tagged_msgs[0])
         breakpoints_used += 1
 
     # 3. Latest context summary checkpoint in middle history
@@ -1104,16 +1256,14 @@ def apply_cache_control_breakpoints(
             break
 
     if summary_idx > 0 and breakpoints_used < max_breakpoints:
-        tagged_msgs[summary_idx] = dict(tagged_msgs[summary_idx])
-        tagged_msgs[summary_idx]["cache_control"] = {"type": "ephemeral"}
+        tagged_msgs[summary_idx] = _inject_cache_control_into_message(tagged_msgs[summary_idx])
         breakpoints_used += 1
 
     # 4. Second-to-last turn in active tail (or last turn if >= 2 messages and not already tagged)
     if len(tagged_msgs) >= 2 and breakpoints_used < max_breakpoints:
         tail_target_idx = len(tagged_msgs) - 2 if len(tagged_msgs) > 2 else len(tagged_msgs) - 1
         if tail_target_idx != summary_idx and tail_target_idx != 0:
-            tagged_msgs[tail_target_idx] = dict(tagged_msgs[tail_target_idx])
-            tagged_msgs[tail_target_idx]["cache_control"] = {"type": "ephemeral"}
+            tagged_msgs[tail_target_idx] = _inject_cache_control_into_message(tagged_msgs[tail_target_idx])
             breakpoints_used += 1
 
     return tagged_msgs, tagged_tools

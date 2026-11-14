@@ -106,6 +106,9 @@ class TestContextCompressorIntegration(unittest.TestCase):
         self.assertIsNotNone(tagged_tools)
         self.assertEqual(tagged_tools[-1].get("cache_control"), {"type": "ephemeral"})
         self.assertEqual(tagged_msgs[0].get("cache_control"), {"type": "ephemeral"})
+        # Verify native Anthropic Messages API content block part formatting
+        self.assertIsInstance(tagged_msgs[0]["content"], list)
+        self.assertEqual(tagged_msgs[0]["content"][0]["cache_control"], {"type": "ephemeral"})
 
     def test_full_four_phase_compaction_pipeline(self) -> None:
         """Verify full 4-phase compaction pipeline preserves atomic boundaries and reduces tokens."""
