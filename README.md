@@ -26,7 +26,8 @@
   <a href="#-sub-agent-delegation-tier-c"><strong>Sub-Agents</strong></a> ·
   <a href="#-headless-browser--multimodal-vision-tier-b"><strong>Browser & Vision</strong></a> ·
   <a href="#-agent-client-protocol-acp-for-ides-tier-a"><strong>IDE Integration</strong></a> ·
-  <a href="#-slash-command-reference"><strong>Commands</strong></a>
+  <a href="#-daily-workflows--slash-commands"><strong>Commands</strong></a> ·
+  <a href="#-comprehensive-harness-comparison-hex-vs-the-ecosystem"><strong>Comparison</strong></a>
 </p>
 
 </div>
@@ -226,6 +227,44 @@ HEX preserves Anthropic Claude thinking block signatures on conversational repla
 
 ### 6. Shadow Summary Deduplication & Pre-Flight Session Hygiene
 In long 30+ turn sessions, HEX automatically detects and prunes historical shadow compaction summaries and runs pre-flight sanitization on oversized message histories before Turn 1, ensuring prompt tokens remain clean and bounded.
+
+---
+
+## ⚖️ Comprehensive Harness Comparison: HEX vs. The Ecosystem
+
+How does HEX compare against other prominent autonomous engineering agents and harnesses?
+
+| Feature / Dimension | HEX AI Workbench | Hermes Agent (Nous Research) | OpenClaw | Claude Code (Anthropic) | Aider |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Workspace Sandbox** | **Copy-on-Write (CoW)**<br>APFS / OverlayFS in <10ms | Host execution / Docker container | In-place repo edits | In-place repo edits | In-place repo edits |
+| **Verification Gate** | **Proof-Before-Commit**<br>0ms instant rollback on failure | Manual or agent self-check | Post-edit git commits | Prompt confirmation | Git commit prompts |
+| **Terminal / UI Client** | **Native Rust Cockpit (Ratatui)**<br>60 FPS, <20MB RAM, 15MB binary | Electron Desktop (~400MB) or Python CLI | Terminal CLI | Terminal CLI | Terminal CLI |
+| **Model Freedom** | **Universal Model Routing**<br>Antigravity ($0), Claude, OpenAI, Gemini, Local | Universal (Nous, OpenRouter, local) | Model API keys | Anthropic Only (Claude 3.7/Opus) | Any LLM via litellm/API keys |
+| **Subagent Architecture** | **Hierarchical CoW Sandboxes**<br>Bounded budgets & role least-privilege | Subprocess worker pools | Linear single-pass execution | Single agent session | Single agent session |
+| **Context Compaction** | **Two-Tier AST + Log Compressor**<br>75–88% reduction + shadow dedup | Summarization buffer | History truncation | Sliding context window | Tree-sitter repo map |
+| **IDE Integration** | **Dual-Stack ACP Server & Client**<br>(Zed, Neovim, VS Code) | Custom messaging bots | CLI only | Terminal only | Editor integrations |
+| **Audit Ledger & State** | **Cryptographic SHA-256 Chain**<br>PostgreSQL 16 + SQLite WAL + Alembic | SQLite history tables | JSON state files | Local session files | Git commit logs |
+| **Browser & Vision** | **Built-in Headless Browser**<br>Compact `ariaSnapshot` DOM + multimodal | Python Playwright tools | External browser skills | Image attachments only | Web scrape tools |
+
+---
+
+### Deep Dive: HEX vs. Key Platforms
+
+#### 1. HEX vs. Hermes Agent (Nous Research)
+- **Filesystem Isolation**: Hermes executes commands directly against your host environment or inside Docker containers. HEX utilizes kernel-level Copy-on-Write snapshots (APFS clone on macOS, OverlayFS on Linux) allowing sub-second branch cloning with instant, zero-cost rollback if a patch fails tests.
+- **Client Footprint**: Hermes packages an Electron app consuming ~400MB RAM. HEX's compiled Rust Ratatui terminal cockpit weighs ~15MB on disk and consumes <20MB RAM with 60 FPS dual-buffer rendering.
+- **Resilience & Tool Schemas**: Both engines feature native `role: "tool"` schemas, Anthropic thinking block signature preservation, and jitter-decorrelated exponential retry backoff.
+- **Ledger & Durability**: Hermes logs to standalone SQLite. HEX maintains an immutable cryptographic SHA-256 event hash chain with dual-driver PostgreSQL 16 (`asyncpg` + `SKIP LOCKED` worker queues) and SQLite WAL engines with verified Alembic migrations.
+
+#### 2. HEX vs. OpenClaw
+- **Safety & State Management**: OpenClaw operates directly within your working directory, writing changes immediately to disk. HEX enforces strict Copy-on-Write isolation and runs verification tests before any changes touch your active repository.
+- **Code Intelligence**: OpenClaw relies primarily on ripgrep text searches. HEX leverages active Graphify tree-sitter AST queries to understand function definitions, caller/callee graphs, and blast radius before modifying code.
+- **Migration Path**: HEX includes a zero-loss migration tool (`scripts/openclaw_to_hex.py`) that imports OpenClaw personas, long-term memory stores, user profiles, and custom skill bundles seamlessly into HEX.
+
+#### 3. HEX vs. Claude Code & Aider
+- **Proof-Before-Commit vs. In-Place Editing**: Tools like Claude Code and Aider edit repository files in place. If an agent loops, hallucinates, or produces broken syntax, developers must manually discard git diffs. HEX only applies changes to your working branch once your test suite passes inside the CoW sandbox.
+- **Vendor Lock-In**: Claude Code is exclusively locked to Anthropic models. HEX is completely model-agnostic, enabling developers to route tasks across Google Antigravity ($0 Day-1 marginal billing), Claude 3.7 Sonnet, OpenAI o3-mini, Gemini 2.5 Pro, or fully offline local LLMs (Ollama / Apple Metal / CUDA).
+- **IDE Extensibility**: Aider and Claude Code run as standalone terminal CLIs. HEX ships a production Agent Client Protocol (ACP) server over JSON-RPC 2.0 stdio, integrating seamlessly into Zed, Neovim, and VS Code.
 
 ---
 
