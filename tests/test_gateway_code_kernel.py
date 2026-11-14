@@ -199,7 +199,7 @@ print("KEY: {raw_key}")
         self.assertIn("code", res["error"])
 
     def test_timeout_handling(self) -> None:
-        """Test execution timeout terminates the cell and returns status=timeout."""
+        """Test execution timeout terminates the cell, drops kernel from registry, and recovers on next call."""
         code = "import time\ntime.sleep(2.0)\nprint('Done')"
         res = self.gateway.execute_tool(
             "code_kernel",
@@ -209,6 +209,18 @@ print("KEY: {raw_key}")
         self.assertFalse(res["ok"])
         self.assertEqual(res["status"], "timeout")
         self.assertIn("timeout", res["output"].lower())
+        # Parity check: kernel dropped from registry immediately upon timeout
+        self.assertEqual(len(self.registry._kernels), 0)
+
+        # Subsequent call recovers with fresh kernel and state_reset=True
+        res2 = self.gateway.execute_tool(
+            "code_kernel",
+            {"code": "print('recovered')"},
+            workspace_dir=self.workspace_dir,
+        )
+        self.assertTrue(res2["ok"])
+        self.assertIn("recovered", res2["output"])
+        self.assertTrue(res2["state_reset"])
 
     def test_risk_policy_gating_r2(self) -> None:
         """Verify code_kernel is rejected on fast_path tasks and permitted on standard tasks."""

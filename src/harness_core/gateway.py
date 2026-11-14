@@ -2306,6 +2306,8 @@ class ToolGateway:
         )
 
         raw_res = kernel.execute(code=code, timeout=timeout)
+        if raw_res.get("status") in ("timeout", "exit"):
+            self.kernel_registry.discard(owner=owner, cwd=ws_str)
 
         # Redact secrets from output streams
         stdout_text = redact_secrets(raw_res.get("stdout", ""))

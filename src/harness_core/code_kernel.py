@@ -353,10 +353,17 @@ def _stderr_reader(kernel: CodeKernel) -> None:
 class CodeKernel:
     """Subprocess supervisor executing code cells in a persistent Python namespace."""
 
-    def __init__(self, owner: str = "default", cwd: str | None = None, kernel_id: str | None = None) -> None:
+    def __init__(
+        self,
+        owner: str = "default",
+        cwd: str | None = None,
+        kernel_id: str | None = None,
+        registry: "KernelRegistry" | None = None,
+    ) -> None:
         self.kernel_id: str = kernel_id or uuid.uuid4().hex
         self.owner: str = owner
         self.cwd: str = cwd or os.getcwd()
+        self.registry: "KernelRegistry" | None = registry
         self.tmpdir: str = ""
         self.sentinel: str = ""
         self.proc: subprocess.Popen | None = None
@@ -366,7 +373,7 @@ class CodeKernel:
         self.execution_count: int = 0
         self.created_at: float = time.monotonic()
         self.last_used: float = time.monotonic()
-        self.lock: threading.Lock = threading.Lock()
+        self.lock: threading.RLock = threading.RLock()
         self.stop_event: threading.Event = threading.Event()
         self.pinned: bool = False
         self.attached: int = 0
@@ -491,6 +498,8 @@ class CodeKernel:
                     self.stop_event.set()
                     raw_out = self.raw_buffer.drain()
                     raw_err = self.stderr_buffer.drain()
+                    if self.registry is not None:
+                        self.registry.discard_kernel(self)
                     return {
                         "status": "timeout",
                         "stdout": clean_text(raw_out),
@@ -544,6 +553,8 @@ class CodeKernel:
                 if status == "exit":
                     if self.proc is not None:
                         _kill_process_tree(self.proc, force=True)
+                    if self.registry is not None:
+                        self.registry.discard_kernel(self)
 
                 return result
             finally:
@@ -589,6 +600,7 @@ class KernelRegistry:
         self.max_kernels = max(1, max_kernels)
         self.idle_timeout = idle_timeout
         self._kernels: dict[tuple[str, str], CodeKernel] = {}
+        self._reset_keys: set[tuple[str, str]] = set()
         self._lock = threading.Lock()
         self._stop_reaper = threading.Event()
         self._reaper_thread = threading.Thread(
@@ -647,9 +659,12 @@ class KernelRegistry:
                 if kernel.attached == 0:
                     kernel.teardown()
                 kernel = None
+            elif key in self._reset_keys or reset:
+                self._reset_keys.discard(key)
+                state_reset = True
 
             if kernel is None:
-                kernel = CodeKernel(owner=owner, cwd=cwd_resolved)
+                kernel = CodeKernel(owner=owner, cwd=cwd_resolved, registry=self)
                 kernel.pinned = pinned
                 self._kernels[key] = kernel
 
@@ -670,16 +685,27 @@ class KernelRegistry:
 
         return kernel, state_reset
 
+    def discard_kernel(self, kernel: CodeKernel) -> None:
+        """Remove and teardown a specific kernel, tracking state reset for its key."""
+        with self._lock:
+            keys_to_pop = [k for k, v in self._kernels.items() if v is kernel]
+            for k in keys_to_pop:
+                self._kernels.pop(k, None)
+                self._reset_keys.add(k)
+        kernel.teardown()
+
     def discard(self, owner: str | tuple[str, str], cwd: str | None = None) -> None:
         """Remove and teardown a registered kernel."""
         if isinstance(owner, tuple):
-            key = (owner[0], os.path.abspath(owner[1]) if owner[1] else "")
+            cwd_resolved = os.path.abspath(owner[1]) if owner[1] else os.getcwd()
+            key = (owner[0], cwd_resolved)
         else:
-            cwd_resolved = os.path.abspath(cwd) if cwd else ""
+            cwd_resolved = os.path.abspath(cwd) if cwd else os.getcwd()
             key = (owner, cwd_resolved)
 
         with self._lock:
             kernel = self._kernels.pop(key, None)
+            self._reset_keys.add(key)
         if kernel:
             kernel.teardown()
 
@@ -689,9 +715,13 @@ class KernelRegistry:
             if owner is None:
                 doomed = list(self._kernels.values())
                 self._kernels.clear()
+                self._reset_keys.clear()
             else:
                 matching_keys = [k for k in self._kernels if k[0] == owner]
                 doomed = [self._kernels.pop(k) for k in matching_keys]
+                for k in list(self._reset_keys):
+                    if k[0] == owner:
+                        self._reset_keys.discard(k)
         for kernel in doomed:
             kernel.teardown()
 
