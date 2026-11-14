@@ -9,12 +9,16 @@ Implements:
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 import logging
 import os
 import re
 import time
+import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -862,3 +866,445 @@ class GuardrailsManager:
         if not rules:
             return ""
         return "## Negative Constraints & Anti-Patterns ([AVOID])\n" + "\n".join(rules)
+
+
+@dataclass
+class ASTNodeMemory:
+    """Represents an architectural note, gotcha, invariant, or post-mortem tied to an AST symbol."""
+
+    id: str
+    symbol_name: str
+    rel_path: str
+    note: str
+    category: str = "gotcha"  # "gotcha" | "invariant" | "post_mortem"
+    code_fingerprint: str = ""  # SHA-256 fingerprint
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "symbol_name": self.symbol_name,
+            "rel_path": self.rel_path,
+            "note": self.note,
+            "category": self.category,
+            "code_fingerprint": self.code_fingerprint,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ASTNodeMemory:
+        return cls(
+            id=str(data.get("id", "")),
+            symbol_name=str(data.get("symbol_name", "")),
+            rel_path=str(data.get("rel_path", "")),
+            note=str(data.get("note", "")),
+            category=str(data.get("category", "gotcha")),
+            code_fingerprint=str(data.get("code_fingerprint", "")),
+            created_at=float(data.get("created_at", time.time())),
+            updated_at=float(data.get("updated_at", time.time())),
+        )
+
+
+def compute_code_fingerprint(
+    workspace_root: Path | str,
+    rel_path: str,
+    symbol_name: str = "",
+    graphify_adapter: Any = None,
+) -> str:
+    """Compute SHA-256 code fingerprint of a symbol definition or its enclosing file."""
+    ws = Path(workspace_root).resolve()
+    norm_rel = rel_path.replace("\\", "/").lstrip("./")
+    target = ws / norm_rel
+    if not target.is_file():
+        return ""
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+
+    if symbol_name and graphify_adapter is not None:
+        try:
+            defs = getattr(graphify_adapter, "symbols_by_name", {}).get(symbol_name, [])
+            matching = [
+                d
+                for d in defs
+                if getattr(d, "rel_path", "").replace("\\", "/").lstrip("./") == norm_rel
+            ]
+            if matching:
+                d = matching[0]
+                lines = content.splitlines(keepends=True)
+                lineno = max(1, getattr(d, "lineno", 1))
+                end_lineno = max(lineno, getattr(d, "end_lineno", lineno))
+                snippet = "".join(lines[lineno - 1 : end_lineno])
+                if snippet.strip():
+                    return hashlib.sha256(snippet.encode("utf-8")).hexdigest()
+        except Exception:
+            pass
+
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def is_fingerprint_stale(
+    workspace_root: Path | str,
+    rel_path: str,
+    stored_fingerprint: str,
+    symbol_name: str = "",
+    graphify_adapter: Any = None,
+) -> bool:
+    """Check if stored fingerprint differs from current source content."""
+    if not stored_fingerprint:
+        return False
+    ws = Path(workspace_root).resolve()
+    norm_rel = rel_path.replace("\\", "/").lstrip("./")
+    target = ws / norm_rel
+    if not target.is_file():
+        return True
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return True
+
+    file_fp = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if file_fp == stored_fingerprint:
+        return False
+
+    if symbol_name and graphify_adapter is not None:
+        try:
+            defs = getattr(graphify_adapter, "symbols_by_name", {}).get(symbol_name, [])
+            matching = [
+                d
+                for d in defs
+                if getattr(d, "rel_path", "").replace("\\", "/").lstrip("./") == norm_rel
+            ]
+            if matching:
+                d = matching[0]
+                lines = content.splitlines(keepends=True)
+                lineno = max(1, getattr(d, "lineno", 1))
+                end_lineno = max(lineno, getattr(d, "end_lineno", lineno))
+                snippet = "".join(lines[lineno - 1 : end_lineno])
+                if snippet.strip() and hashlib.sha256(snippet.encode("utf-8")).hexdigest() == stored_fingerprint:
+                    return False
+        except Exception:
+            pass
+
+    return True
+
+
+class ASTNodeMemoryStore:
+    """Persistent storage for AST node-bound memories, gotchas, and invariants."""
+
+    def __init__(self, workspace_root: Optional[Path | str] = None) -> None:
+        self.workspace_root = (
+            Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+        )
+        self.memories_dir = self.workspace_root / ".hex" / "memories"
+        self.storage_file = self.memories_dir / "ast_memories.json"
+
+    def _ensure_dir(self) -> None:
+        self.memories_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load_all(self) -> dict[str, ASTNodeMemory]:
+        if not self.storage_file.is_file():
+            return {}
+        try:
+            with open(self.storage_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            memories: dict[str, ASTNodeMemory] = {}
+            for item in data.get("memories", []):
+                mem = ASTNodeMemory.from_dict(item)
+                memories[mem.id] = mem
+            return memories
+        except Exception as e:
+            logger.warning("Failed to load AST node memories: %s", e)
+            return {}
+
+    def _save_all(self, memories: dict[str, ASTNodeMemory]) -> None:
+        self._ensure_dir()
+        with _file_lock(self.storage_file):
+            payload = {
+                "version": 1,
+                "updated_at": time.time(),
+                "memories": [m.to_dict() for m in memories.values()],
+            }
+            tmp_path = self.storage_file.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            tmp_path.replace(self.storage_file)
+
+    def record_node_memory(
+        self,
+        symbol_name: str,
+        rel_path: str,
+        note: str,
+        category: str = "gotcha",
+        code_fingerprint: Optional[str] = None,
+        memory_id: Optional[str] = None,
+    ) -> ASTNodeMemory:
+        """Record an AST node-bound memory (gotcha, invariant, or post_mortem)."""
+        rel_path = rel_path.replace("\\", "/").lstrip("./")
+        if code_fingerprint is None:
+            code_fingerprint = compute_code_fingerprint(self.workspace_root, rel_path, symbol_name)
+
+        mem_id = memory_id or f"ast_mem_{uuid.uuid4().hex[:12]}"
+        now = time.time()
+        mem = ASTNodeMemory(
+            id=mem_id,
+            symbol_name=symbol_name,
+            rel_path=rel_path,
+            note=note.strip(),
+            category=category,
+            code_fingerprint=code_fingerprint,
+            created_at=now,
+            updated_at=now,
+        )
+        memories = self._load_all()
+        memories[mem.id] = mem
+        self._save_all(memories)
+        return mem
+
+    def get_node_memories(self, symbol_or_path: str) -> list[ASTNodeMemory]:
+        """Get memories matching symbol name or relative path."""
+        norm_query = symbol_or_path.replace("\\", "/").lstrip("./")
+        memories = self._load_all()
+        results: list[ASTNodeMemory] = []
+        for m in memories.values():
+            if m.symbol_name == symbol_or_path or m.rel_path == norm_query:
+                results.append(m)
+        return results
+
+    def list_all_node_memories(self) -> list[ASTNodeMemory]:
+        """List all stored AST node memories."""
+        return list(self._load_all().values())
+
+    def delete_node_memory(self, memory_id: str) -> bool:
+        """Delete an AST node memory by id."""
+        memories = self._load_all()
+        if memory_id in memories:
+            del memories[memory_id]
+            self._save_all(memories)
+            return True
+        return False
+
+    def is_memory_stale(self, mem: ASTNodeMemory, graphify_adapter: Any = None) -> bool:
+        """Check if memory code fingerprint differs from current source content."""
+        return is_fingerprint_stale(
+            self.workspace_root,
+            mem.rel_path,
+            mem.code_fingerprint,
+            symbol_name=mem.symbol_name,
+            graphify_adapter=graphify_adapter,
+        )
+
+
+def query_jit_memories_for_file(
+    workspace_dir: Path | str,
+    rel_path: str,
+    graphify_adapter: Optional[Any] = None,
+    include_stale: bool = False,
+) -> list[dict[str, Any]]:
+    """Resolve AST symbols, 1-hop callers, 1-hop callees, and guardrails for JIT observation injection."""
+    ws = Path(workspace_dir).resolve()
+    norm_path = str(rel_path).replace("\\", "/").lstrip("./")
+
+    store = ASTNodeMemoryStore(workspace_root=ws)
+    guardrails_mgr = GuardrailsManager(workspace_root=ws)
+    all_memories = store.list_all_node_memories()
+    all_guardrails = guardrails_mgr.list_guardrails()
+
+    # If no memories and no guardrails at all in workspace, return immediately
+    if not all_memories and not all_guardrails:
+        return []
+
+    # Try to initialize or refresh graphify_adapter if needed
+    if graphify_adapter is None:
+        try:
+            from .graphify import ActiveGraphifyAdapter
+            graphify_adapter = ActiveGraphifyAdapter(ws)
+            graphify_adapter.build_or_refresh(ws)
+        except Exception:
+            graphify_adapter = None
+    elif hasattr(graphify_adapter, "symbols_by_file") and not graphify_adapter.symbols_by_file:
+        try:
+            graphify_adapter.build_or_refresh(ws)
+        except Exception:
+            pass
+
+    # Find symbols defined in norm_path
+    defined_syms: list[Any] = []
+    if graphify_adapter is not None and hasattr(graphify_adapter, "symbols_by_file"):
+        if norm_path in graphify_adapter.symbols_by_file:
+            defined_syms = graphify_adapter.symbols_by_file[norm_path]
+        else:
+            for k, sym_list in graphify_adapter.symbols_by_file.items():
+                if k.replace("\\", "/").lstrip("./") == norm_path:
+                    defined_syms = sym_list
+                    break
+
+    defined_names = {getattr(s, "name", "") for s in defined_syms if getattr(s, "name", "")}
+    defined_qnames = {getattr(s, "qualified_name", "") for s in defined_syms if getattr(s, "qualified_name", "")}
+    file_symbols = defined_names | defined_qnames
+
+    # Resolve 1-hop callers: callers_map[caller_name] -> set of defined symbols called
+    callers_map: dict[str, set[str]] = {}
+    if graphify_adapter is not None and hasattr(graphify_adapter, "callers_of"):
+        for s in defined_syms:
+            s_name = getattr(s, "name", "")
+            s_qn = getattr(s, "qualified_name", "")
+            for caller_qn in graphify_adapter.callers_of.get(s_name, set()):
+                callers_map.setdefault(caller_qn, set()).add(s_name)
+            for caller_qn in graphify_adapter.callers_of.get(s_qn, set()):
+                callers_map.setdefault(caller_qn, set()).add(s_name)
+
+    # Resolve 1-hop callees: callees_map[callee_name] -> set of defined symbols that call it
+    callees_map: dict[str, set[str]] = {}
+    for s in defined_syms:
+        s_name = getattr(s, "name", "")
+        for callee in getattr(s, "calls", set()):
+            callees_map.setdefault(callee, set()).add(s_name)
+
+    results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    # 1. Direct memories matching norm_path or defined symbols in this file
+    for m in all_memories:
+        m_rel = m.rel_path.replace("\\", "/").lstrip("./")
+        is_direct = (m_rel == norm_path) or (m.symbol_name and m.symbol_name in file_symbols)
+        if not is_direct:
+            continue
+
+        stale = store.is_memory_stale(m, graphify_adapter=graphify_adapter)
+        if stale and not include_stale:
+            continue
+
+        seen_ids.add(m.id)
+        cat_key = m.category.lower().replace("-", "_")
+        if cat_key == "invariant":
+            label = "Invariant"
+        elif cat_key == "post_mortem":
+            label = "Post-Mortem"
+        else:
+            label = "Gotcha"
+
+        sym_display = m.symbol_name if m.symbol_name else norm_path
+        sha_part = f" (SHA: {m.code_fingerprint[:8]})" if m.code_fingerprint else ""
+        stale_part = " [STALE]" if stale else ""
+        formatted = f"- {label} ({sym_display}): {m.note}{sha_part}{stale_part}"
+
+        results.append({
+            "id": m.id,
+            "type": m.category,
+            "symbol": sym_display,
+            "target_symbol": "",
+            "rel_path": m.rel_path,
+            "note": m.note,
+            "code_fingerprint": m.code_fingerprint,
+            "is_stale": stale,
+            "formatted": formatted,
+        })
+
+    # 2. 1-hop callers: memories attached to callers that call symbols in this file
+    for m in all_memories:
+        if m.id in seen_ids or not m.symbol_name:
+            continue
+
+        matched_targets: set[str] = set()
+        for caller_key, target_set in callers_map.items():
+            short_key = caller_key.split(".")[-1]
+            if m.symbol_name == caller_key or m.symbol_name == short_key:
+                matched_targets |= target_set
+
+        if not matched_targets:
+            continue
+
+        stale = store.is_memory_stale(m, graphify_adapter=graphify_adapter)
+        if stale and not include_stale:
+            continue
+
+        seen_ids.add(m.id)
+        for target in sorted(matched_targets):
+            formatted = f"- 1-Hop Caller Warning ({m.symbol_name} -> {target}): {m.note}"
+            results.append({
+                "id": f"{m.id}_caller_{target}",
+                "type": "caller_warning",
+                "symbol": m.symbol_name,
+                "target_symbol": target,
+                "rel_path": m.rel_path,
+                "note": m.note,
+                "code_fingerprint": m.code_fingerprint,
+                "is_stale": stale,
+                "formatted": formatted,
+            })
+
+    # 3. 1-hop callees: memories attached to callees that symbols in this file call
+    for m in all_memories:
+        if m.id in seen_ids or not m.symbol_name:
+            continue
+
+        matched_sources: set[str] = set()
+        for callee_key, source_set in callees_map.items():
+            short_key = callee_key.split(".")[-1]
+            if m.symbol_name == callee_key or m.symbol_name == short_key:
+                matched_sources |= source_set
+
+        if not matched_sources:
+            continue
+
+        stale = store.is_memory_stale(m, graphify_adapter=graphify_adapter)
+        if stale and not include_stale:
+            continue
+
+        seen_ids.add(m.id)
+        for source in sorted(matched_sources):
+            formatted = f"- 1-Hop Callee Warning ({source} -> {m.symbol_name}): {m.note}"
+            results.append({
+                "id": f"{m.id}_callee_{source}",
+                "type": "callee_warning",
+                "symbol": source,
+                "target_symbol": m.symbol_name,
+                "rel_path": m.rel_path,
+                "note": m.note,
+                "code_fingerprint": m.code_fingerprint,
+                "is_stale": stale,
+                "formatted": formatted,
+            })
+
+    # 4. Guardrails ([AVOID] rules) matching path or symbols
+    match_tokens = {norm_path, Path(norm_path).name, Path(norm_path).stem} | file_symbols | set(callers_map.keys()) | set(callees_map.keys())
+    match_tokens = {t for t in match_tokens if t and len(t) > 2}
+
+    for rule in all_guardrails:
+        if any(token in rule for token in match_tokens):
+            clean_rule = rule.strip()
+            if clean_rule.startswith("- "):
+                clean_rule = clean_rule[2:].strip()
+            formatted = f"- Guardrail: {clean_rule}"
+            rule_id = f"guardrail_{hashlib.md5(rule.encode('utf-8')).hexdigest()[:8]}"
+            if rule_id not in seen_ids:
+                seen_ids.add(rule_id)
+                results.append({
+                    "id": rule_id,
+                    "type": "guardrail",
+                    "symbol": norm_path,
+                    "target_symbol": "",
+                    "rel_path": norm_path,
+                    "note": rule,
+                    "code_fingerprint": "",
+                    "is_stale": False,
+                    "formatted": formatted,
+                })
+
+    return results
+
+
+def format_jit_memories_block(memories: list[dict[str, Any]], rel_path: str) -> str:
+    """Format extracted JIT memories and guardrails into a markdown injection block."""
+    if not memories:
+        return ""
+    lines = [f"[AST Memory & Invariants for {rel_path}]"]
+    for m in memories:
+        fmt = m.get("formatted")
+        if fmt:
+            lines.append(fmt)
+    return "\n".join(lines)
