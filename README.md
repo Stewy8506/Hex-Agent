@@ -148,15 +148,30 @@ HEX includes a native Rust Ratatui cockpit (`hex tui`) designed for high-perform
 
 ---
 
-## 🤖 Supported Models
+## 🤖 26 Supported Providers & Universal Model Routing
 
-HEX is completely model-agnostic. Switch models on the fly with `/model`:
+HEX is completely provider- and model-agnostic. Switch models instantly on the fly with `/model` or `--provider`:
 
-- **Google Antigravity**: Included quota routing ($0 marginal billing).
-- **Anthropic**: Claude 3.7 Sonnet, Claude 3.5 Sonnet, Claude 3.5 Haiku, Claude 3 Opus.
-- **OpenAI**: GPT-4o, GPT-4o-mini, o1, o3-mini.
-- **Google Gemini**: Gemini 2.5 Pro, Gemini 2.5 Flash.
-- **Local Offline Models**: Direct connection to Ollama, Apple Silicon (Metal), NVIDIA GPUs (CUDA), or host CPU.
+- **Frontier & Multi-Model**: Google Antigravity ($0 Day-1 marginal billing via OAuth), Anthropic (Claude 3.7 Sonnet / 3.5 Sonnet / Haiku), OpenAI (GPT-4o, o1, o3-mini), Google Gemini (Gemini 2.5 Pro / Flash), DeepSeek (V3 & R1), OpenRouter, xAI Grok.
+- **High-Speed Open-Weight Cloud**: Groq LPU (Llama 3.3 70B, QwQ 32B), Cerebras (2,000+ tok/s), Mistral AI (Codestral, Mistral Large), Together AI, Fireworks AI, NVIDIA NIM, Alibaba Qwen (Qwen 2.5 Coder), MiniMax (1M context), Kimi / Moonshot, Z.AI / GLM.
+- **Enterprise Hyperscalers**: Microsoft Azure OpenAI & Foundry, AWS Bedrock, Google Cloud Vertex AI.
+- **Aggregators & Gateways**: Vercel AI Gateway, Hugging Face Serverless.
+- **100% Private Offline Local AI**: Ollama (`localhost:11434`), LM Studio (`localhost:1234`), native Apple Silicon Metal acceleration via MLX, and custom OpenAI-compatible endpoints (vLLM, SGLang, LocalAI).
+
+> 📖 **Full Catalog & Configs:** See [`docs/SUPPORTED_MODELS.md`](docs/SUPPORTED_MODELS.md) for the complete directory of 26 providers, model IDs, and environment variables.
+
+---
+
+## ⚡ Built-in Power Capabilities
+
+Beyond conversational coding, HEX includes production engineering superpowers built directly into the core:
+
+- **80+ Built-in Skills & NVIDIA SkillSpector**: Over 80 modular capabilities spanning software development, GitHub automation, Apple ecosystems, MLOps, and productivity. Third-party skills are scanned for AST vulnerabilities and OSV malware before execution (`hex scan-skill <dir>`).
+- **Graphify AST Knowledge Graph**: Polyglot code graph (Python, TypeScript, Rust, Go, C++) indexing functions, classes, and call hierarchies. Inspect blast-radius before editing (`hex graphify affected <symbol>`) or export interactive D3 architecture trees (`hex graphify tree`).
+- **Autonomous Git Autopilot**: Automatically branches, stages atomic commits, and creates formatted GitHub Pull Requests upon task completion (`hex run "Goal" --pr`).
+- **Polyglot Language Server Diagnostics**: Real-time compiler syntax errors, type mismatches, and hover documentation (`hex lsp diagnostics`).
+- **Hands-Free Voice Console**: Interactive spoken pair-programming with real-time vocal feedback (`hex voice` or `hex --voice`).
+- **Self-Healing Diagnostics**: Inspect system health, verify virtual environment integrity, and automatically repair configurations (`hex doctor --fix`).
 
 ---
 
@@ -184,6 +199,7 @@ Inside the interactive console, type `/` to access commands:
 
 For comprehensive guides, architecture deep-dives, and production integrations:
 
+- 🤖 **[Supported Models & 26 Providers](docs/SUPPORTED_MODELS.md)** — Complete catalog of 26 providers, curated model IDs, and environment variables.
 - 🏗️ **[System Architecture](docs/ARCHITECTURE.md)** — Copy-on-Write sandboxing, PostgreSQL/SQLite dual-driver storage, cryptographic hash chaining, and AST code intelligence.
 - ⚖️ **[Harness Comparison](docs/COMPARISON.md)** — In-depth architectural comparison against Hermes Agent, OpenClaw, Claude Code, and Aider.
 - 🤖 **[Sub-Agent Delegation](docs/SUBAGENTS.md)** — Hierarchical child workers, role-based tool gating, and sandbox scratchpads.
