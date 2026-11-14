@@ -181,14 +181,17 @@ class TwoTierModelRouter:
         # Safeguard against cross-provider model contamination
         if resolved_provider_type == "anthropic" and (
             resolved_cloud_model.startswith(("gemini", "gpt", "o1", "o3", "chatgpt"))
+            or (resolved_cloud_model and not resolved_cloud_model.startswith("claude"))
         ):
             resolved_cloud_model = ""
         elif resolved_provider_type == "openai" and (
             resolved_cloud_model.startswith(("gemini", "claude"))
+            or (resolved_cloud_model and not resolved_cloud_model.startswith(("gpt", "o1", "o3", "chatgpt")))
         ):
             resolved_cloud_model = ""
         elif resolved_provider_type == "gemini" and (
             resolved_cloud_model.startswith(("claude", "gpt", "o1", "o3", "chatgpt"))
+            or (resolved_cloud_model and not resolved_cloud_model.startswith("gemini"))
         ):
             resolved_cloud_model = ""
 
@@ -222,14 +225,17 @@ class TwoTierModelRouter:
         # another provider. Validate again before discovery/default selection.
         if resolved_provider_type == "anthropic" and (
             resolved_cloud_model.startswith(("gemini", "gpt", "o1", "o3", "chatgpt"))
+            or (resolved_cloud_model and not resolved_cloud_model.startswith("claude"))
         ):
             resolved_cloud_model = ""
         elif resolved_provider_type == "openai" and (
             resolved_cloud_model.startswith(("gemini", "claude"))
+            or (resolved_cloud_model and not resolved_cloud_model.startswith(("gpt", "o1", "o3", "chatgpt")))
         ):
             resolved_cloud_model = ""
         elif resolved_provider_type == "gemini" and (
             resolved_cloud_model.startswith(("claude", "gpt", "o1", "o3", "chatgpt"))
+            or (resolved_cloud_model and not resolved_cloud_model.startswith("gemini"))
         ):
             resolved_cloud_model = ""
 
@@ -612,6 +618,47 @@ class TwoTierModelRouter:
         decision.provider_metadata = dict(response.raw)
 
         return decision, response
+
+    def get_context_compactor(
+        self,
+        max_context_tokens: int = 100_000,
+        trigger_threshold: float = 0.8,
+    ) -> Any:
+        """Return a configured ContextCompactor instance using the router's local or cloud model."""
+        from .context_compressor import CompactionConfig, ContextCompactor
+
+        def _aux_summary_caller(prompt_or_msgs: Any) -> str:
+            prompt_str = str(prompt_or_msgs)
+            try:
+                decision, resp = self.execute_routed_request(
+                    prompt=prompt_str,
+                    task_class="compression",
+                    risk_class="R0",
+                )
+                return resp.text if hasattr(resp, "text") else str(resp)
+            except Exception:
+                return ""
+
+        return ContextCompactor(
+            config=CompactionConfig(
+                max_context_tokens=max_context_tokens,
+                trigger_threshold=trigger_threshold,
+            ),
+            model_caller=_aux_summary_caller,
+        )
+
+    def compact_context(
+        self,
+        messages: list[dict[str, Any]],
+        budget_tokens: int = 100_000,
+    ) -> tuple[list[dict[str, Any]], Any]:
+        """Compact messages using the router's context compactor.
+
+        Returns (compacted_messages, CompactionResult).
+        """
+        compactor = self.get_context_compactor(max_context_tokens=budget_tokens)
+        res = compactor.compact_messages(messages, force=True)
+        return res.compacted_messages, res
 
 
 class GovernedMemoryService:

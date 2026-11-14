@@ -556,12 +556,21 @@ class HarnessOrchestrator:
             ),
         )
 
+        # Wire ContextCompactor from router if available
+        compactor = None
+        if hasattr(self, "router") and self.router is not None and hasattr(self.router, "get_context_compactor"):
+            try:
+                compactor = self.router.get_context_compactor(max_context_tokens=react_cfg.budget_tokens)
+            except Exception:
+                pass
+
         loop = ReActLoop(
             model_caller=_react_model_caller,
             gateway=self.gateway,
             workspace_root=effective_ws,
             config=react_cfg,
             ledger=self.ledger,
+            context_compactor=compactor,
         )
 
         session_res = loop.run(prompt=goal, task_id=active_task_id)
@@ -612,6 +621,7 @@ class HarnessOrchestrator:
             "termination_reason": session_res.termination_reason,
             "turns": session_res.turns,
             "task_id": active_task_id,
+            "compaction_result": session_res.compaction_result,
         }
 
     def submit_and_run(

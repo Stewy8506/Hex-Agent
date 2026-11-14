@@ -17,6 +17,8 @@ import time
 from typing import Any, Callable
 import uuid
 
+from .context_compressor import CompactionConfig, ContextCompactor, estimate_messages_tokens
+
 
 @dataclass
 class ReActConfig:
@@ -96,6 +98,7 @@ class ReActSessionResult:
     total_turns: int
     turns: list[ReActTurn] = field(default_factory=list)
     termination_reason: str = "finish"  # "finish", "max_turns", "error", "no_tool_calls"
+    compaction_result: Any | None = None
 
 
 def _safe_json_loads(raw: str) -> Any:
@@ -159,14 +162,17 @@ class ReActLoop:
         workspace_root: Path | str | None = None,
         config: ReActConfig | None = None,
         ledger: Any | None = None,
+        context_compactor: ContextCompactor | None = None,
     ) -> None:
         self.model_caller = model_caller
         self.gateway = gateway
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self.config = config or ReActConfig()
         self.ledger = ledger
+        self.context_compactor = context_compactor
         self.messages: list[dict[str, Any]] = []
         self.turns: list[ReActTurn] = []
+        self.last_compaction_result: Any | None = None
 
     # -------------------------------------------------------------------------
     # Response and Tool Parsing
@@ -700,6 +706,27 @@ class ReActLoop:
         for turn_index in range(1, self.config.max_turns + 1):
             turn_start = time.perf_counter()
 
+            # 0. Context compaction check
+            compactor = self.context_compactor
+            if compactor is None and getattr(self.config, "budget_tokens", 0) > 0:
+                compactor = ContextCompactor(
+                    CompactionConfig(
+                        max_context_tokens=self.config.budget_tokens,
+                        trigger_threshold=0.8,
+                    ),
+                    model_caller=self.model_caller,
+                )
+                self.context_compactor = compactor
+
+            if compactor is not None:
+                current_tokens = estimate_messages_tokens(self.messages)
+                threshold = int(self.config.budget_tokens * 0.8)
+                if current_tokens >= threshold or compactor.should_compact(self.messages):
+                    comp_res = compactor.compact_messages(self.messages, force=True)
+                    if comp_res.compacted_tokens < comp_res.original_tokens:
+                        self.messages = comp_res.compacted_messages
+                        self.last_compaction_result = comp_res
+
             # 1. Call model
             try:
                 response = self._call_model(self.messages)
@@ -718,6 +745,7 @@ class ReActLoop:
                     total_turns=len(self.turns),
                     turns=self.turns,
                     termination_reason="error",
+                    compaction_result=self.last_compaction_result,
                 )
 
             raw_text = self._extract_response_text(response)
@@ -821,6 +849,7 @@ class ReActLoop:
             total_turns=len(self.turns),
             turns=self.turns,
             termination_reason=termination_reason,
+            compaction_result=self.last_compaction_result,
         )
 
     async def run_async(

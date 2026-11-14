@@ -1234,7 +1234,7 @@ class HexConsole:
 
     SLASH_COMMANDS: list[str] = [
         "/help", "/status", "/diff", "/sbs", "/rollback", "/fork",
-        "/skills", "/scan", "/model", "/compressor", "/budget",
+        "/skills", "/scan", "/model", "/compressor", "/compress", "/budget",
         "/quota", "/antigravity", "/blast", "/proof", "/memory",
         "/remember", "/reflect", "/search", "/doctor", "/recipe",
         "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
@@ -1270,6 +1270,8 @@ class HexConsole:
         self.react_mode: bool = bool(react_mode)
         self.active_task_id: str | None = None
         self.history: list[str] = []
+        self.messages: list[dict[str, Any]] = []
+        self.last_compaction_result: Any | None = None
         self._suggestion_idx: int = 0
         self.mode: str = "agent"  # "plan" | "agent" | "code"
         self.session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -1719,11 +1721,15 @@ class HexConsole:
             self._cmd_subagents(arg)
         elif cmd in ("/react", "/react-loop", "/loop"):
             self._cmd_react(arg)
+        elif cmd in ("/compress", "/compact", "/compaction"):
+            self._cmd_compress(arg)
         elif cmd == "/clear":
             self._cmd_clear()
         else:
             print(f"{ANSI_RED}Unknown command: {cmd}. Type /help for available commands.{ANSI_RESET}")
         return False
+
+    handle_command = handle_slash_command
 
     def _cmd_mode(self, arg: str = "") -> None:
         target = arg.strip().lower()
@@ -1759,6 +1765,7 @@ class HexConsole:
             ("/scan <dir>", "Scan and register a SKILL.md bundle via NVIDIA SkillSpector"),
             ("/model [name]", "Inspect or switch active model routing profile (or 'antigravity')"),
             ("/compressor [mode]", "Switch Tier-1 log compressor between 'local' and 'cloud'"),
+            ("/compress [threshold]", "Run 4-phase context compaction on active dialogue history"),
             ("/budget", "Display session token usage, compression ratio, and cost"),
             ("/quota", "Inspect Google Antigravity OAuth session & live model quota windows"),
             ("/memory [query]", "Search governed memories with AST code-hash staleness badges"),
@@ -2102,6 +2109,56 @@ class HexConsole:
         if hasattr(self.orchestrator, "router"):
             self.orchestrator.router.compressor_mode = "off" if mode == "disabled" else mode
         print(f"{ANSI_GREEN}Compressor mode updated to: {mode} (session-only; sensitive/secret logs remain auto-pinned to local){ANSI_RESET}")
+
+    def _cmd_compress(self, arg: str = "") -> None:
+        """Manually trigger context window compaction on current dialogue history."""
+        from .context_compressor import CompactionConfig, ContextCompactor, estimate_messages_tokens
+
+        messages = getattr(self, "messages", [])
+        if not messages:
+            history_entries = getattr(self, "history", [])
+            if history_entries:
+                messages = [{"role": "user", "content": h} for h in history_entries]
+                self.messages = messages
+
+        if not messages:
+            print(f"\n{ANSI_YELLOW}No conversation history to compact.{ANSI_RESET}\n")
+            return
+
+        orig_tokens = estimate_messages_tokens(messages)
+        threshold = 0.5
+        if arg.strip():
+            try:
+                threshold = float(arg.strip())
+            except ValueError:
+                pass
+
+        compactor = ContextCompactor(
+            CompactionConfig(
+                max_context_tokens=max(500, orig_tokens),
+                trigger_threshold=threshold,
+            )
+        )
+        result = compactor.compact_messages(messages, force=True)
+
+        if result.compacted_tokens < result.original_tokens:
+            self.messages = result.compacted_messages
+            self.last_compaction_result = result
+            self.session_tokens_saved += (result.original_tokens - result.compacted_tokens)
+            self.session_compression_ratio = result.compression_ratio
+            pct_saved = (1.0 - result.compression_ratio) * 100
+            print(
+                f"\n{ANSI_GREEN}✓ Context Compacted Successfully{ANSI_RESET}\n"
+                f"  Original:  {result.original_tokens:,} tokens ({len(result.compacted_messages) + result.phase3_summarized_turns} turns)\n"
+                f"  Compacted: {result.compacted_tokens:,} tokens ({len(result.compacted_messages)} turns)\n"
+                f"  Savings:   {pct_saved:.1f}% reduction\n"
+                f"  Phase 1:   {result.phase1_demoted_tools} stale tool outputs demoted\n"
+                f"  Phase 3:   {result.phase3_summarized_turns} middle turns summarized\n"
+            )
+        else:
+            print(
+                f"\n{ANSI_CYAN}ℹ Context already optimal ({orig_tokens:,} tokens). No compression applied.{ANSI_RESET}\n"
+            )
 
     def _cmd_budget(self) -> None:
         print(f"\n{ANSI_BOLD}{ANSI_CYAN}Session Budget & Token Telemetry:{ANSI_RESET}")
@@ -2879,10 +2936,21 @@ class HexConsole:
         turns_count = loop_result.get("turns_count", len(turns))
         term_reason = loop_result.get("termination_reason", "unknown")
 
+        comp_res = loop_result.get("compaction_result")
+        compaction_badge = ""
+        if comp_res:
+            pct = (1.0 - getattr(comp_res, "compression_ratio", 1.0)) * 100
+            compaction_badge = f" [COMPACTED: -{pct:.0f}% tokens]"
+
         if success:
-            print(f"{ANSI_GREEN}✔ ReAct Loop completed successfully in {turns_count} turn(s)! [{term_reason}]{ANSI_RESET}")
+            print(f"{ANSI_GREEN}✔ ReAct Loop completed successfully in {turns_count} turn(s)! [{term_reason}]{compaction_badge}{ANSI_RESET}")
         else:
-            print(f"{ANSI_YELLOW}⚠ ReAct Loop stopped: {term_reason} ({turns_count} turns){ANSI_RESET}")
+            print(f"{ANSI_YELLOW}⚠ ReAct Loop stopped: {term_reason} ({turns_count} turns){compaction_badge}{ANSI_RESET}")
+
+        if hasattr(self, "messages"):
+            self.messages.append({"role": "user", "content": prompt})
+            if final_answer:
+                self.messages.append({"role": "assistant", "content": final_answer})
 
         if final_answer:
             active_model = self.model_profile or getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", "react-agent")
@@ -2897,6 +2965,9 @@ class HexConsole:
 
     def handle_user_prompt(self, prompt: str) -> None:
         """Submit natural language coding prompt to orchestrator."""
+        if hasattr(self, "messages"):
+            self.messages.append({"role": "user", "content": prompt})
+
         if getattr(self, "react_mode", False):
             self._handle_react_loop_prompt(prompt)
             return
