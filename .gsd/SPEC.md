@@ -142,5 +142,46 @@ Every implementation task must produce empirical verification output before mark
   - Captures stdout, stderr, and rich evaluation results.
   - Gateway tool: `code_kernel` with timeout protection and memory fences.
 
+---
+
+## 7. Milestone M11: Next-Gen Cognition & Self-Evolution Engine (Phases 30–32)
+
+### 7.1 Multi-Tier Soul Engine & Dynamic Mode Modulators (Phase 30)
+- **Compact Soul & Machine-Wide Developer DNA:**
+  - `~/.hex/SOUL.md` (global persona) and `~/.hex/USER.md` (developer habits/preferences) separated from `.hex/SOUL.md` and `.hex/MEMORY.md` (repo architecture).
+  - Compact budget discipline: 300–500 tokens max to preserve instruction adherence on local 8B–9B models.
+  - Automatic template seeding with legacy hash detection for painless auto-upgrades.
+  - Command: `/rename <name>` dynamically updates Slot #1 identity and TUI headers.
+- **Punchy Mode Modulators:**
+  - 3–4 line behavioral overrides for `plan` (architect), `agent` (builder), `code` (surgical coder) injected directly below Slot #1.
+- **Prompt Pipeline Slotting & Security Gate:**
+  - Slot #1 (Soul) → Slot #2 (Mode Override) → Slot #3 (Environment) → Slot #4 (Frozen Memory) → Slot #5 (Rules/Skills).
+  - Prompt-injection heuristic scan: warns for user-authored souls; blocks third-party imported souls.
+
+### 7.2 AST-Scoped Curated Memory, Negative Guardrails & Lifecycle Engine (Phase 31)
+- **AST-Scoped JIT Memory Injection:**
+  - Global Repo Memory (`.hex/memories/MEMORY.md`) in Slot #1; Node-Bound Memory stored in SQLite/Graphify.
+  - Dynamic injection of symbol gotchas and 1-hop caller/callee invariants into **tool observation output** (e.g. `read_file`), keeping system prompt 100% KV-cache frozen.
+- **Negative Constraint Memory (`GUARDRAILS.md`):**
+  - Auto-populated with `[AVOID]` invariants when tool/build commands fail $\ge 2$ times with the same error or diffs are rejected.
+  - Injected before tool execution to break repeat hallucination loops on 8B–9B models.
+- **Zettelkasten A-MEM Controller & Contradiction Resolution:**
+  - CRUD pattern (`ADD`, `UPDATE`, `DELETE`, `NOOP`) with fast-path FTS5 check to eliminate obsolete conflicting notes rather than appending.
+  - Concept linking via `[[wiki-links]]`.
+- **Memory Lifecycle & Promotion/Demotion:**
+  - Hit counters + `last_referenced_at`. Reflections used $\ge 3$ times promote to `MEMORY.md` or `SKILL.md`. Stale/unreferenced entries (>30 days) demote to cold SQLite FTS5 archival.
+  - Lightweight `.history/` timestamped diffs for rollback without LedgerStore bloat.
+
+### 7.3 Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks (Phase 32)
+- **Deterministic Verification Hooks Attached to Skills:**
+  - `SKILL.md` bundles support `verify:` frontmatter blocks with shell commands, AST invariants, or test filters (e.g. `cargo test rpc_schema_sync`) executed automatically upon skill completion.
+- **Autonomous Friction Sensor with Hardware Gating:**
+  - Gated by `auto_reflect = "cloud_only" | "idle" | "off"` to protect local unified RAM on Apple Silicon / Ollama.
+  - Synthesizes lessons into `.hex/reflections/LESSONS.md` when ReAct loop overcomes tasks taking $\ge 3$ repair attempts.
+- **SkillSpector Gate & Hybrid Retrieval:**
+  - Synthesized skills validated by `SkillSpector` before registration in `.hex/skills/`.
+  - SQLite FTS5 lexical + Graphify AST symbol graph traversal across past sessions.
+
+
 
 

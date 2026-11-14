@@ -369,6 +369,55 @@
   - Direct integration with CoW workspace path resolution.
 - **Verification:** Unit tests verifying cross-execution variable persistence, exception formatting, stdout capture, and kernel reset.
 
+### Phase 29: Production Fit-and-Finish Polish (Hermes Parity Pillar 6)
+- **Goal:** Comprehensive fit-and-finish parity overhaul against Nous Research Hermes Agent: TUI interactive components, model-aware statusline, dynamic context meters, session resume, and cross-platform installation resilience.
+- **Must-haves:**
+  - Dynamic visual statusline and interactive keybindings.
+  - Session history search and zero-friction resume.
+  - Windows/macOS/Linux setup scripts (`install.sh`, `install.ps1`, `hex.bat`).
+- **Verification:** Full automated test suite passes with 100% test success.
+
+---
+
+## Milestone M11: Next-Gen Cognition & Self-Evolution Engine
+
+```
+[ ] Phase 30: Multi-Tier Soul Engine & Dynamic Mode Modulators
+[ ] Phase 31: AST-Scoped Curated Memory, Negative Guardrails & Lifecycle Engine
+[ ] Phase 32: Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks
+```
+
+---
+
+### Phase 30: Multi-Tier Soul Engine & Dynamic Mode Modulators
+- **Goal:** Establish first-class identity and persona modulation in HEX without prompt bloat, separating machine-wide developer DNA (`~/.hex/USER.md` + `~/.hex/SOUL.md`) from repository architecture (`.hex/`), and providing punchy 3–4 line mode modulators for `plan`, `agent`, and `code`.
+- **Must-haves:**
+  - `SoulManager` in `src/harness_core/soul.py`: global vs workspace resolution, compact budget discipline (~300–500 tokens), default template auto-seeding, legacy template hash detection, and `/rename <name>` support.
+  - Punchy 3–4 line behavioral overrides for `plan` (architect), `agent` (builder), and `code` (surgical coder) injected right below Slot #1.
+  - Prompt pipeline slotting in `src/harness_core/prompt_builder.py` and integration into `HarnessOrchestrator.run_agent_loop` and `ReActLoop`.
+  - Prompt injection heuristic scanning: warn for user-authored souls, block third-party distribution souls.
+- **Verification:** Unit tests verifying soul resolution hierarchy, seeding, legacy upgrades, `/rename`, mode modulator injection, and injection scanning.
+
+### Phase 31: AST-Scoped Curated Memory, Negative Guardrails & Lifecycle Engine
+- **Goal:** Overhaul memory management from flat text / isolated classes into an AST-aware, JIT-injected, self-pruning cognitive store with negative constraint memory (`GUARDRAILS.md`), Zettelkasten contradiction resolution (A-MEM), and decay lifecycle.
+- **Must-haves:**
+  - Dual markdown stores (`USER.md`, `MEMORY.md`) with Turn-0 frozen KV-cache snapshotting and `StreamingContextScrubber`.
+  - Negative constraint memory (`GUARDRAILS.md`) auto-populated with `[AVOID]` invariants on $\ge 2$ tool/build failures or rejected diffs.
+  - JIT AST-scoped memory injection: symbol-bound invariants dynamically injected into tool observation outputs (e.g. `read_file`), keeping system prompt 100% KV-cache frozen.
+  - A-MEM CRUD controller with contradiction resolution (UPDATE/DELETE conflicting entries) and `[[wiki-links]]`.
+  - Memory lifecycle: hit counters, promotion to SKILL/MEMORY, demotion of >30d stale notes to SQLite FTS5 archival, and lightweight `.history/` diffs.
+- **Verification:** Unit tests verifying dual markdown stores, KV-cache prefix stability, JIT tool observation injection, A-MEM contradiction resolution, and promotion/demotion.
+
+### Phase 32: Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks
+- **Goal:** Implement executable, verified self-learning that operates safely on both cloud and local hardware with deterministic `verify:` execution hooks and hardware-gated friction reflection.
+- **Must-haves:**
+  - `/learn <target>` command in CLI/TUI synthesizing vetted `SKILL.md` bundles with optional `verify:` frontmatter assertions (executable shell commands/test filters).
+  - Autonomous friction sensor: when ReAct loop takes $\ge 3$ repair attempts, synthesizes lessons into `.hex/reflections/LESSONS.md`.
+  - Hardware gating: `auto_reflect = "cloud_only" | "idle" | "off"` in `config.yaml` to prevent background subagents from thrashing unified RAM on local Apple Silicon / Ollama.
+  - `SkillSpector` AST safety gate: scans synthesized skills before installation into `.hex/skills/`.
+  - Cross-session FTS5 + Graphify AST hybrid retrieval.
+- **Verification:** Unit tests verifying `/learn` skill generation, deterministic `verify:` test execution, hardware gating behavior, and `SkillSpector` validation.
+
 
 
 

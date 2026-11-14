@@ -1,17 +1,20 @@
 # Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-14  
-**Current Milestone:** M10 (Finished Product Parity & Execution Excellence) — COMPLETE (All 5 Pillars Verified)  
-**Status:** Phase 24, 25, 26, 27, and 28 Complete & Verified with 100% Hermes Parity  
-**Active Phase:** Milestone M10 Verification & Next Milestone Scoping  
-**Completed Plans:** Plans 01-01 through 28-02 Complete (700+ Python tests green, 34/34 Rust workspace tests green)  
+**Current Milestone:** M11 (Next-Gen Cognition & Self-Evolution Engine) — ACTIVE  
+**Status:** Phase 30 Planning Complete; Pre-implementation Analysis Finalized  
+**Active Phase:** Phase 30: Multi-Tier Soul Engine & Dynamic Mode Modulators  
+**Completed Milestones:** M1 through M10 Complete & Verified (700+ Python tests green, 34/34 Rust workspace tests green)  
 
 ---
 
 ## 1. Accomplishments to Date
 
-1. **Clean Codebase Foundation & Prior Milestones (M1–M8):**
-   - Full 16-table PostgreSQL schema, transactional LedgerStore, CoW snapshots, Active Graphify, SkillSpector, Google Research Harness², real-time hands-free voice engine, and autonomous repair.
+1. **Clean Codebase Foundation & Prior Milestones (M1–M10):**
+   - Full 16-table PostgreSQL schema, transactional LedgerStore, CoW snapshots, Active Graphify, SkillSpector, Google Research Harness², real-time hands-free voice engine, autonomous repair, 4-phase context compactor, PTY process supervisor, persistent REPL code kernel, and comprehensive fit-and-finish polish.
+2. **Cognition & Self-Evolution Research (Docs & Architectural Spec):**
+   - Completed exhaustive code trace of Hermes Agent soul and memory loops in `docs/HERMES_LEARNING_AND_SOUL_ANALYSIS.md`.
+   - Designed 3-phase cognition overhaul: Multi-Tier Soul Engine (Phase 30), AST-Scoped Memory & Guardrails (Phase 31), and Closed-Loop Autonomous Learning (Phase 32).
 
 2. **Milestone M9: Parity & Next-Gen Capabilities (Tiers C, B, A):**
    - **Tier C (Phase 21: In-Flight Sub-Agent Delegation):**
