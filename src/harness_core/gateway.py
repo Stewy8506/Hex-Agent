@@ -1907,12 +1907,17 @@ class ToolGateway:
             else:
                 cmd = [sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"]
 
-        # Fall back to standard python -m unittest discovery if pytest is not installed on PATH
-        if cmd and cmd[0] == "pytest" and not shutil.which("pytest") and not (Path(sys.executable).parent / "pytest").is_file():
-            if target_tests:
-                cmd = [sys.executable, "-m", "unittest"] + list(target_tests)
-            else:
-                cmd = [sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"]
+        # Resolve pytest path or fall back to standard python -m unittest discovery if pytest is not available
+        if cmd and cmd[0] == "pytest":
+            if not shutil.which("pytest"):
+                venv_pytest = Path(sys.executable).parent / "pytest"
+                if venv_pytest.is_file():
+                    cmd[0] = str(venv_pytest)
+                else:
+                    if target_tests:
+                        cmd = [sys.executable, "-m", "unittest"] + list(target_tests)
+                    else:
+                        cmd = [sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"]
 
         env = {"PYTHONPATH": str(workspace_dir)}
         timeout = float(args.get("timeout", 30.0))
