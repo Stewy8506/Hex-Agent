@@ -608,6 +608,27 @@ class ReActLoop:
 
     def _execute_tool_call(self, call: ToolCallRequest) -> ToolCallResult:
         """Execute a single tool call through the gateway and record execution metrics."""
+        # KV-cache prefix defense: assert system prompt immutability
+        initial_sys_prompt = getattr(self.config, "system_prompt", None)
+        initial_msg0 = (
+            dict(self.messages[0])
+            if (getattr(self, "messages", None) and self.messages and self.messages[0].get("role") == "system")
+            else None
+        )
+
+        try:
+            return self._execute_tool_call_inner(call)
+        finally:
+            assert getattr(self.config, "system_prompt", None) == initial_sys_prompt, (
+                "System prompt KV-cache prefix was mutated during tool execution!"
+            )
+            if initial_msg0 is not None and getattr(self, "messages", None) and self.messages:
+                assert self.messages[0] == initial_msg0, (
+                    "Initial system message in messages[0] was mutated during tool execution!"
+                )
+
+    def _execute_tool_call_inner(self, call: ToolCallRequest) -> ToolCallResult:
+        """Internal execution routine for a tool call."""
         start_t = time.perf_counter()
         if not self.gateway:
             return ToolCallResult(

@@ -42,6 +42,7 @@ from .graphify import (
 )
 from .lsp.manager import LSPManager
 from .mcp_client import MCPClientAdapter, MCPToolDefinition
+from .memory import format_jit_memories_block, query_jit_memories_for_file
 from .models import PolicyDecisionType, RiskClass
 from .process_registry import ProcessRegistry, get_process_registry
 from .sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
@@ -1208,6 +1209,28 @@ class ToolGateway:
         if not target.is_file():
             raise FileNotFoundError(f"File not found in workspace: {args['path']}")
         content = target.read_text(encoding="utf-8", errors="replace")[:32_000]
+
+        # JIT AST-scoped memory & invariant injection
+        rel_p = str(target.relative_to(workspace_dir)).replace("\\", "/")
+        if getattr(self, "graphify", None) is None:
+            try:
+                self.graphify = ActiveGraphifyAdapter(workspace_dir)
+                self.graphify.build_or_refresh(workspace_dir)
+            except Exception:
+                pass
+
+        memories = query_jit_memories_for_file(workspace_dir, rel_p, getattr(self, "graphify", None))
+        if memories:
+            jit_block = format_jit_memories_block(memories, rel_p)
+            injected_content = f"{content}\n\n{jit_block}"
+            return {
+                "ok": True,
+                "path": str(args["path"]),
+                "content": injected_content,
+                "size": len(injected_content),
+                "ast_memories": memories,
+            }
+
         return {"ok": True, "path": str(args["path"]), "content": content, "size": len(content)}
 
     def _tool_list_files(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
