@@ -353,7 +353,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let max_scroll = lines.len().saturating_sub(area.height as usize);
+    let width = area.width.max(1) as usize;
+    let mut total_visual_lines = 0;
+    for line in &lines {
+        let line_len: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        let rows = if line_len == 0 {
+            1
+        } else {
+            (line_len + width - 1) / width
+        };
+        total_visual_lines += rows;
+    }
+    let max_scroll = total_visual_lines.saturating_sub(area.height as usize);
     let scroll = if app.follow_dialogue {
         max_scroll
     } else {

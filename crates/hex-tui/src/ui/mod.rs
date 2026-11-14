@@ -20,17 +20,26 @@ use crate::app::App;
 pub fn draw(frame: &mut Frame, app: &App) {
     let size = frame.area();
 
-    // Vertical top-level splits
+    let header_height = if size.height < 18 { 0 } else { 4 };
+
+    // Vertical top-level splits: 4-tier responsive layout
     let root_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(6),    // The transcript is the only flexible region.
-            Constraint::Length(3), // Composer is permanently locked to terminal bottom.
+            Constraint::Length(header_height), // Top telemetry header
+            Constraint::Min(6),                // Main viewport: Dialogue and Diff
+            Constraint::Length(1),             // Persistent status bar
+            Constraint::Length(3),             // Composer locked to terminal bottom
         ])
         .split(size);
 
+    // 0. Top telemetry header (rendered when terminal height >= 18)
+    if header_height > 0 {
+        header::render(frame, app, root_chunks[0]);
+    }
+
     // 1. Main Viewport: Dialogue and Diff
-    let main_area = root_chunks[0];
+    let main_area = root_chunks[1];
     let show_diff = app.show_diff && (app.active_diff.is_some() || app.raw_diff.is_some());
 
     if show_diff {
@@ -48,15 +57,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
         dialogue::render(frame, app, main_area);
     }
 
-    // 2. Command Prompt
-    input::render(frame, app, root_chunks[1]);
+    // 2. Persistent status bar immediately above composer
+    status_bar::render(frame, app, root_chunks[2]);
 
-    // 3. Help Modal Overlay
+    // 3. Command Prompt
+    input::render(frame, app, root_chunks[3]);
+
+    // 4. Help Modal Overlay
     if app.show_help {
         render_help_overlay(frame, size);
     }
 
-    // 6. Approval Dialog Overlay (highest z-index)
+    // 5. Approval Dialog Overlay (highest z-index)
     if app.active_approval.is_some() {
         approval::render(frame, app, size);
     }
