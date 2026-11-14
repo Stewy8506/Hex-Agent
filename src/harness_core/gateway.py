@@ -1570,9 +1570,12 @@ class ToolGateway:
         action = str(args.get("action", "list")).strip().lower()
 
         if action in ("add", "set", "save"):
-            content = args.get("content") or args.get("value")
-            if not content and "key" in args:
-                content = f"{args['key']}: {args.get('value', '')}"
+            key = args.get("key")
+            raw_content = args.get("content") or args.get("value") or ""
+            if key and not str(raw_content).startswith(f"{key}:"):
+                content = f"{key}: {raw_content}" if raw_content else str(key)
+            else:
+                content = raw_content
             return store.add(str(content or ""), target=target)
 
         elif action == "replace":
@@ -1594,13 +1597,22 @@ class ToolGateway:
             old_text = str(
                 args.get("old_text") or args.get("content") or args.get("key") or ""
             )
-            return store.remove(old_text, target=target)
+            res = store.remove(old_text, target=target)
+            res["deleted"] = bool(res.get("ok"))
+            return res
 
         elif action in ("list", "read", "get"):
             if action in ("read", "get") and (args.get("key") or args.get("query")):
                 query = str(args.get("key") or args.get("query")).strip()
                 entries = store.read_entries(target)
                 matched = [e for e in entries if query.lower() in e.lower()]
+                val = matched[0] if matched else None
+                val_str = ""
+                if val:
+                    if ":" in val and (args.get("key") and val.startswith(f"{args['key']}:")):
+                        val_str = val.split(":", 1)[1].strip()
+                    else:
+                        val_str = val
                 return {
                     "ok": True,
                     "success": True,
@@ -1609,8 +1621,22 @@ class ToolGateway:
                     "query": query,
                     "matches": matched,
                     "count": len(matched),
+                    "memory": {"value": val_str, "content": val, "key": query} if val else None,
                 }
-            return store.list_entries(target=target)
+            res = store.list_entries(target=target)
+            memories_dict: dict[str, Any] = {}
+            all_entries: list[str] = list(res.get("entries") or [])
+            for t_data in res.get("targets", {}).values():
+                if isinstance(t_data, dict):
+                    all_entries.extend(t_data.get("entries") or [])
+            for e in all_entries:
+                if ":" in e:
+                    k, v = e.split(":", 1)
+                    memories_dict[k.strip()] = v.strip()
+                else:
+                    memories_dict[e] = e
+            res["memories"] = memories_dict
+            return res
 
         else:
             return {
