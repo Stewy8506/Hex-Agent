@@ -501,3 +501,96 @@ def test_lifecycle_integration_promote_to_skill(tmp_path: Path) -> None:
     res = lifecycle_mgr.promote_entry(ref["id"], target="skill")
     assert res is True
 
+
+def test_hybrid_retrieval_lexical_and_ast_ranking(tmp_path: Path) -> None:
+    """Verifies HybridLearningRetriever combines FTS5 BM25 search with Active Graphify 1-hop traversal."""
+    from harness_core.skills import HybridLearningRetriever, RetrievalMatch
+    from harness_core.graphify import ActiveGraphifyAdapter
+
+    # 1. Setup sample code in workspace for Graphify
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "rpc.py").write_text("""
+def process_rpc_request(payload):
+    validate_jwt_token(payload)
+    return {"status": "ok"}
+
+def validate_jwt_token(token):
+    if not token:
+        raise ValueError("Invalid token")
+    return True
+""", encoding="utf-8")
+
+    # 2. Setup skills on disk
+    skills_dir = tmp_path / ".hex" / "skills" / "jwt-auth-validator"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / "SKILL.md").write_text("""---
+name: jwt-auth-validator
+description: Validate and refresh expired JWT authentication tokens.
+associated_symbols: ["validate_jwt_token"]
+verify:
+  command: "pytest tests/test_jwt.py"
+  ast_invariant: "validate_jwt_token in src/rpc.py"
+---
+# JWT Auth Validator
+## When to Use
+Use when authentication tokens expire or fail validation.
+""", encoding="utf-8")
+
+    # 3. Setup reflections / lessons in LESSONS.md
+    reflections_dir = tmp_path / ".hex" / "reflections"
+    reflections_dir.mkdir(parents=True, exist_ok=True)
+    (reflections_dir / "LESSONS.md").write_text("""### Lesson: lesson_a1b2c3d4 (Task: tsk_01)
+- **Created At**: 2026-11-14T12:00:00Z
+- **Linked Nodes**: process_rpc_request, src/rpc.py
+- **Symptom**: JWT expired signature error during RPC dispatch
+- **Root Cause**: Token clock skew caused validation failure
+- **Verified Solution**: Adjusted leeway tolerance in auth handler
+- **Negative Guardrail**: - [AVOID] Do not omit leeway tolerance when verifying JWT tokens
+""", encoding="utf-8")
+
+    # 4. Setup memory in MEMORY.md
+    mem_dir = tmp_path / ".hex" / "memories"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    (mem_dir / "MEMORY.md").write_text("""## Memory
+- Always pass authorization header when calling [[process_rpc_request]]
+- Use PostgreSQL for production ledger transactions
+""", encoding="utf-8")
+
+    # 5. Initialize retriever
+    adapter = ActiveGraphifyAdapter(workspace_root=tmp_path)
+    retriever = HybridLearningRetriever(graphify=adapter, workspace_root=tmp_path)
+    count = retriever.refresh_index()
+    assert count >= 3
+
+    # Query 1: Pure lexical keyword match
+    matches = retriever.query(query_text="PostgreSQL transactions")
+    assert len(matches) > 0
+    assert matches[0].item_type == "memory"
+    assert "lexical_fts5" in matches[0].match_type
+
+    # Query 2: AST 1-hop traversal via symbol
+    # 'process_rpc_request' calls 'validate_jwt_token' (1-hop callee)
+    # The skill has associated_symbols: ["validate_jwt_token"]
+    # The lesson has Linked Nodes: ["process_rpc_request"]
+    matches_ast = retriever.query(query_text="", target_file_or_symbol="process_rpc_request")
+    assert len(matches_ast) > 0
+    identifiers = [m.identifier for m in matches_ast]
+    assert "lesson_a1b2c3d4" in identifiers
+    assert "jwt-auth-validator" in identifiers
+
+    # Query 3: Hybrid match (lexical + AST)
+    # Query mentions "JWT" and targets "process_rpc_request"
+    matches_hybrid = retriever.query(query_text="JWT expired", target_file_or_symbol="process_rpc_request")
+    assert len(matches_hybrid) > 0
+    top = matches_hybrid[0]
+    assert top.match_type == "hybrid"
+    assert top.score > 2.0
+
+    # Query 4: find_skills_for_task
+    skills = retriever.find_skills_for_task(goal="Fix JWT authentication and validate token", target_files=["src/rpc.py"])
+    assert len(skills) > 0
+    assert all(s.item_type == "skill" for s in skills)
+    assert skills[0].identifier == "jwt-auth-validator"
+
+

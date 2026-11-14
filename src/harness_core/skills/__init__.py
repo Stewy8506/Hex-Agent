@@ -18,6 +18,10 @@ from harness_core.skills.executor import (
     SkillVerificationResult,
     assert_skill_regression_free,
 )
+from harness_core.skills.retrieval import (
+    HybridLearningRetriever,
+    RetrievalMatch,
+)
 
 __all__ = [
     "SkillCompiler",
@@ -29,4 +33,6 @@ __all__ = [
     "SkillVerificationHook",
     "SkillVerificationResult",
     "assert_skill_regression_free",
+    "HybridLearningRetriever",
+    "RetrievalMatch",
 ]
