@@ -1238,7 +1238,7 @@ class HexConsole:
         "/quota", "/antigravity", "/blast", "/proof", "/memory",
         "/remember", "/reflect", "/search", "/doctor", "/recipe",
         "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
-        "/voice", "/banner", "/clear", "/subagents", "/react", "/ps", "/processes", "/quit", "/exit",
+        "/voice", "/banner", "/clear", "/subagents", "/react", "/ps", "/processes", "/kernel", "/repl", "/quit", "/exit",
     ]
 
     def __init__(
@@ -1725,6 +1725,8 @@ class HexConsole:
             self._cmd_react(arg)
         elif cmd in ("/compress", "/compact", "/compaction"):
             self._cmd_compress(arg)
+        elif cmd in ("/kernel", "/repl"):
+            self._cmd_kernel(arg)
         elif cmd == "/clear":
             self._cmd_clear()
         else:
@@ -1782,6 +1784,7 @@ class HexConsole:
             ("/workers", "List registered distributed workers, CoW backends, and heartbeats"),
             ("/subagents", "Inspect active and completed child subagents and delegation tree"),
             ("/ps [id|kill <id>]", "List and manage PTY background processes or view stream tail"),
+            ("/kernel [status|reset|vars|exec]", "Inspect REPL code kernel status, reset namespace, inspect vars, or exec snippet"),
             ("/react [on|off]", "Toggle continuous multi-turn autonomous ReAct tool loop"),
             ("/harness2", "Run a gated Google Research Harness² Propose-Probe-Compose probe"),
             ("/skin [name]", "Switch TUI theme (amber, cyberpunk, matrix, nord, mono)"),
@@ -2711,6 +2714,161 @@ class HexConsole:
             print(f"\nReAct multi-turn tool loop is now {state}.\n")
         else:
             print(f"\n{ANSI_RED}Usage: /react [on|off]{ANSI_RESET}\n")
+
+    def _cmd_kernel(self, arg: str = "") -> None:
+        """Inspect and manage persistent REPL code kernels."""
+        from .code_kernel import get_kernel_registry
+
+        gateway = getattr(self.orchestrator, "gateway", None)
+        registry = getattr(gateway, "kernel_registry", None) or get_kernel_registry()
+        owner = getattr(gateway, "_active_session_key", "") or self.project_id or "default"
+        ws_path = str(self.workspace_root) if self.workspace_root else os.getcwd()
+
+        arg_str = arg.strip()
+        subcmd = ""
+        subarg = ""
+        if arg_str:
+            parts = arg_str.split(maxsplit=1)
+            subcmd = parts[0].lower()
+            subarg = parts[1] if len(parts) > 1 else ""
+        else:
+            subcmd = "status"
+
+        if subcmd == "status":
+            with registry._lock:
+                kernels_list = list(registry._kernels.values())
+
+            if not kernels_list:
+                print(f"\n{ANSI_CYAN}ℹ No active code kernels currently tracked by KernelRegistry.{ANSI_RESET}\n")
+                return
+
+            if HAS_RICH:
+                table = RichTable(title=f"HEX REPL Code Kernels ({len(kernels_list)} active)")
+                table.add_column("OWNER", style="cyan")
+                table.add_column("CWD", style="white")
+                table.add_column("STATUS", justify="center")
+                table.add_column("PID", style="magenta", justify="right")
+                table.add_column("EXEC COUNT", justify="right")
+                table.add_column("UPTIME", justify="right")
+                table.add_column("LAST USED", justify="right")
+
+                for k in kernels_list:
+                    if k.alive():
+                        st_text = "[green]RUNNING[/green]"
+                    elif k.dead():
+                        st_text = "[red]DEAD[/red]"
+                    else:
+                        st_text = "[yellow]PENDING[/yellow]"
+
+                    pid_str = str(k.proc.pid) if k.proc and k.proc.pid else "-"
+                    exec_str = str(k.execution_count)
+                    now = time.monotonic()
+                    created = getattr(k, "created_at", k.last_used)
+                    uptime_str = f"{max(0.0, now - created):.1f}s"
+                    last_str = f"{max(0.0, now - k.last_used):.1f}s ago"
+                    cwd_display = k.cwd if len(k.cwd) <= 30 else "..." + k.cwd[-27:]
+
+                    table.add_row(
+                        str(k.owner),
+                        cwd_display,
+                        st_text,
+                        pid_str,
+                        exec_str,
+                        uptime_str,
+                        last_str,
+                    )
+                RichConsole().print(table)
+                print()
+            else:
+                print(f"\n{ANSI_BOLD}{ANSI_CYAN}Active HEX REPL Code Kernels ({len(kernels_list)}):{ANSI_RESET}")
+                print(f"  {'OWNER':<15} {'STATUS':<10} {'PID':<8} {'EXEC':<6} {'UPTIME':<9} {'LAST USED':<12} {'CWD'}")
+                print(f"  {'-'*15} {'-'*10} {'-'*8} {'-'*6} {'-'*9} {'-'*12} {'-'*30}")
+                for k in kernels_list:
+                    if k.alive():
+                        st_color = f"{ANSI_GREEN}RUNNING{ANSI_RESET}"
+                    elif k.dead():
+                        st_color = f"{ANSI_RED}DEAD{ANSI_RESET}"
+                    else:
+                        st_color = f"{ANSI_YELLOW}PENDING{ANSI_RESET}"
+
+                    pid_str = str(k.proc.pid) if k.proc and k.proc.pid else "-"
+                    exec_str = str(k.execution_count)
+                    now = time.monotonic()
+                    created = getattr(k, "created_at", k.last_used)
+                    uptime_str = f"{max(0.0, now - created):.1f}s"
+                    last_str = f"{max(0.0, now - k.last_used):.1f}s ago"
+                    cwd_display = k.cwd if len(k.cwd) <= 30 else "..." + k.cwd[-27:]
+                    print(f"  {str(k.owner):<15} {st_color:<19} {pid_str:<8} {exec_str:<6} {uptime_str:<9} {last_str:<12} {cwd_display}")
+                print()
+
+        elif subcmd == "reset":
+            kernel, _ = registry.get_or_create(owner=owner, cwd=ws_path, reset=True)
+            print(f"\n{ANSI_GREEN}✔ Code kernel reset. State and variables cleared.{ANSI_RESET}\n")
+
+        elif subcmd in ("vars", "inspect"):
+            kernel, _ = registry.get_or_create(owner=owner, cwd=ws_path)
+            inspect_snippet = (
+                "import json as _kjson\n"
+                "_vars = [(k, type(v).__name__, repr(v)[:60]) for k, v in sorted(GLOBALS.items()) "
+                "if not k.startswith('_') and k != 'GLOBALS']\n"
+                "print(_kjson.dumps(_vars))\n"
+            )
+            raw_res = kernel.execute(code=inspect_snippet, timeout=10.0)
+            stdout_text = raw_res.get("stdout", "").strip()
+
+            vars_list: list[list[str]] = []
+            if raw_res.get("status") == "ok" and stdout_text:
+                try:
+                    vars_list = json.loads(stdout_text)
+                except Exception:
+                    vars_list = []
+
+            if not vars_list:
+                print(f"\n{ANSI_CYAN}ℹ No user-defined variables in active kernel namespace.{ANSI_RESET}\n")
+                return
+
+            if HAS_RICH:
+                table = RichTable(title=f"Active Kernel Variables ({len(vars_list)})")
+                table.add_column("VARIABLE", style="cyan")
+                table.add_column("TYPE", style="green")
+                table.add_column("VALUE", style="white")
+                for item in vars_list:
+                    if len(item) >= 3:
+                        table.add_row(str(item[0]), str(item[1]), str(item[2]))
+                RichConsole().print(table)
+                print()
+            else:
+                print(f"\n{ANSI_BOLD}{ANSI_CYAN}Active Kernel Variables ({len(vars_list)}):{ANSI_RESET}")
+                print(f"  {'VARIABLE':<20} {'TYPE':<15} {'VALUE'}")
+                print(f"  {'-'*20} {'-'*15} {'-'*30}")
+                for item in vars_list:
+                    if len(item) >= 3:
+                        print(f"  {ANSI_BOLD}{str(item[0]):<20}{ANSI_RESET} {ANSI_GREEN}{str(item[1]):<15}{ANSI_RESET} {str(item[2])}")
+                print()
+
+        elif subcmd == "exec":
+            code = subarg.strip()
+            if not code:
+                print(f"\n{ANSI_RED}Usage: /kernel exec <code>{ANSI_RESET}\n")
+                return
+            kernel, _ = registry.get_or_create(owner=owner, cwd=ws_path)
+            res = kernel.execute(code=code, timeout=30.0)
+            out = res.get("stdout", "")
+            err = res.get("stderr", "")
+            trace = res.get("traceback", "")
+            st = res.get("status", "ok")
+            color = ANSI_GREEN if st == "ok" else ANSI_RED
+            print(f"\n{ANSI_BOLD}[Kernel Cell #{res.get('execution_count')} ({color}{st.upper()}{ANSI_RESET}{ANSI_BOLD})]{ANSI_RESET}")
+            if out:
+                print(out, end="" if out.endswith("\n") else "\n")
+            if err or trace:
+                print(f"{ANSI_RED}{err or trace}{ANSI_RESET}")
+            if res.get("warning"):
+                print(f"{ANSI_YELLOW}[Warning: {res['warning']}]{ANSI_RESET}")
+            print()
+
+        else:
+            print(f"\n{ANSI_RED}Usage: /kernel [status | reset | vars | exec <code>]{ANSI_RESET}\n")
 
     def _cmd_skin(self, arg: str = "") -> None:
         name = arg.strip().lower()

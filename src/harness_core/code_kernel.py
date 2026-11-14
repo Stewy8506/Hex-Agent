@@ -42,6 +42,7 @@ _MAX_STDERR_BYTES = 250_000
 # Shared runner cell source executed inside child runner
 RUNNER_CELL_SOURCE = '''\
 GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
+GLOBALS["GLOBALS"] = GLOBALS
 
 
 def _clip(text):
@@ -363,6 +364,7 @@ class CodeKernel:
         self.raw_buffer: _BoundedBuffer = _BoundedBuffer(_MAX_STDOUT_BYTES)
         self.stderr_buffer: _BoundedBuffer = _BoundedBuffer(_MAX_STDERR_BYTES)
         self.execution_count: int = 0
+        self.created_at: float = time.monotonic()
         self.last_used: float = time.monotonic()
         self.lock: threading.Lock = threading.Lock()
         self.stop_event: threading.Event = threading.Event()

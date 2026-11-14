@@ -120,7 +120,8 @@ class TestACPServer(unittest.TestCase):
         self.assertIn("read_terminal", tool_ids)
         self.assertIn("kill_process", tool_ids)
         self.assertIn("list_processes", tool_ids)
-        self.assertEqual(len(tools), 30)
+        self.assertIn("code_kernel", tool_ids)
+        self.assertEqual(len(tools), 31)
 
         # 2. tools/call read_file
         call_req = {
