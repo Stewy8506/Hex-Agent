@@ -116,6 +116,7 @@ class ReActSessionResult:
     termination_reason: str = "finish"  # "finish", "max_turns", "error", "no_tool_calls"
     compaction_result: Any | None = None
     retry_count: int = 0
+    friction_info: dict[str, Any] = field(default_factory=dict)
 
 
 def _safe_json_loads(raw: str) -> Any:
@@ -194,6 +195,12 @@ class ReActLoop:
         self.turns: list[ReActTurn] = []
         self.last_compaction_result: Any | None = None
         self.retry_count: int = 0
+        self.turn_repair_count: int = 0
+        self.repair_attempts: int = 0
+        self.compiler_errors_count: int = 0
+        self.friction_detected: bool = False
+        self._friction_reasons: list[str] = []
+        self._failed_tool_sig_counts: dict[str, int] = {}
         if guardrails_manager is not None:
             self.guardrails_manager = guardrails_manager
         elif self.workspace_root:
@@ -202,6 +209,37 @@ class ReActLoop:
         else:
             self.guardrails_manager = None
         self._consecutive_tool_failures: dict[str, int] = {}
+
+    def _check_and_trigger_friction(
+        self, reason: str, details: dict[str, Any] | None = None
+    ) -> None:
+        """Record friction detection and emit lifecycle event."""
+        if reason not in self._friction_reasons:
+            self._friction_reasons.append(reason)
+        if not self.friction_detected:
+            self.friction_detected = True
+            payload = {
+                "session_id": self.session_id,
+                "reason": reason,
+                "retry_count": self.retry_count,
+                "turn_repair_count": self.turn_repair_count,
+                "repair_attempts": self.repair_attempts,
+                "compiler_errors_count": self.compiler_errors_count,
+                "details": details or {},
+            }
+            self._emit_event("friction_detected", payload)
+
+    def record_repair_attempt(self, attempt: int | None = None) -> None:
+        """Record a repair attempt in the loop and check friction threshold."""
+        if attempt is not None:
+            self.repair_attempts = attempt
+        else:
+            self.repair_attempts += 1
+        if self.repair_attempts >= 3:
+            self._check_and_trigger_friction(
+                f"repair_attempts_threshold_reached (repair_attempts={self.repair_attempts})",
+                {"repair_attempts": self.repair_attempts},
+            )
 
     # -------------------------------------------------------------------------
     # Response and Tool Parsing
@@ -588,6 +626,11 @@ class ReActLoop:
                 if not self._is_transient_error(exc) or attempt >= max_retries:
                     raise
                 self.retry_count += 1
+                if self.retry_count >= 3:
+                    self._check_and_trigger_friction(
+                        f"retry_count_threshold_reached (retry_count={self.retry_count})",
+                        {"retry_count": self.retry_count},
+                    )
                 delay = initial_delay * (backoff_factor ** attempt) + random.uniform(0, jitter)
                 time.sleep(delay)
                 attempt += 1
@@ -905,42 +948,81 @@ class ReActLoop:
         self, call: ToolCallRequest, tool_res: ToolCallResult
     ) -> None:
         """Capture deterministic repeat failures and record actionable [AVOID] invariants."""
-        if not self.guardrails_manager:
+        sig = ""
+        if self.guardrails_manager:
+            sig = self.guardrails_manager.extract_error_signature(tool_res.output)
+        else:
+            raw = str(tool_res.output or "")
+            clean = re.sub(r"^(?:Error:\s*)+", "", raw.strip(), flags=re.IGNORECASE)
+            sig = clean.split("\n")[0].strip()[:120]
+
+        if not sig:
             return
 
-        from .memory import is_transient_error
+        try:
+            from .memory import is_transient_error
+            if is_transient_error(sig):
+                return
+        except Exception:
+            pass
 
-        sig = self.guardrails_manager.extract_error_signature(tool_res.output)
-        if not sig or is_transient_error(sig):
-            return
+        sig_lower = sig.lower()
+        if (
+            "syntaxerror" in sig_lower
+            or "compiler" in sig_lower
+            or "diagnostic" in sig_lower
+            or "pyright" in sig_lower
+            or "rust-analyzer" in sig_lower
+            or "compilation error" in sig_lower
+            or "preflight" in sig_lower
+            or tool_res.name in ("lsp_diagnostics", "check_syntax")
+        ):
+            self.compiler_errors_count += 1
+            if self.compiler_errors_count >= 2:
+                self._check_and_trigger_friction(
+                    f"repeated_compiler_errors (>= 2): {sig}",
+                    {"tool": tool_res.name, "error": sig, "count": self.compiler_errors_count},
+                )
 
         key = f"{tool_res.name}:{sig}"
         count = self._consecutive_tool_failures.get(key, 0) + 1
         self._consecutive_tool_failures[key] = count
+        self._failed_tool_sig_counts[key] = self._failed_tool_sig_counts.get(key, 0) + 1
 
         if count >= 2:
-            arg_summary = ""
-            if isinstance(call.arguments, dict):
-                arg_val = (
-                    call.arguments.get("command")
-                    or call.arguments.get("path")
-                    or call.arguments.get("file_path")
-                    or call.arguments.get("target")
-                    or ""
-                )
-                if arg_val:
-                    arg_summary = str(arg_val)[:60]
+            self._check_and_trigger_friction(
+                f"repeat_tool_failure: {tool_res.name} failed >= 2 times with: {sig}",
+                {"tool": tool_res.name, "error": sig, "count": count},
+            )
+            if self.guardrails_manager:
+                arg_summary = ""
+                if isinstance(call.arguments, dict):
+                    arg_val = (
+                        call.arguments.get("command")
+                        or call.arguments.get("path")
+                        or call.arguments.get("file_path")
+                        or call.arguments.get("target")
+                        or ""
+                    )
+                    if arg_val:
+                        arg_summary = str(arg_val)[:60]
 
-            if arg_summary:
-                rule = f"- [AVOID] Do not run '{arg_summary}' with {tool_res.name} — repeatedly fails with: {sig}"
-            else:
-                rule = f"- [AVOID] Do not repeat failed invocation of {tool_res.name} — error: {sig}"
+                if arg_summary:
+                    rule = f"- [AVOID] Do not run '{arg_summary}' with {tool_res.name} — repeatedly fails with: {sig}"
+                else:
+                    rule = f"- [AVOID] Do not repeat failed invocation of {tool_res.name} — error: {sig}"
 
-            self.guardrails_manager.record_avoid_invariant(rule)
+                self.guardrails_manager.record_avoid_invariant(rule)
 
     def _reset_tool_failures_on_success(self, tool_name: str) -> None:
         """Reset consecutive error count when tool executes successfully."""
         prefix = f"{tool_name}:"
+        for k, count in list(self._consecutive_tool_failures.items()):
+            if k.startswith(prefix) and count >= 2:
+                self._check_and_trigger_friction(
+                    f"tool_repeat_failure_resolved: {tool_name} failed >= 2 times before succeeding",
+                    {"tool": tool_name, "prior_failures": count},
+                )
         to_del = [k for k in self._consecutive_tool_failures if k.startswith(prefix)]
         for k in to_del:
             self._consecutive_tool_failures.pop(k, None)
@@ -1042,6 +1124,12 @@ class ReActLoop:
         if session_id:
             self.session_id = session_id
         self.retry_count = 0
+        self.turn_repair_count = 0
+        self.repair_attempts = 0
+        self.compiler_errors_count = 0
+        self.friction_detected = False
+        self._friction_reasons = []
+        self._failed_tool_sig_counts = {}
         self.messages = []
         if self.config.system_prompt:
             self.messages.append({"role": "system", "content": self.config.system_prompt})
@@ -1098,6 +1186,17 @@ class ReActLoop:
                     )
                 )
                 self._emit_event("turn_complete", {"turn_index": turn_index, "latency_ms": turn_latency})
+                if self.retry_count >= 3 or self.turn_repair_count >= 3 or self.repair_attempts >= 3:
+                    self._check_and_trigger_friction("friction_threshold_reached")
+                f_info = {
+                    "friction_detected": self.friction_detected,
+                    "retry_count": self.retry_count,
+                    "turn_repair_count": self.turn_repair_count,
+                    "repair_attempts": self.repair_attempts,
+                    "compiler_errors_count": self.compiler_errors_count,
+                    "reasons": list(self._friction_reasons),
+                    "consecutive_tool_failures": dict(self._consecutive_tool_failures),
+                }
                 return ReActSessionResult(
                     success=False,
                     final_answer=f"Error: {e}",
@@ -1106,6 +1205,7 @@ class ReActLoop:
                     termination_reason="error",
                     compaction_result=self.last_compaction_result,
                     retry_count=self.retry_count,
+                    friction_info=f_info,
                 )
 
             raw_text = self._extract_response_text(response)
@@ -1239,9 +1339,30 @@ class ReActLoop:
             self.turns.append(turn)
             self._emit_event("turn_complete", {"turn_index": turn_index, "latency_ms": turn.latency_ms})
 
+            if any(r.is_error for r in tool_results):
+                self.turn_repair_count += 1
+                if self.turn_repair_count >= 3:
+                    self._check_and_trigger_friction(
+                        f"turn_repair_count_threshold_reached (turn_repair_count={self.turn_repair_count})",
+                        {"turn_repair_count": self.turn_repair_count},
+                    )
+
         # Max turns exhausted
         if termination_reason == "max_turns" and not success:
             final_answer = self.turns[-1].thought if self.turns else ""
+
+        if self.retry_count >= 3 or self.turn_repair_count >= 3 or self.repair_attempts >= 3:
+            self._check_and_trigger_friction("friction_threshold_reached")
+
+        friction_info = {
+            "friction_detected": self.friction_detected,
+            "retry_count": self.retry_count,
+            "turn_repair_count": self.turn_repair_count,
+            "repair_attempts": self.repair_attempts,
+            "compiler_errors_count": self.compiler_errors_count,
+            "reasons": list(self._friction_reasons),
+            "consecutive_tool_failures": dict(self._consecutive_tool_failures),
+        }
 
         return ReActSessionResult(
             success=success,
@@ -1251,6 +1372,7 @@ class ReActLoop:
             termination_reason=termination_reason,
             compaction_result=self.last_compaction_result,
             retry_count=self.retry_count,
+            friction_info=friction_info,
         )
 
     async def run_async(

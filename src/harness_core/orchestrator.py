@@ -407,6 +407,121 @@ class HarnessOrchestrator:
             "has_context": lib.context_dir() is not None,
         }
 
+    def _handle_post_task_reflection(
+        self,
+        task_id: str,
+        goal: str,
+        workspace_root: Path | str,
+        repair_attempts: int = 0,
+        friction_info: dict[str, Any] | None = None,
+        error_traces: list[str] | None = None,
+        modified_files: list[str] | None = None,
+        source_nodes: list[str] | None = None,
+        final_patch: str = "",
+    ) -> dict[str, Any]:
+        """Handle post-task reflection gated by hardware profiling and auto_reflect policy."""
+        ws = Path(workspace_root).resolve()
+        from .config_loader import get_auto_reflect_policy, should_execute_background_reflection
+
+        policy = get_auto_reflect_policy(workspace_root=ws)
+        allowed, reason = should_execute_background_reflection(
+            policy=policy,
+            router=getattr(self, "router", None),
+            is_idle=False,
+        )
+
+        if allowed:
+            try:
+                from .reflection import ReflectionSynthesizer
+
+                synth = ReflectionSynthesizer(
+                    router=getattr(self, "router", None),
+                    workspace_root=ws,
+                )
+                lesson = synth.synthesize_lesson(
+                    task_id=task_id,
+                    goal=goal,
+                    error_traces=error_traces or [],
+                    final_patch=final_patch,
+                    modified_files=modified_files or [],
+                    source_nodes=source_nodes or [],
+                    workspace_root=ws,
+                )
+                lessons_path = synth.append_to_lessons_md(lesson, workspace_root=ws)
+
+                # Wire into MemoryLifecycleManager if available
+                if hasattr(self, "memory") and self.memory:
+                    lifecycle = getattr(self.memory, "lifecycle_mgr", None)
+                    if lifecycle and hasattr(lifecycle, "record_reflection"):
+                        lifecycle.record_reflection(
+                            lesson.verified_solution,
+                            source="LESSONS.md",
+                            tags=[f"task:{task_id}"] + getattr(lesson, "source_nodes", []),
+                        )
+                    guardrails = getattr(self.memory, "guardrails_mgr", None)
+                    if lesson.avoid_invariant and guardrails and hasattr(guardrails, "record_avoid_invariant"):
+                        guardrails.record_avoid_invariant(lesson.avoid_invariant)
+
+                if hasattr(self, "ledger") and self.ledger and hasattr(self.ledger, "record_event"):
+                    try:
+                        self.ledger.record_event(
+                            task_id=task_id,
+                            event_type="REFLECTION_SYNTHESIZED",
+                            reason_code="LESSON_APPENDED",
+                            payload={"lesson_id": lesson.lesson_id, "lessons_path": str(lessons_path)},
+                        )
+                    except Exception:
+                        pass
+                return {"status": "synthesized", "lesson_id": lesson.lesson_id, "lessons_path": str(lessons_path)}
+            except Exception as e:
+                logger.warning("Reflection synthesis failed: %s", e)
+                return {"status": "error", "error": str(e)}
+
+        # Suppressed by hardware gating or policy off/idle
+        reflections_dir = ws / ".hex" / "reflections"
+        reflections_dir.mkdir(parents=True, exist_ok=True)
+        pending_file = reflections_dir / "pending_reflections.json"
+        candidate = {
+            "task_id": task_id,
+            "goal": goal,
+            "repair_attempts": repair_attempts,
+            "suppression_reason": reason,
+            "timestamp": time.time(),
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "error_traces": error_traces or [],
+            "modified_files": modified_files or [],
+            "source_nodes": source_nodes or [],
+            "friction_info": friction_info or {},
+            "status": "pending",
+        }
+        try:
+            existing: list[dict[str, Any]] = []
+            if pending_file.is_file():
+                try:
+                    data = json.loads(pending_file.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        existing = data
+                except Exception:
+                    existing = []
+            existing.append(candidate)
+            tmp = pending_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(pending_file)
+        except Exception as e:
+            logger.warning("Failed to write pending reflection candidate: %s", e)
+
+        if hasattr(self, "ledger") and self.ledger and hasattr(self.ledger, "record_event"):
+            try:
+                self.ledger.record_event(
+                    task_id=task_id,
+                    event_type="REFLECTION_SUPPRESSED",
+                    reason_code="HARDWARE_GATED",
+                    payload={"reason": reason, "pending_file": str(pending_file)},
+                )
+            except Exception:
+                pass
+        return {"status": "suppressed", "reason": reason, "pending_file": str(pending_file)}
+
     # ------------------------------------------------------------------
     # Task Submission & Execution Entrypoints
     # ------------------------------------------------------------------
@@ -628,6 +743,29 @@ class HarnessOrchestrator:
             except Exception:
                 pass
 
+        # Trigger reflection if task succeeded after friction
+        if session_res.success and (
+            session_res.friction_info.get("friction_detected")
+            or session_res.retry_count >= 3
+            or session_res.friction_info.get("turn_repair_count", 0) >= 3
+            or session_res.friction_info.get("repair_attempts", 0) >= 3
+        ):
+            try:
+                rep_count = (
+                    session_res.friction_info.get("repair_attempts", 0)
+                    or session_res.friction_info.get("turn_repair_count", 0)
+                    or session_res.retry_count
+                )
+                self._handle_post_task_reflection(
+                    task_id=active_task_id,
+                    goal=goal,
+                    workspace_root=effective_ws,
+                    repair_attempts=rep_count,
+                    friction_info=session_res.friction_info,
+                )
+            except Exception as e:
+                logger.warning("Agent loop friction reflection failed: %s", e)
+
         return {
             "success": session_res.success,
             "final_answer": session_res.final_answer,
@@ -636,6 +774,7 @@ class HarnessOrchestrator:
             "turns": session_res.turns,
             "task_id": active_task_id,
             "compaction_result": session_res.compaction_result,
+            "friction_info": session_res.friction_info,
         }
 
     def submit_and_run(
@@ -1961,6 +2100,20 @@ class HarnessOrchestrator:
                         "entry_path": str(exp_entry),
                     },
                 )
+
+        # Autonomous Friction Reflection with Hardware Gating (PRD Section 7.3)
+        if repair_attempt >= 3:
+            try:
+                self._handle_post_task_reflection(
+                    task_id=task_id,
+                    goal=task.get("goal") or "",
+                    workspace_root=attempt_ws,
+                    repair_attempts=repair_attempt,
+                    modified_files=list(modified_files),
+                    source_nodes=cited_nodes,
+                )
+            except Exception as e:
+                logger.warning("Post-task friction reflection failed: %s", e)
 
         return self.ledger.transition_task(
             task_id,

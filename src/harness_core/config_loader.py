@@ -182,6 +182,15 @@ def load_hex_environment(
                 if web_search_section.get("provider"):
                     cfg_props["HEX_WEB_SEARCH_PROVIDER"] = str(web_search_section["provider"])
 
+            learning_section = cfg_data.get("learning", {})
+            if isinstance(learning_section, dict):
+                if "auto_reflect" in learning_section:
+                    raw_ar = learning_section["auto_reflect"]
+                    if raw_ar is False or str(raw_ar).strip().lower() in ("off", "false", "no", "disabled", "0"):
+                        cfg_props["HEX_AUTO_REFLECT"] = "off"
+                    else:
+                        cfg_props["HEX_AUTO_REFLECT"] = str(raw_ar).strip().lower()
+
     for k, v in cfg_props.items():
         if override or k not in os.environ:
             os.environ[k] = v
@@ -242,3 +251,137 @@ def has_active_credentials(config_dir: Path | None = None) -> bool:
         return True
 
     return False
+
+
+def get_auto_reflect_policy(workspace_root: Path | str | None = None) -> str:
+    """Get the active auto-reflection policy ('cloud_only' | 'idle' | 'off').
+
+    Priority:
+    1. Environment variable HEX_AUTO_REFLECT
+    2. Local workspace .hex/config.yaml under learning.auto_reflect
+    3. Global ~/.hex/config.yaml under learning.auto_reflect
+    4. Default: 'cloud_only'
+    """
+    if "HEX_AUTO_REFLECT" in os.environ and os.environ["HEX_AUTO_REFLECT"].strip():
+        val = os.environ["HEX_AUTO_REFLECT"].strip().lower()
+        if val in ("off", "false", "no", "disabled", "0"):
+            return "off"
+        if val in ("cloud_only", "cloud-only", "cloud"):
+            return "cloud_only"
+        if val in ("idle", "on_idle"):
+            return "idle"
+        return val
+
+    # Candidate config files
+    ws = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    candidates = [
+        ws / ".hex" / "config.yaml",
+        Path.home() / ".hex" / "config.yaml",
+    ]
+    for cfg_path in candidates:
+        if cfg_path.is_file():
+            data = parse_config_yaml(cfg_path)
+            learning = data.get("learning", {})
+            if isinstance(learning, dict) and "auto_reflect" in learning:
+                raw_val = learning["auto_reflect"]
+                if raw_val is False or str(raw_val).strip().lower() in ("off", "false", "no", "disabled", "0"):
+                    return "off"
+                val = str(raw_val).strip().lower()
+                if val in ("cloud_only", "cloud-only", "cloud"):
+                    return "cloud_only"
+                if val in ("idle", "on_idle"):
+                    return "idle"
+                return val
+
+    return "cloud_only"
+
+
+def should_execute_background_reflection(
+    policy: str,
+    router: Any | None = None,
+    is_idle: bool = False,
+) -> tuple[bool, str]:
+    """Determine whether autonomous background reflection may proceed.
+
+    Gated by hardware profiling and policy to protect unified memory on local
+    Apple Silicon (M4/M-series) or local inference backends (Ollama, local vLLM).
+    """
+    norm_policy = (policy or "cloud_only").strip().lower()
+    if norm_policy in ("off", "false", "no", "disabled", "0"):
+        return False, "Autonomous reflection disabled (policy=off)"
+
+    if norm_policy == "idle":
+        if is_idle:
+            return True, "Executing during idle"
+        return False, "Deferred until idle"
+
+    # Policy is "cloud_only" (or default fallback)
+    if router is not None:
+        # Check active provider name/type
+        provider_name = (
+            getattr(router, "active_provider", None)
+            or getattr(router, "provider", None)
+            or getattr(router, "provider_name", None)
+            or getattr(router, "cloud_provider_type", None)
+        )
+        if provider_name and isinstance(provider_name, str):
+            p_clean = provider_name.strip().lower()
+            if p_clean in ("mlx", "ollama", "local", "vllm", "cpu", "metal", "lmstudio", "offline"):
+                return False, "Suppressed background reflection on local hardware to prevent memory starvation"
+            if p_clean in ("cloud", "anthropic", "openai", "gemini", "antigravity", "openrouter", "groq", "deepseek"):
+                return True, "Cloud-routed reasoner active"
+
+        # Check explicit is_cloud boolean
+        is_cloud_val = getattr(router, "is_cloud", None)
+        if isinstance(is_cloud_val, bool):
+            if is_cloud_val:
+                return True, "Cloud-routed reasoner active"
+            return False, "Suppressed background reflection on local hardware to prevent memory starvation"
+
+        # Check cloud_provider attribute on TwoTierModelRouter
+        cp = getattr(router, "cloud_provider", None)
+        if cp is None:
+            return False, "Suppressed background reflection on local hardware to prevent memory starvation"
+
+        # Check availability
+        if hasattr(cp, "is_available") and callable(cp.is_available):
+            try:
+                if not cp.is_available():
+                    return False, "Suppressed background reflection on local hardware to prevent memory starvation"
+            except Exception:
+                return False, "Suppressed background reflection on local hardware to prevent memory starvation"
+
+        cp_type = (
+            getattr(cp, "provider_type", None)
+            or getattr(cp, "provider_name", None)
+            or ""
+        )
+        if cp_type and isinstance(cp_type, str) and cp_type.strip().lower() in ("mlx", "ollama", "local", "vllm", "offline"):
+            return False, "Suppressed background reflection on local hardware to prevent memory starvation"
+
+        return True, "Cloud-routed reasoner active"
+
+    # Fallback when router is None or didn't supply provider
+    import platform
+
+    cloud_prov = (os.environ.get("HEX_CLOUD_PROVIDER") or "").strip().lower()
+    if cloud_prov in ("local", "offline", "ollama", "lmstudio", "mlx"):
+        return False, "Suppressed background reflection on local hardware to prevent memory starvation"
+
+    if cloud_prov in ("anthropic", "openai", "gemini", "antigravity", "openrouter", "groq", "deepseek"):
+        return True, "Cloud-routed reasoner active"
+
+    # Check if active credentials exist
+    try:
+        if has_active_credentials():
+            return True, "Cloud-routed reasoner active"
+    except Exception:
+        pass
+
+    # Local machine detection: Darwin ARM64 (Apple Silicon) or offline
+    is_darwin_arm64 = platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64")
+    if is_darwin_arm64:
+        return False, "Suppressed background reflection on local hardware to prevent memory starvation"
+
+    return False, "Suppressed background reflection on local hardware to prevent memory starvation"
+
