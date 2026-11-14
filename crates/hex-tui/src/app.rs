@@ -76,8 +76,8 @@ pub const AVAILABLE_SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/sbs",
-        description: "Render two-column side-by-side diff for modified file",
-        usage: "/sbs <path>",
+        description: "Toggle side-by-side diff view",
+        usage: "/sbs",
     },
     SlashCommand {
         name: "/blast",
@@ -265,6 +265,34 @@ pub fn detect_git_info(dir: &std::path::Path) -> (String, String) {
     (branch, sha)
 }
 
+/// Detect whether the current terminal has a light background via `COLORFGBG`.
+/// If the background color index >= 7 (e.g. "0;15"), it is considered a light terminal.
+pub fn is_light_terminal() -> bool {
+    if let Ok(val) = std::env::var("COLORFGBG") {
+        let parts: Vec<&str> = val.split(';').collect();
+        let bg_part = if parts.len() >= 2 {
+            parts.last()
+        } else {
+            None
+        };
+        if let Some(bg_str) = bg_part {
+            if let Ok(bg_num) = bg_str.trim().parse::<u32>() {
+                return bg_num >= 7;
+            }
+        }
+    }
+    false
+}
+
+/// Default skin name based on terminal background detection.
+pub fn detect_default_skin() -> String {
+    if is_light_terminal() {
+        "light".to_string()
+    } else {
+        "amber".to_string()
+    }
+}
+
 impl App {
     pub fn new(
         project_id: impl Into<String>,
@@ -306,7 +334,7 @@ impl App {
             splash_text: None,
             fencing_token: 1,
             connection_status: "Connected".to_string(),
-            skin_name: "amber".to_string(),
+            skin_name: detect_default_skin(),
 
             mode: "agent".to_string(),
             focus: Focus::Input,
@@ -486,6 +514,11 @@ impl App {
         }
     }
 
+    /// Toggle side-by-side diff view.
+    pub fn toggle_side_by_side(&mut self) {
+        self.side_by_side = !self.side_by_side;
+    }
+
     /// Set active approval request modal.
     pub fn set_approval_request(&mut self, req: ApprovalRequest) {
         self.active_approval = Some(req);
@@ -652,11 +685,28 @@ impl App {
         let trimmed = self.input_buffer.trim_start();
         if trimmed.starts_with('/') {
             let filter = trimmed.split_whitespace().next().unwrap_or("/");
-            self.slash_suggestions = AVAILABLE_SLASH_COMMANDS
-                .iter()
-                .filter(|cmd| cmd.name.starts_with(filter))
-                .cloned()
-                .collect();
+            if filter == "/" {
+                self.slash_suggestions = AVAILABLE_SLASH_COMMANDS.to_vec();
+            } else {
+                let query = filter.strip_prefix('/').unwrap_or(filter).to_lowercase();
+                let mut prefix_matches = Vec::new();
+                let mut subseq_matches = Vec::new();
+
+                for cmd in AVAILABLE_SLASH_COMMANDS {
+                    let cmd_name_clean = cmd
+                        .name
+                        .strip_prefix('/')
+                        .unwrap_or(cmd.name)
+                        .to_lowercase();
+                    if cmd_name_clean.starts_with(&query) {
+                        prefix_matches.push(cmd.clone());
+                    } else if is_subsequence(&query, &cmd_name_clean) {
+                        subseq_matches.push(cmd.clone());
+                    }
+                }
+                prefix_matches.extend(subseq_matches);
+                self.slash_suggestions = prefix_matches;
+            }
             self.selected_slash_index = 0;
         } else {
             self.slash_suggestions.clear();
@@ -751,6 +801,17 @@ fn char_to_byte(text: &str, char_index: usize) -> usize {
         .unwrap_or(text.len())
 }
 
+/// Check if characters of `query` appear in order within `target`.
+pub fn is_subsequence(query: &str, target: &str) -> bool {
+    let mut target_chars = target.chars();
+    for qc in query.chars() {
+        if !target_chars.any(|tc| tc == qc) {
+            return false;
+        }
+    }
+    true
+}
+
 fn chrono_now() -> String {
     // Zero extra external dependency timestamp
     use std::time::SystemTime;
@@ -805,6 +866,40 @@ mod tests {
 
         assert!(app.accept_slash_suggestion());
         assert_eq!(app.input_buffer, "/diff ");
+
+        // Test '/' shows all commands
+        app.input_buffer = "/".to_string();
+        app.cursor_pos = 1;
+        app.update_slash_suggestions();
+        assert_eq!(app.slash_suggestions.len(), AVAILABLE_SLASH_COMMANDS.len());
+
+        // Test fuzzy subsequence matches
+        app.input_buffer = "/ast".to_string();
+        app.cursor_pos = 4;
+        app.update_slash_suggestions();
+        assert!(app.slash_suggestions.iter().any(|cmd| cmd.name == "/blast"));
+
+        app.input_buffer = "/rb".to_string();
+        app.cursor_pos = 3;
+        app.update_slash_suggestions();
+        assert!(app.slash_suggestions.iter().any(|cmd| cmd.name == "/rollback"));
+
+        // Test ranking: prefix match before subsequence match
+        app.input_buffer = "/mem".to_string();
+        app.cursor_pos = 4;
+        app.update_slash_suggestions();
+        assert_eq!(app.slash_suggestions[0].name, "/memory");
+        assert!(app.slash_suggestions.iter().any(|cmd| cmd.name == "/remember"));
+    }
+
+    #[test]
+    fn test_toggle_side_by_side() {
+        let mut app = App::new("p1", "m1", "cow");
+        assert!(!app.side_by_side);
+        app.toggle_side_by_side();
+        assert!(app.side_by_side);
+        app.toggle_side_by_side();
+        assert!(!app.side_by_side);
     }
 
     #[test]

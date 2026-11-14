@@ -46,12 +46,35 @@ pub const MATRIX: Skin = Skin { border: Color::Rgb(16,185,129), heading: Color::
 pub const NORD: Skin = Skin { border: Color::Rgb(129,161,193), heading: Color::Rgb(136,192,208), accent: Color::Rgb(163,190,140), category: Color::Rgb(129,161,193), text: Color::Rgb(236,239,244), muted: Color::Rgb(125,138,161), success: Color::Rgb(163,190,140), warn: Color::Rgb(235,203,139), danger: Color::Rgb(191,97,106), surface: Color::Rgb(46,52,64), gradient: [Color::Rgb(143,188,187),Color::Rgb(136,192,208),Color::Rgb(129,161,193),Color::Rgb(94,129,172),Color::Rgb(76,86,106),Color::Rgb(67,76,94)], prompt: "❄" };
 pub const MONO: Skin = Skin { border: Color::Rgb(140,140,140), heading: Color::Rgb(255,255,255), accent: Color::Rgb(220,220,220), category: Color::Rgb(180,180,180), text: Color::Rgb(240,240,240), muted: Color::Rgb(130,130,130), success: Color::Rgb(200,200,200), warn: Color::Rgb(180,180,180), danger: Color::Rgb(255,255,255), surface: Color::Rgb(30,30,30), gradient: [Color::Rgb(255,255,255),Color::Rgb(230,230,230),Color::Rgb(200,200,200),Color::Rgb(170,170,170),Color::Rgb(140,140,140),Color::Rgb(110,110,110)], prompt: ">" };
 
+pub const LIGHT: Skin = Skin {
+    border: Color::Rgb(75, 85, 99),
+    heading: Color::Rgb(17, 24, 39),
+    accent: Color::Rgb(217, 119, 6),
+    category: Color::Rgb(79, 70, 229),
+    text: Color::Rgb(17, 24, 39),
+    muted: Color::Rgb(107, 114, 128),
+    success: Color::Rgb(5, 150, 105),
+    warn: Color::Rgb(217, 119, 6),
+    danger: Color::Rgb(220, 38, 38),
+    surface: Color::Rgb(249, 250, 251),
+    gradient: [
+        Color::Rgb(217, 119, 6),
+        Color::Rgb(202, 138, 4),
+        Color::Rgb(79, 70, 229),
+        Color::Rgb(67, 56, 202),
+        Color::Rgb(17, 24, 39),
+        Color::Rgb(75, 85, 99),
+    ],
+    prompt: "❯",
+};
+
 pub fn skin(name: &str) -> Skin {
     match name.to_ascii_lowercase().as_str() {
         "cyberpunk" => CYBERPUNK,
         "matrix" => MATRIX,
         "nord" => NORD,
         "mono" => MONO,
+        "light" => LIGHT,
         _ => AMBER,
     }
 }

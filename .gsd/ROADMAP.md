@@ -322,6 +322,9 @@
 [x] Phase 28: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 5)
     [x] 28-01: Persistent In-Memory Python Kernel & State Isolation
     [x] 28-02: Gateway code_kernel Tool & Workspace File Sync
+[ ] Phase 29: TUI Ergonomics, Scrolling Fix & ReAct Loop Native Tool-Call Alignment (Fit & Finish Polish)
+    [x] 29-01: Rust TUI Cockpit Polish, Widget Wiring & Dialogue Scrolling Fix
+    [ ] 29-02: ReAct Loop Native Tool Schema & Transient Retry Resilience
 ```
 
 ### Phase 24: Continuous Multi-Turn ReAct Tool Loop (Hermes Parity Pillar 1)

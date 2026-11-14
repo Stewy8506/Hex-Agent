@@ -266,7 +266,7 @@ class TestGatewayProcessTools(unittest.TestCase):
         created_proc_ids: list[str] = []
 
         def mock_model(messages: list[dict[str, Any]], **kwargs: Any) -> str:
-            tool_names = [m.get("tool_name") for m in messages if isinstance(m, dict)]
+            tool_names = [m.get("tool_name") or m.get("name") for m in messages if isinstance(m, dict)]
             if "start_process" not in tool_names:
                 cmd = f'{sys.executable} -u -c "import time; print(\'WORKER_RUNNING\', flush=True); time.sleep(5)"'
                 payload = json.dumps({"name": "start_process", "arguments": {"command": cmd, "pty": False}})
@@ -274,7 +274,7 @@ class TestGatewayProcessTools(unittest.TestCase):
 
             if "list_processes" not in tool_names:
                 for m in messages:
-                    if m.get("tool_name") == "start_process":
+                    if (m.get("tool_name") or m.get("name")) == "start_process":
                         content = m.get("content", "")
                         match = re.search(r'"process_id":\s*"([^"]+)"', content)
                         if match:

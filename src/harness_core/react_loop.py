@@ -974,6 +974,8 @@ class ReActLoop:
                         "role": "tool",
                         "tool_call_id": tool_res.call_id,
                         "name": tool_res.name,
+                        "tool_name": tool_res.name,
+                        "call_id": tool_res.call_id,
                         "content": obs_payload,
                         "observation": obs_content,
                     }
