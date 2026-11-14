@@ -189,6 +189,17 @@ class TestHexCLI(unittest.TestCase):
             self.assertEqual(search_options[0][0], "keep")
             self.assertIn("currently configured", search_options[0][1])
 
+    def test_hex_eval_cli(self) -> None:
+        """Verify hex eval --suite core executes cleanly with summary table output (GAP-02)."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["eval", "--suite", "core"])
+        output = buf.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("HEX BENCHMARK EVALUATION RUNNER", output)
+        self.assertIn("TOTAL / SUMMARY", output)
+        self.assertIn("PASSED", output)
+
 
 if __name__ == "__main__":
     unittest.main()

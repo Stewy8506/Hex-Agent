@@ -114,6 +114,29 @@ class _SyncRunner:
             self._thread.join(timeout=2.0)
 
 
+class ChainIntegrityReport(dict):
+    """Result report from LedgerStore.verify_chain_integrity()."""
+
+    @property
+    def valid(self) -> bool:
+        return bool(self.get("valid", False))
+
+    @property
+    def errors(self) -> list[str]:
+        return list(self.get("errors", []))
+
+    @property
+    def tasks_checked(self) -> int:
+        return int(self.get("tasks_checked", 0))
+
+    @property
+    def verified_events(self) -> int:
+        return int(self.get("verified_events", 0))
+
+    def __bool__(self) -> bool:
+        return self.valid
+
+
 class LedgerStore:
     """Thread-safe transactional Task Ledger & Call Journal."""
 
@@ -1105,6 +1128,118 @@ class LedgerStore:
                 task_id,
             )
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
+
+    def verify_chain_integrity(self, task_id: str | None = None) -> ChainIntegrityReport:
+        """Verifies cryptographic hash chain integrity across all or specific task events.
+
+        Checks:
+        1. Sequence continuity (sequence_no 1, 2, ... with no gaps).
+        2. Correct previous hash linking (starts with 64 zeroes, links to preceding event_sha256).
+        3. Cryptographic hash validity: recomputes SHA-256 over all event metadata and payload.
+
+        Returns:
+            ChainIntegrityReport (evaluates to True if valid, False if compromised).
+        """
+        if self.backend_type == "postgres":
+            return self._run_sync(self.verify_chain_integrity_async, task_id)
+
+        with self._lock:
+            if task_id:
+                rows = self.conn.execute(
+                    "SELECT task_id, sequence_no, event_type, prior_state, next_state, "
+                    "reason_code, workspace_tree_sha, payload_json, occurred_at, correlation_id, event_sha256 "
+                    "FROM task_events WHERE task_id = ? ORDER BY sequence_no ASC",
+                    (task_id,),
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT task_id, sequence_no, event_type, prior_state, next_state, "
+                    "reason_code, workspace_tree_sha, payload_json, occurred_at, correlation_id, event_sha256 "
+                    "FROM task_events ORDER BY task_id ASC, sequence_no ASC"
+                ).fetchall()
+
+            return self._verify_event_rows(rows)
+
+    async def verify_chain_integrity_async(
+        self, task_id: str | None = None
+    ) -> ChainIntegrityReport:
+        """Asynchronously verifies cryptographic hash chain integrity across task events."""
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.verify_chain_integrity, task_id)
+
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            if task_id:
+                rows = await conn.fetch(
+                    "SELECT task_id, sequence_no, event_type, prior_state, next_state, "
+                    "reason_code, workspace_tree_sha, payload_json, occurred_at, correlation_id, event_sha256 "
+                    "FROM task_events WHERE task_id = $1 ORDER BY sequence_no ASC",
+                    task_id,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT task_id, sequence_no, event_type, prior_state, next_state, "
+                    "reason_code, workspace_tree_sha, payload_json, occurred_at, correlation_id, event_sha256 "
+                    "FROM task_events ORDER BY task_id ASC, sequence_no ASC"
+                )
+            return self._verify_event_rows(rows)
+
+    def _verify_event_rows(self, rows: list[Any]) -> ChainIntegrityReport:
+        tasks_seen: set[str] = set()
+        verified_events = 0
+        errors: list[str] = []
+        current_task_id: str | None = None
+        prev_hash = "0" * 64
+        expected_seq = 1
+
+        for r in rows:
+            t_id = str(r["task_id"])
+            seq_no = int(r["sequence_no"])
+            stored_hash = str(r["event_sha256"])
+
+            if t_id != current_task_id:
+                current_task_id = t_id
+                tasks_seen.add(t_id)
+                prev_hash = "0" * 64
+                expected_seq = 1
+
+            if seq_no != expected_seq:
+                errors.append(
+                    f"Task {t_id}: sequence discontinuity (expected {expected_seq}, found {seq_no})"
+                )
+
+            payload_raw = r["payload_json"]
+            payload_str = payload_raw if isinstance(payload_raw, str) else canonical_json(payload_raw)
+
+            recomputed_hash = compute_event_hash(
+                prev_hash=prev_hash,
+                task_id=t_id,
+                seq_no=seq_no,
+                event_type=str(r["event_type"]),
+                prior_state=r["prior_state"],
+                next_state=r["next_state"],
+                reason_code=str(r["reason_code"]),
+                workspace_tree_sha=r["workspace_tree_sha"],
+                payload_str=payload_str,
+                occurred_at=str(r["occurred_at"]),
+            )
+
+            if recomputed_hash != stored_hash:
+                errors.append(
+                    f"Task {t_id} event seq {seq_no}: hash mismatch "
+                    f"(computed {recomputed_hash}, stored {stored_hash})"
+                )
+
+            prev_hash = stored_hash
+            expected_seq = seq_no + 1
+            verified_events += 1
+
+        return ChainIntegrityReport({
+            "valid": len(errors) == 0,
+            "tasks_checked": len(tasks_seen),
+            "verified_events": verified_events,
+            "errors": errors,
+        })
 
     # ------------------------------------------------------------------
     # Workers, Leases, Attempts, and Fencing Tokens (FR-011, FR-050..FR-052)

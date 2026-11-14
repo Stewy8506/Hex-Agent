@@ -89,6 +89,41 @@ class TestPackagingAndVendorResolution(unittest.TestCase):
         self.assertIn("HEX AI WORKBENCH", content)
         self.assertIn("onboard --defaults", content)
 
+    def test_installer_script_powershell_parity(self) -> None:
+        """install.ps1 exists, mirrors install.sh features, and contains valid syntax structure."""
+        ps_installer_path = Path(__file__).resolve().parents[1] / "install.ps1"
+        self.assertTrue(ps_installer_path.is_file(), "install.ps1 must exist in repository root")
+
+        content = ps_installer_path.read_text(encoding="utf-8")
+        self.assertIn("HEX AI WORKBENCH", content)
+        self.assertIn("pyproject.toml", content)
+        self.assertIn(".venv", content)
+        self.assertIn("cargo", content)
+        self.assertIn("git", content)
+        self.assertIn("hex.bat", content)
+        self.assertIn("hex.ps1", content)
+        self.assertIn("Quick Start Commands:", content)
+
+        # Delimiter balancing check for PowerShell script
+        delimiters = {"(": ")", "[": "]", "{": "}"}
+        stack = []
+        for i, ch in enumerate(content):
+            if ch in delimiters:
+                stack.append((ch, i))
+            elif ch in delimiters.values():
+                self.assertTrue(len(stack) > 0, f"Unmatched closing delimiter '{ch}' at char {i}")
+                open_ch, _ = stack.pop()
+                self.assertEqual(delimiters[open_ch], ch, f"Mismatched delimiter '{open_ch}' and '{ch}' at char {i}")
+        self.assertEqual(len(stack), 0, "Unclosed delimiters remaining in install.ps1")
+
+    def test_hex_bat_wrapper(self) -> None:
+        """hex.bat exists in repository root and routes to local .venv or user hex python."""
+        hex_bat = Path(__file__).resolve().parents[1] / "hex.bat"
+        self.assertTrue(hex_bat.is_file(), "hex.bat must exist in repository root")
+        bat_content = hex_bat.read_text(encoding="utf-8")
+        self.assertIn(".venv\\Scripts\\python.exe", bat_content)
+        self.assertIn("harness_core.cli", bat_content)
+
     def test_built_wheel_structure(self) -> None:
         """Wheel in dist/ contains all required package data (migrations, skills, console scripts)."""
         dist_dir = Path(__file__).resolve().parents[1] / "dist"

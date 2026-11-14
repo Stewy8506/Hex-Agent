@@ -188,6 +188,25 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_h2_eval.add_argument("--runs-root", default=None, help="Root directory for rollout executions and logs")
     p_h2_eval.add_argument("--json", action="store_true", help="Output results as JSON")
 
+    p_eval = sub.add_parser("eval", help="Run benchmark evaluation suites with formatted summary table")
+    p_eval.add_argument(
+        "--suite",
+        choices=["all", "core", "resilience", "compaction", "tui"],
+        default="core",
+        help="Benchmark evaluation suite to execute (default: core)",
+    )
+    p_eval.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Display verbose unittest execution traces",
+    )
+    p_eval.add_argument(
+        "--json",
+        action="store_true",
+        help="Output evaluation results as structured JSON",
+    )
+
     p_wrk = sub.add_parser("worker", help="Start standalone distributed worker daemon")
     p_wrk.add_argument("--worker-id", default=None, help="Worker ID (defaults to hostname-hash)")
     p_wrk.add_argument("--machine-class", choices=["auto", "m4_air", "desktop_gpu", "server"], default="auto")
@@ -1056,6 +1075,15 @@ def _main_impl(argv: list[str] | None = None) -> int:
                 print(res.report_text)
             print(f"=======================================================\n")
         return 0 if res.ok else 1
+
+    if args.cmd == "eval":
+        from .eval_runner import run_eval_suite
+
+        return run_eval_suite(
+            suite_name=getattr(args, "suite", "core"),
+            verbose=getattr(args, "verbose", False),
+            json_output=getattr(args, "json", False),
+        )
 
     if args.cmd == "worker":
         from .worker_daemon import DirectLedgerWorkerClient, RestWorkerClient, WorkerDaemon
