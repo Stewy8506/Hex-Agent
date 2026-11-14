@@ -203,12 +203,13 @@ class TestMultiTurnReActLoop(unittest.TestCase):
         self.assertEqual(session.total_turns, 3)
         self.assertEqual(tool_executed, ["read_file", "write_file"])
 
-        # Verify messages history has observation blocks
-        user_msgs = [m for m in loop.messages if m.get("role") == "user"]
-        # 1 initial prompt + 2 observation messages
-        self.assertEqual(len(user_msgs), 3)
-        self.assertIn('<observation tool="read_file">', user_msgs[1]["content"])
-        self.assertIn('<observation tool="write_file">', user_msgs[2]["content"])
+        # Verify messages history has native tool result messages with observation blocks
+        tool_msgs = [m for m in loop.messages if m.get("role") == "tool"]
+        self.assertEqual(len(tool_msgs), 2)
+        self.assertIn('<observation tool="read_file">', tool_msgs[0]["observation"])
+        self.assertIn('<observation tool="write_file">', tool_msgs[1]["observation"])
+        self.assertEqual(tool_msgs[0]["name"], "read_file")
+        self.assertEqual(tool_msgs[1]["name"], "write_file")
 
     def test_natural_final_answer_termination(self) -> None:
         """Test termination when the model gives an answer without calling any tools."""

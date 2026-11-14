@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 import inspect
 import json
 from pathlib import Path
+import random
 import re
+import socket
 import time
 from typing import Any, Callable
 import uuid
@@ -29,6 +31,10 @@ class ReActConfig:
     system_prompt: str = ""
     budget_tokens: int = 100_000
     stop_sequences: list[str] = field(default_factory=list)
+    max_retries: int = 3
+    initial_retry_delay: float = 0.5
+    backoff_factor: float = 2.0
+    retry_jitter: float = 0.1
 
 
 @dataclass
@@ -99,6 +105,7 @@ class ReActSessionResult:
     turns: list[ReActTurn] = field(default_factory=list)
     termination_reason: str = "finish"  # "finish", "max_turns", "error", "no_tool_calls"
     compaction_result: Any | None = None
+    retry_count: int = 0
 
 
 def _safe_json_loads(raw: str) -> Any:
@@ -175,6 +182,7 @@ class ReActLoop:
         self.messages: list[dict[str, Any]] = []
         self.turns: list[ReActTurn] = []
         self.last_compaction_result: Any | None = None
+        self.retry_count: int = 0
 
     # -------------------------------------------------------------------------
     # Response and Tool Parsing
@@ -452,8 +460,81 @@ class ReActLoop:
     # Model Invocation & Tool Execution
     # -------------------------------------------------------------------------
 
-    def _call_model(self, messages: list[dict[str, Any]]) -> Any:
-        """Invoke configured model_caller with appropriate parameter signature."""
+    @staticmethod
+    def _is_transient_error(exc: Exception) -> bool:
+        """Check if an exception represents a transient failure eligible for retry."""
+        # Non-transient standard exceptions
+        if isinstance(exc, (ValueError, TypeError, KeyError, AttributeError, SyntaxError)):
+            return False
+
+        try:
+            from .providers.base import BudgetExceededError, PolicyBlockedError
+            if isinstance(exc, (BudgetExceededError, PolicyBlockedError)):
+                return False
+        except Exception:
+            pass
+
+        # Timeout & connection errors
+        if isinstance(exc, (TimeoutError, ConnectionError)):
+            return True
+        try:
+            if isinstance(exc, socket.timeout):
+                return True
+        except Exception:
+            pass
+
+        # Explicit HTTP status code attribute (e.g. urllib.error.HTTPError, custom exceptions)
+        status = (
+            getattr(exc, "code", None)
+            or getattr(exc, "status_code", None)
+            or getattr(exc, "status", None)
+            or getattr(exc, "http_status", None)
+        )
+        if isinstance(status, int):
+            if status in (429, 502, 503, 504, 529):
+                return True
+            if status in (400, 401, 403, 404):
+                return False
+
+        err_str = str(exc).lower()
+
+        # Explicit non-transient markers
+        non_transient_markers = (
+            "400 bad request",
+            "http 400",
+            "401 unauthorized",
+            "http 401",
+            "403 forbidden",
+            "http 403",
+            "404 not found",
+            "http 404",
+        )
+        if any(m in err_str for m in non_transient_markers):
+            return False
+
+        # Explicit transient markers
+        transient_markers = (
+            "429",
+            "503",
+            "502",
+            "504",
+            "529",
+            "rate limit",
+            "ratelimit",
+            "too many requests",
+            "overloaded",
+            "timeout",
+            "timed out",
+            "service unavailable",
+            "temporarily unavailable",
+            "connection reset",
+            "connection refused",
+            "socket error",
+        )
+        return any(m in err_str for m in transient_markers)
+
+    def _invoke_caller(self, messages: list[dict[str, Any]]) -> Any:
+        """Invoke configured model_caller trying multiple parameter signatures."""
         if self.model_caller is None:
             raise RuntimeError("No model_caller configured for ReActLoop")
 
@@ -473,6 +554,25 @@ class ReActLoop:
         prompt_str = self._format_messages_to_prompt(messages)
         return self.model_caller(prompt_str)
 
+    def _call_model(self, messages: list[dict[str, Any]]) -> Any:
+        """Invoke configured model_caller with transient error retry resilience."""
+        max_retries = getattr(self.config, "max_retries", 3)
+        initial_delay = getattr(self.config, "initial_retry_delay", 0.5)
+        backoff_factor = getattr(self.config, "backoff_factor", 2.0)
+        jitter = getattr(self.config, "retry_jitter", 0.1)
+
+        attempt = 0
+        while True:
+            try:
+                return self._invoke_caller(messages)
+            except Exception as exc:
+                if not self._is_transient_error(exc) or attempt >= max_retries:
+                    raise
+                self.retry_count += 1
+                delay = initial_delay * (backoff_factor ** attempt) + random.uniform(0, jitter)
+                time.sleep(delay)
+                attempt += 1
+
     @staticmethod
     def _format_messages_to_prompt(messages: list[dict[str, Any]]) -> str:
         """Convert a list of structured chat messages to a plaintext prompt string."""
@@ -480,7 +580,11 @@ class ReActLoop:
         for msg in messages:
             role = str(msg.get("role", "user")).upper()
             content = str(msg.get("content", ""))
-            lines.append(f"[{role}]\n{content}")
+            if role == "TOOL":
+                tool_name = msg.get("name", "tool")
+                lines.append(f"[TOOL ({tool_name})]\n{content}")
+            else:
+                lines.append(f"[{role}]\n{content}")
         return "\n\n".join(lines)
 
     def _execute_tool_call(self, call: ToolCallRequest) -> ToolCallResult:
@@ -721,6 +825,7 @@ class ReActLoop:
         """Execute the multi-turn ReAct loop synchronously."""
         if session_id:
             self.session_id = session_id
+        self.retry_count = 0
         self.messages = []
         if self.config.system_prompt:
             self.messages.append({"role": "system", "content": self.config.system_prompt})
@@ -776,6 +881,7 @@ class ReActLoop:
                     turns=self.turns,
                     termination_reason="error",
                     compaction_result=self.last_compaction_result,
+                    retry_count=self.retry_count,
                 )
 
             raw_text = self._extract_response_text(response)
@@ -865,10 +971,11 @@ class ReActLoop:
 
                 self.messages.append(
                     {
-                        "role": "user",
-                        "content": obs_content,
-                        "tool_name": tool_res.name,
-                        "call_id": tool_res.call_id,
+                        "role": "tool",
+                        "tool_call_id": tool_res.call_id,
+                        "name": tool_res.name,
+                        "content": obs_payload,
+                        "observation": obs_content,
                     }
                 )
 
@@ -892,6 +999,7 @@ class ReActLoop:
             turns=self.turns,
             termination_reason=termination_reason,
             compaction_result=self.last_compaction_result,
+            retry_count=self.retry_count,
         )
 
     async def run_async(

@@ -490,8 +490,8 @@ class HarnessOrchestrator:
             # 2. Deterministic tool planner fallback
             last_msg_content = ""
             for m in reversed(messages):
-                if m.get("role") in ("user", "observation"):
-                    last_msg_content = str(m.get("content", ""))
+                if m.get("role") in ("user", "observation", "tool"):
+                    last_msg_content = str(m.get("observation") or m.get("content", ""))
                     break
 
             if "<observation" in last_msg_content:
