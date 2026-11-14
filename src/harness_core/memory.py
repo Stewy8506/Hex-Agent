@@ -2070,8 +2070,55 @@ class MemoryLifecycleManager:
 
         return candidates
 
+    def promote_to_skill(
+        self,
+        entry_id: str,
+        name: Optional[str] = None,
+        compiler: Optional[Any] = None,
+    ) -> Any:
+        """Promote a high-confidence reflection or memory entry into a reusable SKILL.md bundle."""
+        target_content = ""
+        is_reflection = False
+
+        if entry_id in self._reflections:
+            ref = self._reflections[entry_id]
+            target_content = ref["content"]
+            is_reflection = True
+        else:
+            item = self.controller.get_memory(entry_id)
+            if item:
+                target_content = item.text
+
+        if not target_content:
+            return None
+
+        from .skills.compiler import SkillCompiler, normalize_skill_name
+
+        skill_comp = compiler or SkillCompiler(default_workspace_root=self.workspace_root)
+        clean_name = name or normalize_skill_name(f"skill-{entry_id.replace('ref_', '')}")
+        desc = f"Synthesized skill from reflection {entry_id}."
+        if len(desc) > 60:
+            desc = desc[:59] + "."
+
+        result = skill_comp.compile_skill(
+            source_input=target_content,
+            name=clean_name,
+            description=desc,
+            workspace_root=self.workspace_root,
+        )
+        if is_reflection:
+            self._reflections[entry_id]["promoted"] = True
+            self._reflections[entry_id]["skill_name"] = clean_name
+            self._save_reflections()
+        return result
+
     def promote_entry(self, entry_id: str, target: str = "memory") -> bool:
-        """Promote an entry with hit_counter >= 3 into active MEMORY.md."""
+        """Promote an entry with hit_counter >= 3 into active MEMORY.md or compile as SKILL.md."""
+        target_norm = str(target or "memory").strip().lower()
+        if target_norm == "skill":
+            res = self.promote_to_skill(entry_id)
+            return bool(res and getattr(res, "skill_dir", None))
+
         target_content = ""
         is_reflection = False
 
@@ -2087,7 +2134,7 @@ class MemoryLifecycleManager:
         if not target_content:
             return False
 
-        res = self.controller.process_memory(target_content, target=target)
+        res = self.controller.process_memory(target_content, target=target_norm)
         if not res.get("ok"):
             return False
 

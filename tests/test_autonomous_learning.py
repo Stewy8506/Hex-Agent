@@ -321,3 +321,183 @@ def test_orchestrator_friction_handling_suppressed(tmp_path: Path) -> None:
     assert entries[0]["repair_attempts"] == 3
     assert entries[0]["status"] == "pending"
     assert "Suppressed background reflection on local hardware" in entries[0]["suppression_reason"]
+
+
+# =============================================================================
+# 4. ReflectionSynthesizer & MemoryLifecycleManager Tests (Task 2)
+# =============================================================================
+
+
+def test_lesson_synthesis_llm(tmp_path: Path) -> None:
+    """ReflectionSynthesizer extracts structured lesson from LLM response when router available."""
+    from harness_core.reflection import ReflectionSynthesizer
+
+    mock_resp = MagicMock()
+    mock_resp.text = json.dumps({
+        "symptom": "Pytest failed with 2 assertion errors in test_auth.py",
+        "root_cause": "Token expiration header was missing from auth payload",
+        "verified_solution": "Injected exp timestamp in JWT payload generation",
+        "avoid_invariant": "- [AVOID] Do not omit exp claim from JWT tokens",
+    })
+
+    mock_router = MagicMock()
+    mock_router.execute_routed_request.return_value = ("ALLOW", mock_resp)
+
+    synth = ReflectionSynthesizer(router=mock_router, workspace_root=tmp_path)
+    lesson = synth.synthesize_lesson(
+        task_id="task_jwt_auth",
+        goal="Fix token validation errors",
+        error_traces=["AssertionError: 'exp' missing from token payload"],
+        modified_files=["auth/jwt.py"],
+    )
+
+    assert lesson.task_id == "task_jwt_auth"
+    assert "Pytest failed with 2 assertion errors" in lesson.symptom
+    assert "Token expiration header was missing" in lesson.root_cause
+    assert "Injected exp timestamp" in lesson.verified_solution
+    assert "- [AVOID] Do not omit exp claim" in lesson.avoid_invariant
+    assert lesson.source_nodes == ["auth/jwt.py"]
+
+
+def test_lesson_synthesis_deterministic(tmp_path: Path) -> None:
+    """ReflectionSynthesizer falls back to clean deterministic extraction when router is None."""
+    from harness_core.reflection import ReflectionSynthesizer
+
+    synth = ReflectionSynthesizer(router=None, workspace_root=tmp_path)
+    lesson = synth.synthesize_lesson(
+        task_id="task_syntax_repair",
+        goal="Fix syntax errors in parser",
+        error_traces=["Error: SyntaxError: unexpected EOF while parsing parser.py line 89"],
+        final_patch="+    return ast_tree\n",
+        modified_files=["parser.py"],
+    )
+
+    assert lesson.task_id == "task_syntax_repair"
+    assert "SyntaxError: unexpected EOF while parsing parser.py line 89" in lesson.symptom
+    assert "parser.py" in lesson.root_cause
+    assert "parser.py" in lesson.verified_solution
+    assert lesson.avoid_invariant.startswith("- [AVOID]")
+    assert "parser.py" in lesson.source_nodes
+
+
+def test_append_to_lessons_md(tmp_path: Path) -> None:
+    """append_to_lessons_md preserves standard markdown structure in LESSONS.md."""
+    from harness_core.reflection import FrictionLesson, ReflectionSynthesizer
+
+    synth = ReflectionSynthesizer(workspace_root=tmp_path)
+    lesson1 = FrictionLesson(
+        lesson_id="lesson_001",
+        task_id="task_100",
+        symptom="Connection pool exhaustion under load",
+        root_cause="Unclosed database transactions in error path",
+        verified_solution="Wrapped connection in async context manager",
+        avoid_invariant="- [AVOID] Do not acquire connection without context manager",
+        source_nodes=["src/db.py"],
+    )
+    lesson2 = FrictionLesson(
+        lesson_id="lesson_002",
+        task_id="task_200",
+        symptom="Type error in router dispatch",
+        root_cause="Optional value passed to strict signature",
+        verified_solution="Added None check guard before call",
+        avoid_invariant="- [AVOID] Do not pass unchecked Optional[str] to router",
+        source_nodes=["src/router.py"],
+    )
+
+    p1 = synth.append_to_lessons_md(lesson1, workspace_root=tmp_path)
+    p2 = synth.append_to_lessons_md(lesson2, workspace_root=tmp_path)
+    assert p1 == p2
+    assert p1.is_file()
+
+    content = p1.read_text(encoding="utf-8")
+    assert "# Autonomous Friction Lessons & Post-Mortems" in content
+    assert "### Lesson: lesson_001 (Task: task_100)" in content
+    assert "### Lesson: lesson_002 (Task: task_200)" in content
+    assert "Connection pool exhaustion under load" in content
+    assert "- [AVOID] Do not acquire connection without context manager" in content
+
+
+def test_lifecycle_integration_auto_registration(tmp_path: Path) -> None:
+    """Appending a lesson automatically records reflection and populates GUARDRAILS.md."""
+    from harness_core.reflection import FrictionLesson, ReflectionSynthesizer
+    from harness_core.memory import GuardrailsManager, MemoryLifecycleManager
+
+    synth = ReflectionSynthesizer(workspace_root=tmp_path)
+    lesson = FrictionLesson(
+        lesson_id="lesson_guardrail_test",
+        task_id="task_guard_01",
+        symptom="Compilation failure in native ffi bindings",
+        root_cause="Missing C-header include in build script",
+        verified_solution="Added #include <unistd.h> to bridge header",
+        avoid_invariant="- [AVOID] Do not omit bridge header include in FFI",
+        source_nodes=["native/bridge.h"],
+    )
+
+    synth.append_to_lessons_md(lesson, workspace_root=tmp_path)
+
+    # 1. Verify GUARDRAILS.md was populated
+    guard_mgr = GuardrailsManager(workspace_root=tmp_path)
+    guardrails = guard_mgr.list_guardrails()
+    assert any("Do not omit bridge header include in FFI" in g for g in guardrails)
+
+    # 2. Verify MemoryLifecycleManager tracked reflection
+    lifecycle_mgr = MemoryLifecycleManager(workspace_root=tmp_path)
+    reflections = list(lifecycle_mgr._reflections.values())
+    assert any("Added #include <unistd.h>" in r["content"] for r in reflections)
+
+
+def test_lifecycle_integration_hit_counter_and_promotion(tmp_path: Path) -> None:
+    """Reflections with hit_counter >= 3 promote to MEMORY.md."""
+    from harness_core.memory import MemoryLifecycleManager
+
+    lifecycle_mgr = MemoryLifecycleManager(workspace_root=tmp_path)
+    ref = lifecycle_mgr.record_reflection("Always run cargo check before committing")
+
+    # Hit 1 (upon creation)
+    assert ref["hit_counter"] == 1
+
+    # Hit 2
+    r2 = lifecycle_mgr.record_reference(ref["id"])
+    assert r2["hit_counter"] == 2
+
+    # Still < 3, no promotions yet
+    assert len(lifecycle_mgr.check_promotions()) == 0
+
+    # Hit 3
+    r3 = lifecycle_mgr.record_reference(ref["id"])
+    assert r3["hit_counter"] == 3
+
+    # Now eligible for promotion
+    promos = lifecycle_mgr.check_promotions()
+    assert len(promos) >= 1
+    assert any(p["id"] == ref["id"] for p in promos)
+
+    # Execute promotion into MEMORY.md
+    ok = lifecycle_mgr.promote_entry(ref["id"], target="memory")
+    assert ok
+
+    mem_file = tmp_path / ".hex" / "memories" / "MEMORY.md"
+    assert mem_file.is_file()
+    assert "Always run cargo check before committing" in mem_file.read_text(encoding="utf-8")
+
+
+def test_lifecycle_integration_promote_to_skill(tmp_path: Path) -> None:
+    """Reflections with hit_counter >= 5 promote to a SKILL.md bundle via SkillCompiler."""
+    from harness_core.memory import MemoryLifecycleManager
+
+    lifecycle_mgr = MemoryLifecycleManager(workspace_root=tmp_path)
+    ref = lifecycle_mgr.record_reflection("Safely scaffold and register a new RPC schema endpoint")
+
+    for _ in range(4):
+        lifecycle_mgr.record_reference(ref["id"])
+
+    assert lifecycle_mgr._reflections[ref["id"]]["hit_counter"] == 5
+
+    promos = lifecycle_mgr.check_promotions()
+    candidate = next(p for p in promos if p["id"] == ref["id"])
+    assert candidate["action"] == "flag_for_skill"
+
+    # Promote to skill
+    res = lifecycle_mgr.promote_entry(ref["id"], target="skill")
+    assert res is True
+
