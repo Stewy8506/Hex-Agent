@@ -10,7 +10,11 @@ import unittest
 from typing import Any
 
 from harness_core.context_compressor import (
+    CompactionConfig,
+    ContextCompactor,
     HEX_COMPRESSION_MARKER_PREFIX,
+    SUMMARY_HEADER,
+    _INFLIGHT_TASK_REPLAY_HEADER,
     align_boundary_backward,
     align_boundary_forward,
     demote_stale_tail_tools,
@@ -20,6 +24,7 @@ from harness_core.context_compressor import (
     estimate_messages_tokens,
     estimate_tokens_rough,
     find_tool_call_groups,
+    is_context_summary_message,
     is_demoted_stub,
     validate_atomic_boundaries,
 )
@@ -475,6 +480,84 @@ class TestContextCompressorTailPruning(unittest.TestCase):
         self.assertIn("historical image omitted", stripped[1]["content"][1]["text"])
         # Tail image untouched
         self.assertEqual(stripped[3]["content"][0]["type"], "image")
+
+    def test_shadow_summary_deduplication(self):
+        """Verify that after 3 compaction cycles, only 1 summary block remains."""
+        compactor = ContextCompactor(
+            CompactionConfig(
+                max_context_tokens=1000,
+                trigger_threshold=0.5,
+                protect_first_n=1,
+                protect_last_n=2,
+                tail_token_budget=200,
+            )
+        )
+
+        # Cycle 1: initial turns
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": "You are a helpful coding assistant."},
+            {"role": "user", "content": "Initial user task: set up sqlite database"},
+            {"role": "assistant", "content": "Creating sqlite schema now."},
+            {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "db_init", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "name": "db_init", "content": "CREATE TABLE users (id INT, name TEXT);\n" * 30},
+            {"role": "assistant", "content": "Database initialized successfully."},
+        ]
+
+        res1 = compactor.compact_messages(messages, force=True)
+        msgs1 = res1.compacted_messages
+        summaries1 = [m for m in msgs1 if is_context_summary_message(m)]
+        self.assertEqual(len(summaries1), 1, "Cycle 1 should produce exactly 1 summary block")
+
+        # Cycle 2: add subsequent conversational turns
+        msgs1.extend([
+            {"role": "user", "content": "Second task: configure redis cache"},
+            {"role": "assistant", "content": "Connecting to redis cache."},
+            {"role": "assistant", "tool_calls": [{"id": "c2", "function": {"name": "redis_init", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c2", "name": "redis_init", "content": "REDIS_PORT = 6379\n" * 30},
+            {"role": "assistant", "content": "Redis configured successfully."},
+        ])
+
+        res2 = compactor.compact_messages(msgs1, force=True)
+        msgs2 = res2.compacted_messages
+        summaries2 = [m for m in msgs2 if is_context_summary_message(m)]
+        self.assertEqual(len(summaries2), 1, "Cycle 2 should have exactly 1 summary block without stacking")
+
+        # Cycle 3: add further conversational turns
+        msgs2.extend([
+            {"role": "user", "content": "Third task: implement JWT authentication"},
+            {"role": "assistant", "content": "Writing auth middleware."},
+            {"role": "assistant", "tool_calls": [{"id": "c3", "function": {"name": "auth_init", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c3", "name": "auth_init", "content": "TOKEN_SECRET = 'xyz'\n" * 30},
+            {"role": "assistant", "content": "Auth configured successfully."},
+        ])
+
+        res3 = compactor.compact_messages(msgs2, force=True)
+        msgs3 = res3.compacted_messages
+        summaries3 = [m for m in msgs3 if is_context_summary_message(m)]
+        self.assertEqual(len(summaries3), 1, "Cycle 3 must have exactly 1 consolidated summary block remaining")
+
+        # Also test direct _prune_shadowed_summaries with artificially stacked summary messages
+        stacked_summaries = [
+            {"role": "system", "content": "System prompt"},
+            {
+                "role": "user",
+                "content": f"{SUMMARY_HEADER}\n\n### Active Goals & User Intent\n- Goal 1\n\n### Actions Taken & Files Modified\n- Action 1\n\n--- END OF CONTEXT SUMMARY ---",
+            },
+            {
+                "role": "user",
+                "content": f"{SUMMARY_HEADER}\n\n### Active Goals & User Intent\n- Goal 2\n\n### Actions Taken & Files Modified\n- Action 2\n\n--- END OF CONTEXT SUMMARY ---",
+            },
+            {"role": "assistant", "content": "Active assistant response."},
+        ]
+        pruned = ContextCompactor._prune_shadowed_summaries(stacked_summaries)
+        pruned_summaries = [m for m in pruned if is_context_summary_message(m)]
+        self.assertEqual(len(pruned_summaries), 1)
+        # Verify facts from both stacked summaries were merged
+        merged_content = str(pruned_summaries[0]["content"])
+        self.assertIn("Goal 1", merged_content)
+        self.assertIn("Goal 2", merged_content)
+        self.assertIn("Action 1", merged_content)
+        self.assertIn("Action 2", merged_content)
 
 
 if __name__ == "__main__":

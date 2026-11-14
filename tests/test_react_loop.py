@@ -278,6 +278,100 @@ class TestMultiTurnReActLoop(unittest.TestCase):
         self.assertEqual(session.total_turns, 2)
         self.assertTrue(session.turns[0].tool_results[0].is_error)
 
+    def test_preflight_session_hygiene(self) -> None:
+        """Verify oversized initial user + system inputs exceeding 85% budget are pre-compacted before Turn 1."""
+        received_tokens = []
+
+        def mock_model(messages: list[dict]) -> str:
+            from harness_core.context_compressor import estimate_messages_tokens
+            toks = estimate_messages_tokens(messages)
+            received_tokens.append(toks)
+            return "<finish>Handled safely after preflight hygiene</finish>"
+
+        oversized_prompt = "Critical context line:\n" + ("Long log buffer data line.\n" * 200)
+        cfg = ReActConfig(
+            max_turns=3,
+            budget_tokens=500,
+            system_prompt="You are HEX ReAct Agent.",
+        )
+        loop = ReActLoop(model_caller=mock_model, config=cfg)
+
+        session = loop.run(oversized_prompt)
+        self.assertTrue(session.success)
+        self.assertEqual(session.final_answer, "Handled safely after preflight hygiene")
+        self.assertIsNotNone(loop.last_compaction_result)
+        # Verify pre-compaction reduced tokens below the 85% budget threshold before model call
+        self.assertGreater(loop.last_compaction_result.original_tokens, int(cfg.budget_tokens * 0.85))
+        self.assertLess(loop.last_compaction_result.compacted_tokens, int(cfg.budget_tokens * 0.85))
+        self.assertTrue(len(received_tokens) > 0)
+        self.assertLess(received_tokens[0], int(cfg.budget_tokens * 0.85))
+
+    def test_react_loop_streaming_events(self) -> None:
+        """Verify that all 5 event types fire during a multi-turn run."""
+        step = 0
+
+        def mock_model(messages: list[dict]) -> str:
+            nonlocal step
+            if step == 0:
+                step += 1
+                return '<thought>Planning to inspect files</thought>\n<tool_call>{"name": "check_status", "arguments": {"verbose": true}}</tool_call>'
+            return '<thought>Inspection complete</thought>\n<finish>All systems nominal</finish>'
+
+        def handle_check(ws: Path, args: dict) -> dict:
+            return {"status": "ok", "active": True}
+
+        mock_gateway = MagicMock()
+        mock_gateway.tools = {
+            "check_status": ToolSpec(tool_id="check_status", description="", risk_class=RiskClass.R0, handler=handle_check),
+        }
+
+        emitted_events: list[tuple[str, dict[str, Any]]] = []
+
+        def event_listener(event_type: str, data: dict[str, Any]) -> None:
+            emitted_events.append((event_type, data))
+
+        cfg = ReActConfig(
+            max_turns=3,
+            on_event=event_listener,
+        )
+        loop = ReActLoop(
+            model_caller=mock_model,
+            gateway=mock_gateway,
+            config=cfg,
+        )
+
+        session = loop.run("Run healthcheck")
+        self.assertTrue(session.success)
+
+        # Check all 5 event types were dispatched
+        event_names = [e[0] for e in emitted_events]
+        expected_types = {"turn_start", "thought", "tool_start", "tool_end", "turn_complete"}
+        for exp in expected_types:
+            self.assertIn(exp, event_names, f"Expected event {exp} was not fired!")
+
+        # Verify event payloads
+        turn_start_events = [d for t, d in emitted_events if t == "turn_start"]
+        self.assertEqual(turn_start_events[0]["turn_index"], 1)
+        self.assertEqual(turn_start_events[1]["turn_index"], 2)
+
+        thought_events = [d for t, d in emitted_events if t == "thought"]
+        self.assertIn("Planning to inspect files", thought_events[0]["thought"])
+
+        tool_start_events = [d for t, d in emitted_events if t == "tool_start"]
+        self.assertEqual(tool_start_events[0]["name"], "check_status")
+        self.assertEqual(tool_start_events[0]["arguments"], {"verbose": True})
+        self.assertTrue("call_id" in tool_start_events[0])
+
+        tool_end_events = [d for t, d in emitted_events if t == "tool_end"]
+        self.assertEqual(tool_end_events[0]["name"], "check_status")
+        self.assertFalse(tool_end_events[0]["is_error"])
+        self.assertGreaterEqual(tool_end_events[0]["duration_ms"], 0.0)
+
+        turn_complete_events = [d for t, d in emitted_events if t == "turn_complete"]
+        self.assertEqual(turn_complete_events[0]["turn_index"], 1)
+        self.assertGreaterEqual(turn_complete_events[0]["latency_ms"], 0.0)
+        self.assertEqual(turn_complete_events[1]["turn_index"], 2)
+
     def test_unknown_tool_error(self) -> None:
         """Test calling a tool not present in gateway returns an error observation."""
         step = 0

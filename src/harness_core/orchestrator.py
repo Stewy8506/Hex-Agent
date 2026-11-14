@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+from .context_compressor import CHARS_PER_TOKEN, elide_middle, estimate_messages_tokens
 from .cow import APFSAndPortableCoWProvider, WorkspaceSnapshotProvider, get_default_snapshot_provider
 from .db import LedgerStore, utcnow_iso
 from .gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
@@ -563,6 +564,15 @@ class HarnessOrchestrator:
                 compactor = self.router.get_context_compactor(max_context_tokens=react_cfg.budget_tokens)
             except Exception:
                 pass
+
+        # Pre-Flight Gateway Session Hygiene: prevent HTTP 400/413 on oversized goal
+        sys_tokens = estimate_messages_tokens([{"role": "system", "content": react_cfg.system_prompt}])
+        goal_tokens = estimate_messages_tokens([{"role": "user", "content": goal}])
+        if (sys_tokens + goal_tokens) >= int(react_cfg.budget_tokens * 0.85):
+            max_goal_tokens = max(100, int(react_cfg.budget_tokens * 0.65) - sys_tokens)
+            max_chars = max_goal_tokens * CHARS_PER_TOKEN
+            if len(goal) > max_chars:
+                goal = elide_middle(goal, head_chars=max_chars // 2, tail_chars=max_chars // 2)
 
         loop = ReActLoop(
             model_caller=_react_model_caller,

@@ -678,13 +678,160 @@ def is_context_summary_message(msg: dict[str, Any]) -> bool:
     if not isinstance(msg, dict):
         return False
     content = msg.get("content", "")
+    if isinstance(content, list):
+        content = " ".join(
+            b.get("text", "") if isinstance(b, dict) else str(b)
+            for b in content
+        )
     if isinstance(content, str):
         return (
             SUMMARY_HEADER in content
             or "[CONTEXT COMPACTION" in content
             or SUMMARY_END_MARKER in content
+            or _INFLIGHT_TASK_REPLAY_HEADER in content
         )
     return False
+
+
+def _extract_summary_facts(content: str) -> dict[str, list[str]]:
+    """Extract bullet facts from markdown summary sections."""
+    sections: dict[str, list[str]] = {
+        "user_intents": [],
+        "actions_taken": [],
+        "findings_errors": [],
+        "working_state": [],
+    }
+    current_sec = None
+    for line in content.split("\n"):
+        line_s = line.strip()
+        if "### Active Goals & User Intent" in line_s:
+            current_sec = "user_intents"
+            continue
+        elif "### Actions Taken & Files Modified" in line_s:
+            current_sec = "actions_taken"
+            continue
+        elif "### Key Findings, Errors & Tool Results" in line_s:
+            current_sec = "findings_errors"
+            continue
+        elif "### Current Working State" in line_s:
+            current_sec = "working_state"
+            continue
+        elif line_s.startswith("### ") or line_s.startswith("## ") or line_s.startswith("---"):
+            current_sec = None
+            continue
+
+        if current_sec and line_s.startswith("- "):
+            fact = line_s[2:].strip()
+            if (
+                fact
+                and not fact.startswith("Execute task instructions")
+                and not fact.startswith("Processed multi-turn")
+                and not fact.startswith("Intermediate tool operations")
+                and not fact.startswith("Compacted ")
+                and not fact.startswith("## CONTEXT COMPACTION SUMMARY")
+            ):
+                if fact not in sections[current_sec]:
+                    sections[current_sec].append(fact)
+    return sections
+
+
+def _merge_summary_blocks(older_content: str, newer_content: str) -> str:
+    """Merge verified facts from older summary block into newer summary block."""
+    old_facts = _extract_summary_facts(older_content)
+    new_facts = _extract_summary_facts(newer_content)
+
+    for sec_name, items in old_facts.items():
+        for item in items:
+            if item not in new_facts[sec_name]:
+                if sec_name == "working_state":
+                    if not new_facts[sec_name]:
+                        new_facts[sec_name].append(item)
+                else:
+                    new_facts[sec_name].append(item)
+
+    lines = [
+        SUMMARY_HEADER,
+        "Earlier turns were compacted into this structured summary reference.",
+        "",
+        "### Active Goals & User Intent",
+    ]
+    if new_facts["user_intents"]:
+        for ui in new_facts["user_intents"][:5]:
+            lines.append(f"- {ui}")
+    else:
+        lines.append("- Execute task instructions from previous turns.")
+
+    lines.extend(["", "### Actions Taken & Files Modified"])
+    if new_facts["actions_taken"]:
+        for act in new_facts["actions_taken"][:8]:
+            lines.append(f"- {act}")
+    else:
+        lines.append("- Processed multi-turn conversational context.")
+
+    lines.extend(["", "### Key Findings, Errors & Tool Results"])
+    if new_facts["findings_errors"]:
+        for fe in new_facts["findings_errors"][:8]:
+            lines.append(f"- {fe}")
+    else:
+        lines.append("- Intermediate tool operations executed successfully.")
+
+    lines.extend(["", "### Current Working State"])
+    if new_facts["working_state"]:
+        lines.append(f"- {new_facts['working_state'][-1]}")
+    else:
+        lines.append("- Active progress continues from compacted history.")
+
+    lines.extend(["", SUMMARY_END_MARKER])
+
+    # Preserve in-flight task replay from newer if present, else older
+    replay_text = ""
+    if _INFLIGHT_TASK_REPLAY_HEADER in newer_content:
+        replay_text = newer_content.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
+    elif _INFLIGHT_TASK_REPLAY_HEADER in older_content:
+        replay_text = older_content.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
+
+    if replay_text:
+        lines.extend(["", _INFLIGHT_TASK_REPLAY_HEADER, replay_text])
+
+    return "\n".join(lines)
+
+
+def _prune_shadowed_summaries(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate stacked shadow summaries across multiple compaction rounds.
+
+    If multiple summary messages exist prior to or within the active compaction window,
+    retains only the most recent summary's verified facts or merges them into a
+    single consolidated summary block, eliminating stacked shadow summaries.
+    """
+    if not messages:
+        return []
+
+    summary_indices = [
+        i for i, m in enumerate(messages) if is_context_summary_message(m)
+    ]
+    if len(summary_indices) <= 1:
+        return list(messages)
+
+    latest_idx = summary_indices[-1]
+    consolidated_content = str(messages[latest_idx].get("content", ""))
+
+    for idx in summary_indices[:-1]:
+        older_content = str(messages[idx].get("content", ""))
+        consolidated_content = _merge_summary_blocks(older_content, consolidated_content)
+
+    pruned: list[dict[str, Any]] = []
+    older_set = set(summary_indices[:-1])
+    for i, m in enumerate(messages):
+        if i in older_set:
+            continue
+        if i == latest_idx:
+            new_m = dict(m)
+            new_m["content"] = consolidated_content
+            pruned.append(new_m)
+        else:
+            pruned.append(m)
+
+    return pruned
 
 
 @dataclass
@@ -729,6 +876,11 @@ class ContextCompactor:
         self.config = config or CompactionConfig()
         self.model_caller = model_caller
         self.compression_count: int = 0
+
+    @staticmethod
+    def _prune_shadowed_summaries(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Deduplicate stacked shadow summaries across multiple compaction rounds."""
+        return _prune_shadowed_summaries(messages)
 
     def _effective_protect_first_n(
         self, messages: list[dict[str, Any]] | None = None
@@ -846,6 +998,21 @@ class ContextCompactor:
                     for b in content
                 )
             content_str = str(content).strip()
+
+            if is_context_summary_message(msg):
+                extracted = _extract_summary_facts(content_str)
+                for item in extracted["user_intents"]:
+                    if item not in user_intents:
+                        user_intents.append(item)
+                for item in extracted["actions_taken"]:
+                    if item not in actions_taken:
+                        actions_taken.append(item)
+                for item in extracted["findings_errors"]:
+                    if item not in findings_errors:
+                        findings_errors.append(item)
+                if extracted["working_state"]:
+                    working_state.extend(extracted["working_state"])
+                continue
 
             if role == "user":
                 if (
@@ -1036,7 +1203,8 @@ class ContextCompactor:
                 used_fallback=False,
             )
 
-        # Sanitize any severed or orphaned tool pairs in input
+        # Sanitize any severed or orphaned tool pairs in input and prune shadowed summaries
+        messages = self._prune_shadowed_summaries(messages)
         messages = sanitize_tool_pairs(messages)
 
         # 1-2. Plan window and demote stale tools
@@ -1076,24 +1244,19 @@ class ContextCompactor:
             summary_role = "assistant" if last_head_role == "user" else "user"
 
             if inflight_task_text:
-                if summary_role == "user":
-                    carrier_content = (
-                        f"{summary_text}\n\n"
-                        f"{_INFLIGHT_TASK_REPLAY_HEADER}\n"
-                        f"{inflight_task_text}"
-                    )
-                    compacted = head + [{"role": "user", "content": carrier_content}] + tail
-                else:
-                    compacted = (
-                        head
-                        + [{"role": "assistant", "content": summary_text}]
-                        + [{"role": "user", "content": f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{inflight_task_text}"}]
-                        + tail
-                    )
+                carrier_content = (
+                    f"{summary_text}\n\n"
+                    f"{_INFLIGHT_TASK_REPLAY_HEADER}\n"
+                    f"{inflight_task_text}"
+                )
+                compacted = head + [{"role": summary_role, "content": carrier_content}] + tail
             else:
                 compacted = head + [{"role": summary_role, "content": summary_text}] + tail
         else:
             compacted = working
+
+        # Prune any shadowed summaries that may exist prior to the active compaction window
+        compacted = self._prune_shadowed_summaries(compacted)
 
         compacted_tokens = estimate_messages_tokens(compacted)
 

@@ -19,7 +19,16 @@ import time
 from typing import Any, Callable
 import uuid
 
-from .context_compressor import CompactionConfig, ContextCompactor, estimate_messages_tokens
+from .context_compressor import (
+    CHARS_PER_TOKEN,
+    CompactionConfig,
+    CompactionResult,
+    ContextCompactor,
+    elide_middle,
+    estimate_message_tokens,
+    estimate_messages_tokens,
+    sanitize_tool_pairs,
+)
 
 
 @dataclass
@@ -35,6 +44,7 @@ class ReActConfig:
     initial_retry_delay: float = 0.5
     backoff_factor: float = 2.0
     retry_jitter: float = 0.1
+    on_event: Callable[[str, dict[str, Any]], None] | None = None
 
 
 @dataclass
@@ -811,6 +821,81 @@ class ReActLoop:
             except Exception:
                 pass
 
+    def _emit_event(self, event_type: str, data: dict[str, Any]) -> None:
+        """Emit a lifecycle event through on_event callback if configured."""
+        cb = getattr(self.config, "on_event", None)
+        if cb and callable(cb):
+            try:
+                cb(event_type, data)
+            except Exception:
+                pass
+
+    def _apply_preflight_session_hygiene(self, budget_tokens: int) -> None:
+        """Run initial sanitization and pre-compaction pass on oversized inputs before Turn 1."""
+        if not self.messages:
+            return
+
+        initial_tokens = estimate_messages_tokens(self.messages)
+
+        # 1. Sanitize tool pairs and broken boundaries
+        self.messages = sanitize_tool_pairs(self.messages)
+
+        # 2. Wire compactor if needed
+        if self.context_compactor is None:
+            self.context_compactor = ContextCompactor(
+                CompactionConfig(
+                    max_context_tokens=budget_tokens,
+                    trigger_threshold=0.8,
+                ),
+                model_caller=self.model_caller,
+            )
+
+        # 3. If multi-message history, attempt standard compaction pass first
+        if len(self.messages) > 2:
+            comp_res = self.context_compactor.compact_messages(self.messages, budget_tokens=budget_tokens, force=True)
+            if comp_res.compacted_tokens < comp_res.original_tokens:
+                self.messages = comp_res.compacted_messages
+                self.last_compaction_result = comp_res
+
+        # 4. If still exceeding 85% of budget, pre-compact oversized messages
+        current_tokens = estimate_messages_tokens(self.messages)
+        threshold_tokens = int(budget_tokens * 0.85)
+
+        if current_tokens >= threshold_tokens:
+            safe_target_tokens = max(100, int(budget_tokens * 0.65))
+            per_msg_budget = max(50, safe_target_tokens // max(1, len(self.messages)))
+            for i, msg in enumerate(self.messages):
+                msg_tok = estimate_message_tokens(msg)
+                if msg_tok > per_msg_budget:
+                    content = msg.get("content", "")
+                    if isinstance(content, str) and len(content) > per_msg_budget * CHARS_PER_TOKEN:
+                        allowed_chars = max(200, per_msg_budget * CHARS_PER_TOKEN)
+                        half = allowed_chars // 2
+                        new_content = elide_middle(content, head_chars=half, tail_chars=half)
+                        self.messages[i] = dict(msg, content=new_content)
+                    elif isinstance(content, list):
+                        new_content_blocks = []
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                txt = str(block.get("text", ""))
+                                if len(txt) > per_msg_budget * CHARS_PER_TOKEN:
+                                    allowed_chars = max(200, per_msg_budget * CHARS_PER_TOKEN)
+                                    half = allowed_chars // 2
+                                    block = dict(block, text=elide_middle(txt, head_chars=half, tail_chars=half))
+                            new_content_blocks.append(block)
+                        self.messages[i] = dict(msg, content=new_content_blocks)
+
+            compacted_tokens = estimate_messages_tokens(self.messages)
+            self.last_compaction_result = CompactionResult(
+                compacted_messages=list(self.messages),
+                original_tokens=initial_tokens,
+                compacted_tokens=compacted_tokens,
+                compression_ratio=compacted_tokens / max(1, initial_tokens),
+                phase1_demoted_tools=0,
+                phase3_summarized_turns=0,
+                used_fallback=True,
+            )
+
     # -------------------------------------------------------------------------
     # Execution Loop
     # -------------------------------------------------------------------------
@@ -833,6 +918,12 @@ class ReActLoop:
             self.messages.extend(initial_messages)
         self.messages.append({"role": "user", "content": prompt})
 
+        # Pre-Flight Gateway Session Hygiene (Before Turn 1)
+        budget = getattr(self.config, "budget_tokens", 100_000) or 100_000
+        initial_tokens = estimate_messages_tokens(self.messages)
+        if initial_tokens >= int(budget * 0.85):
+            self._apply_preflight_session_hygiene(budget)
+
         self.turns = []
         success = False
         final_answer = ""
@@ -840,6 +931,7 @@ class ReActLoop:
 
         for turn_index in range(1, self.config.max_turns + 1):
             turn_start = time.perf_counter()
+            self._emit_event("turn_start", {"turn_index": turn_index})
 
             # 0. Context compaction check
             compactor = self.context_compactor
@@ -874,6 +966,7 @@ class ReActLoop:
                         latency_ms=turn_latency,
                     )
                 )
+                self._emit_event("turn_complete", {"turn_index": turn_index, "latency_ms": turn_latency})
                 return ReActSessionResult(
                     success=False,
                     final_answer=f"Error: {e}",
@@ -886,6 +979,7 @@ class ReActLoop:
 
             raw_text = self._extract_response_text(response)
             thought, tool_calls = self.parse_tool_calls(response)
+            self._emit_event("thought", {"thought": thought})
             turn_latency = (time.perf_counter() - turn_start) * 1000
 
             # 2. Check for explicit <finish> tag
@@ -901,6 +995,7 @@ class ReActLoop:
                         latency_ms=turn_latency,
                     )
                 )
+                self._emit_event("turn_complete", {"turn_index": turn_index, "latency_ms": turn_latency})
                 break
 
             if "<finish>" in raw_text.lower():
@@ -915,6 +1010,7 @@ class ReActLoop:
                         latency_ms=turn_latency,
                     )
                 )
+                self._emit_event("turn_complete", {"turn_index": turn_index, "latency_ms": turn_latency})
                 break
 
             # 3. Check for natural final answer (no tool calls emitted)
@@ -929,6 +1025,7 @@ class ReActLoop:
                         latency_ms=turn_latency,
                     )
                 )
+                self._emit_event("turn_complete", {"turn_index": turn_index, "latency_ms": turn_latency})
                 break
 
             # 4. Tool calls present: record turn and execute each tool call
@@ -936,6 +1033,13 @@ class ReActLoop:
             tool_results: list[ToolCallResult] = []
 
             for seq, call in enumerate(tool_calls):
+                # Emit tool_start event
+                self._emit_event("tool_start", {
+                    "call_id": call.call_id,
+                    "name": call.name,
+                    "arguments": call.arguments,
+                })
+
                 # Ledger step begin
                 self._record_tool_call_in_ledger(task_id, turn_index, seq, call)
 
@@ -945,6 +1049,14 @@ class ReActLoop:
 
                 # Ledger step seal
                 self._seal_tool_call_in_ledger(task_id, turn_index, seq, call, tool_res)
+
+                # Emit tool_end event
+                self._emit_event("tool_end", {
+                    "call_id": tool_res.call_id,
+                    "name": tool_res.name,
+                    "is_error": tool_res.is_error,
+                    "duration_ms": tool_res.duration_ms,
+                })
 
                 # Format observation back into message history
                 if tool_res.name == "code_kernel" and isinstance(tool_res.output, dict):
@@ -989,6 +1101,7 @@ class ReActLoop:
                 latency_ms=(time.perf_counter() - turn_start) * 1000,
             )
             self.turns.append(turn)
+            self._emit_event("turn_complete", {"turn_index": turn_index, "latency_ms": turn.latency_ms})
 
         # Max turns exhausted
         if termination_reason == "max_turns" and not success:
