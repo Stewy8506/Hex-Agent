@@ -365,7 +365,10 @@ class SkillScanReport:
 def _parse_scalar(val: str) -> Any:
     v = val.strip()
     if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
-        return v[1:-1]
+        inner = v[1:-1]
+        if v.startswith('"'):
+            inner = inner.replace('\\"', '"').replace('\\\\', '\\')
+        return inner
     low = v.lower()
     if low in ("true", "yes", "on"):
         return True

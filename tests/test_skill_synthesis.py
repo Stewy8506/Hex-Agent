@@ -34,7 +34,15 @@ from harness_core.skill_synthesizer import (
     _determine_risk_class,
     _slugify,
 )
-from harness_core.skills import SkillCompiler, SkillCompileResult, SkillSecurityViolationError
+from harness_core.skills import (
+    SkillCompiler,
+    SkillCompileResult,
+    SkillExecutionEngine,
+    SkillSecurityViolationError,
+    SkillVerificationHook,
+    SkillVerificationResult,
+    assert_skill_regression_free,
+)
 from harness_core.skillspector import SkillSecurityScanner, parse_skill_frontmatter
 
 
@@ -748,6 +756,179 @@ class TestSkillCompilerSkillspectorGate(unittest.TestCase):
         audit_data = json.loads((quarantined_skill / "audit.json").read_text(encoding="utf-8"))
         self.assertEqual(audit_data["gate_decision"], "QUARANTINE")
         self.assertIn(audit_data["severity"], ("critical", "high"))
+
+
+class TestSkillExecutionEngineVerifyHooks(unittest.TestCase):
+    """Unit tests for SkillExecutionEngine, verification hooks, and regression assertions."""
+
+    def setUp(self):
+        self.tmp_dir = Path(tempfile.mkdtemp(prefix="test_executor_")).resolve()
+        self.workspace_root = (self.tmp_dir / "workspace").resolve()
+        self.workspace_root.mkdir(parents=True, exist_ok=True)
+        self.engine = SkillExecutionEngine(default_workspace_root=self.workspace_root)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_executor_extract_verification_hook(self):
+        # Concise string hook
+        doc_str = """---
+name: string-hook-skill
+verify: "python3 -c \\"print('string hook')\\""
+---
+# String Hook
+"""
+        hook1 = self.engine.extract_verification_hook(doc_str)
+        self.assertIsNotNone(hook1)
+        self.assertEqual(hook1.command, "python3 -c \"print('string hook')\"")
+        self.assertTrue(hook1.must_pass)
+
+        # Structured dictionary hook
+        doc_dict = """---
+name: dict-hook-skill
+verify:
+  command: "pytest tests/test_rpc.py"
+  timeout_seconds: 12.5
+  must_pass: true
+  ast_invariant: "test_rpc_schema_sync in tests/test_rpc.py"
+  test_filter: "-k test_rpc"
+---
+# Dict Hook
+"""
+        hook2 = self.engine.extract_verification_hook(doc_dict)
+        self.assertIsNotNone(hook2)
+        self.assertEqual(hook2.command, "pytest tests/test_rpc.py")
+        self.assertEqual(hook2.timeout_seconds, 12.5)
+        self.assertTrue(hook2.must_pass)
+        self.assertEqual(hook2.ast_invariant, "test_rpc_schema_sync in tests/test_rpc.py")
+        self.assertEqual(hook2.test_filter, "-k test_rpc")
+
+        # Missing hook returns None
+        doc_none = """---
+name: no-hook-skill
+---
+# No Hook
+"""
+        self.assertIsNone(self.engine.extract_verification_hook(doc_none))
+
+    def test_executor_run_passing_verification_hook(self):
+        hook = SkillVerificationHook(
+            command="python3 -c \"print('PASS_ASSERTION')\"",
+            timeout_seconds=10.0,
+            must_pass=True,
+        )
+        result = self.engine.run_skill_verification(
+            hook=hook,
+            workspace_root=self.workspace_root,
+            skill_name="test-pass-skill",
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("PASS_ASSERTION", result.stdout)
+        self.assertGreater(result.duration_ms, 0)
+        self.assertIsNone(result.error_message)
+
+    def test_executor_run_failing_verification_hook(self):
+        hook = SkillVerificationHook(
+            command="python3 -c \"import sys; sys.stderr.write('FAILURE_ERR'); sys.exit(42)\"",
+            timeout_seconds=10.0,
+            must_pass=True,
+        )
+        result = self.engine.run_skill_verification(
+            hook=hook,
+            workspace_root=self.workspace_root,
+            skill_name="test-fail-skill",
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.exit_code, 42)
+        self.assertIn("FAILURE_ERR", result.stderr)
+        self.assertIn("42", result.error_message or "")
+
+    def test_executor_timeout_protection(self):
+        # Command sleeps 2 seconds, but timeout is 0.25 seconds
+        hook = SkillVerificationHook(
+            command="python3 -c \"import time; time.sleep(2.0)\"",
+            timeout_seconds=0.25,
+            must_pass=True,
+        )
+        result = self.engine.run_skill_verification(
+            hook=hook,
+            workspace_root=self.workspace_root,
+            skill_name="test-timeout-skill",
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.exit_code, -1)
+        self.assertIn("timed out", (result.error_message or "").lower())
+
+    def test_executor_ast_invariant_pass_and_fail(self):
+        # Create a test python file in workspace
+        test_py = self.workspace_root / "tests" / "test_rpc.py"
+        test_py.parent.mkdir(parents=True, exist_ok=True)
+        test_py.write_text("def test_rpc_schema_sync():\n    pass\n", encoding="utf-8")
+
+        # 1. Matching AST invariant
+        hook_ok = SkillVerificationHook(
+            command="python3 -c \"print('OK')\"",
+            ast_invariant="test_rpc_schema_sync in tests/test_rpc.py",
+            must_pass=True,
+        )
+        res_ok = self.engine.run_skill_verification(
+            hook=hook_ok,
+            workspace_root=self.workspace_root,
+            skill_name="ast-skill",
+        )
+        self.assertTrue(res_ok.passed)
+        self.assertTrue(res_ok.ast_invariant_passed)
+
+        # 2. Missing AST symbol
+        hook_fail = SkillVerificationHook(
+            command="python3 -c \"print('OK')\"",
+            ast_invariant="missing_symbol_func in tests/test_rpc.py",
+            must_pass=True,
+        )
+        res_fail = self.engine.run_skill_verification(
+            hook=hook_fail,
+            workspace_root=self.workspace_root,
+            skill_name="ast-skill",
+        )
+        self.assertFalse(res_fail.passed)
+        self.assertFalse(res_fail.ast_invariant_passed)
+        self.assertIn("AST invariant check failed", res_fail.error_message or "")
+
+    def test_executor_assert_skill_regression_free(self):
+        skill_dir = self.tmp_dir / "my_skill"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Passing skill assertion
+        (skill_dir / "SKILL.md").write_text("""---
+name: regression-pass
+verify:
+  command: "python3 -c \\"print('Pass')\\""
+  must_pass: true
+---
+# Regression Pass
+""", encoding="utf-8")
+
+        res = assert_skill_regression_free(skill_dir, self.workspace_root)
+        self.assertIsNotNone(res)
+        self.assertTrue(res.passed)
+
+        # 2. Failing skill assertion raises AssertionError
+        (skill_dir / "SKILL.md").write_text("""---
+name: regression-fail
+verify:
+  command: "python3 -c \\"import sys; sys.exit(1)\\""
+  must_pass: true
+---
+# Regression Fail
+""", encoding="utf-8")
+
+        with self.assertRaises(AssertionError) as ctx:
+            assert_skill_regression_free(skill_dir, self.workspace_root)
+        self.assertIn("regression verification failed", str(ctx.exception))
 
 
 if __name__ == "__main__":

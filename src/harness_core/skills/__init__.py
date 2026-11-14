@@ -12,11 +12,21 @@ from harness_core.skills.compiler import (
     normalize_skill_description,
     normalize_skill_name,
 )
+from harness_core.skills.executor import (
+    SkillExecutionEngine,
+    SkillVerificationHook,
+    SkillVerificationResult,
+    assert_skill_regression_free,
+)
 
 __all__ = [
     "SkillCompiler",
     "SkillCompileResult",
     "SkillSecurityViolationError",
-    "normalize_skill_name",
     "normalize_skill_description",
+    "normalize_skill_name",
+    "SkillExecutionEngine",
+    "SkillVerificationHook",
+    "SkillVerificationResult",
+    "assert_skill_regression_free",
 ]
