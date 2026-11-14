@@ -356,5 +356,136 @@ class TestReActLoopGuardrailsIntegration(unittest.TestCase):
         self.assertTrue(any("Rolled back workspace from snap_forensic_01" in r for r in guardrails))
 
 
+class TestGatewayMemoryIntegration(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.workspace = Path(self.temp_dir) / "workspace"
+        self.global_home = Path(self.temp_dir) / "global_home"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.global_home.mkdir(parents=True, exist_ok=True)
+        self._old_hex_home = os.environ.get("HEX_HOME")
+        os.environ["HEX_HOME"] = str(self.global_home)
+        MemorySnapshot.reset_cache()
+
+    def tearDown(self):
+        if self._old_hex_home is not None:
+            os.environ["HEX_HOME"] = self._old_hex_home
+        else:
+            os.environ.pop("HEX_HOME", None)
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        MemorySnapshot.reset_cache()
+
+    def test_gateway_tool_memory_crud_and_batch(self):
+        from unittest.mock import MagicMock
+        from harness_core.gateway import ToolGateway
+
+        mock_ledger = MagicMock()
+        gw = ToolGateway(ledger=mock_ledger)
+
+        # 1. Add to user store
+        res_add_user = gw._tool_memory(
+            self.workspace,
+            {"action": "add", "target": "user", "content": "Prefers TypeScript for frontends"},
+        )
+        self.assertTrue(res_add_user["ok"])
+
+        # 2. Add to project memory
+        res_add_mem = gw._tool_memory(
+            self.workspace,
+            {"action": "add", "target": "memory", "content": "Port is 8080 and host is localhost"},
+        )
+        self.assertTrue(res_add_mem["ok"])
+
+        # 3. Patch entry in project memory
+        res_patch = gw._tool_memory(
+            self.workspace,
+            {"action": "patch", "target": "memory", "old_text": "8080", "new_text": "9090"},
+        )
+        self.assertTrue(res_patch["ok"])
+
+        # 4. Replace entry in user store
+        res_replace = gw._tool_memory(
+            self.workspace,
+            {
+                "action": "replace",
+                "target": "user",
+                "old_text": "Prefers TypeScript",
+                "new_text": "Prefers TypeScript and Vue 3",
+            },
+        )
+        self.assertTrue(res_replace["ok"])
+
+        # 5. List entries
+        res_list = gw._tool_memory(self.workspace, {"action": "list", "target": "all"})
+        self.assertTrue(res_list["ok"])
+        self.assertEqual(len(res_list["targets"]["user"]["entries"]), 1)
+        self.assertIn("Vue 3", res_list["targets"]["user"]["entries"][0])
+        self.assertIn("9090", res_list["targets"]["memory"]["entries"][0])
+
+        # 6. Batch operations
+        batch_ops = [
+            {"action": "add", "target": "guardrails", "content": "- [AVOID] Do not commit credentials"},
+            {"action": "remove", "target": "memory", "old_text": "Port is 9090"},
+        ]
+        res_batch = gw._tool_memory(self.workspace, {"operations": batch_ops})
+        self.assertTrue(res_batch["ok"])
+
+        res_check = gw._tool_memory(self.workspace, {"action": "list", "target": "all"})
+        self.assertEqual(len(res_check["targets"]["memory"]["entries"]), 0)
+        self.assertEqual(len(res_check["targets"]["guardrails"]["entries"]), 1)
+
+
+class TestPromptBuilderKVStability(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.workspace = Path(self.temp_dir) / "workspace"
+        self.global_home = Path(self.temp_dir) / "global_home"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.global_home.mkdir(parents=True, exist_ok=True)
+        MemorySnapshot.reset_cache()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        MemorySnapshot.reset_cache()
+
+    def test_prompt_builder_slot4_memory_and_prefix_hash_stability(self):
+        import hashlib
+        from harness_core.prompt_builder import PromptBuilder
+        from harness_core.soul import SoulManager
+
+        soul_mgr = SoulManager(global_home=self.global_home)
+        store = CuratedMemoryStore(workspace_root=self.workspace, global_home=self.global_home)
+
+        # Seed initial memories
+        store.add("- prefers clean code without unnecessary dependencies", target="user")
+        store.add("Project uses SQLite WAL mode for concurrency", target="memory")
+        store.add("- [AVOID] Do not run destructive drop database commands", target="guardrails")
+
+        builder = PromptBuilder(soul_manager=soul_mgr)
+
+        # Turn 0 prompt assembly
+        prompt_t0 = builder.build_system_prompt(workspace_root=self.workspace, mode="agent")
+        self.assertIn("<memory-context>", prompt_t0)
+        self.assertIn("</memory-context>", prompt_t0)
+        self.assertIn("prefers clean code", prompt_t0)
+        self.assertIn("SQLite WAL mode", prompt_t0)
+        self.assertIn("[AVOID] Do not run destructive", prompt_t0)
+
+        hash_t0 = hashlib.sha256(prompt_t0.encode("utf-8")).hexdigest()
+
+        # Mid-session mutation directly to disk
+        store.add("Mid-session dynamically learned trivia", target="memory")
+        self.assertEqual(len(store.read_entries("memory")), 2)
+
+        # Turn 1 prompt assembly for the same session
+        prompt_t1 = builder.build_system_prompt(workspace_root=self.workspace, mode="agent")
+        hash_t1 = hashlib.sha256(prompt_t1.encode("utf-8")).hexdigest()
+
+        # KV-cache prefix guarantee: Prompt hash must be 100% byte-identical!
+        self.assertEqual(hash_t0, hash_t1)
+        self.assertEqual(prompt_t0, prompt_t1)
+        self.assertNotIn("Mid-session dynamically learned trivia", prompt_t1)
+
+
 if __name__ == "__main__":
     unittest.main()

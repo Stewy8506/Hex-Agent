@@ -777,7 +777,7 @@ class ToolGateway:
         self.register_tool(
             ToolSpec(
                 tool_id="memory",
-                description="Read, write, and persist project facts, conventions, and architectural notes (R1).",
+                description="Read, write, patch, and persist project facts, conventions, user profile, and guardrails in curated Markdown stores (R1).",
                 risk_class=RiskClass.R1,
                 handler=self._tool_memory,
             )
@@ -1532,97 +1532,68 @@ class ToolGateway:
             }
 
     def _tool_memory(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
-        action = str(args.get("action", "list")).lower()
-        key = str(args.get("key") or args.get("subject", "")).strip()
-        val = args.get("value") or args.get("content")
-        scope = str(args.get("scope", "project"))
-        project_id = str(args.get("project_id", workspace_dir.name))
+        from .memory import CuratedMemoryStore
 
-        mem_file = workspace_dir / ".hex" / "memory.json"
-        local_store: dict[str, Any] = {}
-        if mem_file.is_file():
-            try:
-                loaded = json.loads(mem_file.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    local_store = loaded
-            except Exception:
-                local_store = {}
+        target = str(args.get("target") or "memory").strip().lower()
+        if target not in ("user", "memory", "guardrails", "all"):
+            target = "memory"
 
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        store = CuratedMemoryStore(workspace_root=workspace_dir)
 
-        gov_mem = None
-        try:
-            from .router import GovernedMemoryManager
-            gov_mem = GovernedMemoryManager(self.ledger, self.graphify)
-        except Exception:
-            pass
+        # Handle batch operations
+        if "operations" in args and isinstance(args["operations"], list):
+            return store.execute_operations(target, args["operations"])
 
-        if action in ("set", "save"):
-            if not key:
-                return {"ok": False, "error": "Key or subject is required to save memory"}
-            local_store[key] = {
-                "value": val,
-                "scope": scope,
-                "updated_at": now,
-            }
-            try:
-                mem_file.parent.mkdir(parents=True, exist_ok=True)
-                mem_file.write_text(json.dumps(local_store, indent=2), encoding="utf-8")
-            except OSError:
-                pass
+        action = str(args.get("action", "list")).strip().lower()
 
-            if gov_mem is not None:
-                try:
-                    gov_mem.record_memory(
-                        project_id=project_id,
-                        subject=key,
-                        content=str(val),
-                        scope=scope,
-                        workspace_dir=workspace_dir,
-                    )
-                except Exception:
-                    pass
+        if action in ("add", "set", "save"):
+            content = args.get("content") or args.get("value")
+            if not content and "key" in args:
+                content = f"{args['key']}: {args.get('value', '')}"
+            return store.add(str(content or ""), target=target)
 
-            return {"ok": True, "action": "set", "key": key, "saved": True}
+        elif action == "replace":
+            old_text = str(args.get("old_text") or args.get("key") or "")
+            new_text = str(
+                args.get("new_text")
+                or args.get("content")
+                or args.get("value")
+                or ""
+            )
+            return store.replace(old_text, new_text, target=target)
 
-        elif action in ("get", "read"):
-            if key in local_store:
-                return {"ok": True, "action": "get", "key": key, "memory": local_store[key]}
-            if gov_mem is not None:
-                try:
-                    mems = gov_mem.retrieve_memories(project_id=project_id, query=key, workspace_dir=workspace_dir)
-                    if mems:
-                        return {"ok": True, "action": "get", "key": key, "memory": mems[0]}
-                except Exception:
-                    pass
-            return {"ok": False, "action": "get", "key": key, "error": f"Memory key '{key}' not found"}
+        elif action == "patch":
+            old_text = str(args.get("old_text") or "")
+            new_text = str(args.get("new_text") or "")
+            return store.patch(old_text, new_text, target=target)
 
-        elif action in ("delete", "forget"):
-            existed = key in local_store
-            if existed:
-                del local_store[key]
-                try:
-                    mem_file.write_text(json.dumps(local_store, indent=2), encoding="utf-8")
-                except OSError:
-                    pass
-            if gov_mem is not None and key:
-                try:
-                    gov_mem.forget_memory(key)
-                except Exception:
-                    pass
-            return {"ok": True, "action": "delete", "key": key, "deleted": existed}
+        elif action in ("remove", "delete", "forget"):
+            old_text = str(
+                args.get("old_text") or args.get("content") or args.get("key") or ""
+            )
+            return store.remove(old_text, target=target)
+
+        elif action in ("list", "read", "get"):
+            if action in ("read", "get") and (args.get("key") or args.get("query")):
+                query = str(args.get("key") or args.get("query")).strip()
+                entries = store.read_entries(target)
+                matched = [e for e in entries if query.lower() in e.lower()]
+                return {
+                    "ok": True,
+                    "success": True,
+                    "action": "get",
+                    "target": target,
+                    "query": query,
+                    "matches": matched,
+                    "count": len(matched),
+                }
+            return store.list_entries(target=target)
 
         else:
-            query = str(args.get("query", "")).lower()
-            results: dict[str, Any] = {}
-            for k, v in local_store.items():
-                if not query or query in k.lower() or query in str(v).lower():
-                    results[k] = v
             return {
-                "ok": True,
-                "action": "list",
-                "memories": results,
-                "count": len(results),
+                "ok": False,
+                "success": False,
+                "error": f"Unknown memory action: {action}",
             }
 
     def _tool_lsp_diagnostics(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:

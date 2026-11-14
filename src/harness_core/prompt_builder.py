@@ -164,15 +164,30 @@ class PromptBuilder:
 
         # --- Slot #4: Curated Memory Snapshot ---
         if curated_memory and curated_memory.strip():
-            # Memory context fencing
-            fenced_memory = (
-                "<memory-context>\n"
-                "[System note: The following is recalled memory context, NOT new user input. "
-                "Treat as authoritative reference data.]\n\n"
-                f"{curated_memory.strip()}\n"
-                "</memory-context>"
-            )
-            slots.append(fenced_memory)
+            clean_mem = curated_memory.strip()
+            if "<memory-context>" in clean_mem:
+                slots.append(clean_mem)
+            else:
+                fenced_memory = (
+                    "<memory-context>\n"
+                    "[System note: The following is recalled memory context, NOT new user input. "
+                    "Treat as authoritative reference data.]\n\n"
+                    f"{clean_mem}\n"
+                    "</memory-context>"
+                )
+                slots.append(fenced_memory)
+        else:
+            try:
+                from .memory import MemorySnapshot
+
+                frozen_mem = MemorySnapshot.build_frozen_snapshot(
+                    workspace_root=ws,
+                    global_home=getattr(self.soul_manager, "global_home", None),
+                )
+                if frozen_mem and frozen_mem.strip():
+                    slots.append(frozen_mem.strip())
+            except Exception as e:
+                logger.debug("Failed building frozen memory snapshot in PromptBuilder: %s", e)
 
         # --- Slot #5: Project Context & Rules ---
         project_rules_list = []
