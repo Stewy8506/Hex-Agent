@@ -2,9 +2,9 @@
 
 **Date:** 2026-11-14  
 **Current Milestone:** M11 (Next-Gen Cognition & Self-Evolution Engine) — ACTIVE  
-**Status:** Phase 30 Complete & Verified; Ready for Phase 31  
-**Active Phase:** Phase 31: AST-Scoped Curated Memory, Negative Guardrails & Lifecycle Engine  
-**Completed Milestones:** M1 through M10 Complete & Verified; Phase 30 Complete (720+ Python tests green, 34/34 Rust workspace tests green)  
+**Status:** Phase 30 & Phase 31 Complete & Verified; Ready for Phase 32  
+**Active Phase:** Phase 32: Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks  
+**Completed Milestones:** M1 through M10 Complete & Verified; Phases 30 & 31 Complete (810+ Python tests green, 34/34 Rust workspace tests green)  
 
 ---
 
@@ -350,13 +350,31 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
   - NVIDIA SkillSpector upstream Python behavioral AST analyzer (`get_python_ast`, `_analyze_python`) and real-time live OSV.dev batch client (`osv_client.query_batch`).
   - Graphify Upstream CLI Runner (`GraphifyUpstreamRunner`), tree-sitter artifact ingestion (`ingest_upstream_graph`), `hex graphify` CLI commands, and polyglot blast-radius tracking.
 
+- **Milestone M11 (Next-Gen Cognition & Self-Evolution Engine) [IN PROGRESS]:**
+  - **Phase 30 (Multi-Tier Soul Engine & Dynamic Mode Modulators) [COMPLETE & VERIFIED]:**
+    - `SoulManager` in `src/harness_core/soul.py` with global/workspace hierarchy (`~/.hex/SOUL.md` vs `.hex/SOUL.md`), Developer DNA (`USER.md`), compact budget discipline (~300–500 tokens), atomic seeding, and `/rename` command.
+    - 5-slot prompt pipeline in `src/harness_core/prompt_builder.py` with punchy 3–4 line mode overrides (`plan`, `agent`, `code`) and heuristic injection threat scanner.
+    - Verified by independent `gsd-verifier` (`.gsd/phases/30-multi-tier-soul-engine/VERIFICATION.md`).
+  - **Phase 31 (AST-Scoped Curated Memory, Negative Guardrails & Lifecycle Engine) [COMPLETE & VERIFIED]:**
+    - Dual bounded markdown stores (`USER.md` ~1,375 chars, `MEMORY.md` ~2,200 chars) with atomic file locking and drift backup.
+    - `StreamingContextScrubber` holding partial tag tails and stripping `<memory-context>` spans across delta chunks.
+    - Turn-0 frozen snapshot in Slot #4 guaranteeing 100% byte-identical KV-cache prefix stability.
+    - `GuardrailsManager` (`GUARDRAILS.md`) auto-recording `- [AVOID]` invariants on $\ge 2$ repeat tool failures or rejected diffs.
+    - JIT AST-scoped memory injection into `read_file` tool observations with Graphify 1-hop traversal and SHA-256 staleness invalidation.
+    - Zettelkasten A-MEM controller with contradiction resolution (`UPDATE`/`DELETE` conflicting bullets) and `[[wiki-links]]`.
+    - Memory lifecycle with hit counters, reflection promotion ($\ge 3$ hits) to `MEMORY.md`, and sweep demotion of >30d stale notes into cold SQLite FTS5 archival table (`archived_memories`).
+    - Bounded `.history/` rolling backups with instant rollback and CLI/TUI ergonomics (`hex memory`, `/memory`).
+    - Verified by independent `gsd-verifier` (`.gsd/phases/31-ast-scoped-curated-memory/VERIFICATION.md`).
+  - **Phase 32 (Closed-Loop Autonomous Learning Loop & Deterministic Skill Hooks) [NEXT]:**
+    - Authoring phase plans via `gsd-planner` subagent.
+
 ---
 
 ## 4. Next Actions
 
-- Run full test suite discovery (`.venv/bin/python -m unittest discover -s tests`).
-- Update `docs/UPSTREAM_INTEGRATION_AUDIT.md` and `docs/RUNBOOK.md` with Phase 20 capabilities.
-- Commit all milestone completion artifacts and documentation.
+- Dispatch `gsd-planner` subagent to decompose Phase 32 into atomic plans (`.gsd/phases/32-autonomous-learning-loop/PLAN.md`).
+- Execute Phase 32 plans using dedicated `gsd-executor` subagents with atomic commits.
+- Dispatch independent `gsd-verifier` subagent to audit Phase 32 against Nous Research Hermes Agent self-learning loop.
 
 
 
