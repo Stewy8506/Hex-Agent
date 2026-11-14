@@ -319,9 +319,9 @@
 [x] Phase 27: PTY Background Process Supervisor & Stream Registry (Hermes Parity Pillar 4)
     [x] 27-01: PTY ProcessRegistry & Circular Ring Buffer
     [x] 27-02: Gateway Process Tools (start_process, read_terminal, kill_process)
-[ ] Phase 28: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 5)
-    [ ] 28-01: Persistent In-Memory Python Kernel & State Isolation
-    [ ] 28-02: Gateway code_kernel Tool & Workspace File Sync
+[x] Phase 28: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 5)
+    [x] 28-01: Persistent In-Memory Python Kernel & State Isolation
+    [x] 28-02: Gateway code_kernel Tool & Workspace File Sync
 ```
 
 ### Phase 24: Continuous Multi-Turn ReAct Tool Loop (Hermes Parity Pillar 1)
