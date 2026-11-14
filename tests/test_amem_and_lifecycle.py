@@ -10,6 +10,7 @@ from harness_core.memory import (
     AMEMController,
     CuratedMemoryStore,
     MemoryItem,
+    MemoryLifecycleManager,
     extract_wiki_tags,
 )
 
@@ -141,3 +142,118 @@ class TestAMEMController(unittest.TestCase):
         # Non-existent tag
         empty_notes = self.controller.get_linked_neighborhood("unknown-tag")
         self.assertEqual(len(empty_notes), 0)
+
+
+class TestMemoryLifecycleManager(unittest.TestCase):
+    """Test hit-counting, reflection promotion, and SQLite FTS5 cold archival demotion."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.workspace = Path(self.temp_dir) / "workspace"
+        self.global_home = Path(self.temp_dir) / "global_home"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.global_home.mkdir(parents=True, exist_ok=True)
+
+        self.store = CuratedMemoryStore(
+            workspace_root=self.workspace,
+            global_home=self.global_home,
+        )
+        self.controller = AMEMController(
+            workspace_root=self.workspace,
+            global_home=self.global_home,
+            store=self.store,
+        )
+        self.lifecycle = MemoryLifecycleManager(
+            workspace_root=self.workspace,
+            global_home=self.global_home,
+            controller=self.controller,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_lifecycle_hit_counter(self):
+        # 1. Active memory reference
+        res = self.controller.add_memory("Use pytest-asyncio for async tests [[testing]]", target="memory")
+        mid = res["item"]["id"]
+        initial_hits = res["item"]["hit_counter"]
+
+        ref_res = self.lifecycle.record_reference(mid)
+        self.assertIsNotNone(ref_res)
+        self.assertEqual(ref_res["hit_counter"], initial_hits + 1)
+
+        # 2. Reflection reference
+        ref_entry = self.lifecycle.record_reflection("Always wrap asyncpg connections in pool context [[db]]")
+        ref_id = ref_entry["id"]
+        self.assertEqual(ref_entry["hit_counter"], 1)
+
+        ref_res2 = self.lifecycle.record_reference(ref_id)
+        self.assertEqual(ref_res2["hit_counter"], 2)
+
+    def test_promotion(self):
+        # Record a reflection from LESSONS.md
+        ref = self.lifecycle.record_reflection("Pin numpy version to <2.0 for torch compatibility [[python]]")
+        ref_id = ref["id"]
+
+        # No promotions yet
+        self.assertEqual(len(self.lifecycle.check_promotions()), 0)
+
+        # Hit 2
+        self.lifecycle.record_reference(ref_id)
+        self.assertEqual(len(self.lifecycle.check_promotions()), 0)
+
+        # Hit 3 -> qualifies for promotion!
+        self.lifecycle.record_reference(ref_id)
+        promotions = self.lifecycle.check_promotions()
+        self.assertEqual(len(promotions), 1)
+        self.assertEqual(promotions[0]["id"], ref_id)
+        self.assertEqual(promotions[0]["action"], "promote_to_memory")
+
+        # Execute promotion into MEMORY.md
+        ok = self.lifecycle.promote_entry(ref_id, target="memory")
+        self.assertTrue(ok)
+
+        # Verify active MEMORY.md now contains the promoted lesson
+        active_entries = self.store.read_entries("memory")
+        self.assertTrue(any("Pin numpy version" in e for e in active_entries))
+
+        # Once promoted, check_promotions() no longer returns it
+        self.assertEqual(len(self.lifecycle.check_promotions()), 0)
+
+    def test_demotion_fts5(self):
+        # Add an active note
+        res = self.controller.add_memory("Legacy XML reporting endpoint configured at /v1/report.xml [[reporting]]", target="memory")
+        mid = res["item"]["id"]
+
+        # 1. Without staleness, demotion sweep keeps it active
+        demoted = self.lifecycle.run_demotion_sweep(retention_days=30)
+        self.assertEqual(len(demoted), 0)
+        self.assertEqual(len(self.store.read_entries("memory")), 1)
+
+        # 2. Simulate staleness > 30 days
+        item = self.controller.get_memory(mid)
+        self.assertIsNotNone(item)
+        item.last_referenced_at = time.time() - (35 * 86400)
+        self.controller._save_metadata()
+
+        # Run demotion sweep
+        demoted = self.lifecycle.run_demotion_sweep(retention_days=30)
+        self.assertEqual(len(demoted), 1)
+        self.assertEqual(demoted[0]["memory_id"], mid)
+        self.assertEqual(demoted[0]["reason"], "unreferenced_stale_30d")
+
+        # Verify pruned from active MEMORY.md
+        self.assertEqual(len(self.store.read_entries("memory")), 0)
+        self.assertEqual(len(self.controller.list_memories("memory")), 0)
+
+        # Verify indexed in SQLite FTS5 cold archive
+        archived = self.lifecycle.search_archived_memories("report.xml")
+        self.assertGreaterEqual(len(archived), 1)
+        self.assertEqual(archived[0]["memory_id"], mid)
+        self.assertIn("Legacy XML reporting", archived[0]["content"])
+        self.assertEqual(archived[0]["reason"], "unreferenced_stale_30d")
+
+        # Search with wildcards / all
+        all_archived = self.lifecycle.search_archived_memories("*")
+        self.assertGreaterEqual(len(all_archived), 1)
+

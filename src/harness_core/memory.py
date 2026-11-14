@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import re
+import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -1829,4 +1831,406 @@ class AMEMController:
             "item": target_item.to_dict(),
             "deleted_text": old_text,
         }
+
+
+# ============================================================================
+# Memory Lifecycle Engine & SQLite FTS5 Cold Archival (Plan 31-03 Task 2)
+# ============================================================================
+
+class MemoryLifecycleManager:
+    """Manages hit-counting, reflection promotion, and stale memory FTS5 cold demotion."""
+
+    def __init__(
+        self,
+        workspace_root: Optional[Path | str] = None,
+        global_home: Optional[Path | str] = None,
+        controller: Optional[AMEMController] = None,
+        archive_db_path: Optional[Path | str] = None,
+    ) -> None:
+        self.workspace_root = (
+            Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+        )
+        self.global_home = Path(global_home).resolve() if global_home else get_hex_home()
+        self.controller = controller or AMEMController(
+            workspace_root=self.workspace_root,
+            global_home=self.global_home,
+        )
+        self.mem_dir = self.workspace_root / ".hex" / "memories"
+        self.mem_dir.mkdir(parents=True, exist_ok=True)
+        self.archive_db_path = (
+            Path(archive_db_path).resolve()
+            if archive_db_path
+            else self.mem_dir / "archive.db"
+        )
+        self._lock = threading.Lock()
+        self.reflections_file = self.mem_dir / "reflections_meta.json"
+        self._reflections: dict[str, dict[str, Any]] = {}
+        self._init_sqlite()
+        self._load_reflections()
+
+    def _init_sqlite(self) -> None:
+        """Initialize standard table and FTS5 virtual table for cold archival."""
+        self.archive_db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            conn = sqlite3.connect(str(self.archive_db_path), check_same_thread=False, timeout=10.0)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS archived_memories (
+                        memory_id TEXT PRIMARY KEY,
+                        target TEXT,
+                        content TEXT,
+                        tags TEXT,
+                        archived_at TEXT,
+                        reason TEXT
+                    );
+                    """
+                )
+                try:
+                    conn.execute(
+                        """
+                        CREATE VIRTUAL TABLE IF NOT EXISTS archived_memories_fts USING fts5(
+                            memory_id UNINDEXED,
+                            target UNINDEXED,
+                            content,
+                            tags,
+                            archived_at UNINDEXED,
+                            reason UNINDEXED,
+                            tokenize = 'unicode61'
+                        );
+                        """
+                    )
+                except sqlite3.OperationalError:
+                    conn.execute(
+                        """
+                        CREATE VIRTUAL TABLE IF NOT EXISTS archived_memories_fts USING fts5(
+                            memory_id UNINDEXED,
+                            target UNINDEXED,
+                            content,
+                            tags,
+                            archived_at UNINDEXED,
+                            reason UNINDEXED
+                        );
+                        """
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def _load_reflections(self) -> None:
+        """Load tracked reflection entries and synchronize with LESIONS.md if present."""
+        if self.reflections_file.is_file():
+            try:
+                data = json.loads(self.reflections_file.read_text(encoding="utf-8"))
+                self._reflections = {r["id"]: r for r in data.get("reflections", [])}
+            except Exception as e:
+                logger.warning("Failed to load reflections meta: %s", e)
+
+        # Check .hex/reflections/LESSONS.md
+        lessons_path = self.workspace_root / ".hex" / "reflections" / "LESSONS.md"
+        if lessons_path.is_file():
+            try:
+                content = lessons_path.read_text(encoding="utf-8")
+                for line in content.splitlines():
+                    clean = line.strip()
+                    if clean.startswith("- ") or clean.startswith("* "):
+                        bullet = clean[2:].strip()
+                        if not bullet or any(r["content"] == bullet for r in self._reflections.values()):
+                            continue
+                        ref_id = f"ref_{hashlib.md5(bullet.encode('utf-8')).hexdigest()[:10]}"
+                        self._reflections[ref_id] = {
+                            "id": ref_id,
+                            "content": bullet,
+                            "tags": extract_wiki_tags(bullet),
+                            "source": "LESSONS.md",
+                            "hit_counter": 1,
+                            "created_at": time.time(),
+                            "last_referenced_at": time.time(),
+                            "promoted": False,
+                        }
+            except Exception as e:
+                logger.warning("Failed to parse LESSONS.md for reflection tracking: %s", e)
+
+    def _save_reflections(self) -> None:
+        """Save reflection tracking metadata to disk."""
+        with _file_lock(self.reflections_file):
+            payload = {
+                "version": 1,
+                "updated_at": time.time(),
+                "reflections": list(self._reflections.values()),
+            }
+            tmp = self.reflections_file.with_suffix(".tmp")
+            try:
+                tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(self.reflections_file)
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+
+    def record_reflection(
+        self, content: str, source: str = "LESSONS.md", tags: Optional[list[str]] = None
+    ) -> dict[str, Any]:
+        """Record or register a reflection entry for lifecycle tracking."""
+        clean = str(content or "").strip()
+        ref_id = f"ref_{hashlib.md5(clean.encode('utf-8')).hexdigest()[:10]}"
+        now = time.time()
+        if ref_id in self._reflections:
+            self._reflections[ref_id]["hit_counter"] += 1
+            self._reflections[ref_id]["last_referenced_at"] = now
+        else:
+            self._reflections[ref_id] = {
+                "id": ref_id,
+                "content": clean,
+                "tags": tags or extract_wiki_tags(clean),
+                "source": source,
+                "hit_counter": 1,
+                "created_at": now,
+                "last_referenced_at": now,
+                "promoted": False,
+            }
+        self._save_reflections()
+        return self._reflections[ref_id]
+
+    def record_reference(self, entry_id: str) -> Optional[dict[str, Any]]:
+        """Increment hit counter and update last_referenced_at timestamp for a memory or reflection."""
+        # 1. Check in AMEM controller active items
+        item = self.controller.get_memory(entry_id)
+        if item:
+            item.hit_counter += 1
+            item.last_referenced_at = time.time()
+            self.controller._save_metadata()
+            return item.to_dict()
+
+        # 2. Check in tracked reflections
+        if entry_id in self._reflections:
+            ref = self._reflections[entry_id]
+            ref["hit_counter"] += 1
+            ref["last_referenced_at"] = time.time()
+            self._save_reflections()
+            return ref
+
+        return None
+
+    def check_promotions(self) -> list[dict[str, Any]]:
+        """Identify reflections or episodic entries with hit_counter >= 3 for promotion."""
+        candidates: list[dict[str, Any]] = []
+
+        # Check reflections
+        for ref in self._reflections.values():
+            if not ref.get("promoted") and ref.get("hit_counter", 0) >= 3:
+                candidates.append({
+                    "id": ref["id"],
+                    "content": ref["content"],
+                    "hit_counter": ref["hit_counter"],
+                    "source": ref.get("source", "LESSONS.md"),
+                    "target": "MEMORY.md",
+                    "action": "promote_to_memory" if ref["hit_counter"] < 5 else "flag_for_skill",
+                    "promoted": False,
+                })
+
+        # Check active items with episodic/reflection scope
+        for item in self.controller.list_memories("all"):
+            if item.scope in ("reflection", "episodic") and item.hit_counter >= 3:
+                candidates.append({
+                    "id": item.id,
+                    "content": item.text,
+                    "hit_counter": item.hit_counter,
+                    "source": item.scope,
+                    "target": "MEMORY.md",
+                    "action": "promote_to_memory" if item.hit_counter < 5 else "flag_for_skill",
+                    "promoted": False,
+                })
+
+        return candidates
+
+    def promote_entry(self, entry_id: str, target: str = "memory") -> bool:
+        """Promote an entry with hit_counter >= 3 into active MEMORY.md."""
+        target_content = ""
+        is_reflection = False
+
+        if entry_id in self._reflections:
+            ref = self._reflections[entry_id]
+            target_content = ref["content"]
+            is_reflection = True
+        else:
+            item = self.controller.get_memory(entry_id)
+            if item:
+                target_content = item.text
+
+        if not target_content:
+            return False
+
+        res = self.controller.process_memory(target_content, target=target)
+        if not res.get("ok"):
+            return False
+
+        if is_reflection:
+            self._reflections[entry_id]["promoted"] = True
+            self._save_reflections()
+
+        return True
+
+    def archive_entry(
+        self,
+        memory_id: str,
+        target: str,
+        content: str,
+        tags: list[str] | str,
+        reason: str = "manual_archival",
+    ) -> bool:
+        """Directly archive a memory item into SQLite and FTS5 virtual table."""
+        tag_str = ", ".join(tags) if isinstance(tags, (list, set, tuple)) else str(tags or "")
+        archived_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        with self._lock:
+            conn = sqlite3.connect(str(self.archive_db_path), check_same_thread=False, timeout=10.0)
+            try:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO archived_memories (memory_id, target, content, tags, archived_at, reason)
+                    VALUES (?, ?, ?, ?, ?, ?);
+                    """,
+                    (memory_id, target, content, tag_str, archived_at, reason),
+                )
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO archived_memories_fts (memory_id, target, content, tags, archived_at, reason)
+                        VALUES (?, ?, ?, ?, ?, ?);
+                        """,
+                        (memory_id, target, content, tag_str, archived_at, reason),
+                    )
+                except Exception:
+                    pass
+                conn.commit()
+                return True
+            except Exception as e:
+                logger.error("Failed to archive entry %s to %s: %s", memory_id, self.archive_db_path, e)
+                return False
+            finally:
+                conn.close()
+
+    def _check_ast_diverged(self, item: MemoryItem) -> bool:
+        """Check if item is bound to an AST symbol or code snippet whose fingerprint diverged."""
+        try:
+            ast_store = ASTNodeMemoryStore(workspace_root=self.workspace_root)
+            all_ast = ast_store.list_all_node_memories()
+            for ast_mem in all_ast:
+                if (
+                    ast_mem.note == item.text
+                    or ast_mem.symbol_name in item.text
+                    or ast_mem.rel_path in item.text
+                ):
+                    if ast_store.is_memory_stale(ast_mem):
+                        return True
+        except Exception:
+            pass
+        return False
+
+    def run_demotion_sweep(self, retention_days: int = 30) -> list[dict[str, Any]]:
+        """Scan active entries in MEMORY.md and USER.md; demote stale (>30d) or AST-diverged notes to SQLite FTS5."""
+        cutoff = time.time() - (retention_days * 86400)
+        demoted: list[dict[str, Any]] = []
+
+        active_items = self.controller.list_memories("memory") + self.controller.list_memories("user")
+        for item in active_items:
+            reason = None
+            if item.last_referenced_at < cutoff:
+                reason = "unreferenced_stale_30d"
+            elif self._check_ast_diverged(item):
+                reason = "ast_code_diverged"
+
+            if reason:
+                # 1. Store in SQLite FTS5 cold archive
+                self.archive_entry(
+                    memory_id=item.id,
+                    target=item.scope,
+                    content=item.text,
+                    tags=item.tags,
+                    reason=reason,
+                )
+                # 2. Prune from active markdown store
+                self.controller.delete_memory(item.id, target=item.scope)
+                demoted.append({
+                    "memory_id": item.id,
+                    "target": item.scope,
+                    "content": item.text,
+                    "tags": item.tags,
+                    "reason": reason,
+                })
+
+        return demoted
+
+    def search_archived_memories(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Perform ranked BM25 search across cold archived memories in SQLite FTS5."""
+        clean_q = str(query or "").strip()
+        results: list[dict[str, Any]] = []
+
+        with self._lock:
+            conn = sqlite3.connect(str(self.archive_db_path), check_same_thread=False, timeout=10.0)
+            try:
+                if not clean_q or clean_q == "*":
+                    cursor = conn.execute(
+                        """
+                        SELECT memory_id, target, content, tags, archived_at, reason, 0.0 as rank
+                        FROM archived_memories
+                        ORDER BY archived_at DESC
+                        LIMIT ?;
+                        """,
+                        (limit,),
+                    )
+                    rows = cursor.fetchall()
+                else:
+                    # Clean for FTS5 MATCH
+                    safe_match = re.sub(r'[^\w\s\*\-"]', " ", clean_q).strip()
+                    try:
+                        cursor = conn.execute(
+                            """
+                            SELECT memory_id, target, content, tags, archived_at, reason, rank
+                            FROM archived_memories_fts
+                            WHERE archived_memories_fts MATCH ?
+                            ORDER BY rank
+                            LIMIT ?;
+                            """,
+                            (safe_match, limit),
+                        )
+                        rows = cursor.fetchall()
+                    except Exception:
+                        rows = []
+
+                    # Fallback to LIKE if FTS produced 0 results or failed
+                    if not rows:
+                        like_param = f"%{clean_q}%"
+                        cursor = conn.execute(
+                            """
+                            SELECT memory_id, target, content, tags, archived_at, reason, 0.0 as rank
+                            FROM archived_memories
+                            WHERE content LIKE ? OR tags LIKE ?
+                            ORDER BY archived_at DESC
+                            LIMIT ?;
+                            """,
+                            (like_param, like_param, limit),
+                        )
+                        rows = cursor.fetchall()
+
+                for r in rows:
+                    results.append({
+                        "memory_id": r[0],
+                        "target": r[1],
+                        "content": r[2],
+                        "tags": r[3],
+                        "archived_at": r[4],
+                        "reason": r[5],
+                        "score": float(r[6]) if len(r) > 6 and r[6] is not None else 0.0,
+                    })
+            except Exception as e:
+                logger.error("Failed to search archived memories: %s", e)
+            finally:
+                conn.close()
+
+        return results
+
 
