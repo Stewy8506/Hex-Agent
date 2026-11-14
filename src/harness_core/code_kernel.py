@@ -268,6 +268,13 @@ def _kill_process_tree(proc: subprocess.Popen, force: bool = False) -> None:
         if not force:
             _kill_process_tree(proc, force=True)
 
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
 
 def _stdout_reader(kernel: CodeKernel) -> None:
     """Split child stdout into protocol frames and raw stream bytes."""
