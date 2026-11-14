@@ -1211,7 +1211,11 @@ class ToolGateway:
         content = target.read_text(encoding="utf-8", errors="replace")[:32_000]
 
         # JIT AST-scoped memory & invariant injection
-        rel_p = str(target.relative_to(workspace_dir)).replace("\\", "/")
+        ws_resolved = Path(workspace_dir).resolve()
+        try:
+            rel_p = str(target.resolve().relative_to(ws_resolved)).replace("\\", "/")
+        except ValueError:
+            rel_p = str(args["path"]).lstrip("./").replace("\\", "/")
         if getattr(self, "graphify", None) is None:
             try:
                 self.graphify = ActiveGraphifyAdapter(workspace_dir)
