@@ -1675,6 +1675,8 @@ class HexConsole:
             self._cmd_fork()
         elif cmd == "/skills":
             self._cmd_skills()
+        elif cmd in ("/learn", "/synthesize"):
+            self._cmd_learn(arg)
         elif cmd in ("/scan", "/scan-skill"):
             self._cmd_scan(arg)
         elif cmd == "/model":
@@ -1783,6 +1785,7 @@ class HexConsole:
             ("/rollback", "Roll back workspace changes or cancel active task"),
             ("/fork", "Fork active task into speculative attempt branches"),
             ("/skills", "List registered skills, risk scores, and gate decisions"),
+            ("/learn <target>", "Synthesize and verify reusable SKILL.md bundle (--global, --dry-run)"),
             ("/scan <dir>", "Scan and register a SKILL.md bundle via NVIDIA SkillSpector"),
             ("/model [name]", "Inspect or switch active model routing profile (or 'antigravity')"),
             ("/compressor [mode]", "Switch Tier-1 log compressor between 'local' and 'cloud'"),
@@ -1940,10 +1943,10 @@ class HexConsole:
 
     def _cmd_skills(self) -> None:
         skills = []
-        if hasattr(self.orchestrator, "ledger"):
+        if hasattr(self.orchestrator, "ledger") and self.orchestrator.ledger is not None:
             if hasattr(self.orchestrator.ledger, "list_skills"):
                 try:
-                    skills = self.orchestrator.ledger.list_skills()
+                    skills = list(self.orchestrator.ledger.list_skills())
                 except Exception:
                     pass
             elif getattr(self.orchestrator.ledger, "conn", None) is not None:
@@ -1955,20 +1958,145 @@ class HexConsole:
                         skills = [self.orchestrator.ledger._row_to_dict(r) for r in rows if r]
                 except Exception:
                     pass
+
+        # Also discover skills on disk if ledger list is empty or to enrich with disk skills
+        seen_ids = {s.get("skill_id") or s.get("name") for s in skills if s.get("skill_id") or s.get("name")}
+        from .skillspector import parse_skill_frontmatter
+        from .soul import get_hex_home
+
+        search_dirs = [
+            self.workspace_root / ".hex" / "skills",
+            self.workspace_root / "skills",
+            get_hex_home() / "skills",
+        ]
+        for s_dir in search_dirs:
+            if not s_dir.is_dir():
+                continue
+            for skill_md in s_dir.rglob("SKILL.md"):
+                try:
+                    fm, _ = parse_skill_frontmatter(skill_md.read_text(encoding="utf-8", errors="replace"))
+                    sname = str(fm.get("name") or skill_md.parent.name)
+                    if sname not in seen_ids:
+                        seen_ids.add(sname)
+                        skills.append({
+                            "skill_id": sname,
+                            "name": sname,
+                            "status": "active",
+                            "risk_class": str(fm.get("risk_class") or "R1").upper(),
+                            "disk_path": str(skill_md),
+                            "verify": fm.get("verify"),
+                        })
+                except Exception:
+                    pass
+
         if not skills:
             print(f"{ANSI_DIM}No registered skills found.{ANSI_RESET}")
             return
+
         print(f"\n{ANSI_BOLD}{ANSI_CYAN}Registered Skills ({len(skills)}):{ANSI_RESET}")
         for s in skills:
-            sid = s.get("skill_id", "unknown")
+            sid = s.get("skill_id") or s.get("name", "unknown")
             status = s.get("status", "unknown")
             scan = s.get("scan") or {}
             risk = scan.get("risk_score", s.get("risk_class", "R1"))
             gate = scan.get("gate_decision", "ALLOW")
             quarantine = "QUARANTINED" if status == "quarantined" else "ACTIVE"
             badge = RISK_BADGES.get(str(risk)[:2], f"[{risk}]")
-            print(f"  • {ANSI_BOLD}{sid:<24}{ANSI_RESET} {badge}  Gate: {gate:<16} Status: {status} ({quarantine})")
+
+            # Extract verify hook
+            verify_cmd = ""
+            if s.get("verify"):
+                v = s["verify"]
+                verify_cmd = v.get("command", "") if isinstance(v, dict) else str(v)
+            elif s.get("disk_path") or s.get("path"):
+                p = Path(s.get("disk_path") or s.get("path", ""))
+                if p.is_dir():
+                    p = p / "SKILL.md"
+                if p.is_file():
+                    try:
+                        fm, _ = parse_skill_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+                        v = fm.get("verify")
+                        if v:
+                            verify_cmd = v.get("command", "") if isinstance(v, dict) else str(v)
+                    except Exception:
+                        pass
+            elif s.get("manifest_json"):
+                try:
+                    m = json.loads(s["manifest_json"])
+                    v = m.get("verify")
+                    if v:
+                        verify_cmd = v.get("command", "") if isinstance(v, dict) else str(v)
+                except Exception:
+                    pass
+
+            verify_tag = f" {ANSI_YELLOW}[VERIFY: {verify_cmd}]{ANSI_RESET}" if verify_cmd else ""
+            print(f"  • {ANSI_BOLD}{sid:<24}{ANSI_RESET} {badge}  Gate: {gate:<16} Status: {status} ({quarantine}){verify_tag}")
         print()
+
+    def _cmd_learn(self, arg: str = "") -> None:
+        """Synthesize reusable SKILL.md bundle from conversation history or specified source."""
+        from .skills import SkillCompiler, SkillSecurityViolationError
+
+        tokens = arg.strip().split()
+        is_global = "--global" in tokens
+        is_dry_run = "--dry-run" in tokens
+        cleaned_tokens = [t for t in tokens if t not in ("--global", "--dry-run")]
+        target = " ".join(cleaned_tokens).strip()
+
+        # If no target specified, attempt synthesis from current dialogue / session context
+        if not target:
+            messages = getattr(self, "messages", [])
+            history_entries = getattr(self, "history", [])
+            if messages:
+                recent_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+                target = recent_user
+            elif history_entries:
+                target = history_entries[-1]
+
+        if not target:
+            print(f"{ANSI_YELLOW}Usage: /learn <target_file|description|task_id> [--global] [--dry-run]{ANSI_RESET}")
+            return
+
+        compiler = SkillCompiler(
+            ledger=getattr(self.orchestrator, "ledger", None),
+            scanner=getattr(self.orchestrator, "scanner", None),
+            default_workspace_root=self.workspace_root,
+        )
+
+        try:
+            res = compiler.compile_skill(
+                source_input=target,
+                is_global=is_global,
+                workspace_root=self.workspace_root,
+                dry_run=is_dry_run,
+            )
+
+            gate = getattr(res.scan_report, "gate_decision", "ALLOW")
+            score = getattr(res.scan_report, "risk_score", 0)
+            col = ANSI_GREEN if gate == "ALLOW" else (ANSI_RED if gate == "QUARANTINE" else ANSI_YELLOW)
+            scope = "Global (~/.hex/skills)" if res.is_global else f"Workspace ({res.skill_dir.parent})"
+            verify_info = res.frontmatter.get("verify")
+            verify_cmd = verify_info.get("command") if isinstance(verify_info, dict) else (verify_info or "None")
+
+            print(f"\n{ANSI_BOLD}{ANSI_CYAN}Skill Synthesis Preview:{ANSI_RESET}")
+            print(f"  Name:         {res.name}")
+            print(f"  Description:  {res.description}")
+            print(f"  Scope:        {scope}")
+            print(f"  Verify Hook:  {verify_cmd}")
+            print(f"  SkillSpector: {col}{gate}{ANSI_RESET} (Risk Score: {score}/100)")
+            if res.quarantined:
+                print(f"  {ANSI_RED}⚠️ Quarantined: {res.quarantine_path}{ANSI_RESET}")
+            elif is_dry_run:
+                print(f"  {ANSI_YELLOW}[DRY-RUN] Preview only. No files were written to disk.{ANSI_RESET}")
+            else:
+                print(f"  {ANSI_GREEN}✓ Active and registered at {res.skill_dir}{ANSI_RESET}")
+            print()
+        except SkillSecurityViolationError as exc:
+            print(f"\n{ANSI_RED}SkillSpector Security Gate Violation:{ANSI_RESET} {exc}")
+            if exc.quarantine_path:
+                print(f"{ANSI_RED}Quarantined at: {exc.quarantine_path}{ANSI_RESET}\n")
+        except Exception as exc:
+            print(f"\n{ANSI_RED}Skill synthesis failed: {exc}{ANSI_RESET}\n")
 
     def _cmd_scan(self, arg: str = "") -> None:
         path_str = arg.strip()

@@ -594,3 +594,90 @@ Use when authentication tokens expire or fail validation.
     assert skills[0].identifier == "jwt-auth-validator"
 
 
+def test_tui_learn_slash_command(tmp_path: Path) -> None:
+    """Verifies TUI /learn slash command preview, dry-run, and compilation."""
+    import io
+    from unittest.mock import patch
+    from harness_core.orchestrator import HarnessOrchestrator
+    from harness_core.tui import HexConsole
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    orch = HarnessOrchestrator(data_dir=str(data_dir), default_workspace=tmp_path)
+    console = HexConsole(orchestrator=orch, workspace_root=tmp_path, stream=False, quiet=True)
+
+    # 1. Dry run preview
+    buf_dry = io.StringIO()
+    with patch("sys.stdout", buf_dry):
+        term = console.handle_slash_command("/learn Scaffold a mock test endpoint --dry-run")
+    assert not term
+    out_dry = buf_dry.getvalue()
+    assert "Skill Synthesis Preview" in out_dry
+    assert "[DRY-RUN]" in out_dry
+
+    # 2. Real compilation to workspace
+    buf_real = io.StringIO()
+    with patch("sys.stdout", buf_real):
+        console.handle_slash_command("/learn Scaffold a mock test endpoint")
+    out_real = buf_real.getvalue()
+    assert "Active and registered" in out_real
+
+    # Confirm skill was written to workspace
+    ws_skills = list((tmp_path / ".hex" / "skills").iterdir())
+    assert len(ws_skills) >= 1
+    assert any((s / "SKILL.md").is_file() for s in ws_skills)
+
+
+def test_tui_skills_display_with_verify_tag(tmp_path: Path) -> None:
+    """Verifies /skills renders [VERIFY: <cmd>] badge when verify hook is present."""
+    import io
+    from unittest.mock import patch
+    from harness_core.orchestrator import HarnessOrchestrator
+    from harness_core.tui import HexConsole
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    orch = HarnessOrchestrator(data_dir=str(data_dir), default_workspace=tmp_path)
+    console = HexConsole(orchestrator=orch, workspace_root=tmp_path, stream=False, quiet=True)
+
+    # Setup a skill with verify hook
+    skill_dir = tmp_path / ".hex" / "skills" / "verified-test-skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text("""---
+name: verified-test-skill
+description: Skill carrying a deterministic verification hook.
+verify:
+  command: "pytest tests/test_verified.py"
+  must_pass: true
+---
+# Verified Test Skill
+""", encoding="utf-8")
+
+    buf = io.StringIO()
+    with patch("sys.stdout", buf):
+        console.handle_slash_command("/skills")
+    out = buf.getvalue()
+    assert "verified-test-skill" in out
+    assert "[VERIFY: pytest tests/test_verified.py]" in out
+
+
+def test_tui_help_command_lists_learn(tmp_path: Path) -> None:
+    """Verifies /help lists the /learn command."""
+    import io
+    from unittest.mock import patch
+    from harness_core.orchestrator import HarnessOrchestrator
+    from harness_core.tui import HexConsole
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    orch = HarnessOrchestrator(data_dir=str(data_dir), default_workspace=tmp_path)
+    console = HexConsole(orchestrator=orch, workspace_root=tmp_path, stream=False, quiet=True)
+
+    buf = io.StringIO()
+    with patch("sys.stdout", buf):
+        console.handle_slash_command("/help")
+    out = buf.getvalue()
+    assert "/learn <target>" in out
+
+
+

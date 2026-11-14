@@ -332,6 +332,15 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_skl_scan = p_skl_sub.add_parser("scan", help="Scan a skill bundle directory or SKILL.md file via SkillSpector")
     p_skl_scan.add_argument("path", help="Path to skill bundle directory or file")
 
+    p_lrn = sub.add_parser("learn", help="Synthesize reusable SKILL.md bundle from input source or past task")
+    p_lrn.add_argument("target", help="File, directory, URL, past task ID, or quoted description")
+    p_lrn.add_argument("--name", default=None, help="Custom skill name (lowercase-hyphenated, <=64 chars)")
+    p_lrn.add_argument("--global", dest="is_global", action="store_true", default=False, help="Install to ~/.hex/skills/ instead of workspace .hex/skills/")
+    p_lrn.add_argument("--verify", default=None, help="Shell command for regression assertion (e.g. pytest tests/test_rpc.py)")
+    p_lrn.add_argument("--dry-run", action="store_true", default=False, help="Simulate compilation and SkillSpector scan without writing to disk")
+    p_lrn.add_argument("--json", action="store_true", default=False, help="Output structured JSON summary")
+    p_lrn.add_argument("--workspace", default=None, help="Target project workspace directory")
+
     p_doc = sub.add_parser("doctor", help="Run system diagnostics, environment auditing, and self-healing")
     p_doc.add_argument("--fix", action="store_true", help="Automatically resolve fixable diagnostic issues (directories, config, permissions)")
     p_doc.add_argument("--live", action="store_true", help="Perform live read-only model API connectivity ping")
@@ -1357,6 +1366,71 @@ def _main_impl(argv: list[str] | None = None) -> int:
             res = orch.scanner.scan_and_register_skill(scan_path)
             print(json.dumps(res, indent=2, default=str))
             return 0
+
+    if args.cmd == "learn":
+        from .skills import SkillCompiler, SkillSecurityViolationError
+
+        target_ws = getattr(args, "workspace", None) or ws_root
+        compiler = SkillCompiler(
+            ledger=getattr(orch, "ledger", None),
+            scanner=getattr(orch, "scanner", None),
+            default_workspace_root=target_ws,
+        )
+
+        try:
+            res = compiler.compile_skill(
+                source_input=args.target,
+                name=args.name,
+                verify_hook=args.verify,
+                is_global=args.is_global,
+                workspace_root=target_ws,
+                dry_run=args.dry_run,
+            )
+
+            if getattr(args, "json", False):
+                print(json.dumps(res.to_dict(), indent=2))
+            else:
+                gate = getattr(res.scan_report, "gate_decision", "ALLOW")
+                score = getattr(res.scan_report, "risk_score", 0)
+                scope = "Global (~/.hex/skills)" if res.is_global else f"Workspace ({res.skill_dir.parent})"
+                verify_info = res.frontmatter.get("verify")
+                verify_cmd = verify_info.get("command") if isinstance(verify_info, dict) else (verify_info or "None")
+
+                print(f"\nSkill Compilation Complete")
+                print(f"  Name:         {res.name}")
+                print(f"  Description:  {res.description}")
+                print(f"  Scope:        {scope}")
+                print(f"  Location:     {res.skill_dir}")
+                print(f"  Verify Hook:  {verify_cmd}")
+                print(f"  SkillSpector: {gate} (Risk Score: {score}/100)")
+                if res.quarantined:
+                    print(f"  ⚠️ Quarantined: {res.quarantine_path}")
+                elif args.dry_run:
+                    print(f"  [DRY-RUN] No files were written to disk.")
+                else:
+                    print(f"  ✓ Active and registered in workbench.")
+                print()
+            return 0
+        except SkillSecurityViolationError as exc:
+            if getattr(args, "json", False):
+                err_dict = {
+                    "status": "security_violation",
+                    "error": str(exc),
+                    "quarantine_path": str(exc.quarantine_path) if exc.quarantine_path else None,
+                    "scan_report": exc.scan_report.to_dict() if exc.scan_report else None,
+                }
+                print(json.dumps(err_dict, indent=2), file=sys.stderr)
+            else:
+                print(f"Security gate violation: {exc}", file=sys.stderr)
+                if exc.quarantine_path:
+                    print(f"Quarantined at: {exc.quarantine_path}", file=sys.stderr)
+            return 1
+        except Exception as exc:
+            if getattr(args, "json", False):
+                print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
+            else:
+                print(f"Skill compilation failed: {exc}", file=sys.stderr)
+            return 1
 
     if args.cmd == "doctor":
         from .doctor import HexDoctor
