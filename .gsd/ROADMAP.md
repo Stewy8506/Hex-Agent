@@ -418,6 +418,35 @@
   - Cross-session FTS5 + Graphify AST hybrid retrieval.
 - **Verification:** Unit tests verifying `/learn` skill generation, deterministic `verify:` test execution, hardware gating behavior, and `SkillSpector` validation.
 
+---
+
+## Milestone M12: Production Cognition Hardening & Execution Seams
+
+```
+[ ] Phase 33: Production Cognition Hardening & Execution Seams
+```
+
+---
+
+### Phase 33: Production Cognition Hardening & Execution Seams
+- **Goal:** Eliminate the 8 production execution seams identified in the Claude Opus architecture audit (`audit.md`), connecting verified components to the runtime state machine while preserving core architectural strengths.
+- **Must-haves:**
+  - **F-01**: Wire deterministic skill `verify:` hooks into orchestrator task completion with sandbox execution, minimal environment, and SkillSpector hash verification.
+  - **F-02**: Scheduled, durable memory lifecycle with strict archive-before-delete and idempotency guarantees in `archive.db`.
+  - **F-03**: AST node-memory symbol body hashing via Graphify (no whole-file false staleness) and migration to SQLite FTS5 storage.
+  - **F-04**: Session-scoped Turn-0 memory snapshotting (`session_id`), preventing cross-session staleness while guaranteeing 100% intra-session KV-cache freeze.
+  - **F-05**: Transactional multi-operation execution in `CuratedMemoryStore.execute_operations()` with rollback on failure, and safe disk `remove()` result propagation.
+  - **F-06**: Real idle reflection worker draining `.hex/reflections/pending_reflections.json` when system is idle.
+  - **F-07**: Rigid `<retrieved-memory trusted="false">` untrusted data fencing and write-time prompt injection scanning for JIT tool observations.
+  - **F-08**: Exact `MAX_SOUL_CHARS` budget reservation and explicit trust-tier provenance for workspace souls.
+- **Preserved Strengths**:
+  - `PromptBuilder` testable 5-slot order.
+  - Curated memory write locking, atomic replacement, and history snapshots.
+  - Negative guardrail auto-capture.
+  - SkillSpector deterministic risk gates & quarantine.
+  - Deterministic reflection fallback for offline operation.
+- **Verification:** Comprehensive unit and integration test suite verifying all 8 audit findings are fixed with zero regressions.
+
 
 
 

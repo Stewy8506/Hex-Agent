@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-15  
-**Current Milestone:** M11 (Next-Gen Cognition & Self-Evolution Engine) — COMPLETE & VERIFIED  
-**Status:** Phases 30, 31, and 32 100% Complete & Verified  
-**Active Phase:** All Phases Complete (Milestone M11 Signed Off)  
-**Completed Milestones:** M1 through M11 Complete & Verified (848/848 Python tests green, 1 skipped, 34/34 Rust workspace tests green)  
+**Current Milestone:** M12 (Production Cognition Hardening & Execution Seams) — ACTIVE  
+**Status:** Phase 33 Plan 33-01 Complete (Execution Gates & Session Isolation Verified)  
+**Active Phase:** Phase 33: Production Cognition Hardening & Execution Seams  
+**Completed Milestones:** M1 through M11 Complete & Verified (858/858 Python tests green, 1 skipped, 34/34 Rust workspace tests green)  
 
 ---
 
@@ -318,6 +318,21 @@
       - 8 unit tests in `tests/test_context_compressor_tail_pruning.py`.
       - 6 integration tests in `tests/test_context_compressor_integration.py`.
       - Verified 685 Python tests and 34 Rust tests passing cleanly with zero regressions.
+
+39. **Phase 33 Plan 33-01: Execution Gates & Session Isolation Complete (Fixes F-01, F-04, F-08):**
+    - **Deterministic Skill Verification Hooks (F-01):**
+      - Wired post-edit verification hook execution into `HarnessOrchestrator._execute_standard_dag()` during task verification and repair loops.
+      - Enforced sandbox execution (`RestrictedSubprocessSandbox`, Bubblewrap, Docker) and minimal allowlisted environment stripping all provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`), cloud credentials, database URLs, and SSH configs.
+      - Integrated SkillSpector SHA-256 bundle hash validation before hook execution, rejecting tampered or unapproved bundles with `SecurityError`.
+      - Gated task transition on `must_pass: True`: hook failure records `SKILL_VERIFICATION_FAILED` and blocks `SUCCEEDED`.
+    - **Session-Scoped Turn-0 Memory Snapshots (F-04):**
+      - Keyed `MemorySnapshot._cached_snapshots` by `f"{ws}:{gh}:{session_id}"`, ensuring an active session retains 100% byte-frozen KV-cache stability while fresh sessions immediately hydrate updated memory.
+      - Added `reset_session_snapshot()` and `clear_all_snapshots()`.
+    - **Exact Soul Budget Cap & Workspace User Provenance (F-08):**
+      - Fixed `SoulManager._enforce_budget()` to reserve space for `TRUNCATION_MARKER`, ensuring total characters never exceed `MAX_SOUL_CHARS` (2,500 chars).
+      - Introduced `SoulProvenance` enum (`workspace_user`, `global_user`, `repository`, `remote_profile`, `distribution`).
+      - Updated `PromptBuilder` Slot #1 to recognize workspace `.hex/SOUL.md` as user-authored, warning on heuristic injection matches instead of hard-blocking.
+    - Authored 10 unit and integration tests across `tests/test_skill_verification_wiring.py` and `tests/test_session_isolated_snapshots.py` (10/10 passing).
 
 ---
 

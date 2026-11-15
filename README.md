@@ -213,7 +213,7 @@ Not every learned insight deserves permanent real estate in your frozen system p
 - **Why it matters**: Your active context never rots or overflows with obsolete trivia from months ago.
 
 ### 5. Deterministic Verification Hooks Attached to Skills
-Hermes `SKILL.md` files are purely instructional prose. In HEX, a learned skill carries executable verification assertions.
+Hermes/OpenClaw `SKILL.md` files are purely instructional prose. In HEX, a learned skill carries executable verification assertions.
 - **How it works**: When `/learn` compiles a `SKILL.md` bundle (for example, *"How to add a new RPC endpoint"*), it allows an optional `verify:` frontmatter block specifying a shell command, AST invariant, or test filter (e.g. `cargo test rpc_schema_sync`).
 - **Why it matters**: Whenever HEX invokes that skill in the future, the harness automatically runs the verification check after the agent finishes editing, turning passive documentation into an **executable regression test**.
 
