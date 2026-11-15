@@ -14,7 +14,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main
+from harness_core.cli import build_parser, main
 from harness_core.doctor import HexDoctor
 from harness_core.tui import HexConsole, render_status_bar
 from harness_core.voice import (
@@ -123,21 +123,27 @@ class TestVoiceEngineCore(unittest.TestCase):
         try:
             # Enqueue utterance
             eng.speak("Hello HEX", clean=True)
-            time.sleep(0.3)
+            eng._queue.join()
+            t0 = time.time()
+            while not mock_tts.spoken_history and time.time() - t0 < 3.0:
+                time.sleep(0.05)
             self.assertIn("Hello HEX", mock_tts.spoken_history)
 
             # Mute prevents playback
             eng.mute()
             self.assertTrue(eng.is_muted())
             eng.speak("This should be suppressed", clean=True)
-            time.sleep(0.2)
+            eng._queue.join()
             self.assertNotIn("This should be suppressed", mock_tts.spoken_history)
 
             # Unmute restores playback
             eng.unmute()
             self.assertFalse(eng.is_muted())
             eng.speak("Resumed speaking", clean=True)
-            time.sleep(0.3)
+            eng._queue.join()
+            t0 = time.time()
+            while len(mock_tts.spoken_history) < 2 and time.time() - t0 < 3.0:
+                time.sleep(0.05)
             self.assertIn("Resumed speaking", mock_tts.spoken_history)
 
             # Toggle mute
@@ -194,9 +200,11 @@ class TestVoiceEngineCore(unittest.TestCase):
 
             mock_stt.feed_transcript("command one")
             mock_stt.feed_transcript("command two")
-            time.sleep(0.25)
+            t0 = time.time()
+            while len(captured) < 2 and time.time() - t0 < 3.0:
+                time.sleep(0.05)
             stop_signal.set()
-            listener_th.join(timeout=1.0)
+            listener_th.join(timeout=2.0)
 
             self.assertEqual(captured, ["command one", "command two"])
         finally:
@@ -257,30 +265,31 @@ class TestTUIVoiceIntegration(unittest.TestCase):
         console.voice_engine.tts_provider = mock_tts
 
         try:
-            # /voice on
-            console.handle_slash_command("/voice on")
-            self.assertTrue(console.voice_engine.config.tts_enabled)
-            self.assertTrue(console.voice_engine.config.stt_enabled)
-            self.assertFalse(console.voice_engine.is_muted())
+            with patch("sys.stdout", StringIO()):
+                # /voice on
+                console.handle_slash_command("/voice on")
+                self.assertTrue(console.voice_engine.config.tts_enabled)
+                self.assertTrue(console.voice_engine.config.stt_enabled)
+                self.assertFalse(console.voice_engine.is_muted())
 
-            # /voice off
-            console.handle_slash_command("/voice off")
-            self.assertFalse(console.voice_engine.config.tts_enabled)
-            self.assertFalse(console.voice_engine.config.stt_enabled)
+                # /voice off
+                console.handle_slash_command("/voice off")
+                self.assertFalse(console.voice_engine.config.tts_enabled)
+                self.assertFalse(console.voice_engine.config.stt_enabled)
 
-            # /voice mute toggling
-            console.handle_slash_command("/voice mute")
-            self.assertTrue(console.voice_engine.is_muted())
-            console.handle_slash_command("/voice mute")
-            self.assertFalse(console.voice_engine.is_muted())
+                # /voice mute toggling
+                console.handle_slash_command("/voice mute")
+                self.assertTrue(console.voice_engine.is_muted())
+                console.handle_slash_command("/voice mute")
+                self.assertFalse(console.voice_engine.is_muted())
 
-            # /voice rate
-            console.handle_slash_command("/voice rate 220")
-            self.assertEqual(console.voice_engine.config.speech_rate, 220)
+                # /voice rate
+                console.handle_slash_command("/voice rate 220")
+                self.assertEqual(console.voice_engine.config.speech_rate, 220)
 
-            # /voice voice
-            console.handle_slash_command("/voice voice Alex")
-            self.assertEqual(console.voice_engine.config.voice_name, "Alex")
+                # /voice voice
+                console.handle_slash_command("/voice voice Alex")
+                self.assertEqual(console.voice_engine.config.voice_name, "Alex")
 
             # /voice status output inspection
             buf = StringIO()
@@ -334,7 +343,9 @@ class TestTUIVoiceIntegration(unittest.TestCase):
             finally:
                 sys.stdout = old_stdout
 
-            time.sleep(0.3)
+            t0 = time.time()
+            while len(mock_tts.spoken_history) < 1 and time.time() - t0 < 3.0:
+                time.sleep(0.05)
             self.assertTrue(len(mock_tts.spoken_history) >= 1)
             spoken = mock_tts.spoken_history[-1]
             self.assertIn("Generated endpoint in server.py", spoken)
@@ -347,17 +358,19 @@ class TestCLIVoiceErgonomics(unittest.TestCase):
 
     def test_cli_voice_argument_parsing(self) -> None:
         """Verify --voice and hex voice CLI subcommands parse cleanly."""
-        with self.assertRaises(SystemExit) as cm1:
-            main(["--voice", "--help"])
-        self.assertEqual(cm1.exception.code, 0)
+        parser = build_parser()
+        with patch("sys.stdout", StringIO()):
+            with self.assertRaises(SystemExit) as cm1:
+                parser.parse_args(["--voice", "--help"])
+            self.assertEqual(cm1.exception.code, 0)
 
-        with self.assertRaises(SystemExit) as cm2:
-            main(["voice", "--help"])
-        self.assertEqual(cm2.exception.code, 0)
+            with self.assertRaises(SystemExit) as cm2:
+                parser.parse_args(["voice", "--help"])
+            self.assertEqual(cm2.exception.code, 0)
 
-        with self.assertRaises(SystemExit) as cm3:
-            main(["chat", "--voice", "--help"])
-        self.assertEqual(cm3.exception.code, 0)
+            with self.assertRaises(SystemExit) as cm3:
+                parser.parse_args(["chat", "--voice", "--help"])
+            self.assertEqual(cm3.exception.code, 0)
 
 
 if __name__ == "__main__":

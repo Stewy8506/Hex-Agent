@@ -48,10 +48,10 @@ jobs:
           python -m unittest discover -v tests 2>&1 | tee test_run.log || {
             echo "### ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 100 test_run.log >> $GITHUB_STEP_SUMMARY
+            tail -n 120 test_run.log >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            tail_err=$(tail -n 25 test_run.log | tr '\n' ' ')
-            echo "::error title=Test Failure::$tail_err"
+            fail_msg=$(grep -E "(FAIL|ERROR):" test_run.log -A 5 | head -n 25 | tr '\n' ' ')
+            echo "::error title=Test Failure::${fail_msg:-Test suite failed. Check step summary.}"
             exit 1
           }
 
