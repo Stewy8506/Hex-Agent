@@ -193,6 +193,7 @@ pub struct App {
     pub session_id: String,
     pub project_id: String,
     pub model_name: String,
+    pub agent_name: String,
     pub provider_name: String,
     pub cow_mode: String,
     pub git_branch: String,
@@ -331,6 +332,7 @@ impl App {
             session_id: "ses_default".to_string(),
             project_id: project_id.into(),
             model_name: resolved_model,
+            agent_name: std::env::var("HEX_AGENT_NAME").unwrap_or_else(|_| "HEX".to_string()),
             provider_name: "Google Antigravity".to_string(),
             cow_mode: cow_mode.into(),
             git_branch: branch,
@@ -379,6 +381,11 @@ impl App {
         app.add_system_message("◈ Welcome to HEX Agent");
         app.add_system_message("Type your goal or /help for interactive commands.");
         app
+    }
+
+    /// Set or override the agent's display name.
+    pub fn set_agent_name(&mut self, name: impl Into<String>) {
+        self.agent_name = name.into();
     }
 
     /// Add a user message to dialogue history.

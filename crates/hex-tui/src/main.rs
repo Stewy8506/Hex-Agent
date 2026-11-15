@@ -55,6 +55,9 @@ struct Args {
 
     #[arg(short, long, help = "Session ID to attach or resume")]
     session: Option<String>,
+
+    #[arg(long, help = "Assistant display name (default: HEX)")]
+    name: Option<String>,
 }
 
 #[tokio::main]
@@ -107,6 +110,9 @@ fn run_headless_check(args: Args) -> Result<()> {
     }
     if let Some(s) = args.skin {
         app.skin_name = s;
+    }
+    if let Some(n) = args.name {
+        app.agent_name = n;
     }
 
     // Add sample dialogue and tool calls
@@ -196,6 +202,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     }
     if let Some(s) = args.skin {
         app.skin_name = s;
+    }
+    if let Some(n) = args.name {
+        app.agent_name = n;
     }
 
     // Try connecting to ACP server in background

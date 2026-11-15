@@ -153,8 +153,10 @@ fn test_visual_wrapped_lines_scroll_calculation() {
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(content.contains("definitely exceeds"));
-    assert!(content.contains("constrained terminal"));
+    assert!(content.contains("definitely"));
+    assert!(content.contains("fifty characters"));
+    assert!(content.contains("constrained"));
+    assert!(content.contains("terminal viewport"));
 }
 
 #[test]

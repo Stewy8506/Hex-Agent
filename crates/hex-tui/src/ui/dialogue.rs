@@ -46,9 +46,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     lines.extend(render_hex_intro(app, area.width));
 
     // 2. Render dialogue conversation items
-    let mut in_assistant_turn = false;
-    let mut had_tool_in_turn = false;
-
     for (idx, item) in app.dialogue_items.iter().enumerate() {
         // The intro above replaces the seed welcome messages.
         if idx < 2 {
@@ -65,9 +62,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         match item {
             DialogueItem::Message(msg) => {
                 if msg.role == Role::User {
-                    in_assistant_turn = false;
-                    had_tool_in_turn = false;
-
                     lines.push(Line::raw(""));
                     let card_width = (area.width.saturating_sub(2)).max(30) as usize;
                     let prefix = "╭─ ❯ You ";
@@ -107,137 +101,145 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 }
 
                 if msg.role == Role::Assistant {
-                    if !in_assistant_turn {
-                        lines.push(Line::from(vec![
-                            Span::styled("◈ Assistant", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
-                        ]));
-                    }
-                    if had_tool_in_turn {
-                        lines.push(Line::from(Span::styled("  │", Style::default().fg(skin.muted))));
-                    }
-                    lines.push(Line::from(vec![
-                        Span::styled("  ▼   ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
-                        Span::styled(&msg.timestamp, Style::default().fg(skin.muted)),
-                    ]));
                     lines.push(Line::raw(""));
+                    let card_width = (area.width.saturating_sub(2)).max(30) as usize;
+                    let inner_width = card_width.saturating_sub(4);
+                    let prefix = format!("╭─ ⬢ {} ", app.agent_name);
+                    let suffix = format!(" {} ─╮", msg.timestamp);
+                    let prefix_len = prefix.chars().count();
+                    let suffix_len = suffix.chars().count();
+                    let dash_count = card_width.saturating_sub(prefix_len + suffix_len).max(2);
 
-                    in_assistant_turn = false;
-                    had_tool_in_turn = false;
+                    lines.push(Line::from(vec![
+                        Span::styled("╭─ ", Style::default().fg(skin.accent)),
+                        Span::styled("⬢ ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("{} ", app.agent_name), Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
+                        Span::styled("─".repeat(dash_count), Style::default().fg(skin.accent)),
+                        Span::styled(format!(" {} ", msg.timestamp), Style::default().fg(skin.muted)),
+                        Span::styled("─╮", Style::default().fg(skin.accent)),
+                    ]));
 
-                    // Message body lines with rich markdown formatting
+                    let is_streaming_assistant = idx == app.dialogue_items.len() - 1 && app.is_busy;
                     let mut in_code_block = false;
-                    for raw_line in msg.content.lines() {
-                        let trimmed = raw_line.trim_start();
+                    let raw_lines: Vec<&str> = msg.content.lines().collect();
+                    let num_raw_lines = raw_lines.len();
 
-                        if trimmed.starts_with("```") {
-                            in_code_block = !in_code_block;
-                            if in_code_block {
-                                let lang = trimmed.trim_start_matches('`').trim();
-                                lines.push(Line::from(vec![
-                                    Span::styled("  ┌── ", Style::default().fg(skin.muted)),
-                                    Span::styled(
-                                        if lang.is_empty() { "[code] ".to_string() } else { format!("[{}] ", lang) },
-                                        Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled("─".repeat(40), Style::default().fg(skin.muted)),
-                                ]));
-                            } else {
-                                lines.push(Line::from(vec![
-                                    Span::styled(format!("  └──{}", "─".repeat(48)), Style::default().fg(skin.muted)),
-                                ]));
-                            }
-                            continue;
-                        }
+                    if num_raw_lines == 0 && is_streaming_assistant {
+                        let cursor_char = if (app.animation_frame / 8) % 2 == 0 { "▍" } else { " " };
+                        let pad = inner_width.saturating_sub(1);
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ", Style::default().fg(skin.accent)),
+                            Span::styled(cursor_char, Style::default().fg(skin.accent)),
+                            Span::raw(" ".repeat(pad)),
+                            Span::styled(" │", Style::default().fg(skin.accent)),
+                        ]));
+                    } else {
+                        for (line_idx, raw_line) in raw_lines.iter().enumerate() {
+                            let is_last_line = line_idx == num_raw_lines - 1;
+                            let trimmed = raw_line.trim();
 
-                        if in_code_block {
-                            lines.push(Line::from(vec![
-                                Span::styled("  │ ", Style::default().fg(skin.muted)),
-                                Span::styled(raw_line.to_string(), Style::default().fg(skin.accent)),
-                            ]));
-                            continue;
-                        }
-
-                        // Headings
-                        if trimmed.starts_with("### ") {
-                            let mut spans = vec![
-                                Span::styled("  ● ", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
-                            ];
-                            spans.extend(parse_inline_spans(trimmed[4..].trim(), &skin));
-                            lines.push(Line::from(spans));
-                            continue;
-                        } else if trimmed.starts_with("## ") {
-                            let mut spans = vec![
-                                Span::styled("  ◆ ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
-                            ];
-                            spans.extend(parse_inline_spans(trimmed[3..].trim(), &skin));
-                            lines.push(Line::from(spans));
-                            continue;
-                        } else if trimmed.starts_with("# ") {
-                            let mut spans = vec![
-                                Span::styled("  ■ ", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
-                            ];
-                            spans.extend(parse_inline_spans(trimmed[2..].trim(), &skin));
-                            lines.push(Line::from(spans));
-                            continue;
-                        }
-
-                        // Numbered list items (e.g. "1. ")
-                        let is_num_list = trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
-                            && trimmed.find(". ").is_some();
-
-                        if is_num_list {
-                            if let Some(dot_idx) = trimmed.find(". ") {
-                                let num_str = &trimmed[..dot_idx];
-                                if num_str.chars().all(|c| c.is_ascii_digit()) {
-                                    let rest = trimmed[dot_idx + 2..].trim();
-                                    let mut spans = vec![
-                                        Span::styled(
-                                            format!("  {}. ", num_str),
-                                            Style::default().fg(skin.heading).add_modifier(Modifier::BOLD),
-                                        ),
-                                    ];
-                                    spans.extend(parse_inline_spans(rest, &skin));
-                                    lines.push(Line::from(spans));
-                                    continue;
+                            if trimmed.starts_with("```") {
+                                in_code_block = !in_code_block;
+                                if in_code_block {
+                                    let lang = trimmed.trim_start_matches('`').trim();
+                                    let tag = if lang.is_empty() { "[code]".to_string() } else { format!("[{}]", lang) };
+                                    let tag_len = tag.chars().count() + 4;
+                                    let dash_len = inner_width.saturating_sub(tag_len + 1).max(2);
+                                    let code_header = format!("┌─ {} {}┐", tag, "─".repeat(dash_len));
+                                    let clen = code_header.chars().count();
+                                    let pad = inner_width.saturating_sub(clen);
+                                    lines.push(Line::from(vec![
+                                        Span::styled("│ ", Style::default().fg(skin.accent)),
+                                        Span::styled(code_header, Style::default().fg(skin.muted)),
+                                        Span::raw(" ".repeat(pad)),
+                                        Span::styled(" │", Style::default().fg(skin.accent)),
+                                    ]));
+                                } else {
+                                    let code_footer = format!("└{}┘", "─".repeat(inner_width.saturating_sub(2)));
+                                    let clen = code_footer.chars().count();
+                                    let pad = inner_width.saturating_sub(clen);
+                                    lines.push(Line::from(vec![
+                                        Span::styled("│ ", Style::default().fg(skin.accent)),
+                                        Span::styled(code_footer, Style::default().fg(skin.muted)),
+                                        Span::raw(" ".repeat(pad)),
+                                        Span::styled(" │", Style::default().fg(skin.accent)),
+                                    ]));
                                 }
+                                continue;
+                            }
+
+                            if in_code_block {
+                                let wlen = raw_line.chars().count() + 4;
+                                let code_pad = inner_width.saturating_sub(wlen);
+                                lines.push(Line::from(vec![
+                                    Span::styled("│ ", Style::default().fg(skin.accent)),
+                                    Span::styled("│ ", Style::default().fg(skin.muted)),
+                                    Span::styled(raw_line.to_string(), Style::default().fg(skin.accent)),
+                                    Span::raw(" ".repeat(code_pad)),
+                                    Span::styled(" │", Style::default().fg(skin.muted)),
+                                    Span::styled(" │", Style::default().fg(skin.accent)),
+                                ]));
+                                continue;
+                            }
+
+                            if trimmed.is_empty() {
+                                lines.push(Line::from(vec![
+                                    Span::styled("│ ", Style::default().fg(skin.accent)),
+                                    Span::raw(" ".repeat(inner_width)),
+                                    Span::styled(" │", Style::default().fg(skin.accent)),
+                                ]));
+                                continue;
+                            }
+
+                            // Headings and lists
+                            let (prefix_spans, content_to_parse, indent) = if trimmed.starts_with("### ") {
+                                (vec![Span::styled("● ", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD))], trimmed[4..].trim(), 2)
+                            } else if trimmed.starts_with("## ") {
+                                (vec![Span::styled("◆ ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD))], trimmed[3..].trim(), 2)
+                            } else if trimmed.starts_with("# ") {
+                                (vec![Span::styled("■ ", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD))], trimmed[2..].trim(), 2)
+                            } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+                                (vec![Span::styled("• ", Style::default().fg(skin.accent))], trimmed[2..].trim(), 2)
+                            } else {
+                                (Vec::new(), *raw_line, 0)
+                            };
+
+                            let mut parsed_spans = prefix_spans;
+                            parsed_spans.extend(parse_inline_spans(content_to_parse, &skin));
+
+                            let wrapped_rows = wrap_spans(parsed_spans, inner_width, indent);
+                            let num_rows = wrapped_rows.len();
+
+                            for (row_idx, mut row) in wrapped_rows.into_iter().enumerate() {
+                                if is_last_line && row_idx == num_rows - 1 && is_streaming_assistant {
+                                    let cursor_char = if (app.animation_frame / 8) % 2 == 0 { "▍" } else { " " };
+                                    row.push(Span::styled(cursor_char, Style::default().fg(skin.accent)));
+                                }
+
+                                let rlen: usize = row.iter().map(|s| s.content.chars().count()).sum();
+                                let pad = inner_width.saturating_sub(rlen);
+
+                                let mut line_spans = vec![Span::styled("│ ", Style::default().fg(skin.accent))];
+                                line_spans.extend(row);
+                                if pad > 0 {
+                                    line_spans.push(Span::raw(" ".repeat(pad)));
+                                }
+                                line_spans.push(Span::styled(" │", Style::default().fg(skin.accent)));
+                                lines.push(Line::from(line_spans));
                             }
                         }
-
-                        // Bullet list items
-                        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-                            let rest = trimmed[2..].trim();
-                            let mut spans = vec![
-                                Span::styled("  • ", Style::default().fg(skin.accent)),
-                            ];
-                            spans.extend(parse_inline_spans(rest, &skin));
-                            lines.push(Line::from(spans));
-                            continue;
-                        }
-
-                        // Blockquotes
-                        if trimmed.starts_with("> ") {
-                            let rest = trimmed[2..].trim();
-                            let mut spans = vec![
-                                Span::styled("  │ ", Style::default().fg(skin.accent)),
-                            ];
-                            spans.extend(parse_inline_spans(rest, &skin));
-                            lines.push(Line::from(spans));
-                            continue;
-                        }
-
-                        // Normal prose
-                        let mut spans = vec![Span::raw("  ")];
-                        spans.extend(parse_inline_spans(raw_line, &skin));
-                        lines.push(Line::from(spans));
                     }
+
+                    let bot_dashes = card_width.saturating_sub(2);
+                    lines.push(Line::from(Span::styled(
+                        format!("╰{}╯", "─".repeat(bot_dashes)),
+                        Style::default().fg(skin.accent),
+                    )));
                     lines.push(Line::raw(""));
                     continue;
                 }
 
                 // System / Tool message
-                in_assistant_turn = false;
-                had_tool_in_turn = false;
-
                 if msg.content.starts_with("Available Skills") || msg.content.starts_with("Available Tools") {
                     for (line_idx, raw_line) in msg.content.lines().enumerate() {
                         let trimmed = raw_line.trim();
@@ -346,14 +348,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             }
 
             DialogueItem::ToolCall(tc) => {
-                if !in_assistant_turn {
-                    lines.push(Line::from(vec![
-                        Span::styled("◈ Assistant", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
-                    ]));
-                    in_assistant_turn = true;
-                }
-                had_tool_in_turn = true;
-
                 let spin_char = SPINNER[(app.animation_frame as usize / 2) % SPINNER.len()];
                 let (status_icon, status_style) = match tc.exit_status.as_deref() {
                     Some("ERROR") | Some("FAILED") => (
@@ -378,8 +372,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     crate::app::fmt_elapsed(tc.started_at.map(|t| t.elapsed()).unwrap_or_default())
                 };
 
+                let is_last_tool = idx + 1 >= app.dialogue_items.len()
+                    || !matches!(app.dialogue_items[idx + 1], DialogueItem::ToolCall(_));
+                let branch_lead = if is_last_tool && !app.is_busy {
+                    "  ╰─ "
+                } else {
+                    "  ├─ "
+                };
+
                 let mut spans = vec![
-                    Span::styled("  ├─ ", Style::default().fg(skin.muted)),
+                    Span::styled(branch_lead, Style::default().fg(skin.muted)),
                     Span::styled(format!("{} ", status_icon), status_style),
                     Span::styled(
                         format!("{} ", tc.tool),
@@ -423,11 +425,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         };
 
         if !last_is_streaming {
-            if !in_assistant_turn {
-                lines.push(Line::from(vec![
-                    Span::styled("◈ Assistant", Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
-                ]));
-            }
             let spin_char = SPINNER[(app.animation_frame as usize / 2) % SPINNER.len()];
             let verb_idx = (app.animation_frame as usize / 40) % VERBS.len();
             let verb = VERBS[verb_idx];
@@ -447,7 +444,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             );
 
             lines.push(Line::from(vec![
-                Span::styled("  ├─ ", Style::default().fg(skin.muted)),
+                Span::styled("  ╰─ ", Style::default().fg(skin.muted)),
                 Span::styled(format!("{} ", spin_char), Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{:<13}", display_text), Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
                 Span::styled("· ", Style::default().fg(skin.muted)),
@@ -851,6 +848,65 @@ fn parse_inline_spans(input: &str, skin: &Skin) -> Vec<Span<'static>> {
     }
 
     spans
+}
+
+fn wrap_spans<'a>(spans: Vec<Span<'a>>, max_width: usize, indent: usize) -> Vec<Vec<Span<'a>>> {
+    if max_width == 0 {
+        return vec![spans];
+    }
+    let mut rows: Vec<Vec<Span<'a>>> = Vec::new();
+    let mut current_row: Vec<Span<'a>> = Vec::new();
+    let mut current_width = 0;
+
+    for span in spans {
+        let style = span.style;
+        let text = span.content;
+        let words = text.split(' ');
+        let mut first = true;
+        for word in words {
+            if !first {
+                if current_width + 1 <= max_width {
+                    current_row.push(Span::styled(" ", style));
+                    current_width += 1;
+                } else {
+                    rows.push(std::mem::take(&mut current_row));
+                    if indent > 0 {
+                        current_row.push(Span::raw(" ".repeat(indent)));
+                        current_width = indent;
+                    } else {
+                        current_width = 0;
+                    }
+                }
+            }
+            first = false;
+
+            let wlen = word.chars().count();
+            if wlen == 0 {
+                continue;
+            }
+
+            if current_width + wlen > max_width && current_width > indent {
+                rows.push(std::mem::take(&mut current_row));
+                if indent > 0 {
+                    current_row.push(Span::raw(" ".repeat(indent)));
+                    current_width = indent;
+                } else {
+                    current_width = 0;
+                }
+            }
+
+            current_row.push(Span::styled(word.to_string(), style));
+            current_width += wlen;
+        }
+    }
+
+    if !current_row.is_empty() {
+        rows.push(current_row);
+    }
+    if rows.is_empty() {
+        rows.push(Vec::new());
+    }
+    rows
 }
 
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {

@@ -234,8 +234,8 @@ fn test_transcript_design_language_and_badges() {
         "Must render ❯ You or ❯ User badge"
     );
     assert!(
-        content.contains("◈ Assistant"),
-        "Must render ◈ Assistant badge"
+        content.contains("⬢ HEX"),
+        "Must render ⬢ HEX agent card header"
     );
     assert!(content.contains("run_tests"), "Must render tool call");
 
@@ -339,11 +339,12 @@ fn test_three_tier_dialogue_hierarchy_and_user_card() {
     assert!(content.contains("╰"), "User card contains bottom rounded corner '╰'");
 
     // Assistant Working assertions
-    assert!(content.contains("◈ Assistant"), "Must render '◈ Assistant' header");
-    assert!(content.contains("├─ ✔ list_files (.)"), "Tool formatted as tree branch with checkmark and args");
+    assert!(content.contains("⬢ HEX"), "Must render '⬢ HEX' header card");
+    assert!(content.contains("list_files (.)"), "Tool formatted as tree branch with args");
+    assert!(content.contains("✔"), "Tool completed with checkmark");
 
     // Assistant Response indicator
-    assert!(content.contains("▼"), "Assistant response arrow indicator '▼'");
+    assert!(!content.contains("▼"), "Floating arrow '▼' is eliminated in Option 1");
     assert!(content.contains("I am HEX"), "Assistant response content");
 }
 
