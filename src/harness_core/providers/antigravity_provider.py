@@ -936,6 +936,7 @@ class AntigravityModelProvider(ModelProvider):
         budget_tracker: Any = None,
         http_transport: Callable[[str, dict[str, str], bytes], tuple[int, bytes]] | None = None,
         enable_prompt_caching: bool = True,
+        reasoning_effort: str | None = None,
     ) -> None:
         resolved_mid = (
             model_id
@@ -948,6 +949,7 @@ class AntigravityModelProvider(ModelProvider):
         self.base_url = (base_url or default_ep).rstrip("/")
         self.http_transport = http_transport
         self.enable_prompt_caching = enable_prompt_caching
+        self.reasoning_effort = reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
 
         from .cloud_provider import TaskBudgetTracker
 
@@ -1206,9 +1208,11 @@ class AntigravityModelProvider(ModelProvider):
         stop_sequences: list[str] | None = None,
         data_classification: str = "internal",
         budget: Any = None,
+        reasoning_effort: str | None = None,
         **kwargs: Any,
     ) -> ModelResponse:
         """Execute generation against Google Antigravity (`v1internal:streamGenerateContent?alt=sse`)."""
+        eff_effort = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
         if data_classification in ("sensitive", "secret"):
             raise PolicyBlockedError(
                 f"Cloud egress forbidden for data classification '{data_classification}'. "
@@ -1240,6 +1244,7 @@ class AntigravityModelProvider(ModelProvider):
             max_tokens=max_tokens,
             temperature=temperature,
             stop_sequences=stop_sequences,
+            reasoning_effort=eff_effort,
         )
 
         t0 = time.perf_counter()
@@ -1425,6 +1430,7 @@ class AntigravityModelProvider(ModelProvider):
         max_tokens: int,
         temperature: float,
         stop_sequences: list[str] | None,
+        reasoning_effort: str | None = None,
     ) -> tuple[str, dict[str, str], bytes]:
         target_base = self.base_url
         if (
@@ -1454,6 +1460,14 @@ class AntigravityModelProvider(ModelProvider):
             inner_req["systemInstruction"] = {"parts": [{"text": system_prompt}]}
         if stop_sequences:
             inner_req["generationConfig"]["stopSequences"] = stop_sequences
+
+        eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
+        if eff:
+            from ..reasoning_effort import effort_to_gemini_thinking, model_supports_reasoning
+            if model_supports_reasoning("antigravity", self.model_id):
+                th_cfg = effort_to_gemini_thinking(eff)
+                if th_cfg is not None:
+                    inner_req["generationConfig"]["thinkingConfig"] = th_cfg
 
         envelope = {
             "project": project_id,

@@ -402,6 +402,7 @@ class CloudModelProvider(ModelProvider):
         http_transport: Callable[[str, dict[str, str], bytes], tuple[int, bytes]] | None = None,
         enable_prompt_caching: bool = False,
         oauth_manager: AntigravityOAuthManager | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         if isinstance(provider_type, CloudProviderType):
             self.provider_type = provider_type
@@ -435,6 +436,7 @@ class CloudModelProvider(ModelProvider):
         self.budget_tracker = budget_tracker or TaskBudgetTracker()
         self.http_transport = http_transport
         self.enable_prompt_caching = enable_prompt_caching
+        self.reasoning_effort = reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
         self._antigravity_delegate: AntigravityModelProvider | None = None
 
         if self.provider_type == CloudProviderType.ANTIGRAVITY:
@@ -446,6 +448,7 @@ class CloudModelProvider(ModelProvider):
                 budget_tracker=self.budget_tracker,
                 http_transport=http_transport,
                 enable_prompt_caching=enable_prompt_caching,
+                reasoning_effort=self.reasoning_effort,
             )
             self.api_key = api_key or self._resolve_env_api_key()
         else:
@@ -504,11 +507,15 @@ class CloudModelProvider(ModelProvider):
         data_classification: str = "internal",
         budget: Any = None,
         messages: list[dict[str, Any]] | None = None,
+        reasoning_effort: str | None = None,
         **kwargs: Any,
     ) -> ModelResponse:
         """Generate response from frontier cloud provider with privacy, prefix caching, and budget enforcement."""
+        eff_effort = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
         if self._antigravity_delegate is not None:
             self._antigravity_delegate.model_id = AntigravityModelProvider._normalize_model_id(self.model_id)
+            if hasattr(self._antigravity_delegate, "reasoning_effort") and eff_effort:
+                self._antigravity_delegate.reasoning_effort = eff_effort
             return self._antigravity_delegate.generate(
                 prompt,
                 system_prompt=system_prompt,
@@ -519,6 +526,7 @@ class CloudModelProvider(ModelProvider):
                 stop_sequences=stop_sequences,
                 data_classification=data_classification,
                 budget=budget,
+                reasoning_effort=eff_effort,
                 **kwargs,
             )
 
@@ -554,6 +562,7 @@ class CloudModelProvider(ModelProvider):
             temperature=temperature,
             stop_sequences=stop_sequences,
             messages=messages,
+            reasoning_effort=eff_effort,
         )
 
         t0 = time.perf_counter()
@@ -702,6 +711,7 @@ class CloudModelProvider(ModelProvider):
         temperature: float = 0.0,
         stop_sequences: list[str] | None = None,
         messages: list[dict[str, Any]] | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[str, dict[str, str], bytes]:
         if (
             (self.api_key is None or not str(self.api_key).strip())
@@ -768,6 +778,13 @@ class CloudModelProvider(ModelProvider):
                 payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
             if stop_sequences:
                 payload["generationConfig"]["stopSequences"] = stop_sequences
+            eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
+            if eff:
+                from ..reasoning_effort import effort_to_gemini_thinking, model_supports_reasoning
+                if model_supports_reasoning("gemini", self.model_id):
+                    th_cfg = effort_to_gemini_thinking(eff)
+                    if th_cfg is not None:
+                        payload["generationConfig"]["thinkingConfig"] = th_cfg
             return url, headers, json.dumps(payload).encode("utf-8")
 
         elif transport == "anthropic_messages" or self.provider_type == CloudProviderType.ANTHROPIC:
@@ -890,6 +907,13 @@ class CloudModelProvider(ModelProvider):
                         payload["system"] = eff_system
                 if stop_sequences:
                     payload["stop_sequences"] = stop_sequences
+                eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
+                if eff:
+                    from ..reasoning_effort import effort_to_anthropic_thinking, model_supports_reasoning
+                    if model_supports_reasoning("anthropic", self.model_id):
+                        th = effort_to_anthropic_thinking(eff)
+                        if th is not None:
+                            payload["thinking"] = th
                 return url, headers, json.dumps(payload).encode("utf-8")
 
             if enable_prompt_caching and cacheable_prefix:
@@ -926,6 +950,13 @@ class CloudModelProvider(ModelProvider):
                     payload["system"] = system_prompt
             if stop_sequences:
                 payload["stop_sequences"] = stop_sequences
+            eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
+            if eff:
+                from ..reasoning_effort import effort_to_anthropic_thinking, model_supports_reasoning
+                if model_supports_reasoning("anthropic", self.model_id):
+                    th = effort_to_anthropic_thinking(eff)
+                    if th is not None:
+                        payload["thinking"] = th
             return url, headers, json.dumps(payload).encode("utf-8")
 
         else:
@@ -968,6 +999,11 @@ class CloudModelProvider(ModelProvider):
                 }
                 if stop_sequences:
                     payload["stop"] = stop_sequences
+                eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
+                if eff:
+                    from ..reasoning_effort import OPENAI_EFFORTS, clamp_effort, model_supports_reasoning
+                    if model_supports_reasoning(self.provider_type.value, self.model_id):
+                        payload["reasoning_effort"] = clamp_effort(eff, OPENAI_EFFORTS)
                 return url, headers, json.dumps(payload).encode("utf-8")
 
             # Order strictly as stable (system) -> context (cacheable_prefix) -> volatile (prompt)
@@ -985,6 +1021,11 @@ class CloudModelProvider(ModelProvider):
             }
             if stop_sequences:
                 payload["stop"] = stop_sequences
+            eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
+            if eff:
+                from ..reasoning_effort import OPENAI_EFFORTS, clamp_effort, model_supports_reasoning
+                if model_supports_reasoning(self.provider_type.value, self.model_id):
+                    payload["reasoning_effort"] = clamp_effort(eff, OPENAI_EFFORTS)
             return url, headers, json.dumps(payload).encode("utf-8")
 
     def _parse_response(

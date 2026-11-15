@@ -25,6 +25,7 @@ _MODEL_SELECTION_ENV_KEYS = {
     "HEX_CLOUD_MODEL_ID",
     "HEX_LOCAL_MODEL_ID",
     "HEX_COMPRESSOR_MODE",
+    "HEX_REASONING_EFFORT",
 }
 
 try:
@@ -175,6 +176,16 @@ def load_hex_environment(
                         cfg_props["HEX_COMPRESSOR_MODE"] = str(model_section["compressor_mode"])
                     if model_section.get("cloud_base_url"):
                         cfg_props["HEX_CLOUD_BASE_URL"] = str(model_section["cloud_base_url"])
+                    if model_section.get("reasoning_effort"):
+                        cfg_props["HEX_REASONING_EFFORT"] = str(model_section["reasoning_effort"]).strip().lower()
+                    elif "HEX_REASONING_EFFORT" not in cfg_props and "HEX_REASONING_EFFORT" not in os.environ:
+                        try:
+                            from .reasoning_effort import resolve_reasoning_effort
+                            m_prov = str(model_section.get("cloud_provider") or cfg_props.get("HEX_CLOUD_PROVIDER") or "")
+                            m_id = str(model_section.get("cloud_model_id") or cfg_props.get("HEX_CLOUD_MODEL_ID") or "")
+                            cfg_props["HEX_REASONING_EFFORT"] = resolve_reasoning_effort(m_prov, m_id)
+                        except Exception:
+                            pass
                     cfg_props["HEX_MODEL_SOURCE"] = "project override" if is_project_file else "global default"
 
             web_search_section = cfg_data.get("web_search", {})
@@ -435,5 +446,49 @@ def load_retention_config(workspace_root: Path | str | None = None) -> dict[str,
             continue
 
     return defaults
+
+
+def load_reasoning_effort(
+    workspace_root: Path | str | None = None,
+    config_dir: Path | str | None = None,
+) -> str:
+    """Load configured reasoning effort from environment or config.yaml.
+
+    Defaults to 'medium' for reasoning models and 'none' for non-reasoning models.
+    """
+    env_effort = os.getenv("HEX_REASONING_EFFORT")
+    if env_effort:
+        return env_effort.strip().lower()
+
+    candidates: list[Path] = []
+    if config_dir:
+        cd = Path(config_dir)
+        candidates.append(cd if cd.name == "config.yaml" else cd / "config.yaml")
+    if workspace_root:
+        ws = Path(workspace_root)
+        candidates.append(ws / ".hex" / "config.yaml")
+    if not config_dir and not workspace_root:
+        candidates.extend([
+            Path.cwd() / ".hex" / "config.yaml",
+            Path.home() / ".hex" / "config.yaml",
+        ])
+
+    for cfg_file in candidates:
+        if cfg_file.is_file():
+            data = parse_config_yaml(cfg_file)
+            m_sec = data.get("model") or data.get("models") or {}
+            if isinstance(m_sec, dict):
+                if m_sec.get("reasoning_effort"):
+                    return str(m_sec["reasoning_effort"]).strip().lower()
+                prov = str(m_sec.get("cloud_provider") or "")
+                mid = str(m_sec.get("cloud_model_id") or "")
+                if prov or mid:
+                    try:
+                        from .reasoning_effort import resolve_reasoning_effort
+                        return resolve_reasoning_effort(prov, mid)
+                    except Exception:
+                        pass
+
+    return "medium" if os.getenv("HEX_CLOUD_MODEL_ID") else "none"
 
 

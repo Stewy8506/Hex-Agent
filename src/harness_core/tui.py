@@ -1261,7 +1261,7 @@ class HexConsole:
 
     SLASH_COMMANDS: list[str] = [
         "/help", "/mode", "/rename", "/status", "/diff", "/sbs", "/rollback", "/fork",
-        "/skills", "/scan", "/model", "/compressor", "/compress", "/budget",
+        "/skills", "/scan", "/model", "/reasoning", "/compressor", "/compress", "/budget",
         "/quota", "/antigravity", "/blast", "/proof", "/memory",
         "/remember", "/reflect", "/search", "/doctor", "/recipe", "/gc",
         "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
@@ -1486,7 +1486,7 @@ class HexConsole:
         slash_cmds = [
             "/help", "/mode", "/plan", "/agent", "/code", "/ask",
             "/status", "/tasks", "/diff", "/sbs", "/rollback", "/fork",
-            "/skills", "/scan", "/model", "/compressor", "/budget",
+            "/skills", "/scan", "/model", "/reasoning", "/compressor", "/budget",
             "/quota", "/antigravity", "/blast", "/proof", "/memory",
             "/remember", "/reflect", "/search", "/doctor", "/recipe",
             "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
@@ -1715,6 +1715,8 @@ class HexConsole:
             self._cmd_scan(arg)
         elif cmd == "/model":
             self._cmd_model(arg)
+        elif cmd in ("/reasoning", "/effort", "/thinking"):
+            self._cmd_reasoning(arg)
         elif cmd in ("/compressor", "/comp"):
             self._cmd_compressor(arg)
         elif cmd == "/budget":
@@ -1824,6 +1826,7 @@ class HexConsole:
             ("/learn <target>", "Synthesize and verify reusable SKILL.md bundle (--global, --dry-run)"),
             ("/scan <dir>", "Scan and register a SKILL.md bundle via NVIDIA SkillSpector"),
             ("/model [name]", "Inspect or switch active model routing profile (or 'antigravity')"),
+            ("/reasoning [level]", "Inspect or switch reasoning effort level (none, low, medium, high, max)"),
             ("/compressor [mode]", "Switch Tier-1 log compressor between 'local' and 'cloud'"),
             ("/compress [threshold]", "Run 4-phase context compaction on active dialogue history"),
             ("/budget", "Display session token usage, compression ratio, and cost"),
@@ -2285,6 +2288,58 @@ class HexConsole:
                         max_usd = 1.0
                     print(f"  Task Ceiling:     ${max_usd:.2f} USD")
             print()
+
+    def _cmd_reasoning(self, arg: str = "") -> None:
+        """Inspect or dynamically update the active model reasoning effort level."""
+        from .reasoning_effort import (
+            EFFORT_LADDER,
+            EFFORT_ALIASES,
+            clamp_effort,
+            get_provider_supported_efforts,
+            model_supports_reasoning,
+        )
+
+        router = getattr(self.orchestrator, "router", None)
+        active_prov = getattr(router, "cloud_provider_type", None) or os.getenv("HEX_CLOUD_PROVIDER", "")
+        active_model = getattr(router, "cloud_model_id", None) or os.getenv("HEX_CLOUD_MODEL_ID", "")
+        supports = model_supports_reasoning(active_prov, active_model)
+        supported_efforts = get_provider_supported_efforts(active_prov)
+
+        level = arg.strip().lower()
+        if not level:
+            curr_effort = (
+                getattr(router, "reasoning_effort", None)
+                or os.getenv("HEX_REASONING_EFFORT")
+                or ("medium" if supports else "none")
+            )
+            print()
+            print(f"{ANSI_BOLD}{ANSI_CYAN}Model Reasoning Effort Telemetry{ANSI_RESET}")
+            print(f"  Active Level:     {ANSI_GREEN}{curr_effort}{ANSI_RESET}")
+            print(f"  Active Model:     {active_model or 'unconfigured'}")
+            print(f"  Extended Thinking: {'Supported' if supports else 'Non-reasoning model'}")
+            print(f"  Provider Set:     {', '.join(supported_efforts)}")
+            print(f"  Canonical Ladder: {', '.join(EFFORT_LADDER)}")
+            print(f"  Usage:            /reasoning <{' | '.join(EFFORT_LADDER)}>")
+            print()
+            return
+
+        clean = EFFORT_ALIASES.get(level, level)
+        if clean not in EFFORT_LADDER:
+            print(f"{ANSI_YELLOW}Unknown reasoning effort '{arg}'. Canonical ladder: {', '.join(EFFORT_LADDER)}{ANSI_RESET}")
+            return
+
+        if router is not None:
+            if hasattr(router, "set_reasoning_effort"):
+                router.set_reasoning_effort(clean)
+            else:
+                router.reasoning_effort = clean
+                if hasattr(router, "cloud_provider") and hasattr(router.cloud_provider, "reasoning_effort"):
+                    router.cloud_provider.reasoning_effort = clean
+        os.environ["HEX_REASONING_EFFORT"] = clean
+
+        clamped = clamp_effort(clean, supported_efforts)
+        clamp_note = f" (wire-clamped to '{clamped}' for {active_prov})" if clamped != clean and supports else ""
+        print(f"{ANSI_GREEN}Reasoning effort updated to: {clean}{clamp_note} (session-only){ANSI_RESET}")
 
     def _cmd_compressor(self, arg: str = "") -> None:
         mode = arg.strip().lower()

@@ -64,10 +64,11 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         # Step 1: Antigravity provider (0)
         # Step 1a: Auth -> Keep (0)
         # Step 1b: Model selection -> gemini-2.5-flash (1)
-        # Step 1c: Context compressor -> (0)
+        # Step 1c: Reasoning effort -> (0)
+        # Step 1d: Context compressor -> (0)
         # Step 2: Search -> Disabled (3)
         # Step 3: Messaging -> Skip (0)
-        mock_select.side_effect = [0, 0, 1, 0, 3, 0]
+        mock_select.side_effect = [0, 0, 1, 0, 0, 3, 0]
 
         result = run_onboard_wizard(
             config_dir=self.cfg_dir,
@@ -112,10 +113,11 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         # Step 1: Antigravity (0)
         # Step 1a: Auth option: Browser sign-in (0)
         # Step 1b: Model -> gemini-2.5-pro (0)
-        # Step 1c: Context compressor -> (0)
+        # Step 1c: Reasoning effort -> (0)
+        # Step 1d: Context compressor -> (0)
         # Step 2: Search -> DuckDuckGo (0)
         # Step 3: Messaging -> Skip (0)
-        mock_select.side_effect = [0, 0, 0, 0, 0, 0]
+        mock_select.side_effect = [0, 0, 0, 0, 0, 0, 0]
 
         result = run_onboard_wizard(
             config_dir=self.cfg_dir,

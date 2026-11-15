@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
+import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from harness_core.config_loader import (
+    _MODEL_SELECTION_ENV_KEYS,
+    load_hex_environment,
+    load_reasoning_effort,
+)
+from harness_core.onboard import update_config_yaml_model
+from harness_core.providers.cloud_provider import CloudModelProvider, CloudProviderType
 from harness_core.reasoning_effort import (
     ANTHROPIC_EFFORTS,
     DEEPSEEK_EFFORTS,
@@ -19,6 +30,8 @@ from harness_core.reasoning_effort import (
     model_supports_reasoning,
     resolve_reasoning_effort,
 )
+from harness_core.router import TwoTierModelRouter
+from harness_core.tui import HexConsole
 
 
 class TestReasoningEffortLadderAndVocabularies(unittest.TestCase):
@@ -231,6 +244,179 @@ class TestResolveReasoningEffort(unittest.TestCase):
     def test_environment_variable_overrides_default(self) -> None:
         with patch.dict(os.environ, {"HEX_REASONING_EFFORT": "xhigh"}):
             self.assertEqual(resolve_reasoning_effort("openai", "o3-mini"), "xhigh")
+
+
+class TestRouterPayloadFormatting(unittest.TestCase):
+    """Test router wire payload formatting across OpenAI, Anthropic, Gemini, and Antigravity."""
+
+    def setUp(self) -> None:
+        self.router = TwoTierModelRouter(cloud_provider_type="openai", cloud_model_id="o3-mini")
+
+    def test_format_payload_openai_o_series(self) -> None:
+        raw_payload = {"model": "o3-mini", "messages": [{"role": "user", "content": "solve"}]}
+        formatted = self.router._format_cloud_payload("openai", "o3-mini", raw_payload, effort="high")
+        self.assertEqual(formatted.get("reasoning_effort"), "high")
+
+    def test_format_payload_openai_non_reasoning(self) -> None:
+        raw_payload = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hello"}]}
+        formatted = self.router._format_cloud_payload("openai", "gpt-4o", raw_payload, effort="high")
+        self.assertNotIn("reasoning_effort", formatted)
+
+    def test_format_payload_anthropic_claude_37(self) -> None:
+        raw_payload = {"model": "claude-3-7-sonnet-20250219", "messages": [{"role": "user", "content": "analyze"}]}
+        formatted = self.router._format_cloud_payload("anthropic", "claude-3-7-sonnet-20250219", raw_payload, effort="high")
+        self.assertEqual(formatted.get("thinking"), {"type": "enabled", "budget_tokens": 16384})
+
+    def test_format_payload_anthropic_non_reasoning(self) -> None:
+        raw_payload = {"model": "claude-3-5-sonnet-20241022", "messages": [{"role": "user", "content": "analyze"}]}
+        formatted = self.router._format_cloud_payload("anthropic", "claude-3-5-sonnet-20241022", raw_payload, effort="high")
+        self.assertNotIn("thinking", formatted)
+
+    def test_format_payload_gemini_25(self) -> None:
+        raw_payload = {
+            "contents": [{"role": "user", "parts": [{"text": "query"}]}],
+            "generationConfig": {"maxOutputTokens": 4096},
+        }
+        formatted = self.router._format_cloud_payload("gemini", "gemini-2.5-pro", raw_payload, effort="medium")
+        self.assertIn("thinkingConfig", formatted.get("generationConfig", {}))
+        self.assertEqual(formatted["generationConfig"]["thinkingConfig"], {"thinkingBudget": 8192})
+
+    def test_router_set_reasoning_effort(self) -> None:
+        self.router.set_reasoning_effort("max")
+        self.assertEqual(self.router.reasoning_effort, "max")
+
+
+class TestProviderRequestWireGeneration(unittest.TestCase):
+    """Test actual wire payload generation in CloudModelProvider and AntigravityModelProvider."""
+
+    def test_openai_wire_request_includes_reasoning_effort(self) -> None:
+        provider = CloudModelProvider(
+            provider_type=CloudProviderType.OPENAI,
+            model_id="o3-mini",
+            api_key="mock-key",
+            reasoning_effort="high",
+        )
+        url, headers, body_bytes = provider._build_request("Test reasoning prompt")
+        body = json.loads(body_bytes.decode("utf-8"))
+        self.assertEqual(body.get("reasoning_effort"), "high")
+
+    def test_anthropic_wire_request_includes_thinking(self) -> None:
+        provider = CloudModelProvider(
+            provider_type=CloudProviderType.ANTHROPIC,
+            model_id="claude-3-7-sonnet-20250219",
+            api_key="mock-key",
+            reasoning_effort="medium",
+        )
+        url, headers, body_bytes = provider._build_request("Test reasoning prompt")
+        body = json.loads(body_bytes.decode("utf-8"))
+        self.assertEqual(body.get("thinking"), {"type": "enabled", "budget_tokens": 8192})
+
+    def test_gemini_wire_request_includes_thinking_config(self) -> None:
+        provider = CloudModelProvider(
+            provider_type=CloudProviderType.GEMINI,
+            model_id="gemini-2.5-pro",
+            api_key="mock-key",
+            reasoning_effort="low",
+        )
+        url, headers, body_bytes = provider._build_request("Test reasoning prompt")
+        body = json.loads(body_bytes.decode("utf-8"))
+        gen_cfg = body.get("generationConfig", {})
+        self.assertEqual(gen_cfg.get("thinkingConfig"), {"thinkingBudget": 2048})
+
+
+class TestConfigLoaderReasoningEffort(unittest.TestCase):
+    """Test parsing and hydrating reasoning effort in config_loader."""
+
+    def test_model_selection_env_keys_includes_reasoning_effort(self) -> None:
+        self.assertIn("HEX_REASONING_EFFORT", _MODEL_SELECTION_ENV_KEYS)
+
+    def test_load_hex_environment_parses_reasoning_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_dir = Path(td)
+            cfg_path = cfg_dir / "config.yaml"
+            cfg_path.write_text(
+                """version: "1.0"
+model:
+  cloud_provider: "anthropic"
+  cloud_model_id: "claude-3-7-sonnet-20250219"
+  reasoning_effort: "xhigh"
+""",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                load_hex_environment(config_dir=cfg_dir, override=True)
+                self.assertEqual(os.environ.get("HEX_REASONING_EFFORT"), "xhigh")
+
+    def test_load_reasoning_effort_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_dir = Path(td)
+            cfg_path = cfg_dir / "config.yaml"
+            cfg_path.write_text(
+                """version: "1.0"
+model:
+  cloud_provider: "openai"
+  cloud_model_id: "o3-mini"
+  reasoning_effort: "high"
+""",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                eff = load_reasoning_effort(config_dir=cfg_dir)
+                self.assertEqual(eff, "high")
+
+
+class TestOnboardConfigYamlWiring(unittest.TestCase):
+    """Test update_config_yaml_model and onboarding with reasoning effort."""
+
+    def test_update_config_yaml_model_writes_reasoning_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yaml"
+            success = update_config_yaml_model(
+                cfg_path,
+                cloud_provider="openai",
+                cloud_model_id="o3-mini",
+                profile="cloud",
+                reasoning_effort="high",
+            )
+            self.assertTrue(success)
+            content = cfg_path.read_text(encoding="utf-8")
+            self.assertIn('reasoning_effort: "high"', content)
+
+
+class TestTUIReasoningSlashCommand(unittest.TestCase):
+    """Test /reasoning command in HexConsole interactive TUI."""
+
+    def setUp(self) -> None:
+        self.mock_orch = MagicMock()
+        self.mock_orch.router = TwoTierModelRouter(cloud_provider_type="anthropic", cloud_model_id="claude-3-7-sonnet-20250219")
+        self.console = HexConsole(self.mock_orch)
+
+    def test_slash_commands_list_includes_reasoning(self) -> None:
+        self.assertIn("/reasoning", HexConsole.SLASH_COMMANDS)
+
+    def test_cmd_reasoning_inspect_output(self) -> None:
+        f = io.StringIO()
+        with patch("sys.stdout", f):
+            self.console._cmd_reasoning("")
+        out = f.getvalue()
+        self.assertIn("Model Reasoning Effort Telemetry", out)
+        self.assertIn("Active Level:", out)
+
+    def test_cmd_reasoning_update_valid_level(self) -> None:
+        f = io.StringIO()
+        with patch("sys.stdout", f):
+            self.console._cmd_reasoning("max")
+        out = f.getvalue()
+        self.assertIn("Reasoning effort updated to: max", out)
+        self.assertEqual(self.mock_orch.router.reasoning_effort, "max")
+        self.assertEqual(os.environ.get("HEX_REASONING_EFFORT"), "max")
+
+    def test_cmd_reasoning_unknown_level(self) -> None:
+        f = io.StringIO()
+        with patch("sys.stdout", f):
+            self.console._cmd_reasoning("super_ultra")
+        out = f.getvalue()
+        self.assertIn("Unknown reasoning effort", out)
 
 
 if __name__ == "__main__":

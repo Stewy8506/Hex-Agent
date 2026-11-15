@@ -147,6 +147,7 @@ class TwoTierModelRouter:
         cloud_provider_type: str | None = None,
         compressor_mode: str | None = None,
         compressor_provider: ModelProvider | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.profile = os.getenv("HEX_MODEL_PROFILE", "antigravity_hybrid")
         resolved_local_model = (
@@ -305,6 +306,92 @@ class TwoTierModelRouter:
         ).strip().lower()
         self.local_model_id = getattr(self.local_provider, "model_id", resolved_local_model)
         self.cloud_model_id = getattr(self.cloud_provider, "model_id", resolved_cloud_model)
+
+        from .reasoning_effort import resolve_reasoning_effort
+        self.reasoning_effort = (
+            reasoning_effort
+            or os.getenv("HEX_REASONING_EFFORT")
+            or resolve_reasoning_effort(resolved_provider_type, self.cloud_model_id)
+        )
+        if hasattr(self.cloud_provider, "reasoning_effort"):
+            self.cloud_provider.reasoning_effort = self.reasoning_effort
+
+    def set_reasoning_effort(self, effort: str) -> None:
+        """Dynamically update reasoning effort across router and providers."""
+        clean = (effort or "none").strip().lower()
+        self.reasoning_effort = clean
+        if hasattr(self.cloud_provider, "reasoning_effort"):
+            self.cloud_provider.reasoning_effort = clean
+
+    def _format_cloud_payload(
+        self,
+        provider: str,
+        model_id: str,
+        payload: dict[str, Any],
+        effort: str | None = None,
+    ) -> dict[str, Any]:
+        """Inject appropriate reasoning effort payload into the request payload dictionary.
+
+        - For OpenAI (o1, o3, o3-mini, gpt-5.6, etc.): attach "reasoning_effort": clamped_effort
+        - For Anthropic (Claude 3.7+): attach "thinking": effort_to_anthropic_thinking(effort)
+        - For Gemini / Antigravity (Gemini 2.5, 2.0 Thinking): attach "thinkingConfig": effort_to_gemini_thinking(effort)
+        """
+        from .reasoning_effort import (
+            DEEPSEEK_EFFORTS,
+            OPENAI_EFFORTS,
+            clamp_effort,
+            effort_to_anthropic_thinking,
+            effort_to_gemini_thinking,
+            model_supports_reasoning,
+        )
+
+        eff = (effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT") or "medium").strip().lower()
+        prov = (provider or "").strip().lower()
+        mid = (model_id or "").strip().lower()
+
+        if not model_supports_reasoning(prov, mid):
+            return payload
+
+        res_payload = dict(payload)
+
+        if prov in ("openai", "azure") or (prov == "openrouter" and any(k in mid for k in ("o1", "o3", "reasoning"))):
+            clamped = clamp_effort(eff, OPENAI_EFFORTS)
+            res_payload["reasoning_effort"] = clamped
+
+        elif prov == "anthropic" or (prov == "openrouter" and any(k in mid for k in ("claude-3-7", "claude-3.7"))):
+            thinking = effort_to_anthropic_thinking(eff)
+            if thinking is not None:
+                res_payload["thinking"] = thinking
+            else:
+                res_payload.pop("thinking", None)
+
+        elif prov in ("gemini", "google", "antigravity", "google-antigravity", "agy") or (
+            prov == "openrouter" and any(k in mid for k in ("gemini-2.5", "thinking"))
+        ):
+            thinking_cfg = effort_to_gemini_thinking(eff)
+            if thinking_cfg is not None:
+                if "generationConfig" in res_payload and isinstance(res_payload["generationConfig"], dict):
+                    gen_cfg = dict(res_payload["generationConfig"])
+                    gen_cfg["thinkingConfig"] = thinking_cfg
+                    res_payload["generationConfig"] = gen_cfg
+                else:
+                    res_payload["thinkingConfig"] = thinking_cfg
+
+        elif prov == "deepseek":
+            clamped = clamp_effort(eff, DEEPSEEK_EFFORTS)
+            res_payload["reasoning_effort"] = clamped
+
+        return res_payload
+
+    def format_cloud_payload(
+        self,
+        provider: str,
+        model_id: str,
+        payload: dict[str, Any],
+        effort: str | None = None,
+    ) -> dict[str, Any]:
+        """Public alias for _format_cloud_payload."""
+        return self._format_cloud_payload(provider, model_id, payload, effort=effort)
 
     def set_active_model(self, model_id: str) -> None:
         """Synchronously update the model ID across router and providers."""
@@ -575,11 +662,14 @@ class TwoTierModelRouter:
                     "Data must remain within 100% local boundary."
                 )
             try:
+                gen_kwargs = dict(kwargs)
+                if "reasoning_effort" not in gen_kwargs and self.reasoning_effort:
+                    gen_kwargs["reasoning_effort"] = self.reasoning_effort
                 response = self.cloud_provider.generate(
                     prompt=effective_prompt,
                     data_classification=data_classification,
                     budget=budget,
-                    **kwargs,
+                    **gen_kwargs,
                 )
             except ProviderUnavailableError as pue:
                 # Only fail over when a real local runtime is ready. The old

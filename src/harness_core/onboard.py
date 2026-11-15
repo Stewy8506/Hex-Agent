@@ -152,6 +152,7 @@ def update_config_yaml_model(
     profile: str,
     cloud_base_url: str | None = None,
     project_override: bool = False,
+    reasoning_effort: str | None = None,
 ) -> bool:
     """Safely update model section in config.yaml without requiring third-party PyYAML."""
     try:
@@ -182,6 +183,12 @@ def update_config_yaml_model(
         block = _set_field(block, "cloud_provider", f'"{_clean_val(cloud_provider)}"')
         block = _set_field(block, "cloud_model_id", f'"{_clean_val(cloud_model_id)}"')
         block = _set_field(block, "profile", f'"{_clean_val(profile)}"')
+        if reasoning_effort is not None:
+            if reasoning_effort.strip():
+                block = _set_field(block, "reasoning_effort", f'"{_clean_val(reasoning_effort)}"')
+            else:
+                pattern = r"(?m)^  reasoning_effort:\s*[^\n]*\n?"
+                block = re.sub(pattern, "", block)
         if cloud_base_url is not None:
             if cloud_base_url.strip():
                 block = _set_field(block, "cloud_base_url", f'"{_clean_val(cloud_base_url)}"')
@@ -346,6 +353,12 @@ def run_onboard_wizard(
         or (existing_config.get("model") or {}).get("compressor_mode")
         or "deterministic"
     )
+    existing_reasoning_effort = (
+        existing_creds.get("HEX_REASONING_EFFORT")
+        or (existing_config.get("model") or {}).get("reasoning_effort")
+        or ""
+    )
+    reasoning_effort = existing_reasoning_effort or "medium"
 
     anthropic_key = existing_anthropic_key
     openai_key = existing_openai_key
@@ -668,7 +681,39 @@ def run_onboard_wizard(
                     cloud_model_id = manual_mid or default_mid
                     print(f"  ✓ Active model configured (offline mode): {cloud_model_id}\n")
 
-        # Step 1b: Context & Log Compressor Strategy Selection
+        # Step 1b: Extended Thinking / Reasoning Effort Selection
+        from .reasoning_effort import model_supports_reasoning
+        supports_reasoning = model_supports_reasoning(cloud_provider, cloud_model_id)
+        if supports_reasoning:
+            if not non_interactive and not defaults_only and should_run_model:
+                effort_options: list[tuple[str, str]] = []
+                if is_already_configured and existing_reasoning_effort:
+                    effort_options.append(("keep", f"Use currently configured ({existing_reasoning_effort})"))
+                effort_options.extend([
+                    ("low", "Low — Fast response with light reasoning budget"),
+                    ("medium", "Medium — Balanced speed and analytical depth [Recommended]"),
+                    ("high", "High — Deep analytical reasoning and extensive verification"),
+                    ("max", "Max — Maximum reasoning token budget for complex logic"),
+                    ("none", "None / Disabled — Disable extended thinking tokens"),
+                ])
+                def_idx = 0 if (is_already_configured and existing_reasoning_effort) else 1
+                e_idx = select_option(
+                    f"Select Reasoning Effort for {cloud_model_id}:",
+                    effort_options,
+                    default_index=def_idx,
+                )
+                chosen_eff = effort_options[e_idx][0]
+                if chosen_eff != "keep":
+                    reasoning_effort = chosen_eff
+                else:
+                    reasoning_effort = existing_reasoning_effort
+                print(f"  ✓ Reasoning effort configured: {reasoning_effort}\n")
+            else:
+                reasoning_effort = existing_reasoning_effort or "medium"
+        else:
+            reasoning_effort = existing_reasoning_effort or "none"
+
+        # Step 1c: Context & Log Compressor Strategy Selection
         existing_compressor = (existing_config.get("model") or {}).get("compressor_mode")
         compressor_mode = existing_compressor or ("local" if cloud_provider == "local" else "deterministic")
         if not non_interactive and not defaults_only and should_run_model:
@@ -802,6 +847,8 @@ def run_onboard_wizard(
         creds_dict["GEMINI_API_KEY"] = gemini_key
     if active_provider_key and active_provider_key_var:
         creds_dict[active_provider_key_var] = active_provider_key
+    if reasoning_effort:
+        creds_dict["HEX_REASONING_EFFORT"] = reasoning_effort
     creds_dict["HEX_WEB_SEARCH_PROVIDER"] = web_search_provider
     if tavily_key:
         creds_dict["TAVILY_API_KEY"] = tavily_key
@@ -842,6 +889,7 @@ def run_onboard_wizard(
     # Write config.yaml
     local_model_id = cloud_model_id if cloud_provider == "local" else (existing_config.get("model") or {}).get("local_model_id", "")
     cloud_base_url_line = f'  cloud_base_url: "{cloud_base_url}"\n' if cloud_base_url else ""
+    reasoning_effort_line = f'  reasoning_effort: "{reasoning_effort}"\n' if reasoning_effort else ""
     config_yaml = f"""# HEX Agent Configuration
 version: "1.0"
 model:
@@ -849,7 +897,7 @@ model:
   cloud_provider: "{cloud_provider}"
   compressor_mode: "{compressor_mode}"
   cloud_model_id: "{cloud_model_id}"
-{cloud_base_url_line}  local_model_id: "{local_model_id}"
+{cloud_base_url_line}{reasoning_effort_line}  local_model_id: "{local_model_id}"
 web_search:
   provider: "{web_search_provider}"
 messaging:
@@ -889,6 +937,7 @@ webhooks:
             "cloud_provider": cloud_provider,
             "cloud_model_id": cloud_model_id,
             "model": cloud_model_id,
+            "reasoning_effort": reasoning_effort,
         }
 
     if is_search_stage:
@@ -960,6 +1009,7 @@ webhooks:
         "cloud_provider": cloud_provider,
         "cloud_model_id": cloud_model_id,
         "model": cloud_model_id,
+        "reasoning_effort": reasoning_effort,
         "web_search_provider": web_search_provider,
         "data_dir": str(data_dir),
         "hardware": {
