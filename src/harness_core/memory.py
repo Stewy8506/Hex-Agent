@@ -730,14 +730,21 @@ class CuratedMemoryStore:
 
         return {"ok": True, "success": True, "action": "batch", "results": results}
 
-    def build_frozen_snapshot(self) -> str:
+    def build_frozen_snapshot(self, session_id: Optional[str] = None) -> str:
         """Build and cache the Turn-0 frozen snapshot of all memory stores."""
-        if self._frozen_snapshot is not None:
+        if session_id is None and self._frozen_snapshot is not None:
             return self._frozen_snapshot
 
-        snap = MemorySnapshot.build_frozen_snapshot(self.workspace_root, self.global_home)
-        self._frozen_snapshot = snap
+        snap = MemorySnapshot.build_frozen_snapshot(
+            self.workspace_root, self.global_home, session_id=session_id
+        )
+        if session_id is None:
+            self._frozen_snapshot = snap
         return snap
+
+    def get_frozen_turn0_snapshot(self, session_id: Optional[str] = None) -> str:
+        """Convenience method to retrieve the session-scoped Turn-0 memory snapshot."""
+        return self.build_frozen_snapshot(session_id=session_id)
 
 
 class MemorySnapshot:
@@ -750,11 +757,18 @@ class MemorySnapshot:
         cls,
         workspace_root: Optional[Path | str] = None,
         global_home: Optional[Path | str] = None,
+        session_id: Optional[str] = None,
     ) -> str:
-        """Read USER.md, MEMORY.md, and GUARDRAILS.md at session start and wrap in <memory-context>."""
+        """Read USER.md, MEMORY.md, and GUARDRAILS.md at session start and wrap in <memory-context>.
+
+        Keyed by workspace, global_home, and optional session_id to isolate Turn-0 memory snapshots per session.
+        """
         ws = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
         gh = Path(global_home).resolve() if global_home else get_hex_home()
-        cache_key = f"{ws}:{gh}"
+        if session_id:
+            cache_key = f"{ws}:{gh}:{session_id}"
+        else:
+            cache_key = f"{ws}:{gh}"
 
         if cache_key in cls._cached_snapshots:
             return cls._cached_snapshots[cache_key]
@@ -790,9 +804,21 @@ class MemorySnapshot:
         return fenced
 
     @classmethod
-    def reset_cache(cls) -> None:
-        """Clear cached snapshot (e.g. for testing or fresh session)."""
+    def reset_session_snapshot(cls, session_id: str) -> None:
+        """Clear cached snapshot for a specific session_id."""
+        to_del = [k for k in cls._cached_snapshots if k.endswith(f":{session_id}")]
+        for k in to_del:
+            cls._cached_snapshots.pop(k, None)
+
+    @classmethod
+    def clear_all_snapshots(cls) -> None:
+        """Clear all cached snapshots across all workspaces and sessions."""
         cls._cached_snapshots.clear()
+
+    @classmethod
+    def reset_cache(cls) -> None:
+        """Clear cached snapshot (backwards-compatible alias for clear_all_snapshots)."""
+        cls.clear_all_snapshots()
 
 
 _TRANSIENT_ERROR_PATTERNS = [

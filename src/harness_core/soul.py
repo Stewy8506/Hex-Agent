@@ -9,8 +9,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,27 @@ DEFAULT_USER_MD = (
 )
 
 MAX_SOUL_CHARS = 2500  # ~500 tokens cap to prevent prompt bloat on local 8B-9B models
+TRUNCATION_MARKER = "\n... [truncated to fit 500-token budget]"
+
+
+class SoulProvenance(str, Enum):
+    """Explicit trust-tier provenance of resolved soul content."""
+
+    GLOBAL_USER = "global_user"
+    WORKSPACE_USER = "workspace_user"
+    REPOSITORY = "repository"
+    REMOTE_PROFILE = "remote_profile"
+    DISTRIBUTION = "distribution"
+
+    def __eq__(self, other: Any) -> bool:
+        if super().__eq__(other):
+            return True
+        val = getattr(other, "value", other)
+        if self.value == "workspace_user" and val in ("workspace", "workspace_user"):
+            return True
+        if self.value == "global_user" and val in ("global", "default", "global_user"):
+            return True
+        return False
 
 
 def normalize_soul(text: str) -> str:
@@ -128,13 +150,15 @@ class SoulManager:
             logger.debug("Failed reading soul at %s for legacy check: %s", soul_path, e)
         return False
 
-    def resolve_soul(self, workspace_root: Optional[Path | str] = None) -> Tuple[str, str]:
-        """Resolve the effective soul text and provenance scope ('workspace' or 'global').
+    def resolve_soul(
+        self, workspace_root: Optional[Path | str] = None
+    ) -> Tuple[str, SoulProvenance]:
+        """Resolve the effective soul text and provenance scope.
 
-        Returns (soul_content, source_label).
+        Returns (soul_content, SoulProvenance).
         Enforces MAX_SOUL_CHARS budget to protect local model context windows.
         """
-        # 1. Check workspace .hex/SOUL.md first
+        # 1. Check workspace .hex/SOUL.md first (tagged as workspace_user)
         if workspace_root:
             ws_path = Path(workspace_root).resolve()
             ws_soul = ws_path / ".hex" / "SOUL.md"
@@ -142,23 +166,32 @@ class SoulManager:
                 try:
                     content = ws_soul.read_text(encoding="utf-8").strip()
                     if content:
-                        return self._enforce_budget(content, f"workspace ({ws_soul})"), "workspace"
+                        return (
+                            self._enforce_budget(content, f"workspace ({ws_soul})"),
+                            SoulProvenance.WORKSPACE_USER,
+                        )
                 except Exception as e:
                     logger.debug("Could not read workspace soul %s: %s", ws_soul, e)
 
-        # 2. Fall back to global SOUL.md
+        # 2. Fall back to global SOUL.md (tagged as global_user)
         if self.global_soul_path.is_file():
             try:
                 content = self.global_soul_path.read_text(encoding="utf-8").strip()
                 if content:
-                    return self._enforce_budget(content, f"global ({self.global_soul_path})"), "global"
+                    return (
+                        self._enforce_budget(content, f"global ({self.global_soul_path})"),
+                        SoulProvenance.GLOBAL_USER,
+                    )
             except Exception as e:
                 logger.debug("Could not read global soul %s: %s", self.global_soul_path, e)
 
-        return DEFAULT_SOUL_MD, "default"
+        return DEFAULT_SOUL_MD, SoulProvenance.GLOBAL_USER
 
     def _enforce_budget(self, content: str, source_label: str) -> str:
-        """Enforce compact token budget (~300-500 tokens / 2,500 chars)."""
+        """Enforce compact token budget (~300-500 tokens / 2,500 chars).
+
+        Reserves space for TRUNCATION_MARKER so total characters never exceed MAX_SOUL_CHARS.
+        """
         if len(content) > MAX_SOUL_CHARS:
             logger.warning(
                 "Soul from %s exceeds budget (%d > %d chars); truncating to protect context cache",
@@ -166,7 +199,8 @@ class SoulManager:
                 len(content),
                 MAX_SOUL_CHARS,
             )
-            return content[:MAX_SOUL_CHARS].rstrip() + "\n... [truncated to fit 500-token budget]"
+            keep_len = MAX_SOUL_CHARS - len(TRUNCATION_MARKER)
+            return content[:keep_len].rstrip() + TRUNCATION_MARKER
         return content
 
     def load_developer_dna(self) -> str:

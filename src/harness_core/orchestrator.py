@@ -549,15 +549,16 @@ class HarnessOrchestrator:
         effective_ws = Path(workspace_root or self.default_workspace).resolve()
         effective_ws.mkdir(parents=True, exist_ok=True)
 
+        # Submit task into ledger if available
+        active_task_id = task_id or f"task_react_{uuid.uuid4().hex[:8]}"
+
         system_directive = self.prompt_builder.build_system_prompt(
             workspace_root=effective_ws,
             mode=mode,
             extra_rules=extra_rules,
             curated_memory=curated_memory,
+            session_id=active_task_id,
         )
-
-        # Submit task into ledger if available
-        active_task_id = task_id or f"task_react_{uuid.uuid4().hex[:8]}"
         task_record: dict[str, Any] | None = None
         if hasattr(self, "ledger") and self.ledger is not None:
             try:

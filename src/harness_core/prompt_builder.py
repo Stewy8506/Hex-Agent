@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .soul import SoulManager, get_hex_home
+from .soul import SoulManager, SoulProvenance, get_hex_home
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,8 @@ class PromptBuilder:
         curated_memory: str = "",
         custom_env_context: Optional[str] = None,
         is_distribution_profile: bool = False,
+        session_id: Optional[str] = None,
+        soul_provenance: Optional[SoulProvenance | str] = None,
     ) -> str:
         """Compose the full system prompt in strictly ordered slots for KV-cache prefix stability.
 
@@ -140,8 +142,12 @@ class PromptBuilder:
         slots: List[str] = []
 
         # --- Slot #1: SOUL.md Identity ---
-        raw_soul, source_scope = self.soul_manager.resolve_soul(workspace_root=ws)
-        user_authored = not is_distribution_profile and source_scope in ("global", "default")
+        raw_soul, resolved_scope = self.soul_manager.resolve_soul(workspace_root=ws)
+        active_scope = soul_provenance or resolved_scope
+        # Distinguish local user-authored workspace souls (.hex/SOUL.md) from untrusted distribution profiles
+        user_authored = not is_distribution_profile and (
+            active_scope in ("global_user", "workspace_user", "workspace", "global", "default")
+        )
         safe_soul = scan_context_content(raw_soul, "SOUL.md", user_authored=user_authored)
         slots.append(safe_soul.strip())
 
@@ -183,6 +189,7 @@ class PromptBuilder:
                 frozen_mem = MemorySnapshot.build_frozen_snapshot(
                     workspace_root=ws,
                     global_home=getattr(self.soul_manager, "global_home", None),
+                    session_id=session_id,
                 )
                 if frozen_mem and frozen_mem.strip():
                     slots.append(frozen_mem.strip())
