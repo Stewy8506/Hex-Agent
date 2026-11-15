@@ -50,7 +50,7 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             tail -n 120 test_run.log >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            fail_msg=$(grep -E "(FAIL|ERROR):" test_run.log -A 5 | head -n 25 | tr '\n' ' ')
+            fail_msg=$(grep -E "(FAIL|ERROR):" test_run.log -A 20 | head -n 35 | tr '\n' ' ')
             echo "::error title=Test Failure::${fail_msg:-Test suite failed. Check step summary.}"
             exit 1
           }
