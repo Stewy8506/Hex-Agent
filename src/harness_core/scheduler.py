@@ -416,4 +416,48 @@ class TaskScheduler:
 
         # Save updated execution states
         self.save_jobs(list(job_map.values()))
+
+        # Run idle reflection drainage & memory lifecycle maintenance when no due jobs ran
+        if not due_jobs:
+            self.run_cognition_maintenance(orchestrator)
+
         return results
+
+    def run_cognition_maintenance(
+        self,
+        orchestrator: HarnessOrchestrator,
+        workspace_root: Path | str | None = None,
+        retention_days: int = 30,
+        max_reflections: int = 5,
+    ) -> dict[str, Any]:
+        """Run idle reflection queue drainage and memory lifecycle demotion sweeps."""
+        ws = workspace_root or getattr(orchestrator, "default_workspace", None)
+        if not isinstance(ws, (str, Path)):
+            return {"reflections": None, "lifecycle": None}
+
+        ws_path = Path(ws).resolve()
+        out: dict[str, Any] = {"reflections": None, "lifecycle": None}
+
+        if hasattr(orchestrator, "check_and_run_idle_workers") and callable(
+            orchestrator.check_and_run_idle_workers
+        ):
+            try:
+                out["reflections"] = orchestrator.check_and_run_idle_workers(
+                    workspace_root=ws_path,
+                    max_items=max_reflections,
+                )
+            except Exception as exc:
+                logger.warning("Scheduler idle reflection worker failed: %s", exc)
+
+        if hasattr(orchestrator, "run_lifecycle_maintenance") and callable(
+            orchestrator.run_lifecycle_maintenance
+        ):
+            try:
+                out["lifecycle"] = orchestrator.run_lifecycle_maintenance(
+                    workspace_root=ws_path,
+                    retention_days=retention_days,
+                )
+            except Exception as exc:
+                logger.warning("Scheduler lifecycle maintenance failed: %s", exc)
+
+        return out
