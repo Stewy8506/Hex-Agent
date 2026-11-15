@@ -768,6 +768,26 @@ class HarnessOrchestrator:
             except Exception as e:
                 logger.warning("Agent loop friction reflection failed: %s", e)
 
+        # Wire promotion checks into agent loop task completion (Plan 33-03 Task 1)
+        if session_res.success:
+            try:
+                lifecycle = getattr(self.memory, "lifecycle_mgr", None)
+                if lifecycle is None:
+                    from .memory import MemoryLifecycleManager
+
+                    lifecycle = MemoryLifecycleManager(workspace_root=effective_ws)
+                if lifecycle and hasattr(lifecycle, "check_promotions"):
+                    candidates = lifecycle.check_promotions()
+                    for cand in candidates:
+                        target_store = (
+                            "memory"
+                            if cand.get("action") == "promote_to_memory" or cand.get("target") == "MEMORY.md"
+                            else "skill"
+                        )
+                        lifecycle.promote_entry(cand["id"], target=target_store)
+            except Exception as e:
+                logger.warning("Agent loop memory promotion check failed: %s", e)
+
         return {
             "success": session_res.success,
             "final_answer": session_res.final_answer,
@@ -2353,6 +2373,25 @@ class HarnessOrchestrator:
             except Exception as e:
                 logger.warning("Post-task friction reflection failed: %s", e)
 
+        # Wire promotion checks into task completion (Plan 33-03 Task 1)
+        try:
+            lifecycle = getattr(self.memory, "lifecycle_mgr", None)
+            if lifecycle is None:
+                from .memory import MemoryLifecycleManager
+
+                lifecycle = MemoryLifecycleManager(workspace_root=attempt_ws)
+            if lifecycle and hasattr(lifecycle, "check_promotions"):
+                candidates = lifecycle.check_promotions()
+                for cand in candidates:
+                    target_store = (
+                        "memory"
+                        if cand.get("action") == "promote_to_memory" or cand.get("target") == "MEMORY.md"
+                        else "skill"
+                    )
+                    lifecycle.promote_entry(cand["id"], target=target_store)
+        except Exception as e:
+            logger.warning("Post-task memory promotion check failed: %s", e)
+
         return self.ledger.transition_task(
             task_id,
             TaskState.SUCCEEDED,
@@ -2659,3 +2698,30 @@ class HarnessOrchestrator:
         )
         setattr(outcome, "meta_task_id", meta_task_id)
         return outcome
+
+    def run_lifecycle_maintenance(
+        self,
+        workspace_root: Path | str | None = None,
+        retention_days: int = 30,
+    ) -> dict[str, Any]:
+        """Execute lifecycle maintenance sweep (cold demotion of stale/diverged memories to archive.db)."""
+        ws = Path(workspace_root or self.default_workspace).resolve()
+        return run_lifecycle_maintenance(workspace_root=ws, retention_days=retention_days)
+
+
+def run_lifecycle_maintenance(
+    workspace_root: Path | str,
+    retention_days: int = 30,
+) -> dict[str, Any]:
+    """Helper executing memory lifecycle demotion sweep on workspace open, idle tick, or session teardown."""
+    from .memory import MemoryLifecycleManager
+
+    ws = Path(workspace_root).resolve()
+    mgr = MemoryLifecycleManager(workspace_root=ws)
+    demoted = mgr.run_demotion_sweep(retention_days=retention_days)
+    return {
+        "status": "success",
+        "demoted_count": len(demoted),
+        "demoted": demoted,
+    }
+

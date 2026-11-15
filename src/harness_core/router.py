@@ -674,6 +674,23 @@ class GovernedMemoryService:
     def __init__(self, ledger: LedgerStore, graphify: Any = None):
         self.ledger = ledger
         self.graphify = graphify
+        self.workspace_root: Path | None = None
+        self._lifecycle_mgr: Any | None = None
+
+    @property
+    def lifecycle_mgr(self) -> Any:
+        if self._lifecycle_mgr is None:
+            try:
+                from .memory import MemoryLifecycleManager
+                ws = self.workspace_root or getattr(self.graphify, "workspace_root", None) or Path.cwd()
+                self._lifecycle_mgr = MemoryLifecycleManager(workspace_root=ws)
+            except Exception:
+                self._lifecycle_mgr = None
+        return self._lifecycle_mgr
+
+    @lifecycle_mgr.setter
+    def lifecycle_mgr(self, val: Any) -> None:
+        self._lifecycle_mgr = val
 
     def _compute_code_fingerprints(
         self,

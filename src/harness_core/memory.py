@@ -2623,31 +2623,35 @@ class MemoryLifecycleManager:
         tags: list[str] | str,
         reason: str = "manual_archival",
     ) -> bool:
-        """Directly archive a memory item into SQLite and FTS5 virtual table."""
+        """Directly archive a memory item into SQLite and FTS5 virtual table within an explicit transaction."""
         tag_str = ", ".join(tags) if isinstance(tags, (list, set, tuple)) else str(tags or "")
         archived_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         with self._lock:
             conn = sqlite3.connect(str(self.archive_db_path), check_same_thread=False, timeout=10.0)
             try:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO archived_memories (memory_id, target, content, tags, archived_at, reason)
-                    VALUES (?, ?, ?, ?, ?, ?);
-                    """,
-                    (memory_id, target, content, tag_str, archived_at, reason),
-                )
-                try:
+                with conn:
                     conn.execute(
                         """
-                        INSERT INTO archived_memories_fts (memory_id, target, content, tags, archived_at, reason)
+                        INSERT OR REPLACE INTO archived_memories (memory_id, target, content, tags, archived_at, reason)
                         VALUES (?, ?, ?, ?, ?, ?);
                         """,
                         (memory_id, target, content, tag_str, archived_at, reason),
                     )
-                except Exception:
-                    pass
-                conn.commit()
+                    try:
+                        conn.execute(
+                            "DELETE FROM archived_memories_fts WHERE memory_id = ?;",
+                            (memory_id,),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO archived_memories_fts (memory_id, target, content, tags, archived_at, reason)
+                            VALUES (?, ?, ?, ?, ?, ?);
+                            """,
+                            (memory_id, target, content, tag_str, archived_at, reason),
+                        )
+                    except Exception as fts_err:
+                        logger.warning("FTS indexing failed in archive_entry for %s: %s", memory_id, fts_err)
                 return True
             except Exception as e:
                 logger.error("Failed to archive entry %s to %s: %s", memory_id, self.archive_db_path, e)
@@ -2687,22 +2691,36 @@ class MemoryLifecycleManager:
 
             if reason:
                 # 1. Store in SQLite FTS5 cold archive
-                self.archive_entry(
+                archived_ok = self.archive_entry(
                     memory_id=item.id,
                     target=item.scope,
                     content=item.text,
                     tags=item.tags,
                     reason=reason,
                 )
-                # 2. Prune from active markdown store
-                self.controller.delete_memory(item.id, target=item.scope)
-                demoted.append({
-                    "memory_id": item.id,
-                    "target": item.scope,
-                    "content": item.text,
-                    "tags": item.tags,
-                    "reason": reason,
-                })
+                if not archived_ok:
+                    logger.error(
+                        "Archive failed for memory %s; retaining in active markdown store",
+                        item.id,
+                    )
+                    continue
+
+                # 2. Prune from active markdown store only after archive succeeds
+                del_res = self.controller.delete_memory(item.id, target=item.scope)
+                if del_res.get("ok"):
+                    demoted.append({
+                        "memory_id": item.id,
+                        "target": item.scope,
+                        "content": item.text,
+                        "tags": item.tags,
+                        "reason": reason,
+                    })
+                else:
+                    logger.warning(
+                        "Demotion archive succeeded for %s but active delete failed: %s",
+                        item.id,
+                        del_res.get("error"),
+                    )
 
         return demoted
 
