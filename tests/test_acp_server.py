@@ -318,6 +318,33 @@ class TestACPServer(unittest.TestCase):
         content = prompt_resp["result"]["content"]
         self.assertTrue(len(content) > 0)
 
+    def test_acp_conceptual_question_runs_zero_tools(self) -> None:
+        """Verify non-workspace conceptual questions do not trigger list_files/query_graphify."""
+        new_resp = self.server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 64,
+            "method": "session/new",
+            "params": {"cwd": str(self.workspace_dir)},
+        })
+        sid = new_resp["result"]["sessionId"]
+
+        tool_calls_fired = []
+        with patch.object(self.orchestrator.gateway, "invoke", side_effect=tool_calls_fired.append):
+            prompt_resp = self.server.handle_request({
+                "jsonrpc": "2.0",
+                "id": 65,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": sid,
+                    "prompt": "Explain how KV-cache prefix freezing works.",
+                },
+            })
+
+        self.assertEqual(len(tool_calls_fired), 0, "Conceptual questions must not trigger workspace scan tools")
+        self.assertIn("result", prompt_resp)
+        content = prompt_resp["result"]["content"]
+        self.assertTrue(len(content) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()

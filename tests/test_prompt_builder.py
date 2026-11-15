@@ -134,3 +134,29 @@ def test_orchestrator_integration_with_prompt_builder_and_soul(tmp_path):
     assert res is not None
     assert "turns" in res
 
+
+def test_prompt_builder_dynamic_tools_skills_and_surface(temp_hex_env):
+    hex_home, ws = temp_hex_env
+    skill_dir = ws / ".hex" / "skills" / "demo_skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo_skill\ndescription: Demo workflow skill\n---\n# Steps\n",
+        encoding="utf-8",
+    )
+
+    soul_mgr = SoulManager(global_home=hex_home)
+    builder = PromptBuilder(soul_manager=soul_mgr)
+
+    prompt = builder.build_system_prompt(
+        workspace_root=ws,
+        mode="agent",
+        surface="acp",
+    )
+
+    assert "[Available Tools]" in prompt
+    assert "- read_file (R0):" in prompt
+    assert "[Parallel Tool Calls]" in prompt
+    assert "Surface: Editor ACP integration" in prompt
+    assert "<available_skills>" in prompt
+    assert "- demo_skill: Demo workflow skill" in prompt
+    assert "Adhere strictly to YAGNI." not in prompt

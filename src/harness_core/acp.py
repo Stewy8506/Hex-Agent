@@ -247,11 +247,13 @@ class ACPServer:
 
         # Submit task
         from .models import TaskSubmitRequest
+        exec_mode = str(params.get("execution_mode") or "fast_path")
         task_req = TaskSubmitRequest(
             goal=prompt_text,
             project_id="acp_session",
-            execution_mode="fast_path",
+            execution_mode=exec_mode,
             workspace_root=str(sess.workspace_root),
+            constraints={"surface": "acp"},
         )
         sub_res = self.orchestrator.submit_task(task_req)
         task_id = sub_res["task_id"]

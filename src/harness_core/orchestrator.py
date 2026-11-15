@@ -57,6 +57,27 @@ from harness2.core.library import Library, domain_dir, has_experience
 from harness2.substrate.opencode import OPENCODE_SURFACE
 
 
+_WORKSPACE_SCAN_KEYWORDS = (
+    "repo", "repository", "codebase", "workspace", "directory", "folder",
+    "files", "ast", "graphify", "blast radius", "callers", "callees",
+    "symbol", "module", "function", "class", "inspect", "audit",
+    "debug", "bug", "traceback", "stack trace", "pytest", "unittest",
+    "cargo", "lint", "refactor", "summarize this", "find in", "grep",
+)
+_FILE_REF_RE = re.compile(r"(?:[\w./-]+\.(?:py|rs|ts|tsx|js|jsx|go|json|yaml|yml|toml|md|sh)|[\w-]+/[\w./-]+)")
+
+
+def _needs_workspace_scan(goal: str) -> bool:
+    """Return True only when a fast_path goal references workspace files, code, or repo inspection."""
+    g = (goal or "").strip()
+    if not g:
+        return False
+    if _FILE_REF_RE.search(g):
+        return True
+    g_lower = g.lower()
+    return any(re.search(rf"\b{re.escape(kw)}\b", g_lower) for kw in _WORKSPACE_SCAN_KEYWORDS)
+
+
 class HarnessOrchestrator:
     """End-to-end orchestrator wiring Ledger, CoW, Gateway, Graphify, SkillSpector, and Proof services."""
 
@@ -930,51 +951,16 @@ class HarnessOrchestrator:
         )
 
         goal = (task.get("goal") or "").strip()
-        g_clean = re.sub(r"[?!.,]", "", goal.lower()).strip()
-        words = g_clean.split()
-        first_word = words[0] if words else ""
-
-        # Conversational, greeting, capability, or help inquiries execute 0 tools immediately
-        CONVERSATIONAL_KEYWORDS = {
-            "hey", "hi", "hello", "yo", "greetings", "howdy", "sup",
-            "good morning", "good evening", "good afternoon",
-            "who are you", "what are you", "what can you do", "what can you do for me",
-            "tell me what you can do", "how do you work", "what are your capabilities",
-            "what can i ask you", "what are you capable of", "help", "commands",
-            "what commands", "what are the commands", "what are the commands i can give you",
-            "list commands", "how to use you", "how do i use you", "what do you do",
-            "what can i do", "what are my options", "options",
-        }
-
-        is_conversational = (
-            g_clean in CONVERSATIONAL_KEYWORDS
-            or (len(words) <= 3 and first_word in {"hey", "hi", "hello", "yo"})
-            or (
-                any(g_clean.startswith(p) for p in ("hi ", "hello ", "hey ", "yo "))
-                and any(w in g_clean for w in ("what", "who", "can you", "help", "commands", "do", "you"))
-            )
-            or any(
-                g_clean.startswith(prefix)
-                for prefix in (
-                    "what can you",
-                    "what are the commands",
-                    "what commands",
-                    "how can you help",
-                    "who are you",
-                    "what are you",
-                    "tell me what you",
-                    "tell me about yourself",
-                )
-            )
-        )
-
-        if is_conversational:
-            steps = []
-        else:
-            steps = (task.get("constraints") or {}).get("requested_steps") or [
+        requested_steps = (task.get("constraints") or {}).get("requested_steps")
+        if requested_steps is not None:
+            steps = requested_steps
+        elif _needs_workspace_scan(goal):
+            steps = [
                 {"step_id": "fp_list", "tool_id": "list_files", "args": {}, "risk_class": "R0"},
                 {"step_id": "fp_graph", "tool_id": "query_graphify", "args": {}, "risk_class": "R1"},
             ]
+        else:
+            steps = []
 
         tool_results: list[dict[str, Any]] = []
         tool_cb = kwargs.get("tool_callback")
@@ -1016,10 +1002,12 @@ class HarnessOrchestrator:
         system_directive = None
         if hasattr(self, "prompt_builder") and self.prompt_builder is not None:
             try:
+                surface = str((task.get("constraints") or {}).get("surface") or "tui")
                 system_directive = self.prompt_builder.build_system_prompt(
                     workspace_root=source_ws,
                     mode=str(task.get("mode") or "agent"),
                     session_id=task_id,
+                    surface=surface,
                 )
             except Exception as pb_exc:
                 logger.debug("Fast-path system prompt build failed: %s", pb_exc)

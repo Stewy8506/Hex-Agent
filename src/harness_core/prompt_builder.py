@@ -118,15 +118,96 @@ MODE_MODULATORS: Dict[str, str] = {
 
 HEX_CAPABILITIES_GUIDANCE: str = (
     "[Capabilities & Interaction Guidance]\n"
-    "You are HEX, an autonomous AI agent and pairing partner. When asked about your capabilities, what you can do, or available commands, provide an authoritative, natural, well-structured summary across what you can help with:\n\n"
-    "• Code and Engineering: Read, search, and edit codebases, run terminal commands and test suites (Cargo, Pytest, Node, etc.), debug issues at root cause, and ship minimal, verified diffs.\n"
-    "• Terminal, Automation & Workspace Tools: Execute shell commands and scripts, spawn isolated subagents for parallel tasks, manage background jobs, and leverage persistent memory and skills.\n"
-    "• Codebase Navigation & Analysis: Search AST symbols, trace callers across dependency graphs, audit architectures, and eliminate dead code or unnecessary complexity.\n"
-    "• Web, Docs & Technical Research: Search the web, fetch technical documentation, inspect APIs, research libraries, and synthesize papers or architecture proposals.\n"
-    "• Data, Files & Workflows: Process structured data (JSON, YAML, CSV, SQL), inspect diffs, manage Git branches and commits, and automate build/release workflows.\n"
-    "• Interactive Session Commands: /help (command list), /mode [plan|agent|code] (toggle behavior), /model [name] (view/switch model), /clear or /reset (fresh context), /quit (exit).\n\n"
-    "Match reply length to the ask. Be direct, calm, and senior; avoid robotic disclaimers, filler, or repetitive chanting of acronyms. Conclude conversational welcomes with a natural ask like 'What are we working on?'"
+    "You are HEX, an autonomous AI agent and pairing partner. When asked about your capabilities, what you can do, or available commands, answer concisely from your active tools, skills, and session commands (/help, /mode [plan|agent|code], /model [name], /clear, /quit).\n"
+    "Match reply length to the ask. Be direct, calm, and senior; avoid robotic disclaimers, filler, or repetitive chanting of acronyms."
 )
+
+PARALLEL_TOOL_CALL_GUIDANCE: str = (
+    "[Parallel Tool Calls]\n"
+    "Batch independent read, search, and web lookup calls in a single turn rather than serializing them one by one. "
+    "Serialize calls only when a later call depends on an earlier call's output."
+)
+
+PLATFORM_HINTS: Dict[str, str] = {
+    "tui": "Surface: HEX TUI. Markdown renders cleanly; deliver local files by stating their path.",
+    "cli": "Surface: Plain CLI terminal. Prefer concise plain text or minimal markdown; state file paths directly.",
+    "acp": "Surface: Editor ACP integration. Keep responses concise, code-focused, and cite exact file paths/symbols.",
+    "desktop": "Surface: Desktop GUI. Full GitHub-flavored Markdown and structured tables render natively.",
+}
+
+
+def build_tools_summary(max_tools: int = 35) -> str:
+    """Build a compact summary of active tools from ToolGateway.TOOL_DEFINITIONS."""
+    try:
+        from .gateway import TOOL_DEFINITIONS
+    except Exception:
+        return ""
+
+    if not TOOL_DEFINITIONS:
+        return ""
+
+    lines = ["[Available Tools]"]
+    for t in TOOL_DEFINITIONS[:max_tools]:
+        name = t.get("name") or t.get("id") or ""
+        desc = (t.get("description") or "").split(".")[0].strip()
+        risk = t.get("risk_class", "")
+        if name:
+            risk_tag = f" ({risk})" if risk else ""
+            lines.append(f"- {name}{risk_tag}: {desc}")
+    return "\n".join(lines)
+
+
+def build_skills_index(
+    workspace_root: Path,
+    global_home: Optional[Path] = None,
+    max_skills: int = 60,
+) -> str:
+    """Build a compact <available_skills> index scanning repo, built-in, and global skills."""
+    home = Path(global_home).resolve() if global_home else get_hex_home().resolve()
+    builtin_skills = Path(__file__).resolve().parent / "skills"
+    search_roots = [
+        workspace_root / ".hex" / "skills",
+        workspace_root / "skills",
+        home / "skills",
+        builtin_skills,
+    ]
+
+    discovered: Dict[str, str] = {}
+    for root in search_roots:
+        if not root.is_dir():
+            continue
+        for skill_md in sorted(root.rglob("SKILL.md")):
+            try:
+                raw = skill_md.read_text(encoding="utf-8", errors="replace")
+                name = skill_md.parent.name
+                desc = ""
+                if raw.startswith("---"):
+                    end = raw.find("\n---", 3)
+                    if end != -1:
+                        fm_block = raw[3:end]
+                        for line in fm_block.splitlines():
+                            s = line.strip()
+                            if s.startswith("name:"):
+                                val = s.split(":", 1)[1].strip().strip("\"'")
+                                if val:
+                                    name = val
+                            elif s.startswith("description:") or s.startswith("purpose:"):
+                                val = s.split(":", 1)[1].strip().strip("\"'")
+                                if val and not desc:
+                                    desc = val[:90]
+                if name and name not in discovered:
+                    discovered[name] = desc
+            except Exception:
+                continue
+
+    if not discovered:
+        return ""
+
+    rows = [
+        f"- {name}: {desc}" if desc else f"- {name}"
+        for name, desc in sorted(discovered.items())[:max_skills]
+    ]
+    return "## Skills\n<available_skills>\n" + "\n".join(rows) + "\n</available_skills>"
 
 
 class PromptBuilder:
@@ -153,12 +234,15 @@ class PromptBuilder:
         is_distribution_profile: bool = False,
         session_id: Optional[str] = None,
         soul_provenance: Optional[SoulProvenance | str] = None,
+        surface: str = "tui",
+        include_tools: bool = True,
+        include_skills: bool = True,
     ) -> str:
         """Compose the full system prompt in strictly ordered slots for KV-cache prefix stability.
 
         Slot #1: SOUL.md Identity
         Slot #2: Mode Behavioral Overrides (plan / agent / code)
-        Slot #3: Environment & Tool Boundaries
+        Slot #3: Environment, Tools & Execution Guidance
         Slot #4: Curated Memory Snapshot (fenced)
         Slot #5: Project Rules / AGENTS.md / Skills
         """
@@ -183,14 +267,29 @@ class PromptBuilder:
         if custom_env_context:
             env_text = custom_env_context.strip()
         else:
-            env_text = (
-                f"[Environment Context]\n"
-                f"- Platform: {platform.system()} {platform.machine()} (Python {sys.version.split()[0]})\n"
-                f"- Workspace Root: {ws}\n"
-                f"- Policy: Read files before editing. Verify changes with tests or commands. "
-                f"Adhere strictly to YAGNI.\n\n"
-                f"{HEX_CAPABILITIES_GUIDANCE}"
+            clean_mode = str(mode or "agent").strip().lower()
+            policy_line = (
+                "Read files before editing. Verify changes with tests or commands. Adhere strictly to YAGNI."
+                if clean_mode == "code"
+                else "Read files before editing. Verify changes empirically with tests or commands."
             )
+            platform_hint = PLATFORM_HINTS.get(str(surface or "tui").lower(), PLATFORM_HINTS["tui"])
+            env_parts = [
+                (
+                    f"[Environment Context]\n"
+                    f"- Platform: {platform.system()} {platform.machine()} (Python {sys.version.split()[0]})\n"
+                    f"- Workspace Root: {ws}\n"
+                    f"- {platform_hint}\n"
+                    f"- Policy: {policy_line}"
+                ),
+                HEX_CAPABILITIES_GUIDANCE,
+                PARALLEL_TOOL_CALL_GUIDANCE,
+            ]
+            if include_tools:
+                tools_summary = build_tools_summary()
+                if tools_summary:
+                    env_parts.append(tools_summary)
+            env_text = "\n\n".join(env_parts)
         slots.append(env_text)
 
         # --- Slot #4: Curated Memory Snapshot ---
@@ -238,6 +337,14 @@ class PromptBuilder:
         if extra_rules and extra_rules.strip():
             safe_extra = scan_context_content(extra_rules.strip(), "extra_rules", user_authored=False)
             project_rules_list.append(safe_extra)
+
+        if include_skills:
+            skills_idx = build_skills_index(
+                ws,
+                global_home=getattr(self.soul_manager, "global_home", None),
+            )
+            if skills_idx:
+                project_rules_list.append(skills_idx)
 
         if project_rules_list:
             slots.append("\n\n".join(project_rules_list))
