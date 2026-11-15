@@ -41,6 +41,28 @@ pub const AMBER: Skin = Skin {
     prompt: "⚕",
 };
 
+pub const SAPPHIRE: Skin = Skin {
+    border: Color::Rgb(63, 63, 70),
+    heading: Color::Rgb(255, 255, 255),
+    accent: Color::Rgb(59, 130, 246),
+    category: Color::Rgb(161, 161, 170),
+    text: Color::Rgb(244, 244, 245),
+    muted: Color::Rgb(113, 113, 122),
+    success: Color::Rgb(52, 211, 153),
+    warn: Color::Rgb(251, 191, 36),
+    danger: Color::Rgb(248, 113, 113),
+    surface: Color::Rgb(15, 17, 23),
+    gradient: [
+        Color::Rgb(255, 255, 255),
+        Color::Rgb(147, 197, 253),
+        Color::Rgb(59, 130, 246),
+        Color::Rgb(37, 99, 235),
+        Color::Rgb(148, 163, 184),
+        Color::Rgb(71, 85, 105),
+    ],
+    prompt: "❯",
+};
+
 pub const CYBERPUNK: Skin = Skin { border: Color::Rgb(0,195,215), heading: Color::Rgb(0,245,255), accent: Color::Rgb(244,114,182), category: Color::Rgb(56,189,248), text: Color::Rgb(241,245,249), muted: Color::Rgb(100,116,139), success: Color::Rgb(16,185,129), warn: Color::Rgb(250,204,21), danger: Color::Rgb(244,63,94), surface: Color::Rgb(15,23,42), gradient: [Color::Rgb(0,245,255),Color::Rgb(35,205,255),Color::Rgb(95,155,255),Color::Rgb(160,105,255),Color::Rgb(220,65,255),Color::Rgb(255,40,180)], prompt: "⚡" };
 pub const MATRIX: Skin = Skin { border: Color::Rgb(16,185,129), heading: Color::Rgb(110,231,183), accent: Color::Rgb(52,211,153), category: Color::Rgb(5,150,105), text: Color::Rgb(209,250,229), muted: Color::Rgb(75,135,105), success: Color::Rgb(52,211,153), warn: Color::Rgb(250,204,21), danger: Color::Rgb(248,113,113), surface: Color::Rgb(6,28,20), gradient: [Color::Rgb(167,243,208),Color::Rgb(110,231,183),Color::Rgb(52,211,153),Color::Rgb(16,185,129),Color::Rgb(5,150,105),Color::Rgb(4,120,87)], prompt: "⌘" };
 pub const NORD: Skin = Skin { border: Color::Rgb(129,161,193), heading: Color::Rgb(136,192,208), accent: Color::Rgb(163,190,140), category: Color::Rgb(129,161,193), text: Color::Rgb(236,239,244), muted: Color::Rgb(125,138,161), success: Color::Rgb(163,190,140), warn: Color::Rgb(235,203,139), danger: Color::Rgb(191,97,106), surface: Color::Rgb(46,52,64), gradient: [Color::Rgb(143,188,187),Color::Rgb(136,192,208),Color::Rgb(129,161,193),Color::Rgb(94,129,172),Color::Rgb(76,86,106),Color::Rgb(67,76,94)], prompt: "❄" };
@@ -70,12 +92,14 @@ pub const LIGHT: Skin = Skin {
 
 pub fn skin(name: &str) -> Skin {
     match name.to_ascii_lowercase().as_str() {
+        "amber" => AMBER,
         "cyberpunk" => CYBERPUNK,
         "matrix" => MATRIX,
         "nord" => NORD,
         "mono" => MONO,
         "light" => LIGHT,
-        _ => AMBER,
+        "sapphire" => SAPPHIRE,
+        _ => SAPPHIRE,
     }
 }
 

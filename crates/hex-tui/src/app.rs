@@ -294,7 +294,7 @@ pub fn detect_default_skin() -> String {
     if is_light_terminal() {
         "light".to_string()
     } else {
-        "amber".to_string()
+        "sapphire".to_string()
     }
 }
 

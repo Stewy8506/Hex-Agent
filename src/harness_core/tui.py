@@ -153,6 +153,29 @@ class TUISkin:
 
 
 SKIN_REGISTRY: dict[str, TUISkin] = {
+    "sapphire": TUISkin(
+        name="sapphire",
+        description="Signature monochrome with #3b82f6 cobalt/sapphire blue accent",
+        banner_gradient=(
+            (255, 255, 255),  # Pure white highlight
+            (147, 197, 253),  # Ice frost
+            (59, 130, 246),   # Signature sapphire #3b82f6
+            (37, 99, 235),    # Deep cobalt
+            (148, 163, 184),  # Slate silver
+            (71, 85, 105),    # Graphite shadow
+        ),
+        border_rgb=(63, 63, 70),
+        heading_rgb=(255, 255, 255),
+        accent_rgb=(59, 130, 246),
+        category_rgb=(161, 161, 170),
+        text_rgb=(244, 244, 245),
+        muted_rgb=(113, 113, 122),
+        success_rgb=(52, 211, 153),
+        warn_rgb=(251, 191, 36),
+        danger_rgb=(248, 113, 113),
+        status_bg_rgb=(15, 17, 23),
+        prompt_symbol="❯",
+    ),
     "amber": TUISkin(
         name="amber",
         description="HEX-style warm gold, amber, and burnished bronze gradient",
@@ -525,7 +548,7 @@ def format_terminal_markdown(text: str, skin: TUISkin | None = None) -> str:
     if not text:
         return ""
 
-    sk = skin or SKIN_REGISTRY.get("amber")
+    sk = skin or SKIN_REGISTRY.get("sapphire", SKIN_REGISTRY["amber"])
     heading_c = sk.heading_rgb if sk else (250, 204, 21)
     accent_c = sk.accent_rgb if sk else (245, 158, 11)
     cat_c = sk.category_rgb if sk else (186, 135, 58)
@@ -677,7 +700,7 @@ class ActivitySpinner:
     """Animated Claude-style terminal activity spinner with smooth braille morphing transitions."""
 
     def __init__(self, skin: TUISkin | None = None, out: TextIO = sys.stdout, enabled: bool = True) -> None:
-        self.skin = skin or SKIN_REGISTRY["amber"]
+        self.skin = skin or SKIN_REGISTRY.get("sapphire", SKIN_REGISTRY["amber"])
         self.out = out
         self.enabled = enabled and hasattr(out, "isatty") and out.isatty()
         self._stop_event = threading.Event()
@@ -844,7 +867,7 @@ def _resolve_provider_label(orchestrator: Any = None, model_id: str = "") -> str
 def render_hex_splash(
     orchestrator: Any = None,
     *,
-    skin_name: str = "amber",
+    skin_name: str = "sapphire",
     model_id: str | None = None,
     compressor_mode: str = "deterministic",
     workspace_root: Path | str | None = None,
@@ -854,7 +877,7 @@ def render_hex_splash(
     enable_color: bool = True,
 ) -> str:
     """Render the unboxed HEX retro-block gradient banner and two-column splash card."""
-    skin = SKIN_REGISTRY.get(skin_name.lower(), SKIN_REGISTRY["amber"])
+    skin = SKIN_REGISTRY.get(skin_name.lower(), SKIN_REGISTRY.get("sapphire", SKIN_REGISTRY["amber"]))
     total_w = max(80, width)
 
     def _c(txt: str, fg: tuple[int, int, int] | None = None, bg: tuple[int, int, int] | None = None, bold: bool = False) -> str:
@@ -1037,12 +1060,12 @@ def render_status_bar(
     max_cost_usd: float = 2.0,
     elapsed_seconds: int = 0,
     voice_status: str | None = None,
-    skin_name: str = "amber",
+    skin_name: str = "sapphire",
     width: int = 108,
     enable_color: bool = True,
 ) -> str:
     """Render the persistent bottom status bar with context window fill gauge (`[██░░░░░░░░] XX%`)."""
-    skin = SKIN_REGISTRY.get(skin_name.lower(), SKIN_REGISTRY["amber"])
+    skin = SKIN_REGISTRY.get(skin_name.lower(), SKIN_REGISTRY.get("sapphire", SKIN_REGISTRY["amber"]))
 
     def _c(txt: str, fg: tuple[int, int, int] | None = None, bg: tuple[int, int, int] | None = None, bold: bool = False) -> str:
         return colorize_rgb(txt, fg=fg, bg=bg, bold=bold, enabled=enable_color)
@@ -1147,7 +1170,7 @@ def render_docked_input_frame(
     enable_color: bool = True,
 ) -> tuple[str, str, str]:
     """Render the HEX-grade docked input frame with ghost suggestion and status footer."""
-    sk = skin or SKIN_REGISTRY["amber"]
+    sk = skin or SKIN_REGISTRY.get("sapphire", SKIN_REGISTRY["amber"])
     w = max(60, min(120, width))
 
     def _c(txt: str, fg: tuple[int, int, int] | None = None, bg: tuple[int, int, int] | None = None, bold: bool = False) -> str:
@@ -1252,7 +1275,7 @@ class HexConsole:
         workspace_root: Path | str | None = None,
         stream: bool = True,
         model_profile: str | None = None,
-        skin_name: str = "amber",
+        skin_name: str = "sapphire",
         quiet: bool = False,
         voice_enabled: bool = False,
         voice_name: str | None = None,
@@ -1269,7 +1292,7 @@ class HexConsole:
             self.workspace_root = Path.cwd().resolve()
         self.stream = stream
         self.model_profile = model_profile
-        self.skin_name = skin_name.lower() if skin_name.lower() in SKIN_REGISTRY else "amber"
+        self.skin_name = skin_name.lower() if skin_name.lower() in SKIN_REGISTRY else "sapphire"
         self.quiet = quiet
         self.react_mode: bool = bool(react_mode)
         self.active_task_id: str | None = None
@@ -1300,7 +1323,7 @@ class HexConsole:
 
     @property
     def skin(self) -> TUISkin:
-        return SKIN_REGISTRY.get(self.skin_name, SKIN_REGISTRY["amber"])
+        return SKIN_REGISTRY.get(self.skin_name, SKIN_REGISTRY.get("sapphire", SKIN_REGISTRY["amber"]))
 
     def _setup_readline(self) -> None:
         try:

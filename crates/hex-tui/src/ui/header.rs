@@ -1,22 +1,24 @@
 //! Top header widget with system telemetry, model routing, git branch, and tools count.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::ui::design::skin;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let s = skin(&app.skin_name);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(s.border))
         .title(Span::styled(
             " ◈ HEX AGENT ◈ ",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(s.accent)
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -33,69 +35,69 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             " HEX ",
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(s.surface)
+                .bg(s.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
         Span::styled(
             "Agent",
             Style::default()
-                .fg(Color::White)
+                .fg(s.heading)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  │  "),
-        Span::styled("Branch: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  │  ", Style::default().fg(s.border)),
+        Span::styled("Branch: ", Style::default().fg(s.muted)),
         Span::styled(
             format!("{} ({})", app.git_branch, app.git_sha),
             Style::default()
-                .fg(Color::Magenta)
+                .fg(s.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  │  "),
-        Span::styled("Project: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&app.project_id, Style::default().fg(Color::Cyan)),
-        Span::raw("  │  "),
-        Span::styled("Session: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&app.session_id, Style::default().fg(Color::White)),
+        Span::styled("  │  ", Style::default().fg(s.border)),
+        Span::styled("Project: ", Style::default().fg(s.muted)),
+        Span::styled(&app.project_id, Style::default().fg(s.text)),
+        Span::styled("  │  ", Style::default().fg(s.border)),
+        Span::styled("Session: ", Style::default().fg(s.muted)),
+        Span::styled(&app.session_id, Style::default().fg(s.muted)),
     ];
     frame.render_widget(Paragraph::new(Line::from(banner_spans)), chunks[0]);
 
     // Line 2: Real Telemetry Badges (Model, CoW, Tools count, Skills count, Status)
     let conn_color = if app.connection_status.contains("Connected") {
-        Color::Green
+        s.accent
     } else {
-        Color::Yellow
+        s.muted
     };
 
     let telemetry_spans = vec![
-        Span::styled("Model: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Model: ", Style::default().fg(s.muted)),
         Span::styled(
             format!("[{}] ", app.model_name),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(s.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled("CoW: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("CoW: ", Style::default().fg(s.muted)),
         Span::styled(
             format!("[{}] ", app.cow_mode),
-            Style::default().fg(Color::Blue),
+            Style::default().fg(s.category),
         ),
         Span::raw(" "),
-        Span::styled("Tools: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Tools: ", Style::default().fg(s.muted)),
         Span::styled(
             format!("[{}] ", app.tools_count),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(s.category),
         ),
         Span::raw(" "),
-        Span::styled("Skills: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Skills: ", Style::default().fg(s.muted)),
         Span::styled(
             format!("[{}] ", app.skills_count),
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(s.category),
         ),
         Span::raw(" "),
-        Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Status: ", Style::default().fg(s.muted)),
         Span::styled(
             format!("[● {}] ", app.connection_status),
             Style::default().fg(conn_color).add_modifier(Modifier::BOLD),

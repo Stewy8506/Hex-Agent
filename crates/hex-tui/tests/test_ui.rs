@@ -253,10 +253,10 @@ fn test_light_terminal_skin_selection_and_rendering() {
         // Dark terminal (e.g. "15;0")
         std::env::set_var("COLORFGBG", "15;0");
         assert!(!hex_tui::app::is_light_terminal());
-        assert_eq!(hex_tui::app::detect_default_skin(), "amber");
+        assert_eq!(hex_tui::app::detect_default_skin(), "sapphire");
 
         let app_dark = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
-        assert_eq!(app_dark.skin_name, "amber");
+        assert_eq!(app_dark.skin_name, "sapphire");
 
         if let Some(val) = orig {
             std::env::set_var("COLORFGBG", val);
