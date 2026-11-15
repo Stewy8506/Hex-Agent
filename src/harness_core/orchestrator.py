@@ -2117,6 +2117,7 @@ class HarnessOrchestrator:
             )
 
         except Exception as crash_exc:
+            logger.error("Step execution crash in _execute_standard_dag: %s", crash_exc, exc_info=True)
             # Roll back dirty uncommitted files in attempt_ws to latest valid snapshot (FR-012a)
             latest_valid = self.ledger.get_latest_checkpoint(task_id)
             snap_to_restore = Path(latest_valid["snapshot_path"]) if latest_valid else base_snap_path
