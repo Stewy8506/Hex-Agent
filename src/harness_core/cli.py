@@ -81,9 +81,9 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default=None, help="Custom endpoint Base URL (e.g., http://localhost:8000/v1 for custom / vLLM)")
     parser.add_argument(
         "--skin",
-        default="amber",
-        choices=["amber", "cyberpunk", "matrix", "nord", "mono"],
-        help="TUI color skin (default: amber)",
+        default="sapphire",
+        choices=["sapphire", "amber", "cyberpunk", "matrix", "nord", "mono"],
+        help="TUI color skin (default: sapphire)",
     )
     parser.add_argument("-Q", "--quiet", action="store_true", help="Quiet mode: suppress startup banner and spinner")
     parser.add_argument("--no-stream", action="store_true", help="Disable live token streaming")
@@ -225,7 +225,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_chat.add_argument("--provider", default=argparse.SUPPRESS, help="Cloud reasoner provider override (e.g., antigravity, openrouter, deepseek, local)")
     p_chat.add_argument("--model", default=argparse.SUPPRESS, help="Model routing profile override (hybrid, local, cloud, or model ID)")
     p_chat.add_argument("--base-url", default=argparse.SUPPRESS, help="Custom endpoint Base URL override")
-    p_chat.add_argument("--skin", default=argparse.SUPPRESS, choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
+    p_chat.add_argument("--skin", default=argparse.SUPPRESS, choices=["sapphire", "amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
     p_chat.add_argument("-Q", "--quiet", action="store_true", default=argparse.SUPPRESS, help="Quiet mode: suppress startup banner and spinner")
     p_chat.add_argument("--no-stream", action="store_true", default=argparse.SUPPRESS, help="Disable live token streaming")
     p_chat.add_argument("--voice", action="store_true", default=argparse.SUPPRESS, help="Enable hands-free voice mode and spoken agent commentary")
@@ -239,7 +239,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_tui.add_argument("--project", default="default", help="Project ID")
     p_tui.add_argument("--workspace", default=None, help="Workspace path (defaults to repository root)")
     p_tui.add_argument("--model", default="gemini-2.5-pro", help="Model routing profile override")
-    p_tui.add_argument("--skin", default="amber", choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="HEX visual skin")
+    p_tui.add_argument("--skin", default="sapphire", choices=["sapphire", "amber", "cyberpunk", "matrix", "nord", "mono"], help="HEX visual skin")
     p_tui.add_argument("--cow", default="OverlayFS", help="CoW snapshot provider backend")
     p_tui.add_argument("--session", default=None, help="Session ID to attach or resume")
     p_tui.add_argument("--build", action="store_true", default=False, help="Force recompiling hex-tui before launching")
@@ -253,7 +253,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_voice.add_argument("--voice-name", default=None, help="TTS voice name (e.g., Samantha, Daniel)")
     p_voice.add_argument("--speech-rate", type=int, default=190, help="Speech rate in words per minute (default: 190)")
     p_voice.add_argument("--muted", action="store_true", default=False, help="Start voice console in muted state")
-    p_voice.add_argument("--skin", default=argparse.SUPPRESS, choices=["amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
+    p_voice.add_argument("--skin", default=argparse.SUPPRESS, choices=["sapphire", "amber", "cyberpunk", "matrix", "nord", "mono"], help="TUI color skin")
     p_voice.add_argument("-Q", "--quiet", action="store_true", default=argparse.SUPPRESS, help="Quiet mode: suppress startup banner and spinner")
     p_voice.add_argument("--no-stream", action="store_true", default=argparse.SUPPRESS, help="Disable live token streaming")
     p_voice.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
@@ -853,7 +853,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             workspace_root=ws_root,
             stream=not getattr(args, "no_stream", False),
             model_profile=getattr(args, "model", None),
-            skin_name=getattr(args, "skin", "amber"),
+            skin_name=getattr(args, "skin", "sapphire"),
             quiet=getattr(args, "quiet", False),
             voice_enabled=voice_mode,
             voice_name=voice_name,
