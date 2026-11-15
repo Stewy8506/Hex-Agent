@@ -510,7 +510,7 @@ fn style_splash_text(splash: &str, s: &Skin, _area_width: u16) -> Vec<Line<'stat
         // Style right workbench details part
         let r_trimmed = right_part.trim();
         if !r_trimmed.is_empty() {
-            if r_trimmed.contains("HEX Autonomous AI Workbench") {
+            if r_trimmed.contains("HEX Agent") || r_trimmed.contains("HEX Autonomous AI Workbench") {
                 if let Some(pos) = right_part.find("  (upstream") {
                     spans.push(Span::styled(
                         right_part[..pos].to_string(),
@@ -594,7 +594,7 @@ fn render_hex_intro_fallback(app: &App, width: u16) -> Vec<Line<'static>> {
     if width < 80 {
         out.push(Line::raw(""));
         out.push(Line::from(Span::styled(
-            "◈ HEX Autonomous AI Workbench",
+            "◈ HEX Agent",
             Style::default().fg(s.heading).add_modifier(Modifier::BOLD),
         )));
         out.push(Line::from(vec![
@@ -653,7 +653,7 @@ fn render_hex_intro_fallback(app: &App, width: u16) -> Vec<Line<'static>> {
     // 4. Two-column body
     let mut right_lines: Vec<Line<'static>> = Vec::new();
     right_lines.push(Line::from(vec![
-        Span::styled("HEX Autonomous AI Workbench  v0.20.1", Style::default().fg(s.heading).add_modifier(Modifier::BOLD)),
+        Span::styled("HEX Agent  v0.20.1", Style::default().fg(s.heading).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  (upstream {})", app.git_sha), Style::default().fg(s.muted)),
     ]));
     right_lines.push(Line::from(vec![

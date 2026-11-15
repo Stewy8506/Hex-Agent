@@ -191,7 +191,7 @@ class TestSessionBannerAndHEXSplash(unittest.TestCase):
                 sandbox_backend="bwrap",
                 cow_backend="apfs_clone",
             )
-        self.assertIn("HEX Autonomous AI Workbench", banner)
+        self.assertTrue("HEX Agent" in banner or "HEX Autonomous AI Workbench" in banner)
         self.assertIn("claude-3-7-sonnet", banner)
         self.assertIn("M4 MLX Local Engine", banner)
         self.assertIn("bwrap", banner)
@@ -213,7 +213,7 @@ class TestSessionBannerAndHEXSplash(unittest.TestCase):
                 width=110,
             )
             plain = strip_ansi(splash)
-            self.assertIn("HEX Autonomous AI Workbench", plain)
+            self.assertTrue("HEX Agent" in plain or "HEX Autonomous AI Workbench" in plain)
             self.assertIn("anv.dev", plain)
             self.assertIn("did you know", plain)
             self.assertIn("tools", plain)
@@ -547,7 +547,7 @@ class TestCLIChatSubcommand(unittest.TestCase):
                 ])
             self.assertEqual(res, 0)
             text = out.getvalue()
-            self.assertIn("HEX Autonomous AI Workbench", text)
+            self.assertTrue("HEX Agent" in text or "HEX Autonomous AI Workbench" in text)
             self.assertIn("Available HEX Slash Commands", text)
         finally:
             sys.stdin = old_stdin

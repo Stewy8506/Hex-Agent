@@ -128,7 +128,7 @@ class TestAutoSetupAndPolish(unittest.TestCase):
             compressor_mode="local",
             workspace_root=Path.cwd(),
         )
-        self.assertIn("HEX Autonomous AI Workbench", splash)
+        self.assertTrue("HEX Agent" in splash or "HEX Autonomous AI Workbench" in splash)
         self.assertIn("web_search", splash)
         self.assertNotIn("v1.3.0", splash)
 

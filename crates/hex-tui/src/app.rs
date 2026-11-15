@@ -373,7 +373,7 @@ impl App {
         };
 
         // Seed with welcome messages
-        app.add_system_message("◈ Welcome to HEX Autonomous AI Workbench");
+        app.add_system_message("◈ Welcome to HEX Agent");
         app.add_system_message("Type your goal or /help for interactive commands.");
         app
     }

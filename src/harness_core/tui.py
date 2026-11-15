@@ -770,7 +770,7 @@ def render_session_banner(
     width: int = 78,
 ) -> str:
     """Render the compact 78-column HEX pair-programming session header banner."""
-    title = "HEX Autonomous AI Workbench — Interactive Terminal Console"
+    title = "HEX Agent — Interactive Terminal Console"
     model_source = os.getenv("HEX_MODEL_SOURCE")
     source_suffix = f"  │  Source: {model_source}" if model_source else ""
     line1 = f"Model: {model_id}{source_suffix}  │  Compressor: {compressor_mode}"
@@ -961,7 +961,7 @@ def render_hex_splash(
     total_skills = max(db_skills_count, disk_skills_count, builtin_skills_count)
 
     right_lines: list[str] = [
-        _c(f"HEX Autonomous AI Workbench  v{pkg_version}", fg=skin.heading_rgb, bold=True) + _c(f"  (upstream {git_sha})", fg=skin.muted_rgb),
+        _c(f"HEX Agent  v{pkg_version}", fg=skin.heading_rgb, bold=True) + _c(f"  (upstream {git_sha})", fg=skin.muted_rgb),
         _c(active_model, fg=skin.accent_rgb, bold=True) + _c(" · ", fg=skin.muted_rgb) + _c(provider_label, fg=skin.category_rgb),
         _c(ws_disp, fg=skin.muted_rgb),
         _c(f"Session: {short_sess}", fg=skin.muted_rgb),
