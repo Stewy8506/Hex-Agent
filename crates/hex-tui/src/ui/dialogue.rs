@@ -73,11 +73,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     let dash_count = card_width.saturating_sub(prefix_len + suffix_len).max(2);
 
                     lines.push(Line::from(vec![
-                        Span::styled("╭─ ", Style::default().fg(card_border)),
+                        Span::styled("╭─ ", Style::default().fg(skin.accent)),
                         Span::styled("❯ You ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
-                        Span::styled("─".repeat(dash_count), Style::default().fg(card_border)),
+                        Span::styled("─".repeat(dash_count), Style::default().fg(skin.accent)),
                         Span::styled(format!(" {} ", msg.timestamp), Style::default().fg(skin.muted)),
-                        Span::styled("─╮", Style::default().fg(card_border)),
+                        Span::styled("─╮", Style::default().fg(skin.accent)),
                     ]));
 
                     let inner_width = card_width.saturating_sub(4);
@@ -86,17 +86,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                         let wlen = wline.chars().count();
                         let pad = inner_width.saturating_sub(wlen);
                         lines.push(Line::from(vec![
-                            Span::styled("│ ", Style::default().fg(card_border)),
+                            Span::styled("│ ", Style::default().fg(skin.accent)),
                             Span::styled(wline, Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
                             Span::raw(" ".repeat(pad)),
-                            Span::styled(" │", Style::default().fg(card_border)),
+                            Span::styled(" │", Style::default().fg(skin.accent)),
                         ]));
                     }
 
                     let bot_dashes = card_width.saturating_sub(2);
                     lines.push(Line::from(Span::styled(
                         format!("╰{}╯", "─".repeat(bot_dashes)),
-                        Style::default().fg(card_border),
+                        Style::default().fg(skin.accent),
                     )));
                     lines.push(Line::raw(""));
                     continue;
