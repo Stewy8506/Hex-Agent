@@ -8,7 +8,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Focus};
-use crate::ui::design::{skin, Skin, PROMPTS};
+use crate::ui::design::{skin, Skin, PROMPTS, SPINNER};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let skin = skin(&app.skin_name);
@@ -45,9 +45,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ]).alignment(Alignment::Left);
 
     let right_footer = if app.is_busy {
+        let elapsed_str = crate::app::fmt_elapsed(
+            app.busy_started_at.map(|t| t.elapsed()).unwrap_or_default()
+        );
+        let spin_char = SPINNER[(app.animation_frame as usize / 2) % SPINNER.len()];
         Line::from(vec![
             Span::styled(
-                format!(" [{}] ", app.status_message),
+                format!(" [{} {} · {}] ", spin_char, app.status_message, elapsed_str),
                 Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
             ),
         ]).alignment(Alignment::Right)

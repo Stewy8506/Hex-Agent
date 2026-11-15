@@ -292,20 +292,24 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         app.add_assistant_message(&msg);
                     }
                     app.is_busy = false;
+                    app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::Ready => {
                     app.is_busy = false;
+                    app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::AcpMessage(msg) => {
                     app.add_system_message(&msg);
                     app.is_busy = false;
+                    app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::Error(err) => {
                     app.add_system_message(&format!("Error: {}", err));
                     app.is_busy = false;
+                    app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::Tick => {
@@ -592,6 +596,7 @@ async fn execute_submitted_text(
         // If ACP client connected, forward slash command to backend server
         if let Some(client) = acp_client {
             app.is_busy = true;
+            app.busy_started_at = Some(std::time::Instant::now());
             app.status_message = format!("Running {}...", cmd);
             let sess_id = app.session_id.clone();
             let cmd_str = cmd.to_string();
@@ -676,7 +681,8 @@ async fn execute_submitted_text(
     // Regular conversation message
     app.add_user_message(&text);
     app.is_busy = true;
-    app.status_message = "Reasoning...".to_string();
+    app.busy_started_at = Some(std::time::Instant::now());
+    app.status_message = "Thinking...".to_string();
 
     // Mode-specific prompt framing matching tui.py
     let effective_prompt = match app.mode.as_str() {
@@ -711,6 +717,7 @@ async fn execute_submitted_text(
         let reply = format!("Received: \"{}\". Connect to ACP server (`hex acp`) for live autonomous agent execution.", text);
         app.add_assistant_message(&reply);
         app.is_busy = false;
+        app.busy_started_at = None;
         app.status_message = "Ready".to_string();
     }
 
@@ -727,6 +734,9 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                 if let Some(delta) = update.delta {
                     app.append_assistant_delta(&delta);
                     app.is_busy = true;
+                    if app.busy_started_at.is_none() {
+                        app.busy_started_at = Some(std::time::Instant::now());
+                    }
                     app.status_message = "Streaming...".to_string();
                 }
                 if let Some(tool_val) = update.tool {
@@ -748,6 +758,7 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                     app.status_message = st.clone();
                     if st.eq_ignore_ascii_case("ready") || st.eq_ignore_ascii_case("completed") {
                         app.is_busy = false;
+                        app.busy_started_at = None;
                         app.status_message = "Ready".to_string();
                     }
                 }

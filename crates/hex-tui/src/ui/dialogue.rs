@@ -316,10 +316,31 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(&msg.timestamp, Style::default().fg(skin.muted)),
                 ]);
                 lines.push(header_line);
-                for raw_line in msg.content.lines() {
-                    let mut spans = vec![Span::raw("  ")];
-                    spans.extend(parse_inline_spans(raw_line, &skin));
-                    lines.push(Line::from(spans));
+                let is_streaming_assistant = idx == app.dialogue_items.len() - 1
+                    && msg.role == Role::Assistant
+                    && app.is_busy;
+
+                let raw_lines: Vec<&str> = msg.content.lines().collect();
+                let num_raw_lines = raw_lines.len();
+
+                if num_raw_lines == 0 {
+                    if is_streaming_assistant {
+                        let cursor_char = if (app.animation_frame / 8) % 2 == 0 { "▍" } else { " " };
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(cursor_char, Style::default().fg(skin.accent)),
+                        ]));
+                    }
+                } else {
+                    for (line_i, raw_line) in raw_lines.into_iter().enumerate() {
+                        let mut spans = vec![Span::raw("  ")];
+                        spans.extend(parse_inline_spans(raw_line, &skin));
+                        if is_streaming_assistant && line_i == num_raw_lines - 1 {
+                            let cursor_char = if (app.animation_frame / 8) % 2 == 0 { "▍" } else { " " };
+                            spans.push(Span::styled(cursor_char, Style::default().fg(skin.accent)));
+                        }
+                        lines.push(Line::from(spans));
+                    }
                 }
                 lines.push(Line::raw(""));
             }
@@ -333,17 +354,29 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 }
                 had_tool_in_turn = true;
 
+                let spin_char = SPINNER[(app.animation_frame as usize / 2) % SPINNER.len()];
                 let (status_icon, status_style) = match tc.exit_status.as_deref() {
                     Some("ERROR") | Some("FAILED") => (
                         "✖",
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     ),
-                    _ => (
-                        "⚙",
+                    Some("RUNNING") => (
+                        spin_char,
                         Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
+                    ),
+                    _ => (
+                        "✔",
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                     ),
                 };
                 let formatted_args = format_tool_args(&tc.args);
+                let dur_str = if tc.exit_status.as_deref() == Some("RUNNING") {
+                    crate::app::fmt_elapsed(tc.started_at.map(|t| t.elapsed()).unwrap_or_default())
+                } else if let Some(ms) = tc.duration_ms {
+                    crate::app::fmt_elapsed(std::time::Duration::from_millis(ms))
+                } else {
+                    crate::app::fmt_elapsed(tc.started_at.map(|t| t.elapsed()).unwrap_or_default())
+                };
 
                 let mut spans = vec![
                     Span::styled("  ├─ ", Style::default().fg(skin.muted)),
@@ -355,6 +388,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(formatted_args, Style::default().fg(skin.muted)),
+                    Span::styled(format!(" · {}", dur_str), Style::default().fg(skin.muted)),
                 ];
                 if tc.collapsed {
                     spans.push(Span::styled(" [collapsed]", Style::default().fg(skin.muted)));
@@ -392,16 +426,27 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             let spin_char = SPINNER[(app.animation_frame as usize / 2) % SPINNER.len()];
             let verb_idx = (app.animation_frame as usize / 40) % VERBS.len();
             let verb = VERBS[verb_idx];
-            let status_text = if !app.status_message.is_empty() && app.status_message != "Ready" {
+            let display_text = if !app.status_message.is_empty()
+                && app.status_message != "Ready"
+                && app.status_message != "Reasoning..."
+                && app.status_message != "Thinking..."
+                && app.status_message != "Streaming..."
+            {
                 &app.status_message
             } else {
                 verb
             };
 
+            let elapsed_str = crate::app::fmt_elapsed(
+                app.busy_started_at.map(|t| t.elapsed()).unwrap_or_default()
+            );
+
             lines.push(Line::from(vec![
                 Span::styled("  ├─ ", Style::default().fg(skin.muted)),
                 Span::styled(format!("{} ", spin_char), Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{}...", status_text), Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{:<13}", display_text), Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
+                Span::styled("· ", Style::default().fg(skin.muted)),
+                Span::styled(elapsed_str, Style::default().fg(skin.muted)),
             ]));
             lines.push(Line::raw(""));
         }

@@ -31,6 +31,7 @@ pub struct ToolCallItem {
     pub duration_ms: Option<u64>,
     pub exit_status: Option<String>,
     pub collapsed: bool,
+    pub started_at: Option<std::time::Instant>,
 }
 
 /// Dialogue viewport item (either a chat message or a tool call).
@@ -212,6 +213,7 @@ pub struct App {
     pub side_by_side: bool,
     pub should_quit: bool,
     pub is_busy: bool,
+    pub busy_started_at: Option<std::time::Instant>,
     pub status_message: String,
 
     // Dialogue items and scrolling
@@ -348,6 +350,7 @@ impl App {
             side_by_side: false,
             should_quit: false,
             is_busy: false,
+            busy_started_at: None,
             status_message: "Ready".to_string(),
 
             dialogue_items: Vec::new(),
@@ -440,6 +443,7 @@ impl App {
                     .map(|s| s.to_string())
                     .or_else(|| Some("RUNNING".to_string())),
                 collapsed: false,
+                started_at: Some(std::time::Instant::now()),
             }));
         self.scroll_dialogue_to_bottom();
     }
@@ -828,6 +832,21 @@ fn chrono_now() -> String {
     let mins = (secs / 60) % 60;
     let s = secs % 60;
     format!("{:02}:{:02}:{:02}", hours, mins, s)
+}
+
+/// Format an elapsed duration with Hermes-style precision:
+/// e.g. "0.4s", "2.1s", "14s", "1m12s"
+pub fn fmt_elapsed(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs_f32();
+    if secs < 10.0 {
+        format!("{:.1}s", secs)
+    } else if secs < 60.0 {
+        format!("{:.0}s", secs)
+    } else {
+        let mins = duration.as_secs() / 60;
+        let rem = duration.as_secs() % 60;
+        format!("{}m{:02}s", mins, rem)
+    }
 }
 
 #[cfg(test)]

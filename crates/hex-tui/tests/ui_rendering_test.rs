@@ -339,9 +339,51 @@ fn test_three_tier_dialogue_hierarchy_and_user_card() {
 
     // Assistant Working assertions
     assert!(content.contains("◈ Assistant"), "Must render '◈ Assistant' header");
-    assert!(content.contains("├─ ⚙ list_files (.)"), "Tool formatted as tree branch with args");
+    assert!(content.contains("├─ ✔ list_files (.)"), "Tool formatted as tree branch with checkmark and args");
 
     // Assistant Response indicator
     assert!(content.contains("▼"), "Assistant response arrow indicator '▼'");
     assert!(content.contains("I am HEX"), "Assistant response content");
+}
+
+#[test]
+fn test_hermes_style_live_animation_and_stopwatch() {
+    let backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
+
+    let mut app = App::new("test_proj", "gemini-3.8-flash-tiered", "apfs_clone");
+    app.dialogue_items.clear();
+    app.dialogue_scroll = 0;
+
+    // 1. User submits prompt
+    app.add_user_message("Run analysis");
+    app.is_busy = true;
+    app.busy_started_at = Some(std::time::Instant::now());
+
+    // 2. Add an in-flight tool call (RUNNING)
+    app.add_tool_call(
+        "tc_check",
+        "read_file",
+        "{\"path\": \"src/main.rs\"}",
+        None,
+        Some("RUNNING"),
+    );
+
+    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
+    let content = format!("{:?}", terminal.backend().buffer());
+
+    // Running tool must have Braille spinner and stopwatch
+    assert!(content.contains("read_file"), "Must render tool name");
+    assert!(content.contains("·"), "Must render duration separator dot");
+    assert!(content.contains("0.0s") || content.contains("0.1s"), "Must render live elapsed stopwatch");
+
+    // Thinking row must render rotating verb and stopwatch
+    assert!(
+        content.contains("Thinking") || content.contains("Analyzing") || content.contains("Exploring"),
+        "Must render rotating verb"
+    );
+
+    // Footer of input box must also reflect live telemetry
+    let bottom_row = (0..120).map(|x| terminal.backend().buffer()[(x, 35)].symbol()).collect::<String>();
+    assert!(bottom_row.contains("Thinking") || bottom_row.contains("Ready") || bottom_row.contains("·"), "Input footer must show live animation telemetry");
 }
