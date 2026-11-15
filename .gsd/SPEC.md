@@ -182,6 +182,40 @@ Every implementation task must produce empirical verification output before mark
   - Synthesized skills validated by `SkillSpector` before registration in `.hex/skills/`.
   - SQLite FTS5 lexical + Graphify AST symbol graph traversal across past sessions.
 
+---
+
+## 8. Milestone M13: Autonomous Adaptive Setup & Reasoning Effort Parity (Phase 34)
+
+### 8.1 Model Reasoning Effort Engine & Wire Clamping
+- **Canonical Effort Ladder:** `("none", "minimal", "low", "medium", "high", "xhigh", "max")` in `src/harness_core/reasoning_effort.py`.
+- **Wire Vocabulary Mapping & Clamping:**
+  - OpenAI / Codex: `reasoning_effort: "low" | "medium" | "high"`
+  - Anthropic: `thinking: {"type": "enabled", "budget_tokens": ...}` (scaled by tier: low=2048, medium=8192, high=16384, max=32768)
+  - Google Gemini: `thinkingConfig: {"thinkingBudget": ...}` or `thinkingLevel`
+  - OpenRouter / vLLM / SGLang / DeepSeek / Kimi / Qwen / Grok native payload translation.
+- **Config & Environment:** `model.reasoning_effort` in `config.yaml` and `HEX_REASONING_EFFORT` in `credentials.env`.
+- **Runtime TUI & CLI:** `/reasoning [level]` in Cockpit TUI and `--reasoning-effort <level>` in CLI.
+
+### 8.2 Autonomous Agent Self-Setup & Host Inspection Engine
+- **Hardware & Devtool Auto-Discovery:**
+  - Extends `HardwareProfile` to discover compilers (`clang`, `rustc`), runtimes (`node`, `python3`, `docker`), package managers (`brew`, `winget`, `flatpak`), and IDE OAuth state (`state.vscdb`).
+- **Autonomous Setup Mode (`hex setup --auto`):**
+  - Evaluates host environment and automatically writes `.hex/config.yaml` and `.hex/credentials.env` without blocking for manual input.
+  - Automatically selects optimal provider (Antigravity IDE if logged in, local Ollama if offline, or detected API keys).
+  - Automatically configures messaging gateways (Telegram / Discord) if bot tokens exist in environment, validating connectivity via live probe.
+- **Conversational Onboarding Intercept:**
+  - In Cockpit TUI, if unconfigured, starts an interactive conversational dialogue with the agent driving setup beats.
+
+### 8.3 Ergonomic & Modular Setup Controls
+- **`--quick` Flag:** On existing installs, only prompts for unconfigured or missing keys, skipping already configured values.
+- **`--blank-slate` Flag:** Minimal lightweight installation preset (only `file`, `terminal`, `vision`, `skills` toolsets, zero telemetry, low memory).
+- **`--reset` Flag:** Clean factory reset of `.hex/` configuration.
+- **Curated Provider Hierarchy:** Organizes the 26 providers into 4 intuitive tiers (Included/Recommended, Unified Gateway, Local Offline, Enterprise).
+
+### 8.4 Guided First-Task Verification Beat
+- Onboarding concludes with an optional live verification task (`build` beat) running in an isolated CoW workspace (`active_workspaces/ws_onboard_verify`), confirming tool execution, CAS hashing, and ledger integrity with empirical proof.
+
+
 
 
 

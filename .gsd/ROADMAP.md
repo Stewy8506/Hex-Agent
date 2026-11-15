@@ -447,6 +447,36 @@
   - Deterministic reflection fallback for offline operation.
 - **Verification:** Comprehensive unit and integration test suite verifying all 8 audit findings are fixed with zero regressions.
 
+---
+
+## Milestone M13: Autonomous Adaptive Setup & Reasoning Effort Parity [IN PROGRESS]
+
+```
+[ ] Phase 34: Autonomous Adaptive Setup & Reasoning Effort Parity
+```
+
+---
+
+### Phase 34: Autonomous Adaptive Setup & Reasoning Effort Parity
+- **Goal:** Reach complete parity with and surpass Hermes Agent's setup ergonomics, introducing native model reasoning effort control, autonomous agent self-configuration (`hex setup --auto`), ergonomic setup flags (`--quick`, `--blank-slate`), curated provider tiers, and live first-task verification.
+- **Must-haves:**
+  - **Task 1: Model Reasoning Effort Engine & Router Wire Clamping**:
+    - Port canonical reasoning ladder (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) into `src/harness_core/reasoning_effort.py`.
+    - Implement wire translation and nearest-level clamping for OpenAI (`reasoning_effort`), Claude 3.7 (`thinking.budget_tokens`), Gemini (`thinkingConfig`), and open-weight models.
+    - Wire `reasoning_effort` into `config.yaml`, `credentials.env`, and `router.py`.
+    - Add effort prompt to `onboard.py` after model selection and `/reasoning` command to `tui.py`.
+  - **Task 2: Autonomous Agent Self-Setup & Environment Auto-Discovery**:
+    - Build `src/harness_core/auto_setup.py` enabling headless non-blocking bootstrapping (`hex setup --auto`).
+    - Auto-discover hardware, compilers, devtools, package managers, and Antigravity IDE credentials.
+    - Auto-detect and validate Telegram & Discord bot credentials if available in environment.
+    - Wire interactive conversational setup intercept in Cockpit TUI when launching unconfigured.
+  - **Task 3: Setup Modularity, Curated Provider Hierarchy & First-Task Verification**:
+    - Add `--quick` (missing items only) and `--blank-slate` (minimal agent preset) to `hex setup`.
+    - Reorganize the 26-provider flat menu into 4 curated tiers (Recommended/Included, Unified Gateway, Local Offline, Enterprise).
+    - Implement guided First-Task verification beat running in isolated CoW workspace (`active_workspaces/ws_onboard_verify`).
+- **Verification:** Unit test suite covering reasoning effort clamping, router wire translation, auto-setup bootstrapping, and subagent parity audit against Hermes.
+
+
 
 
 

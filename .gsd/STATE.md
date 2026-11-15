@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-15  
-**Current Milestone:** M12 (Production Cognition Hardening & Execution Seams) — COMPLETE & VERIFIED  
-**Status:** All 8 Claude Opus Audit Findings (F-01..F-08) Resolved & Verified by Independent Verifier  
-**Active Phase:** All Phases Complete (Milestone M12 Signed Off)  
-**Completed Milestones:** M1 through M12 Complete & Verified (895+ Python tests green, 1 skipped, 34/34 Rust workspace tests green)  
+**Current Milestone:** M13 (Autonomous Adaptive Setup & Reasoning Effort Parity) — IN PROGRESS  
+**Status:** Implementing Phase 34: Model Reasoning Effort Control, Autonomous Self-Setup & Ergonomics  
+**Active Phase:** Phase 34 (Autonomous Adaptive Setup & Reasoning Effort Parity)  
+**Completed Milestones:** M1 through M12 Complete & Verified (918 Python tests green, 1 skipped, 34/34 Rust workspace tests green)  
 
 ---
 
