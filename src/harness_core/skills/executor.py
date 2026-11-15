@@ -173,12 +173,19 @@ class SkillExecutionEngine:
 
     def run_skill_verification(
         self,
-        hook: SkillVerificationHook,
+        hook: SkillVerificationHook | str,
         workspace_root: Optional[Path | str] = None,
         skill_name: str = "unknown",
         env_overrides: Optional[dict[str, str]] = None,
     ) -> SkillVerificationResult:
         """Execute the verification hook command inside workspace_root with timeout protection."""
+        if isinstance(hook, str):
+            extracted = self.extract_verification_hook(hook)
+            if extracted is not None:
+                hook = extracted
+            else:
+                hook = SkillVerificationHook(command=hook.strip())
+
         ws = (
             Path(workspace_root).resolve()
             if workspace_root

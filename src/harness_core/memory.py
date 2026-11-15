@@ -1125,13 +1125,18 @@ class ASTNodeMemoryStore:
 
 
 def query_jit_memories_for_file(
-    workspace_dir: Path | str,
-    rel_path: str,
+    workspace_dir: Optional[Path | str] = None,
+    rel_path: str = "",
     graphify_adapter: Optional[Any] = None,
     include_stale: bool = False,
+    *,
+    workspace_root: Optional[Path | str] = None,
 ) -> list[dict[str, Any]]:
     """Resolve AST symbols, 1-hop callers, 1-hop callees, and guardrails for JIT observation injection."""
-    ws = Path(workspace_dir).resolve()
+    target_dir = workspace_root if workspace_root is not None else workspace_dir
+    if target_dir is None:
+        target_dir = Path.cwd()
+    ws = Path(target_dir).resolve()
     norm_path = str(rel_path).replace("\\", "/").lstrip("./")
 
     store = ASTNodeMemoryStore(workspace_root=ws)
