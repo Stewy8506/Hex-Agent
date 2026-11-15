@@ -145,7 +145,7 @@ class SkillSynthesizer:
         task = self.ledger.get_task(task_id)
         if not task:
             raise ValueError(f"Task not found: {task_id}")
-        if task.get("status") != "COMPLETED":
+        if task.get("status") not in ("COMPLETED", "SUCCEEDED"):
             raise ValueError(f"Task {task_id} is not completed (current status: {task.get('status')})")
 
         goal = str(task.get("goal") or "").strip()
@@ -239,14 +239,16 @@ class SkillSynthesizer:
         files_modified: list[str],
         verification_passed: bool,
         code_summary: str = "",
+        verify_command: str | None = None,
     ) -> str:
         """Generates structured SKILL.md bundle content with frontmatter and markdown body."""
         clean_name = _slugify(name)
         risk_class = _determine_risk_class(tools_used)
 
-        # Sanitize single-line purpose & description for YAML
+        # Sanitize single-line purpose & cap description at <= 60 chars (Hermes Slot #5 contract)
         distilled_purpose = (goal or f"Automated workflow for {clean_name}").replace("\n", " ").strip()
         distilled_purpose = re.sub(r"\s+", " ", distilled_purpose)
+        short_desc = distilled_purpose if len(distilled_purpose) <= 60 else (distilled_purpose[:57].rstrip() + "...")
 
         # Allowed tools array representation
         tools_repr = "[" + ", ".join(tools_used) + "]"
@@ -256,16 +258,34 @@ class SkillSynthesizer:
             "---",
             f"name: {clean_name}",
             f"purpose: {distilled_purpose}",
-            f"description: {distilled_purpose}",
+            f"description: {short_desc}",
             f"risk_class: {risk_class}",
             f"allowed_tools: {tools_repr}",
             f"trigger: {clean_name}",
+        ]
+        if verify_command:
+            lines.extend([
+                "verify:",
+                f'  command: "{verify_command}"',
+                "  timeout_seconds: 30",
+                "  must_pass: true",
+            ])
+        elif "run_tests" in tools_used:
+            test_files = [f for f in files_modified if "test" in Path(f).name.lower()]
+            inferred_cmd = f"pytest -q {test_files[0]}" if test_files else "pytest -q"
+            lines.extend([
+                "verify:",
+                f'  command: "{inferred_cmd}"',
+                "  timeout_seconds: 30",
+                "  must_pass: true",
+            ])
+        lines.extend([
             "---",
             f"# {clean_name.replace('_', ' ').title()}",
             "",
             "## Overview & Problem Pattern",
             f"Distilled workflow pattern addressing: {distilled_purpose}.",
-        ]
+        ])
 
         if code_summary:
             lines.append(f"{code_summary}.")

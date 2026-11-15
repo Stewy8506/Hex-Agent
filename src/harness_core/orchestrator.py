@@ -992,6 +992,16 @@ class HarnessOrchestrator:
                         f"Workspace Context & Findings:\n{context_str}\n\n"
                         "Synthesize a direct, helpful, and concise response to the user's prompt based on the workspace findings."
                     )
+                raw_cb = kwargs.get("stream_callback")
+                scrubber = None
+                scrubbed_cb = raw_cb
+                if raw_cb is not None:
+                    from .memory import StreamingContextScrubber
+                    scrubber = StreamingContextScrubber()
+                    def scrubbed_cb(chunk: str) -> None:
+                        cleaned = scrubber.feed(chunk)
+                        if cleaned:
+                            raw_cb(cleaned)
                 decision, model_resp = self.router.execute_routed_request(
                     prompt=prompt,
                     task_class="synthesis",
@@ -999,10 +1009,15 @@ class HarnessOrchestrator:
                     budget_remaining=1.0,
                     workspace_dir=source_ws,
                     max_tokens=4096,
-                    stream_callback=kwargs.get("stream_callback"),
+                    stream_callback=scrubbed_cb,
                 )
+                if scrubber is not None and raw_cb is not None:
+                    rem = scrubber.flush()
+                    if rem:
+                        raw_cb(rem)
                 if model_resp and getattr(model_resp, "text", None):
-                    synthesized_text = model_resp.text.strip()
+                    from .memory import sanitize_context
+                    synthesized_text = sanitize_context(model_resp.text).strip()
             except Exception as synth_exc:
                 synthesized_text = f"I completed task execution, but encountered an error synthesizing the response: {synth_exc}"
 
@@ -1148,7 +1163,24 @@ class HarnessOrchestrator:
             + f"[AST Blast Radius Report]\nWarning: {blast_warning}\nImpacted Symbols: {impacted_symbols}\n\n"
             + f"[Surgical Source Code Context]\n{code_context_str}"
         )
-        volatile_failure_prompt = f"[Failure Digest]\n{failure_digest}"
+        # Inject matching negative constraints ([AVOID]) into volatile prompt without mutating system prefix
+        guardrail_lines: list[str] = []
+        try:
+            from .memory import GuardrailsManager
+            gm = GuardrailsManager(workspace_root=attempt_ws)
+            all_rules = gm.list_guardrails()
+            tokens = {Path(f).name for f in target_files if f} | set(mod_syms)
+            for rule in all_rules:
+                if not tokens or any(tok in rule for tok in tokens):
+                    guardrail_lines.append(rule)
+        except Exception:
+            pass
+        guardrail_block = (
+            "[Negative Constraints - DO NOT Repeat]\n" + "\n".join(guardrail_lines[:8]) + "\n\n"
+            if guardrail_lines
+            else ""
+        )
+        volatile_failure_prompt = f"{guardrail_block}[Failure Digest]\n{failure_digest}"
         budget_dict = task.get("budget") or {}
         task_budget = TaskBudget.from_dict(budget_dict)
 

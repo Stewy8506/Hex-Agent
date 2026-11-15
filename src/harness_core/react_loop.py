@@ -1313,7 +1313,16 @@ class ReActLoop:
                         else json.dumps(tool_res.output, default=str, ensure_ascii=False)
                     )
                 if tool_res.is_error:
-                    obs_content = f"<observation tool=\"{tool_res.name}\">\nError: {obs_payload}\n</observation>"
+                    avoid_hint = ""
+                    if self.guardrails_manager is not None:
+                        try:
+                            rules = self.guardrails_manager.list_guardrails()
+                            matched_rules = [r for r in rules if call.name in r][:3]
+                            if matched_rules:
+                                avoid_hint = "\n[Active Guardrails - DO NOT Repeat]\n" + "\n".join(matched_rules)
+                        except Exception:
+                            pass
+                    obs_content = f"<observation tool=\"{tool_res.name}\">\nError: {obs_payload}{avoid_hint}\n</observation>"
                 else:
                     obs_content = f"<observation tool=\"{tool_res.name}\">\n{obs_payload}\n</observation>"
 

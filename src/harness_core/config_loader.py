@@ -257,20 +257,29 @@ def get_auto_reflect_policy(workspace_root: Path | str | None = None) -> str:
     """Get the active auto-reflection policy ('cloud_only' | 'idle' | 'off').
 
     Priority:
-    1. Environment variable HEX_AUTO_REFLECT
+    1. Explicit environment variable HEX_AUTO_REFLECT (not merely hydrated from another workspace)
     2. Local workspace .hex/config.yaml under learning.auto_reflect
     3. Global ~/.hex/config.yaml under learning.auto_reflect
-    4. Default: 'cloud_only'
+    4. Managed environment fallback
+    5. Default: 'cloud_only'
     """
-    if "HEX_AUTO_REFLECT" in os.environ and os.environ["HEX_AUTO_REFLECT"].strip():
-        val = os.environ["HEX_AUTO_REFLECT"].strip().lower()
-        if val in ("off", "false", "no", "disabled", "0"):
+    def _normalize_policy(raw_val: Any) -> str:
+        if raw_val is False or str(raw_val).strip().lower() in ("off", "false", "no", "disabled", "0"):
             return "off"
+        val = str(raw_val).strip().lower()
         if val in ("cloud_only", "cloud-only", "cloud"):
             return "cloud_only"
         if val in ("idle", "on_idle"):
             return "idle"
         return val
+
+    env_val = (os.environ.get("HEX_AUTO_REFLECT") or "").strip()
+    is_explicit_env = bool(env_val) and (
+        "HEX_AUTO_REFLECT" not in _managed_environment
+        or env_val != _managed_environment.get("HEX_AUTO_REFLECT")
+    )
+    if is_explicit_env:
+        return _normalize_policy(env_val)
 
     # Candidate config files
     ws = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
@@ -283,15 +292,10 @@ def get_auto_reflect_policy(workspace_root: Path | str | None = None) -> str:
             data = parse_config_yaml(cfg_path)
             learning = data.get("learning", {})
             if isinstance(learning, dict) and "auto_reflect" in learning:
-                raw_val = learning["auto_reflect"]
-                if raw_val is False or str(raw_val).strip().lower() in ("off", "false", "no", "disabled", "0"):
-                    return "off"
-                val = str(raw_val).strip().lower()
-                if val in ("cloud_only", "cloud-only", "cloud"):
-                    return "cloud_only"
-                if val in ("idle", "on_idle"):
-                    return "idle"
-                return val
+                return _normalize_policy(learning["auto_reflect"])
+
+    if env_val:
+        return _normalize_policy(env_val)
 
     return "cloud_only"
 
