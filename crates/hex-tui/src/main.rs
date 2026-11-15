@@ -291,22 +291,26 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     if !already_populated {
                         app.add_assistant_message(&msg);
                     }
+                    app.close_running_tool_calls();
                     app.is_busy = false;
                     app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::Ready => {
+                    app.close_running_tool_calls();
                     app.is_busy = false;
                     app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::AcpMessage(msg) => {
+                    app.close_running_tool_calls();
                     app.add_system_message(&msg);
                     app.is_busy = false;
                     app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::Error(err) => {
+                    app.close_running_tool_calls();
                     app.add_system_message(&format!("Error: {}", err));
                     app.is_busy = false;
                     app.busy_started_at = None;
@@ -757,6 +761,7 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                 if let Some(st) = update.status {
                     app.status_message = st.clone();
                     if st.eq_ignore_ascii_case("ready") || st.eq_ignore_ascii_case("completed") {
+                        app.close_running_tool_calls();
                         app.is_busy = false;
                         app.busy_started_at = None;
                         app.status_message = "Ready".to_string();

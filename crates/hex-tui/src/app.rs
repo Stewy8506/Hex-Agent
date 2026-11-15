@@ -450,6 +450,8 @@ impl App {
 
     /// Mark a tool call as completed.
     pub fn complete_tool_call(&mut self, id: &str, result: &str, duration_ms: u64, is_err: bool) {
+        let mut matched = false;
+        // 1. Direct match by exact tool call ID
         for item in &mut self.dialogue_items {
             if let DialogueItem::ToolCall(tc) = item {
                 if tc.id == id {
@@ -460,7 +462,61 @@ impl App {
                     } else {
                         "OK".to_string()
                     });
+                    matched = true;
                     break;
+                }
+            }
+        }
+        // 2. Fallback: match by tool name or prefix if ID had generation variance
+        if !matched {
+            for item in self.dialogue_items.iter_mut().rev() {
+                if let DialogueItem::ToolCall(tc) = item {
+                    if tc.exit_status.as_deref() == Some("RUNNING")
+                        && (tc.tool == id || tc.id.starts_with(id) || id.starts_with(&tc.tool))
+                    {
+                        tc.result = Some(result.to_string());
+                        tc.duration_ms = Some(duration_ms);
+                        tc.exit_status = Some(if is_err {
+                            "ERROR".to_string()
+                        } else {
+                            "OK".to_string()
+                        });
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+        }
+        // 3. Fallback: match the latest RUNNING tool call
+        if !matched {
+            for item in self.dialogue_items.iter_mut().rev() {
+                if let DialogueItem::ToolCall(tc) = item {
+                    if tc.exit_status.as_deref() == Some("RUNNING") {
+                        tc.result = Some(result.to_string());
+                        tc.duration_ms = Some(duration_ms);
+                        tc.exit_status = Some(if is_err {
+                            "ERROR".to_string()
+                        } else {
+                            "OK".to_string()
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Close all running tool calls when an assistant turn completes.
+    pub fn close_running_tool_calls(&mut self) {
+        for item in &mut self.dialogue_items {
+            if let DialogueItem::ToolCall(tc) = item {
+                if tc.exit_status.as_deref() == Some("RUNNING") {
+                    tc.exit_status = Some("OK".to_string());
+                    if tc.duration_ms.is_none() {
+                        if let Some(started) = tc.started_at {
+                            tc.duration_ms = Some(started.elapsed().as_millis() as u64);
+                        }
+                    }
                 }
             }
         }

@@ -274,7 +274,15 @@ class ACPServer:
             sys.stdout.write(json.dumps(notif, ensure_ascii=False) + "\n")
             sys.stdout.flush()
 
+        active_tool_calls: dict[str, str] = {}
+
         def tool_cb(event_type: str, tool_id: str, payload: Any, dur_ms: int = 0) -> None:
+            if event_type == "start":
+                call_id = f"{tool_id}_{int(time.time() * 1000)}"
+                active_tool_calls[tool_id] = call_id
+            else:
+                call_id = active_tool_calls.pop(tool_id, f"{tool_id}_{int(time.time() * 1000)}")
+
             notif = {
                 "jsonrpc": "2.0",
                 "method": "session/update",
@@ -284,7 +292,7 @@ class ACPServer:
                     "tool": {
                         "eventType": event_type,
                         "toolId": tool_id,
-                        "callId": f"{tool_id}_{int(time.time()*1000)}",
+                        "callId": call_id,
                         "durationMs": dur_ms,
                         "payload": json.dumps(payload, default=str)[:300] if isinstance(payload, (dict, list)) else str(payload)[:300],
                     },
