@@ -92,8 +92,17 @@ def export_delta_archive(snapshot_path: Path | str, archive_dest: Path | str) ->
     snap = Path(snapshot_path).resolve()
     dest = Path(archive_dest).resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    def _tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        parts = Path(tarinfo.name).parts
+        if any(p in IGNORE_DIRS or p.startswith(".DS_Store") for p in parts):
+            return None
+        if tarinfo.name.endswith((".pyc", ".db-wal", ".db-shm")):
+            return None
+        return tarinfo
+
     with tarfile.open(dest, "w:gz") as tar:
-        tar.add(snap, arcname="workspace")
+        tar.add(snap, arcname="workspace", filter=_tar_filter)
     return hashlib.sha256(dest.read_bytes()).hexdigest()
 
 
@@ -269,7 +278,7 @@ def _cow_copy_tree(src: Path, dst: Path, apfs_supported: bool = False) -> None:
         src,
         dst,
         symlinks=True,
-        ignore=shutil.ignore_patterns(*IGNORE_DIRS, ".DS_Store", "*.pyc"),
+        ignore=shutil.ignore_patterns(*IGNORE_DIRS, ".DS_Store", "*.pyc", "*.db-wal", "*.db-shm"),
         dirs_exist_ok=True,
     )
 
@@ -294,7 +303,7 @@ def _copy_tree_contents(src: Path, dst: Path) -> None:
         target_dir = dst / rel
         target_dir.mkdir(parents=True, exist_ok=True)
         for fname in filenames:
-            if fname.startswith(".DS_Store"):
+            if fname.startswith(".DS_Store") or fname.endswith((".pyc", ".db-wal", ".db-shm")):
                 continue
             src_file = Path(dirpath) / fname
             dst_file = target_dir / fname
@@ -382,12 +391,7 @@ class APFSAndPortableCoWProvider:
 
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str:
         """Exports CoW snapshot to a deterministic tar.gz CAS bundle for remote worker handoff."""
-        snap = Path(snapshot_path).resolve()
-        dest = Path(archive_dest).resolve()
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(dest, "w:gz") as tar:
-            tar.add(snap, arcname="workspace")
-        return hashlib.sha256(dest.read_bytes()).hexdigest()
+        return export_delta_archive(snapshot_path, archive_dest)
 
     def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str:
         return import_delta_archive(archive_path, target_dir)
@@ -648,12 +652,7 @@ class OverlayFSSnapshotProvider:
         self._active_mounts.pop(ws_str, None)
 
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str:
-        snap = Path(snapshot_path).resolve()
-        dest = Path(archive_dest).resolve()
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(dest, "w:gz") as tar:
-            tar.add(snap, arcname="workspace")
-        return hashlib.sha256(dest.read_bytes()).hexdigest()
+        return export_delta_archive(snapshot_path, archive_dest)
 
     def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str:
         return import_delta_archive(archive_path, target_dir)
@@ -789,12 +788,7 @@ class BtrfsSnapshotProvider:
         return self.compute_tree_sha(ws)
 
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str:
-        snap = Path(snapshot_path).resolve()
-        dest = Path(archive_dest).resolve()
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(dest, "w:gz") as tar:
-            tar.add(snap, arcname="workspace")
-        return hashlib.sha256(dest.read_bytes()).hexdigest()
+        return export_delta_archive(snapshot_path, archive_dest)
 
     def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str:
         return import_delta_archive(archive_path, target_dir)
