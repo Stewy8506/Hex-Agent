@@ -41,7 +41,7 @@ struct Args {
 
     #[arg(
         long,
-        value_parser = ["amber", "cyberpunk", "matrix", "nord", "mono", "light"],
+        value_parser = ["sapphire", "amber", "cyberpunk", "matrix", "nord", "mono", "light"],
         help = "HEX visual skin"
     )]
     skin: Option<String>,
