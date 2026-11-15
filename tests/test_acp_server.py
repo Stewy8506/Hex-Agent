@@ -263,6 +263,61 @@ class TestACPServer(unittest.TestCase):
             self.assertIn("HEX Editor Integration Snippets", out_setup.getvalue())
             self.assertIn(".zed/settings.json", out_setup.getvalue())
 
+    def test_acp_conversational_turn_runs_zero_tools(self) -> None:
+        """Verify conversational turns like 'Hi what can you do?' execute 0 tools."""
+        new_resp = self.server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 60,
+            "method": "session/new",
+            "params": {"cwd": str(self.workspace_dir)},
+        })
+        sid = new_resp["result"]["sessionId"]
+
+        tool_calls_fired = []
+        with patch.object(self.orchestrator.gateway, "invoke", side_effect=tool_calls_fired.append):
+            prompt_resp = self.server.handle_request({
+                "jsonrpc": "2.0",
+                "id": 61,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": sid,
+                    "prompt": "Hi what can you do?",
+                },
+            })
+
+        self.assertEqual(len(tool_calls_fired), 0, "Conversational questions must not trigger tool calls")
+        self.assertIn("result", prompt_resp)
+        content = prompt_resp["result"]["content"]
+        self.assertTrue(len(content) > 0)
+        self.assertEqual(content[0]["type"], "text")
+
+    def test_acp_commands_query_runs_zero_tools(self) -> None:
+        """Verify 'What are the commands i can give you?' executes 0 tools."""
+        new_resp = self.server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 62,
+            "method": "session/new",
+            "params": {"cwd": str(self.workspace_dir)},
+        })
+        sid = new_resp["result"]["sessionId"]
+
+        tool_calls_fired = []
+        with patch.object(self.orchestrator.gateway, "invoke", side_effect=tool_calls_fired.append):
+            prompt_resp = self.server.handle_request({
+                "jsonrpc": "2.0",
+                "id": 63,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": sid,
+                    "prompt": "What are the commands i can give you?",
+                },
+            })
+
+        self.assertEqual(len(tool_calls_fired), 0, "Commands questions must not trigger tool calls")
+        self.assertIn("result", prompt_resp)
+        content = prompt_resp["result"]["content"]
+        self.assertTrue(len(content) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -931,13 +931,44 @@ class HarnessOrchestrator:
 
         goal = (task.get("goal") or "").strip()
         g_clean = re.sub(r"[?!.,]", "", goal.lower()).strip()
-        is_greeting = g_clean in {
-            "hey", "hi", "hello", "yo", "greetings", "howdy",
-            "good morning", "good evening", "good afternoon",
-            "who are you", "what are you", "help",
-        } or (len(g_clean) <= 12 and g_clean.split()[0] in {"hey", "hi", "hello"})
+        words = g_clean.split()
+        first_word = words[0] if words else ""
 
-        if is_greeting:
+        # Conversational, greeting, capability, or help inquiries execute 0 tools immediately
+        CONVERSATIONAL_KEYWORDS = {
+            "hey", "hi", "hello", "yo", "greetings", "howdy", "sup",
+            "good morning", "good evening", "good afternoon",
+            "who are you", "what are you", "what can you do", "what can you do for me",
+            "tell me what you can do", "how do you work", "what are your capabilities",
+            "what can i ask you", "what are you capable of", "help", "commands",
+            "what commands", "what are the commands", "what are the commands i can give you",
+            "list commands", "how to use you", "how do i use you", "what do you do",
+            "what can i do", "what are my options", "options",
+        }
+
+        is_conversational = (
+            g_clean in CONVERSATIONAL_KEYWORDS
+            or (len(words) <= 3 and first_word in {"hey", "hi", "hello", "yo"})
+            or (
+                any(g_clean.startswith(p) for p in ("hi ", "hello ", "hey ", "yo "))
+                and any(w in g_clean for w in ("what", "who", "can you", "help", "commands", "do", "you"))
+            )
+            or any(
+                g_clean.startswith(prefix)
+                for prefix in (
+                    "what can you",
+                    "what are the commands",
+                    "what commands",
+                    "how can you help",
+                    "who are you",
+                    "what are you",
+                    "tell me what you",
+                    "tell me about yourself",
+                )
+            )
+        )
+
+        if is_conversational:
             steps = []
         else:
             steps = (task.get("constraints") or {}).get("requested_steps") or [
@@ -981,14 +1012,26 @@ class HarnessOrchestrator:
                 terminal_reason=str(exc),
             )
 
+        # Build full 5-slot system prompt via PromptBuilder for prefix-cache stability and persona grounding
+        system_directive = None
+        if hasattr(self, "prompt_builder") and self.prompt_builder is not None:
+            try:
+                system_directive = self.prompt_builder.build_system_prompt(
+                    workspace_root=source_ws,
+                    mode=str(task.get("mode") or "agent"),
+                    session_id=task_id,
+                )
+            except Exception as pb_exc:
+                logger.debug("Fast-path system prompt build failed: %s", pb_exc)
+
         # Synthesize model response using active LLM / router if available
         synthesized_text = ""
         if hasattr(self, "router") and self.router is not None:
             try:
-                if is_greeting:
+                if not steps:
                     prompt = (
                         f"User Request: {goal}\n\n"
-                        "Respond directly, helpfully, and warmly as HEX Agent."
+                        "Respond directly, helpfully, and authoritatively as HEX."
                     )
                 else:
                     findings_blocks = []
@@ -1025,6 +1068,7 @@ class HarnessOrchestrator:
                     workspace_dir=source_ws,
                     max_tokens=4096,
                     stream_callback=scrubbed_cb,
+                    system_prompt=system_directive,
                 )
                 if scrubber is not None and raw_cb is not None:
                     rem = scrubber.flush()
