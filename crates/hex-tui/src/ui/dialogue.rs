@@ -390,17 +390,22 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(formatted_args, Style::default().fg(skin.muted)),
                     Span::styled(format!(" · {}", dur_str), Style::default().fg(skin.muted)),
                 ];
-                if tc.collapsed {
-                    spans.push(Span::styled(" [collapsed]", Style::default().fg(skin.muted)));
+                if !tc.collapsed {
+                    spans.push(Span::styled(" [expanded]", Style::default().fg(skin.muted)));
                 }
                 lines.push(Line::from(spans));
 
-                if !tc.collapsed {
+                // Only render raw output details if explicitly expanded OR if tool failed
+                let is_err = matches!(tc.exit_status.as_deref(), Some("ERROR") | Some("FAILED"));
+                if !tc.collapsed || is_err {
                     if let Some(res) = &tc.result {
                         for res_line in res.lines().take(8) {
                             lines.push(Line::from(vec![
                                 Span::styled("  │  └─ ", Style::default().fg(skin.muted)),
-                                Span::styled(res_line, Style::default().fg(skin.text)),
+                                Span::styled(
+                                    res_line,
+                                    Style::default().fg(if is_err { Color::Red } else { skin.text }),
+                                ),
                             ]));
                         }
                     }

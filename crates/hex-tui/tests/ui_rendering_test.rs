@@ -192,17 +192,18 @@ fn test_collapsible_tool_calls_rendering() {
     app.complete_tool_call("tc_render_1", "12 tests passed", 120, false);
     app.dialogue_scroll = 0;
 
-    // Expanded state
+    // Collapsed by default (clean Hermes tree without raw dump)
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
     let buf1 = format!("{:?}", terminal.backend().buffer());
     assert!(buf1.contains("run_tests"), "Must render tool name");
-    assert!(buf1.contains("12 tests passed"), "Must render tool result");
+    assert!(!buf1.contains("12 tests passed"), "Tool output is hidden by default");
 
-    // Collapsed state
+    // Expanded state after toggle
     app.toggle_tool_call_collapse(0);
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
     let buf2 = format!("{:?}", terminal.backend().buffer());
-    assert!(buf2.contains("collapsed"), "Must indicate collapsed state");
+    assert!(buf2.contains("12 tests passed"), "Must render tool result when expanded");
+    assert!(buf2.contains("expanded"), "Must indicate expanded state");
 }
 
 #[test]

@@ -442,7 +442,7 @@ impl App {
                 exit_status: status
                     .map(|s| s.to_string())
                     .or_else(|| Some("RUNNING".to_string())),
-                collapsed: false,
+                collapsed: true,
                 started_at: Some(std::time::Instant::now()),
             }));
         self.scroll_dialogue_to_bottom();
@@ -997,9 +997,15 @@ mod tests {
             panic!("Expected ToolCall item");
         }
 
-        app.toggle_tool_call_collapse(0);
+        // By default tool calls are collapsed for a clean minimal transcript
         if let DialogueItem::ToolCall(tc) = &app.dialogue_items[2] {
             assert!(tc.collapsed);
+        }
+
+        // Toggling expands the tool details
+        app.toggle_tool_call_collapse(0);
+        if let DialogueItem::ToolCall(tc) = &app.dialogue_items[2] {
+            assert!(!tc.collapsed);
         }
     }
 
