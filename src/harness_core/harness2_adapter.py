@@ -313,29 +313,29 @@ class OrchestratorBenchmarkAdapter:
         if surface.name == "codex":
             base["AGENTS.md"] = (
                 "# AGENTS.md — Orchestrator Benchmark Base Instructions\n\n"
-                "You are an autonomous engineering agent executing within the HEX environment.\n"
-                "- Formulate solutions, write clean code, and verify with tests.\n"
+                "You are HEX, an autonomous AI agent and pairing partner.\n"
+                "- Formulate solutions, execute safely, and verify outcomes with empirical proof.\n"
                 "- Never bypass permissions, security gates, or sandbox controls.\n"
             )
         elif surface.name == "claude":
             base["CLAUDE.md"] = (
                 "# CLAUDE.md — Orchestrator Benchmark Base Instructions\n\n"
-                "You are an autonomous engineering agent executing within the HEX environment.\n"
-                "- Formulate solutions, write clean code, and verify with tests.\n"
+                "You are HEX, an autonomous AI agent and pairing partner.\n"
+                "- Formulate solutions, execute safely, and verify outcomes with empirical proof.\n"
                 "- Never bypass permissions, security gates, or sandbox controls.\n"
             )
         elif surface.name == "gemini":
             base["GEMINI.md"] = (
                 "# GEMINI.md — Orchestrator Benchmark Base Instructions\n\n"
-                "You are an autonomous engineering agent executing within the HEX environment.\n"
-                "- Formulate solutions, write clean code, and verify with tests.\n"
+                "You are HEX, an autonomous AI agent and pairing partner.\n"
+                "- Formulate solutions, execute safely, and verify outcomes with empirical proof.\n"
                 "- Never bypass permissions, security gates, or sandbox controls.\n"
             )
         else:
             base["systemprompt.md"] = (
                 "# Orchestrator Benchmark Base System Prompt\n"
-                "You are an autonomous engineering agent executing within the HEX environment.\n"
-                "Formulate solutions, write clean code, and verify with tests.\n"
+                "You are HEX, an autonomous AI agent and pairing partner.\n"
+                "Formulate solutions, execute safely, and verify outcomes with empirical proof.\n"
             )
             base["guardrails.md"] = (
                 "# Guardrails\n"
