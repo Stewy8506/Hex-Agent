@@ -273,6 +273,9 @@ fn test_composer_is_locked_to_terminal_bottom() {
     // The final three rows are always the composer: its top rounded border,
     // input row, and bottom border. This is the invariant that stops streamed
     // content from moving the input away from the operator.
+    let bottom_row = (0..100).map(|x| buffer[(x, 27)].symbol()).collect::<String>();
+    assert!(bottom_row.contains("agent · test_proj · main · gemini-2.5-pro"));
+    assert!(bottom_row.contains("enter send · tab mode · /help ╯"));
     assert_eq!(buffer[(0, 25)].symbol(), "╭");
     assert_eq!(buffer[(0, 27)].symbol(), "╰");
     let input_row = (0..100).map(|x| buffer[(x, 26)].symbol()).collect::<String>();

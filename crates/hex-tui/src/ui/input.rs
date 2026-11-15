@@ -1,6 +1,6 @@
 //! The always-bottom HEX composer. Output never moves the operator's cursor.
 
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
@@ -30,16 +30,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         _ => Span::styled("agent", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
     };
 
-    let action_span = if app.is_busy {
-        Span::styled(
-            format!("── [{}] ", app.status_message),
-            Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
-        )
-    } else {
-        Span::styled("── enter send · tab mode · /help ", Style::default().fg(skin.muted))
-    };
-
-    let footer = Line::from(vec![
+    let left_footer = Line::from(vec![
         Span::raw(" "),
         mode_span,
         Span::styled(" · ", Style::default().fg(skin.muted)),
@@ -51,14 +42,27 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             format!("{} ", app.model_name),
             Style::default().fg(skin.heading),
         ),
-        action_span,
-    ]);
+    ]).alignment(Alignment::Left);
+
+    let right_footer = if app.is_busy {
+        Line::from(vec![
+            Span::styled(
+                format!(" [{}] ", app.status_message),
+                Style::default().fg(skin.accent).add_modifier(Modifier::BOLD),
+            ),
+        ]).alignment(Alignment::Right)
+    } else {
+        Line::from(vec![
+            Span::styled(" enter send · tab mode · /help ", Style::default().fg(skin.muted)),
+        ]).alignment(Alignment::Right)
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
-        .title_bottom(footer);
+        .title_bottom(left_footer)
+        .title_bottom(right_footer);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 || inner.width == 0 {
