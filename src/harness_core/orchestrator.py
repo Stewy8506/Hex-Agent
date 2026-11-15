@@ -493,21 +493,26 @@ class HarnessOrchestrator:
             "modified_files": modified_files or [],
             "source_nodes": source_nodes or [],
             "friction_info": friction_info or {},
+            "final_patch": final_patch or "",
+            "retry_count": 0,
             "status": "pending",
         }
         try:
-            existing: list[dict[str, Any]] = []
-            if pending_file.is_file():
-                try:
-                    data = json.loads(pending_file.read_text(encoding="utf-8"))
-                    if isinstance(data, list):
-                        existing = data
-                except Exception:
-                    existing = []
-            existing.append(candidate)
-            tmp = pending_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(pending_file)
+            from .memory import _file_lock
+
+            with _file_lock(pending_file):
+                existing: list[dict[str, Any]] = []
+                if pending_file.is_file():
+                    try:
+                        data = json.loads(pending_file.read_text(encoding="utf-8"))
+                        if isinstance(data, list):
+                            existing = data
+                    except Exception:
+                        existing = []
+                existing.append(candidate)
+                tmp = pending_file.with_suffix(".tmp")
+                tmp.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(pending_file)
         except Exception as e:
             logger.warning("Failed to write pending reflection candidate: %s", e)
 
@@ -2708,6 +2713,22 @@ class HarnessOrchestrator:
         ws = Path(workspace_root or self.default_workspace).resolve()
         return run_lifecycle_maintenance(workspace_root=ws, retention_days=retention_days)
 
+    def check_and_run_idle_workers(
+        self,
+        workspace_root: Path | str | None = None,
+        max_items: int = 5,
+    ) -> dict[str, Any]:
+        """Execute idle reflection drainage and lifecycle maintenance sweeps when system is idle."""
+        ws = Path(workspace_root or self.default_workspace).resolve()
+        return process_pending_reflections(
+            workspace_root=ws,
+            is_idle=True,
+            max_items=max_items,
+            router=getattr(self, "router", None),
+            memory=getattr(self, "memory", None),
+            ledger=getattr(self, "ledger", None),
+        )
+
 
 def run_lifecycle_maintenance(
     workspace_root: Path | str,
@@ -2723,5 +2744,160 @@ def run_lifecycle_maintenance(
         "status": "success",
         "demoted_count": len(demoted),
         "demoted": demoted,
+    }
+
+
+def process_pending_reflections(
+    workspace_root: Path | str,
+    is_idle: bool = True,
+    max_items: int = 5,
+    router: Any = None,
+    memory: Any = None,
+    ledger: Any = None,
+) -> dict[str, Any]:
+    """Drain queued reflection candidates from .hex/reflections/pending_reflections.json during idle periods."""
+    from .config_loader import get_auto_reflect_policy, should_execute_background_reflection
+    from .memory import GuardrailsManager, MemoryLifecycleManager, _file_lock
+    from .reflection import ReflectionSynthesizer
+
+    ws = Path(workspace_root).resolve()
+    reflections_dir = ws / ".hex" / "reflections"
+    pending_file = reflections_dir / "pending_reflections.json"
+
+    if not pending_file.is_file():
+        return {"processed": 0, "completed": [], "failed": [], "skipped": 0}
+
+    policy = get_auto_reflect_policy(workspace_root=ws)
+    allowed, reason = should_execute_background_reflection(
+        policy=policy,
+        router=router,
+        is_idle=is_idle,
+    )
+    if not allowed:
+        logger.info("Skipping idle reflection processing: %s", reason)
+        return {"processed": 0, "completed": [], "failed": [], "skipped": 0, "reason": reason}
+
+    processed_count = 0
+    completed_ids: list[str] = []
+    failed_ids: list[str] = []
+
+    with _file_lock(pending_file):
+        try:
+            data = json.loads(pending_file.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return {"processed": 0, "completed": [], "failed": [], "skipped": 0}
+            candidates = data
+        except Exception as e:
+            logger.warning("Failed to read pending reflections: %s", e)
+            return {"processed": 0, "completed": [], "failed": [], "skipped": 0}
+
+        synth = ReflectionSynthesizer(
+            router=router,
+            workspace_root=ws,
+        )
+
+        for cand in candidates:
+            if processed_count >= max_items:
+                break
+
+            status = cand.get("status")
+            if status != "pending":
+                continue
+
+            retry_count = cand.get("retry_count", 0)
+            if retry_count >= 3:
+                cand["status"] = "failed"
+                cand["last_error"] = cand.get("last_error") or "Max retries (3) exhausted"
+                continue
+
+            task_id = cand.get("task_id", "unknown_task")
+            goal = cand.get("goal", "")
+            error_traces = cand.get("error_traces", [])
+            final_patch = cand.get("final_patch", "")
+            modified_files = cand.get("modified_files", [])
+            source_nodes = cand.get("source_nodes", [])
+
+            cand["status"] = "processing"
+            try:
+                lesson = synth.synthesize_lesson(
+                    task_id=task_id,
+                    goal=goal,
+                    error_traces=error_traces,
+                    final_patch=final_patch,
+                    modified_files=modified_files,
+                    source_nodes=source_nodes,
+                    workspace_root=ws,
+                )
+                lessons_path = synth.append_to_lessons_md(lesson, workspace_root=ws)
+
+                # Record with memory lifecycle manager and guardrails if available
+                lifecycle = getattr(memory, "lifecycle_mgr", None) if memory else None
+                if lifecycle is None:
+                    try:
+                        lifecycle = MemoryLifecycleManager(workspace_root=ws)
+                    except Exception:
+                        lifecycle = None
+
+                if lifecycle and hasattr(lifecycle, "record_reflection"):
+                    lifecycle.record_reflection(
+                        lesson.verified_solution,
+                        source="LESSONS.md",
+                        tags=[f"task:{task_id}"] + getattr(lesson, "source_nodes", []),
+                    )
+
+                guardrails = getattr(memory, "guardrails_mgr", None) if memory else None
+                if guardrails is None:
+                    try:
+                        guardrails = GuardrailsManager(workspace_root=ws)
+                    except Exception:
+                        guardrails = None
+
+                if lesson.avoid_invariant and guardrails and hasattr(guardrails, "record_avoid_invariant"):
+                    guardrails.record_avoid_invariant(lesson.avoid_invariant)
+
+                if ledger and hasattr(ledger, "record_event"):
+                    try:
+                        ledger.record_event(
+                            task_id=task_id,
+                            event_type="REFLECTION_SYNTHESIZED",
+                            reason_code="IDLE_WORKER_DRAINED",
+                            payload={"lesson_id": lesson.lesson_id, "lessons_path": str(lessons_path)},
+                        )
+                    except Exception:
+                        pass
+
+                cand["status"] = "completed"
+                cand["synthesized_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                cand["lesson_id"] = lesson.lesson_id
+                completed_ids.append(task_id)
+                processed_count += 1
+
+            except Exception as exc:
+                logger.warning("Idle reflection synthesis failed for task %s: %s", task_id, exc)
+                cand["retry_count"] = retry_count + 1
+                cand["last_error"] = str(exc)
+                if cand["retry_count"] >= 3:
+                    cand["status"] = "failed"
+                else:
+                    cand["status"] = "pending"
+                failed_ids.append(task_id)
+                processed_count += 1
+
+        # Atomically write back updated candidate statuses
+        tmp = pending_file.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(candidates, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(pending_file)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+    return {
+        "processed": processed_count,
+        "completed": completed_ids,
+        "failed": failed_ids,
     }
 

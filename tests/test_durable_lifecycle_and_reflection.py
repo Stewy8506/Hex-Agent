@@ -20,7 +20,11 @@ from harness_core.memory import (
     CuratedMemoryStore,
     MemoryLifecycleManager,
 )
-from harness_core.orchestrator import HarnessOrchestrator, run_lifecycle_maintenance
+from harness_core.orchestrator import (
+    HarnessOrchestrator,
+    process_pending_reflections,
+    run_lifecycle_maintenance,
+)
 
 
 class TestDurableLifecycle:
@@ -271,4 +275,126 @@ class TestTransactionalMutations:
         assert del_res_ok["ok"] is True
         assert controller.get_memory(mem_id) is None
         assert mem_id not in controller._tag_index.get("security", set())
+
+
+class TestIdleReflectionWorker:
+    """Tests for draining pending reflections when system is idle (F-06)."""
+
+    def test_idle_reflection_worker(self, tmp_path, monkeypatch):
+        """Worker drains pending reflections when is_idle=True, writes LESSONS.md, and updates candidate status."""
+        monkeypatch.delenv("HEX_AUTO_REFLECT", raising=False)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        hex_dir = workspace / ".hex"
+        reflections_dir = hex_dir / "reflections"
+        reflections_dir.mkdir(parents=True)
+
+        # Set policy to idle
+        (hex_dir / "config.yaml").write_text("learning:\n  auto_reflect: idle\n", encoding="utf-8")
+
+        pending_file = reflections_dir / "pending_reflections.json"
+        candidate = {
+            "task_id": "tsk_idle_001",
+            "goal": "Refactor token bucket algorithm",
+            "repair_attempts": 3,
+            "suppression_reason": "Deferred until idle",
+            "timestamp": time.time(),
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "error_traces": ["IndexError: token list empty in acquire()"],
+            "modified_files": ["src/bucket.py"],
+            "source_nodes": ["TokenBucket.acquire"],
+            "final_patch": "+ if not self.tokens: return False",
+            "retry_count": 0,
+            "status": "pending",
+        }
+        pending_file.write_text(json.dumps([candidate], indent=2), encoding="utf-8")
+
+        # Execute idle worker
+        result = process_pending_reflections(workspace_root=workspace, is_idle=True)
+        assert result["processed"] == 1
+        assert "tsk_idle_001" in result["completed"]
+        assert len(result["failed"]) == 0
+
+        # Assert candidate status updated to "completed" in pending_reflections.json
+        updated = json.loads(pending_file.read_text(encoding="utf-8"))
+        assert len(updated) == 1
+        assert updated[0]["status"] == "completed"
+        assert "synthesized_at" in updated[0]
+        assert "lesson_id" in updated[0]
+
+        # Assert lesson written to LESSONS.md
+        lessons_md = reflections_dir / "LESSONS.md"
+        assert lessons_md.is_file()
+        content = lessons_md.read_text(encoding="utf-8")
+        assert "TokenBucket.acquire" in content or "tsk_idle_001" in content or "Refactor token bucket algorithm" in content
+
+    def test_idle_gate(self, tmp_path, monkeypatch):
+        """When auto_reflect is idle and is_idle=False, pending reflections are left untouched."""
+        monkeypatch.delenv("HEX_AUTO_REFLECT", raising=False)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        hex_dir = workspace / ".hex"
+        reflections_dir = hex_dir / "reflections"
+        reflections_dir.mkdir(parents=True)
+
+        (hex_dir / "config.yaml").write_text("learning:\n  auto_reflect: idle\n", encoding="utf-8")
+
+        pending_file = reflections_dir / "pending_reflections.json"
+        candidate = {
+            "task_id": "tsk_idle_002",
+            "goal": "Optimize query plan caching",
+            "repair_attempts": 3,
+            "suppression_reason": "Deferred until idle",
+            "timestamp": time.time(),
+            "error_traces": [],
+            "modified_files": [],
+            "source_nodes": [],
+            "retry_count": 0,
+            "status": "pending",
+        }
+        pending_file.write_text(json.dumps([candidate], indent=2), encoding="utf-8")
+
+        # Invoke with is_idle=False (e.g. system is busy running tasks)
+        result = process_pending_reflections(workspace_root=workspace, is_idle=False)
+        assert result["processed"] == 0
+        assert len(result["completed"]) == 0
+
+        # Candidate must remain in "pending" status
+        updated = json.loads(pending_file.read_text(encoding="utf-8"))
+        assert updated[0]["status"] == "pending"
+
+    def test_retry_ceiling(self, tmp_path, monkeypatch):
+        """Candidates with retry_count >= 3 are marked failed and skipped, not endlessly retried."""
+        monkeypatch.delenv("HEX_AUTO_REFLECT", raising=False)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        hex_dir = workspace / ".hex"
+        reflections_dir = hex_dir / "reflections"
+        reflections_dir.mkdir(parents=True)
+
+        (hex_dir / "config.yaml").write_text("learning:\n  auto_reflect: idle\n", encoding="utf-8")
+
+        pending_file = reflections_dir / "pending_reflections.json"
+        candidate = {
+            "task_id": "tsk_idle_poison_pill",
+            "goal": "Unresolvable task that causes crash",
+            "repair_attempts": 3,
+            "suppression_reason": "Deferred until idle",
+            "timestamp": time.time(),
+            "error_traces": [],
+            "modified_files": [],
+            "source_nodes": [],
+            "retry_count": 3,  # Already hit ceiling
+            "status": "pending",
+        }
+        pending_file.write_text(json.dumps([candidate], indent=2), encoding="utf-8")
+
+        result = process_pending_reflections(workspace_root=workspace, is_idle=True)
+        assert result["processed"] == 0
+        assert len(result["completed"]) == 0
+
+        # Status should be transitioned to failed
+        updated = json.loads(pending_file.read_text(encoding="utf-8"))
+        assert updated[0]["status"] == "failed"
+        assert "exhausted" in updated[0]["last_error"]
 
