@@ -1,5 +1,5 @@
 //! Agent Client Protocol (ACP) JSON-RPC 2.0 client, models, and diff parser
-//! for the HEX Autonomous AI Workbench.
+//! for HEX Agent.
 
 pub mod client;
 pub mod diff;

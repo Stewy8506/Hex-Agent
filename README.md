@@ -10,7 +10,7 @@
                                           anv.dev
 ```
 
-### The Autonomous AI Terminal Workbench That Tests Before It Touches Your Code
+### The Autonomous AI Terminal Agent That Tests Before It Touches Your Code
 
 [![Version](https://img.shields.io/badge/version-0.21.0-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
@@ -93,7 +93,7 @@ hex
 On your very first run, HEX opens an interactive terminal setup menu:
 
 ```text
-◈ Welcome to HEX — Autonomous AI Workbench
+◈ Welcome to HEX Agent
   Select your primary model brain:
 
   [•] Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detects IDE session)

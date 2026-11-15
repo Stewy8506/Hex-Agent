@@ -420,7 +420,7 @@ class DiscordBotGateway:
 
         if cmd_name == "help":
             help_text = (
-                "🤖 **HEX Autonomous AI Workbench (Discord)**\n\n"
+                "🤖 **HEX Agent (Discord)**\n\n"
                 "Available slash commands:\n"
                 "• `/task <goal>` — Submit a new autonomous task\n"
                 "• `/status [task_id]` — Check task status or list recent tasks\n"

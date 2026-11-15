@@ -1,5 +1,5 @@
-﻿# ==============================================================================
-# HEX AI Workbench — Windows PowerShell Universal Installer
+# ==============================================================================
+# HEX Agent — Windows PowerShell Universal Installer
 # Compatible with Windows 10 / 11 and Windows Server (x64 / arm64)
 #
 # Usage from PowerShell (Admin or User):
@@ -20,8 +20,8 @@ $BinDir = if ($env:HEX_BIN_DIR) { $env:HEX_BIN_DIR } else { Join-Path $env:USERP
 
 function Print-Banner {
     Write-Host "  _   _ _______  __" -ForegroundColor Cyan
-    Write-Host " | | | | ____\ \/ /   HEX AI WORKBENCH" -ForegroundColor Cyan
-    Write-Host " | |_| |  _|  \  /    Autonomous AI Workbench & Interactive TUI" -ForegroundColor Cyan
+    Write-Host " | | | | ____\ \/ /   HEX AGENT" -ForegroundColor Cyan
+    Write-Host " | |_| |  _|  \  /    Autonomous AI Engineering Agent & Interactive TUI" -ForegroundColor Cyan
     Write-Host " |  _  | |___ /  \    CoW Snapshots • Call Journal • Graphify AST" -ForegroundColor Cyan
     Write-Host " |_| |_|_____/_/\_\   https://github.com/Stewy8506/Harness" -ForegroundColor Cyan
 }
@@ -215,7 +215,7 @@ if (-not (Test-Path $ConfigFile)) {
 
 Write-Host ""
 Write-Host "======================================================================" -ForegroundColor Green
-Write-Host "   HEX AI WORKBENCH INSTALLED SUCCESSFULLY!                           " -ForegroundColor Green
+Write-Host "   HEX AGENT INSTALLED SUCCESSFULLY!                                  " -ForegroundColor Green
 Write-Host "======================================================================" -ForegroundColor Green
 Write-Host ""
 

@@ -180,7 +180,7 @@ class SubprocessGitHubTransport:
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
-            "User-Agent": "HEX-Autonomous-AI-Workbench",
+            "User-Agent": "HEX-Agent",
         }
         body_bytes = None
         if data is not None:
@@ -434,7 +434,7 @@ class GitAutopilot:
         message = (
             f"{commit_type}({clean_scope}): {desc_line}\n\n"
             f"Task-ID: {task_id}\n"
-            f"Automated-By: HEX Autonomous Workbench"
+            f"Automated-By: HEX Agent"
         )
 
         if self.config.dry_run:
@@ -548,7 +548,7 @@ class GitAutopilot:
 > {goal.strip()}
 
 ### 📋 Summary of Changes
-Automated implementation and verification for Task `{task_id}` executed via **HEX Autonomous AI Workbench**.
+Automated implementation and verification for Task `{task_id}` executed via **HEX Agent**.
 All modifications were isolated in Copy-on-Write workspaces and verified deterministically against pinned test suites.
 
 ### 🔍 Active Graphify AST Impact Matrix
@@ -568,7 +568,7 @@ All modifications were isolated in Copy-on-Write workspaces and verified determi
 | **Ledger Signature** | {sig_excerpt} |
 
 ---
-*Task ID: `{task_id}` | Generated automatically by HEX Autonomous Workbench*
+*Task ID: `{task_id}` | Generated automatically by HEX Agent*
 """
         return body
 

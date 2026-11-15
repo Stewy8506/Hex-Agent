@@ -376,7 +376,7 @@ class TelegramBotGateway:
         # Route /start and /help
         if text in ("/start", "/help") or text.startswith(("/start ", "/help ")):
             help_text = (
-                "🤖 *HEX Autonomous AI Workbench*\n\n"
+                "🤖 *HEX Agent*\n\n"
                 "Available commands:\n"
                 "• `/task <goal>` — Submit a new autonomous task\n"
                 "• `/status [id]` — Check status of recent tasks or specific task\n"

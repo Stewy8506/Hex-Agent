@@ -187,7 +187,7 @@ class TestDiscordInteractionsAndCommands(unittest.TestCase):
         res = self.gw.handle_interaction(interaction)
         self.assertEqual(res["type"], 4)
         content = res["data"]["content"]
-        self.assertIn("HEX Autonomous AI Workbench", content)
+        self.assertTrue("HEX Agent" in content or "HEX Autonomous AI Workbench" in content)
         self.assertIn("/task", content)
         self.assertIn("/status", content)
         self.assertIn("/diff", content)

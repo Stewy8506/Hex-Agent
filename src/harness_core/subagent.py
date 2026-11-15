@@ -1,4 +1,4 @@
-"""Subagent Manager for HEX Autonomous AI Workbench.
+"""Subagent Manager for HEX Agent.
 
 Implements in-flight sub-agent delegation parity with role-constrained sandboxing:
 - Strict recursion depth cap (default max_depth = 2) to eliminate uncontrolled agent forks.
@@ -425,7 +425,7 @@ class SubagentManager:
             if self.router is not None and hasattr(self.router, "execute_routed_request"):
                 tools_str = ", ".join(sorted(allowed_tools))
                 system_prompt = (
-                    f"You are a specialized {record.role.value.upper()} subagent in the HEX Autonomous AI Workbench.\n"
+                    f"You are a specialized {record.role.value.upper()} subagent in HEX Agent.\n"
                     f"Goal: {record.goal}\n"
                     f"Permitted tools: {tools_str}\n"
                     f"Context: {record.context or 'None'}\n"

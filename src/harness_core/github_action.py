@@ -465,7 +465,7 @@ class GitHubActionRunner:
 | **Ledger Signature** | {sig_excerpt} |
 {git_section}
 ---
-*Automated execution verified by HEX Autonomous AI Workbench*
+*Automated execution verified by HEX Agent*
 """
         return redact_secrets(body)
 
@@ -484,7 +484,7 @@ class GitHubActionRunner:
             f"### ⚠️ Error Details\n"
             f"Task `{task_id}` failed during isolated CoW workspace verification:\n\n"
             f"```\n{error_message}\n```\n\n"
-            f"---\n*HEX Autonomous AI Workbench*"
+            f"---\n*HEX Agent*"
         )
         return redact_secrets(body)
 

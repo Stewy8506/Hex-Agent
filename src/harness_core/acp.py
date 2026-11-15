@@ -1,4 +1,4 @@
-"""Agent Client Protocol (ACP) Server for HEX Autonomous AI Workbench.
+"""Agent Client Protocol (ACP) Server for HEX Agent.
 
 Implements the ACP JSON-RPC 2.0 protocol over stdio for IDE integration with Zed, Neovim, VSCode, and Cursor.
 Standardized methods:
@@ -488,7 +488,7 @@ class ACPServer:
             if cmd == "/help":
                 output = (
                     "Available Commands:\n"
-                    "  /status            - Workbench and active task status\n"
+                    "  /status            - Agent and active task status\n"
                     "  /doctor [--fix]    - Diagnostics and self-healing\n"
                     "  /skills            - Registered skills and risk gates\n"
                     "  /blast [target]    - Graphify AST blast radius\n"

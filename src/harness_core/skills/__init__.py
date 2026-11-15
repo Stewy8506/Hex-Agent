@@ -1,4 +1,4 @@
-"""HEX Autonomous AI Workbench - Skills Engine.
+"""HEX Agent - Skills Engine.
 
 Exports skill compilation, verification, and regression assertions.
 """

@@ -2,7 +2,7 @@
 name = "hex-protocol"
 version = "0.1.0"
 edition = "2021"
-description = "Agent Client Protocol (ACP) JSON-RPC 2.0 client, models, and diff parser for HEX Autonomous AI Workbench"
+description = "Agent Client Protocol (ACP) JSON-RPC 2.0 client, models, and diff parser for HEX Agent"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

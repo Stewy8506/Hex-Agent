@@ -1,4 +1,4 @@
-"""Headless Browser Automation Engine for HEX Autonomous AI Workbench.
+"""Headless Browser Automation Engine for HEX Agent.
 
 Provides interactive headless browsing capabilities with accessibility snapshots (ariaSnapshot),
 element interaction via selectors (@e1, @e2, CSS), screenshot captures, and per-task session isolation.
@@ -146,7 +146,7 @@ class HeadlessBrowserSession:
                 else:
                     req = urllib.request.Request(
                         target_url,
-                        headers={"User-Agent": "HEX-Autonomous-Workbench/1.0 (Headless)"},
+                        headers={"User-Agent": "HEX-Agent/1.0 (Headless)"},
                     )
                     with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                         raw_bytes = resp.read()

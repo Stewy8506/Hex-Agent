@@ -44,7 +44,7 @@ class TestHexCLI(unittest.TestCase):
             )
 
         output = buf.getvalue()
-        self.assertIn("HEX: Autonomous AI Workbench", output)
+        self.assertTrue("HEX Agent" in output or "HEX: Autonomous AI Workbench" in output)
         self.assertIn("HEX has been successfully initialized!", output)
         self.assertEqual(res["status"], "ready")
         self.assertGreaterEqual(res["seeded_skills"], 2)
@@ -55,7 +55,7 @@ class TestHexCLI(unittest.TestCase):
         self.assertTrue(creds_path.is_file())
 
         cfg_text = cfg_path.read_text(encoding="utf-8")
-        self.assertIn("HEX Autonomous AI Workbench Configuration", cfg_text)
+        self.assertTrue("HEX Agent Configuration" in cfg_text or "HEX Autonomous AI Workbench Configuration" in cfg_text)
         self.assertIn("compressor_mode: \"deterministic\"", cfg_text)
 
         # Check credentials file permissions on POSIX

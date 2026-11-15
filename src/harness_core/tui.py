@@ -1,4 +1,4 @@
-"""Interactive Terminal UI (TUI) Engine for HEX Autonomous AI Workbench (PRD Section 8, Pillar 2).
+"""Interactive Terminal UI (TUI) Engine for HEX Agent (PRD Section 8, Pillar 2).
 
 Provides:
 - Rich / 24-bit TrueColor ANSI terminal compatibility with zero-dependency ANSI fallbacks.
@@ -1234,7 +1234,7 @@ def render_docked_input_frame(
 
 
 class HexConsole:
-    """Interactive pair-programming terminal REPL for HEX Autonomous AI Workbench."""
+    """Interactive pair-programming terminal REPL for HEX Agent."""
 
     SLASH_COMMANDS: list[str] = [
         "/help", "/mode", "/rename", "/status", "/diff", "/sbs", "/rollback", "/fork",

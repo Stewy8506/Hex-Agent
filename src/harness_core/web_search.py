@@ -1,4 +1,4 @@
-"""Autonomous Web Search Tool for HEX AI Workbench.
+"""Autonomous Web Search Tool for HEX Agent.
 
 Provides multi-backend live web search capabilities for autonomous coding agents:
 1. DuckDuckGo: Zero-key default fallback (free, instant, works offline/online with zero credentials).

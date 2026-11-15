@@ -60,7 +60,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="hex",
-        description="HEX: Autonomous AI Workbench & Interactive TUI (Run 'hex' to launch interactive console)",
+        description="HEX Agent — Interactive Terminal Agent & TUI (Run 'hex' to launch interactive console)",
         allow_abbrev=False,
     )
     parser.add_argument("-v", "--version", action="version", version=f"hex {__version__}")
@@ -1408,7 +1408,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
                 elif args.dry_run:
                     print(f"  [DRY-RUN] No files were written to disk.")
                 else:
-                    print(f"  ✓ Active and registered in workbench.")
+                    print(f"  ✓ Active and registered.")
                 print()
             return 0
         except SkillSecurityViolationError as exc:

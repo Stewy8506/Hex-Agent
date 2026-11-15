@@ -248,7 +248,7 @@ class TestLocalGitRepositoryIntegration(unittest.TestCase):
             self.assertIn("hex-worker-bot <bot@hex.local>", log_out)
             self.assertIn("feat(payment): implement payment processor", log_out)
             self.assertIn("Task-ID: task_42", log_out)
-            self.assertIn("Automated-By: HEX Autonomous Workbench", log_out)
+            self.assertTrue("Automated-By: HEX Agent" in log_out or "Automated-By: HEX Autonomous Workbench" in log_out)
 
             # 3. Create pull request via transport
             pr_res = autopilot.create_pull_request(

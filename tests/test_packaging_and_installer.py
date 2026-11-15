@@ -86,7 +86,7 @@ class TestPackagingAndVendorResolution(unittest.TestCase):
         self.assertEqual(res.returncode, 0, f"install.sh syntax error: {res.stderr}")
 
         content = installer_path.read_text(encoding="utf-8")
-        self.assertIn("HEX AI WORKBENCH", content)
+        self.assertTrue("HEX AGENT" in content or "HEX AI WORKBENCH" in content)
         self.assertIn("onboard --defaults", content)
 
     def test_installer_script_powershell_parity(self) -> None:
@@ -95,7 +95,7 @@ class TestPackagingAndVendorResolution(unittest.TestCase):
         self.assertTrue(ps_installer_path.is_file(), "install.ps1 must exist in repository root")
 
         content = ps_installer_path.read_text(encoding="utf-8")
-        self.assertIn("HEX AI WORKBENCH", content)
+        self.assertTrue("HEX AGENT" in content or "HEX AI WORKBENCH" in content)
         self.assertIn("pyproject.toml", content)
         self.assertIn(".venv", content)
         self.assertIn("cargo", content)

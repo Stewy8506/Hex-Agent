@@ -1,4 +1,4 @@
-"""Single source of truth for AI model providers in HEX Workbench.
+"""Single source of truth for AI model providers in HEX Agent.
 
 Parity with Hermes Agent provider specifications, providing unified metadata,
 transports (OpenAI Chat, Anthropic Messages, Gemini REST, Antigravity OAuth, Local),

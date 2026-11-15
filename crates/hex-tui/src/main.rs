@@ -1,4 +1,4 @@
-//! Native Rust Terminal Cockpit (Ratatui + Crossterm) binary for HEX Autonomous AI Workbench.
+//! Native Rust Terminal Cockpit (Ratatui + Crossterm) binary for HEX Agent.
 
 use std::io::{stdout, Stdout};
 use std::path::PathBuf;
@@ -22,7 +22,7 @@ use hex_tui::ui::design::{format_available_skills, format_available_tools};
 #[derive(Parser, Debug)]
 #[command(
     name = "hex-tui",
-    author = "HEX Autonomous AI Workbench",
+    author = "HEX Agent",
     version = "0.1.0",
     about = "Native Ratatui cockpit with animated HEX visual language and ACP integration"
 )]

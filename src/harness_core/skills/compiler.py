@@ -393,12 +393,12 @@ class SkillCompiler:
             verify_cmd = final_verify.get("command") if final_verify else f"pytest tests/test_{final_name.replace('-', '_')}.py"
             overview_intro = (
                 f"{final_desc} This skill defines canonical workflows and regression invariants "
-                f"for autonomous execution under the HEX workbench."
+                f"for autonomous execution under HEX Agent."
             )
             sections = [
                 f"# {human_title}\n\n{overview_intro}\n",
                 "## When to Use\n- Triggered when operating on related tasks and procedures.\n- Use during automated regression checks.\n",
-                "## Prerequisites\n- Standard workbench environment and verified dependencies.\n",
+                "## Prerequisites\n- Standard agent environment and verified dependencies.\n",
                 "## How to Run\n- Execute commands through the `terminal` tool.\n- Inspect files using `read_file`.\n",
                 "## Quick Reference\n- Canonical commands and endpoints.\n",
                 f"## Procedure\n1. Review workspace requirements.\n2. Execute procedures cleanly.\n3. Run verification check.\n\n{body_text}\n" if body_text else "## Procedure\n1. Review workspace requirements.\n2. Execute procedures cleanly.\n3. Run verification check.\n",

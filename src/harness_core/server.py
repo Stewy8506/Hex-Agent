@@ -759,6 +759,6 @@ def run_http_server(
             return
 
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"⚡ HEX Autonomous AI Workbench listening on http://{host}:{port}")
+    print(f"⚡ HEX Agent listening on http://{host}:{port}")
     runner = GracefulServerRunner(server, app, drain_timeout=drain_timeout)
     runner.run()

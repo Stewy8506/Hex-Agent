@@ -134,7 +134,7 @@
 
     <!-- Main HEX Wordmark -->
     <text x="0" y="122" class="title-text" font-size="68" fill="url(#goldGrad)" letter-spacing="3" filter="url(#glow)">HEX</text>
-    <text x="165" y="102" class="mono-text" font-size="22" font-weight="700" fill="#f0f4fc">Autonomous AI Workbench</text>
+    <text x="165" y="102" class="mono-text" font-size="22" font-weight="700" fill="#f0f4fc">HEX Agent</text>
     <text x="165" y="125" class="mono-text" font-size="13.5" fill="#00F5D4">CoW Sandboxes · 0ms Replay · AST Blast-Radius · M4 MLX + Cloud</text>
 
     <!-- Subtitle Description -->

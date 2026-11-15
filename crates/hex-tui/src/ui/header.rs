@@ -14,7 +14,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
-            " ◈ HEX AUTONOMOUS COCKPIT ◈ ",
+            " ◈ HEX AGENT ◈ ",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw(" "),
         Span::styled(
-            "Autonomous AI Workbench",
+            "Agent",
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),

@@ -2,7 +2,7 @@
 name = "hex-tui"
 version = "0.1.0"
 edition = "2021"
-description = "Native Rust Terminal Cockpit (Ratatui + Crossterm) for HEX Autonomous AI Workbench"
+description = "Native Rust Terminal Cockpit (Ratatui + Crossterm) for HEX Agent"
 
 [dependencies]
 hex-protocol = { path = "../hex-protocol" }

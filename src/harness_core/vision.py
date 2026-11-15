@@ -1,4 +1,4 @@
-"""Multimodal Vision Engine for HEX Autonomous AI Workbench.
+"""Multimodal Vision Engine for HEX Agent.
 
 Provides visual image analysis, diagram inspection, UI mockup validation, and screenshot diagnosis.
 Supports local image files (PNG, JPG, WEBP, GIF, SVG) and remote HTTP/HTTPS image URLs.
@@ -58,7 +58,7 @@ def get_image_metadata(data: bytes, ext: str) -> tuple[int, int] | None:
 
 
 class VisionEngine:
-    """Multimodal image inspection engine for HEX workbench."""
+    """Multimodal image inspection engine for HEX Agent."""
 
     def __init__(self, router: Any | None = None) -> None:
         self.router = router
@@ -80,7 +80,7 @@ class VisionEngine:
             if target.startswith(("http://", "https://")):
                 req = urllib.request.Request(
                     target,
-                    headers={"User-Agent": "HEX-Autonomous-Workbench/1.0 (Vision)"},
+                    headers={"User-Agent": "HEX-Agent/1.0 (Vision)"},
                 )
                 with urllib.request.urlopen(req, timeout=15.0) as resp:
                     data_bytes = resp.read()

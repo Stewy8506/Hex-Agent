@@ -1,4 +1,4 @@
-//! Strongly typed ACP JSON-RPC 2.0 protocol models for HEX Autonomous AI Workbench.
+//! Strongly typed ACP JSON-RPC 2.0 protocol models for HEX Agent.
 
 use std::fmt;
 use serde::{Deserialize, Serialize};

@@ -66,7 +66,7 @@ pub const AVAILABLE_SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/status",
-        description: "Display current workbench and task status",
+        description: "Display current agent and task status",
         usage: "/status",
     },
     SlashCommand {

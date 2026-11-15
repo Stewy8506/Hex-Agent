@@ -310,7 +310,7 @@ class HarnessOrchestrator:
         if tree is None:
             # Assemble active harness tree representing current configuration
             tree = {
-                "systemprompt.md": "# Autonomous Agent System Prompt\nOperating under HEX Workbench.\n",
+                "systemprompt.md": "# Autonomous Agent System Prompt\nOperating under HEX Agent.\n",
                 "guardrails.md": "# Guardrails\nEnforce safe tool execution and default-deny policy.\n",
                 "LongTermMEMORY.md": "# Long-Term Memory\n",
                 "tool_descriptions/tool_guidance.md": "# Tool Descriptions\nGuidance on tool execution.\n",
@@ -973,7 +973,7 @@ class HarnessOrchestrator:
                 if is_greeting:
                     prompt = (
                         f"User Request: {goal}\n\n"
-                        "Respond directly, helpfully, and warmly as HEX, the Autonomous AI Workbench."
+                        "Respond directly, helpfully, and warmly as HEX Agent."
                     )
                 else:
                     findings_blocks = []

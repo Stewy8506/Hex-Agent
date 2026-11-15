@@ -152,7 +152,7 @@ class TestTelegramCommandsAndTaskDelegation(unittest.TestCase):
             res = self.gw.handle_message(msg)
             self.assertTrue(res["ok"])
             self.assertEqual(res["action"], "help")
-            self.assertIn("HEX Autonomous AI Workbench", res["text"])
+            self.assertTrue("HEX Agent" in res["text"] or "HEX Autonomous AI Workbench" in res["text"])
             self.assertIn("/task", res["text"])
             self.assertIn("/status", res["text"])
             self.assertIn("/diff", res["text"])

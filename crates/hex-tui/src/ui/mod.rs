@@ -71,7 +71,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
-            " ◈ HEX WORKBENCH HELP & KEYBINDINGS ◈ ",
+            " ◈ HEX AGENT HELP & KEYBINDINGS ◈ ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),

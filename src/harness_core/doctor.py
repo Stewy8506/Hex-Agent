@@ -98,7 +98,7 @@ class DoctorReport:
             "credentials": "MODEL PROVIDERS & CREDENTIALS",
             "git": "VERSION CONTROL & WORKTREE",
             "storage": "DISK STORAGE CAPACITY",
-            "directories": "WORKBENCH DIRECTORIES & CONFIG",
+            "directories": "AGENT DIRECTORIES & CONFIG",
             "audio": "AUDIO HARDWARE & SPEECH ENGINES",
             "live": "LIVE CONNECTIVITY PINGS",
         }
@@ -937,7 +937,7 @@ class HexDoctor:
             try:
                 self.hex_dir.mkdir(parents=True, exist_ok=True)
                 default_config = (
-                    "# HEX Autonomous AI Workbench Configuration\n"
+                    "# HEX Agent Configuration\n"
                     "version: 1\n"
                     "project:\n"
                     f"  name: \"{self.workspace_root.name or 'default'}\"\n"

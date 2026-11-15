@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# HEX AI Workbench — One-Line Universal Installer
+# HEX Agent — One-Line Universal Installer
 # Compatible with macOS (Apple Silicon / Intel) and Linux (x86_64 / arm64)
 #
 # Usage:
@@ -28,8 +28,8 @@ NC='\033[0m' # No Color
 print_banner() {
     cat << "EOF"
   _   _ _______  __
- | | | | ____\ \/ /   HEX AI WORKBENCH
- | |_| |  _|  \  /    Autonomous AI Workbench & Interactive TUI
+ | | | | ____\ \/ /   HEX AGENT
+ | |_| |  _|  \  /    Autonomous AI Engineering Agent & Interactive TUI
  |  _  | |___ /  \    CoW Snapshots • Call Journal • Graphify AST
  |_| |_|_____/_/\_\   https://github.com/Stewy8506/Harness
 EOF
@@ -164,7 +164,7 @@ fi
 
 echo ""
 echo -e "${BOLD}${GREEN}======================================================================${NC}"
-echo -e "${BOLD}${GREEN}   HEX AI WORKBENCH INSTALLED SUCCESSFULLY!                           ${NC}"
+echo -e "${BOLD}${GREEN}   HEX AGENT INSTALLED SUCCESSFULLY!                                  ${NC}"
 echo -e "${BOLD}${GREEN}======================================================================${NC}"
 echo ""
 

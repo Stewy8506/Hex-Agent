@@ -1,6 +1,6 @@
 """Local-First Web Control Surface UI (PRD Section 15.2).
 
-Provides an interactive single-page workbench served at `GET /` over the `/v1/*` API:
+Provides an interactive single-page dashboard served at `GET /` over the `/v1/*` API:
 1. Work: queued/running/speculating/succeeded tasks with Fast-Path toggle & submission form.
 2. Task Detail & Proof Inspector: Dynamic DAG visualization, Call-Journal replay timeline,
    AST Blast-Radius Impact Map, Speculative Branch comparison, and Proof-Carrying Artifact receipt.
@@ -17,7 +17,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HEX — Autonomous AI Workbench</title>
+  <title>HEX Agent</title>
   <style>
     :root {
       --bg: #0b0f19;
@@ -135,7 +135,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <body>
   <header>
     <h1>
-      <span>⚡ HEX Autonomous AI Workbench</span>
+      <span>⚡ HEX Agent</span>
       <span class="badge badge-green">v1.3 CoW + Call Journal</span>
       <span class="badge badge-purple">NVIDIA SkillSpector Gate</span>
       <span class="badge badge-blue">Harness² Adapter</span>

@@ -40,7 +40,7 @@ HEX_BANNER = r"""
   ██╔══██║██╔══╝   ██╔██╗ 
   ██║  ██║███████╗██╔╝ ██╗
   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
-  HEX: Autonomous AI Workbench
+  HEX Agent
 """
 
 
@@ -224,7 +224,7 @@ def run_onboard_wizard(
     ag_cred = ag_mgr.resolve_credential(auto_refresh=True)
 
     print(HEX_BANNER)
-    print("Welcome to HEX — The Autonomous AI Workbench.")
+    print("Welcome to HEX Agent.")
     print("=" * 64)
     print(f"  OS / Architecture:  {profile.os_name} ({profile.arch})")
     print(f"  Hardware Model:     {profile.machine_model}")
@@ -842,7 +842,7 @@ def run_onboard_wizard(
     # Write config.yaml
     local_model_id = cloud_model_id if cloud_provider == "local" else (existing_config.get("model") or {}).get("local_model_id", "")
     cloud_base_url_line = f'  cloud_base_url: "{cloud_base_url}"\n' if cloud_base_url else ""
-    config_yaml = f"""# HEX Autonomous AI Workbench Configuration
+    config_yaml = f"""# HEX Agent Configuration
 version: "1.0"
 model:
   profile: "{model_profile}"
