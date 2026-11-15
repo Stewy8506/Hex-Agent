@@ -1,12 +1,12 @@
 # Comprehensive Harness Comparison: HEX vs. The Ecosystem
 
-An in-depth architectural and empirical comparison between **HEX AI Workbench** and leading autonomous engineering agents: **Hermes Agent** (Nous Research), **OpenClaw**, **Claude Code** (Anthropic), and **Aider**.
+An in-depth architectural and empirical comparison between **HEX Agent** and leading autonomous engineering agents: **Hermes Agent** (Nous Research), **OpenClaw**, **Claude Code** (Anthropic), and **Aider**.
 
 ---
 
 ## 1. Architectural Feature Matrix
 
-| Feature / Dimension | HEX AI Workbench | Hermes Agent (Nous Research) | OpenClaw | Claude Code (Anthropic) | Aider |
+| Feature / Dimension | HEX Agent | Hermes Agent (Nous Research) | OpenClaw | Claude Code (Anthropic) | Aider |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Workspace Sandbox** | **Copy-on-Write (CoW)**<br>APFS clone / OverlayFS in <10ms | Host execution / Docker container | In-place repo edits | In-place repo edits | In-place repo edits |
 | **Verification Gate** | **Proof-Before-Commit**<br>0ms instant rollback on failure | Manual or agent self-check | Post-edit git commits | Interactive prompt confirmation | Git commit / rollback prompts |

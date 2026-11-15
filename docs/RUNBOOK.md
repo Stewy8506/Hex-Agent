@@ -1,6 +1,6 @@
 # Operator Runbook: Autonomous AI Harness (HEX)
 
-This runbook provides canonical operational instructions for deploying, monitoring, administering, and troubleshooting the **HEX Autonomous AI Workbench & Harness** in development and production environments.
+This runbook provides canonical operational instructions for deploying, monitoring, administering, and troubleshooting **HEX Agent** in development and production environments.
 
 ---
 
@@ -117,7 +117,7 @@ hex graphify status
 # Trigger AST update on the workspace (extracts code files without LLM)
 hex graphify update
 
-# Ingest an existing graphify-out/graph.json into the active workbench
+# Ingest an existing graphify-out/graph.json into the active agent
 hex graphify ingest --graph graphify-out/graph.json
 
 # Identify architectural hubs and god-nodes (top N connected symbols)
@@ -350,7 +350,7 @@ Create `/etc/systemd/system/hex.service`:
 
 ```ini
 [Unit]
-Description=HEX Autonomous AI Workbench & Harness Production Server
+Description=HEX Agent Production Server
 After=network.target postgresql.service
 Wants=postgresql.service
 

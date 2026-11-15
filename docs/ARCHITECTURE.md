@@ -1,6 +1,6 @@
 # HEX System Architecture
 
-This document provides a detailed overview of the core architectural subsystems powering the **HEX Autonomous AI Workbench**.
+This document provides a detailed overview of the core architectural subsystems powering **HEX Agent**.
 
 ---
 

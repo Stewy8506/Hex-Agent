@@ -144,7 +144,7 @@ HEX includes a native Rust Ratatui cockpit (`hex tui`) designed for high-perform
 - **Natural History Scrolling**: Use `PageUp` / `PageDown` or arrow keys to scroll conversation history directly without leaving your input prompt.
 - **Fuzzy Slash Autocomplete**: Type `/` to open fuzzy command suggestions (`/ast` matches `/blast`, `/rb` matches `/rollback`). Press `Tab` to accept suggestions.
 - **Side-by-Side Split Diff (`/sbs`)**: Toggle synchronized two-column split diff views alongside unified diffs.
-- **Light & Dark Terminal Skins**: 6 themes (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) with automatic background luminance detection.
+- **Light & Dark Terminal Skins**: 7 themes featuring signature **Sapphire** monochrome (`sapphire` [default], `amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) with automatic background luminance detection.
 - **Policy Approvals**: Centered modal overlay for high-risk operations (e.g. git pushes) with action keys (`[y] Approve`, `[n] Reject`, `[d] Diff`).
 
 ---
@@ -256,7 +256,7 @@ Inside the interactive console, type `/` to access commands:
 | **`/rename <name>`** | Set persona or agent name across session and global `SOUL.md` |
 | **`/model`** | Inspect active model routing profile or switch providers |
 | **`/doctor`** | Run system health diagnostics and repair configurations |
-| **`/skin`** | Switch color theme (`amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) |
+| **`/skin`** | Switch color theme (`sapphire` [default], `amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) |
 | **`/help`** | Display full table of slash commands |
 
 ---

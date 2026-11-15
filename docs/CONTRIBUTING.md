@@ -1,4 +1,4 @@
-# Contributing to HEX AI Workbench
+# Contributing to HEX Agent
 
 Thank you for your interest in contributing to **HEX**! Whether fixing a bug, adding a new language grammar, optimizing context compression, or designing a TUI theme, we welcome your contributions.
 
