@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-15  
 **Current Milestone:** M12 (Production Cognition Hardening & Execution Seams) — ACTIVE  
-**Status:** Phase 33 Plan 33-01 Complete (Execution Gates & Session Isolation Verified)  
+**Status:** Phase 33 Plan 33-03 Complete (Durable Lifecycle & Idle Reflection Workers Verified)  
 **Active Phase:** Phase 33: Production Cognition Hardening & Execution Seams  
 **Completed Milestones:** M1 through M11 Complete & Verified (858/858 Python tests green, 1 skipped, 34/34 Rust workspace tests green)  
 
@@ -333,6 +333,20 @@
       - Introduced `SoulProvenance` enum (`workspace_user`, `global_user`, `repository`, `remote_profile`, `distribution`).
       - Updated `PromptBuilder` Slot #1 to recognize workspace `.hex/SOUL.md` as user-authored, warning on heuristic injection matches instead of hard-blocking.
     - Authored 10 unit and integration tests across `tests/test_skill_verification_wiring.py` and `tests/test_session_isolated_snapshots.py` (10/10 passing).
+
+40. **Phase 33 Plan 33-03: Durable Lifecycle & Idle Reflection Workers Complete (Fixes F-02, F-05, F-06):**
+    - **Archive-Before-Delete Durability & FTS Idempotency (F-02):**
+      - Fixed `MemoryLifecycleManager.run_demotion_sweep()` to check `archive_entry()` success, retaining active memories in `MEMORY.md`/`USER.md` on archive failure.
+      - Fixed `archive_entry()` with explicit SQLite transaction and prior FTS row pruning (`DELETE FROM archived_memories_fts WHERE memory_id = ?`) preventing duplicate rows on retry.
+      - Wired `check_promotions()` into `HarnessOrchestrator._execute_standard_dag()` and `run_agent_loop()` task completions, automatically promoting reflections with $\ge 3$ references.
+      - Added `run_lifecycle_maintenance(workspace_root)` for workspace open and session close sweeps.
+    - **Transactional Multi-Operation Memory Execution & Checked Deletions (F-05):**
+      - Upgraded `CuratedMemoryStore.execute_operations()` to acquire all target file locks in deterministic order, stage in-memory copies, validate budget limits and text matches across all operations before disk writes, and rollback on multi-file failures.
+      - Hardened `AMEMController.delete_memory()` and contradiction `DELETE` to verify `store.remove()` success before removing items from `_items` and `_tag_index`.
+    - **Idle Reflection Worker Draining Queue (F-06):**
+      - Implemented `process_pending_reflections()` and `HarnessOrchestrator.check_and_run_idle_workers()` draining queued candidates from `.hex/reflections/pending_reflections.json` during idle periods under file lock.
+      - Synthesized lessons into `LESSONS.md`, updated guardrails, recorded lifecycle reflections, and enforced a 3-strike retry ceiling.
+    - Authored 8 unit and integration tests in `tests/test_durable_lifecycle_and_reflection.py` (111/111 full cognition test suite passing).
 
 ---
 
