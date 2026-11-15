@@ -333,6 +333,18 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 }
                 AppEvent::Tick => {
                     app.advance_animation();
+                    // Streaming debounce matching Hermes: if text has streamed and no delta/tool
+                    // has arrived for >350ms, seal the busy spinner instantly.
+                    if app.is_busy && app.active_turn_has_streamed {
+                        if let Some(last_t) = app.last_delta_received_at {
+                            if last_t.elapsed() >= std::time::Duration::from_millis(350) {
+                                app.is_busy = false;
+                                app.busy_started_at = None;
+                                app.last_delta_received_at = None;
+                                app.status_message = "Ready".to_string();
+                            }
+                        }
+                    }
                 }
                 AppEvent::Resize(_, _) => {
                     // Handled on next draw
@@ -720,6 +732,7 @@ async fn execute_submitted_text(
 
     // Regular conversation message
     app.active_turn_has_streamed = false;
+    app.last_delta_received_at = None;
     app.add_user_message(&text);
     app.is_busy = true;
     app.busy_started_at = Some(std::time::Instant::now());
@@ -772,6 +785,14 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
             if let Ok(update) =
                 serde_json::from_value::<hex_protocol::models::SessionUpdateNotification>(params)
             {
+                if update.update_type == "stream_end" {
+                    app.active_turn_has_streamed = false;
+                    app.last_delta_received_at = None;
+                    app.close_running_tool_calls();
+                    app.is_busy = false;
+                    app.busy_started_at = None;
+                    app.status_message = "Ready".to_string();
+                }
                 if let Some(delta) = update.delta {
                     app.append_assistant_delta(&delta);
                     app.is_busy = true;
@@ -781,6 +802,7 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                     app.status_message = "Streaming...".to_string();
                 }
                 if let Some(tool_val) = update.tool {
+                    app.last_delta_received_at = None;
                     if let Some(tool_obj) = tool_val.as_object() {
                         let ev_type = tool_obj.get("eventType").and_then(|v| v.as_str()).unwrap_or("");
                         let tool_id = tool_obj.get("toolId").and_then(|v| v.as_str()).unwrap_or("tool");
@@ -799,6 +821,7 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                     app.status_message = st.clone();
                     if st.eq_ignore_ascii_case("ready") || st.eq_ignore_ascii_case("completed") {
                         app.active_turn_has_streamed = false;
+                        app.last_delta_received_at = None;
                         app.close_running_tool_calls();
                         app.is_busy = false;
                         app.busy_started_at = None;

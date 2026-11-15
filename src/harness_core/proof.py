@@ -80,8 +80,23 @@ class VerificationAndProofService:
     ) -> dict[str, Any]:
         ws = Path(workspace_dir).resolve()
         base = Path(base_snapshot_path).resolve()
-        tree_sha = self.cow.compute_tree_sha(ws)
-        diff_sha, diff_text = self.compute_git_diff(base, ws)
+        if not modified_files and base == ws:
+            tree_sha = ""
+            if hasattr(self, "ledger") and self.ledger:
+                attempts = self.ledger.list_attempts(task_id)
+                for a in attempts:
+                    if a.get("attempt_id") == attempt_id:
+                        tree_sha = a.get("base_tree_sha") or ""
+                        break
+            if not tree_sha:
+                task_rec = self.ledger.get_task(task_id) if hasattr(self, "ledger") and self.ledger else None
+                tree_sha = task_rec.get("workspace_tree_sha") if task_rec else ""
+            if not tree_sha:
+                tree_sha = sha256_hex("empty")
+            diff_sha, diff_text = sha256_hex(""), ""
+        else:
+            tree_sha = self.cow.compute_tree_sha(ws)
+            diff_sha, diff_text = self.compute_git_diff(base, ws)
 
         # 1. Compute AST Impact Subgraph via Active Graphify
         if modified_files:

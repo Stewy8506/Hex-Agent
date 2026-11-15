@@ -307,6 +307,20 @@ class ACPServer:
             tool_callback=tool_cb,
         )
 
+        if streamed_chunks:
+            # Emit stream_end notification immediately matching Hermes _stream_delta(None)
+            end_notif = {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": sess.session_id,
+                    "updateType": "stream_end",
+                    "status": "Ready",
+                },
+            }
+            sys.stdout.write(json.dumps(end_notif, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+
         raw_status = exec_res.get("status", "COMPLETED")
         status_str = "completed" if raw_status in ("SUCCEEDED", "COMPLETED") else raw_status.lower()
 

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -893,7 +894,21 @@ class HarnessOrchestrator:
         **kwargs: Any,
     ) -> dict[str, Any]:
         task_id = task["task_id"]
-        base_tree_sha = self.cow.compute_tree_sha(source_ws)
+        base_tree_sha = ""
+        try:
+            head_cmd = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source_ws,
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            if head_cmd.returncode == 0:
+                base_tree_sha = head_cmd.stdout.strip()
+        except Exception:
+            pass
+        if not base_tree_sha:
+            base_tree_sha = self.cow.compute_tree_sha(source_ws)
         if lease_info is None:
             lease_info = self.ledger.acquire_lease_and_attempt(
                 task_id,
