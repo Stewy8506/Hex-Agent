@@ -98,6 +98,11 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
 
     p_setup = sub.add_parser("setup", aliases=["onboard"], help="Run interactive setup wizard for hardware & configuration (alias: hex onboard)")
     p_setup.add_argument("stage", nargs="?", default=None, help="Specific component to configure (e.g. 'model', 'search', 'messaging', or omit for full setup)")
+    p_setup.add_argument("--auto", action="store_true", help="Run autonomous self-setup discovering hardware, devtools, IDE session and environment keys")
+    p_setup.add_argument("--quick", action="store_true", help="Prompt only for unconfigured or missing settings, skipping configured sections")
+    p_setup.add_argument("--blank-slate", action="store_true", help="Minimal lightweight agent footprint (essential tools only, 0 telemetry)")
+    p_setup.add_argument("--reset", action="store_true", help="Cleanly reset configuration to factory defaults")
+    p_setup.add_argument("--reasoning-effort", default=None, help="Configure model reasoning effort level (none, low, medium, high, xhigh, max)")
     p_setup.add_argument("--provider", default=None, help="Target model provider to configure (e.g. openrouter, deepseek, groq, anthropic, openai)")
     p_setup.add_argument("--model", default=None, help="Target model ID to configure")
     p_setup.add_argument("--base-url", default=None, help="Custom endpoint Base URL")
@@ -544,6 +549,11 @@ def _main_impl(argv: list[str] | None = None) -> int:
             target_stage=getattr(args, "stage", None),
             target_provider=getattr(args, "provider", None),
             target_model=getattr(args, "model", None),
+            auto_mode=getattr(args, "auto", False),
+            quick=getattr(args, "quick", False),
+            blank_slate=getattr(args, "blank_slate", False),
+            reset=getattr(args, "reset", False),
+            target_reasoning_effort=getattr(args, "reasoning_effort", None),
         )
         if isinstance(res, dict) and res.get("status") == "error":
             return 1
@@ -752,11 +762,28 @@ def _main_impl(argv: list[str] | None = None) -> int:
     if (args.cmd is None or args.cmd in ("chat", "voice")) and not has_active_credentials():
         if (sys.stdin.isatty() or force_interactive) and not getattr(args, "quiet", False):
             print("\n◈ Welcome to HEX. No model provider or API key was detected.")
-            print("  Launching interactive auto-setup sequence...\n")
-            from .onboard import run_onboard_wizard
-
+            from .ui_selector import select_option
             cfg_dir = Path(args.config_dir) if getattr(args, "config_dir", None) else None
-            run_onboard_wizard(config_dir=cfg_dir)
+            setup_choices = [
+                ("auto", "★ Autonomous Setup (Recommended: auto-detects Antigravity IDE, hardware, dev tools, and keys)"),
+                ("wizard", "Interactive Wizard (Configure model, reasoning effort, search, messaging step-by-step)"),
+                ("blank_slate", "Blank Slate (Minimal lightweight agent, zero telemetry, essential tools only)"),
+            ]
+            c_idx = select_option("Select Setup Mode:", setup_choices, default_index=0)
+            chosen_mode = setup_choices[c_idx][0]
+            if chosen_mode == "auto":
+                from .auto_setup import execute_auto_setup
+                res = execute_auto_setup(config_dir=cfg_dir)
+                prov = res["synthesized"]["model"]["cloud_provider"]
+                mid = res["synthesized"]["model"]["cloud_model_id"]
+                eff = res["synthesized"]["model"]["reasoning_effort"]
+                print(f"\n  ✓ Autonomous setup complete! Active model: {prov} ({mid}) · Effort: {eff}\n")
+            elif chosen_mode == "blank_slate":
+                from .onboard import run_onboard_wizard
+                run_onboard_wizard(config_dir=cfg_dir, blank_slate=True)
+            else:
+                from .onboard import run_onboard_wizard
+                run_onboard_wizard(config_dir=cfg_dir)
             load_hex_environment(config_dir=cfg_dir, override=True)
 
     from .project_registry import ProjectRegistry

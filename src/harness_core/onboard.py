@@ -212,6 +212,12 @@ def run_onboard_wizard(
     target_stage: str | None = None,
     target_provider: str | None = None,
     target_model: str | None = None,
+    auto_mode: bool = False,
+    quick: bool = False,
+    blank_slate: bool = False,
+    reset: bool = False,
+    target_reasoning_effort: str | None = None,
+    first_task_beat: bool = True,
 ) -> dict[str, Any]:
     """Execute the interactive or automated onboarding sequence for HEX."""
     cfg_dir = config_dir or (Path.home() / ".hex")
@@ -226,7 +232,43 @@ def run_onboard_wizard(
     credentials_file = cfg_dir / "credentials.env"
     config_file = cfg_dir / "config.yaml"
 
+    if reset:
+        if config_file.is_file():
+            try:
+                config_file.unlink()
+            except Exception:
+                pass
+        if credentials_file.is_file():
+            try:
+                credentials_file.unlink()
+            except Exception:
+                pass
+        print("\n  ✓ Existing configuration reset to factory defaults.\n")
+
     profile = HardwareProfile.detect()
+
+    if auto_mode:
+        from .auto_setup import execute_auto_setup
+        res = execute_auto_setup(config_dir=cfg_dir)
+        m_cfg = res["synthesized"]["model"]
+        s_cfg = res["synthesized"]["web_search"]
+        msg_cfg = res["synthesized"]["messaging"]
+        print(HEX_BANNER)
+        print("Welcome to HEX Agent (Autonomous Setup Mode).")
+        print("=" * 64)
+        print(f"  OS / Architecture:  {profile.os_name} ({profile.arch})")
+        print(f"  Hardware Model:     {profile.machine_model}")
+        print(f"  System Memory:      {profile.ram_gb} GB RAM")
+        print(f"  Active Model:       {m_cfg['cloud_provider']} ({m_cfg['cloud_model_id']})")
+        print(f"  Reasoning Effort:   {m_cfg['reasoning_effort']}")
+        print(f"  Context Compressor: {m_cfg['compressor_mode']}")
+        print(f"  Web Search:         {s_cfg['provider']}")
+        print(f"  Telegram Bot:       {'Enabled' if msg_cfg['telegram']['enabled'] else 'Disabled'}")
+        print(f"  Discord Bot:        {'Enabled' if msg_cfg['discord']['enabled'] else 'Disabled'}")
+        print("=" * 64)
+        print(f"\n✓ Autonomous setup complete! Configured in {res['config_file']}\n")
+        return res
+
     ag_mgr = AntigravityOAuthManager(auth_file=cfg_dir / "antigravity_auth.json")
     ag_cred = ag_mgr.resolve_credential(auto_refresh=True)
 
