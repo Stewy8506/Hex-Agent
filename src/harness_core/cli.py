@@ -163,6 +163,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_run.add_argument("--base-branch", default="main", help="Base branch for Pull Request (default: main)")
     p_run.add_argument("--dry-run", action="store_true", help="Dry-run mode: do not create real git commits or remote PRs")
     p_run.add_argument("--react", action="store_true", help="Enable autonomous multi-turn ReAct tool execution")
+    p_run.add_argument("--keep-artifacts", "--pinned", action="store_true", dest="keep_artifacts", help="Exempt task artifacts and snapshots from GC retention deletion")
 
     p_sub = sub.add_parser("submit", help="Submit and execute a task")
     p_sub.add_argument("goal", help="Task goal description")
@@ -170,6 +171,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_sub.add_argument("--mode", choices=["auto", "fast_path", "standard"], default="auto")
     p_sub.add_argument("--provider", default=None, help="Cloud reasoner provider override")
     p_sub.add_argument("--workspace", default=None)
+    p_sub.add_argument("--keep-artifacts", "--pinned", action="store_true", dest="keep_artifacts", help="Exempt task artifacts and snapshots from GC retention deletion")
 
     p_stat = sub.add_parser("status", help="Inspect task status, events, and Proof-Carrying Artifact")
     p_stat.add_argument("task_id", nargs="?", default=None)
@@ -473,6 +475,20 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_ps.add_argument("--kill", type=str, default=None, help="Terminate specified process ID")
     p_ps.add_argument("--force", action="store_true", help="Force kill with SIGKILL")
     p_ps.add_argument("--filter", type=str, default=None, choices=["running", "completed", "failed", "killed"], help="Filter by process status")
+
+    p_gc = sub.add_parser("gc", help="Run storage retention garbage collection sweep on expired snapshots and unreferenced CAS blobs")
+    p_gc.add_argument("--dry-run", action="store_true", help="Inspect reclaimable storage without deleting files")
+    p_gc.add_argument("--workspace-ttl", default=None, help="Workspace and snapshot retention duration (default: 24h)")
+    p_gc.add_argument("--cas-ttl", default=None, help="CAS blob retention duration (default: 7d)")
+    p_gc.add_argument("--full-vacuum", action="store_true", help="Perform full SQLite database VACUUM")
+    p_gc.add_argument("--no-vacuum", action="store_true", help="Skip ledger database vacuum")
+    p_gc.add_argument("--json", action="store_true", help="Output raw JSON retention report")
+
+    p_pin = sub.add_parser("pin", help="Pin task execution artifacts to protect them from GC deletion")
+    p_pin.add_argument("task_id", help="Task ID to pin (e.g., tsk_123456)")
+
+    p_unpin = sub.add_parser("unpin", help="Unpin task execution artifacts to allow normal GC expiration")
+    p_unpin.add_argument("task_id", help="Task ID to unpin")
 
     p_uninst = sub.add_parser("uninstall", help="Uninstall HEX CLI, unload background daemons, and optionally purge data")
     p_uninst.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
@@ -929,6 +945,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             project_id=task_project_id,
             execution_mode=args.mode,
             workspace_root=str(ws_root),
+            pinned=bool(getattr(args, "keep_artifacts", False)),
         )
 
         needs_git = bool(getattr(args, "pr", False) or getattr(args, "branch", None))
@@ -1028,6 +1045,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             project_id=task_project_id,
             execution_mode=args.mode,
             workspace_root=args.workspace or str(ws_root),
+            pinned=bool(getattr(args, "keep_artifacts", False)),
         )
         task = orch.submit_and_run(req, auto_execute=True)
         proof = orch.ledger.get_proof_bundle(task["task_id"])
@@ -2034,6 +2052,54 @@ def _main_impl(argv: list[str] | None = None) -> int:
             pid_s = str(p.get("pid") or "-")
             print(f"{p.get('id', ''):<16} {pid_s:<8} {st:<12} {uptime_s:<9} {pty_s:<5} {cmd:<30} {tail or '-'}")
         return 0
+
+    if args.cmd == "gc":
+        from .gc import GarbageCollector
+
+        collector = GarbageCollector(
+            data_dir=bound_data_dir,
+            ledger=orch.ledger,
+            workspace_root=ws_root,
+        )
+        report = collector.run_sweep(
+            dry_run=bool(getattr(args, "dry_run", False)),
+            full_vacuum=bool(getattr(args, "full_vacuum", False)),
+            workspace_ttl=getattr(args, "workspace_ttl", None),
+            cas_ttl=getattr(args, "cas_ttl", None),
+            skip_vacuum=bool(getattr(args, "no_vacuum", False)),
+        )
+
+        if getattr(args, "json", False):
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            print(report.format_summary(color=sys.stdout.isatty()))
+        return 0
+
+    if args.cmd == "pin":
+        tid = getattr(args, "task_id", "").strip()
+        if not tid:
+            print("Error: Missing task_id to pin.")
+            return 1
+        ok = orch.ledger.pin_task(tid, pinned=True)
+        if ok:
+            print(f"✔ Task {tid} pinned: artifacts and snapshots exempted from GC retention deletion.")
+            return 0
+        else:
+            print(f"Error: Task {tid} not found in ledger.")
+            return 1
+
+    if args.cmd == "unpin":
+        tid = getattr(args, "task_id", "").strip()
+        if not tid:
+            print("Error: Missing task_id to unpin.")
+            return 1
+        ok = orch.ledger.pin_task(tid, pinned=False)
+        if ok:
+            print(f"✔ Task {tid} unpinned: artifacts subject to normal GC retention.")
+            return 0
+        else:
+            print(f"Error: Task {tid} not found in ledger.")
+            return 1
 
     if args.cmd == "uninstall":
         import shutil

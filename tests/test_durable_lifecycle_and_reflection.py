@@ -7,13 +7,13 @@ Addresses:
 """
 
 import json
+import os
 import sqlite3
 import tempfile
 import time
+import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from harness_core.memory import (
     AMEMController,
@@ -27,11 +27,20 @@ from harness_core.orchestrator import (
 )
 
 
-class TestDurableLifecycle:
+class TestDurableLifecycle(unittest.TestCase):
     """Tests for MemoryLifecycleManager archive-before-delete durability and FTS idempotency (F-02)."""
 
-    def test_archive_before_delete(self, tmp_path):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._temp_dir.name)
+
+    def tearDown(self) -> None:
+        self._temp_dir.cleanup()
+
+    def test_archive_before_delete(self, tmp_path=None):
         """Demotion sweep must preserve active memory if cold archive fails."""
+        if tmp_path is None:
+            tmp_path = self.tmp_path
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         mem_dir = workspace / ".hex" / "memories"
@@ -80,8 +89,10 @@ class TestDurableLifecycle:
         assert len(archived) == 1
         assert archived[0]["memory_id"] == mem_id
 
-    def test_archive_idempotency(self, tmp_path):
+    def test_archive_idempotency(self, tmp_path=None):
         """Re-archiving an existing memory updates row and avoids duplicate rows in FTS5."""
+        if tmp_path is None:
+            tmp_path = self.tmp_path
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         lifecycle = MemoryLifecycleManager(workspace_root=workspace)
@@ -124,8 +135,10 @@ class TestDurableLifecycle:
         assert len(results) == 1
         assert "max size 20" in results[0]["content"]
 
-    def test_promotion_wiring(self, tmp_path):
+    def test_promotion_wiring(self, tmp_path=None):
         """A reflection with >= 3 references is automatically promoted on task completion."""
+        if tmp_path is None:
+            tmp_path = self.tmp_path
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         orchestrator_dir = tmp_path / "orchestrator_data"
@@ -184,11 +197,20 @@ class TestDurableLifecycle:
         assert "demoted_count" in maint_res
 
 
-class TestTransactionalMutations:
+class TestTransactionalMutations(unittest.TestCase):
     """Tests for transactional batch operations and disk deletion verification (F-05)."""
 
-    def test_batch_transaction_rollback(self, tmp_path):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._temp_dir.name)
+
+    def tearDown(self) -> None:
+        self._temp_dir.cleanup()
+
+    def test_batch_transaction_rollback(self, tmp_path=None):
         """Batch operations must be all-or-nothing: failure in Op 2 rolls back Op 1."""
+        if tmp_path is None:
+            tmp_path = self.tmp_path
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         store = CuratedMemoryStore(workspace_root=workspace)
@@ -245,8 +267,10 @@ class TestTransactionalMutations:
         assert "Baseline rule: keep methods small and pure." in updated_content
         assert "Baseline rule: keep methods concise." not in updated_content
 
-    def test_delete_memory_disk_check(self, tmp_path):
+    def test_delete_memory_disk_check(self, tmp_path=None):
         """AMEMController.delete_memory must verify physical store remove result and retain metadata if disk remove fails."""
+        if tmp_path is None:
+            tmp_path = self.tmp_path
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         store = CuratedMemoryStore(workspace_root=workspace)
@@ -277,12 +301,21 @@ class TestTransactionalMutations:
         assert mem_id not in controller._tag_index.get("security", set())
 
 
-class TestIdleReflectionWorker:
+class TestIdleReflectionWorker(unittest.TestCase):
     """Tests for draining pending reflections when system is idle (F-06)."""
 
-    def test_idle_reflection_worker(self, tmp_path, monkeypatch):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._temp_dir.name)
+
+    def tearDown(self) -> None:
+        self._temp_dir.cleanup()
+
+    def test_idle_reflection_worker(self, tmp_path=None):
         """Worker drains pending reflections when is_idle=True, writes LESSONS.md, and updates candidate status."""
-        monkeypatch.delenv("HEX_AUTO_REFLECT", raising=False)
+        os.environ.pop("HEX_AUTO_REFLECT", None)
+        if tmp_path is None:
+            tmp_path = self.tmp_path
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         hex_dir = workspace / ".hex"
@@ -328,9 +361,11 @@ class TestIdleReflectionWorker:
         content = lessons_md.read_text(encoding="utf-8")
         assert "TokenBucket.acquire" in content or "tsk_idle_001" in content or "Refactor token bucket algorithm" in content
 
-    def test_idle_gate(self, tmp_path, monkeypatch):
+    def test_idle_gate(self, tmp_path=None):
         """When auto_reflect is idle and is_idle=False, pending reflections are left untouched."""
-        monkeypatch.delenv("HEX_AUTO_REFLECT", raising=False)
+        os.environ.pop("HEX_AUTO_REFLECT", None)
+        if tmp_path is None:
+            tmp_path = self.tmp_path
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         hex_dir = workspace / ".hex"
@@ -363,9 +398,11 @@ class TestIdleReflectionWorker:
         updated = json.loads(pending_file.read_text(encoding="utf-8"))
         assert updated[0]["status"] == "pending"
 
-    def test_retry_ceiling(self, tmp_path, monkeypatch):
+    def test_retry_ceiling(self, tmp_path=None):
         """Candidates with retry_count >= 3 are marked failed and skipped, not endlessly retried."""
-        monkeypatch.delenv("HEX_AUTO_REFLECT", raising=False)
+        os.environ.pop("HEX_AUTO_REFLECT", None)
+        if tmp_path is None:
+            tmp_path = self.tmp_path
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         hex_dir = workspace / ".hex"

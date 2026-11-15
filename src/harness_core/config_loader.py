@@ -389,3 +389,51 @@ def should_execute_background_reflection(
 
     return False, "Suppressed background reflection on local hardware to prevent memory starvation"
 
+
+def load_retention_config(workspace_root: Path | str | None = None) -> dict[str, Any]:
+    """Load storage retention and garbage collection settings.
+
+    Priority:
+    1. Local workspace .hex/config.toml or .hex/config.yaml under [retention]
+    2. Global ~/.hex/config.toml or ~/.hex/config.yaml under [retention]
+    3. Defaults: workspace_ttl='24h', cas_ttl='7d', auto_vacuum=True
+    """
+    defaults = {
+        "workspace_ttl": "24h",
+        "cas_ttl": "7d",
+        "auto_vacuum": True,
+    }
+
+    ws = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    candidates = [
+        ws / ".hex" / "config.toml",
+        ws / ".hex" / "config.yaml",
+        Path.home() / ".hex" / "config.toml",
+        Path.home() / ".hex" / "config.yaml",
+    ]
+
+    for p in candidates:
+        if not p.is_file():
+            continue
+        try:
+            if p.suffix == ".toml":
+                try:
+                    import tomllib  # type: ignore[import-not-found]
+                    content = p.read_bytes()
+                    data = tomllib.loads(content.decode("utf-8"))
+                    ret = data.get("retention")
+                    if isinstance(ret, dict):
+                        return {**defaults, **ret}
+                except Exception:
+                    pass
+            elif p.suffix in (".yaml", ".yml"):
+                data = parse_config_yaml(p)
+                ret = data.get("retention")
+                if isinstance(ret, dict):
+                    return {**defaults, **ret}
+        except Exception:
+            continue
+
+    return defaults
+
+

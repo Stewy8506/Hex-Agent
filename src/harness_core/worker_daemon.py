@@ -518,6 +518,7 @@ class WorkerDaemon:
                 else:
                     if once:
                         break
+                    self._maybe_run_idle_gc()
                     self._stop_event.wait(timeout=self.poll_interval)
             except Exception as exc:
                 logger.error("Task claim loop error on %s: %s", self.worker_id, exc)
@@ -535,6 +536,18 @@ class WorkerDaemon:
                 lease_info=task if "attempt_id" in task else None,
             )
         return self.client.execute_task(task_id, worker_id=self.worker_id)
+
+    def _maybe_run_idle_gc(self) -> None:
+        """Throttled non-blocking GC sweep during worker idle window."""
+        now = time.time()
+        if now - getattr(self, "_last_idle_gc", 0.0) < 7200:
+            return
+        self._last_idle_gc = now
+        if self.orchestrator is not None and hasattr(self.orchestrator, "gc") and self.orchestrator.gc:
+            try:
+                self.orchestrator.gc.run_sweep(dry_run=False, full_vacuum=False)
+            except Exception as exc:
+                logger.debug("Idle GC sweep error: %s", exc)
 
     def stop(self) -> None:
         """Gracefully shuts down the daemon, releasing active leases."""

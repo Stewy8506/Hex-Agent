@@ -1263,7 +1263,7 @@ class HexConsole:
         "/help", "/mode", "/rename", "/status", "/diff", "/sbs", "/rollback", "/fork",
         "/skills", "/scan", "/model", "/compressor", "/compress", "/budget",
         "/quota", "/antigravity", "/blast", "/proof", "/memory",
-        "/remember", "/reflect", "/search", "/doctor", "/recipe",
+        "/remember", "/reflect", "/search", "/doctor", "/recipe", "/gc",
         "/lsp", "/backup", "/dump", "/workers", "/harness2", "/skin",
         "/voice", "/banner", "/clear", "/subagents", "/react", "/ps", "/processes", "/kernel", "/repl", "/quit", "/exit",
     ]
@@ -1635,6 +1635,13 @@ class HexConsole:
         if not self.quiet:
             print(self.render_welcome_splash())
 
+        # Trigger non-blocking asynchronous retention sweep in daemon thread
+        if not os.getenv("HEX_TESTING") and hasattr(self.orchestrator, "gc") and self.orchestrator.gc:
+            try:
+                self.orchestrator.gc.start_async_sweep()
+            except Exception:
+                pass
+
         if input_fn is not None:
             read_line = input_fn
         else:
@@ -1752,6 +1759,8 @@ class HexConsole:
             self._cmd_subagents(arg)
         elif cmd in ("/ps", "/processes", "/proc"):
             self._cmd_ps(arg)
+        elif cmd in ("/gc", "/cleanup"):
+            self._cmd_gc(arg)
         elif cmd in ("/react", "/react-loop", "/loop"):
             self._cmd_react(arg)
         elif cmd in ("/compress", "/compact", "/compaction"):
@@ -2757,6 +2766,23 @@ class HexConsole:
             print(f"  Audio Input:    {hw.get('mic_tool') or 'None'}\n")
         else:
             print(f"\n{ANSI_RED}Usage: /voice [on|off|mute|status|rate <wpm>|voice <name>]{ANSI_RESET}\n")
+
+    def _cmd_gc(self, arg: str = "") -> None:
+        """Run storage retention garbage collection sweep from TUI."""
+        dry_run = "dry-run" in arg.lower() or "--dry-run" in arg.lower()
+        print(f"\n{ANSI_CYAN}Running storage garbage collection sweep...{ANSI_RESET}")
+        try:
+            from .gc import GarbageCollector
+
+            collector = getattr(self.orchestrator, "gc", None) or GarbageCollector(
+                data_dir=getattr(self.orchestrator, "data_dir", None) or (Path.home() / ".hex" / "data"),
+                ledger=getattr(self.orchestrator, "ledger", None),
+                workspace_root=self.workspace_root,
+            )
+            report = collector.run_sweep(dry_run=dry_run, full_vacuum=False)
+            print(report.format_summary(color=True) + "\n")
+        except Exception as exc:
+            print(f"\n{ANSI_RED}GC sweep failed: {exc}{ANSI_RESET}\n")
 
     def _cmd_backup(self) -> None:
         from .backup import create_backup

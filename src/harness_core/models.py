@@ -222,3 +222,4 @@ class TaskSubmitRequest:
     steps: list[dict[str, Any]] | None = None
     skill_id: str | None = None
     parent_task_id: str | None = None
+    pinned: bool = False

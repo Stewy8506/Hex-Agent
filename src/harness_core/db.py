@@ -320,6 +320,10 @@ class LedgerStore:
             with self._lock:
                 if self.conn is not None:
                     self.conn.executescript(sql)
+                    try:
+                        self.conn.execute("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;")
+                    except sqlite3.OperationalError:
+                        pass
                     self.conn.commit()
 
     def _row_to_dict(self, row: Any) -> dict[str, Any] | None:
@@ -377,14 +381,16 @@ class LedgerStore:
             if mode == "auto":
                 mode = "fast_path" if self._is_fast_path_eligible(req) else "standard"
 
+            pinned_val = 1 if getattr(req, "pinned", False) else 0
+
             self.conn.execute(
                 """
                 INSERT INTO tasks (
                     task_id, parent_task_id, project_id, goal, execution_mode,
                     status, priority, deadline_at, budget_json, constraints_json,
                     deliverable, policy_snapshot_id, idempotency_key,
-                    active_workspace_tree_sha, version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    active_workspace_tree_sha, version, pinned, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -401,6 +407,7 @@ class LedgerStore:
                     policy_snapshot_id,
                     req.idempotency_key,
                     None,
+                    pinned_val,
                     now,
                     now,
                 ),
@@ -474,14 +481,16 @@ class LedgerStore:
                 if mode == "auto":
                     mode = "fast_path" if self._is_fast_path_eligible(req) else "standard"
 
+                pinned_val = 1 if getattr(req, "pinned", False) else 0
+
                 await conn.execute(
                     """
                     INSERT INTO tasks (
                         task_id, parent_task_id, project_id, goal, execution_mode,
                         status, priority, deadline_at, budget_json, constraints_json,
                         deliverable, policy_snapshot_id, idempotency_key,
-                        active_workspace_tree_sha, version, created_at, updated_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 1, $15, $16)
+                        active_workspace_tree_sha, version, pinned, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 1, $15, $16, $17)
                     """,
                     task_id,
                     req.parent_task_id,
@@ -497,6 +506,7 @@ class LedgerStore:
                     policy_snapshot_id,
                     req.idempotency_key,
                     None,
+                    pinned_val,
                     now,
                     now,
                 )
@@ -3698,4 +3708,195 @@ class LedgerStore:
         """Search tasks, execution transcripts, and logs via FTS5 BM25 index."""
         results = self.search_index.search(query, project_id=project_id, limit=limit)
         return [r.to_dict() for r in results]
+
+    # ------------------------------------------------------------------
+    # Garbage Collection & Retention Queries
+    # ------------------------------------------------------------------
+
+    def pin_task(self, task_id: str, pinned: bool = True) -> bool:
+        """Pin or unpin a task to exempt or unexempt its workspace artifacts from GC."""
+        if self.backend_type == "postgres":
+            return self._run_sync(self.pin_task_async, task_id, pinned)
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE tasks SET pinned = ?, updated_at = ? WHERE task_id = ?",
+                (1 if pinned else 0, utcnow_iso(), task_id),
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    async def pin_task_async(self, task_id: str, pinned: bool = True) -> bool:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.pin_task, task_id, pinned)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE tasks SET pinned = $1, updated_at = $2 WHERE task_id = $3",
+                1 if pinned else 0,
+                utcnow_iso(),
+                task_id,
+            )
+            return "UPDATE 1" in res
+
+    def is_task_pinned(self, task_id: str) -> bool:
+        """Check whether a task is explicitly pinned."""
+        task = self.get_task(task_id)
+        if not task:
+            return False
+        return bool(task.get("pinned", 0))
+
+    def get_terminal_unpinned_tasks_older_than(self, cutoff_iso: str) -> list[dict[str, Any]]:
+        """Find terminal unpinned tasks updated before cutoff_iso."""
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_terminal_unpinned_tasks_older_than_async, cutoff_iso)
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT task_id, status, updated_at, pinned
+                FROM tasks
+                WHERE (pinned IS NULL OR pinned = 0)
+                  AND status IN ('SUCCEEDED', 'COMPLETED', 'FAILED', 'ABANDONED')
+                  AND updated_at < ?
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_terminal_unpinned_tasks_older_than_async(self, cutoff_iso: str) -> list[dict[str, Any]]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_terminal_unpinned_tasks_older_than, cutoff_iso)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT task_id, status, updated_at, pinned
+                FROM tasks
+                WHERE (pinned IS NULL OR pinned = 0)
+                  AND status IN ('SUCCEEDED', 'COMPLETED', 'FAILED', 'ABANDONED')
+                  AND updated_at < $1
+                """,
+                cutoff_iso,
+            )
+            return [dict(r) for r in rows]
+
+    def get_active_or_pinned_cas_hashes(self, recent_cutoff_iso: str) -> set[str]:
+        """Collect all SHA-256 hashes referenced by active tasks, pinned tasks, or tasks updated >= recent_cutoff_iso."""
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_active_or_pinned_cas_hashes_async, recent_cutoff_iso)
+        with self._lock:
+            protected_query = """
+                SELECT task_id FROM tasks
+                WHERE pinned = 1
+                   OR status NOT IN ('SUCCEEDED', 'COMPLETED', 'FAILED', 'ABANDONED')
+                   OR updated_at >= ?
+            """
+            rows = self.conn.execute(protected_query, (recent_cutoff_iso,)).fetchall()
+            protected_task_ids = [r["task_id"] for r in rows]
+
+            hashes: set[str] = set()
+
+            if protected_task_ids:
+                # Query in chunks of 500 to avoid SQLite variable limits
+                for i in range(0, len(protected_task_ids), 500):
+                    chunk = protected_task_ids[i : i + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+
+                    art_rows = self.conn.execute(
+                        f"SELECT sha256 FROM artifacts WHERE task_id IN ({placeholders}) AND sha256 IS NOT NULL",
+                        chunk,
+                    ).fetchall()
+                    for r in art_rows:
+                        if r["sha256"]:
+                            hashes.add(r["sha256"].lower().strip())
+
+                    pb_rows = self.conn.execute(
+                        f"""
+                        SELECT git_diff_sha, workspace_tree_sha, runtime_digest
+                        FROM proof_bundles WHERE task_id IN ({placeholders})
+                        """,
+                        chunk,
+                    ).fetchall()
+                    for r in pb_rows:
+                        for k in ("git_diff_sha", "workspace_tree_sha", "runtime_digest"):
+                            val = r[k]
+                            if val and len(val) >= 8:
+                                hashes.add(val.lower().strip())
+
+                    chk_rows = self.conn.execute(
+                        f"""
+                        SELECT workspace_tree_sha, sha256
+                        FROM checkpoints WHERE task_id IN ({placeholders})
+                        """,
+                        chunk,
+                    ).fetchall()
+                    for r in chk_rows:
+                        for k in ("workspace_tree_sha", "sha256"):
+                            val = r[k]
+                            if val and len(val) >= 8:
+                                hashes.add(val.lower().strip())
+
+                    att_rows = self.conn.execute(
+                        f"""
+                        SELECT base_tree_sha, head_tree_sha
+                        FROM attempts WHERE task_id IN ({placeholders})
+                        """,
+                        chunk,
+                    ).fetchall()
+                    for r in att_rows:
+                        for k in ("base_tree_sha", "head_tree_sha"):
+                            val = r[k]
+                            if val and len(val) >= 8:
+                                hashes.add(val.lower().strip())
+
+            t_rows = self.conn.execute(
+                "SELECT active_workspace_tree_sha FROM tasks WHERE active_workspace_tree_sha IS NOT NULL"
+            ).fetchall()
+            for r in t_rows:
+                val = r["active_workspace_tree_sha"]
+                if val and len(val) >= 8:
+                    hashes.add(val.lower().strip())
+
+            return hashes
+
+    async def get_active_or_pinned_cas_hashes_async(self, recent_cutoff_iso: str) -> set[str]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_active_or_pinned_cas_hashes, recent_cutoff_iso)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            protected_rows = await conn.fetch(
+                """
+                SELECT task_id FROM tasks
+                WHERE pinned = 1
+                   OR status NOT IN ('SUCCEEDED', 'COMPLETED', 'FAILED', 'ABANDONED')
+                   OR updated_at >= $1
+                """,
+                recent_cutoff_iso,
+            )
+            protected_ids = [r["task_id"] for r in protected_rows]
+            hashes: set[str] = set()
+
+            if protected_ids:
+                art_rows = await conn.fetch(
+                    "SELECT sha256 FROM artifacts WHERE task_id = ANY($1::text[]) AND sha256 IS NOT NULL",
+                    protected_ids,
+                )
+                for r in art_rows:
+                    if r["sha256"]:
+                        hashes.add(r["sha256"].lower().strip())
+
+            return hashes
+
+    def vacuum(self, incremental: bool = True) -> None:
+        """Run SQLite vacuum to reclaim space. Uses non-blocking incremental_vacuum when incremental=True."""
+        if self.backend_type != "sqlite" or self.conn is None:
+            return
+        with self._lock:
+            try:
+                if incremental:
+                    self.conn.execute("PRAGMA incremental_vacuum;")
+                else:
+                    self.conn.execute("VACUUM;")
+            except Exception as exc:
+                logger.debug("Ledger vacuum exception: %s", exc)
+
 

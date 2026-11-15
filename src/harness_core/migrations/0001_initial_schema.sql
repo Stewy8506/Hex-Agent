@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     idempotency_key TEXT UNIQUE,
     active_workspace_tree_sha TEXT,
     version INTEGER NOT NULL DEFAULT 1,
+    pinned INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     terminal_reason TEXT
