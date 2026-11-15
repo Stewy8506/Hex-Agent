@@ -289,23 +289,29 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     handle_notification(&mut app, notif);
                 }
                 AppEvent::AssistantResponse(msg) => {
-                    let already_populated = if let Some(hex_tui::app::DialogueItem::Message(m)) =
-                        app.dialogue_items.last()
-                    {
-                        m.role == hex_protocol::models::Role::Assistant
-                            && (m.content == msg || m.content.contains(&msg[..msg.len().min(40)]))
-                    } else {
-                        false
-                    };
+                    let already_populated = app.active_turn_has_streamed
+                        || app.dialogue_items.iter().rev().any(|item| {
+                            if let hex_tui::app::DialogueItem::Message(m) = item {
+                                if m.role == hex_protocol::models::Role::Assistant {
+                                    let check_len = msg.len().min(40);
+                                    return check_len > 0
+                                        && (m.content == msg
+                                            || m.content.contains(&msg[..check_len]));
+                                }
+                            }
+                            false
+                        });
                     if !already_populated {
                         app.add_assistant_message(&msg);
                     }
+                    app.active_turn_has_streamed = false;
                     app.close_running_tool_calls();
                     app.is_busy = false;
                     app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::Ready => {
+                    app.active_turn_has_streamed = false;
                     app.close_running_tool_calls();
                     app.is_busy = false;
                     app.busy_started_at = None;
@@ -367,7 +373,7 @@ async fn handle_key_event(
         return Ok(());
     }
 
-    // Modal dismiss / help dismiss
+    // Modal dismiss / help dismiss / interrupt busy execution
     if key.code == KeyCode::Esc {
         if app.show_help {
             app.show_help = false;
@@ -376,6 +382,22 @@ async fn handle_key_event(
         if app.active_approval.is_some() {
             app.clear_approval_request();
             app.add_system_message("Operator dismissed approval dialog.");
+            return Ok(());
+        }
+        if app.is_busy {
+            if let Some(client) = acp_client {
+                let client_clone = client.clone();
+                let sess_id = app.session_id.clone();
+                tokio::spawn(async move {
+                    let _ = client_clone.session_cancel(&sess_id).await;
+                });
+            }
+            app.active_turn_has_streamed = false;
+            app.close_running_tool_calls();
+            app.is_busy = false;
+            app.busy_started_at = None;
+            app.status_message = "Ready".to_string();
+            app.add_system_message("Execution cancelled by operator.");
             return Ok(());
         }
     }
@@ -479,6 +501,11 @@ async fn handle_key_event(
                         && !app.input_buffer.contains(' ')
                     {
                         app.accept_slash_suggestion();
+                        return Ok(());
+                    }
+
+                    if app.is_busy {
+                        app.status_message = "Agent busy - please wait... (Esc to cancel)".to_string();
                         return Ok(());
                     }
 
@@ -692,6 +719,7 @@ async fn execute_submitted_text(
     }
 
     // Regular conversation message
+    app.active_turn_has_streamed = false;
     app.add_user_message(&text);
     app.is_busy = true;
     app.busy_started_at = Some(std::time::Instant::now());
@@ -770,6 +798,7 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                 if let Some(st) = update.status {
                     app.status_message = st.clone();
                     if st.eq_ignore_ascii_case("ready") || st.eq_ignore_ascii_case("completed") {
+                        app.active_turn_has_streamed = false;
                         app.close_running_tool_calls();
                         app.is_busy = false;
                         app.busy_started_at = None;

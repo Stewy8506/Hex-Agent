@@ -216,6 +216,7 @@ pub struct App {
     pub is_busy: bool,
     pub busy_started_at: Option<std::time::Instant>,
     pub status_message: String,
+    pub active_turn_has_streamed: bool,
 
     // Dialogue items and scrolling
     pub dialogue_items: Vec<DialogueItem>,
@@ -354,6 +355,7 @@ impl App {
             is_busy: false,
             busy_started_at: None,
             status_message: "Ready".to_string(),
+            active_turn_has_streamed: false,
 
             dialogue_items: Vec::new(),
             dialogue_scroll: 0,
@@ -410,6 +412,7 @@ impl App {
 
     /// Append a streaming token delta to the active Assistant message, or create one if none exists.
     pub fn append_assistant_delta(&mut self, delta: &str) {
+        self.active_turn_has_streamed = true;
         if let Some(DialogueItem::Message(msg)) = self.dialogue_items.last_mut() {
             if msg.role == Role::Assistant {
                 msg.content.push_str(delta);
@@ -1029,7 +1032,9 @@ mod tests {
     #[test]
     fn test_append_assistant_delta() {
         let mut app = App::new("p1", "m1", "cow");
+        assert!(!app.active_turn_has_streamed);
         app.append_assistant_delta("Hello");
+        assert!(app.active_turn_has_streamed);
         app.append_assistant_delta(" world");
         app.append_assistant_delta("!");
 

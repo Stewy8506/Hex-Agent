@@ -50,10 +50,15 @@ class VerificationAndProofService:
 
     def compute_git_diff(self, base_dir: Path | str, head_dir: Path | str) -> tuple[str, str]:
         """Computes unified diff and its SHA-256 between base snapshot and modified workspace."""
+        b_path = Path(base_dir).resolve()
+        h_path = Path(head_dir).resolve()
+        if b_path == h_path:
+            return sha256_hex(""), ""
+
         cmd = ["/usr/bin/diff", "-ruN"]
         for ign in sorted(IGNORE_DIRS):
             cmd.extend(["-x", ign])
-        cmd.extend(["-x", ".DS_Store", "-x", "*.pyc", str(base_dir), str(head_dir)])
+        cmd.extend(["-x", ".DS_Store", "-x", "*.pyc", str(b_path), str(h_path)])
         res = subprocess.run(
             cmd,
             capture_output=True,
