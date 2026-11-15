@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-15  
-**Current Milestone:** M12 (Production Cognition Hardening & Execution Seams) — ACTIVE  
-**Status:** Phase 33 Plan 33-03 Complete (Durable Lifecycle & Idle Reflection Workers Verified)  
-**Active Phase:** Phase 33: Production Cognition Hardening & Execution Seams  
-**Completed Milestones:** M1 through M11 Complete & Verified (858/858 Python tests green, 1 skipped, 34/34 Rust workspace tests green)  
+**Current Milestone:** M12 (Production Cognition Hardening & Execution Seams) — COMPLETE & VERIFIED  
+**Status:** All 8 Claude Opus Audit Findings (F-01..F-08) Resolved & Verified by Independent Verifier  
+**Active Phase:** All Phases Complete (Milestone M12 Signed Off)  
+**Completed Milestones:** M1 through M12 Complete & Verified (895+ Python tests green, 1 skipped, 34/34 Rust workspace tests green)  
 
 ---
 
@@ -404,11 +404,23 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
     - Full CLI `hex learn <target>` and TUI `/learn <target>` commands with preview, dry-run, and `[VERIFY: <cmd>]` status tags in `/skills`.
     - Verified by independent `gsd-verifier` (`.gsd/phases/32-autonomous-learning-loop/VERIFICATION.md`): 55/55 phase tests passed, 108/108 M11 tests passed, 848/848 repository tests passed (zero regressions).
 
+- **Milestone M12 (Production Cognition Hardening & Execution Seams) [COMPLETE & VERIFIED]:**
+  - **Phase 33 (Production Cognition Hardening & Execution Seams) [COMPLETE & VERIFIED]:**
+    - **F-01**: Sandboxed skill `verify:` hooks wired into orchestrator task completion state machine, allowlisted clean environment stripping provider/SSH secrets, and SkillSpector bundle SHA-256 integrity check.
+    - **F-02**: Scheduled memory lifecycle, archive-before-delete guarantee in `run_demotion_sweep()`, unique constraints in `archive.db`, and FTS5 deduplication idempotency.
+    - **F-03**: AST symbol definition body fingerprinting in `compute_code_fingerprint()`, eliminating false staleness from unrelated edits; migrated node memory to SQLite (`node_memories.db`) with FTS5 search.
+    - **F-04**: Session-scoped Turn-0 memory snapshotting (`session_id`) isolating sessions while freezing KV-cache within a session.
+    - **F-05**: Transactional multi-operation batch memory mutations with all-or-nothing rollback in `CuratedMemoryStore.execute_operations()`, and verified physical deletion in `AMEMController.delete_memory()`.
+    - **F-06**: Real idle reflection worker draining `pending_reflections.json` during idle intervals under file locks with retry ceilings.
+    - **F-07**: Rigid XML untrusted observation data fencing (`<retrieved-memory trusted="false">`), tag escaping, byte caps (300 bytes per note, 2,000 bytes total), and write-time prompt injection rejection.
+    - **F-08**: Exact `MAX_SOUL_CHARS` budget reservation and explicit trust-tier provenance (`SoulProvenance.WORKSPACE_USER`).
+    - Verified by independent `gsd-verifier` (`.gsd/phases/33-production-cognition-hardening/VERIFICATION.md`): 23/23 audit tests passed, 111/111 cognition suite tests passed, all 5 core strengths confirmed intact.
+
 ---
 
 ## 4. Next Actions
 
-- Milestone M11 is 100% Complete & Empirically Verified. Ready for user feedback and next milestone planning.
+- Milestone M12 is 100% Complete & Empirically Verified. All 8 findings from Claude Opus audit are fully resolved and verified.
 
 
 
