@@ -26,7 +26,7 @@ _INJECTION_PATTERNS = [
     (
         "ignore_instructions",
         re.compile(
-            r"(?i)(?:ignore|disregard|forget|bypass)\s+(?:all\s+)?(?:previous|prior|above|system)\s+(?:instructions|directives|prompts|rules)"
+            r"(?i)(?:ignore|disregard|forget|bypass)\s+(?:all\s+)?(?:previous\s+|prior\s+|above\s+|system\s+)?(?:instructions|directives|prompts|rules)"
         ),
     ),
     (
@@ -38,13 +38,25 @@ _INJECTION_PATTERNS = [
     (
         "prompt_override",
         re.compile(
-            r"(?i)(?:system\s+prompt\s+override|override\s+(?:all\s+)?system\s+directives|new\s+system\s+instruction)"
+            r"(?i)(?:system\s+prompt\s+override|override\s+(?:all\s+)?(?:system\s+)?(?:directives|instructions|tools?|rules)|new\s+system\s+instruction)"
         ),
     ),
     (
         "secret_exfiltration",
         re.compile(
             r"(?i)(?:print|output|exfiltrate|send|leak|dump)\s+(?:all\s+)?(?:env|environment\s+variables|api[_\s-]?keys?|secrets?|tokens?|credentials?)"
+        ),
+    ),
+    (
+        "tool_override",
+        re.compile(
+            r"(?i)(?:override|bypass|disable)\s+(?:all\s+)?(?:tools?|security|policies|guardrails|safety)"
+        ),
+    ),
+    (
+        "role_prompt",
+        re.compile(
+            r"(?i)(?:^|\n)\s*(?:system\s*:|<\|im_start\|>system|<system>)"
         ),
     ),
 ]

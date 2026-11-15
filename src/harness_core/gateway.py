@@ -1226,14 +1226,15 @@ class ToolGateway:
         memories = query_jit_memories_for_file(workspace_dir, rel_p, getattr(self, "graphify", None))
         if memories:
             jit_block = format_jit_memories_block(memories, rel_p)
-            injected_content = f"{content}\n\n{jit_block}"
-            return {
-                "ok": True,
-                "path": str(args["path"]),
-                "content": injected_content,
-                "size": len(injected_content),
-                "ast_memories": memories,
-            }
+            if jit_block:
+                injected_content = f"{content}\n\n{jit_block}"
+                return {
+                    "ok": True,
+                    "path": str(args["path"]),
+                    "content": injected_content,
+                    "size": len(injected_content),
+                    "ast_memories": memories,
+                }
 
         return {"ok": True, "path": str(args["path"]), "content": content, "size": len(content)}
 
