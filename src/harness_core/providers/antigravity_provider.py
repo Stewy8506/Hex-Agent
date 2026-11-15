@@ -523,29 +523,36 @@ class AntigravityOAuthManager:
         access_tok = str(data.get("access_token", ""))
         refresh_tok = str(data.get("refresh_token", ""))
 
-        project_id = DEFAULT_FALLBACK_PROJECT_ID
+        project_id: str | None = None
         plan_tier = "Antigravity (Included Plan)"
-        try:
-            load_url = f"{ANTIGRAVITY_PROD_ENDPOINT}/v1internal:loadCodeAssist"
-            headers_load = {
-                "Authorization": f"Bearer {access_tok}",
-                "Content-Type": "application/json",
-                "User-Agent": "antigravity",
-                "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-                "Client-Metadata": json.dumps({"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}),
-            }
-            body_load = json.dumps({"metadata": {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}}).encode("utf-8")
-            status_l, body_l = self._http_request(load_url, headers_load, body_load, "POST")
-            if status_l in (200, 201):
-                l_data = json.loads(body_l.decode("utf-8"))
-                p = l_data.get("cloudaicompanionProject")
-                if isinstance(p, str) and p.strip():
-                    project_id = p.strip()
-                tier = l_data.get("currentTier")
-                if isinstance(tier, dict) and tier.get("name"):
-                    plan_tier = str(tier["name"])
-        except Exception:
-            pass
+        headers_load = {
+            "Authorization": f"Bearer {access_tok}",
+            "Content-Type": "application/json",
+            "User-Agent": "antigravity",
+            "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+            "Client-Metadata": json.dumps({"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}),
+        }
+        body_load = json.dumps({"metadata": {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}}).encode("utf-8")
+        for ep in (ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_PROD_ENDPOINT):
+            try:
+                load_url = f"{ep}/v1internal:loadCodeAssist"
+                status_l, body_l = self._http_request(load_url, headers_load, body_load, "POST")
+                if status_l in (200, 201):
+                    l_data = json.loads(body_l.decode("utf-8"))
+                    p = l_data.get("cloudaicompanionProject")
+                    if isinstance(p, str) and p.strip() and p.strip() != DEFAULT_FALLBACK_PROJECT_ID:
+                        project_id = p.strip()
+                    elif isinstance(p, dict) and p.get("id"):
+                        pid = str(p["id"]).strip()
+                        if pid and pid != DEFAULT_FALLBACK_PROJECT_ID:
+                            project_id = pid
+                    tier = l_data.get("currentTier")
+                    if isinstance(tier, dict) and tier.get("name"):
+                        plan_tier = str(tier["name"])
+                    if project_id:
+                        break
+            except Exception:
+                continue
 
         cred = AntigravityCredential(
             access_token=access_tok,
@@ -1025,11 +1032,11 @@ class AntigravityModelProvider(ModelProvider):
 
     def ensure_project_id(self, access_token: str | None = None) -> str:
         """Resolve `cloudaicompanionProject` via `/v1internal:loadCodeAssist` or cached value."""
-        if self._cached_project_id:
+        if self._cached_project_id and self._cached_project_id != DEFAULT_FALLBACK_PROJECT_ID:
             return self._cached_project_id
 
         cred = self._get_active_credential()
-        if cred and cred.project_id:
+        if cred and cred.project_id and cred.project_id != DEFAULT_FALLBACK_PROJECT_ID:
             if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", cred.project_id, re.I):
                 self._cached_project_id = cred.project_id
                 return self._cached_project_id
@@ -1038,7 +1045,6 @@ class AntigravityModelProvider(ModelProvider):
         if not tok:
             return DEFAULT_FALLBACK_PROJECT_ID
 
-        url = f"{self.base_url}/v1internal:loadCodeAssist"
         headers = self._build_antigravity_headers(tok, include_client_meta=True)
         payload = {
             "metadata": {
@@ -1047,19 +1053,30 @@ class AntigravityModelProvider(ModelProvider):
                 "pluginType": "GEMINI",
             }
         }
-        try:
-            status, resp_bytes = self._execute_http(url, headers, json.dumps(payload).encode("utf-8"))
-            if status in (200, 201):
-                data = json.loads(resp_bytes.decode("utf-8"))
-                proj = data.get("cloudaicompanionProject")
-                if isinstance(proj, str) and proj.strip():
-                    self._cached_project_id = proj.strip()
-                    return self._cached_project_id
-                if isinstance(proj, dict) and proj.get("id"):
-                    self._cached_project_id = str(proj["id"]).strip()
-                    return self._cached_project_id
-        except Exception:
-            pass
+        candidate_bases = [self.base_url]
+        for alt_ep in (ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_PROD_ENDPOINT):
+            if alt_ep not in candidate_bases:
+                candidate_bases.append(alt_ep)
+
+        for ep in candidate_bases:
+            url = f"{ep}/v1internal:loadCodeAssist"
+            try:
+                status, resp_bytes = self._execute_http(url, headers, json.dumps(payload).encode("utf-8"))
+                if status in (200, 201):
+                    data = json.loads(resp_bytes.decode("utf-8"))
+                    proj = data.get("cloudaicompanionProject")
+                    resolved: str | None = None
+                    if isinstance(proj, str) and proj.strip() and proj.strip() != DEFAULT_FALLBACK_PROJECT_ID:
+                        resolved = proj.strip()
+                    elif isinstance(proj, dict) and proj.get("id"):
+                        pid = str(proj["id"]).strip()
+                        if pid and pid != DEFAULT_FALLBACK_PROJECT_ID:
+                            resolved = pid
+                    if resolved:
+                        self._cached_project_id = resolved
+                        return self._cached_project_id
+            except Exception:
+                continue
 
         self._cached_project_id = DEFAULT_FALLBACK_PROJECT_ID
         return self._cached_project_id
@@ -1295,7 +1312,7 @@ class AntigravityModelProvider(ModelProvider):
                 )
             err_detail = self._extract_error_message(resp_bytes) or "Rate limit or capacity temporarily exhausted"
             raise ProviderUnavailableError(
-                f"Google Antigravity returned HTTP 429 for model '{self.model_id}': {err_detail}"
+                f"Google Antigravity returned HTTP 429 for model '{self.model_id}' (project={project_id}): {err_detail}"
             )
 
         if status_code not in (200, 201):
