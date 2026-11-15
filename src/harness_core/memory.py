@@ -20,7 +20,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -694,42 +694,292 @@ class CuratedMemoryStore:
     def execute_operations(
         self, target: str, operations: List[Dict[str, Any]]
     ) -> dict[str, Any]:
-        """Execute a batch list of operations atomically."""
+        """Execute a batch list of operations transactionally with full validation and rollback."""
         if not operations:
             return {"ok": True, "success": True, "action": "batch", "results": []}
 
-        results = []
+        default_target = str(target or "memory").strip().lower()
+        target_map: dict[str, Path] = {}
         for op in operations:
-            action = str(op.get("action", "")).lower()
-            op_target = op.get("target") or target
-            if action == "add":
-                res = self.add(op.get("content", ""), target=op_target)
-            elif action == "replace":
-                res = self.replace(
-                    op.get("old_text", ""), op.get("new_text", ""), target=op_target
-                )
-            elif action == "patch":
-                res = self.patch(
-                    op.get("old_text", ""), op.get("new_text", ""), target=op_target
-                )
-            elif action in ("remove", "delete"):
-                res = self.remove(
-                    op.get("old_text") or op.get("content", ""), target=op_target
-                )
-            else:
-                res = {"ok": False, "success": False, "error": f"Unknown action: {action}"}
-            results.append(res)
-            if not res.get("ok"):
+            op_target = str(op.get("target") or default_target).strip().lower()
+            if op_target not in target_map:
+                try:
+                    target_map[op_target] = self.get_path_for_target(op_target)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "success": False,
+                        "action": "batch",
+                        "error": f"Invalid target '{op_target}': {exc}",
+                        "failed_op": op,
+                        "results": [],
+                    }
+
+        sorted_targets = sorted(target_map.keys(), key=lambda t: str(target_map[t]))
+        with ExitStack() as stack:
+            for t in sorted_targets:
+                stack.enter_context(_file_lock(target_map[t]))
+
+            original_contents: dict[str, str] = {}
+            staging_entries: dict[str, list[str]] = {}
+            for t in sorted_targets:
+                p = target_map[t]
+                if drift_err := self._check_drift_and_backup(t, p):
+                    return drift_err
+                original_contents[t] = p.read_text(encoding="utf-8") if p.is_file() else ""
+                staging_entries[t] = self.read_entries(t)
+
+            simulated_results: list[dict[str, Any]] = []
+            for op in operations:
+                action = str(op.get("action", "")).strip().lower()
+                op_target = str(op.get("target") or default_target).strip().lower()
+                entries = staging_entries[op_target]
+                limit = self.get_limit(op_target)
+
+                if action == "add":
+                    clean_content = str(op.get("content", "")).strip()
+                    if not clean_content:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": "Content cannot be empty",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    new_entries = list(entries) + [clean_content]
+                    total_chars = len(ENTRY_DELIMITER.join(new_entries))
+                    if total_chars > limit:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": (
+                                f"Adding entry exceeds {op_target} char limit: would put memory at "
+                                f"{total_chars}/{limit} chars (free at least {total_chars - limit} chars)"
+                            ),
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    staging_entries[op_target] = new_entries
+                    simulated_results.append({
+                        "ok": True,
+                        "success": True,
+                        "action": "add",
+                        "target": op_target,
+                        "content": clean_content,
+                        "usage": f"{total_chars}/{limit}",
+                    })
+
+                elif action == "replace":
+                    old_clean = str(op.get("old_text", "")).strip()
+                    new_clean = str(op.get("new_text", "")).strip()
+                    if not old_clean or not new_clean:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": "old_text and new_text are both required for replace",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    match_idx, is_ambiguous = _find_unique_match(entries, old_clean)
+                    if is_ambiguous:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": f"Multiple entries matched '{old_clean}'. Provide more surrounding context.",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    if match_idx is None:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": f"No entry matched '{old_clean}'. Ensure old_text matches an existing entry.",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    new_entries = list(entries)
+                    new_entries[match_idx] = new_clean
+                    total_chars = len(ENTRY_DELIMITER.join(new_entries))
+                    if total_chars > limit:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": (
+                                f"Replacing entry would put {op_target} memory at {total_chars}/{limit} chars: "
+                                f"free at least {total_chars - limit} chars"
+                            ),
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    staging_entries[op_target] = new_entries
+                    simulated_results.append({
+                        "ok": True,
+                        "success": True,
+                        "action": "replace",
+                        "target": op_target,
+                        "old_text": old_clean,
+                        "new_text": new_clean,
+                        "usage": f"{total_chars}/{limit}",
+                    })
+
+                elif action == "patch":
+                    old_clean = str(op.get("old_text", ""))
+                    new_clean = str(op.get("new_text", ""))
+                    if not old_clean:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": "old_text cannot be empty",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    match_idx, is_ambiguous = _find_unique_match(entries, old_clean)
+                    if is_ambiguous:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": f"Multiple entries matched '{old_clean}'. Provide more specific context.",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    if match_idx is None:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": f"No entry matched '{old_clean}' to patch.",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    entry = entries[match_idx]
+                    count = _span_occurrences(entry, old_clean)
+                    if count > 1:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": (
+                                f"'{old_clean}' appears {count} times in the matched entry. "
+                                f"Include more surrounding text so old_text occurs exactly once."
+                            ),
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    patched = entry.replace(old_clean, new_clean, 1)
+                    if patched == entry:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": f"Patch is a no-op: '{old_clean}' -> '{new_clean}' leaves entry unchanged.",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    new_entries = list(entries)
+                    new_entries[match_idx] = patched
+                    total_chars = len(ENTRY_DELIMITER.join(new_entries))
+                    if total_chars > limit:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": f"Patch would put {op_target} memory at {total_chars}/{limit} chars.",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    staging_entries[op_target] = new_entries
+                    simulated_results.append({
+                        "ok": True,
+                        "success": True,
+                        "action": "patch",
+                        "target": op_target,
+                        "patched_entry": patched,
+                        "usage": f"{total_chars}/{limit}",
+                    })
+
+                elif action in ("remove", "delete"):
+                    old_clean = str(op.get("old_text") or op.get("content", "")).strip()
+                    if not old_clean:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": "old_text cannot be empty",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    match_idx, is_ambiguous = _find_unique_match(entries, old_clean)
+                    if is_ambiguous:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": f"Multiple entries matched '{old_clean}'. Provide more surrounding text.",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    if match_idx is None:
+                        return {
+                            "ok": False,
+                            "success": False,
+                            "action": "batch",
+                            "error": f"No entry matched '{old_clean}' to remove.",
+                            "failed_op": op,
+                            "results": simulated_results,
+                        }
+                    removed = entries[match_idx]
+                    new_entries = [e for i, e in enumerate(entries) if i != match_idx]
+                    staging_entries[op_target] = new_entries
+                    total_chars = len(ENTRY_DELIMITER.join(new_entries))
+                    simulated_results.append({
+                        "ok": True,
+                        "success": True,
+                        "action": "remove",
+                        "target": op_target,
+                        "removed": removed,
+                        "usage": f"{total_chars}/{limit}",
+                    })
+
+                else:
+                    return {
+                        "ok": False,
+                        "success": False,
+                        "action": "batch",
+                        "error": f"Unknown action: {action}",
+                        "failed_op": op,
+                        "results": simulated_results,
+                    }
+
+            written_targets: list[str] = []
+            try:
+                for t in sorted_targets:
+                    new_text = ENTRY_DELIMITER.join(staging_entries[t])
+                    if new_text != original_contents[t]:
+                        self._write_with_history(t, target_map[t], new_text)
+                        written_targets.append(t)
+            except Exception as write_err:
+                logger.error("Batch commit failed during disk write: %s; rolling back", write_err)
+                for wt in written_targets:
+                    try:
+                        _atomic_write_text(target_map[wt], original_contents[wt])
+                    except Exception as rollback_err:
+                        logger.error("Failed to rollback %s: %s", wt, rollback_err)
                 return {
                     "ok": False,
                     "success": False,
                     "action": "batch",
-                    "error": res.get("error"),
-                    "failed_op": op,
-                    "results": results,
+                    "error": f"Batch write failed and was rolled back: {write_err}",
                 }
 
-        return {"ok": True, "success": True, "action": "batch", "results": results}
+            return {"ok": True, "success": True, "action": "batch", "results": simulated_results}
 
     def build_frozen_snapshot(self, session_id: Optional[str] = None) -> str:
         """Build and cache the Turn-0 frozen snapshot of all memory stores."""
@@ -2192,7 +2442,13 @@ class AMEMController:
         if action == "DELETE":
             if conflicting_item:
                 old_text = conflicting_item.text
-                self.store.remove(old_text=old_text, target=scope)
+                del_res = self.store.remove(old_text=old_text, target=scope)
+                if not del_res.get("ok"):
+                    return {
+                        "ok": False,
+                        "success": False,
+                        "error": f"Failed to remove memory from physical store: {del_res.get('error')}",
+                    }
                 del_id = conflicting_item.id
                 if del_id in self._items:
                     del self._items[del_id]
@@ -2310,7 +2566,14 @@ class AMEMController:
             }
 
         old_text = target_item.text
-        self.store.remove(old_text=old_text, target=scope)
+        res = self.store.remove(old_text=old_text, target=scope)
+        if not res.get("ok"):
+            return {
+                "ok": False,
+                "success": False,
+                "error": f"Failed to remove memory from physical store: {res.get('error')}",
+            }
+
         del_id = target_item.id
         if del_id in self._items:
             del self._items[del_id]

@@ -178,3 +178,97 @@ class TestDurableLifecycle:
         maint_res = run_lifecycle_maintenance(workspace_root=workspace)
         assert maint_res["status"] == "success"
         assert "demoted_count" in maint_res
+
+
+class TestTransactionalMutations:
+    """Tests for transactional batch operations and disk deletion verification (F-05)."""
+
+    def test_batch_transaction_rollback(self, tmp_path):
+        """Batch operations must be all-or-nothing: failure in Op 2 rolls back Op 1."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        store = CuratedMemoryStore(workspace_root=workspace)
+
+        # Initialize with baseline entry
+        baseline = store.add("Baseline rule: keep methods concise.", target="memory")
+        assert baseline["ok"]
+
+        mem_path = store.get_path_for_target("memory")
+        original_content = mem_path.read_text(encoding="utf-8")
+        assert "Baseline rule: keep methods concise." in original_content
+
+        # Submit batch: Op 1 is valid add, Op 2 fails due to budget limit (2200 chars max for memory)
+        giant_text = "X" * 3000
+        ops = [
+            {"action": "add", "content": "Valid Op 1: always write unit tests.", "target": "memory"},
+            {"action": "add", "content": giant_text, "target": "memory"},
+        ]
+
+        res = store.execute_operations("memory", ops)
+        assert res["ok"] is False
+        assert "char limit" in res["error"]
+        assert res["failed_op"] == ops[1]
+
+        # Verify disk file is UNCHANGED: Op 1 was NOT committed
+        current_content = mem_path.read_text(encoding="utf-8")
+        assert current_content == original_content
+        assert "Valid Op 1: always write unit tests." not in current_content
+
+        # Test failure on non-existent old_text for replace
+        ops_bad_replace = [
+            {"action": "add", "content": "Valid Op 1: check error codes.", "target": "memory"},
+            {"action": "replace", "old_text": "Non-existent string xyz123", "new_text": "Replacement", "target": "memory"},
+        ]
+        res_replace = store.execute_operations("memory", ops_bad_replace)
+        assert res_replace["ok"] is False
+        assert "No entry matched" in res_replace["error"]
+
+        current_content = mem_path.read_text(encoding="utf-8")
+        assert current_content == original_content
+        assert "Valid Op 1: check error codes." not in current_content
+
+        # Now test a batch where all operations succeed
+        ops_valid = [
+            {"action": "add", "content": "Valid Op 1: check error codes.", "target": "memory"},
+            {"action": "replace", "old_text": "Baseline rule: keep methods concise.", "new_text": "Baseline rule: keep methods small and pure.", "target": "memory"},
+        ]
+        res_valid = store.execute_operations("memory", ops_valid)
+        assert res_valid["ok"] is True
+        assert len(res_valid["results"]) == 2
+
+        updated_content = mem_path.read_text(encoding="utf-8")
+        assert "Valid Op 1: check error codes." in updated_content
+        assert "Baseline rule: keep methods small and pure." in updated_content
+        assert "Baseline rule: keep methods concise." not in updated_content
+
+    def test_delete_memory_disk_check(self, tmp_path):
+        """AMEMController.delete_memory must verify physical store remove result and retain metadata if disk remove fails."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        store = CuratedMemoryStore(workspace_root=workspace)
+        controller = AMEMController(workspace_root=workspace, store=store)
+
+        res = controller.add_memory("Rule to be safely tested for deletion: [[security]]", target="memory")
+        assert res["ok"]
+        mem_id = res["item"]["id"]
+
+        assert controller.get_memory(mem_id) is not None
+        assert "security" in controller._tag_index
+        assert mem_id in controller._tag_index["security"]
+
+        # Mock store.remove returning failure (e.g. disk I/O or lock error)
+        with patch.object(store, "remove", return_value={"ok": False, "success": False, "error": "Disk I/O error"}):
+            del_res = controller.delete_memory(mem_id, target="memory")
+            assert del_res["ok"] is False
+            assert "Failed to remove memory from physical store" in del_res["error"]
+
+            # CRITICAL: Memory item and tag index MUST be preserved!
+            assert controller.get_memory(mem_id) is not None
+            assert mem_id in controller._tag_index["security"]
+
+        # Now let deletion succeed
+        del_res_ok = controller.delete_memory(mem_id, target="memory")
+        assert del_res_ok["ok"] is True
+        assert controller.get_memory(mem_id) is None
+        assert mem_id not in controller._tag_index.get("security", set())
+
