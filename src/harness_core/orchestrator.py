@@ -2090,6 +2090,32 @@ class HarnessOrchestrator:
                 terminal_reason=str(pol_err),
             )
 
+        except BudgetExceededError as budget_err:
+            forensic_snap = self.cow.create_snapshot(
+                attempt_ws, label=f"{task_id}_budget_exhausted"
+            )
+            forensic_sha = forensic_snap.workspace_tree_sha
+            forensic_path = str(forensic_snap.snapshot_path)
+            self.ledger.update_attempt(
+                attempt_id,
+                status="FAILED",
+                head_tree_sha=forensic_sha,
+                failure_class="BUDGET_EXCEEDED",
+            )
+            return self.ledger.transition_task(
+                task_id,
+                TaskState.NEEDS_ATTENTION,
+                reason_code="BUDGET_EXHAUSTED",
+                attempt_id=attempt_id,
+                workspace_tree_sha=forensic_sha,
+                fencing_token=fencing_token,
+                terminal_reason=f"Task budget exhausted: {budget_err}",
+                payload={
+                    "forensic_snapshot_path": forensic_path,
+                    "error": str(budget_err),
+                },
+            )
+
         except Exception as crash_exc:
             # Roll back dirty uncommitted files in attempt_ws to latest valid snapshot (FR-012a)
             latest_valid = self.ledger.get_latest_checkpoint(task_id)
