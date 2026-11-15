@@ -38,6 +38,13 @@ An in-depth architectural and empirical comparison between **HEX AI Workbench** 
 4. **State Storage & Audit Ledger**:
    - **Hermes**: Persists session trajectories in SQLite tables.
    - **HEX**: Maintains an immutable cryptographic SHA-256 event hash chain backed by a dual-driver PostgreSQL 16 (`asyncpg` with `FOR UPDATE SKIP LOCKED` worker queues) and SQLite WAL engine with reversible Alembic migrations.
+5. **Cognition, Memory & Self-Learning**:
+   - **KV-Cache Prefix Stability**: Hermes mutates dynamic recall tags into the system prompt prefix on every turn, destroying KV-cache across both cloud APIs and local inference engines. HEX compiles Slot #4 at Turn 0 and freezes it, guaranteeing 100% byte-identical prefix invariance (up to 90% prompt cache discount on Anthropic/OpenAI; 0ms prefix processing on local MLX).
+   - **AST-Scoped JIT Memory**: Instead of stuffing every project rule into prompt memory, HEX binds memories to AST nodes via Graphify and injects them dynamically into `read_file` tool observations right when code is inspected.
+   - **Negative Invariants (`GUARDRAILS.md`)**: Automatically captures `- [AVOID]` rules when tool executions or builds fail repeatedly.
+   - **Zettelkasten Contradiction Resolution**: Uses the A-MEM pattern (`ADD`, `UPDATE`, `DELETE`, `NOOP`) to update or delete obsolete facts instead of accumulating contradictory bullet lists.
+   - **Deterministic `verify:` Skill Hooks**: Hermes skills are instructional prose; HEX skills carry executable shell verification commands and AST invariants, turning documentation into automated regression tests.
+   - **Hardware Gating (`auto_reflect`)**: Prevents unified memory starvation on local Apple Silicon / Ollama by gating background reflection behind hardware profiling (`cloud_only` | `idle` | `off`).
 
 ---
 

@@ -82,3 +82,84 @@ To operate within bounded model token budgets without losing critical failure co
    - Achieves a **75% to 88% token reduction** on compiler outputs and test traces.
 2. **Shadow Summary Deduplication**:
    - In extended 30+ turn sessions, older compaction summaries are parsed and consolidated into a single unified summary block, eliminating stacked duplicate context.
+
+---
+
+## 6. Next-Gen Cognition & Self-Evolution Architecture
+
+HEX fundamentally redesigns agent self-learning and memory away from static flat text buffers into a multi-tiered, active cognitive loop designed to eliminate prompt bloat, preserve KV-cache prefix stability, and turn learned experience into deterministic regression tests.
+
+```text
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                    5-SLOT SYSTEM PROMPT ARCHITECTURE                        │
+  │                                                                             │
+  │  Slot #1: SOUL.md Identity (Global ~/.hex/SOUL.md or Repo .hex/SOUL.md)    │
+  │           Capped token budget (~300–500 tokens). Defines tone and persona. │
+  │                                                                             │
+  │  Slot #2: Dynamic Mode Modulator                                            │
+  │           Punchy 3–4 line constraint overrides: plan / agent / code.        │
+  │                                                                             │
+  │  Slot #3: Environment & Tool Capabilities                                   │
+  │           Tool schemas, R0–R4 safety tiers, and platform execution context. │
+  │                                                                             │
+  │  Slot #4: Curated Memory Snapshot (Fenced in <memory-context>)              │
+  │           Frozen Turn-0 prefix snapshot: USER.md + MEMORY.md + GUARDRAILS.md│
+  │           Guarantees 100% byte-for-byte prefix invariance (KV-Cache freeze).│
+  │                                                                             │
+  │  Slot #5: Dynamic Context, Active Files & Skills                            │
+  │           Task intake, selected SKILL.md bundles, and dynamic execution.    │
+  └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### The 6 Architectural Pillars:
+
+#### 1. AST-Scoped Memory Injection (JIT Graph Retrieval)
+Instead of stuffing every project rule into a single 2,500-character `MEMORY.md` file, HEX partitions project memory into:
+- **Global Repo Memory**: Universal architectural facts kept in Slot #4.
+- **Node-Bound Memory**: File- and function-specific gotchas stored in SQLite/Graphify and retrieved Just-In-Time.
+- **Mechanism**: When the agent reads `src/orchestrator.py` or inspects a symbol, HEX automatically pulls any memory notes, invariants, or past bug post-mortems attached to that symbol or its 1-hop callers/callees. These are injected directly into the **`read_file` tool observation output**—not the system prompt.
+- **Benefit**: The system prompt stays 100% KV-cache frozen, while code-specific gotchas appear dynamically right when the model inspects or edits that file.
+
+#### 2. Negative Constraint Memory ("Anti-Patterns & Guardrails")
+Standard agent memories store positive facts (*"Use cargo nextest"*). Coding agents fail repeatedly because they forget what already failed.
+- **Mechanism**: HEX maintains `.hex/memories/GUARDRAILS.md`, populated automatically whenever a tool call or build command fails twice with the same signature, or when a user rejects a diff.
+- **Format**: `[AVOID] Do not use tokio::sync::Mutex across .await in router.rs — causes Send bound compile errors.`
+- **Benefit**: Negative invariants framed as explicit `[AVOID]` constraints right before execution dramatically cut repeat hallucination loops, especially on 8B–9B local models.
+
+#### 3. Zettelkasten-Style Linked Memory & Contradiction Resolution
+Flat bullet lists rot because new facts sit next to old facts that contradict them.
+- **Mechanism**: Memory writes follow the A-MEM / CRUD controller pattern (`ADD`, `UPDATE`, `DELETE`, `NOOP`). Before writing a new bullet to `MEMORY.md`, HEX executes a lightweight fast-path check against existing entries using FTS5 and tag overlap. If a new note contradicts an old one (e.g., *"Migrated database from MongoDB to SQLite"*), HEX executes an `UPDATE` or `DELETE` on the obsolete note rather than appending a conflicting line.
+- **Benefit**: Notes are linked with lightweight wiki-style tags (`[[auth-flow]]`, `[[webrtc-room]]`), so retrieving one pulls its immediate conceptual neighborhood without fact pollution.
+
+#### 4. Confidence Decay & "Promotion / Demotion" Lifecycle
+Not every learned insight deserves permanent real estate in your frozen system prompt.
+- **Mechanism**: Every memory entry carries an active hit counter and last-referenced timestamp.
+  - **Promotion**: If a reflection in `.hex/reflections/LESSONS.md` gets retrieved and helps solve a task across 3 separate sessions, HEX promotes it into `MEMORY.md` (or compiles it into a reusable `SKILL.md`).
+  - **Demotion (Archive)**: If a bullet in `MEMORY.md` goes unreferenced for 30 days—or its linked AST hash goes stale—it automatically demotes out of the active prompt into cold SQLite FTS5 archival storage.
+- **Benefit**: Active prompt context remains lean and relevant; old knowledge is preserved in cold search storage without bloating prompt tokens.
+
+#### 5. Deterministic Verification Hooks Attached to Skills
+Hermes `SKILL.md` files are purely instructional prose. In HEX, a learned skill carries executable verification assertions.
+- **Mechanism**: When `/learn` compiles a `SKILL.md` bundle (e.g. *"How to add a new RPC endpoint"*), it allows an optional `verify:` frontmatter block specifying a shell command, AST invariant, or test filter (e.g. `cargo test rpc_schema_sync`).
+- **Benefit**: Whenever HEX invokes that skill in the future, `SkillExecutionEngine` automatically runs the verification check with timeout protection after the agent finishes editing, turning passive documentation into an executable regression test.
+
+#### 6. Cross-Repo "Developer DNA" Sync (`USER.md` + Universal Skills)
+Separates machine-wide engineering habits from repository-specific trivia:
+- **`~/.hex/USER.md` + `~/.hex/skills/`**: Stores personal stack preferences (e.g. Rust error handling style, Neo-brutalist UI tokens, preferred CLI flags) and universal workflows across every project on the machine.
+- **`.hex/MEMORY.md` + `.hex/skills/`**: Tracked in git (or `.gitignored` per user choice) so project-specific architecture rules travel with the repository and can even be shared across teams.
+
+---
+
+## 7. Supply-Chain Security & Hardware Protection
+
+### NVIDIA SkillSpector AST Safety Gate
+Before any synthesized or third-party skill bundle is written to disk, it is staged in an isolated scratchpad and scanned by the upstream NVIDIA SkillSpector engine (`vendor/skillspector`):
+- **AST Behavioral Analysis**: Runs Python AST taint checks on bundled scripts to detect socket exfiltration, shell spawns, and unauthorized reflection.
+- **Prompt Injection & Steganography**: Scans for zero-width Unicode characters, bidirectional overrides, and instruction override markers.
+- **OSV CVE Lookup**: Scans bundled dependencies against the live OSV advisory database.
+- **Deterministic Quarantine**: Any skill scoring High or Critical risk (`gate_decision == "QUARANTINE"`) is rejected and quarantined to `.hex/quarantine/<name>/` with a forensic `audit.json`.
+
+### Hardware Gating (`auto_reflect = "cloud_only" | "idle" | "off"`)
+Spawning background reflection subagents on local hardware (e.g. Apple Silicon M-series or Ollama) competes for unified memory bandwidth and stalls active inference. HEX enforces strict hardware gating:
+- When running on local hardware under `cloud_only` or `off`, background LLM reflection is bypassed.
+- Candidate friction lessons are safely queued to `.hex/reflections/pending_reflections.json` for offline processing.

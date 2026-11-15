@@ -47,6 +47,7 @@ Most AI coding assistants edit your files in place. If an agent hallucinates or 
 <tr><td><b>Isolated Sandboxing</b></td><td>Instant Copy-on-Write staging (macOS APFS / Linux OverlayFS in &lt;10ms). Broken patches are discarded with zero host pollution.</td></tr>
 <tr><td><b>Proof Before Commit</b></td><td>Verifies tests and diagnostics inside the sandbox before touching a single line of your working branch.</td></tr>
 <tr><td><b>Native Rust Cockpit</b></td><td>Ultra-responsive 60 FPS Ratatui terminal interface with multiline editing, fuzzy slash autocomplete, and side-by-side split diffs.</td></tr>
+<tr><td><b>Active Cognition & Memory</b></td><td>JIT AST-scoped memory injection into tool observations (100% frozen KV-cache prompt), negative [AVOID] guardrails, and executable <code>verify:</code> skill hooks.</td></tr>
 <tr><td><b>Model Independence</b></td><td>Use any cloud provider or local offline LLM. Switch anytime with <code>/model</code>—no code changes, zero lock-in.</td></tr>
 <tr><td><b>Editor Integration</b></td><td>Built-in Agent Client Protocol (ACP) server for seamless use inside Zed, Neovim, and VS Code.</td></tr>
 <tr><td><b>Headless Browser & Vision</b></td><td>Automate web testing, inspect DOM accessibility hierarchies, and evaluate visual UI regressions directly from the CLI.</td></tr>
@@ -159,6 +160,67 @@ HEX is completely provider- and model-agnostic. Switch models instantly on the f
 - **100% Private Offline Local AI**: Ollama (`localhost:11434`), LM Studio (`localhost:1234`), native Apple Silicon Metal acceleration via MLX, and custom OpenAI-compatible endpoints (vLLM, SGLang, LocalAI).
 
 > 📖 **Full Catalog & Configs:** See [`docs/SUPPORTED_MODELS.md`](docs/SUPPORTED_MODELS.md) for the complete directory of 26 providers, model IDs, and environment variables.
+
+---
+
+## 🧠 Next-Gen Cognition & Self-Evolution (The 6 Upgrades Over Hermes)
+
+Traditional AI coding agents (including Hermes Agent and OpenClaw) either dump flat bullet lists into system prompts until context runs out, or lose memory the moment you restart your terminal. 
+
+HEX replaces flat memory files with an active **Cognitive Self-Evolution Engine** designed for long-lived codebases and local hardware:
+
+```text
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                            HEX COGNITIVE LOOP                               │
+  │                                                                             │
+  │   [ ~/.hex/USER.md ]       [ .hex/MEMORY.md ]       [ .hex/GUARDRAILS.md ]  │
+  │      Machine DNA              Repo Invariants           Negative [AVOID]    │
+  │           │                          │                         │            │
+  │           └───────────┬──────────────┴─────────────────────────┘            │
+  │                       ▼                                                     │
+  │            Slot #4: Turn-0 Frozen System Prompt (100% KV-Cache Invariant)   │
+  │                       │                                                     │
+  │       [ Tool Read ]   ▼   [ Tool Edit ]                                     │
+  │    JIT AST Node Gotchas Injected into Tool Output (Keeps prompt frozen!)     │
+  │                       │                                                     │
+  │   [ Friction Detected: ≥3 retries ] ──► Synthesizes .hex/reflections/       │
+  │   [ Deterministic Skill Compiler  ] ──► Generates SKILL.md with `verify:`   │
+  │   [ NVIDIA SkillSpector AST Gate  ] ──► Quarantines Malicious/Unvetted Code │
+  └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1. AST-Scoped Memory Injection (JIT Graph Retrieval)
+Instead of stuffing every project rule into a single 2,500-character `MEMORY.md` file, HEX partitions project memory into **Global Repo Memory** (always in Slot #4) and **Node-Bound Memory** (stored in SQLite/Graphify, retrieved on demand).
+- **How it works**: When the agent opens `src/orchestrator.py` or queries an AST symbol via Graphify, HEX automatically pulls any memory notes, invariants, or past bug post-mortems attached to that specific symbol or its immediate 1-hop callers/callees, injecting them into the **tool observation output** (not the system prompt).
+- **Why it matters**: Your system prompt stays tiny and **100% KV-cache frozen**, while file-specific gotchas appear dynamically right when the model reads or edits that exact code.
+
+### 2. Negative Constraint Memory ("Anti-Patterns & Guardrails")
+Standard agent memories store positive facts (*"Use cargo nextest"*). Coding agents fail repeatedly because they forget what already failed.
+- **How it works**: HEX maintains a dedicated `.hex/memories/GUARDRAILS.md` populated automatically whenever a tool call or build command fails twice in the same way, or when you explicitly reject a proposed diff.
+- **Format**: `[AVOID] Do not use tokio::sync::Mutex across .await in router.rs — causes Send bound compile errors.`
+- **Why it matters**: Retrieved failure traces are usually advisory and easily ignored by smaller models (8B–9B); framing them as explicit **`[AVOID]` invariants** right before tool execution dramatically cuts repeat hallucination loops.
+
+### 3. Zettelkasten-Style Linked Memory & Contradiction Resolution
+Flat bullet lists rot because new facts sit next to old facts that contradict them.
+- **How it works**: Model memory writes follow the A-MEM / CRUD controller pattern (`ADD`, `UPDATE`, `DELETE`, `NOOP`). Before writing a new bullet to `MEMORY.md`, HEX runs a lightweight fast-path check against existing entries (using FTS5 + tag overlap). If a new note contradicts an old one (e.g., *"Migrated database from MongoDB to SQLite"*), HEX executes an `UPDATE` or `DELETE` on the obsolete MongoDB note rather than appending a conflicting line.
+- **Why it matters**: Notes are linked with lightweight wiki-style tags (`[[auth-flow]]`, `[[webrtc-room]]`), so retrieving one pulls its immediate conceptual neighborhood without fact pollution.
+
+### 4. Confidence Decay & "Promotion / Demotion" Lifecycle
+Not every learned insight deserves permanent real estate in your frozen system prompt.
+- **How it works**: Every memory entry carries an active hit counter and last-referenced timestamp.
+  - **Promotion**: If a reflection in `.hex/reflections/LESSONS.md` gets retrieved and helps solve a task across 3 separate sessions, HEX promotes it into `MEMORY.md` (or compiles it into a reusable `SKILL.md`).
+  - **Demotion (Archive)**: If a bullet in `MEMORY.md` goes unreferenced for 30 days—or its linked AST hash goes stale—it automatically demotes out of the active prompt into cold SQLite FTS5 archival storage.
+- **Why it matters**: Your active context never rots or overflows with obsolete trivia from months ago.
+
+### 5. Deterministic Verification Hooks Attached to Skills
+Hermes `SKILL.md` files are purely instructional prose. In HEX, a learned skill carries executable verification assertions.
+- **How it works**: When `/learn` compiles a `SKILL.md` bundle (for example, *"How to add a new RPC endpoint"*), it allows an optional `verify:` frontmatter block specifying a shell command, AST invariant, or test filter (e.g. `cargo test rpc_schema_sync`).
+- **Why it matters**: Whenever HEX invokes that skill in the future, the harness automatically runs the verification check after the agent finishes editing, turning passive documentation into an **executable regression test**.
+
+### 6. Cross-Repo "Developer DNA" Sync (`USER.md` + Universal Skills)
+Separate machine-wide engineering habits from repository-specific trivia:
+- **`~/.hex/USER.md` + `~/.hex/skills/`**: Stores your personal stack preferences (e.g., Rust error handling style, Neo-brutalist UI tokens, preferred CLI flags) and universal workflows across every project you open.
+- **`.hex/MEMORY.md` + `.hex/skills/`**: Tracked in git (or `.gitignored` per user choice) so project-specific architecture rules travel with the repo and can even be shared across machines.
 
 ---
 
