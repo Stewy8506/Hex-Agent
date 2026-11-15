@@ -17,6 +17,7 @@ use hex_protocol::client::AcpClient;
 use hex_tui::app::{App, ApprovalRequest, Focus};
 use hex_tui::event::{AppEvent, EventHandler};
 use hex_tui::ui;
+use hex_tui::ui::design::{format_available_skills, format_available_tools};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -641,7 +642,10 @@ async fn execute_submitted_text(
                 app.add_system_message(&format!("Diff viewer mode: {}", mode_str));
             }
             "/skills" => {
-                app.add_system_message("Active Skills: [Python AST Analyzer, OSV CVE Scanner, Graphify Blast-Radius, Shell Gateway]");
+                app.add_system_message(&format_available_skills(4));
+            }
+            "/tools" => {
+                app.add_system_message(&format_available_tools(4));
             }
             "/react" => {
                 app.add_system_message("Toggled autonomous continuous ReAct loop.");

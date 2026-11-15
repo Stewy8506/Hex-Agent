@@ -101,8 +101,13 @@ pub const AVAILABLE_SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/skills",
-        description: "List active and scanned SkillSpector skills",
+        description: "Display categorized available skills catalog",
         usage: "/skills",
+    },
+    SlashCommand {
+        name: "/tools",
+        description: "Display categorized available tools catalog",
+        usage: "/tools",
     },
     SlashCommand {
         name: "/scan",

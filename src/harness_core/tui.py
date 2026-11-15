@@ -311,33 +311,38 @@ EMBLEM_ART: tuple[str, ...] = (
 )
 
 TOOL_CATEGORY_MAP: dict[str, str] = {
-    # File tools
-    "read_file": "file",
-    "write_file": "file",
-    "list_files": "file",
-    "patch": "file",
-    # Search tools
+    # Filesystem
+    "read_file": "filesystem",
+    "write_file": "filesystem",
+    "list_files": "filesystem",
+    "patch": "filesystem",
+    # Code Intelligence
+    "query_graphify": "code-intelligence",
+    "lsp_diagnostics": "code-intelligence",
+    "lsp_definition": "code-intelligence",
+    "lsp_references": "code-intelligence",
+    "lsp_hover": "code-intelligence",
+    # Execution & Runtime
+    "terminal": "execution",
+    "run_tests": "execution",
+    "process": "execution",
+    "code_kernel": "execution",
+    # Search
     "search_files": "search",
     "web_search": "search",
     "web_extract": "search",
-    # AST & Code Intelligence
-    "query_graphify": "ast_graph",
-    "lsp_diagnostics": "lsp_compiler",
-    "lsp_definition": "lsp_compiler",
-    "lsp_references": "lsp_compiler",
-    "lsp_hover": "lsp_compiler",
-    # Execution & Verification
-    "terminal": "shell_exec",
-    "run_tests": "verification",
-    "process": "shell_exec",
-    # Autonomy & Memory
-    "todo": "autonomy",
-    "clarify": "autonomy",
-    "memory": "autonomy",
-    "session_search": "autonomy",
-    # Remote Ops & Policy Guard
-    "git_push_remote": "git_ops",
-    "modify_system_policy": "policy_guard",
+    # Cognition & Autonomy
+    "todo": "cognition",
+    "clarify": "cognition",
+    "memory": "cognition",
+    "session_search": "cognition",
+    # Governance & Ops
+    "git_push_remote": "governance",
+    "modify_system_policy": "governance",
+    # Browser & Vision
+    "browser": "browser-vision",
+    "image_inspect": "browser-vision",
+    "delegate": "agent-delegation",
 }
 
 BUILTIN_SKILL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -927,15 +932,13 @@ def render_hex_splash(
                 grouped_tools.setdefault(cat, []).append(tid)
     else:
         grouped_tools = {
-            "file": ["list_files", "patch", "read_file", "write_file"],
+            "filesystem": ["list_files", "patch", "read_file", "write_file"],
+            "code-intelligence": ["query_graphify", "lsp_definition", "lsp_diagnostics", "lsp_hover", "lsp_references"],
+            "execution": ["code_kernel", "process", "terminal", "run_tests"],
             "search": ["search_files", "web_extract", "web_search"],
-            "lsp_compiler": ["lsp_definition", "lsp_diagnostics", "lsp_hover", "lsp_references"],
-            "ast_graph": ["query_graphify"],
-            "shell_exec": ["process", "terminal"],
-            "verification": ["run_tests"],
-            "autonomy": ["clarify", "memory", "session_search", "todo"],
-            "git_ops": ["git_push_remote"],
-            "policy_guard": ["modify_system_policy"],
+            "cognition": ["clarify", "memory", "session_search", "todo"],
+            "governance": ["modify_system_policy", "git_push_remote"],
+            "browser-vision": ["browser", "image_inspect"],
         }
 
     total_tools = sum(len(v) for v in grouped_tools.values())
@@ -971,20 +974,21 @@ def render_hex_splash(
     else:
         right_lines.append("")
 
-    right_lines.append(_c("tools", fg=skin.category_rgb, bold=True))
-    disp_count = 0
+    right_lines.append(_c("Available Tools", fg=skin.heading_rgb, bold=True))
     cat_items = list(grouped_tools.items())[:6]
     for cat, tnames in cat_items:
         disp_tools = tnames[:4]
-        disp_count += len(disp_tools)
         names_str = ", ".join(disp_tools)
+        rem_in_cat = len(tnames) - len(disp_tools)
+        if rem_in_cat > 0:
+            names_str += f", +{rem_in_cat} more"
         right_lines.append(
             _c(f"  {cat}: ", fg=skin.category_rgb) + _c(names_str, fg=skin.text_rgb)
         )
 
-    rem_tools = max(0, total_tools - disp_count)
-    if rem_tools > 0:
-        right_lines.append(_c(f"  +{rem_tools} more", fg=skin.muted_rgb))
+    rem_cats = len(grouped_tools) - len(cat_items)
+    if rem_cats > 0:
+        right_lines.append(_c(f"  +{rem_cats} more categories", fg=skin.muted_rgb))
 
     right_lines.append("")
     right_lines.append(_c(f"{total_tools} tools · {total_skills} skills", fg=skin.category_rgb, bold=True))

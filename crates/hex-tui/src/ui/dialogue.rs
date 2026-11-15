@@ -238,6 +238,60 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 in_assistant_turn = false;
                 had_tool_in_turn = false;
 
+                if msg.content.starts_with("Available Skills") || msg.content.starts_with("Available Tools") {
+                    for (line_idx, raw_line) in msg.content.lines().enumerate() {
+                        let trimmed = raw_line.trim();
+                        if trimmed.is_empty() {
+                            lines.push(Line::raw(""));
+                            continue;
+                        }
+                        if line_idx == 0 {
+                            lines.push(Line::from(vec![
+                                Span::raw("  "),
+                                Span::styled(
+                                    trimmed.to_string(),
+                                    Style::default().fg(skin.heading).add_modifier(Modifier::BOLD),
+                                ),
+                            ]));
+                            continue;
+                        }
+                        if let Some(pos) = raw_line.find(": ") {
+                            let cat = &raw_line[..pos];
+                            let items = &raw_line[pos + 2..];
+                            let mut spans = vec![
+                                Span::raw("  "),
+                                Span::styled(
+                                    format!("{}: ", cat.trim()),
+                                    Style::default().fg(skin.category).add_modifier(Modifier::BOLD),
+                                ),
+                            ];
+                            if let Some(more_pos) = items.find(", +") {
+                                spans.push(Span::styled(
+                                    items[..more_pos].to_string(),
+                                    Style::default().fg(skin.text),
+                                ));
+                                spans.push(Span::styled(
+                                    items[more_pos..].to_string(),
+                                    Style::default().fg(skin.muted),
+                                ));
+                            } else {
+                                spans.push(Span::styled(
+                                    items.to_string(),
+                                    Style::default().fg(skin.text),
+                                ));
+                            }
+                            lines.push(Line::from(spans));
+                        } else {
+                            lines.push(Line::from(vec![
+                                Span::raw("  "),
+                                Span::styled(raw_line.to_string(), Style::default().fg(skin.text)),
+                            ]));
+                        }
+                    }
+                    lines.push(Line::raw(""));
+                    continue;
+                }
+
                 let (badge_text, badge_style) = match msg.role {
                     Role::System => (
                         "◈ System  ",
@@ -486,10 +540,10 @@ fn style_splash_text(splash: &str, s: &Skin, _area_width: u16) -> Vec<Line<'stat
                 } else {
                     spans.push(Span::styled(right_part, Style::default().fg(s.text)));
                 }
-            } else if r_trimmed.starts_with("tools") && !r_trimmed.contains("skills") {
+            } else if r_trimmed.starts_with("Available Tools") || r_trimmed.starts_with("Available Skills") || r_trimmed.starts_with("tools") {
                 spans.push(Span::styled(
                     right_part,
-                    Style::default().fg(s.category).add_modifier(Modifier::BOLD),
+                    Style::default().fg(s.heading).add_modifier(Modifier::BOLD),
                 ));
             } else if r_trimmed.contains("tools · ") && r_trimmed.contains("skills") {
                 spans.push(Span::styled(
@@ -499,16 +553,25 @@ fn style_splash_text(splash: &str, s: &Skin, _area_width: u16) -> Vec<Line<'stat
             } else if r_trimmed.starts_with("type a message") {
                 spans.push(Span::styled(right_part, Style::default().fg(s.muted)));
             } else if right_part.contains(':') && !r_trimmed.starts_with("Session:") {
-                // Category line e.g. "  general: browser, code_kernel..."
+                // Category line e.g. "  filesystem: list_files, patch, read_file, write_file"
                 if let Some(pos) = right_part.find(':') {
                     spans.push(Span::styled(
                         right_part[..=pos].to_string(),
-                        Style::default().fg(s.category),
+                        Style::default().fg(s.category).add_modifier(Modifier::BOLD),
                     ));
-                    spans.push(Span::styled(
-                        right_part[pos + 1..].to_string(),
-                        Style::default().fg(s.text),
-                    ));
+                    let rest = &right_part[pos + 1..];
+                    if let Some(more_pos) = rest.find(", +") {
+                        spans.push(Span::styled(
+                            rest[..more_pos].to_string(),
+                            Style::default().fg(s.text),
+                        ));
+                        spans.push(Span::styled(
+                            rest[more_pos..].to_string(),
+                            Style::default().fg(s.muted),
+                        ));
+                    } else {
+                        spans.push(Span::styled(rest.to_string(), Style::default().fg(s.text)));
+                    }
                 } else {
                     spans.push(Span::styled(right_part, Style::default().fg(s.text)));
                 }
@@ -528,7 +591,26 @@ fn render_hex_intro_fallback(app: &App, width: u16) -> Vec<Line<'static>> {
     let s = skin(&app.skin_name);
     let mut out: Vec<Line<'static>> = Vec::new();
 
-    let total_w = (width as usize).max(80);
+    if width < 80 {
+        out.push(Line::raw(""));
+        out.push(Line::from(Span::styled(
+            "◈ HEX Autonomous AI Workbench",
+            Style::default().fg(s.heading).add_modifier(Modifier::BOLD),
+        )));
+        out.push(Line::from(vec![
+            Span::styled(format!("{} ", app.model_name), Style::default().fg(s.accent).add_modifier(Modifier::BOLD)),
+            Span::styled("· ", Style::default().fg(s.muted)),
+            Span::styled(app.provider_name.clone(), Style::default().fg(s.category)),
+        ]));
+        out.push(Line::from(Span::styled(
+            format!("{} tools · {} skills", app.tools_count, app.skills_count),
+            Style::default().fg(s.category).add_modifier(Modifier::BOLD),
+        )));
+        out.push(Line::raw(""));
+        return out;
+    }
+
+    let total_w = width as usize;
     let block_w = 34 + 4 + 60; // left_w (34) + gap (4) + right_w (60) = 98
     let margin_l = if total_w > block_w { (total_w - block_w) / 2 } else { 2 };
     let margin_str = " ".repeat(margin_l);
@@ -582,34 +664,33 @@ fn render_hex_intro_fallback(app: &App, width: u16) -> Vec<Line<'static>> {
     right_lines.push(Line::from(Span::styled(app.workspace_path.clone(), Style::default().fg(s.muted))));
     right_lines.push(Line::from(Span::styled(format!("Session: {}", app.session_id), Style::default().fg(s.muted))));
     right_lines.push(Line::raw(""));
-    right_lines.push(Line::from(Span::styled("tools", Style::default().fg(s.category).add_modifier(Modifier::BOLD))));
+    right_lines.push(Line::from(Span::styled("Available Tools", Style::default().fg(s.heading).add_modifier(Modifier::BOLD))));
     right_lines.push(Line::from(vec![
-        Span::styled("  file: ", Style::default().fg(s.category)),
+        Span::styled("  filesystem: ", Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
         Span::styled("list_files, patch, read_file, write_file", Style::default().fg(s.text)),
     ]));
     right_lines.push(Line::from(vec![
-        Span::styled("  search: ", Style::default().fg(s.category)),
+        Span::styled("  code-intelligence: ", Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
+        Span::styled("lsp_definition, lsp_diagnostics, lsp_hover, lsp_references", Style::default().fg(s.text)),
+        Span::styled(", +1 more", Style::default().fg(s.muted)),
+    ]));
+    right_lines.push(Line::from(vec![
+        Span::styled("  execution: ", Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
+        Span::styled("code_kernel, process, terminal, run_tests", Style::default().fg(s.text)),
+    ]));
+    right_lines.push(Line::from(vec![
+        Span::styled("  search: ", Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
         Span::styled("search_files, web_extract, web_search", Style::default().fg(s.text)),
     ]));
     right_lines.push(Line::from(vec![
-        Span::styled("  lsp_compiler: ", Style::default().fg(s.category)),
-        Span::styled("lsp_definition, lsp_diagnostics, lsp_hover, lsp_references", Style::default().fg(s.text)),
+        Span::styled("  cognition: ", Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
+        Span::styled("clarify, memory, session_search, todo", Style::default().fg(s.text)),
     ]));
     right_lines.push(Line::from(vec![
-        Span::styled("  ast_graph: ", Style::default().fg(s.category)),
-        Span::styled("query_graphify", Style::default().fg(s.text)),
+        Span::styled("  governance: ", Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
+        Span::styled("modify_system_policy, git_push_remote", Style::default().fg(s.text)),
     ]));
-    right_lines.push(Line::from(vec![
-        Span::styled("  shell_exec: ", Style::default().fg(s.category)),
-        Span::styled("process, terminal", Style::default().fg(s.text)),
-    ]));
-    right_lines.push(Line::from(vec![
-        Span::styled("  verification: ", Style::default().fg(s.category)),
-        Span::styled("run_tests", Style::default().fg(s.text)),
-    ]));
-    if app.tools_count > 15 {
-        right_lines.push(Line::from(Span::styled(format!("  +{} more", app.tools_count.saturating_sub(15)), Style::default().fg(s.muted))));
-    }
+    right_lines.push(Line::from(Span::styled("  +1 more categories", Style::default().fg(s.muted))));
     right_lines.push(Line::raw(""));
     right_lines.push(Line::from(Span::styled(
         format!("{} tools · {} skills", app.tools_count, app.skills_count),

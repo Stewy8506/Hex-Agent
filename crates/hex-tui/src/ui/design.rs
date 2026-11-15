@@ -137,3 +137,60 @@ pub const VERBS: [&str; 6] = [
     "Reflecting",
     "Synthesizing",
 ];
+
+pub const SKILL_CATEGORIES: &[(&str, &[&str])] = &[
+    ("apple", &["apple-notes", "apple-reminders", "findmy", "imessage"]),
+    ("autonomous-ai-agents", &["claude-code", "codex", "computer-use", "opencode"]),
+    ("creative", &["architecture-diagram", "ascii-art", "ascii-video", "baoyu-infographic", "claude-design", "design-token-audit", "diagram-creator", "excalidraw", "fast-canvas", "flux", "frontend-imagegen", "infographic", "nano-banana-pro", "retro-pixel-art", "screenshot-to-code", "sticker-pack"]),
+    ("email", &["email-inbox-triage", "himalaya"]),
+    ("github", &["codebase-inspection", "github-auth", "github-code-review", "github-issue-to-pr", "github-issues", "pr-reviewer", "repo-ranger"]),
+    ("media", &["gif-search", "songsee", "youtube-content"]),
+    ("mlops", &["evaluation", "huggingface-hub", "inference"]),
+    ("note-taking", &["obsidian"]),
+    ("productivity", &["airtable", "document-to-action-items", "docx", "google-workspace", "maps", "meeting-notes", "notion", "office-docs", "pdf-toolkit", "presentation-slides", "quick-notes", "spreadsheet", "task-planner", "time-tracker", "web-clipper"]),
+    ("research", &["arxiv", "blogwatcher", "competitor-news-monitor", "grounded-citations", "llm-wiki", "paper-summarizer"]),
+    ("smart-home", &["openhue"]),
+    ("social-media", &["xurl"]),
+    ("software-development", &["dogfood", "hex-agent-skill-authoring", "node-inspect-debugger", "plan", "ponytail", "profiler", "refactor-cleaner", "repo_understanding", "rust-code-assistant", "security-audit", "sql-optimizer", "system-troubleshooter", "technical_research", "test-generator", "token-refresher", "web-scraper"]),
+];
+
+pub const TOOL_CATEGORIES: &[(&str, &[&str])] = &[
+    ("filesystem", &["list_files", "patch", "read_file", "write_file"]),
+    ("code-intelligence", &["lsp_definition", "lsp_diagnostics", "lsp_hover", "lsp_references", "query_graphify"]),
+    ("execution", &["code_kernel", "process", "terminal", "run_tests"]),
+    ("search", &["search_files", "web_extract", "web_search"]),
+    ("cognition", &["clarify", "memory", "session_search", "todo"]),
+    ("governance", &["modify_system_policy", "git_push_remote"]),
+    ("browser-vision", &["browser", "image_inspect"]),
+    ("agent-delegation", &["delegate"]),
+];
+
+pub fn format_available_skills(max_items_per_cat: usize) -> String {
+    let mut lines = vec!["Available Skills".to_string()];
+    for (cat, items) in SKILL_CATEGORIES {
+        let disp_count = items.len().min(max_items_per_cat);
+        let disp_items = &items[..disp_count];
+        let mut line = format!("{}: {}", cat, disp_items.join(", "));
+        let rem = items.len().saturating_sub(disp_count);
+        if rem > 0 {
+            line.push_str(&format!(", +{} more", rem));
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+pub fn format_available_tools(max_items_per_cat: usize) -> String {
+    let mut lines = vec!["Available Tools".to_string()];
+    for (cat, items) in TOOL_CATEGORIES {
+        let disp_count = items.len().min(max_items_per_cat);
+        let disp_items = &items[..disp_count];
+        let mut line = format!("{}: {}", cat, disp_items.join(", "));
+        let rem = items.len().saturating_sub(disp_count);
+        if rem > 0 {
+            line.push_str(&format!(", +{} more", rem));
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
