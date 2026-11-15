@@ -700,6 +700,10 @@ class AntigravityOAuthManager:
                 cred.access_token = aux.access_token
                 cred.expires_at_ms = aux.expires_at_ms
                 cred.source = aux.source
+                if aux.project_id:
+                    cred.project_id = aux.project_id
+                if aux.refresh_token:
+                    cred.refresh_token = aux.refresh_token
             elif cred.expires_at_ms <= 0 and aux.expires_at_ms > 0:
                 cred.expires_at_ms = aux.expires_at_ms
             if cred.refresh_token and cred.project_id:
@@ -1266,12 +1270,32 @@ class AntigravityModelProvider(ModelProvider):
             except Exception:
                 pass
 
-        # Handle HTTP 429 quota exhaustion with reset delay extraction
+        # Retry transient HTTP 429s (capacity/rate limit without quotaResetDelay) before failing
         if status_code == 429:
             reset_delay = self._extract_quota_reset_delay(resp_bytes)
-            delay_msg = f" (Quota resets in {reset_delay})" if reset_delay else ""
+            if not reset_delay:
+                for delay_s in (0.5, 1.0):
+                    if self.http_transport is None:
+                        time.sleep(delay_s)
+                    status_code, resp_bytes = self._execute_http(
+                        url, headers, body_bytes, stream_callback=stream_cb
+                    )
+                    if status_code != 429:
+                        break
+                    reset_delay = self._extract_quota_reset_delay(resp_bytes)
+                    if reset_delay:
+                        break
+
+        # Handle persistent HTTP 429 with clear distinction between quota exhaustion and capacity/rate limits
+        if status_code == 429:
+            reset_delay = self._extract_quota_reset_delay(resp_bytes)
+            if reset_delay:
+                raise ProviderUnavailableError(
+                    f"Google Antigravity quota exhausted for model '{self.model_id}' (Quota resets in {reset_delay})."
+                )
+            err_detail = self._extract_error_message(resp_bytes) or "Rate limit or capacity temporarily exhausted"
             raise ProviderUnavailableError(
-                f"Google Antigravity quota exhausted for model '{self.model_id}'{delay_msg}."
+                f"Google Antigravity returned HTTP 429 for model '{self.model_id}': {err_detail}"
             )
 
         if status_code not in (200, 201):
@@ -1429,6 +1453,25 @@ class AntigravityModelProvider(ModelProvider):
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _extract_error_message(resp_bytes: bytes) -> str:
+        try:
+            raw = resp_bytes.decode("utf-8", errors="replace").strip()
+            if not raw:
+                return ""
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                err = data.get("error")
+                if isinstance(err, dict):
+                    msg = str(err.get("message") or "").strip()
+                    status = str(err.get("status") or "").strip()
+                    if msg and status:
+                        return f"{status}: {msg}"
+                    return msg or status
+            return raw[:300]
+        except Exception:
+            return resp_bytes.decode("utf-8", errors="replace")[:300].strip()
 
     def _parse_response(
         self, resp_bytes: bytes, prompt: str

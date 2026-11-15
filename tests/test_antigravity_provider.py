@@ -381,6 +381,71 @@ class TestAntigravityOAuthAndProvider(unittest.TestCase):
         self.assertEqual(status_out["status"], "authenticated")
         self.assertEqual(status_out["project_id"], "cli-proj-99")
 
+    def test_transient_429_without_reset_delay_retries_and_surfaces_detail(self) -> None:
+        """Verify transient 429s retry cleanly and persistent 429s without resetDelay surface upstream detail."""
+        attempts = {"count": 0}
+
+        def mock_flaky_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            if url.endswith(":loadCodeAssist"):
+                return 200, json.dumps({"cloudaicompanionProject": "ag-retry-proj"}).encode("utf-8")
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                return 429, json.dumps({"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Temporary capacity spike"}}).encode("utf-8")
+            return 200, json.dumps({"response": {"candidates": [{"content": {"parts": [{"text": "Recovered on retry"}]}}]}}).encode("utf-8")
+
+        provider = AntigravityModelProvider(
+            model_id="gemini-3.8-flash-tiered",
+            access_token="ya29.retry_tok",
+            http_transport=mock_flaky_transport,
+        )
+        resp = provider.generate("Hello")
+        self.assertEqual(resp.text, "Recovered on retry")
+        self.assertEqual(attempts["count"], 2)
+
+        def mock_persistent_429(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            if url.endswith(":loadCodeAssist"):
+                return 200, json.dumps({"cloudaicompanionProject": "ag-retry-proj"}).encode("utf-8")
+            return 429, json.dumps({"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "No capacity available on pool"}}).encode("utf-8")
+
+        provider2 = AntigravityModelProvider(
+            model_id="gemini-3.8-flash-tiered",
+            access_token="ya29.retry_tok",
+            http_transport=mock_persistent_429,
+        )
+        with self.assertRaises(ProviderUnavailableError) as ctx:
+            provider2.generate("Hello")
+        self.assertIn("RESOURCE_EXHAUSTED: No capacity available on pool", str(ctx.exception))
+        self.assertNotIn("quota exhausted", str(ctx.exception))
+
+    def test_resolve_credential_adopts_fresh_auth_file_project_id(self) -> None:
+        """Verify resolve_credential updates project_id when adopting a fresher token from antigravity_auth.json."""
+        auth_file = self.root / "antigravity_auth.json"
+        fresh_cred = AntigravityCredential(
+            access_token="ya29.fresh_pkce_tok",
+            refresh_token="1//fresh_refresh",
+            expires_at_ms=int((time.time() + 3000) * 1000),
+            project_id="fresh-pkce-proj",
+            source="pkce_oauth",
+        )
+        mgr = AntigravityOAuthManager(
+            auth_file=auth_file,
+            ide_db_paths=[],
+            external_auth_paths=[],
+            allow_keychain=False,
+        )
+        mgr.save_credential(fresh_cred)
+
+        with patch.dict(
+            os.environ,
+            {"HEX_ANTIGRAVITY_TOKEN": "ya29.stale_env_tok", "HEX_ANTIGRAVITY_PROJECT_ID": "stale-env-proj"},
+            clear=True,
+        ):
+            resolved = mgr.resolve_credential(auto_refresh=False)
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual(resolved.access_token, "ya29.fresh_pkce_tok")
+        self.assertEqual(resolved.project_id, "fresh-pkce-proj")
+
 
 if __name__ == "__main__":
     unittest.main()
