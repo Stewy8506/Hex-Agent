@@ -163,3 +163,39 @@ Before any synthesized or third-party skill bundle is written to disk, it is sta
 Spawning background reflection subagents on local hardware (e.g. Apple Silicon M-series or Ollama) competes for unified memory bandwidth and stalls active inference. HEX enforces strict hardware gating:
 - When running on local hardware under `cloud_only` or `off`, background LLM reflection is bypassed.
 - Candidate friction lessons are safely queued to `.hex/reflections/pending_reflections.json` for offline processing.
+
+---
+
+## 8. Storage Lifecycle, Scoped TTL Retention & Garbage Collection
+
+Because HEX operates as an ACID-style transactional flight recorder, task execution continuously produces Copy-on-Write snapshots, CAS delta tarballs, and proof bundles. To prevent unbounded disk growth while preserving forensic auditability, HEX implements an automated, scoped retention engine (`src/harness_core/gc.py`):
+
+```text
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                           GARBAGE COLLECTION SWEEP                          │
+  │                                                                             │
+  │   [ active_workspaces/ ]   [ cow_snapshots/ ]            [ cas/ ]           │
+  │      Ephemeral Clones         Step Snapshots         Deduplicated Tarballs  │
+  │             │                       │                         │             │
+  │             ▼                       ▼                         ▼             │
+  │     Query ledger.db        Query ledger.db            Mark-and-Sweep:       │
+  │   status in terminal &   status in terminal &    Reference set against all  │
+  │   updated_at > 24h &     updated_at > 24h &      active/pinned/recent tasks │
+  │     pinned == 0            pinned == 0                        │             │
+  │             │                       │                         ▼             │
+  │             ▼                       ▼                Delete unreferenced    │
+  │       Safe Deletion           Safe Deletion          blobs older than 7d    │
+  │             │                       │                         │             │
+  │             └───────────────────────┼─────────────────────────┘             │
+  │                                     ▼                                       │
+  │                      PRAGMA incremental_vacuum;                             │
+  │               (Non-blocking; full VACUUM only via hex gc)                   │
+  └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Architectural Guarantees:
+1. **Active & Pinned Task Immunity**: Tasks with state `RUNNING`, `PAUSED`, `PENDING`, or `pinned = True` are strictly exempt from TTL deletion.
+2. **Reference-Counted CAS Mark-and-Sweep**: Blobs in `cas/` and `cas_artifacts/` are never deleted by mtime alone. Instead, a mark-and-sweep algorithm computes all SHA-256 hashes referenced across all active, pinned, or recent (< 7 days) tasks and proofs, pruning only unreferenced blobs older than `7d`.
+3. **Orphan Directory Race Guard**: Ephemeral workspace directories created before database transaction commit are protected by an orphan guard threshold (`mtime > 1h` or `workspace_ttl`), preventing races with in-flight worker tasks.
+4. **Non-Blocking Concurrency Policy**: Automated sweeps executed during TUI startup or worker idle loops execute `PRAGMA incremental_vacuum;` to reclaim unused database pages without acquiring table locks or blocking concurrent workers. Heavy exclusive `VACUUM` is strictly restricted to explicit `hex gc --full-vacuum` invocations when no worker leases exist.
+5. **Deterministic Delta Safety Filter**: The `export_delta_archive` process applies a recursive `_tar_filter` that excludes `IGNORE_DIRS` (`.hex`, `.git`, `.venv`), `.DS_Store`, and active SQLite WAL lockfiles (`*.db-wal`, `*.db-shm`), preventing file-system race conditions during snapshot bundling.

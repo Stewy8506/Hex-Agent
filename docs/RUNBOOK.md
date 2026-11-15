@@ -96,9 +96,49 @@ hex task status <task_id>
 
 # Cancel a running task safely
 hex task cancel <task_id> --reason "Operator manual abort"
+
+# Submit a task exempt from TTL garbage collection sweeps
+hex run "Debug critical auth crash" --pinned
+# or
+hex task submit "Debug critical auth crash" --keep-artifacts
+
+# Pin an existing task so its CoW workspace, snapshots, and CAS blobs are preserved
+hex pin <task_id>
+
+# Unpin a task to restore normal TTL expiration
+hex unpin <task_id>
 ```
 
-### 2.4 Controlled Self-Improvement (Google Research Harness²)
+### 2.4 Storage Hygiene, TTL Retention & Garbage Collection (`hex gc`)
+
+HEX includes an automated, scoped retention engine to keep `.hex/data` lean without risking in-flight operations:
+
+```bash
+# Dry-run inspection of prunable workspaces, snapshots, and unreferenced CAS blobs
+hex gc --dry-run
+
+# Run full garbage collection sweep and perform non-blocking incremental vacuum
+hex gc
+
+# Run garbage collection and force a full SQLite VACUUM (requires no active worker leases)
+hex gc --full-vacuum
+```
+
+#### Retention Policies (`~/.hex/config.toml` or `.hex/config.toml`):
+```toml
+[storage]
+workspace_ttl = "24h"          # Prune completed/failed/abandoned workspaces & snapshots >24h old
+cas_ttl = "7d"                 # Sweep unreferenced CAS blobs in cas/ and cas_artifacts/ >7d old
+orphan_guard_seconds = 3600    # Protect unindexed scratchpads <1h old from race deletion
+```
+
+#### Safety Guarantees:
+1. **Active & Pinned Task Immunity**: Workspaces in `RUNNING`, `PAUSED`, `PENDING`, or `pinned = True` states are never pruned.
+2. **CAS Mark-and-Sweep**: Reference counting against `ledger.db` guarantees blobs referenced by active, pinned, or recent (<7d) tasks are retained.
+3. **Orphan Race Guard**: Ephemeral workspace directories created before database transaction commit are protected by a minimum age threshold (`mtime > 1h`).
+4. **Non-Blocking Vacuum Policy**: Background and startup sweeps run `PRAGMA incremental_vacuum;` to prevent SQLite lock contention; full `VACUUM` is strictly guarded.
+
+### 2.5 Controlled Self-Improvement (Google Research Harness²)
 
 ```bash
 # Run parallel Propose-Probe-Compose sweep (k=2 iterations)
@@ -108,7 +148,7 @@ hex harness2-eval --task-id demo-1 --mode parallel --k 2
 hex harness2-eval --task-id ledger-1 --mode sequential --substrate codex --proposer llm --k 1 --json
 ```
 
-### 2.5 Polyglot Knowledge Graph & Blast-Radius Engine (Graphify)
+### 2.6 Polyglot Knowledge Graph & Blast-Radius Engine (Graphify)
 
 ```bash
 # Check Graphify CLI status and indexed graph stats
@@ -130,7 +170,7 @@ hex graphify affected calculate_discount
 hex graphify tree --out architecture.html
 ```
 
-### 2.6 Daemon & Service Management
+### 2.7 Daemon & Service Management
 
 ```bash
 # Start background worker daemon (processes background tasks and schedules)
@@ -149,7 +189,7 @@ hex daemon stop
 hex daemon uninstall
 ```
 
-### 2.6 Full System Teardown & Uninstallation
+### 2.8 Full System Teardown & Uninstallation
 
 ```bash
 # Dry-run inspection of uninstall actions

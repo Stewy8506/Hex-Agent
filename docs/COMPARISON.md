@@ -16,6 +16,7 @@ An in-depth architectural and empirical comparison between **HEX Agent** and lea
 | **Context Compaction** | **Two-Tier AST + Log Compressor**<br>75–88% reduction + shadow dedup | Summarization buffer | History truncation | Sliding context window | Tree-sitter repo map |
 | **IDE Integration** | **Dual-Stack ACP Server & Client**<br>(Zed, Neovim, VS Code) | Custom messaging bots | CLI only | Terminal only | Editor integrations |
 | **Audit Ledger & State** | **Cryptographic SHA-256 Chain**<br>PostgreSQL 16 + SQLite WAL + Alembic | SQLite history tables | JSON state files | Local session files | Git commit logs |
+| **Storage & Retention** | **Scoped TTL & Mark-and-Sweep GC**<br>24h workspace TTL, 7d CAS sweep, `hex gc` | Unbounded SQLite history | Ad-hoc JSON files | Local session files | Git commit logs |
 | **Browser & Vision** | **Built-in Headless Browser**<br>Compact `ariaSnapshot` DOM + multimodal | Python Playwright tools | External browser skills | Image attachments only | Web scrape tools |
 
 ---
@@ -45,6 +46,9 @@ An in-depth architectural and empirical comparison between **HEX Agent** and lea
    - **Zettelkasten Contradiction Resolution**: Uses the A-MEM pattern (`ADD`, `UPDATE`, `DELETE`, `NOOP`) to update or delete obsolete facts instead of accumulating contradictory bullet lists.
    - **Deterministic `verify:` Skill Hooks**: Hermes skills are instructional prose; HEX skills carry executable shell verification commands and AST invariants, turning documentation into automated regression tests.
    - **Hardware Gating (`auto_reflect`)**: Prevents unified memory starvation on local Apple Silicon / Ollama by gating background reflection behind hardware profiling (`cloud_only` | `idle` | `off`).
+6. **Storage Footprint & Lifecycle GC**:
+   - **Hermes**: Operates directly in-place with low run-time disk allocation (~1–10MB), but leaves repos vulnerable to half-applied dirty patches if an error occurs.
+   - **HEX**: Operates like an ACID transactional flight recorder with isolated CoW clones, step snapshots, and CAS delta archives. To keep storage lightweight and bounded over time, HEX features an automated background retention engine (`hex gc`, 24h workspace TTL, 7d CAS mark-and-sweep, task debugging pinning, and non-blocking incremental vacuum).
 
 ---
 
