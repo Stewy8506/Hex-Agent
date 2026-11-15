@@ -30,7 +30,7 @@ HEX operates as a resilient, distributed autonomous execution engine consisting 
 ### 1.4 Two-Tier Model Routing Pipeline
 - **Tier-1 Local / Free Tier**:
   - Apple Silicon M4 / Darwin ARM64 log compression reducing raw diagnostic outputs by >70% while scrubbing tokens and credentials.
-  - Google Antigravity OAuth integration importing IDE tokens from `state.vscdb` for **$0 Day-1 cloud reasoning**.
+  - Google Antigravity OAuth integration importing IDE tokens from `state.vscdb` for **included subscription cloud reasoning**.
 - **Tier-2 Cloud Reasoners**: Anthropic Claude, OpenAI, and Google Gemini with strict privacy classification gating (blocking `sensitive` and `secret` egress) and per-task budget ceilings.
 
 ### 1.5 Distributed Workers & Fencing

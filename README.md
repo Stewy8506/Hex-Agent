@@ -41,7 +41,7 @@ Most AI coding assistants edit your files in place. If an agent hallucinates or 
 **HEX does the opposite:**
 - **Zero-Risk Scratchpad**: Every code change and test runs inside a high-speed, isolated sandbox.
 - **Proof Before Commit**: HEX executes your project's test suite. Only when tests pass are patches applied to your code.
-- **Model Freedom**: Connect directly to your existing Google Antigravity OAuth quota ($0 marginal billing), frontier cloud models (Claude 3.7 Sonnet, GPT-4o, Gemini 2.5 Pro), or run 100% offline with local models (Ollama, Apple Metal, NVIDIA CUDA).
+- **Model Freedom**: Connect directly to your existing Google Antigravity OAuth quota, frontier cloud models (Claude 3.7 Sonnet, GPT-4o, Gemini 2.5 Pro), or run 100% offline with local models (Ollama, Apple Metal, NVIDIA CUDA).
 
 <table>
 <tr><td><b>Isolated Sandboxing</b></td><td>Instant Copy-on-Write staging (macOS APFS / Linux OverlayFS in &lt;10ms). Broken patches are discarded with zero host pollution.</td></tr>
@@ -96,7 +96,7 @@ On your very first run, HEX opens an interactive terminal setup menu:
 ◈ Welcome to HEX Agent
   Select your primary model brain:
 
-  [•] Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detects IDE session)
+  [•] Google Antigravity OAuth (Included Subscription Quota / Auto-detects IDE session)
   [ ] Anthropic Claude (Claude 3.7 Sonnet / Opus)
   [ ] OpenAI (GPT-4o / o3-mini)
   [ ] Google Gemini API (Gemini 2.5 Pro / Flash)
@@ -153,7 +153,7 @@ HEX includes a native Rust Ratatui cockpit (`hex tui`) designed for high-perform
 
 HEX is completely provider- and model-agnostic. Switch models instantly on the fly with `/model` or `--provider`:
 
-- **Frontier & Multi-Model**: Google Antigravity ($0 Day-1 marginal billing via OAuth), Anthropic (Claude 3.7 Sonnet / 3.5 Sonnet / Haiku), OpenAI (GPT-4o, o1, o3-mini), Google Gemini (Gemini 2.5 Pro / Flash), DeepSeek (V3 & R1), OpenRouter, xAI Grok.
+- **Frontier & Multi-Model**: Google Antigravity (Included quota via OAuth), Anthropic (Claude 3.7 Sonnet / 3.5 Sonnet / Haiku), OpenAI (GPT-4o, o1, o3-mini), Google Gemini (Gemini 2.5 Pro / Flash), DeepSeek (V3 & R1), OpenRouter, xAI Grok.
 - **High-Speed Open-Weight Cloud**: Groq LPU (Llama 3.3 70B, QwQ 32B), Cerebras (2,000+ tok/s), Mistral AI (Codestral, Mistral Large), Together AI, Fireworks AI, NVIDIA NIM, Alibaba Qwen (Qwen 2.5 Coder), MiniMax (1M context), Kimi / Moonshot, Z.AI / GLM.
 - **Enterprise Hyperscalers**: Microsoft Azure OpenAI & Foundry, AWS Bedrock, Google Cloud Vertex AI.
 - **Aggregators & Gateways**: Vercel AI Gateway, Hugging Face Serverless.

@@ -2364,7 +2364,7 @@ class HexConsole:
             print()
             return
 
-        print(f"  Session Status:   {ANSI_GREEN}Active ($0.00 marginal API billing){ANSI_RESET}")
+        print(f"  Session Status:   {ANSI_GREEN}Active (Subscription Quota){ANSI_RESET}")
         print(f"  Credential Source:{cred.source}")
         if cred.project_id:
             print(f"  Project ID:       {cred.project_id}")

@@ -5,7 +5,7 @@
      failure summaries (>70% token reduction while preserving file, line number, and assertion error).
   2. Runs local R0/R1 triage and keeps sensitive/secret data 100% local.
 - Tier-2 Cloud / Google Antigravity Reasoner:
-  Supports Day-1 Google Antigravity OAuth quota routing (`AntigravityModelProvider` at $0 marginal API billing)
+  Supports Google Antigravity OAuth quota routing (`AntigravityModelProvider` via active subscription quota)
   as well as Anthropic, OpenAI, and Gemini API keys with ephemeral prompt prefix caching.
 - Governed Memory Service:
   Enforces strict isolation across `project`, `personal`, and `episodic` scopes with provenance,
@@ -131,7 +131,7 @@ class TwoTierModelRouter:
     """Routes between Tier-1 Local M4 MLX Gatekeeper/Compressor and Tier-2 Heavy Reasoner.
 
     Supports:
-    - Day-1 Google Antigravity OAuth quota routing (`cloud_provider_type='antigravity'`).
+    - Google Antigravity OAuth quota routing (`cloud_provider_type='antigravity'`).
     - Configurable log compression mode (`compressor_mode`):
       - `'local'` (default): 100% local M4 MLX / deterministic compression at $0 marginal cost.
       - `'cloud'`: Uses `compressor_provider` (or `cloud_provider`) for cloud LLM log compression,

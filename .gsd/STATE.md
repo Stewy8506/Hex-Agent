@@ -217,7 +217,7 @@
     - Authored 21 unit and integration tests across `tests/test_ui_selector_and_web_search.py` and `tests/test_auto_setup_and_polish.py` (415/415 total repository tests passing with zero regressions).
 
 29. **Phase 14 Antigravity Interactive OAuth, Model Selection & TUI Crash Hardening Complete (Plans 14-01 & 14-02):**
-    - Implemented `_probe_antigravity_token` in `src/harness_core/onboard.py` to validate OAuth tokens before declaring active session ($0 Day-1 Free Tier).
+    - Implemented `_probe_antigravity_token` in `src/harness_core/onboard.py` to validate OAuth tokens before declaring active session (included subscription quota).
     - Added interactive browser PKCE OAuth 2.0 handoff (`webbrowser.open`) and manual token entry in onboarding when unauthenticated.
     - Added interactive model selection menus for Antigravity (`gemini-2.5-pro` default, `gemini-2.5-flash`, `claude-3-5-sonnet`), Anthropic, OpenAI, and Gemini; purged all fictitious `gemini-3.5-pro` references.
     - Streamlined setup menus: simplified search option label to `"Disabled"` and removed redundant execution sandbox interactive prompt.

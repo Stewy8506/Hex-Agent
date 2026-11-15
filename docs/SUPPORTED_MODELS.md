@@ -21,7 +21,7 @@ hex --provider ollama --model qwen2.5-coder:7b
 
 | Provider | ID | Default Model | Curated Models | Authentication |
 | :--- | :--- | :--- | :--- | :--- |
-| **Google Antigravity** | `antigravity` | `claude-opus-4-6-thinking` | `claude-opus-4-6-thinking`<br>`gemini-2.5-pro`<br>`gemini-2.5-flash` | OAuth ($0 Day-1 Marginal Billing) |
+| **Google Antigravity** | `antigravity` | `claude-opus-4-6-thinking` | `claude-opus-4-6-thinking`<br>`gemini-2.5-pro`<br>`gemini-2.5-flash` | OAuth (Included Plan Quota) |
 | **OpenRouter** | `openrouter` | `anthropic/claude-3.7-sonnet` | `anthropic/claude-3.7-sonnet`<br>`deepseek/deepseek-r1`<br>`deepseek/deepseek-chat`<br>`openai/gpt-4o`<br>`google/gemini-2.5-pro`<br>`meta-llama/llama-3.3-70b-instruct` | `OPENROUTER_API_KEY` |
 | **Anthropic** | `anthropic` | `claude-3-7-sonnet-20250219` | `claude-3-7-sonnet-20250219` (Hybrid reasoning)<br>`claude-3-5-sonnet-20241022` (v2)<br>`claude-3-5-haiku-20241022` | `ANTHROPIC_API_KEY` |
 | **OpenAI** | `openai` | `gpt-4o` | `gpt-4o` (Omni)<br>`gpt-4o-mini`<br>`o1` (Full reasoning)<br>`o3-mini` (High-speed reasoning) | `OPENAI_API_KEY` |
@@ -85,6 +85,6 @@ Ultra-low-latency inference engines for open-weight models:
 ## Zero-Friction Setup: Google Antigravity OAuth
 
 If you already use Google Antigravity in your editor, HEX automatically detects your active local credentials on startup:
-- **$0 Marginal Quota**: Uses your included frontier daily reasoning budget.
+- **Included Quota**: Uses your active subscription daily reasoning budget.
 - **Zero API Keys**: No manual token generation or billing setup required.
 - **Quota Telemetry**: Run `hex quota` at any time to inspect token buckets, remaining percentages, and reset windows.

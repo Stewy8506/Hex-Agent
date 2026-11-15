@@ -1,7 +1,7 @@
 """Google Antigravity (Cloud Code Assist) Quota-Backed Model Provider & OAuth Manager.
 
 Enables HEX to use Google Antigravity subscription quota (Google AI Pro / Ultra / Individual)
-from Day 1 at $0 marginal API billing cost via:
+via:
 1. Multi-source local credential discovery:
    - Environment variables (`HEX_ANTIGRAVITY_TOKEN`, `ANTIGRAVITY_OAUTH_TOKEN`, `ANTIGRAVITY_ACCESS_TOKEN`)
    - HEX credential store (`~/.hex/antigravity_auth.json`)
@@ -524,7 +524,7 @@ class AntigravityOAuthManager:
         refresh_tok = str(data.get("refresh_token", ""))
 
         project_id = DEFAULT_FALLBACK_PROJECT_ID
-        plan_tier = "Antigravity ($0 Free Tier)"
+        plan_tier = "Antigravity (Included Plan)"
         try:
             load_url = f"{ANTIGRAVITY_PROD_ENDPOINT}/v1internal:loadCodeAssist"
             headers_load = {
@@ -910,7 +910,7 @@ class AntigravityModelProvider(ModelProvider):
 
     Dispatches requests through `https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`
     using the user's local Antigravity OAuth session so every call uses included Antigravity plan quota
-    ($0 marginal API cost) while enforcing HEX's privacy gate, secret redaction, and prefix caching.
+    while enforcing HEX's privacy gate, secret redaction, and prefix caching.
     """
 
     provider_id: str = "google_antigravity"
@@ -1308,7 +1308,7 @@ class AntigravityModelProvider(ModelProvider):
             resp_bytes, clean_prompt
         )
 
-        # Antigravity requests are covered by subscription quota ($0.00 marginal API billing)
+        # Antigravity requests are covered by subscription quota
         cost_usd = 0.0
         self.budget_tracker.record_usage(
             in_tokens,
@@ -1345,7 +1345,7 @@ class AntigravityModelProvider(ModelProvider):
         data_classification: str = "internal",
         budget: Any = None,
     ) -> dict[str, Any]:
-        """Compress verbose test/build logs using Antigravity quota at $0 marginal billing."""
+        """Compress verbose test/build logs using Antigravity subscription quota."""
         if data_classification in ("sensitive", "secret"):
             raise PolicyBlockedError(
                 f"Cloud log compression forbidden for data classification '{data_classification}'."

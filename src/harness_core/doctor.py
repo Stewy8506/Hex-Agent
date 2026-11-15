@@ -555,7 +555,7 @@ class HexDoctor:
                     name="Google Antigravity OAuth Session",
                     category="credentials",
                     status="ok",
-                    message=f"Antigravity credentials found via {antigravity_src} with $0 Day-1 model quota",
+                    message=f"Antigravity credentials found via {antigravity_src} with active model quota",
                 )
             )
         else:

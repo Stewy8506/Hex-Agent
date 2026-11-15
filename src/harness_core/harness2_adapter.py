@@ -7,7 +7,7 @@ Connects HEX's autonomous HarnessOrchestrator with the complete Google Research 
    zero-compute content-addressed rollout caching when `(run_id, harness_fingerprint)` matches.
 3. Dual-Substrate Support: `OpencodeSubstrate` (`OPENCODE_SURFACE` / `systemprompt.md`) and
    `CodexSubstrate` (`CODEX_SURFACE` / `AGENTS.md`).
-4. `LLMRouterProposer`: Bridges HEX's `TwoTierModelRouter` (Day-1 Google Antigravity OAuth quota,
+4. `LLMRouterProposer`: Bridges HEX's `TwoTierModelRouter` (Google Antigravity OAuth quota,
    cloud frontier APIs, or local M4 MLX) to `harness2.core.proposer.Proposer`, with deterministic
    fallback (`LocalRouterProposer`) for offline/air-gapped validation.
 5. Complete Post-Sweep Selection, Reflection, Library Persistence, Judging & Statistical Reporting:
@@ -756,7 +756,7 @@ class LocalRouterProposer(Proposer):
 class LLMRouterProposer(Proposer):
     """Live LLM-backed Harness² Proposer routed through HEX's TwoTierModelRouter.
 
-    Supports Day-1 Google Antigravity OAuth quota, Anthropic/OpenAI/Gemini cloud APIs,
+    Supports Google Antigravity OAuth quota, Anthropic/OpenAI/Gemini cloud APIs,
     or local Apple Silicon M4 MLX models without requiring external `bun`/`opencode` CLIs.
     Includes content-addressed call caching and automatic fallback to `LocalRouterProposer`
     if the model provider is offline or returns an unparseable response.

@@ -611,7 +611,7 @@ class ACPServer:
                 scan_dir = Path(self.workspace_root) / (args.strip() or "")
                 output = f"SkillSpector scanned directory '{scan_dir}'. All detected skills evaluated and registered."
             elif cmd in ("/quota", "/antigravity", "/ag"):
-                output = "Google Antigravity Quota Windows:\n  • Session: Active (Day-1 $0 tier)\n  • Gemini 2.5 Flash: 1,500 RPM | 4,000,000 TPM\n  • Gemini 2.5 Pro: 360 RPM\n  • Reset Window: Midnight UTC"
+                output = "Google Antigravity Quota Windows:\n  • Session: Active (Included subscription quota)\n  • Gemini 2.5 Flash: 1,500 RPM | 4,000,000 TPM\n  • Gemini 2.5 Pro: 360 RPM\n  • Reset Window: Midnight UTC"
             elif cmd in ("/memory", "/mem"):
                 query = args.strip()
                 output = f"Governed Memories for '{query}': 0 matching records. Code-hash AST staleness verified."

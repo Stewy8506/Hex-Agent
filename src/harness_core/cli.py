@@ -3,7 +3,7 @@
 Commands:
 - `hex setup`: Run interactive onboarding wizard for hardware discovery, model profile, and configuration (alias: `hex onboard`).
 - `hex project`: Manage persistent global project registry and daily switching (`list`, `add`, `use`, `switch`).
-- `hex auth antigravity`: Discover, import, or authenticate Google Antigravity OAuth session for $0 Day-1 quota.
+- `hex auth antigravity`: Discover, import, or authenticate Google Antigravity OAuth session for included quota.
 - `hex quota`: Inspect live Google Antigravity model quota windows, remaining percentages, and reset timers.
 - `hex init`: Initialize local database, CoW snapshot store, and seed default repo skills.
 - `hex up`: Start the local web control surface & HTTP API on 127.0.0.1:8420.

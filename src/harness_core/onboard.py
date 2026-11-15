@@ -238,7 +238,7 @@ def run_onboard_wizard(
     else:
         print("  Local Acceleration: Host CPU (Cross-platform standard)")
     if ag_cred and (ag_cred.access_token or ag_cred.refresh_token):
-        print(f"  Antigravity Quota:  Detected ({ag_cred.source}) — Ready for $0 Day-1 routing")
+        print(f"  Antigravity Quota:  Detected ({ag_cred.source}) — Ready for subscription quota routing")
     else:
         print("  Antigravity Quota:  Ready to link via `hex auth antigravity`")
     print("=" * 64)
@@ -378,7 +378,7 @@ def run_onboard_wizard(
                 return label
 
             provider_options: list[tuple[str, str]] = [
-                ("antigravity", _prov_label("antigravity", "Google Antigravity OAuth ($0 Day-1 Free Tier / Auto-detect IDE session)")),
+                ("antigravity", _prov_label("antigravity", "Google Antigravity OAuth (Included Quota / Auto-detect IDE session)")),
                 ("anthropic", _prov_label("anthropic", "Anthropic API Key (Claude 3.7 / 3.5 Sonnet / Opus)")),
                 ("openai", _prov_label("openai", "OpenAI API Key (GPT-4o / o1 / o3-mini)")),
                 ("gemini", _prov_label("gemini", "Google Gemini API Key (Gemini 2.5 Pro / Flash)")),

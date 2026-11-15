@@ -20,7 +20,7 @@ The audit was conducted by inspecting source implementations, dependency graphs,
 
 | Evaluation Dimension | Weight | Hermes Agent | HEX AI Workbench | Margin / Verdict |
 |---|:---:|:---:|:---:|---|
-| **1. Setup & Onboarding Ergonomics** | 25% | **88 / 100** | **96 / 100** | **HEX +8:** Zero-dependency ANSI viewport-locked selector; $0 Day-1 Antigravity OAuth auto-detection; 26-provider registry; unified one-line installer. |
+| **1. Setup & Onboarding Ergonomics** | 25% | **88 / 100** | **96 / 100** | **HEX +8:** Zero-dependency ANSI viewport-locked selector; Antigravity OAuth auto-detection; 26-provider registry; unified one-line installer. |
 | **2. Database & State Persistence** | 30% | **72 / 100** | **98 / 100** | **HEX +26:** Dual-driver PostgreSQL 16 (`asyncpg` + `SKIP LOCKED`) & SQLite WAL; formal reversible Alembic migrations; cryptographic SHA-256 hash-chained event ledger; call-level journaling. Hermes is SQLite-only with manual Python migration scripts. |
 | **3. Resilience & Exception Hygiene** | 25% | **79 / 100** | **94 / 100** | **HEX +15:** PTY `ProcessRegistry` with 200 KB circular ring buffer, process-group `killpg` escalation (SIGTERM → SIGKILL), `atexit` cleanup, CAS worker lease fencing. Hermes suffers from daemon leaks requiring external reaper scripts. |
 | **4. Test Suites & Evals** | 20% | **84 / 100** | **91 / 100** | **HEX +7:** 771 green, isolated unit & integration tests executing in seconds without cross-file state leakage. Upstream Google Harness², NVIDIA SkillSpector, and Graphify eval integration. Hermes has 7,850 test files but suffers severe xdist state pollution requiring custom fork runners. |
@@ -95,13 +95,13 @@ This guarantees that when selecting from 26+ providers or 50+ models, the termin
 
 ---
 
-### 2.3 OAuth Auto-Detection & $0 Day-1 Onboarding
+### 2.3 OAuth Auto-Detection & Quota Onboarding
 
 HEX introduces an onboarding flow centered around Google Antigravity OAuth:
 - **Auto-Detection (`src/harness_core/onboard.py:223-244`):**
   - Instantiates `AntigravityOAuthManager(auth_file=cfg_dir / "antigravity_auth.json")`.
   - Automatically checks local IDE tokens (e.g. from VS Code Antigravity extensions) and existing credentials.
-  - If a valid token is found, reports: `Antigravity Quota: Detected ({ag_cred.source}) — Ready for $0 Day-1 routing`.
+  - If a valid token is found, reports: `Antigravity Quota: Detected ({ag_cred.source}) — Ready for subscription quota routing`.
 - **Browser PKCE OAuth 2.0 Flow (`src/harness_core/onboard.py:452-474`):**
   - Generates PKCE code challenge and verifier pairs.
   - Automatically opens Google authentication in the user's default browser.
@@ -405,7 +405,7 @@ HEX integrates three industry-standard upstream evaluation and analysis engines,
 1. **Unmatched Database Architecture:** HEX's dual-driver database (`db.py`) with PostgreSQL 16 `asyncpg` + `FOR UPDATE SKIP LOCKED` and SQLite WAL is vastly superior to Hermes' single-node SQLite monolith.
 2. **Cryptographic Tamper-Evidence:** HEX provides mathematical SHA-256 event chaining (`compute_event_hash`), whereas Hermes has no verifiable audit trail.
 3. **Setup Simplicity & Ergonomics:** The combination of `install.sh` and zero-dependency ANSI `ui_selector.py` with scroll-locked viewport windowing provides a superior operator experience over Hermes' curses-dependent wizard.
-4. **$0 Day-1 Antigravity OAuth:** Seamless integration with Google Antigravity OAuth PKCE and local IDE session discovery provides immediate frontier intelligence with zero API key configuration.
+4. **Antigravity OAuth Quota:** Seamless integration with Google Antigravity OAuth PKCE and local IDE session discovery provides immediate frontier intelligence with zero API key configuration.
 5. **Process Supervision Hygiene:** `ProcessRegistry` with process groups, 200 KB circular ring buffers, and `atexit` cleanup prevents runaway processes and memory leaks.
 
 ### 6.2 Identified Gaps & Actionable Recommendations

@@ -74,7 +74,7 @@ An in-depth architectural and empirical comparison between **HEX Agent** and lea
    - **HEX**: Runs code edits and test runners inside an isolated sandbox. Only when your test runner confirms clean execution are the changes committed to your working tree.
 2. **Vendor Independence**:
    - **Claude Code**: Exclusively tied to Anthropic models (Claude 3.7 Sonnet / Opus).
-   - **HEX**: Completely provider-agnostic. Route tasks across Google Antigravity ($0 Day-1 marginal quota), Claude 3.7 Sonnet, OpenAI o3-mini, Gemini 2.5 Pro, or offline local LLMs via Ollama, Apple Metal, and NVIDIA CUDA.
+   - **HEX**: Completely provider-agnostic. Route tasks across Google Antigravity (included subscription quota), Claude 3.7 Sonnet, OpenAI o3-mini, Gemini 2.5 Pro, or offline local LLMs via Ollama, Apple Metal, and NVIDIA CUDA.
 3. **IDE Integration (Agent Client Protocol)**:
    - **Aider & Claude Code**: Standalone terminal CLIs.
    - **HEX**: Ships a production JSON-RPC 2.0 stdio Agent Client Protocol (ACP) server, allowing you to use HEX directly inside Zed, Neovim, and VS Code.
