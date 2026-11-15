@@ -1333,14 +1333,17 @@ webhooks:
     print()
 
     first_task_res: dict[str, Any] | None = None
-    if first_task_beat:
+    if first_task_beat and not non_interactive and not defaults_only:
         should_run_ft = False
-        if not non_interactive and sys.stdin.isatty():
-            try:
-                ans = input("Would you like to run system self-test & first-task verification? [Y/n]: ").strip().lower()
-                should_run_ft = ans in ("", "y", "yes")
-            except (EOFError, KeyboardInterrupt):
-                should_run_ft = False
+        try:
+            ft_choices = [
+                ("yes", "Yes, run system self-test & first-task verification [Recommended]"),
+                ("no", "No, skip verification and finish setup"),
+            ]
+            ans_idx = select_option("Run system self-test & first-task verification?", ft_choices, default_index=0)
+            should_run_ft = ft_choices[ans_idx][0] == "yes"
+        except Exception:
+            should_run_ft = False
         if should_run_ft:
             first_task_res = run_first_task_verification(config_dir=cfg_dir)
 

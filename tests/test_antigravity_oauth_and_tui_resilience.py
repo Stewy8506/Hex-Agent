@@ -61,14 +61,16 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
             refresh_token="1//existing_refresh_abc",
             expires_at_ms=9999999999000,
         )
-        # Step 1: Antigravity provider (0)
-        # Step 1a: Auth -> Keep (0)
-        # Step 1b: Model selection -> gemini-2.5-flash (1)
-        # Step 1c: Reasoning effort -> (0)
-        # Step 1d: Context compressor -> (0)
+        # Step 1: Recommended category (0)
+        # Step 1a: Antigravity provider (0)
+        # Step 1b: Auth -> Keep (0)
+        # Step 1c: Model selection -> gemini-2.5-flash (1)
+        # Step 1d: Reasoning effort -> (0)
+        # Step 1e: Context compressor -> (0)
         # Step 2: Search -> Disabled (3)
         # Step 3: Messaging -> Skip (0)
-        mock_select.side_effect = [0, 0, 1, 0, 0, 3, 0]
+        # Step 4: First-task verification -> Skip (1)
+        mock_select.side_effect = [0, 0, 0, 1, 0, 0, 3, 0, 1]
 
         result = run_onboard_wizard(
             config_dir=self.cfg_dir,
@@ -110,14 +112,16 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         )
         mock_exchange.return_value = mock_cred
 
-        # Step 1: Antigravity (0)
-        # Step 1a: Auth option: Browser sign-in (0)
-        # Step 1b: Model -> gemini-2.5-pro (0)
-        # Step 1c: Reasoning effort -> (0)
-        # Step 1d: Context compressor -> (0)
+        # Step 1: Recommended category (0)
+        # Step 1a: Antigravity (0)
+        # Step 1b: Auth option: Browser sign-in (0)
+        # Step 1c: Model -> gemini-2.5-pro (0)
+        # Step 1d: Reasoning effort -> (0)
+        # Step 1e: Context compressor -> (0)
         # Step 2: Search -> DuckDuckGo (0)
         # Step 3: Messaging -> Skip (0)
-        mock_select.side_effect = [0, 0, 0, 0, 0, 0, 0]
+        # Step 4: First-task verification -> Skip (1)
+        mock_select.side_effect = [0, 0, 0, 0, 0, 0, 0, 0, 1]
 
         result = run_onboard_wizard(
             config_dir=self.cfg_dir,
