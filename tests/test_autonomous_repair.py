@@ -385,8 +385,10 @@ class TestAutonomousRepairBenchmark(unittest.TestCase):
 
         # 1. Verify task transitioned to NEEDS_ATTENTION with BUDGET_EXHAUSTED
         if task["status"] != TaskState.NEEDS_ATTENTION.value:
-            p_err = task.get("payload", {}).get("error") if isinstance(task.get("payload"), dict) else task.get("payload")
-            self.fail(f"STATUS_FAIL:{task.get('status')}:PAYLOAD_ERR:{p_err}:REASON:{task.get('terminal_reason')}")
+            events = orch.ledger.list_events(task["task_id"])
+            last_ev = events[-1] if events else {}
+            ev_err = (last_ev.get("payload") or {}).get("error") if isinstance(last_ev.get("payload"), dict) else last_ev.get("payload")
+            self.fail(f"STATUS_FAIL:{task.get('status')}:EVENT_ERR:{ev_err}:REASON:{task.get('terminal_reason')}")
         self.assertEqual(task["status"], TaskState.NEEDS_ATTENTION.value)
         self.assertFalse(generator_called, "Must not execute repair generator when budget is exhausted")
 

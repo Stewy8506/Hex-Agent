@@ -2135,6 +2135,7 @@ class HarnessOrchestrator:
                 attempt_id=attempt_id,
                 workspace_tree_sha=reverted_sha,
                 fencing_token=fencing_token,
+                terminal_reason=f"Step crash: {crash_exc}",
                 payload={"error": str(crash_exc), "restored_snapshot": str(snap_to_restore)},
             )
 
