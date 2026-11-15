@@ -67,15 +67,17 @@ ANTIGRAVITY_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/experimentsandconfigs",
 )
 
-# Standard Google Cloud SDK / Antigravity installed-app OAuth client identifiers
-# (Overridable via HEX_ANTIGRAVITY_CLIENT_ID / HEX_ANTIGRAVITY_CLIENT_SECRET)
-DEFAULT_OAUTH_CLIENT_ID = os.getenv(
-    "HEX_ANTIGRAVITY_CLIENT_ID",
-    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+# Google Cloud SDK / Antigravity OAuth client identifiers
+# (Configured via HEX_ANTIGRAVITY_CLIENT_ID / HEX_ANTIGRAVITY_CLIENT_SECRET)
+DEFAULT_OAUTH_CLIENT_ID = (
+    os.getenv("HEX_ANTIGRAVITY_CLIENT_ID")
+    or os.getenv("ANTIGRAVITY_CLIENT_ID")
+    or ""
 )
-DEFAULT_OAUTH_CLIENT_SECRET = os.getenv(
-    "HEX_ANTIGRAVITY_CLIENT_SECRET",
-    "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",
+DEFAULT_OAUTH_CLIENT_SECRET = (
+    os.getenv("HEX_ANTIGRAVITY_CLIENT_SECRET")
+    or os.getenv("ANTIGRAVITY_CLIENT_SECRET")
+    or ""
 )
 
 ACCESS_TOKEN_RE = re.compile(r"(ya29\.[A-Za-z0-9_\-.]+)")
