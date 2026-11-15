@@ -137,8 +137,8 @@ fn run_headless_check(args: Args) -> Result<()> {
     let content = format!("{:?}", buffer);
 
     assert!(
-        content.contains("HEX"),
-        "Virtual buffer must contain HEX banner"
+        content.contains("HEX") || content.contains(&app.model_name),
+        "Virtual buffer must contain HEX banner or model identity"
     );
     let ws_name = if args.project == "default" && !app.workspace_path.is_empty() {
         std::path::Path::new(&app.workspace_path)

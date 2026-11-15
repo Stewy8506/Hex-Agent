@@ -9,7 +9,7 @@ use ratatui::Frame;
 use hex_protocol::models::Role;
 
 use crate::app::{App, DialogueItem, Focus};
-use crate::ui::design::{skin, Skin, BANNER, SPINNER, TIPS, VERBS};
+use crate::ui::design::{skin, Skin, BANNER, EMBLEM_ART, SPINNER, TIPS, VERBS};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let skin = skin(&app.skin_name);
@@ -378,85 +378,281 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+fn style_splash_text(splash: &str, s: &Skin, _area_width: u16) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut banner_row = 0usize;
+    let mut emblem_row = 0usize;
+
+    for raw_line in splash.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            out.push(Line::raw(""));
+            continue;
+        }
+
+        if raw_line.contains("did you know") {
+            let lead_spaces = raw_line.len() - raw_line.trim_start().len();
+            let prefix = " ".repeat(lead_spaces);
+            let rest = raw_line.trim_start();
+            if let Some(pos) = rest.find(" · ") {
+                let tag = &rest[..pos];
+                let tip = &rest[pos + 3..];
+                out.push(Line::from(vec![
+                    Span::raw(prefix),
+                    Span::styled(tag.to_string(), Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
+                    Span::styled(" · ", Style::default().fg(s.muted)),
+                    Span::styled(tip.to_string(), Style::default().fg(s.muted)),
+                ]));
+            } else {
+                out.push(Line::from(Span::styled(raw_line.to_string(), Style::default().fg(s.muted))));
+            }
+            continue;
+        }
+
+        if raw_line.contains('█') || raw_line.contains('╚') {
+            let color = s.gradient[banner_row.min(5)];
+            banner_row += 1;
+            out.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )));
+            continue;
+        }
+
+        if trimmed == "anv.dev" {
+            let lead_spaces = raw_line.len() - raw_line.trim_start().len();
+            let prefix = " ".repeat(lead_spaces);
+            out.push(Line::from(vec![
+                Span::raw(prefix),
+                Span::styled("anv.dev", Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
+            ]));
+            continue;
+        }
+
+        // Two-column section: Left has emblem art, right has workbench details
+        let chars: Vec<char> = raw_line.chars().collect();
+        let split_pos = if chars.len() > 42 { 42 } else { chars.len() };
+        let left_part: String = chars[..split_pos].iter().collect();
+        let right_part: String = if chars.len() > split_pos {
+            chars[split_pos..].iter().collect()
+        } else {
+            String::new()
+        };
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+
+        // Style left emblem part
+        if !left_part.trim().is_empty() {
+            let emb_color = s.gradient[(emblem_row / 3).min(s.gradient.len() - 1)];
+            emblem_row += 1;
+            spans.push(Span::styled(
+                left_part,
+                Style::default().fg(emb_color).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::raw(left_part));
+        }
+
+        // Style right workbench details part
+        let r_trimmed = right_part.trim();
+        if !r_trimmed.is_empty() {
+            if r_trimmed.contains("HEX Autonomous AI Workbench") {
+                if let Some(pos) = right_part.find("  (upstream") {
+                    spans.push(Span::styled(
+                        right_part[..pos].to_string(),
+                        Style::default().fg(s.heading).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        right_part[pos..].to_string(),
+                        Style::default().fg(s.muted),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        right_part,
+                        Style::default().fg(s.heading).add_modifier(Modifier::BOLD),
+                    ));
+                }
+            } else if r_trimmed.contains(" · ") && !r_trimmed.contains("tools") && !r_trimmed.contains("skills") {
+                if let Some(pos) = right_part.find(" · ") {
+                    spans.push(Span::styled(
+                        right_part[..pos].to_string(),
+                        Style::default().fg(s.accent).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(" · ", Style::default().fg(s.muted)));
+                    spans.push(Span::styled(
+                        right_part[pos + 3..].to_string(),
+                        Style::default().fg(s.category),
+                    ));
+                } else {
+                    spans.push(Span::styled(right_part, Style::default().fg(s.text)));
+                }
+            } else if r_trimmed.starts_with("tools") && !r_trimmed.contains("skills") {
+                spans.push(Span::styled(
+                    right_part,
+                    Style::default().fg(s.category).add_modifier(Modifier::BOLD),
+                ));
+            } else if r_trimmed.contains("tools · ") && r_trimmed.contains("skills") {
+                spans.push(Span::styled(
+                    right_part,
+                    Style::default().fg(s.category).add_modifier(Modifier::BOLD),
+                ));
+            } else if r_trimmed.starts_with("type a message") {
+                spans.push(Span::styled(right_part, Style::default().fg(s.muted)));
+            } else if right_part.contains(':') && !r_trimmed.starts_with("Session:") {
+                // Category line e.g. "  general: browser, code_kernel..."
+                if let Some(pos) = right_part.find(':') {
+                    spans.push(Span::styled(
+                        right_part[..=pos].to_string(),
+                        Style::default().fg(s.category),
+                    ));
+                    spans.push(Span::styled(
+                        right_part[pos + 1..].to_string(),
+                        Style::default().fg(s.text),
+                    ));
+                } else {
+                    spans.push(Span::styled(right_part, Style::default().fg(s.text)));
+                }
+            } else {
+                // Session, workspace path, "+N more", etc.
+                spans.push(Span::styled(right_part, Style::default().fg(s.muted)));
+            }
+        }
+
+        out.push(Line::from(spans));
+    }
+
+    out
+}
+
+fn render_hex_intro_fallback(app: &App, width: u16) -> Vec<Line<'static>> {
+    let s = skin(&app.skin_name);
+    let mut out: Vec<Line<'static>> = Vec::new();
+
+    let total_w = (width as usize).max(80);
+    let block_w = 34 + 4 + 60; // left_w (34) + gap (4) + right_w (60) = 98
+    let margin_l = if total_w > block_w { (total_w - block_w) / 2 } else { 2 };
+    let margin_str = " ".repeat(margin_l);
+    let gap_str = "    "; // 4 spaces
+
+    // 1. Tip line
+    let tip = TIPS[(app.animation_frame as usize / 120) % TIPS.len()];
+    out.push(Line::raw(""));
+    out.push(Line::from(vec![
+        Span::raw(format!("{}    ", margin_str)),
+        Span::styled("did you know", Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
+        Span::styled(" · ", Style::default().fg(s.muted)),
+        Span::styled(tip.to_string(), Style::default().fg(s.muted)),
+    ]));
+    out.push(Line::raw(""));
+
+    // 2. Banner lines (centered)
+    let banner_w = 77;
+    let banner_margin = if total_w > banner_w { (total_w - banner_w) / 2 } else { 0 };
+    let b_margin_str = " ".repeat(banner_margin);
+    for (i, row) in BANNER.iter().enumerate() {
+        out.push(Line::from(vec![
+            Span::raw(b_margin_str.clone()),
+            Span::styled(
+                (*row).to_string(),
+                Style::default().fg(s.gradient[i]).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
+    // 3. anv.dev (centered)
+    let anv_str = "anv.dev";
+    let anv_margin = if total_w > anv_str.len() { (total_w - anv_str.len()) / 2 } else { 0 };
+    out.push(Line::from(vec![
+        Span::raw(" ".repeat(anv_margin)),
+        Span::styled(anv_str, Style::default().fg(s.category).add_modifier(Modifier::BOLD)),
+    ]));
+    out.push(Line::raw(""));
+
+    // 4. Two-column body
+    let mut right_lines: Vec<Line<'static>> = Vec::new();
+    right_lines.push(Line::from(vec![
+        Span::styled("HEX Autonomous AI Workbench  v0.20.1", Style::default().fg(s.heading).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  (upstream {})", app.git_sha), Style::default().fg(s.muted)),
+    ]));
+    right_lines.push(Line::from(vec![
+        Span::styled(format!("{} ", app.model_name), Style::default().fg(s.accent).add_modifier(Modifier::BOLD)),
+        Span::styled("· ", Style::default().fg(s.muted)),
+        Span::styled(app.provider_name.clone(), Style::default().fg(s.category)),
+    ]));
+    right_lines.push(Line::from(Span::styled(app.workspace_path.clone(), Style::default().fg(s.muted))));
+    right_lines.push(Line::from(Span::styled(format!("Session: {}", app.session_id), Style::default().fg(s.muted))));
+    right_lines.push(Line::raw(""));
+    right_lines.push(Line::from(Span::styled("tools", Style::default().fg(s.category).add_modifier(Modifier::BOLD))));
+    right_lines.push(Line::from(vec![
+        Span::styled("  file: ", Style::default().fg(s.category)),
+        Span::styled("list_files, patch, read_file, write_file", Style::default().fg(s.text)),
+    ]));
+    right_lines.push(Line::from(vec![
+        Span::styled("  search: ", Style::default().fg(s.category)),
+        Span::styled("search_files, web_extract, web_search", Style::default().fg(s.text)),
+    ]));
+    right_lines.push(Line::from(vec![
+        Span::styled("  lsp_compiler: ", Style::default().fg(s.category)),
+        Span::styled("lsp_definition, lsp_diagnostics, lsp_hover, lsp_references", Style::default().fg(s.text)),
+    ]));
+    right_lines.push(Line::from(vec![
+        Span::styled("  ast_graph: ", Style::default().fg(s.category)),
+        Span::styled("query_graphify", Style::default().fg(s.text)),
+    ]));
+    right_lines.push(Line::from(vec![
+        Span::styled("  shell_exec: ", Style::default().fg(s.category)),
+        Span::styled("process, terminal", Style::default().fg(s.text)),
+    ]));
+    right_lines.push(Line::from(vec![
+        Span::styled("  verification: ", Style::default().fg(s.category)),
+        Span::styled("run_tests", Style::default().fg(s.text)),
+    ]));
+    if app.tools_count > 15 {
+        right_lines.push(Line::from(Span::styled(format!("  +{} more", app.tools_count.saturating_sub(15)), Style::default().fg(s.muted))));
+    }
+    right_lines.push(Line::raw(""));
+    right_lines.push(Line::from(Span::styled(
+        format!("{} tools · {} skills", app.tools_count, app.skills_count),
+        Style::default().fg(s.category).add_modifier(Modifier::BOLD),
+    )));
+    right_lines.push(Line::raw(""));
+    right_lines.push(Line::from(Span::styled("type a message   /help for commands", Style::default().fg(s.muted))));
+
+    let max_rows = EMBLEM_ART.len().max(right_lines.len());
+    for r in 0..max_rows {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::raw(margin_str.clone()));
+
+        if r < EMBLEM_ART.len() {
+            let emb_color = s.gradient[(r / 3).min(s.gradient.len() - 1)];
+            spans.push(Span::styled(
+                EMBLEM_ART[r].to_string(),
+                Style::default().fg(emb_color).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::raw(" ".repeat(34)));
+        }
+
+        spans.push(Span::raw(gap_str));
+
+        if r < right_lines.len() {
+            spans.extend(right_lines[r].spans.clone());
+        }
+
+        out.push(Line::from(spans));
+    }
+
+    out
+}
+
 fn render_hex_intro(app: &App, width: u16) -> Vec<Line<'static>> {
     let s = skin(&app.skin_name);
-    let mut out = vec![
-        Line::from(vec![
-            Span::styled(
-                "did you know",
-                Style::default().fg(s.category).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" · ", Style::default().fg(s.muted)),
-            Span::styled(
-                TIPS[(app.animation_frame as usize / 120) % TIPS.len()].to_string(),
-                Style::default().fg(s.muted),
-            ),
-        ]),
-        Line::raw(""),
-    ];
-    if width >= 94 {
-        for (i, row) in BANNER.iter().enumerate() {
-            out.push(Line::from(Span::styled(
-                (*row).to_string(),
-                Style::default()
-                    .fg(s.gradient[i])
-                    .add_modifier(Modifier::BOLD),
-            )));
+    if let Some(ref splash) = app.splash_text {
+        if !splash.trim().is_empty() {
+            return style_splash_text(splash, &s, width);
         }
-        out.push(Line::from(Span::styled(
-            "                                      anv.dev",
-            Style::default().fg(s.category).add_modifier(Modifier::BOLD),
-        )));
-    } else {
-        out.push(Line::from(Span::styled(
-            "                 ◈  H E X   A G E N T  ◈",
-            Style::default().fg(s.heading).add_modifier(Modifier::BOLD),
-        )));
-        out.push(Line::from(Span::styled(
-            "                       anv.dev",
-            Style::default().fg(s.category),
-        )));
     }
-    out.push(Line::raw(""));
-    out.push(Line::from(vec![
-        Span::styled(
-            "     ◈ HEX Autonomous AI Workbench",
-            Style::default().fg(s.heading).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  ·  {}", app.provider_name),
-            Style::default().fg(s.category),
-        ),
-    ]));
-    out.push(Line::from(vec![
-        Span::styled(
-            format!("     {}", app.model_name),
-            Style::default().fg(s.accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  ·  {}", app.workspace_path),
-            Style::default().fg(s.muted),
-        ),
-    ]));
-    out.push(Line::from(vec![
-        Span::styled(
-            "     tools",
-            Style::default().fg(s.category).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(
-                "  {} tools · {} skills · CoW:{}",
-                app.tools_count, app.skills_count, app.cow_mode
-            ),
-            Style::default().fg(s.text),
-        ),
-    ]));
-    out.push(Line::from(Span::styled(
-        "     type a message   /help for commands",
-        Style::default().fg(s.muted),
-    )));
-    out.push(Line::raw(""));
-    out
+    render_hex_intro_fallback(app, width)
 }
 
 fn parse_inline_spans(input: &str, skin: &Skin) -> Vec<Span<'static>> {
