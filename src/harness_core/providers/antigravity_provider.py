@@ -1287,11 +1287,11 @@ class AntigravityModelProvider(ModelProvider):
             except Exception:
                 pass
 
-        # Retry transient HTTP 429s (capacity/rate limit without quotaResetDelay) before failing
+        # Retry transient HTTP 429s (RPM/TPM per-minute rate limit without quotaResetDelay) before failing
         if status_code == 429:
             reset_delay = self._extract_quota_reset_delay(resp_bytes)
             if not reset_delay:
-                for delay_s in (0.5, 1.0):
+                for delay_s in (1.5, 3.0, 6.0):
                     if self.http_transport is None:
                         time.sleep(delay_s)
                     status_code, resp_bytes = self._execute_http(
@@ -1303,16 +1303,18 @@ class AntigravityModelProvider(ModelProvider):
                     if reset_delay:
                         break
 
-        # Handle persistent HTTP 429 with clear distinction between quota exhaustion and capacity/rate limits
+        # Handle persistent HTTP 429 with clear distinction between daily quota exhaustion and transient rate limits
         if status_code == 429:
             reset_delay = self._extract_quota_reset_delay(resp_bytes)
             if reset_delay:
                 raise ProviderUnavailableError(
                     f"Google Antigravity quota exhausted for model '{self.model_id}' (Quota resets in {reset_delay})."
                 )
-            err_detail = self._extract_error_message(resp_bytes) or "Rate limit or capacity temporarily exhausted"
+            err_detail = self._extract_error_message(resp_bytes) or "Resource has been exhausted"
             raise ProviderUnavailableError(
-                f"Google Antigravity returned HTTP 429 for model '{self.model_id}' (project={project_id}): {err_detail}"
+                f"Google Antigravity returned HTTP 429 ({err_detail}). "
+                f"This is a per-minute rate limit (RPM/TPM) on model '{self.model_id}' (project={project_id}). "
+                "Your account still has daily quota — wait a few seconds or switch models with `/model`."
             )
 
         if status_code not in (200, 201):
@@ -1422,7 +1424,15 @@ class AntigravityModelProvider(ModelProvider):
         temperature: float,
         stop_sequences: list[str] | None,
     ) -> tuple[str, dict[str, str], bytes]:
-        url = f"{self.base_url}/v1internal:streamGenerateContent?alt=sse"
+        target_base = self.base_url
+        if (
+            project_id == DEFAULT_FALLBACK_PROJECT_ID
+            and ANTIGRAVITY_PROD_ENDPOINT in target_base
+            and not os.getenv("HEX_ANTIGRAVITY_ENDPOINT")
+        ):
+            target_base = ANTIGRAVITY_DAILY_ENDPOINT
+            self.base_url = ANTIGRAVITY_DAILY_ENDPOINT
+        url = f"{target_base}/v1internal:streamGenerateContent?alt=sse"
         headers = self._build_antigravity_headers(access_token)
 
         # Strictly order parts as cacheable_prefix -> volatile prompt
@@ -1605,11 +1615,15 @@ class AntigravityModelProvider(ModelProvider):
         except urllib.error.HTTPError as e:
             # If 429 or 403 occurs on one endpoint, attempt fallback to alternate Antigravity endpoint
             if e.code in (403, 429):
-                alt_base = (
-                    ANTIGRAVITY_DAILY_ENDPOINT
-                    if ANTIGRAVITY_PROD_ENDPOINT in url
-                    else (ANTIGRAVITY_PROD_ENDPOINT if ANTIGRAVITY_DAILY_ENDPOINT in url else None)
-                )
+                is_consumer_project = b'"project": "aicode-consumers"' in body or b'"project":"aicode-consumers"' in body
+                if is_consumer_project:
+                    alt_base = ANTIGRAVITY_DAILY_ENDPOINT if ANTIGRAVITY_PROD_ENDPOINT in url else None
+                else:
+                    alt_base = (
+                        ANTIGRAVITY_DAILY_ENDPOINT
+                        if ANTIGRAVITY_PROD_ENDPOINT in url
+                        else (ANTIGRAVITY_PROD_ENDPOINT if ANTIGRAVITY_DAILY_ENDPOINT in url else None)
+                    )
                 if alt_base and alt_base not in url:
                     alt_url = url.replace(ANTIGRAVITY_PROD_ENDPOINT, alt_base).replace(ANTIGRAVITY_DAILY_ENDPOINT, alt_base)
                     try:
