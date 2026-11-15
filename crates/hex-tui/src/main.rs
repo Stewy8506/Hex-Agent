@@ -231,7 +231,6 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     app.add_system_message(&format!("Session handshake notice: {}", e));
                 }
             }
-            app.add_system_message("Connected to internal ACP server.");
             Some(client)
         }
         Err(err) => {
