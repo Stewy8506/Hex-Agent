@@ -885,16 +885,7 @@ pub fn is_subsequence(query: &str, target: &str) -> bool {
 }
 
 fn chrono_now() -> String {
-    // Zero extra external dependency timestamp
-    use std::time::SystemTime;
-    let duration = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    let hours = (secs / 3600) % 24;
-    let mins = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{:02}:{:02}:{:02}", hours, mins, s)
+    chrono::Local::now().format("%-I:%M %p").to_string()
 }
 
 /// Format an elapsed duration with Hermes-style precision:

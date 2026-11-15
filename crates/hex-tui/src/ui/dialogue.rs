@@ -61,6 +61,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
         match item {
             DialogueItem::Message(msg) => {
+                let card_border = Color::Rgb(82, 82, 91);
+
                 if msg.role == Role::User {
                     lines.push(Line::raw(""));
                     let card_width = (area.width.saturating_sub(2)).max(30) as usize;
@@ -71,11 +73,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     let dash_count = card_width.saturating_sub(prefix_len + suffix_len).max(2);
 
                     lines.push(Line::from(vec![
-                        Span::styled("╭─ ", Style::default().fg(skin.accent)),
+                        Span::styled("╭─ ", Style::default().fg(card_border)),
                         Span::styled("❯ You ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
-                        Span::styled("─".repeat(dash_count), Style::default().fg(skin.accent)),
+                        Span::styled("─".repeat(dash_count), Style::default().fg(card_border)),
                         Span::styled(format!(" {} ", msg.timestamp), Style::default().fg(skin.muted)),
-                        Span::styled("─╮", Style::default().fg(skin.accent)),
+                        Span::styled("─╮", Style::default().fg(card_border)),
                     ]));
 
                     let inner_width = card_width.saturating_sub(4);
@@ -84,17 +86,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                         let wlen = wline.chars().count();
                         let pad = inner_width.saturating_sub(wlen);
                         lines.push(Line::from(vec![
-                            Span::styled("│ ", Style::default().fg(skin.accent)),
+                            Span::styled("│ ", Style::default().fg(card_border)),
                             Span::styled(wline, Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
                             Span::raw(" ".repeat(pad)),
-                            Span::styled(" │", Style::default().fg(skin.accent)),
+                            Span::styled(" │", Style::default().fg(card_border)),
                         ]));
                     }
 
                     let bot_dashes = card_width.saturating_sub(2);
                     lines.push(Line::from(Span::styled(
                         format!("╰{}╯", "─".repeat(bot_dashes)),
-                        Style::default().fg(skin.accent),
+                        Style::default().fg(card_border),
                     )));
                     lines.push(Line::raw(""));
                     continue;
@@ -111,12 +113,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     let dash_count = card_width.saturating_sub(prefix_len + suffix_len).max(2);
 
                     lines.push(Line::from(vec![
-                        Span::styled("╭─ ", Style::default().fg(skin.accent)),
+                        Span::styled("╭─ ", Style::default().fg(card_border)),
                         Span::styled("⬢ ", Style::default().fg(skin.accent).add_modifier(Modifier::BOLD)),
                         Span::styled(format!("{} ", app.agent_name), Style::default().fg(skin.heading).add_modifier(Modifier::BOLD)),
-                        Span::styled("─".repeat(dash_count), Style::default().fg(skin.accent)),
+                        Span::styled("─".repeat(dash_count), Style::default().fg(card_border)),
                         Span::styled(format!(" {} ", msg.timestamp), Style::default().fg(skin.muted)),
-                        Span::styled("─╮", Style::default().fg(skin.accent)),
+                        Span::styled("─╮", Style::default().fg(card_border)),
                     ]));
 
                     let is_streaming_assistant = idx == app.dialogue_items.len() - 1 && app.is_busy;
@@ -128,10 +130,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                         let cursor_char = if (app.animation_frame / 8) % 2 == 0 { "▍" } else { " " };
                         let pad = inner_width.saturating_sub(1);
                         lines.push(Line::from(vec![
-                            Span::styled("│ ", Style::default().fg(skin.accent)),
+                            Span::styled("│ ", Style::default().fg(card_border)),
                             Span::styled(cursor_char, Style::default().fg(skin.accent)),
                             Span::raw(" ".repeat(pad)),
-                            Span::styled(" │", Style::default().fg(skin.accent)),
+                            Span::styled(" │", Style::default().fg(card_border)),
                         ]));
                     } else {
                         for (line_idx, raw_line) in raw_lines.iter().enumerate() {
@@ -149,20 +151,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                                     let clen = code_header.chars().count();
                                     let pad = inner_width.saturating_sub(clen);
                                     lines.push(Line::from(vec![
-                                        Span::styled("│ ", Style::default().fg(skin.accent)),
+                                        Span::styled("│ ", Style::default().fg(card_border)),
                                         Span::styled(code_header, Style::default().fg(skin.muted)),
                                         Span::raw(" ".repeat(pad)),
-                                        Span::styled(" │", Style::default().fg(skin.accent)),
+                                        Span::styled(" │", Style::default().fg(card_border)),
                                     ]));
                                 } else {
                                     let code_footer = format!("└{}┘", "─".repeat(inner_width.saturating_sub(2)));
                                     let clen = code_footer.chars().count();
                                     let pad = inner_width.saturating_sub(clen);
                                     lines.push(Line::from(vec![
-                                        Span::styled("│ ", Style::default().fg(skin.accent)),
+                                        Span::styled("│ ", Style::default().fg(card_border)),
                                         Span::styled(code_footer, Style::default().fg(skin.muted)),
                                         Span::raw(" ".repeat(pad)),
-                                        Span::styled(" │", Style::default().fg(skin.accent)),
+                                        Span::styled(" │", Style::default().fg(card_border)),
                                     ]));
                                 }
                                 continue;
@@ -172,21 +174,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                                 let wlen = raw_line.chars().count() + 4;
                                 let code_pad = inner_width.saturating_sub(wlen);
                                 lines.push(Line::from(vec![
-                                    Span::styled("│ ", Style::default().fg(skin.accent)),
+                                    Span::styled("│ ", Style::default().fg(card_border)),
                                     Span::styled("│ ", Style::default().fg(skin.muted)),
                                     Span::styled(raw_line.to_string(), Style::default().fg(skin.accent)),
                                     Span::raw(" ".repeat(code_pad)),
                                     Span::styled(" │", Style::default().fg(skin.muted)),
-                                    Span::styled(" │", Style::default().fg(skin.accent)),
+                                    Span::styled(" │", Style::default().fg(card_border)),
                                 ]));
                                 continue;
                             }
 
                             if trimmed.is_empty() {
                                 lines.push(Line::from(vec![
-                                    Span::styled("│ ", Style::default().fg(skin.accent)),
+                                    Span::styled("│ ", Style::default().fg(card_border)),
                                     Span::raw(" ".repeat(inner_width)),
-                                    Span::styled(" │", Style::default().fg(skin.accent)),
+                                    Span::styled(" │", Style::default().fg(card_border)),
                                 ]));
                                 continue;
                             }
@@ -219,12 +221,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                                 let rlen: usize = row.iter().map(|s| s.content.chars().count()).sum();
                                 let pad = inner_width.saturating_sub(rlen);
 
-                                let mut line_spans = vec![Span::styled("│ ", Style::default().fg(skin.accent))];
+                                let mut line_spans = vec![Span::styled("│ ", Style::default().fg(card_border))];
                                 line_spans.extend(row);
                                 if pad > 0 {
                                     line_spans.push(Span::raw(" ".repeat(pad)));
                                 }
-                                line_spans.push(Span::styled(" │", Style::default().fg(skin.accent)));
+                                line_spans.push(Span::styled(" │", Style::default().fg(card_border)));
                                 lines.push(Line::from(line_spans));
                             }
                         }
@@ -233,7 +235,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     let bot_dashes = card_width.saturating_sub(2);
                     lines.push(Line::from(Span::styled(
                         format!("╰{}╯", "─".repeat(bot_dashes)),
-                        Style::default().fg(skin.accent),
+                        Style::default().fg(card_border),
                     )));
                     lines.push(Line::raw(""));
                     continue;
