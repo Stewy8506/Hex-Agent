@@ -40,6 +40,7 @@ from .providers.base import BudgetExceededError
 from .react_loop import ReActConfig, ReActLoop, ReActSessionResult, ReActTurn
 from .router import GovernedMemoryService, TwoTierModelRouter
 from .sandbox import ExecutionSandbox, get_default_sandbox
+from .skills.executor import SecurityError, SkillExecutionEngine
 from .skillspector import SkillSpectorScanner
 from .soul import SoulManager
 from .subagent import SubagentManager, SubagentRole
@@ -1489,6 +1490,192 @@ class HarnessOrchestrator:
 
         return {"passed": True, "error_count": 0, "errors": []}
 
+    def _run_skill_verifications(
+        self,
+        task_id: str,
+        attempt_id: str,
+        attempt_ws: Path,
+        modified_files: list[str],
+        task: dict[str, Any],
+        workspace_tree_sha: str,
+    ) -> dict[str, Any]:
+        """Runs deterministic skill verify: hooks for referenced or affected skills."""
+        constraints = task.get("constraints") or {}
+        metadata = task.get("metadata") or {}
+
+        # 1. Collect candidate skill names / IDs from task references
+        referenced_skill_names: set[str] = set()
+        for source in (
+            constraints.get("skills"),
+            constraints.get("skill"),
+            constraints.get("required_skills"),
+            metadata.get("skills"),
+            metadata.get("skill"),
+            task.get("skill"),
+            task.get("skills"),
+        ):
+            if isinstance(source, list):
+                referenced_skill_names.update(str(s).strip() for s in source if s)
+            elif isinstance(source, str) and source.strip():
+                for s in re.split(r"[,;|\s]+", source.strip()):
+                    if s.strip():
+                        referenced_skill_names.add(s.strip())
+
+        # 2. Collect candidate skill bundles from disk and ledger
+        candidate_skills: list[dict[str, Any]] = []
+
+        # From ledger active/pinned skills
+        if self.ledger is not None:
+            try:
+                with self.ledger._lock:
+                    rows = self.ledger.conn.execute(
+                        "SELECT * FROM skills WHERE status IN ('active', 'pinned') ORDER BY created_at DESC"
+                    ).fetchall()
+                    for r in rows:
+                        d = self.ledger._row_to_dict(r)
+                        if d:
+                            candidate_skills.append(d)
+            except Exception:
+                pass
+
+        # Also look in workspace skill directories (.hex/skills, skills/custom)
+        ws_skill_dirs = [
+            attempt_ws / ".hex" / "skills",
+            attempt_ws / "skills" / "custom",
+            attempt_ws / "skills",
+        ]
+        seen_paths = {str(c.get("disk_path")) for c in candidate_skills if c.get("disk_path")}
+        for base_d in ws_skill_dirs:
+            if base_d.is_dir():
+                for sub in base_d.iterdir():
+                    if sub.is_dir() and (sub / "SKILL.md").is_file():
+                        if str(sub) not in seen_paths:
+                            candidate_skills.append({
+                                "skill_id": f"skl_{sub.name.lower()}",
+                                "name": sub.name,
+                                "disk_path": str(sub),
+                                "status": "active",
+                            })
+                            seen_paths.add(str(sub))
+
+        # 3. Match candidate skills
+        engine = SkillExecutionEngine(
+            default_workspace_root=attempt_ws,
+            ledger=self.ledger,
+            scanner=self.scanner,
+        )
+
+        matched_skills: list[tuple[dict[str, Any], Any]] = []
+        for cand in candidate_skills:
+            disk_p = Path(cand["disk_path"]) if cand.get("disk_path") else None
+            if not disk_p or not disk_p.exists():
+                continue
+
+            hook = engine.extract_verification_hook(disk_p)
+            if hook is None:
+                continue
+
+            c_name = cand.get("name") or disk_p.name
+            c_id = cand.get("skill_id") or ""
+
+            # Check matching criteria:
+            # - Explicitly referenced by name or id
+            is_referenced = (
+                c_name in referenced_skill_names
+                or c_id in referenced_skill_names
+                or any(r in c_name or r in c_id for r in referenced_skill_names)
+            )
+
+            # - AST invariant touches modified files
+            ast_matched = False
+            if hook.ast_invariant and modified_files:
+                for mf in modified_files:
+                    if mf in hook.ast_invariant or Path(mf).name in hook.ast_invariant:
+                        ast_matched = True
+                        break
+
+            if is_referenced or ast_matched:
+                matched_skills.append((cand, hook))
+
+        if not matched_skills:
+            return {"passed": True, "results": []}
+
+        # 4. Execute verification hooks
+        results: list[dict[str, Any]] = []
+        for cand, hook in matched_skills:
+            bundle_p = Path(cand["disk_path"])
+            skill_name = cand.get("name") or bundle_p.name
+            try:
+                res = engine.run_skill_verification(
+                    hook=hook,
+                    workspace_root=attempt_ws,
+                    skill_name=skill_name,
+                    sandbox=self.sandbox,
+                    skill_bundle_dir=bundle_p,
+                    ledger=self.ledger,
+                    scanner=self.scanner,
+                )
+            except SecurityError as sec_err:
+                try:
+                    self.ledger.record_event(
+                        task_id=task_id,
+                        event_type="SKILL_VERIFICATION_FAILED",
+                        reason_code="SKILL_INTEGRITY_VIOLATION",
+                        attempt_id=attempt_id,
+                        workspace_tree_sha=workspace_tree_sha,
+                        payload={
+                            "skill_name": skill_name,
+                            "error_message": str(sec_err),
+                        },
+                    )
+                except Exception:
+                    pass
+                return {
+                    "passed": False,
+                    "failed_skill": skill_name,
+                    "error_message": str(sec_err),
+                    "result": {
+                        "skill_name": skill_name,
+                        "passed": False,
+                        "error_message": str(sec_err),
+                        "exit_code": -1,
+                        "stdout": "",
+                        "stderr": str(sec_err),
+                    },
+                }
+
+            results.append(res.to_dict())
+
+            if hook.must_pass and not res.passed:
+                try:
+                    self.ledger.record_event(
+                        task_id=task_id,
+                        event_type="SKILL_VERIFICATION_FAILED",
+                        reason_code="SKILL_HOOK_FAILED",
+                        attempt_id=attempt_id,
+                        workspace_tree_sha=workspace_tree_sha,
+                        payload={
+                            "skill_name": res.skill_name,
+                            "command": res.command,
+                            "exit_code": res.exit_code,
+                            "stdout": res.stdout[:4000],
+                            "stderr": res.stderr[:4000],
+                            "error_message": res.error_message,
+                            "ast_invariant_passed": res.ast_invariant_passed,
+                        },
+                    )
+                except Exception:
+                    pass
+                return {
+                    "passed": False,
+                    "failed_skill": res.skill_name,
+                    "error_message": res.error_message or f"Hook failed with exit code {res.exit_code}",
+                    "result": res.to_dict(),
+                    "all_results": results,
+                }
+
+        return {"passed": True, "results": results}
+
     def _execute_standard_dag(
         self,
         task: dict[str, Any],
@@ -1840,6 +2027,31 @@ class HarnessOrchestrator:
                 run_tests=True,
             )
 
+        # Post-edit deterministic skill verification hooks (FR-039 / F-01)
+        if ver_outcome["passed"]:
+            skill_ver = self._run_skill_verifications(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                attempt_ws=attempt_ws,
+                modified_files=modified_files,
+                task=task,
+                workspace_tree_sha=head_sha,
+            )
+            if not skill_ver["passed"]:
+                fail_msg = (
+                    f"Skill Verification Hook Failed for '{skill_ver.get('failed_skill')}':\n"
+                    f"{skill_ver.get('error_message')}\n"
+                    f"Stdout: {skill_ver.get('result', {}).get('stdout', '')}\n"
+                    f"Stderr: {skill_ver.get('result', {}).get('stderr', '')}"
+                )
+                ver_outcome = {
+                    "passed": False,
+                    "verification_results": {
+                        "test_output_excerpt": fail_msg,
+                        "skill_verification": skill_ver,
+                    },
+                }
+
         repair_attempt = 0
         task_budget = TaskBudget.from_dict(task.get("budget"))
         constraints = task.get("constraints") or {}
@@ -1986,6 +2198,31 @@ class HarnessOrchestrator:
                     modified_files=modified_files,
                     run_tests=True,
                 )
+
+            # Re-execute skill verification in repair loop
+            if ver_outcome["passed"]:
+                skill_ver = self._run_skill_verifications(
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    attempt_ws=attempt_ws,
+                    modified_files=modified_files,
+                    task=task,
+                    workspace_tree_sha=curr_sha,
+                )
+                if not skill_ver["passed"]:
+                    fail_msg = (
+                        f"Skill Verification Hook Failed for '{skill_ver.get('failed_skill')}':\n"
+                        f"{skill_ver.get('error_message')}\n"
+                        f"Stdout: {skill_ver.get('result', {}).get('stdout', '')}\n"
+                        f"Stderr: {skill_ver.get('result', {}).get('stderr', '')}"
+                    )
+                    ver_outcome = {
+                        "passed": False,
+                        "verification_results": {
+                            "test_output_excerpt": fail_msg,
+                            "skill_verification": skill_ver,
+                        },
+                    }
 
         if not ver_outcome["passed"]:
             forensic_snap = self.cow.create_snapshot(

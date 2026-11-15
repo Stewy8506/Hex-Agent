@@ -449,6 +449,66 @@ def compute_mcp_manifest_sha256(manifest_data: dict[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def compute_bundle_sha256(bundle_dir: Path | str) -> str:
+    """Deterministically computes SHA-256 hash across all files and symlinks in a skill bundle."""
+    root = Path(bundle_dir).resolve()
+    if root.is_file():
+        root = root.parent
+    h = hashlib.sha256()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__" and not d.startswith(".git"))
+        for fname in sorted(filenames):
+            fpath = Path(dirpath) / fname
+            rel = str(fpath.relative_to(root)).replace("\\", "/")
+            if fpath.is_symlink():
+                h.update(f"SYMLINK:{rel}->{os.readlink(fpath)}\n".encode("utf-8"))
+            elif fpath.is_file():
+                h.update(f"FILE:{rel}:".encode("utf-8"))
+                h.update(fpath.read_bytes())
+                h.update(b"\n")
+    return h.hexdigest()
+
+
+def get_approved_skill_hash(
+    bundle_dir_or_name: Path | str, ledger: Any | None = None
+) -> str | None:
+    """Retrieves the approved SHA-256 hash for a skill bundle from ledger or local audit records."""
+    target_str = str(bundle_dir_or_name)
+    target_path = Path(bundle_dir_or_name)
+
+    # 1. Check ledger database if provided
+    if ledger is not None and hasattr(ledger, "conn"):
+        try:
+            with ledger._lock:
+                row = ledger.conn.execute(
+                    """
+                    SELECT bundle_sha256, status FROM skills
+                    WHERE disk_path = ? OR name = ? OR skill_id = ?
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (target_str, target_path.name if target_path.is_dir() else target_str, target_str),
+                ).fetchone()
+                if row:
+                    data = ledger._row_to_dict(row)
+                    if data and data.get("status") in ("active", "pinned"):
+                        return data.get("bundle_sha256")
+        except Exception:
+            pass
+
+    # 2. Check local audit.json inside bundle directory
+    if target_path.is_dir():
+        audit_file = target_path / "audit.json"
+        if audit_file.is_file():
+            try:
+                data = json.loads(audit_file.read_text(encoding="utf-8"))
+                if data.get("gate_decision") == "ALLOW":
+                    return data.get("bundle_sha256")
+            except Exception:
+                pass
+
+    return None
+
+
 class SkillSpectorScanner:
     """Automated static, dependency (OSV), and semantic alignment scanner for skills.
 
@@ -463,20 +523,7 @@ class SkillSpectorScanner:
         self.rules = STATIC_RULES_REGISTRY
 
     def compute_bundle_sha256(self, bundle_dir: Path | str) -> str:
-        root = Path(bundle_dir).resolve()
-        h = hashlib.sha256()
-        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-            dirnames[:] = sorted(d for d in dirnames if d != "__pycache__" and not d.startswith(".git"))
-            for fname in sorted(filenames):
-                fpath = Path(dirpath) / fname
-                rel = str(fpath.relative_to(root)).replace("\\", "/")
-                if fpath.is_symlink():
-                    h.update(f"SYMLINK:{rel}->{os.readlink(fpath)}\n".encode("utf-8"))
-                elif fpath.is_file():
-                    h.update(f"FILE:{rel}:".encode("utf-8"))
-                    h.update(fpath.read_bytes())
-                    h.update(b"\n")
-        return h.hexdigest()
+        return compute_bundle_sha256(bundle_dir)
 
     def scan_bundle(self, bundle_dir: Path | str) -> SkillScanReport:
         root = Path(bundle_dir).resolve()
