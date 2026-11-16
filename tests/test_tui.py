@@ -23,10 +23,10 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main
-from harness_core.cow import compute_workspace_diff
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.tui import (
+from harness_core.client.cli import main
+from harness_core.storage.cow import compute_workspace_diff
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.client.tui import (
     ANSI_CYAN,
     ANSI_GREEN,
     ANSI_RED,
@@ -469,14 +469,14 @@ class TestDockedInputFrameAndGhostSuggestions(unittest.TestCase):
     """Verifies HEX-grade docked input frame and dynamic ghost suggestions."""
 
     def test_default_prompt_suggestions_pool(self):
-        from harness_core.tui import DEFAULT_PROMPT_SUGGESTIONS
+        from harness_core.client.tui import DEFAULT_PROMPT_SUGGESTIONS
         self.assertGreaterEqual(len(DEFAULT_PROMPT_SUGGESTIONS), 10)
         self.assertIn("Ask me anything...", DEFAULT_PROMPT_SUGGESTIONS)
         for s in DEFAULT_PROMPT_SUGGESTIONS:
             self.assertTrue(len(s) > 5)
 
     def test_render_docked_input_frame_empty_with_ghost_text(self):
-        from harness_core.tui import render_docked_input_frame
+        from harness_core.client.tui import render_docked_input_frame
         top, mid, bot = render_docked_input_frame(
             width=100,
             text="",
@@ -500,7 +500,7 @@ class TestDockedInputFrameAndGhostSuggestions(unittest.TestCase):
         self.assertIn("enter send", bot)
 
     def test_render_docked_input_frame_typed_text_replaces_ghost(self):
-        from harness_core.tui import render_docked_input_frame
+        from harness_core.client.tui import render_docked_input_frame
         top, mid, bot = render_docked_input_frame(
             width=100,
             text="Explain AST graphify",
@@ -511,14 +511,14 @@ class TestDockedInputFrameAndGhostSuggestions(unittest.TestCase):
         self.assertNotIn("Ask me anything...", mid)
 
     def test_render_docked_input_frame_across_widths(self):
-        from harness_core.tui import render_docked_input_frame, strip_ansi
+        from harness_core.client.tui import render_docked_input_frame, strip_ansi
         for w in [70, 80, 95, 110]:
             top, mid, bot = render_docked_input_frame(width=w, text="", enable_color=True)
             self.assertEqual(len(strip_ansi(top)), w)
             self.assertEqual(len(strip_ansi(bot)), w)
 
     def test_console_suggestion_rotation(self):
-        from harness_core.tui import HexConsole, DEFAULT_PROMPT_SUGGESTIONS
+        from harness_core.client.tui import HexConsole, DEFAULT_PROMPT_SUGGESTIONS
         mock_orch = MagicMock()
         console = HexConsole(mock_orch, quiet=True)
         s1 = console._get_next_suggestion()
@@ -548,7 +548,7 @@ class TestCLIChatSubcommand(unittest.TestCase):
             self.assertEqual(res, 0)
             text = out.getvalue()
             self.assertTrue("HEX Agent" in text or "HEX Autonomous AI Workbench" in text)
-            self.assertIn("Available HEX Slash Commands", text)
+            self.assertIn("Available Commands:", text)
         finally:
             sys.stdin = old_stdin
 

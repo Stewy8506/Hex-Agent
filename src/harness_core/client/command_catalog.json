@@ -1,0 +1,344 @@
+{
+  "version": 1,
+  "description": "Shared HEX slash-command catalog. Single source of truth for help, completion, and dispatch availability across the Python console, Rust TUI, and ACP surfaces. Status values: supported | unavailable.",
+  "commands": [
+    {
+      "name": "/help",
+      "aliases": ["/h", "/?"],
+      "usage": "/help",
+      "description": "Show available slash commands for this surface",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/mode",
+      "aliases": ["/m"],
+      "usage": "/mode [plan|agent|code]",
+      "description": "Switch execution mode: plan (read-only spec), agent (autonomous), code (direct synthesis)",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
+      "name": "/plan",
+      "aliases": ["/ask"],
+      "usage": "/plan",
+      "description": "Switch to read-only architecture planning mode",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
+      "name": "/agent",
+      "aliases": [],
+      "usage": "/agent",
+      "description": "Switch to autonomous agent execution mode",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
+      "name": "/code",
+      "aliases": [],
+      "usage": "/code",
+      "description": "Switch to direct code synthesis mode",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
+      "name": "/rename",
+      "aliases": ["/identity"],
+      "usage": "/rename <name>",
+      "description": "Rename the agent persona identity",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/status",
+      "aliases": ["/tasks"],
+      "usage": "/status",
+      "description": "Session, workspace, and last task status",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/diff",
+      "aliases": [],
+      "usage": "/diff",
+      "description": "Inspect uncommitted workspace changes (TUI toggles the diff pane)",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"},
+      "tui_local": true
+    },
+    {
+      "name": "/sbs",
+      "aliases": [],
+      "usage": "/sbs <file>",
+      "description": "Side-by-side diff for one file (TUI toggles the diff viewer mode)",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"},
+      "tui_local": true
+    },
+    {
+      "name": "/rollback",
+      "aliases": [],
+      "usage": "/rollback [task_id]",
+      "description": "Cancel a task and roll back the uncommitted CoW workspace layer",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/fork",
+      "aliases": [],
+      "usage": "/fork [task_id]",
+      "description": "Fork a task into speculative attempt branches",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/skills",
+      "aliases": [],
+      "usage": "/skills",
+      "description": "List registered skills, risk scores, and gate decisions",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/tools",
+      "aliases": [],
+      "usage": "/tools",
+      "description": "Display the categorized tool catalog",
+      "surfaces": {"console": "unavailable", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
+      "name": "/learn",
+      "aliases": ["/synthesize"],
+      "usage": "/learn <target> [--global] [--dry-run]",
+      "description": "Synthesize and verify a reusable SKILL.md bundle",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/scan",
+      "aliases": ["/scan-skill"],
+      "usage": "/scan <dir>",
+      "description": "Scan and register a SKILL.md bundle via SkillSpector",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/model",
+      "aliases": [],
+      "usage": "/model [name]",
+      "description": "Inspect or switch the active model",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/reasoning",
+      "aliases": ["/effort", "/thinking"],
+      "usage": "/reasoning [none|low|medium|high|max]",
+      "description": "Inspect or switch reasoning effort level",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/compressor",
+      "aliases": ["/comp"],
+      "usage": "/compressor [deterministic|cloud|local|off]",
+      "description": "Inspect or switch the context compressor mode",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/compress",
+      "aliases": ["/compact", "/compaction"],
+      "usage": "/compress [threshold]",
+      "description": "Run 4-phase context compaction on the active dialogue history",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/budget",
+      "aliases": [],
+      "usage": "/budget",
+      "description": "Provider budget and token telemetry",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/quota",
+      "aliases": ["/antigravity", "/ag"],
+      "usage": "/quota",
+      "description": "Antigravity credential status and live model quota windows",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/blast",
+      "aliases": ["/graph", "/ast"],
+      "usage": "/blast [symbol|file|--html]",
+      "description": "Active Graphify AST blast-radius analysis",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/proof",
+      "aliases": [],
+      "usage": "/proof [task_id]",
+      "description": "Proof-Carrying Artifact bundle and event-chain verification",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/memory",
+      "aliases": ["/mem"],
+      "usage": "/memory [query]",
+      "description": "Search governed project memories with staleness badges",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/remember",
+      "aliases": [],
+      "usage": "/remember <subject>: <content>",
+      "description": "Record a governed project memory",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/reflect",
+      "aliases": ["/lessons"],
+      "usage": "/reflect",
+      "description": "Graphify deterministic work-memory reflection (LESSONS.md)",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/search",
+      "aliases": [],
+      "usage": "/search <query>",
+      "description": "SQLite FTS5 BM25 search across the task journal",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/doctor",
+      "aliases": [],
+      "usage": "/doctor [--fix]",
+      "description": "System health diagnostics and self-healing",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/recipe",
+      "aliases": [],
+      "usage": "/recipe",
+      "description": "Auto-detect project bootstrap, build, test, and start recipes",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/lsp",
+      "aliases": ["/compiler"],
+      "usage": "/lsp [diag [file]]",
+      "description": "Language server status and compiler diagnostics",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/backup",
+      "aliases": [],
+      "usage": "/backup",
+      "description": "Quick zip backup of state, config, and ledger",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/dump",
+      "aliases": [],
+      "usage": "/dump",
+      "description": "Plain-text diagnostic dump with secret redaction",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/workers",
+      "aliases": [],
+      "usage": "/workers",
+      "description": "Registered distributed workers, CoW backends, and heartbeats",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/subagents",
+      "aliases": ["/subagent", "/delegates"],
+      "usage": "/subagents",
+      "description": "Inspect active and completed subagents and the delegation tree",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/ps",
+      "aliases": ["/processes", "/proc"],
+      "usage": "/ps [id|kill <id>]",
+      "description": "List and manage PTY background processes",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/kernel",
+      "aliases": ["/repl"],
+      "usage": "/kernel [status|reset|vars|exec]",
+      "description": "Inspect or drive the REPL code kernel",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/react",
+      "aliases": ["/react-loop", "/loop"],
+      "usage": "/react [on|off]",
+      "description": "Toggle the continuous multi-turn autonomous ReAct loop",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
+    },
+    {
+      "name": "/rewind",
+      "aliases": ["/undo"],
+      "usage": "/rewind [turn_id|-N]",
+      "description": "Rewind conversation history with ledger branching",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/lease",
+      "aliases": ["/leases"],
+      "usage": "/lease [grant|list|revoke]",
+      "description": "Manage temporal auto-approval leases for trusted commands",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/harness2",
+      "aliases": ["/h2"],
+      "usage": "/harness2",
+      "description": "Gated Harness-squared Propose-Probe-Compose probe",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/skin",
+      "aliases": ["/theme"],
+      "usage": "/skin [name]",
+      "description": "Switch console theme (amber, cyberpunk, matrix, nord, mono)",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/voice",
+      "aliases": [],
+      "usage": "/voice [on|off|mute]",
+      "description": "Toggle hands-free voice mode",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/project",
+      "aliases": ["/proj"],
+      "usage": "/project [list|switch]",
+      "description": "Inspect the active project card or switch workspace context",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/banner",
+      "aliases": ["/splash"],
+      "usage": "/banner",
+      "description": "Re-render the startup splash screen",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/gc",
+      "aliases": ["/cleanup"],
+      "usage": "/gc",
+      "description": "Run storage retention garbage collection",
+      "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
+    },
+    {
+      "name": "/clear",
+      "aliases": [],
+      "usage": "/clear",
+      "description": "Clear the dialogue viewport or terminal screen",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
+      "name": "/quit",
+      "aliases": ["/exit"],
+      "usage": "/quit",
+      "description": "Exit the interactive session",
+      "surfaces": {"console": "supported", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    }
+  ]
+}

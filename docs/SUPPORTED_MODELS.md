@@ -82,9 +82,35 @@ Ultra-low-latency inference engines for open-weight models:
 
 ---
 
-## Zero-Friction Setup: Google Antigravity OAuth
+## Multi-Key Credential Resilience & OS Keychain Vault
 
-If you already use Google Antigravity in your editor, HEX automatically detects your active local credentials on startup:
-- **Included Quota**: Uses your active subscription daily reasoning budget.
-- **Zero API Keys**: No manual token generation or billing setup required.
-- **Quota Telemetry**: Run `hex quota` at any time to inspect token buckets, remaining percentages, and reset windows.
+Production pipelines often require multi-key redundancy to handle upstream provider rate limits and burst traffic:
+
+### 1. Multi-Key Ingestion & Round-Robin Balancing
+You can configure multiple keys per provider using numeric suffixes:
+```bash
+export ANTHROPIC_API_KEY_1="sk-ant-prod-key1"
+export ANTHROPIC_API_KEY_2="sk-ant-prod-key2"
+export OPENAI_API_KEY_1="sk-proj-primary"
+export OPENAI_API_KEY_2="sk-proj-backup"
+```
+HEX's `CredentialPool` automatically balances requests across active keys and automatically rotates to secondary keys when HTTP 429 (Rate Limited) errors occur, with jittered exponential backoff.
+
+### 2. Operating System Keychain Storage
+Instead of leaving plaintext keys in shell environment files, store them securely in your system's native keychain:
+```bash
+# Save secret into macOS Keychain / Linux Secret Service:
+python3 -c "from harness_core.storage.vault_keychain import store_secret; store_secret('anthropic', 'sk-ant-vault-key')"
+
+# Inspect stored credentials:
+python3 -c "from harness_core.storage.vault_keychain import get_secret; print('Stored:', bool(get_secret('anthropic')))"
+```
+
+### 3. Automatic Local Socket Discovery
+HEX automatically inspects local default endpoints without requiring manual URL configuration:
+- **Ollama**: `http://localhost:11434/api/show`
+- **LM Studio**: `http://localhost:1234/v1/models`
+- **llama.cpp**: `http://localhost:8080/props`
+- **vLLM**: `http://localhost:8000/v1/models`
+
+Run `python3 -c "from harness_core.models.model_metadata import probe_local_endpoints; print(probe_local_endpoints())"` to inspect locally running models.

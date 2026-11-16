@@ -14,10 +14,10 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import build_parser, main
-from harness_core.doctor import HexDoctor
-from harness_core.tui import HexConsole, render_status_bar
-from harness_core.voice import (
+from harness_core.client.cli import build_parser, main
+from harness_core.client.doctor import HexDoctor
+from harness_core.client.tui import HexConsole, render_status_bar
+from harness_core.capabilities.voice import (
     BaseTTSProvider,
     LinuxTTSProvider,
     MacOSTTSProvider,
@@ -232,7 +232,7 @@ class TestVoiceEngineCore(unittest.TestCase):
             self.assertIn(c.status, ("ok", "warning"))
 
         # Assert full report is healthy even when audio devices are simulated as absent
-        with patch("harness_core.voice.probe_audio_hardware") as mock_probe:
+        with patch("harness_core.capabilities.voice.probe_audio_hardware") as mock_probe:
             mock_probe.return_value = {
                 "platform": "Linux",
                 "tts_available": False,

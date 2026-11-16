@@ -23,11 +23,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main as cli_main
-from harness_core.doctor import DoctorCheckResult, DoctorReport, HexDoctor
+from harness_core.client.cli import main as cli_main
+from harness_core.client.doctor import DoctorCheckResult, DoctorReport, HexDoctor
 from harness_core.gateway import ToolGateway
 from harness_core.graphify import ActiveGraphifyAdapter, SymbolDef
-from harness_core.recipes import Recipe, detect_recipe
+from harness_core.capabilities.recipes import Recipe, detect_recipe
 
 
 class TestHexDoctor(unittest.TestCase):
@@ -141,7 +141,7 @@ class TestHexDoctor(unittest.TestCase):
     def test_doctor_audio_checks_fallback(self) -> None:
         """Verify audio checks return warnings and remain healthy in headless/no-hardware environments."""
         with patch(
-            "harness_core.voice.probe_audio_hardware",
+            "harness_core.capabilities.voice.probe_audio_hardware",
             return_value={
                 "platform": "Linux",
                 "tts_available": False,

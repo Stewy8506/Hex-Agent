@@ -17,10 +17,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness_core.browser import BrowserAction, BrowserManager, HeadlessBrowserSession
-from harness_core.db import LedgerStore
+from harness_core.capabilities.browser import BrowserAction, BrowserManager, HeadlessBrowserSession
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import ToolGateway
-from harness_core.vision import VisionEngine, get_image_metadata
+from harness_core.capabilities.vision import VisionEngine, get_image_metadata
 
 
 SAMPLE_HTML = """<!DOCTYPE html>

@@ -26,17 +26,17 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from harness_core.cli import main as cli_main
+from harness_core.client.cli import main as cli_main
 from harness_core.harness2_adapter import (
     LLMRouterProposer,
     OrchestratorBenchmarkAdapter,
     SweepEvaluationOutcome,
     run_orchestrator_sweep,
 )
-from harness_core.models import TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
+from harness_core.core.models import TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
 from harness_core.providers.base import ModelResponse, ModelUsage
-from harness_core.router import RouteDecision
+from harness_core.core.router import RouteDecision
 
 
 from contextlib import redirect_stdout

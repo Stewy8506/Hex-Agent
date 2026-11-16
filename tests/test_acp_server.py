@@ -18,10 +18,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from harness_core.acp import ACPServer, ACPSession
-from harness_core.cli import main as cli_main
-from harness_core.db import LedgerStore
-from harness_core.orchestrator import HarnessOrchestrator
+from harness_core.client.acp import ACPServer, ACPSession
+from harness_core.client.cli import main as cli_main
+from harness_core.storage.db import LedgerStore
+from harness_core.core.orchestrator import HarnessOrchestrator
 
 
 class TestACPServer(unittest.TestCase):
@@ -60,7 +60,9 @@ class TestACPServer(unittest.TestCase):
         self.assertIn("result", resp)
         res = resp["result"]
         self.assertEqual(res["serverInfo"]["name"], "HEX")
-        self.assertEqual(res["serverInfo"]["version"], "0.20.1")
+        from harness_core import __version__
+
+        self.assertEqual(res["serverInfo"]["version"], __version__)
         self.assertTrue(res["capabilities"]["session"]["streaming"])
         self.assertTrue(res["capabilities"]["session"]["cancel"])
 
@@ -235,7 +237,8 @@ class TestACPServer(unittest.TestCase):
             "params": {"sessionId": "test_s1", "command": "/doctor"},
         })
         self.assertIn("result", resp_doc)
-        self.assertIn("Doctor", resp_doc["result"]["output"])
+        self.assertIn("HEX SYSTEM DIAGNOSTIC & HEALTH REPORT", resp_doc["result"]["output"])
+        self.assertIn("Overall Status:", resp_doc["result"]["output"])
 
         # /model
         resp_mod = self.server.handle_request({

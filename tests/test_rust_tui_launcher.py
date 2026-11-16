@@ -11,8 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import build_parser, main
-from harness_core.tui_launcher import (
+from harness_core.client.cli import build_parser, main
+from harness_core.client.tui_launcher import (
     build_hex_tui,
     build_tui_cmd_args,
     find_hex_tui_binary,

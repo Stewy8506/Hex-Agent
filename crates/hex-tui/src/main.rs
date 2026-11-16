@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -14,7 +14,7 @@ use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::Terminal;
 
 use hex_protocol::client::AcpClient;
-use hex_tui::app::{App, ApprovalRequest, Focus};
+use hex_tui::app::{available_slash_commands, App, ApprovalRequest, Focus, ScreenState};
 use hex_tui::event::{AppEvent, EventHandler};
 use hex_tui::ui;
 use hex_tui::ui::design::{format_available_skills, format_available_tools};
@@ -23,7 +23,7 @@ use hex_tui::ui::design::{format_available_skills, format_available_tools};
 #[command(
     name = "hex-tui",
     author = "HEX Agent",
-    version = "0.1.0",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Native Ratatui cockpit with animated HEX visual language and ACP integration"
 )]
 struct Args {
@@ -58,6 +58,9 @@ struct Args {
 
     #[arg(long, help = "Assistant display name (default: HEX)")]
     name: Option<String>,
+
+    #[arg(long, visible_alias = "context-window", help = "Maximum context window tokens")]
+    max_tokens: Option<usize>,
 }
 
 #[tokio::main]
@@ -77,7 +80,7 @@ async fn main() -> Result<()> {
     setup_panic_hook();
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -105,14 +108,17 @@ fn run_headless_check(args: Args) -> Result<()> {
         &args.cow,
         args.workspace.as_deref(),
     );
-    if let Some(s) = args.session {
-        app.session_id = s;
+    if let Some(s) = &args.session {
+        app.session_id = s.clone();
     }
     if let Some(s) = args.skin {
         app.skin_name = s;
     }
     if let Some(n) = args.name {
         app.agent_name = n;
+    }
+    if let Some(tok) = args.max_tokens {
+        app.max_tokens = tok;
     }
 
     // Add sample dialogue and tool calls
@@ -138,37 +144,34 @@ fn run_headless_check(args: Args) -> Result<()> {
  }";
     app.load_diff(sample_diff);
 
-    // Render frame 1: Main layout with dialogue and diff
+    // Render frame 1: Start Screen (HEX wordmark, workspace, prompt card, shortcut hints)
     terminal.draw(|f| ui::draw(f, &app))?;
-    let buffer = terminal.backend().buffer().clone();
-    let content = format!("{:?}", buffer);
-
+    let buffer1 = terminal.backend().buffer().clone();
+    let content1 = format!("{:?}", buffer1);
     assert!(
-        content.contains("HEX") || content.contains(&app.model_name),
-        "Virtual buffer must contain HEX banner or model identity"
-    );
-    let ws_name = if args.project == "default" && !app.workspace_path.is_empty() {
-        std::path::Path::new(&app.workspace_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&args.project)
-    } else {
-        &args.project
-    };
-    assert!(
-        content.contains(&args.project) || content.contains(ws_name),
-        "Virtual buffer must contain project ID or workspace name"
+        content1.contains("HEX") || content1.contains("███"),
+        "Virtual buffer must contain HEX block wordmark"
     );
     assert!(
-        content.contains("Diff Viewer"),
-        "Virtual buffer must contain Diff Viewer"
-    );
-    assert!(
-        content.contains("agent") || content.contains('❯'),
-        "Virtual buffer must contain Prompt"
+        content1.contains("commands") || content1.contains("build"),
+        "Virtual buffer must contain prompt hints or action bar"
     );
 
-    // Render frame 2: Approval modal overlay
+    // Render frame 2: Active Session Screen (Dialogue stream, diff, right rail context bar)
+    app.screen_state = ScreenState::Session;
+    terminal.draw(|f| ui::draw(f, &app))?;
+    let buffer2 = terminal.backend().buffer().clone();
+    let content2 = format!("{:?}", buffer2);
+    assert!(
+        content2.contains("Create a high-performance HTTP service") || content2.contains("server.rs"),
+        "Virtual buffer must contain session dialogue and tool activity"
+    );
+    assert!(
+        content2.contains("context") || content2.contains("plan"),
+        "Virtual buffer must contain right rail telemetry"
+    );
+
+    // Render frame 3: Approval modal overlay
     app.set_approval_request(ApprovalRequest {
         id: "appr_check_1".to_string(),
         risk_level: "R4 - DESTRUCTIVE".to_string(),
@@ -180,11 +183,11 @@ fn run_headless_check(args: Args) -> Result<()> {
     let approval_buffer = terminal.backend().buffer().clone();
     let approval_content = format!("{:?}", approval_buffer);
     assert!(
-        approval_content.contains("APPROVAL REQUIRED") || approval_content.contains("DESTRUCTIVE"),
+        approval_content.contains("APPROVAL REQUIRED") || approval_content.contains("DESTRUCTIVE") || approval_content.contains("rm -rf"),
         "Virtual buffer must render approval modal"
     );
 
-    println!("HEX TUI headless verification passed: 1 virtual frame rendered successfully.");
+    println!("HEX TUI headless verification passed: 3 virtual frames (Start, Session, Approval) verified successfully.");
     Ok(())
 }
 
@@ -197,14 +200,17 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
         &args.cow,
         args.workspace.as_deref(),
     );
-    if let Some(s) = args.session {
-        app.session_id = s;
+    if let Some(s) = &args.session {
+        app.session_id = s.clone();
     }
     if let Some(s) = args.skin {
         app.skin_name = s;
     }
     if let Some(n) = args.name {
         app.agent_name = n;
+    }
+    if let Some(tok) = args.max_tokens {
+        app.max_tokens = tok;
     }
 
     // Try connecting to ACP server in background
@@ -213,32 +219,59 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     let acp_client = match maybe_client {
         Ok(client) => {
             app.connection_status = "Connected".to_string();
-            // Handshake session to populate dynamic tools, skills, cow backend, and active model
-            match client
-                .session_new(ws_path.and_then(|p| p.to_str()), args.model.as_deref())
-                .await
-            {
-                Ok(sess) => {
-                    app.session_id = sess.session_id;
-                    app.model_name = sess.model;
-                    if let Some(prov) = sess.provider {
-                        app.provider_name = prov;
+            // Resume a requested session first; only fall back to a fresh
+            // session when the server cannot load the supplied identifier.
+            let mut resumed = false;
+            if let Some(requested) = args.session.as_deref() {
+                match client.session_load(requested).await {
+                    Ok(loaded) => {
+                        app.session_id = loaded.session_id.clone();
+                        app.model_name = loaded.model.clone();
+                        app.replay_session_history(&loaded.history);
+                        app.add_system_message(&format!(
+                            "Resumed session {} ({} prior turn{}).",
+                            loaded.session_id,
+                            loaded.history_count,
+                            if loaded.history_count == 1 { "" } else { "s" }
+                        ));
+                        resumed = true;
                     }
-                    if let Some(tc) = sess.tools_count {
-                        app.tools_count = tc;
-                    }
-                    if let Some(sc) = sess.skills_count {
-                        app.skills_count = sc;
-                    }
-                    if let Some(cow) = sess.cow_backend {
-                        app.cow_mode = cow;
-                    }
-                    if let Some(splash) = sess.splash_text {
-                        app.splash_text = Some(splash);
+                    Err(e) => {
+                        app.add_system_message(&format!(
+                            "Could not resume session {}: {}. Starting a new session.",
+                            requested, e
+                        ));
                     }
                 }
-                Err(e) => {
-                    app.add_system_message(&format!("Session handshake notice: {}", e));
+            }
+            if !resumed {
+                // Handshake session to populate dynamic tools, skills, cow backend, and active model
+                match client
+                    .session_new(ws_path.and_then(|p| p.to_str()), args.model.as_deref())
+                    .await
+                {
+                    Ok(sess) => {
+                        app.session_id = sess.session_id;
+                        app.model_name = sess.model;
+                        if let Some(prov) = sess.provider {
+                            app.provider_name = prov;
+                        }
+                        if let Some(tc) = sess.tools_count {
+                            app.tools_count = tc;
+                        }
+                        if let Some(sc) = sess.skills_count {
+                            app.skills_count = sc;
+                        }
+                        if let Some(cow) = sess.cow_backend {
+                            app.cow_mode = cow;
+                        }
+                        if let Some(splash) = sess.splash_text {
+                            app.splash_text = Some(splash);
+                        }
+                    }
+                    Err(e) => {
+                        app.add_system_message(&format!("Session handshake notice: {}", e));
+                    }
                 }
             }
             Some(client)
@@ -283,12 +316,34 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         app.scroll_down();
                         app.scroll_down();
                     }
+                    crossterm::event::MouseEventKind::Moved
+                    | crossterm::event::MouseEventKind::Drag(_) => {
+                        let term_rect = terminal
+                            .size()
+                            .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
+                            .unwrap_or(ratatui::layout::Rect::new(0, 0, 120, 36));
+                        app.handle_mouse_move(mouse.column, mouse.row, term_rect);
+                    }
+                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                        if app.screen_state == ScreenState::Start =>
+                    {
+                        let term_rect = terminal
+                            .size()
+                            .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
+                            .unwrap_or(ratatui::layout::Rect::new(0, 0, 120, 36));
+                        let resume_rect = app.get_start_resume_area(term_rect);
+                        handle_start_mouse_click(&mut app, mouse.column, mouse.row, resume_rect);
+                    }
                     _ => {}
                 },
                 AppEvent::Notification(notif) => {
                     handle_notification(&mut app, notif);
                 }
                 AppEvent::AssistantResponse(msg) => {
+                    let detected_plan = hex_tui::app::extract_plan_steps_from_text(&msg);
+                    if !detected_plan.is_empty() {
+                        app.plan_steps = detected_plan;
+                    }
                     let already_populated = app.active_turn_has_streamed
                         || app.dialogue_items.iter().rev().any(|item| {
                             if let hex_tui::app::DialogueItem::Message(m) = item {
@@ -305,6 +360,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         app.add_assistant_message(&msg);
                     }
                     app.active_turn_has_streamed = false;
+                    app.cancel_requested = false;
                     app.close_running_tool_calls();
                     app.is_busy = false;
                     app.busy_started_at = None;
@@ -312,6 +368,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 }
                 AppEvent::Ready => {
                     app.active_turn_has_streamed = false;
+                    app.cancel_requested = false;
                     app.close_running_tool_calls();
                     app.is_busy = false;
                     app.busy_started_at = None;
@@ -327,24 +384,16 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 AppEvent::Error(err) => {
                     app.close_running_tool_calls();
                     app.add_system_message(&format!("Error: {}", err));
+                    app.cancel_requested = false;
                     app.is_busy = false;
                     app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::Tick => {
                     app.advance_animation();
-                    // Streaming debounce matching Hermes: if text has streamed and no delta/tool
-                    // has arrived for >350ms, seal the busy spinner instantly.
-                    if app.is_busy && app.active_turn_has_streamed {
-                        if let Some(last_t) = app.last_delta_received_at {
-                            if last_t.elapsed() >= std::time::Duration::from_millis(350) {
-                                app.is_busy = false;
-                                app.busy_started_at = None;
-                                app.last_delta_received_at = None;
-                                app.status_message = "Ready".to_string();
-                            }
-                        }
-                    }
+                    // Turn completion is owned by authoritative server events
+                    // (stream_end / terminal status / prompt response), never
+                    // by a delta-gap heuristic.
                 }
                 AppEvent::Resize(_, _) => {
                     // Handled on next draw
@@ -356,6 +405,29 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     Ok(())
 }
 
+/// Ask the server to stop the active turn. With a live connection the busy
+/// state is sealed only by the server's authoritative terminal event/response;
+/// standalone mode has no server, so it settles locally.
+fn request_turn_cancel(app: &mut App, acp_client: Option<&AcpClient>) {
+    if let Some(client) = acp_client {
+        let client_clone = client.clone();
+        let sess_id = app.session_id.clone();
+        tokio::spawn(async move {
+            let _ = client_clone.session_cancel(&sess_id).await;
+        });
+        app.status_message = "Cancelling...".to_string();
+        app.add_system_message("Cancellation requested; waiting for the server to stop the turn.");
+    } else {
+        app.active_turn_has_streamed = false;
+        app.cancel_requested = false;
+        app.close_running_tool_calls();
+        app.is_busy = false;
+        app.busy_started_at = None;
+        app.status_message = "Ready".to_string();
+        app.add_system_message("Execution cancelled by operator.");
+    }
+}
+
 /// Process keyboard inputs.
 async fn handle_key_event(
     app: &mut App,
@@ -363,9 +435,15 @@ async fn handle_key_event(
     acp_client: Option<&AcpClient>,
     event_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) -> Result<()> {
-    // Global hotkeys
+    // Global hotkeys: Ctrl+C cancels an in-flight turn first; a second
+    // Ctrl+C while cancelling (or Ctrl+C when idle) quits the application.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        app.should_quit = true;
+        if app.is_busy && !app.cancel_requested {
+            app.cancel_requested = true;
+            request_turn_cancel(app, acp_client);
+        } else {
+            app.should_quit = true;
+        }
         return Ok(());
     }
 
@@ -397,19 +475,8 @@ async fn handle_key_event(
             return Ok(());
         }
         if app.is_busy {
-            if let Some(client) = acp_client {
-                let client_clone = client.clone();
-                let sess_id = app.session_id.clone();
-                tokio::spawn(async move {
-                    let _ = client_clone.session_cancel(&sess_id).await;
-                });
-            }
-            app.active_turn_has_streamed = false;
-            app.close_running_tool_calls();
-            app.is_busy = false;
-            app.busy_started_at = None;
-            app.status_message = "Ready".to_string();
-            app.add_system_message("Execution cancelled by operator.");
+            app.cancel_requested = true;
+            request_turn_cancel(app, acp_client);
             return Ok(());
         }
     }
@@ -521,26 +588,93 @@ async fn handle_key_event(
                         return Ok(());
                     }
 
+                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
+                        let visible_count = if app.show_all_resume {
+                            app.resume_sessions.len().min(10)
+                        } else {
+                            app.resume_sessions.len().min(3)
+                        };
+                        let has_toggle = app.resume_sessions.len() > 3;
+
+                        if app.selected_resume_index < visible_count && app.selected_resume_index < app.resume_sessions.len() {
+                            let session = app.resume_sessions[app.selected_resume_index].clone();
+                            app.resume_session(&session.session_id);
+                            return Ok(());
+                        } else if app.selected_resume_index == visible_count && has_toggle {
+                            app.toggle_show_all_resume();
+                            return Ok(());
+                        }
+                    }
+
                     if let Some(text) = app.submit_input() {
                         execute_submitted_text(app, text, acp_client, event_tx).await?;
                     }
                 }
+                KeyCode::Char('d') => {
+                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
+                        let visible_count = if app.show_all_resume {
+                            app.resume_sessions.len().min(10)
+                        } else {
+                            app.resume_sessions.len().min(3)
+                        };
+                        if app.selected_resume_index < visible_count && app.selected_resume_index < app.resume_sessions.len() {
+                            app.delete_resume_session(app.selected_resume_index);
+                            return Ok(());
+                        }
+                    }
+                    app.insert_char('d');
+                }
                 KeyCode::Char(c) => app.insert_char(c),
                 KeyCode::Backspace => app.delete_char(),
-                KeyCode::Delete => app.delete_char_forward(),
+                KeyCode::Delete => {
+                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
+                        let visible_count = if app.show_all_resume {
+                            app.resume_sessions.len().min(10)
+                        } else {
+                            app.resume_sessions.len().min(3)
+                        };
+                        if app.selected_resume_index < visible_count && app.selected_resume_index < app.resume_sessions.len() {
+                            app.delete_resume_session(app.selected_resume_index);
+                            return Ok(());
+                        }
+                    }
+                    app.delete_char_forward();
+                }
                 KeyCode::Left => app.move_cursor_left(),
                 KeyCode::Right => app.move_cursor_right(),
                 KeyCode::Home => app.move_cursor_start(),
                 KeyCode::End => app.move_cursor_end(),
                 KeyCode::Up => {
-                    if app.input_buffer.is_empty() {
+                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
+                        let visible_count = if app.show_all_resume {
+                            app.resume_sessions.len().min(10)
+                        } else {
+                            app.resume_sessions.len().min(3)
+                        };
+                        let has_toggle = app.resume_sessions.len() > 3;
+                        let total = if has_toggle { visible_count + 1 } else { visible_count };
+                        if total > 0 {
+                            app.selected_resume_index = (app.selected_resume_index + total - 1) % total;
+                        }
+                    } else if app.input_buffer.is_empty() {
                         app.scroll_up();
                     } else {
                         app.history_up();
                     }
                 }
                 KeyCode::Down => {
-                    if app.input_buffer.is_empty() {
+                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
+                        let visible_count = if app.show_all_resume {
+                            app.resume_sessions.len().min(10)
+                        } else {
+                            app.resume_sessions.len().min(3)
+                        };
+                        let has_toggle = app.resume_sessions.len() > 3;
+                        let total = if has_toggle { visible_count + 1 } else { visible_count };
+                        if total > 0 {
+                            app.selected_resume_index = (app.selected_resume_index + 1) % total;
+                        }
+                    } else if app.input_buffer.is_empty() {
                         app.scroll_down();
                     } else {
                         app.history_down();
@@ -687,8 +821,9 @@ async fn execute_submitted_text(
                 ));
             }
             "/rollback" => {
-                app.add_system_message("CoW workspace rolled back to clean checkpoint.");
-                app.clear_diff();
+                app.add_system_message(
+                    "/rollback requires an ACP connection (`hex acp`); no workspace changes were made.",
+                );
             }
             "/sbs" => {
                 app.toggle_side_by_side();
@@ -705,7 +840,9 @@ async fn execute_submitted_text(
                 app.add_system_message(&format_available_tools(4));
             }
             "/react" => {
-                app.add_system_message("Toggled autonomous continuous ReAct loop.");
+                app.add_system_message(
+                    "/react requires an ACP connection (`hex acp`); the ReAct loop was not toggled.",
+                );
             }
             "/model" => {
                 if let Some(m) = arg {
@@ -717,14 +854,22 @@ async fn execute_submitted_text(
             }
             "/budget" => {
                 app.add_system_message(
-                    "Budget Telemetry: 1,240 tokens used | $0.003 USD consumed | Limit: $5.00",
+                    "/budget requires an ACP connection (`hex acp`); no telemetry is available standalone.",
                 );
             }
             other => {
-                app.add_system_message(&format!(
-                    "Unknown slash command: {}. Type /help for available commands.",
-                    other
-                ));
+                let known = available_slash_commands().iter().any(|c| c.name == other);
+                if known {
+                    app.add_system_message(&format!(
+                        "{} requires an ACP connection (`hex acp`).",
+                        other
+                    ));
+                } else {
+                    app.add_system_message(&format!(
+                        "Unknown slash command: {}. Type /help for available commands.",
+                        other
+                    ));
+                }
             }
         }
         return Ok(());
@@ -732,7 +877,7 @@ async fn execute_submitted_text(
 
     // Regular conversation message
     app.active_turn_has_streamed = false;
-    app.last_delta_received_at = None;
+    app.cancel_requested = false;
     app.add_user_message(&text);
     app.is_busy = true;
     app.busy_started_at = Some(std::time::Instant::now());
@@ -785,14 +930,8 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
             if let Ok(update) =
                 serde_json::from_value::<hex_protocol::models::SessionUpdateNotification>(params)
             {
-                if update.update_type == "stream_end" {
-                    app.active_turn_has_streamed = false;
-                    app.last_delta_received_at = None;
-                    app.close_running_tool_calls();
-                    app.is_busy = false;
-                    app.busy_started_at = None;
-                    app.status_message = "Ready".to_string();
-                }
+                let terminal = update.is_turn_terminal();
+                let status_val = update.status.clone();
                 if let Some(delta) = update.delta {
                     app.append_assistant_delta(&delta);
                     app.is_busy = true;
@@ -802,7 +941,6 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                     app.status_message = "Streaming...".to_string();
                 }
                 if let Some(tool_val) = update.tool {
-                    app.last_delta_received_at = None;
                     if let Some(tool_obj) = tool_val.as_object() {
                         let ev_type = tool_obj.get("eventType").and_then(|v| v.as_str()).unwrap_or("");
                         let tool_id = tool_obj.get("toolId").and_then(|v| v.as_str()).unwrap_or("tool");
@@ -814,19 +952,27 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                             app.add_tool_call(call_id, tool_id, payload_str, dur, Some("RUNNING"));
                         } else if ev_type == "complete" {
                             app.complete_tool_call(call_id, payload_str, dur.unwrap_or(0), false);
+                        } else if ev_type == "error" {
+                            app.complete_tool_call(call_id, payload_str, dur.unwrap_or(0), true);
                         }
                     }
                 }
-                if let Some(st) = update.status {
-                    app.status_message = st.clone();
-                    if st.eq_ignore_ascii_case("ready") || st.eq_ignore_ascii_case("completed") {
-                        app.active_turn_has_streamed = false;
-                        app.last_delta_received_at = None;
-                        app.close_running_tool_calls();
-                        app.is_busy = false;
-                        app.busy_started_at = None;
-                        app.status_message = "Ready".to_string();
-                    }
+                // Authoritative terminal events own turn completion.
+                if terminal {
+                    app.active_turn_has_streamed = false;
+                    app.cancel_requested = false;
+                    app.close_running_tool_calls();
+                    app.is_busy = false;
+                    app.busy_started_at = None;
+                    let st = status_val.as_deref().unwrap_or("Ready");
+                    app.status_message =
+                        if st.eq_ignore_ascii_case("ready") || st.eq_ignore_ascii_case("completed") {
+                            "Ready".to_string()
+                        } else {
+                            st.to_string()
+                        };
+                } else if let Some(st) = status_val {
+                    app.status_message = st;
                 }
             }
         }
@@ -855,14 +1001,211 @@ fn setup_panic_hook() {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen);
+        let _ = execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture);
         original_hook(panic_info);
     }));
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+fn handle_start_mouse_click(app: &mut App, col: u16, row: u16, rect: ratatui::layout::Rect) {
+    app.handle_start_mouse_click(col, row, rect);
+}
+
+#[cfg(test)]
+mod wire_contract_tests {
+    //! F04: prove the TUI consumes the same real-server fixtures as the desktop
+    //! bridge (tests/fixtures/acp_wire, captured by tests/test_acp_wire_contract.py).
+    use super::*;
+    use hex_protocol::models::Role;
+    use hex_tui::app::DialogueItem;
+
+    fn fixture(name: &str) -> Vec<serde_json::Value> {
+        let path = format!(
+            "{}/../../tests/fixtures/acp_wire/{}",
+            env!("CARGO_MANIFEST_DIR"),
+            name
+        );
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("missing wire fixture {path}: {e}"));
+        text.lines()
+            .filter(|ln| !ln.trim().is_empty())
+            .map(|ln| serde_json::from_str(ln).unwrap())
+            .collect()
+    }
+
+    fn replay(app: &mut App, name: &str) {
+        for line in fixture(name) {
+            if line.get("method").is_some() {
+                let notif: hex_protocol::models::JsonRpcNotification =
+                    serde_json::from_value(line).unwrap();
+                handle_notification(app, notif);
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_turn_fixture_drives_app_state() {
+        let mut app = App::new("p", "m", "cow");
+        app.is_busy = true;
+        replay(&mut app, "turn_streamed.jsonl");
+
+        assert!(!app.is_busy, "turn must end unbusy");
+        assert_eq!(app.status_message, "Ready");
+        assert!(!app.active_turn_has_streamed);
+
+        let assistant_text: String = app
+            .dialogue_items
+            .iter()
+            .filter_map(|d| match d {
+                DialogueItem::Message(m) if m.role == Role::Assistant => Some(m.content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(assistant_text.contains("Hello world"), "got: {assistant_text}");
+
+        let tool = app
+            .dialogue_items
+            .iter()
+            .find_map(|d| match d {
+                DialogueItem::ToolCall(tc) => Some(tc),
+                _ => None,
+            })
+            .expect("tool card must exist");
+        assert_eq!(tool.tool, "list_files");
+        assert_eq!(tool.exit_status.as_deref(), Some("OK"));
+        assert_eq!(tool.duration_ms, Some(12));
+        assert!(tool.result.as_deref().unwrap_or("").contains("a.py"));
+    }
+
+    #[test]
+    fn nonstreamed_turn_fixture_drives_app_state() {
+        let mut app = App::new("p", "m", "cow");
+        app.is_busy = true;
+        replay(&mut app, "turn_nonstreamed.jsonl");
+
+        assert!(!app.is_busy);
+        assert_eq!(app.status_message, "Ready");
+        let assistant_text: String = app
+            .dialogue_items
+            .iter()
+            .filter_map(|d| match d {
+                DialogueItem::Message(m) if m.role == Role::Assistant => Some(m.content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(assistant_text.contains("Fixture answer."), "got: {assistant_text}");
+    }
+}
+
+#[cfg(test)]
+mod session_lifecycle_tests {
+    //! F05: authoritative completion, cancellation journey, and session resume.
+    use super::*;
+    use hex_protocol::models::{Role, SessionHistoryTurn};
+    use hex_tui::app::DialogueItem;
+
+    fn status_notification(status: &str) -> hex_protocol::models::JsonRpcNotification {
+        serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "acp_sess_lifecycle",
+                "updateType": "status",
+                "status": status,
+            }
+        }))
+        .unwrap()
+    }
+
+    fn ctrl_c() -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn cancelled_status_seals_turn_with_truthful_state() {
+        let mut app = App::new("p", "m", "cow");
+        app.is_busy = true;
+        app.cancel_requested = true;
+        handle_notification(&mut app, status_notification("Cancelled"));
+        assert!(!app.is_busy);
+        assert!(!app.cancel_requested);
+        assert_eq!(app.status_message, "Cancelled");
+    }
+
+    #[test]
+    fn failed_status_seals_turn_with_truthful_state() {
+        let mut app = App::new("p", "m", "cow");
+        app.is_busy = true;
+        handle_notification(&mut app, status_notification("Failed"));
+        assert!(!app.is_busy);
+        assert_eq!(app.status_message, "Failed");
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_cancels_busy_turn_before_quitting() {
+        let mut app = App::new("p", "m", "cow");
+        app.is_busy = true;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // First Ctrl+C while busy: cancel journey, not quit (standalone settles locally).
+        handle_key_event(&mut app, ctrl_c(), None, tx.clone()).await.unwrap();
+        assert!(!app.should_quit, "first Ctrl+C must cancel, not quit");
+        assert!(!app.is_busy, "standalone cancel settles locally");
+        assert!(app
+            .dialogue_items
+            .iter()
+            .any(|d| matches!(d, DialogueItem::Message(m) if m.role == Role::System && m.content.contains("cancelled"))));
+
+        // Second Ctrl+C: quit.
+        handle_key_event(&mut app, ctrl_c(), None, tx).await.unwrap();
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_quits_when_idle() {
+        let mut app = App::new("p", "m", "cow");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_key_event(&mut app, ctrl_c(), None, tx).await.unwrap();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn replay_session_history_restores_dialogue() {
+        let mut app = App::new("p", "m", "cow");
+        let history = vec![
+            SessionHistoryTurn {
+                task_id: Some("tsk_1".into()),
+                prompt: "first question".into(),
+                response: "first answer".into(),
+                status: "completed".into(),
+            },
+            SessionHistoryTurn {
+                task_id: Some("tsk_2".into()),
+                prompt: "follow-up".into(),
+                response: "second answer".into(),
+                status: "completed".into(),
+            },
+        ];
+        app.replay_session_history(&history);
+        let messages: Vec<(Role, String)> = app
+            .dialogue_items
+            .iter()
+            .filter_map(|d| match d {
+                DialogueItem::Message(m) => Some((m.role.clone(), m.content.clone())),
+                _ => None,
+            })
+            .collect();
+        // App::new seeds welcome dialogue; the replayed transcript is the tail.
+        let tail = &messages[messages.len() - 4..];
+        assert_eq!(tail[0], (Role::User, "first question".to_string()));
+        assert_eq!(tail[1], (Role::Assistant, "first answer".to_string()));
+        assert_eq!(tail[2], (Role::User, "follow-up".to_string()));
+        assert_eq!(tail[3], (Role::Assistant, "second answer".to_string()));
+    }
 }

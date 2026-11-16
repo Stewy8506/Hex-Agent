@@ -2,13 +2,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness_core.prompt_builder import (
+from harness_core.cognition.prompt_builder import (
     PromptBuilder,
     scan_context_content,
     scan_for_threats,
     MODE_MODULATORS,
 )
-from harness_core.soul import SoulManager
+from harness_core.cognition.soul import SoulManager
 
 
 class TestPromptBuilder(unittest.TestCase):
@@ -96,7 +96,7 @@ class TestPromptBuilder(unittest.TestCase):
         self.assertIn("Minimal diff specialist adhering strictly to YAGNI.", p_code)
 
     def test_orchestrator_integration_with_prompt_builder_and_soul(self) -> None:
-        from harness_core.orchestrator import HarnessOrchestrator
+        from harness_core.core.orchestrator import HarnessOrchestrator
 
         data_dir = self.tmp_path / "data"
         ws = self.tmp_path / "ws"

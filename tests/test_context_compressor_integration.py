@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock
 
-from harness_core.context_compressor import (
+from harness_core.cognition.context_compressor import (
     CompactionConfig,
     CompactionResult,
     ContextCompactor,
@@ -23,9 +23,9 @@ from harness_core.context_compressor import (
     stabilize_prompt_cache_prefix,
     validate_atomic_boundaries,
 )
-from harness_core.react_loop import ReActConfig, ReActLoop
-from harness_core.router import TwoTierModelRouter
-from harness_core.tui import HexConsole
+from harness_core.core.react_loop import ReActConfig, ReActLoop
+from harness_core.core.router import TwoTierModelRouter
+from harness_core.client.tui import HexConsole
 
 
 class TestContextCompressorIntegration(unittest.TestCase):

@@ -26,11 +26,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from harness_core.db import ConcurrencyFenceError, LedgerStore
-from harness_core.models import TaskState, TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.server import HarnessAPIApp
-from harness_core.worker_daemon import (
+from harness_core.storage.db import ConcurrencyFenceError, LedgerStore
+from harness_core.core.models import TaskState, TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.client.server import HarnessAPIApp
+from harness_core.runtime.worker_daemon import (
     DirectLedgerWorkerClient,
     RestWorkerClient,
     WorkerDaemon,

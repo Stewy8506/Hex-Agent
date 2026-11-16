@@ -28,17 +28,24 @@ pip install -e ".[full,test]"
 
 ## 2. Running Test Suites
 
-HEX includes a unified evaluation and test runner (`hex eval`):
+HEX uses `pytest` for the Python suite (CI runs the full `tests/` directory):
 
 ```bash
-# Run core unit and integration tests
-python -m harness_core.cli eval --suite core
+# Run the full Python test suite
+python -m pytest tests -v
 
-# Run all test suites (core, resilience, compaction, tui)
-python -m harness_core.cli eval --suite all
+# Run a focused module
+python -m pytest tests/test_acp_server.py -v
 
-# Run native Rust workspace tests
-cargo test --workspace
+# Run benchmark evaluation suites (core, resilience, compaction, tui)
+python -m harness_core.client.cli eval --suite core
+python -m harness_core.client.cli eval --suite all
+
+# Run native Rust tests (protocol + TUI; works on Linux and macOS)
+cargo test -p hex-protocol -p hex-tui
+
+# Desktop crate (macOS only; GPUI requires the Metal toolchain)
+cargo test -p hex-desktop
 ```
 
 ---

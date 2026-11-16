@@ -38,6 +38,7 @@ env/
 
 # Testing & linting caches
 .pytest_cache/
+.pytest-cache/
 .ruff_cache/
 .mypy_cache/
 .coverage

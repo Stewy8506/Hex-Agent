@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from harness_core.cli import main as hex_cli_main
+from harness_core.client.cli import main as hex_cli_main
 from harness_core.providers.antigravity_provider import (
     AntigravityCredential,
     AntigravityModelProvider,
@@ -40,7 +40,7 @@ from harness_core.providers.antigravity_provider import (
 )
 from harness_core.providers.base import PolicyBlockedError, ProviderUnavailableError
 from harness_core.providers.cloud_provider import CloudModelProvider, CloudProviderType
-from harness_core.router import TwoTierModelRouter
+from harness_core.core.router import TwoTierModelRouter
 
 
 class TestAntigravityOAuthAndProvider(unittest.TestCase):

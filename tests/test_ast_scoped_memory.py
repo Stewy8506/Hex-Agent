@@ -7,10 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import ToolGateway
 from harness_core.graphify import ActiveGraphifyAdapter
-from harness_core.memory import (
+from harness_core.cognition.memory import (
     ASTNodeMemoryStore,
     GuardrailsManager,
     compute_code_fingerprint,
@@ -18,7 +18,7 @@ from harness_core.memory import (
     is_fingerprint_stale,
     query_jit_memories_for_file,
 )
-from harness_core.react_loop import ReActConfig, ReActLoop
+from harness_core.core.react_loop import ReActConfig, ReActLoop
 
 
 class TestASTNodeMemoryStore(unittest.TestCase):

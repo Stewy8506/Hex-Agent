@@ -15,9 +15,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
-from harness_core.asgi import HarnessASGIAdapter, get_asgi_app
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.server import GracefulServerRunner, HarnessAPIApp
+from harness_core.client.asgi import HarnessASGIAdapter, get_asgi_app
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.client.server import GracefulServerRunner, HarnessAPIApp
 
 
 class TestProductionHealthChecks(unittest.TestCase):

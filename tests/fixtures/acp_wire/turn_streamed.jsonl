@@ -1,0 +1,7 @@
+{"jsonrpc": "2.0", "method": "session/update", "params": {"delta": "Hello", "sessionId": "ses_fixture", "updateType": "agent_response"}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"delta": " world", "sessionId": "ses_fixture", "updateType": "agent_response"}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "ses_fixture", "tool": {"callId": "list_files_<ts>", "durationMs": 0, "eventType": "start", "payload": "{\"path\": \".\"}", "toolId": "list_files"}, "updateType": "tool"}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "ses_fixture", "tool": {"callId": "list_files_<ts>", "durationMs": 12, "eventType": "complete", "payload": "{\"files\": [\"a.py\"]}", "toolId": "list_files"}, "updateType": "tool"}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "ses_fixture", "status": "Ready", "updateType": "stream_end"}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "ses_fixture", "status": "Ready", "updateType": "status"}}
+{"id": 1, "jsonrpc": "2.0", "result": {"content": [{"text": "Fixture answer.", "type": "text"}], "sessionId": "ses_fixture", "status": "completed", "taskId": "tsk_fixture"}}

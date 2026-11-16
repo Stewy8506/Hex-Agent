@@ -23,8 +23,8 @@ from harness_core.config_loader import (
     get_auto_reflect_policy,
     should_execute_background_reflection,
 )
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.react_loop import (
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.core.react_loop import (
     ReActConfig,
     ReActLoop,
     ReActSessionResult,
@@ -346,7 +346,7 @@ class TestAutonomousLearning(unittest.TestCase):
         """ReflectionSynthesizer extracts structured lesson from LLM response when router available."""
         if tmp_path is None:
             tmp_path = self.tmp_path
-        from harness_core.reflection import ReflectionSynthesizer
+        from harness_core.cognition.reflection import ReflectionSynthesizer
 
         mock_resp = MagicMock()
         mock_resp.text = json.dumps({
@@ -379,7 +379,7 @@ class TestAutonomousLearning(unittest.TestCase):
         """ReflectionSynthesizer falls back to clean deterministic extraction when router is None."""
         if tmp_path is None:
             tmp_path = self.tmp_path
-        from harness_core.reflection import ReflectionSynthesizer
+        from harness_core.cognition.reflection import ReflectionSynthesizer
 
         synth = ReflectionSynthesizer(router=None, workspace_root=tmp_path)
         lesson = synth.synthesize_lesson(
@@ -402,7 +402,7 @@ class TestAutonomousLearning(unittest.TestCase):
         """append_to_lessons_md preserves standard markdown structure in LESSONS.md."""
         if tmp_path is None:
             tmp_path = self.tmp_path
-        from harness_core.reflection import FrictionLesson, ReflectionSynthesizer
+        from harness_core.cognition.reflection import FrictionLesson, ReflectionSynthesizer
 
         synth = ReflectionSynthesizer(workspace_root=tmp_path)
         lesson1 = FrictionLesson(
@@ -441,8 +441,8 @@ class TestAutonomousLearning(unittest.TestCase):
         """Appending a lesson automatically records reflection and populates GUARDRAILS.md."""
         if tmp_path is None:
             tmp_path = self.tmp_path
-        from harness_core.reflection import FrictionLesson, ReflectionSynthesizer
-        from harness_core.memory import GuardrailsManager, MemoryLifecycleManager
+        from harness_core.cognition.reflection import FrictionLesson, ReflectionSynthesizer
+        from harness_core.cognition.memory import GuardrailsManager, MemoryLifecycleManager
 
         synth = ReflectionSynthesizer(workspace_root=tmp_path)
         lesson = FrictionLesson(
@@ -472,7 +472,7 @@ class TestAutonomousLearning(unittest.TestCase):
         """Reflections with hit_counter >= 3 promote to MEMORY.md."""
         if tmp_path is None:
             tmp_path = self.tmp_path
-        from harness_core.memory import MemoryLifecycleManager
+        from harness_core.cognition.memory import MemoryLifecycleManager
 
         lifecycle_mgr = MemoryLifecycleManager(workspace_root=tmp_path)
         ref = lifecycle_mgr.record_reflection("Always run cargo check before committing")
@@ -509,7 +509,7 @@ class TestAutonomousLearning(unittest.TestCase):
         """Reflections with hit_counter >= 5 promote to a SKILL.md bundle via SkillCompiler."""
         if tmp_path is None:
             tmp_path = self.tmp_path
-        from harness_core.memory import MemoryLifecycleManager
+        from harness_core.cognition.memory import MemoryLifecycleManager
 
         lifecycle_mgr = MemoryLifecycleManager(workspace_root=tmp_path)
         ref = lifecycle_mgr.record_reflection("Safely scaffold and register a new RPC schema endpoint")
@@ -628,8 +628,8 @@ Use when authentication tokens expire or fail validation.
             tmp_path = self.tmp_path
         import io
         from unittest.mock import patch
-        from harness_core.orchestrator import HarnessOrchestrator
-        from harness_core.tui import HexConsole
+        from harness_core.core.orchestrator import HarnessOrchestrator
+        from harness_core.client.tui import HexConsole
 
         data_dir = tmp_path / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -664,8 +664,8 @@ Use when authentication tokens expire or fail validation.
             tmp_path = self.tmp_path
         import io
         from unittest.mock import patch
-        from harness_core.orchestrator import HarnessOrchestrator
-        from harness_core.tui import HexConsole
+        from harness_core.core.orchestrator import HarnessOrchestrator
+        from harness_core.client.tui import HexConsole
 
         data_dir = tmp_path / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -699,8 +699,8 @@ verify:
             tmp_path = self.tmp_path
         import io
         from unittest.mock import patch
-        from harness_core.orchestrator import HarnessOrchestrator
-        from harness_core.tui import HexConsole
+        from harness_core.core.orchestrator import HarnessOrchestrator
+        from harness_core.client.tui import HexConsole
 
         data_dir = tmp_path / "data"
         data_dir.mkdir(parents=True, exist_ok=True)

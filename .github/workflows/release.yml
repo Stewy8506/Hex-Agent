@@ -46,7 +46,7 @@ jobs:
       - name: Run unit test suite
         run: |
           set -o pipefail
-          python -m unittest discover -v tests 2>&1 | tee test_run.log || {
+          python -m pytest tests -v 2>&1 | tee test_run.log || {
             echo "### ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             tail -n 100 test_run.log >> $GITHUB_STEP_SUMMARY
@@ -56,9 +56,75 @@ jobs:
             exit 1
           }
 
+  build-native:
+    name: Build Native Cockpit (${{ matrix.tag }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            tag: linux-x86_64
+          - os: ubuntu-24.04-arm
+            tag: linux-arm64
+          - os: macos-latest
+            tag: macos-arm64
+          - os: macos-latest
+            tag: macos-x86_64
+            rust_target: x86_64-apple-darwin
+          - os: windows-latest
+            tag: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target || '' }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build hex-tui (release)
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.rust_target }}" ]; then
+            cargo build --release -p hex-tui --target "${{ matrix.rust_target }}"
+            echo "BIN_DIR=target/${{ matrix.rust_target }}/release" >> "$GITHUB_ENV"
+          else
+            cargo build --release -p hex-tui
+            echo "BIN_DIR=target/release" >> "$GITHUB_ENV"
+          fi
+
+      - name: Package artifact with SHA-256 (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p native
+          tar -czf "native/hex-tui-${{ matrix.tag }}.tar.gz" -C "$BIN_DIR" hex-tui
+          shasum -a 256 "native/hex-tui-${{ matrix.tag }}.tar.gz" > "native/hex-tui-${{ matrix.tag }}.tar.gz.sha256"
+
+      - name: Package artifact with SHA-256 (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path native -Force | Out-Null
+          Compress-Archive -Path "$env:BIN_DIR/hex-tui.exe" -DestinationPath "native/hex-tui-${{ matrix.tag }}.zip"
+          $hash = (Get-FileHash "native/hex-tui-${{ matrix.tag }}.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "native/hex-tui-${{ matrix.tag }}.zip.sha256" -Value "$hash  hex-tui-${{ matrix.tag }}.zip"
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hex-tui-${{ matrix.tag }}
+          path: native/*
+          if-no-files-found: error
+
   build-and-release:
     name: Build Wheel & Create GitHub Release
-    needs: verify
+    needs: [verify, build-native]
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -98,6 +164,23 @@ jobs:
           /tmp/smoke_env/bin/hex --help
           /tmp/smoke_env/bin/hex doctor --json
 
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: native
+          merge-multiple: true
+
+      - name: Smoke test install contract (isolated home, outside checkout, no compiler)
+        run: |
+          ISO_HOME=$(mktemp -d)
+          ISO_WS=$(mktemp -d)
+          mkdir -p "$ISO_HOME/.hex/bin"
+          tar -xzf native/hex-tui-linux-x86_64.tar.gz -C "$ISO_HOME/.hex/bin"
+          chmod +x "$ISO_HOME/.hex/bin/hex-tui"
+          cd "$ISO_WS"
+          env -i HOME="$ISO_HOME" PATH="/usr/bin:/bin" /tmp/smoke_env/bin/hex tui --check
+          env -i HOME="$ISO_HOME" PATH="/usr/bin:/bin" /tmp/smoke_env/bin/hex doctor --json
+
       - name: Create GitHub Release & Upload Assets
         uses: softprops/action-gh-release@v2
         with:
@@ -105,6 +188,10 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
             install.sh
+            install.ps1
+            native/*.tar.gz
+            native/*.zip
+            native/*.sha256
           generate_release_notes: true
           draft: false
           prerelease: false

@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main as cli_main
-from harness_core.git_autopilot import (
+from harness_core.client.cli import main as cli_main
+from harness_core.capabilities.git_autopilot import (
     GitAutopilot,
     GitAutopilotConfig,
     GitHubTransport,
@@ -373,7 +373,7 @@ class TestCLIIntegrationWorkflows(unittest.TestCase):
         }
 
         out = io.StringIO()
-        with patch("harness_core.orchestrator.HarnessOrchestrator.submit_and_run", return_value=mock_task):
+        with patch("harness_core.core.orchestrator.HarnessOrchestrator.submit_and_run", return_value=mock_task):
             with patch("sys.stdout", out):
                 code = cli_main([
                     "run",

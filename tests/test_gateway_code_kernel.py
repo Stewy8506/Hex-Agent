@@ -25,23 +25,23 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.code_kernel import (
+from harness_core.runtime.code_kernel import (
     CodeKernel,
     KernelRegistry,
     get_kernel_registry,
     reset_kernel_registry,
 )
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import (
     TOOL_DEFINITIONS,
     PolicyBlockedError,
     ToolGateway,
     redact_secrets,
 )
-from harness_core.models import PolicyDecisionType, RiskClass
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
-from harness_core.tui import HexConsole
+from harness_core.core.models import PolicyDecisionType, RiskClass
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
+from harness_core.client.tui import HexConsole
 
 
 class TestToolGatewayCodeKernel(unittest.TestCase):
@@ -359,9 +359,13 @@ class TestHexConsoleKernelSlashCommand(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_slash_command_autocompletion_and_help(self) -> None:
-        """Verify /kernel and /repl are present in autocompletion list and help docs."""
+        """Completion lists canonical catalog names; /repl remains a dispatchable alias."""
         self.assertIn("/kernel", HexConsole.SLASH_COMMANDS)
-        self.assertIn("/repl", HexConsole.SLASH_COMMANDS)
+
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.console.handle_slash_command("/repl")
+        self.assertIn("No active code kernels currently tracked", out.getvalue())
 
         out = io.StringIO()
         with patch("sys.stdout", out):

@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main as cli_main
-from harness_core.git_autopilot import MockGitHubTransport
-from harness_core.github_action import (
+from harness_core.client.cli import main as cli_main
+from harness_core.capabilities.git_autopilot import MockGitHubTransport
+from harness_core.capabilities.github_action import (
     GitHubActionConfig,
     GitHubActionRunner,
     TriggerMatch,
@@ -425,8 +425,8 @@ class TestCLIIntegration(unittest.TestCase):
                 "status": "SUCCEEDED",
                 "state": "SUCCEEDED",
             }
-            with patch("harness_core.orchestrator.HarnessOrchestrator.submit_and_run", return_value=mock_task):
-                with patch("harness_core.db.LedgerStore.get_proof_bundle", return_value={
+            with patch("harness_core.core.orchestrator.HarnessOrchestrator.submit_and_run", return_value=mock_task):
+                with patch("harness_core.storage.db.LedgerStore.get_proof_bundle", return_value={
                     "git_diff_sha": "diff_test",
                     "workspace_tree_sha": "tree_test",
                     "verification_results": {"passed": True},

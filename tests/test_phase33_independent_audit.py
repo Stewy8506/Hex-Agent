@@ -22,10 +22,10 @@ from harness_core.config_loader import (
     get_auto_reflect_policy,
     should_execute_background_reflection,
 )
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import ToolGateway
 from harness_core.graphify import ActiveGraphifyAdapter
-from harness_core.memory import (
+from harness_core.cognition.memory import (
     AMEMController,
     ASTNodeMemory,
     ASTNodeMemoryStore,
@@ -40,30 +40,30 @@ from harness_core.memory import (
     query_jit_memories_for_file,
     resolve_symbol_span,
 )
-from harness_core.models import TaskSubmitRequest
-from harness_core.orchestrator import (
+from harness_core.core.models import TaskSubmitRequest
+from harness_core.core.orchestrator import (
     HarnessOrchestrator,
     process_pending_reflections,
     run_lifecycle_maintenance,
 )
-from harness_core.prompt_builder import (
+from harness_core.cognition.prompt_builder import (
     PromptBuilder,
     scan_context_content,
     scan_for_threats,
 )
-from harness_core.reflection import FrictionLesson, ReflectionSynthesizer
-from harness_core.sandbox import ExecutionSandbox, SandboxResult
+from harness_core.cognition.reflection import FrictionLesson, ReflectionSynthesizer
+from harness_core.storage.sandbox import ExecutionSandbox, SandboxResult
 from harness_core.skills.executor import (
     SecurityError,
     SkillExecutionEngine,
     build_minimal_skill_env,
 )
-from harness_core.skillspector import (
+from harness_core.cognition.skillspector import (
     SkillSecurityScanner,
     compute_bundle_sha256,
     get_approved_skill_hash,
 )
-from harness_core.soul import (
+from harness_core.cognition.soul import (
     MAX_SOUL_CHARS,
     TRUNCATION_MARKER,
     SoulManager,

@@ -18,10 +18,10 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from harness_core.models import TaskBudget, TaskState, TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
+from harness_core.core.models import TaskBudget, TaskState, TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
 from harness_core.providers.base import ModelResponse, ModelUsage
-from harness_core.router import RouteDecision
+from harness_core.core.router import RouteDecision
 
 
 class TestHarness2LibraryWiring(unittest.TestCase):

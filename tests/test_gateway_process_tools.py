@@ -24,13 +24,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from harness_core.cli import main as cli_main
-from harness_core.db import LedgerStore
+from harness_core.client.cli import main as cli_main
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import PolicyBlockedError, ToolGateway
-from harness_core.models import RiskClass, TaskSubmitRequest
-from harness_core.process_registry import ProcessRegistry, ProcessStatus, get_process_registry, reset_process_registry
-from harness_core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
-from harness_core.tui import HexConsole
+from harness_core.core.models import RiskClass, TaskSubmitRequest
+from harness_core.runtime.process_registry import ProcessRegistry, ProcessStatus, get_process_registry, reset_process_registry
+from harness_core.core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
+from harness_core.client.tui import HexConsole
 
 
 class TestGatewayProcessTools(unittest.TestCase):

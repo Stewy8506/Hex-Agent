@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hex-ai"
-version = "0.20.1"
+version = "0.22.0"
 description = "HEX Agent with CoW durability, Call-Level Journaling, Active Graphify, SkillSpector gate, and Two-Tier model routing"
 readme = "README.md"
 license = "Apache-2.0"
@@ -13,6 +13,8 @@ dependencies = [
     "networkx>=3.0",
     "httpx>=0.24.0",
     "typing_extensions>=4.6.0",
+    "keyring>=24.0.0",
+    "pyyaml>=6.0",
 ]
 
 [project.urls]
@@ -30,6 +32,8 @@ full = [
     "networkx>=3.0",
     "httpx>=0.24.0",
     "typing_extensions>=4.6.0",
+    "keyring>=24.0.0",
+    "pyyaml>=6.0",
     "rich>=13.0.0",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
@@ -43,6 +47,8 @@ test = [
     "networkx>=3.0",
     "httpx>=0.24.0",
     "typing_extensions>=4.6.0",
+    "keyring>=24.0.0",
+    "pyyaml>=6.0",
     "rich>=13.0.0",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
@@ -53,8 +59,11 @@ test = [
 ]
 
 [project.scripts]
-hex = "harness_core.cli:main"
-harness = "harness_core.cli:main"
+hex = "harness_core.client.cli:main"
+harness = "harness_core.client.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -63,6 +72,7 @@ include = ["harness_core*"]
 [tool.setuptools.package-data]
 harness_core = [
     "migrations/*.sql",
+    "client/command_catalog.json",
     "skills/**/*.md",
     "skills/**/*.yaml",
     "skills/**/*.yml",

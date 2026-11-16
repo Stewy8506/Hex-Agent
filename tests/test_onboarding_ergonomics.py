@@ -1,13 +1,14 @@
 """Unit tests for Setup Ergonomics, Curated Provider Tiers, and First-Task Verification."""
 
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from harness_core.config_loader import parse_config_yaml, parse_env_file
-from harness_core.db import LedgerStore
-from harness_core.onboard import run_first_task_verification, run_onboard_wizard
+from harness_core.storage.db import LedgerStore
+from harness_core.client.onboard import run_first_task_verification, run_onboard_wizard
 
 
 class TestOnboardingErgonomics(unittest.TestCase):
@@ -117,17 +118,23 @@ webhooks:
         self.assertEqual(res.get("status"), "passed")
         self.assertTrue(res.get("task_id", "").startswith("tsk_"))
 
-        # 1. CoW workspace validation
+        # 1. CoW workspace validation (real clone + isolation + rollback probe)
         ws_path = Path(res["cow_workspace"])
         self.assertTrue(ws_path.is_dir())
         self.assertTrue((ws_path / ".hex_workspace").is_file())
+        self.assertTrue((ws_path / "marker.txt").is_file())
+        self.assertFalse((ws_path / "dirty_probe.txt").exists())
+        self.assertNotEqual(res.get("cow_backend"), "unknown")
+        cow_check = next(c for c in res["checks"] if c["name"] == "cow_isolation")
+        self.assertEqual(cow_check["status"], "passed")
 
-        # 2. Diagnostic report validation
+        # 2. Diagnostic report validation reflects real check outcomes
         art_path = Path(res["artifact_path"])
         self.assertTrue(art_path.is_file())
         report_text = art_path.read_text(encoding="utf-8")
         self.assertIn("HEX Agent System Diagnostic", report_text)
-        self.assertIn("ALL SUBSYSTEMS OPERATIONAL", report_text)
+        self.assertIn("ALL VERIFIED SUBSYSTEMS OPERATIONAL", report_text)
+        self.assertIn("Subsystem Check Results", report_text)
 
         # 3. CAS blob validation
         sha256 = res["cas_sha256"]
@@ -147,6 +154,90 @@ webhooks:
             self.assertEqual(task.get("status"), "SUCCEEDED")
             arts = ledger.list_artifacts(res["task_id"])
             self.assertTrue(any(a.get("sha256") == sha256 for a in arts))
+        finally:
+            ledger.close()
+
+        # 5. Provider connectivity is honestly skipped, chain actually verified
+        provider_check = next(c for c in res["checks"] if c["name"] == "provider_connectivity")
+        self.assertEqual(provider_check["status"], "skipped")
+        self.assertGreater(res.get("chain_verified_events", 0), 0)
+
+    def test_first_task_verification_fails_when_required_tool_missing(self) -> None:
+        """Missing git must fail the beat honestly instead of reporting PASS."""
+        from unittest.mock import patch
+
+        real_which = shutil.which
+
+        def fake_which(name: str, *args, **kwargs):
+            if name == "git":
+                return None
+            return real_which(name, *args, **kwargs)
+
+        with patch("harness_core.client.onboard.shutil.which", side_effect=fake_which):
+            res = run_first_task_verification(
+                config_dir=self.root,
+                target_dir=self.root / "ft_missing_git",
+            )
+        self.assertEqual(res["status"], "failed")
+        devtools = next(c for c in res["checks"] if c["name"] == "devtools")
+        self.assertEqual(devtools["status"], "failed")
+        self.assertIn("git", devtools["detail"])
+        report_text = Path(res["artifact_path"]).read_text(encoding="utf-8")
+        self.assertIn("VERIFICATION FAILED", report_text)
+        self.assertNotIn("ALL VERIFIED SUBSYSTEMS OPERATIONAL", report_text)
+        ledger = LedgerStore(self.root / "data" / "ledger.db")
+        try:
+            self.assertEqual(ledger.get_task(res["task_id"]).get("status"), "FAILED")
+        finally:
+            ledger.close()
+
+    def test_first_task_verification_fails_when_cow_probe_fails(self) -> None:
+        """A broken CoW provider must fail the beat and mark the ledger task FAILED."""
+        from unittest.mock import patch
+
+        def broken_provider(*args, **kwargs):
+            raise RuntimeError("simulated CoW backend failure")
+
+        with patch(
+            "harness_core.storage.cow.get_default_snapshot_provider",
+            side_effect=broken_provider,
+        ):
+            res = run_first_task_verification(
+                config_dir=self.root,
+                target_dir=self.root / "ft_broken_cow",
+            )
+        self.assertEqual(res["status"], "failed")
+        cow_check = next(c for c in res["checks"] if c["name"] == "cow_isolation")
+        self.assertEqual(cow_check["status"], "failed")
+        self.assertIn("simulated CoW backend failure", cow_check["detail"])
+        ledger = LedgerStore(self.root / "data" / "ledger.db")
+        try:
+            self.assertEqual(ledger.get_task(res["task_id"]).get("status"), "FAILED")
+        finally:
+            ledger.close()
+
+    def test_first_task_verification_fails_when_chain_invalid(self) -> None:
+        """Even with all probes passing, an invalid hash chain must block SUCCEEDED."""
+        from unittest.mock import patch
+
+        from harness_core.storage.db import ChainIntegrityReport
+
+        with patch.object(
+            LedgerStore,
+            "verify_chain_integrity",
+            return_value=ChainIntegrityReport(valid=False, errors=["simulated tamper"], verified_events=0),
+        ):
+            res = run_first_task_verification(
+                config_dir=self.root,
+                target_dir=self.root / "ft_bad_chain",
+            )
+        self.assertEqual(res["status"], "failed")
+        ledger_check = next(c for c in res["checks"] if c["name"] == "ledger")
+        self.assertEqual(ledger_check["status"], "failed")
+        self.assertIn("simulated tamper", ledger_check["detail"])
+        ledger = LedgerStore(self.root / "data" / "ledger.db")
+        try:
+            self.assertEqual(ledger.get_task(res["task_id"]).get("status"), "FAILED")
         finally:
             ledger.close()
 

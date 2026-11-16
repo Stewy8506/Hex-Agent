@@ -11,6 +11,14 @@
 
 set -euo pipefail
 
+BUILD_NATIVE=0
+for arg in "$@"; do
+    case "$arg" in
+        --build-native) BUILD_NATIVE=1 ;;
+        *) ;;
+    esac
+done
+
 HEX_DIR="${HEX_DIR:-$HOME/.hex}"
 VENV_DIR="$HEX_DIR/env"
 BIN_DIR="${HEX_BIN_DIR:-$HOME/.local/bin}"
@@ -147,6 +155,77 @@ mkdir -p "$BIN_DIR"
 ln -sf "$VENV_DIR/bin/hex" "$BIN_DIR/hex"
 ln -sf "$VENV_DIR/bin/hex" "$BIN_DIR/harness"
 success "Linked executable: $BIN_DIR/hex -> $VENV_DIR/bin/hex"
+
+# 5b. Install the native Ratatui cockpit — the supported default surface.
+# Contract: release artifact (checksum-verified) or an explicit developer
+# build lands in ~/.hex/bin/hex-tui; the Python console needs no compiler.
+NATIVE_BIN_DIR="$HEX_DIR/bin"
+mkdir -p "$NATIVE_BIN_DIR"
+case "$OS-$ARCH" in
+    Darwin-arm64)              NATIVE_TAG="macos-arm64" ;;
+    Darwin-x86_64)             NATIVE_TAG="macos-x86_64" ;;
+    Linux-x86_64)              NATIVE_TAG="linux-x86_64" ;;
+    Linux-aarch64|Linux-arm64) NATIVE_TAG="linux-arm64" ;;
+    *)                         NATIVE_TAG="" ;;
+esac
+
+install_native_from() {
+    install -m 755 "$1" "$NATIVE_BIN_DIR/hex-tui"
+    ln -sf "$NATIVE_BIN_DIR/hex-tui" "$BIN_DIR/hex-tui"
+}
+
+NATIVE_INSTALLED=0
+if [ "$BUILD_NATIVE" -eq 1 ]; then
+    if [ -f "$SCRIPT_DIR/Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
+        info "Building native cockpit from source (explicit developer option)..."
+        (cd "$SCRIPT_DIR" && cargo build --release -p hex-tui)
+        install_native_from "$SCRIPT_DIR/target/release/hex-tui"
+        NATIVE_INSTALLED=1
+    else
+        warn "--build-native requires a source checkout with cargo; skipping source build."
+    fi
+fi
+if [ "$NATIVE_INSTALLED" -eq 0 ] && [ -f "$SCRIPT_DIR/target/release/hex-tui" ]; then
+    info "Installing native cockpit from local checkout build..."
+    install_native_from "$SCRIPT_DIR/target/release/hex-tui"
+    NATIVE_INSTALLED=1
+elif [ "$NATIVE_INSTALLED" -eq 0 ] && [ -f "$SCRIPT_DIR/target/debug/hex-tui" ]; then
+    info "Installing native cockpit from local checkout debug build..."
+    install_native_from "$SCRIPT_DIR/target/debug/hex-tui"
+    NATIVE_INSTALLED=1
+fi
+if [ "$NATIVE_INSTALLED" -eq 0 ] && [ -n "$NATIVE_TAG" ]; then
+    info "Downloading native cockpit release artifact ($NATIVE_TAG)..."
+    RELEASE_BASE="https://github.com/Stewy8506/Harness/releases/latest/download"
+    TMP_NATIVE="$(mktemp -d)"
+    if curl -fsSL "$RELEASE_BASE/hex-tui-$NATIVE_TAG.tar.gz" -o "$TMP_NATIVE/hex-tui.tar.gz" && \
+       curl -fsSL "$RELEASE_BASE/hex-tui-$NATIVE_TAG.tar.gz.sha256" -o "$TMP_NATIVE/hex-tui.tar.gz.sha256"; then
+        EXPECTED="$(awk '{print $1}' "$TMP_NATIVE/hex-tui.tar.gz.sha256")"
+        if command -v shasum >/dev/null 2>&1; then
+            ACTUAL="$(shasum -a 256 "$TMP_NATIVE/hex-tui.tar.gz" | awk '{print $1}')"
+        else
+            ACTUAL="$(sha256sum "$TMP_NATIVE/hex-tui.tar.gz" | awk '{print $1}')"
+        fi
+        if [ "$EXPECTED" = "$ACTUAL" ]; then
+            tar -xzf "$TMP_NATIVE/hex-tui.tar.gz" -C "$TMP_NATIVE"
+            install_native_from "$TMP_NATIVE/hex-tui"
+            NATIVE_INSTALLED=1
+            success "Native cockpit installed (SHA-256 verified)."
+        else
+            warn "Checksum mismatch for the native artifact; refusing to install it."
+        fi
+    else
+        warn "Could not download the native release artifact."
+    fi
+    rm -rf "$TMP_NATIVE"
+fi
+if [ "$NATIVE_INSTALLED" -eq 1 ]; then
+    success "Native hex-tui cockpit: $NATIVE_BIN_DIR/hex-tui"
+else
+    warn "Native hex-tui cockpit not installed. The Python console (hex --legacy) is fully supported."
+    echo "  ↳ Re-run ./install.sh from a source checkout, use --build-native with cargo, or"
+    echo "    place the hex-tui release binary for your platform into $NATIVE_BIN_DIR."
+fi
 
 # 6. Verify PATH contains BIN_DIR
 PATH_NEEDS_UPDATE=0

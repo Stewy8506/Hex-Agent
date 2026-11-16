@@ -1,26 +1,13 @@
-"""HEX Bidirectional Multi-Platform Chat Gateways.
+"""Backward-compatibility re-export stub for gateways package.
 
-Pillar 3: Telegram and Discord bot interfaces for autonomous agent oversight,
-conversational task delegation, and gated R3/R4 human-in-the-loop approvals.
+Canonical implementation lives in harness_core.capabilities.gateways.
 """
 
-from .discord_bot import (
-    DiscordBotGateway,
-    DiscordConfig,
-    HttpDiscordTransport,
-    MockDiscordTransport,
-)
-from .manager import GatewayManager
-from .telegram_bot import TelegramBotGateway, TelegramConfig, MockTelegramTransport
+from __future__ import annotations
 
-__all__ = [
-    "TelegramBotGateway",
-    "TelegramConfig",
-    "MockTelegramTransport",
-    "DiscordBotGateway",
-    "DiscordConfig",
-    "HttpDiscordTransport",
-    "MockDiscordTransport",
-    "GatewayManager",
-]
+import sys
+from harness_core.capabilities.gateways import *  # noqa: F401, F403
+import harness_core.capabilities.gateways as _impl
 
+# Transparent module aliasing for mock / patch identity stability
+sys.modules[__name__] = _impl

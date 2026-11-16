@@ -331,3 +331,96 @@ fn render_side_by_side(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(left_paragraph, cols[0]);
     frame.render_widget(right_paragraph, cols[1]);
 }
+
+use crate::ui::style::HexTheme;
+
+/// Formatted line for the mockup's inline unified diff block.
+#[derive(Debug, Clone)]
+pub struct MockupDiffLine {
+    pub line_no: Option<usize>,
+    pub line_type: DiffLineType,
+    pub content: String,
+}
+
+/// Renders a Sage/Rose tinted unified diff block matching the HEX Agent HTML mockup.
+pub fn render_mockup_inline_diff(
+    file_path: &str,
+    additions: usize,
+    deletions: usize,
+    lines: &[MockupDiffLine],
+    theme: &HexTheme,
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+) -> u16 {
+    if area.height == 0 || area.width == 0 {
+        return 0;
+    }
+
+    let mut y = area.y;
+
+    // Header row: "edit   src/graph/builder.ts" ... "+18 −31"
+    let mut header_spans = vec![
+        Span::styled("edit   ", Style::default().fg(theme.text_dim)),
+        Span::styled(file_path, Style::default().fg(theme.text_bright)),
+    ];
+
+    let counts_str = format!("+{} −{}", additions, deletions);
+    let spaces = (area.width as usize).saturating_sub(7 + file_path.len() + counts_str.len());
+    header_spans.push(Span::raw(" ".repeat(spaces)));
+    header_spans.push(Span::styled(format!("+{}", additions), Style::default().fg(theme.sage_fg)));
+    header_spans.push(Span::raw(" "));
+    header_spans.push(Span::styled(format!("−{}", deletions), Style::default().fg(theme.rose_fg)));
+
+    buf.set_line(area.x, y, &Line::from(header_spans), area.width);
+    y += 1;
+
+    // Divider line under header
+    if y < area.bottom() {
+        for x in area.left()..area.right() {
+            buf[(x, y)].set_symbol("─");
+            buf[(x, y)].set_fg(theme.border_low);
+        }
+        y += 1;
+    }
+
+    // Render diff lines with sage and rose line-by-line background tints
+    for diff_line in lines {
+        if y >= area.bottom() {
+            break;
+        }
+
+        let (bg, marker_col, text_col, marker_symbol) = match diff_line.line_type {
+            DiffLineType::Added => (theme.sage_bg, theme.sage_fg, theme.sage_text, "+"),
+            DiffLineType::Deleted => (theme.rose_bg, theme.rose_fg, theme.rose_text, "−"),
+            DiffLineType::Context => (theme.window_bg, theme.text_extra_dim, theme.text_extra_dim, " "),
+            DiffLineType::HunkHeader | DiffLineType::Meta => (
+                theme.window_bg,
+                theme.text_extra_dim,
+                theme.text_dim,
+                "~",
+            ),
+        };
+
+        // Fill background across entire line width for tinted diff
+        for x in area.left()..area.right() {
+            buf[(x, y)].set_bg(bg);
+        }
+
+        let line_num_str = if let Some(n) = diff_line.line_no {
+            format!("{:3} ", n)
+        } else {
+            "    ".to_string()
+        };
+
+        let row_line = Line::from(vec![
+            Span::styled(line_num_str, Style::default().fg(theme.text_extra_dim).bg(bg)),
+            Span::styled(format!("{} ", marker_symbol), Style::default().fg(marker_col).bg(bg)),
+            Span::styled(&diff_line.content, Style::default().fg(text_col).bg(bg)),
+        ]);
+
+        buf.set_line(area.x, y, &row_line, area.width);
+        y += 1;
+    }
+
+    y - area.y
+}

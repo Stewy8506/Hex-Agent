@@ -22,10 +22,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main
-from harness_core.daemon import DaemonConfig, DaemonInstaller
-from harness_core.scheduler import CronParser, ScheduledJob, TaskScheduler
-from harness_core.webhooks import WebhookConfig, WebhookNotifier
+from harness_core.client.cli import main
+from harness_core.runtime.daemon import DaemonConfig, DaemonInstaller
+from harness_core.runtime.scheduler import CronParser, ScheduledJob, TaskScheduler
+from harness_core.capabilities.webhooks import WebhookConfig, WebhookNotifier
 
 
 class TestCronParser(unittest.TestCase):
@@ -347,7 +347,7 @@ class TestDaemonInstaller(unittest.TestCase):
         unit_user = self.installer.generate_systemd_unit(user=True)
         self.assertIn("[Unit]", unit_user)
         self.assertIn("Description=Test HEX Daemon Service", unit_user)
-        self.assertIn("ExecStart=/usr/bin/python3 -m harness_core.cli schedule run-due", unit_user)
+        self.assertIn("ExecStart=/usr/bin/python3 -m harness_core.client.cli schedule run-due", unit_user)
         self.assertIn('Environment="HEX_DATA_DIR=', unit_user)
         self.assertIn("WantedBy=default.target", unit_user)
 
@@ -444,7 +444,7 @@ class TestCliScheduleAndDaemon(unittest.TestCase):
         scheduler.save_jobs([job])
 
         out = io.StringIO()
-        with patch("sys.stdout", out), patch("harness_core.cli.HarnessOrchestrator") as mock_orch_cls:
+        with patch("sys.stdout", out), patch("harness_core.client.cli.HarnessOrchestrator") as mock_orch_cls:
             mock_orch = MagicMock()
             mock_orch.submit_and_run.return_value = {
                 "task_id": "tsk_cli_test",

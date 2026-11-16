@@ -23,8 +23,8 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from harness_core.db import LedgerStore
-from harness_core.skillspector import SkillSpectorScanner, UPSTREAM_AST_AVAILABLE
+from harness_core.storage.db import LedgerStore
+from harness_core.cognition.skillspector import SkillSpectorScanner, UPSTREAM_AST_AVAILABLE
 
 
 class TestSkillSpectorASTWiring(unittest.TestCase):

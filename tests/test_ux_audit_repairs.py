@@ -10,13 +10,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from harness_core.config_loader import load_hex_environment, parse_config_yaml
-from harness_core.db import LedgerStore
-from harness_core.models import TaskSubmitRequest
-from harness_core.onboard import HardwareProfile
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.project_registry import ProjectRecord, ProjectRegistry, compute_project_id
-from harness_core.router import TwoTierModelRouter
-from harness_core.tui import HexConsole
+from harness_core.storage.db import LedgerStore
+from harness_core.core.models import TaskSubmitRequest
+from harness_core.client.onboard import HardwareProfile
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.storage.project_registry import ProjectRecord, ProjectRegistry, compute_project_id
+from harness_core.core.router import TwoTierModelRouter
+from harness_core.client.tui import HexConsole
 
 
 class TestUXAuditRepairs(unittest.TestCase):
@@ -305,7 +305,7 @@ class TestUXAuditRepairs(unittest.TestCase):
 
     def test_terminal_markdown_formatting_renders_ansi_not_raw_markdown(self):
         """Assistant deliverable formats markdown headers, bullets, code, and blocks with ANSI styling."""
-        from harness_core.tui import format_terminal_markdown
+        from harness_core.client.tui import format_terminal_markdown
 
         raw_md = (
             "# Main Title\n"

@@ -23,7 +23,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from harness_core.cli import main
+from harness_core.client.cli import main
 from harness_core.gateways.discord_bot import (
     DiscordBotGateway,
     DiscordConfig,
@@ -36,8 +36,8 @@ from harness_core.gateways.telegram_bot import (
     TelegramBotGateway,
     TelegramConfig,
 )
-from harness_core.models import PlanNode, TaskState, TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
+from harness_core.core.models import PlanNode, TaskState, TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
 
 
 class TestDiscordConfigAndWhitelisting(unittest.TestCase):

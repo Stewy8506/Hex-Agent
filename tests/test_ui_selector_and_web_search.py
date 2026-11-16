@@ -16,13 +16,13 @@ from harness_core.config_loader import (
     parse_env_file,
 )
 from harness_core.gateway import RiskClass, ToolGateway
-from harness_core.ui_selector import (
+from harness_core.client.ui_selector import (
     SelectorCancelledError,
     prompt_secret,
     select_multiple,
     select_option,
 )
-from harness_core.web_search import (
+from harness_core.capabilities.web_search import (
     execute_web_search,
 )
 
@@ -228,7 +228,7 @@ class TestWebSearch(unittest.TestCase):
         self.assertEqual(res["count"], 0)
         self.assertEqual(res["results"], [])
 
-    @patch("harness_core.web_search._search_duckduckgo")
+    @patch("harness_core.capabilities.web_search._search_duckduckgo")
     def test_execute_web_search_duckduckgo(self, mock_ddg: MagicMock) -> None:
         mock_ddg.return_value = [
             {"title": "Python Docs", "url": "https://python.org", "snippet": "Official documentation"}
@@ -238,7 +238,7 @@ class TestWebSearch(unittest.TestCase):
         self.assertEqual(res["provider"], "duckduckgo")
         self.assertEqual(res["results"][0]["title"], "Python Docs")
 
-    @patch("harness_core.web_search._search_tavily")
+    @patch("harness_core.capabilities.web_search._search_tavily")
     def test_execute_web_search_tavily(self, mock_tav: MagicMock) -> None:
         mock_tav.return_value = [
             {"title": "FastAPI Guide", "url": "https://fastapi.tiangolo.com", "snippet": "Modern Python framework"}
@@ -255,7 +255,7 @@ class TestWebSearch(unittest.TestCase):
         spec = gw.tools["web_search"]
         self.assertEqual(spec.risk_class, RiskClass.R1)
 
-        with patch("harness_core.web_search.execute_web_search") as mock_exec:
+        with patch("harness_core.capabilities.web_search.execute_web_search") as mock_exec:
             mock_exec.return_value = {
                 "query": "pytest fixtures",
                 "provider": "duckduckgo",

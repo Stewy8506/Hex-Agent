@@ -25,10 +25,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from harness_core.cli import main
-from harness_core.db import LedgerStore
-from harness_core.models import TaskSubmitRequest
-from harness_core.skill_synthesizer import (
+from harness_core.client.cli import main
+from harness_core.storage.db import LedgerStore
+from harness_core.core.models import TaskSubmitRequest
+from harness_core.cognition.skill_synthesizer import (
     SkillSynthesizer,
     SynthesizedSkill,
     _determine_risk_class,
@@ -43,7 +43,7 @@ from harness_core.skills import (
     SkillVerificationResult,
     assert_skill_regression_free,
 )
-from harness_core.skillspector import SkillSecurityScanner, parse_skill_frontmatter
+from harness_core.cognition.skillspector import SkillSecurityScanner, parse_skill_frontmatter
 
 
 class TestSkillSynthesizerUnit(unittest.TestCase):

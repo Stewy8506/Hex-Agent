@@ -23,7 +23,7 @@ _src_dir = _repo_root / "src"
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 
 
 def resolve_db_url(cli_db_url: str | None = None) -> tuple[str, Path | None]:

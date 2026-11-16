@@ -10,10 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.onboard import _probe_antigravity_token, run_onboard_wizard
+from harness_core.client.onboard import _probe_antigravity_token, run_onboard_wizard
 from harness_core.providers.antigravity_provider import AntigravityCredential, AntigravityModelProvider
 from harness_core.providers.base import ProviderUnavailableError
-from harness_core.tui import HexConsole
+from harness_core.client.tui import HexConsole
 
 
 class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
@@ -44,10 +44,10 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         self.assertFalse(_probe_antigravity_token("expired_token_123"))
 
     @patch("harness_core.providers.antigravity_provider.AntigravityOAuthManager.resolve_credential")
-    @patch("harness_core.onboard.fetch_available_models", return_value=[("gemini-2.5-pro", "Gemini 2.5 Pro"), ("gemini-2.5-flash", "Gemini 2.5 Flash")])
-    @patch("harness_core.onboard.prompt_secret")
-    @patch("harness_core.onboard.select_option")
-    @patch("harness_core.onboard._probe_antigravity_token", return_value=True)
+    @patch("harness_core.client.onboard.fetch_available_models", return_value=[("gemini-2.5-pro", "Gemini 2.5 Pro"), ("gemini-2.5-flash", "Gemini 2.5 Flash")])
+    @patch("harness_core.client.onboard.prompt_secret")
+    @patch("harness_core.client.onboard.select_option")
+    @patch("harness_core.client.onboard._probe_antigravity_token", return_value=True)
     def test_onboard_wizard_antigravity_model_selection(
         self,
         mock_probe: MagicMock,
@@ -83,17 +83,19 @@ class TestAntigravityOAuthAndTuiResilience(unittest.TestCase):
         self.assertEqual(result["web_search_provider"], "none")
 
         # Verify config written
-        cfg_text = (self.cfg_dir / "config.yaml").read_text(encoding="utf-8")
-        self.assertIn('cloud_model_id: "gemini-2.5-flash"', cfg_text)
+        from harness_core.config_loader import parse_config_yaml
+
+        parsed_cfg = parse_config_yaml(self.cfg_dir / "config.yaml")
+        self.assertEqual(parsed_cfg["model"]["cloud_model_id"], "gemini-2.5-flash")
 
     @patch("harness_core.providers.antigravity_provider.AntigravityOAuthManager.resolve_credential", return_value=None)
-    @patch("harness_core.onboard.fetch_available_models", return_value=[("gemini-2.5-pro", "Gemini 2.5 Pro")])
+    @patch("harness_core.client.onboard.fetch_available_models", return_value=[("gemini-2.5-pro", "Gemini 2.5 Pro")])
     @patch("builtins.input", return_value="http://localhost:8420/?code=auth_code_999")
     @patch("webbrowser.open")
     @patch("harness_core.providers.antigravity_provider.AntigravityOAuthManager.exchange_code_for_tokens")
-    @patch("harness_core.onboard.prompt_secret")
-    @patch("harness_core.onboard.select_option")
-    @patch("harness_core.onboard._probe_antigravity_token", return_value=False)
+    @patch("harness_core.client.onboard.prompt_secret")
+    @patch("harness_core.client.onboard.select_option")
+    @patch("harness_core.client.onboard._probe_antigravity_token", return_value=False)
     def test_onboard_wizard_triggers_browser_oauth_when_unauthenticated(
         self,
         mock_probe: MagicMock,

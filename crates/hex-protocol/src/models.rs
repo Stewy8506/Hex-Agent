@@ -414,6 +414,24 @@ pub struct SessionLoadResponse {
     pub cwd: String,
     pub model: String,
     pub history_count: usize,
+    /// Prior turns (prompt/response pairs) so clients can replay the transcript.
+    #[serde(default)]
+    pub history: Vec<SessionHistoryTurn>,
+}
+
+/// One completed turn in a session transcript.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHistoryTurn {
+    // The server stores transcript turns with snake_case keys.
+    #[serde(default, rename = "task_id")]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub response: String,
+    #[serde(default)]
+    pub status: String,
 }
 
 /// Parameters for `session/prompt`.
@@ -535,7 +553,15 @@ impl ToolCallResponse {
     }
 }
 
-/// Streaming notification payloads (`session/update`, `progress`, etc.).
+/// Streaming notification payloads (`session/update`).
+///
+/// Canonical wire contract emitted by the Python ACP server
+/// (`harness_core.client.acp`), shared by all HEX Rust clients:
+/// - `updateType=agent_response` with `delta`: streaming assistant text.
+/// - `updateType=tool` with nested `tool` ([`ToolUpdate`]): tool lifecycle.
+/// - `updateType=stream_end` with `status=Ready`: token stream finished.
+/// - `updateType=status` with `status=Ready` (and `delta` when nothing
+///   streamed): authoritative end of the prompt turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionUpdateNotification {
@@ -547,6 +573,41 @@ pub struct SessionUpdateNotification {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<serde_json::Value>,
+}
+
+impl SessionUpdateNotification {
+    /// True when this notification terminates the active prompt turn.
+    pub fn is_turn_terminal(&self) -> bool {
+        if self.update_type == "stream_end" {
+            return true;
+        }
+        if self.update_type == "status" {
+            if let Some(status) = self.status.as_deref() {
+                return status.eq_ignore_ascii_case("ready")
+                    || status.eq_ignore_ascii_case("completed")
+                    || status.eq_ignore_ascii_case("cancelled")
+                    || status.eq_ignore_ascii_case("failed");
+            }
+        }
+        false
+    }
+}
+
+/// Nested tool lifecycle payload inside `session/update` (`updateType=tool`).
+///
+/// `event_type` is `start`, `complete`, or `error`; `call_id` correlates the
+/// start event with its completion, and `payload` is a truncated JSON/text
+/// rendering of the tool arguments (start) or result (complete/error).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolUpdate {
+    pub event_type: String,
+    pub tool_id: String,
+    pub call_id: String,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub payload: String,
 }
 
 /// Parameters for `session/approvalRequest` notification sent from server to client.
@@ -709,5 +770,42 @@ mod tests {
         assert_eq!(tools.tools.len(), 1);
         assert_eq!(tools.tools[0].name, "read_file");
         assert_eq!(tools.tools[0].risk_class.as_deref(), Some("R0"));
+    }
+
+    #[test]
+    fn test_session_load_response_with_history() {
+        let raw = r#"{
+            "sessionId": "acp_sess_12345",
+            "cwd": "/tmp/ws",
+            "model": "gemini-2.5-pro",
+            "historyCount": 1,
+            "history": [
+                {
+                    "task_id": "tsk_acp_1",
+                    "prompt": "hello",
+                    "response": "hi there",
+                    "status": "completed",
+                    "duration": 0.5
+                }
+            ]
+        }"#;
+        let resp: SessionLoadResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(resp.history_count, 1);
+        assert_eq!(resp.history.len(), 1);
+        assert_eq!(resp.history[0].prompt, "hello");
+        assert_eq!(resp.history[0].response, "hi there");
+        assert_eq!(resp.history[0].task_id.as_deref(), Some("tsk_acp_1"));
+    }
+
+    #[test]
+    fn test_session_load_response_without_history_field() {
+        let raw = r#"{
+            "sessionId": "acp_sess_12345",
+            "cwd": "/tmp/ws",
+            "model": "default",
+            "historyCount": 0
+        }"#;
+        let resp: SessionLoadResponse = serde_json::from_str(raw).unwrap();
+        assert!(resp.history.is_empty());
     }
 }

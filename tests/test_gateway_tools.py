@@ -9,9 +9,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import PolicyBlockedError, ToolGateway
-from harness_core.models import RiskClass, TaskSubmitRequest
+from harness_core.core.models import RiskClass, TaskSubmitRequest
 
 
 class TestGatewayTools(unittest.TestCase):

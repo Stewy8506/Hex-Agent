@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hex agent · palette</title>
+<script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+@font-face{font-family:'Apfel Grotezk';font-weight:400;src:url(./assets/94181a5624e6acdba8bae420d4c8577d.woff2) format('woff2')}
+@font-face{font-family:'Apfel Grotezk';font-weight:700;src:url(./assets/b1f165c57ef90373214fc45e2800fff2.woff2) format('woff2')}
+.hd{font-family:'Apfel Grotezk','Helvetica Neue',Arial,sans-serif}
+body{margin:0;background:#0a0a0a}
+.t{font-family:'Geist Mono',ui-monospace,Menlo,monospace;font-size:13px;line-height:21px;color:#d6d6d6}
+.t *{box-sizing:border-box}
+.d{color:#8c8c8c}.f{color:#f2f2f2}.x{color:#7d7d7d}.b{color:#7aa7ff}
+.pre{white-space:pre;margin:0;font:inherit}
+.ln{opacity:0;transform:translateY(4px);animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards}
+@keyframes rise{to{opacity:1;transform:none}}
+.sh{background:linear-gradient(90deg,#6a6a6a 0%,#6a6a6a 35%,#f0f0f0 50%,#6a6a6a 65%,#6a6a6a 100%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:shim 2.4s linear infinite}
+@keyframes shim{from{background-position:100% 0}to{background-position:-100% 0}}
+.cur{display:inline-block;width:8px;height:15px;background:#7aa7ff;vertical-align:-2px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{0%,55%{opacity:1}56%,100%{opacity:0}}
+.opt{display:flex;justify-content:space-between;padding:2px 10px;border-radius:4px;transition:background .2s ease}
+.opt:hover{background:#151515}
+.sel{background:#1a1a1a}
+.rule{height:1px;background:#1f1f1f}
+.sp{display:inline-block;width:1ch}
+.sp::before{content:"\280B";animation:spin .9s steps(1) infinite}
+@keyframes spin{0%{content:"\280B"}10%{content:"\2819"}20%{content:"\2839"}30%{content:"\2838"}40%{content:"\283C"}50%{content:"\2834"}60%{content:"\2826"}70%{content:"\2827"}80%{content:"\2807"}90%{content:"\280F"}}
+.pulse{animation:pl 2.2s ease-in-out infinite}
+@keyframes pl{0%,100%{opacity:.35}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.ln,.sh,.cur,.sp::before,.pulse{animation:none;opacity:1;transform:none}.sh{color:#bdbdbd;background:none}}
+</style>
+</helmet>
+<div class="t" style="width:1200px;height:760px;position:relative;background:#0e0e0e;border:1px solid #232323;border-radius:10px;overflow:hidden;display:flex;flex-direction:column">
+<div style="height:36px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid #1c1c1c"><span class="d">hex</span><span class="d">~/dataflow-visualiser</span><span class="x">main</span></div>
+<div style="flex:1;min-height:0;display:flex"><div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;gap:14px;padding:16px 28px 0 28px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 24px);mask-image:linear-gradient(to bottom,transparent 0,#000 24px)">
+
+<div class="ln" style="animation-delay:.2s"><span class="d">&gt; </span><span class="f">refactor the graph builder to stream edges instead of buffering. keep the public API.</span></div>
+
+<div class="ln" style="animation-delay:.45s;padding-left:2ch;color:#bdbdbd">Reading the builder first, then replacing the edge buffer with an async iterator.</div>
+
+<div style="padding-left:2ch;display:flex;flex-direction:column">
+<div class="ln hl" style="animation-delay:.7s"><span class="d">read</span>   <span class="f">src/graph/builder.ts</span> <span class="x">212 lines</span></div>
+<div class="ln hl" style="animation-delay:.85s"><span class="d">grep</span>   <span class="f">"buffer"</span> <span class="d">src/</span> <span class="x">4 matches</span></div>
+<div class="ln hl" style="animation-delay:1s"><span class="d">read</span>   <span class="f">src/graph/types.ts</span> <span class="x">58 lines</span></div>
+</div>
+
+<div class="ln" style="animation-delay:1.25s;padding-left:2ch">
+<div style="display:flex;justify-content:space-between;border-bottom:1px solid #1f1f1f;padding-bottom:3px;margin-bottom:4px"><span><span class="d">edit</span>   <span class="f">src/graph/builder.ts</span></span><span><span style="color:#8fbf93">+18</span> <span style="color:#c98b8b">−31</span></span></div>
+<pre class="pre x"> 41   export class GraphBuilder {</pre>
+<pre class="pre" style="background:rgba(201,139,139,.08);color:#c9a0a0;padding:0 8px;margin:0 -8px"> 42 <span style="color:#c98b8b">−</span>   private edges: Edge[] = [];</pre>
+<pre class="pre" style="background:rgba(143,191,147,.09);color:#c4e0c7;padding:0 8px;margin:0 -8px"> 42 <span style="color:#8fbf93">+</span>   async *edges(): AsyncIterable&lt;Edge&gt; {</pre>
+<pre class="pre" style="background:rgba(201,139,139,.08);color:#c9a0a0;padding:0 8px;margin:0 -8px"> 43 <span style="color:#c98b8b">−</span>     for (const f of this.files) this.edges.push(...parse(f));</pre>
+<pre class="pre" style="background:rgba(143,191,147,.09);color:#c4e0c7;padding:0 8px;margin:0 -8px"> 43 <span style="color:#8fbf93">+</span>     for await (const f of this.files) yield* parse(f);</pre>
+<pre class="pre x"> 44   }</pre>
+</div>
+
+<div class="ln hl" style="animation-delay:1.6s;padding-left:2ch"><span class="d">edit</span>   <span class="f">src/graph/index.ts</span> <span style="color:#8fbf93">+4</span> <span style="color:#c98b8b">−2</span></div>
+
+<div class="ln" style="animation-delay:1.85s;padding-left:2ch;display:flex;flex-direction:column">
+<div><span class="b"><span class="sp"></span></span> <span class="d">bash</span>   <span class="f">pnpm test graph</span> <span class="x">· 3.2s</span></div>
+<div class="d" style="padding-left:2ch"><span style="color:#8fbf93">pass</span>  builder.stream.test.ts   <span class="d">6/6</span></div>
+<div class="d" style="padding-left:2ch"><span style="color:#8fbf93">pass</span>  builder.compat.test.ts   <span class="d">11/11</span></div>
+<div class="x" style="padding-left:2ch">...</div>
+</div>
+
+<div class="ln" style="animation-delay:2.1s;padding-left:2ch"><span class="sh">Verifying public API surface</span></div></div>
+<div class="ln" style="animation-delay:2.3s;margin:14px 28px 14px 28px;border:1px solid #2a2a2a;border-radius:6px;padding:10px 14px;background:#0b0b0b;display:flex;align-items:center;"><span class="d">&gt;&nbsp;</span><span class="d">Message hex</span><span class="cur" style="margin-left:1px"></span></div>
+<div style="height:34px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 28px;border-top:1px solid #1c1c1c"><span><span class="f">build</span> <span class="x">·</span> <span class="d">sonnet</span> <span class="x">·</span> <span class="d">38.2k tokens</span></span><span class="d">ctrl+p commands</span></div>
+</div>
+<div style="width:268px;flex:none;border-left:1px solid #1c1c1c;padding:20px 22px;display:flex;flex-direction:column;gap:22px"><div class="ln" style="animation-delay:0.3s"><div class="d hd" style="margin-bottom:6px;font-size:14px">context</div><pre class="pre f">▕██████░░░░░░░░░░▏</pre><div class="d">38%  <span class="x">·</span>  76k / 200k</div></div><div class="rule"></div><div class="ln" style="animation-delay:0.45s"><div class="d hd" style="margin-bottom:6px;font-size:14px">plan</div><div class="x">[x] <span class="d">read builder</span></div><div class="x">[x] <span class="d">stream edges</span></div><div><span class="b">[<span class="pulse">&gt;</span>]</span> <span class="f">verify api</span></div><div class="x">[ ] update docs</div></div><div class="rule"></div><div class="ln" style="animation-delay:0.6s"><div class="d hd" style="margin-bottom:6px;font-size:14px">changed</div><div style="display:flex;justify-content:space-between"><span class="f">builder.ts</span><span><span style="color:#8fbf93">+18</span> <span style="color:#c98b8b">−31</span></span></div><div style="display:flex;justify-content:space-between"><span class="f">index.ts</span><span><span style="color:#8fbf93">+4</span> <span style="color:#c98b8b">−2</span></span></div><div style="display:flex;justify-content:space-between"><span class="d">types.ts</span><span><span class="x">—</span></span></div></div><div class="rule"></div><div class="ln" style="animation-delay:0.75s"><div class="d hd" style="margin-bottom:6px;font-size:14px">agents</div><div style="display:flex;justify-content:space-between"><span class="f">explore</span><span><span class="b"><span class="sp"></span></span></span></div><div class="d" style="margin-bottom:6px">mapping callers</div><div style="display:flex;justify-content:space-between"><span class="f">test</span><span><span style="color:#8fbf93">pass</span></span></div><div class="d" style="margin-bottom:6px">17 of 17</div></div></div>
+</div>
+<div style="position:absolute;left:0;right:0;top:36px;bottom:0;display:flex;justify-content:center;align-items:flex-start;padding-top:72px;background:rgba(10,10,10,.62)"><div class="ln" style="animation-delay:.1s;width:580px;border:1px solid #333;border-radius:8px;background:#0c0c0c;box-shadow:0 24px 60px rgba(0,0,0,.6)">
+<div style="padding:12px 16px;border-bottom:1px solid #1f1f1f"><span class="d">&gt;&nbsp;</span><span class="f">sw</span><span class="cur" style="margin-left:1px"></span></div>
+<div style="padding:8px 6px;display:flex;flex-direction:column;gap:2px">
+<div class="x hd" style="padding:2px 10px;font-size:14px">agents</div>
+<div class="opt sel"><span><span class="b">&gt;</span>&nbsp;<span style="color:#bdbdbd">S<span class="f" style="font-weight:500">w</span>itch agent</span></span><span class="d">tab</span></div>
+<div class="opt"><span>&nbsp;&nbsp;<span style="color:#bdbdbd">S<span class="f" style="font-weight:500">w</span>itch model</span></span><span class="d">ctrl+m</span></div>
+<div class="x hd" style="padding:8px 10px 2px 10px;font-size:14px">session</div>
+<div class="opt"><span>&nbsp;&nbsp;<span style="color:#bdbdbd">S<span class="f" style="font-weight:500">w</span>itch <span class="f" style="font-weight:500">s</span>ession</span></span><span class="d">ctrl+s</span></div>
+</div>
+<div style="padding:8px 16px;border-top:1px solid #1f1f1f;display:flex;justify-content:space-between"><span class="d">3 results</span><span class="d">enter select <span class="x">·</span> esc close</span></div>
+</div></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1200,"height":760}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

@@ -27,10 +27,10 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from harness_core.db import ConcurrencyFenceError
-from harness_core.models import TaskState, TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.server import HarnessAPIApp
+from harness_core.storage.db import ConcurrencyFenceError
+from harness_core.core.models import TaskState, TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.client.server import HarnessAPIApp
 
 
 class TestAutonomousHarnessStages(unittest.TestCase):

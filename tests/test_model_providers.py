@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from harness_core.models import TaskBudget
+from harness_core.core.models import TaskBudget
 from harness_core.providers.base import (
     BudgetExceededError,
     ModelProvider,
@@ -129,7 +129,7 @@ class TestLocalMLXModelProvider(unittest.TestCase):
         provider = LocalMLXModelProvider(model_id="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit")
         caps = provider.get_capabilities()
         self.assertEqual(caps.quantization, "4bit")
-        self.assertEqual(caps.max_context_window, 32768)
+        self.assertEqual(caps.max_context_window, 131072)
         self.assertTrue(caps.supports_system_prompt)
 
     def test_generate_fallback_when_mlx_absent(self) -> None:

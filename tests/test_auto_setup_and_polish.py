@@ -11,14 +11,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from harness_core.config_loader import has_active_credentials, parse_env_file
-from harness_core.onboard import HardwareProfile, run_onboard_wizard
-from harness_core.orchestrator import HarnessOrchestrator
+from harness_core.client.onboard import HardwareProfile, run_onboard_wizard
+from harness_core.core.orchestrator import HarnessOrchestrator
 from harness_core.providers.cloud_provider import (
     CloudModelProvider,
     CloudProviderType,
     ProviderUnavailableError,
 )
-from harness_core.tui import render_hex_splash, render_hex_splash
+from harness_core.client.tui import render_hex_splash, render_hex_splash
 
 
 class TestAutoSetupAndPolish(unittest.TestCase):
@@ -48,9 +48,9 @@ class TestAutoSetupAndPolish(unittest.TestCase):
         self.assertEqual(creds.get("HEX_WEB_SEARCH_PROVIDER"), "duckduckgo")
         self.assertEqual(creds.get("HEX_CLOUD_PROVIDER"), "antigravity")
 
-    @patch("harness_core.onboard.fetch_available_models")
-    @patch("harness_core.onboard.prompt_secret")
-    @patch("harness_core.onboard.select_option")
+    @patch("harness_core.client.onboard.fetch_available_models")
+    @patch("harness_core.client.onboard.prompt_secret")
+    @patch("harness_core.client.onboard.select_option")
     def test_onboard_wizard_interactive_anthropic_and_tavily(
         self,
         mock_select: MagicMock,
@@ -58,12 +58,13 @@ class TestAutoSetupAndPolish(unittest.TestCase):
         mock_fetch: MagicMock,
     ) -> None:
         mock_fetch.return_value = [("claude-3-5-sonnet", "Claude 3.5 Sonnet")]
+        # Step 0: Tier Recommended (idx 0)
         # Step 1: Anthropic (idx 1)
         # Step 1b: Model claude-3-5-sonnet (idx 0)
         # Step 1c: Compressor (idx 1 -> cloud)
         # Step 2: Tavily (idx 1)
         # Step 3: Skip messaging (idx 0)
-        mock_select.side_effect = [1, 0, 1, 1, 0]
+        mock_select.side_effect = [0, 1, 0, 1, 1, 0]
         mock_prompt.side_effect = ["sk-ant-test-key-999", "tvly-test-key-888"]
 
         result = run_onboard_wizard(
@@ -79,9 +80,9 @@ class TestAutoSetupAndPolish(unittest.TestCase):
         self.assertEqual(creds.get("TAVILY_API_KEY"), "tvly-test-key-888")
         self.assertEqual(creds.get("HEX_CLOUD_PROVIDER"), "anthropic")
 
-    @patch("harness_core.onboard.fetch_available_models")
-    @patch("harness_core.onboard.prompt_secret")
-    @patch("harness_core.onboard.select_option")
+    @patch("harness_core.client.onboard.fetch_available_models")
+    @patch("harness_core.client.onboard.prompt_secret")
+    @patch("harness_core.client.onboard.select_option")
     def test_onboard_wizard_flat_provider_cerebras(
         self,
         mock_select: MagicMock,
@@ -89,12 +90,13 @@ class TestAutoSetupAndPolish(unittest.TestCase):
         mock_fetch: MagicMock,
     ) -> None:
         mock_fetch.return_value = [("llama3.1-70b", "Llama 3.1 70B (Cerebras Ultra-Fast)")]
+        # Step 0: Tier All 26 providers (idx 4)
         # Step 1: Cerebras (idx 8 in flat provider list)
         # Step 1b: Model selection (idx 0)
         # Step 1c: Context compressor (idx 1 -> cloud)
         # Step 2: Web search (idx 0 -> duckduckgo)
         # Step 3: Messaging (idx 0 -> skip)
-        mock_select.side_effect = [8, 0, 1, 0, 0]
+        mock_select.side_effect = [4, 8, 0, 1, 0, 0]
         mock_prompt.side_effect = ["csk-cerebras-test-key"]
 
         result = run_onboard_wizard(
@@ -133,17 +135,18 @@ class TestAutoSetupAndPolish(unittest.TestCase):
         self.assertNotIn("v1.3.0", splash)
 
     def test_cli_auto_intercept_unconfigured(self) -> None:
-        from harness_core.cli import main
+        from harness_core.client.cli import main
 
         with patch.object(sys, "argv", ["hex", "chat"]):
             with patch("sys.stdin.isatty", return_value=True):
                 with patch("harness_core.config_loader.has_active_credentials", return_value=False):
-                    with patch("harness_core.onboard.run_onboard_wizard") as mock_wizard:
-                        with patch("harness_core.tui.HexConsole.start", return_value=0):
-                            with patch("sys.stdout", new_callable=io.StringIO):
-                                ret = main(["chat", "--data-dir", str(self.cfg_dir)])
-                                self.assertEqual(ret, 0)
-                                mock_wizard.assert_called_once()
+                    with patch("harness_core.client.ui_selector.select_option", return_value=1):
+                        with patch("harness_core.client.onboard.run_onboard_wizard") as mock_wizard:
+                            with patch("harness_core.client.tui.HexConsole.start", return_value=0):
+                                with patch("sys.stdout", new_callable=io.StringIO):
+                                    ret = main(["chat", "--data-dir", str(self.cfg_dir)])
+                                    self.assertEqual(ret, 0)
+                                    mock_wizard.assert_called_once()
 
     def test_cloud_provider_missing_key_raises_unavailable(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

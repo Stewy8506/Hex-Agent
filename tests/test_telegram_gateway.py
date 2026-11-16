@@ -26,8 +26,8 @@ from harness_core.gateways.telegram_bot import (
     TelegramBotGateway,
     TelegramConfig,
 )
-from harness_core.models import PlanNode, TaskState, TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
+from harness_core.core.models import PlanNode, TaskState, TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
 
 
 class TestTelegramConfigAndWhitelisting(unittest.TestCase):

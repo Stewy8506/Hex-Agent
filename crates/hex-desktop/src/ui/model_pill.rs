@@ -1,0 +1,193 @@
+//! Model selector pill button and send button controls for HEX Desktop.
+//!
+//! Mirrors Hermes Desktop composer model pill (`app/chat/composer/model-pill.tsx`):
+//! - Compact pill button embedded in composer bottom bar
+//! - Provider dot color: Anthropic (Amber), OpenAI (Emerald), Google (Blue), Local/Other (Electric Blue)
+//! - Model name label and chevron down (`▾`)
+//! - Click toggle for model selection modal
+//! - Dedicated Send/Stop action button
+
+use gpui::*;
+
+use crate::theme::HermesTheme;
+
+/// Provider brand dot color mapping.
+pub fn provider_dot_color(provider_name: &str, theme: &HermesTheme) -> Rgba {
+    match provider_name.to_lowercase().as_str() {
+        "anthropic" | "claude" => rgb(0xd97706), // Amber-600
+        "openai" | "gpt" => rgb(0x10b981),      // Emerald-500
+        "google" | "gemini" => rgb(0x3b82f6),   // Blue-500
+        _ => theme.accent_blue(),               // Electric Blue #7aa7ff
+    }
+}
+
+/// Model selector pill embedded in the composer toolbar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelSelectorPill {
+    pub provider_name: String,
+    pub model_name: String,
+    pub is_picker_open: bool,
+}
+
+impl Default for ModelSelectorPill {
+    fn default() -> Self {
+        Self::new("Anthropic", "Claude 3.7 Sonnet")
+    }
+}
+
+impl ModelSelectorPill {
+    pub fn new(provider_name: impl Into<String>, model_name: impl Into<String>) -> Self {
+        Self {
+            provider_name: provider_name.into(),
+            model_name: model_name.into(),
+            is_picker_open: false,
+        }
+    }
+
+    pub fn set_model(&mut self, provider_name: impl Into<String>, model_name: impl Into<String>) {
+        self.provider_name = provider_name.into();
+        self.model_name = model_name.into();
+    }
+
+    pub fn toggle_picker(&mut self) {
+        self.is_picker_open = !self.is_picker_open;
+    }
+
+    pub fn dot_color(&self, theme: &HermesTheme) -> Rgba {
+        provider_dot_color(&self.provider_name, theme)
+    }
+
+    pub fn display_label(&self) -> &str {
+        &self.model_name
+    }
+
+    /// Renders the compact model pill button.
+    pub fn render(&self, theme: &HermesTheme) -> Div {
+        let dot_color = self.dot_color(theme);
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .h(px(28.0))
+            .px_2()
+            .rounded_md()
+            .bg(theme.card_bg())
+            .border_1()
+            .border_color(theme.border_subtle())
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.card_hover()))
+            .child(
+                // Provider Dot
+                div()
+                    .w(px(6.0))
+                    .h(px(6.0))
+                    .rounded_full()
+                    .bg(dot_color),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(theme.text_muted())
+                    .child(self.model_name.clone()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.text_dim())
+                    .child("▾"),
+            )
+    }
+}
+
+/// Send / Stop action button for the composer toolbar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendButton {
+    pub is_streaming: bool,
+    pub can_send: bool,
+}
+
+impl SendButton {
+    pub fn new(is_streaming: bool, can_send: bool) -> Self {
+        Self {
+            is_streaming,
+            can_send,
+        }
+    }
+
+    pub fn icon(&self) -> &'static str {
+        if self.is_streaming {
+            "⏹"
+        } else {
+            "↑"
+        }
+    }
+
+    /// Renders the circular send/stop button.
+    pub fn render(&self, theme: &HermesTheme) -> Div {
+        let bg_color = if self.is_streaming {
+            theme.rose_fg()
+        } else if self.can_send {
+            theme.accent_blue()
+        } else {
+            theme.border_subtle()
+        };
+
+        let text_color = if self.can_send || self.is_streaming {
+            rgb(0x09090b) // Dark glyph on active fill
+        } else {
+            theme.text_dim()
+        };
+
+        div()
+            .w(px(28.0))
+            .h(px(28.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(bg_color)
+            .cursor_pointer()
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(text_color)
+                    .child(self.icon()),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    #[test]
+    fn test_model_pill_dot_colors() {
+        let theme = HermesTheme::default();
+
+        let anthropic_dot = provider_dot_color("Anthropic", &theme);
+        assert_eq!((anthropic_dot.r * 255.0).round() as u8, 0xd9);
+
+        let openai_dot = provider_dot_color("OpenAI", &theme);
+        assert_eq!((openai_dot.r * 255.0).round() as u8, 0x10);
+
+        let google_dot = provider_dot_color("Google", &theme);
+        assert_eq!((google_dot.r * 255.0).round() as u8, 0x3b);
+    }
+
+    #[test]
+    fn test_send_button_icons_and_states() {
+        let disabled_send = SendButton::new(false, false);
+        assert_eq!(disabled_send.icon(), "↑");
+
+        let active_send = SendButton::new(false, true);
+        assert_eq!(active_send.icon(), "↑");
+
+        let stop_btn = SendButton::new(true, false);
+        assert_eq!(stop_btn.icon(), "⏹");
+    }
+}

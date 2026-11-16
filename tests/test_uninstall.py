@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from harness_core.cli import main
-from harness_core.daemon import DaemonConfig, DaemonInstaller
+from harness_core.client.cli import main
+from harness_core.runtime.daemon import DaemonConfig, DaemonInstaller
 
 
 class TestUninstall(unittest.TestCase):

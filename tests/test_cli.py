@@ -7,7 +7,7 @@ import json
 import unittest
 from contextlib import redirect_stdout
 
-from harness_core.cli import main
+from harness_core.client.cli import main
 
 
 class TestHexEvalCLI(unittest.TestCase):

@@ -22,7 +22,7 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from harness_core.db import (
+from harness_core.storage.db import (
     ConcurrencyFenceError,
     InvalidTransitionError,
     LedgerStore,
@@ -32,7 +32,7 @@ from harness_core.db import (
     normalize_query,
     sha256_hex,
 )
-from harness_core.models import TaskBudget, TaskState, TaskSubmitRequest
+from harness_core.core.models import TaskBudget, TaskState, TaskSubmitRequest
 
 
 class TestDualDriverQueryNormalization(unittest.TestCase):

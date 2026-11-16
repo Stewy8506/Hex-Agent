@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from harness_core.models import RiskClass
+from harness_core.core.models import RiskClass
 
 logger = logging.getLogger(__name__)
 

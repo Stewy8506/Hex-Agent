@@ -26,9 +26,9 @@ import time
 import unittest
 from pathlib import Path
 
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.graphify import ActiveGraphifyAdapter
-from harness_core.router import GovernedMemoryService
+from harness_core.core.router import GovernedMemoryService
 
 
 class TestGraphifyEfficiencySuite(unittest.TestCase):

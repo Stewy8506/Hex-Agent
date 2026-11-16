@@ -15,12 +15,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.memory import (
+from harness_core.cognition.memory import (
     AMEMController,
     CuratedMemoryStore,
     MemoryLifecycleManager,
 )
-from harness_core.orchestrator import (
+from harness_core.core.orchestrator import (
     HarnessOrchestrator,
     process_pending_reflections,
     run_lifecycle_maintenance,
@@ -177,7 +177,7 @@ class TestDurableLifecycle(unittest.TestCase):
             turns=[],
             compaction_result=None,
         )
-        with patch("harness_core.react_loop.ReActLoop.run", return_value=mock_result):
+        with patch("harness_core.core.react_loop.ReActLoop.run", return_value=mock_result):
             orch.run_agent_loop(
                 goal="Verify database migration scripts",
                 workspace_root=workspace,

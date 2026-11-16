@@ -170,7 +170,7 @@ fn render_suggestions(frame: &mut Frame, app: &App, composer: Rect, skin: Skin) 
                         .bg(bg)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(cmd.description, Style::default().fg(fg).bg(bg)),
+                Span::styled(cmd.description.as_str(), Style::default().fg(fg).bg(bg)),
             ]))
             .style(Style::default().bg(skin.surface))
         })

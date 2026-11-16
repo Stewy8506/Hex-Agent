@@ -464,10 +464,13 @@ class LocalModelProvider(ModelProvider):
     def get_capabilities(self) -> ProviderCapabilities:
         """Return provider architectural capabilities."""
         quant = "4bit" if "4bit" in self.model_id.lower() else "8bit" if "8bit" in self.model_id.lower() else None
+        from harness_core.models.model_metadata import get_model_context_length
+
+        max_ctx = get_model_context_length(self.model_id, provider="local", base_url="")
         return ProviderCapabilities(
             supports_system_prompt=True,
             supports_streaming=False,
-            max_context_window=32768,
+            max_context_window=max_ctx,
             quantization=quant,
             local_unified_memory=self.is_apple_silicon(),
         )

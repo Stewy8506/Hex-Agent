@@ -21,11 +21,11 @@ import sqlite3
 import threading
 from typing import Any, Optional
 
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.graphify import ActiveGraphifyAdapter
-from harness_core.search import sanitize_fts5_query
-from harness_core.skillspector import parse_skill_frontmatter
-from harness_core.soul import get_hex_home
+from harness_core.capabilities.search import sanitize_fts5_query
+from harness_core.cognition.skillspector import parse_skill_frontmatter
+from harness_core.cognition.soul import get_hex_home
 
 logger = logging.getLogger(__name__)
 

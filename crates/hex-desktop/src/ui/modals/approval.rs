@@ -1,0 +1,595 @@
+//! Tool approval modal overlay with 3-way radio options and 15m lease auto-approval toggle.
+//!
+//! Conforms to Hermes Desktop approval cards and Phase 37 temporal lease architecture:
+//! - Warning/shield header with tool name badge and risk classification tag (R3/R4)
+//! - Command / script preview box
+//! - 3-Way Radio: [1] Allow once (y), [2] Allow all in session (a), [3] Deny (n)
+//! - 15-minute lease toggle ("Grant 15m auto-approval lease for matching commands")
+//! - Primary Approve and Danger Deny actions
+
+use gpui::*;
+use serde::{Deserialize, Serialize};
+
+use crate::theme::HermesTheme;
+
+/// Operator decision choice for privileged tool approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolApprovalChoice {
+    /// Allow this single execution only (hotkey `y` / `1`).
+    Once,
+    /// Allow all invocations of this tool for the remainder of the active session (hotkey `a` / `2`).
+    Session,
+    /// Deny tool invocation and halt execution (hotkey `n` / `3`).
+    Deny,
+}
+
+impl ToolApprovalChoice {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ToolApprovalChoice::Once => "Allow once",
+            ToolApprovalChoice::Session => "Allow all in session",
+            ToolApprovalChoice::Deny => "Deny",
+        }
+    }
+
+    pub fn hotkey(&self) -> &'static str {
+        match self {
+            ToolApprovalChoice::Once => "y",
+            ToolApprovalChoice::Session => "a",
+            ToolApprovalChoice::Deny => "n",
+        }
+    }
+
+    pub fn key_number(&self) -> &'static str {
+        match self {
+            ToolApprovalChoice::Once => "1",
+            ToolApprovalChoice::Session => "2",
+            ToolApprovalChoice::Deny => "3",
+        }
+    }
+}
+
+/// Result returned when an operator submits a tool approval decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolApprovalResult {
+    pub request_id: String,
+    pub choice: ToolApprovalChoice,
+    pub lease_15m: bool,
+    pub lease_duration_seconds: Option<u64>,
+}
+
+impl ToolApprovalResult {
+    /// Returns the lease duration in seconds if lease was requested.
+    pub fn lease_seconds(&self) -> Option<u64> {
+        if self.lease_15m {
+            Some(self.lease_duration_seconds.unwrap_or(900))
+        } else {
+            None
+        }
+    }
+}
+
+/// Tool Approval modal state and rendering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolApprovalModal {
+    pub request_id: String,
+    pub tool_name: String,
+    pub risk_class: String,
+    pub command: String,
+    pub description: Option<String>,
+    pub choice: ToolApprovalChoice,
+    pub lease_15m: bool,
+    pub is_submitting: bool,
+}
+
+impl ToolApprovalModal {
+    /// Construct a new tool approval modal.
+    pub fn new(
+        request_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        command: impl Into<String>,
+        risk_class: impl Into<String>,
+    ) -> Self {
+        Self {
+            request_id: request_id.into(),
+            tool_name: tool_name.into(),
+            risk_class: risk_class.into(),
+            command: command.into(),
+            description: None,
+            choice: ToolApprovalChoice::Once,
+            lease_15m: false,
+            is_submitting: false,
+        }
+    }
+
+    /// Attach an optional human-readable description of the tool operation.
+    pub fn with_description(mut self, desc: impl Into<String>) -> Self {
+        self.description = Some(desc.into());
+        self
+    }
+
+    /// Select a decision radio choice.
+    pub fn set_choice(&mut self, choice: ToolApprovalChoice) {
+        self.choice = choice;
+    }
+
+    /// Toggle the 15-minute auto-approval lease checkbox.
+    pub fn toggle_lease(&mut self) {
+        self.lease_15m = !self.lease_15m;
+    }
+
+    /// Explicitly set the 15-minute lease toggle.
+    pub fn set_lease(&mut self, enabled: bool) {
+        self.lease_15m = enabled;
+    }
+
+    /// Handle keyboard shortcut interaction.
+    pub fn handle_key(&mut self, key: &str) -> Option<ToolApprovalResult> {
+        match key.to_lowercase().as_str() {
+            "y" | "1" => {
+                self.choice = ToolApprovalChoice::Once;
+                None
+            }
+            "a" | "2" => {
+                self.choice = ToolApprovalChoice::Session;
+                None
+            }
+            "n" | "3" => {
+                self.choice = ToolApprovalChoice::Deny;
+                None
+            }
+            "l" => {
+                self.toggle_lease();
+                None
+            }
+            "enter" => Some(self.confirm()),
+            "escape" => Some(ToolApprovalResult {
+                request_id: self.request_id.clone(),
+                choice: ToolApprovalChoice::Deny,
+                lease_15m: false,
+                lease_duration_seconds: None,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Confirm and produce the final approval decision result.
+    pub fn confirm(&self) -> ToolApprovalResult {
+        ToolApprovalResult {
+            request_id: self.request_id.clone(),
+            choice: self.choice,
+            lease_15m: self.lease_15m && self.choice != ToolApprovalChoice::Deny,
+            lease_duration_seconds: if self.lease_15m && self.choice != ToolApprovalChoice::Deny {
+                Some(900)
+            } else {
+                None
+            },
+        }
+    }
+
+    fn render_header(&self, theme: &HermesTheme) -> Div {
+        let is_high_risk = self.risk_class.contains("R4") || self.risk_class.to_uppercase().contains("CRITICAL");
+        let badge_bg = if is_high_risk {
+            theme.rose_bg()
+        } else {
+            rgba(0xf59e0b26)
+        };
+        let badge_fg = if is_high_risk {
+            theme.rose_fg()
+        } else {
+            theme.warning_amber()
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_size(px(16.0)).child("🛡️"))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text_primary())
+                            .child("Privileged Tool Approval"),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_0p5()
+                            .rounded(px(4.0))
+                            .bg(theme.card_hover())
+                            .border_1()
+                            .border_color(theme.border_subtle())
+                            .text_size(px(11.0))
+                            .font_family(theme.typography.font_mono[0].clone())
+                            .text_color(theme.accent_blue())
+                            .child(self.tool_name.clone()),
+                    )
+                    .child(
+                        div()
+                            .px_2()
+                            .py_0p5()
+                            .rounded(px(4.0))
+                            .bg(badge_bg)
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(badge_fg)
+                            .child(self.risk_class.clone()),
+                    ),
+            )
+    }
+
+    fn render_command_box(&self, theme: &HermesTheme) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(theme.text_dim())
+                    .child("COMMAND / ARGUMENTS:"),
+            )
+            .child(
+                div()
+                    .max_h(px(160.0))
+                    .overflow_y_hidden()
+                    .p_3()
+                    .rounded(px(6.0))
+                    .bg(theme.canvas_bg())
+                    .border_1()
+                    .border_color(theme.border_subtle())
+                    .font_family(theme.typography.font_mono[0].clone())
+                    .text_size(px(11.5))
+                    .text_color(theme.text_primary())
+                    .child(self.command.clone()),
+            )
+    }
+
+    fn render_decision_box(&self, theme: &HermesTheme) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded(px(6.0))
+            .bg(theme.card_hover())
+            .border_1()
+            .border_color(theme.border_subtle())
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_dim())
+                    .child("DECISION:"),
+            )
+            .child(self.render_radio_option(ToolApprovalChoice::Once, theme))
+            .child(self.render_radio_option(ToolApprovalChoice::Session, theme))
+            .child(self.render_radio_option(ToolApprovalChoice::Deny, theme))
+    }
+
+    fn render_lease_box(&self, theme: &HermesTheme) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_3()
+            .py_2()
+            .rounded(px(6.0))
+            .bg(if self.lease_15m {
+                rgba(0x7aa7ff1a)
+            } else {
+                theme.card_hover()
+            })
+            .border_1()
+            .border_color(if self.lease_15m {
+                rgba(0x7aa7ff59)
+            } else {
+                theme.border_subtle()
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(if self.lease_15m {
+                                theme.accent_blue()
+                            } else {
+                                theme.border_structural()
+                            })
+                            .bg(if self.lease_15m {
+                                theme.accent_blue()
+                            } else {
+                                theme.canvas_bg()
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(10.0))
+                            .text_color(if self.lease_15m {
+                                theme.canvas_bg()
+                            } else {
+                                theme.text_dim()
+                            })
+                            .child(if self.lease_15m { "✓" } else { "" }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text_primary())
+                                    .child("Grant 15m auto-approval lease for matching commands"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(theme.text_dim())
+                                    .child("Subsequent matching commands will execute with 0ms delay (hotkey: l)"),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .px_1p5()
+                    .py_0p5()
+                    .rounded(px(3.0))
+                    .bg(theme.border_subtle())
+                    .text_size(px(10.0))
+                    .font_family(theme.typography.font_mono[0].clone())
+                    .text_color(theme.text_dim())
+                    .child("15m"),
+            )
+    }
+
+    fn render_action_buttons(&self, theme: &HermesTheme) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .pt_2()
+            .child(
+                // Deny Button
+                div()
+                    .px_3()
+                    .py_1p5()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(rgba(0xc98b8b66))
+                    .bg(theme.rose_bg())
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(theme.rose_fg())
+                            .child("Deny"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(theme.rose_fg())
+                            .child("(Esc)"),
+                    ),
+            )
+            .child(
+                // Approve Button
+                div()
+                    .px_4()
+                    .py_1p5()
+                    .rounded(px(6.0))
+                    .bg(theme.accent_blue())
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.canvas_bg())
+                            .child(if self.choice == ToolApprovalChoice::Deny {
+                                "Confirm Deny"
+                            } else {
+                                "Approve"
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(theme.canvas_bg())
+                            .child("↵"),
+                    ),
+            )
+    }
+
+    /// Render the tool approval modal card.
+    pub fn render(&self, theme: &HermesTheme) -> Div {
+        let mut root = div()
+            .w(px(520.0))
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(self.render_header(theme));
+
+        if let Some(ref desc) = self.description {
+            root = root.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme.text_muted())
+                    .child(desc.clone()),
+            );
+        }
+
+        root.child(self.render_command_box(theme))
+            .child(self.render_decision_box(theme))
+            .child(self.render_lease_box(theme))
+            .child(self.render_action_buttons(theme))
+    }
+
+    fn render_radio_option(&self, option: ToolApprovalChoice, theme: &HermesTheme) -> Div {
+        let is_selected = self.choice == option;
+        let active_fg = if option == ToolApprovalChoice::Deny {
+            theme.rose_fg()
+        } else {
+            theme.accent_blue()
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .bg(if is_selected {
+                theme.canvas_bg()
+            } else {
+                gpui::rgba(0x00000000)
+            })
+            .cursor_pointer()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(14.0))
+                            .h(px(14.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(if is_selected {
+                                active_fg
+                            } else {
+                                theme.border_structural()
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w(px(6.0))
+                                    .h(px(6.0))
+                                    .rounded_full()
+                                    .bg(if is_selected {
+                                        active_fg
+                                    } else {
+                                        gpui::rgba(0x00000000)
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(if is_selected {
+                                theme.text_primary()
+                            } else {
+                                theme.text_muted()
+                            })
+                            .child(format!("[{}] {}", option.key_number(), option.label())),
+                    ),
+            )
+            .child(
+                div()
+                    .px_1p5()
+                    .rounded(px(3.0))
+                    .bg(theme.border_subtle())
+                    .font_family(theme.typography.font_mono[0].clone())
+                    .text_size(px(10.0))
+                    .text_color(theme.text_dim())
+                    .child(option.hotkey()),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    #[test]
+    fn test_tool_approval_modal_initialization() {
+        let modal = ToolApprovalModal::new(
+            "req_123",
+            "execute_code",
+            "rm -rf /tmp/test",
+            "R4 - Critical",
+        );
+        assert_eq!(modal.request_id, "req_123");
+        assert_eq!(modal.tool_name, "execute_code");
+        assert_eq!(modal.choice, ToolApprovalChoice::Once);
+        assert!(!modal.lease_15m);
+
+        let res = modal.confirm();
+        assert_eq!(res.choice, ToolApprovalChoice::Once);
+        assert!(!res.lease_15m);
+        assert_eq!(res.lease_seconds(), None);
+    }
+
+    #[test]
+    fn test_tool_approval_modal_lease_toggle_and_shortcuts() {
+        let mut modal = ToolApprovalModal::new(
+            "req_456",
+            "bash",
+            "cargo test --workspace",
+            "R3",
+        );
+
+        // Press 'a' to select Session
+        assert!(modal.handle_key("a").is_none());
+        assert_eq!(modal.choice, ToolApprovalChoice::Session);
+
+        // Press 'l' to toggle lease
+        assert!(modal.handle_key("l").is_none());
+        assert!(modal.lease_15m);
+
+        // Press Enter to confirm
+        let res = modal.handle_key("enter").expect("expected confirmation");
+        assert_eq!(res.choice, ToolApprovalChoice::Session);
+        assert!(res.lease_15m);
+        assert_eq!(res.lease_seconds(), Some(900));
+    }
+
+    #[test]
+    fn test_tool_approval_deny_clears_lease() {
+        let mut modal = ToolApprovalModal::new(
+            "req_789",
+            "write_file",
+            "writing sensitive file",
+            "R3",
+        );
+        modal.set_lease(true);
+        modal.set_choice(ToolApprovalChoice::Deny);
+
+        let res = modal.confirm();
+        assert_eq!(res.choice, ToolApprovalChoice::Deny);
+        // Deny should not grant temporal lease
+        assert!(!res.lease_15m);
+        assert_eq!(res.lease_seconds(), None);
+    }
+}

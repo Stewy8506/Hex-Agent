@@ -29,11 +29,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
-from .models import TaskSubmitRequest
+from harness_core.core.models import TaskSubmitRequest
 from .vendor_paths import get_harness2_dir
 
 if TYPE_CHECKING:
-    from .orchestrator import HarnessOrchestrator
+    from harness_core.core.orchestrator import HarnessOrchestrator
 
 # Ensure cloned vendor/harness2 is on sys.path
 VENDOR_HARNESS2 = get_harness2_dir()

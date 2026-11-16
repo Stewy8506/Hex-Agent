@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .cow import IGNORE_DIRS
+from harness_core.storage.cow import IGNORE_DIRS
 from .vendor_paths import get_graphify_dir
 
 # Wire directly to vendor/graphify upstream engine

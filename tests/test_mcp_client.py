@@ -37,7 +37,7 @@ from harness_core.mcp_client import (
     StdioMCPTransport,
     classify_mcp_tool_risk,
 )
-from harness_core.models import RiskClass
+from harness_core.core.models import RiskClass
 
 
 MOCK_SERVER_CODE = """

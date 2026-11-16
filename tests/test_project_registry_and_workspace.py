@@ -10,12 +10,12 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main
-from harness_core.onboard import init_project
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.project_registry import ProjectRecord, ProjectRegistry, compute_project_id
+from harness_core.client.cli import main
+from harness_core.client.onboard import init_project
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.storage.project_registry import ProjectRecord, ProjectRegistry, compute_project_id
 from harness_core.providers.cloud_provider import CloudModelProvider, CloudProviderType, ProviderUnavailableError
-from harness_core.tui import HexConsole
+from harness_core.client.tui import HexConsole
 
 
 class TestProjectRegistryPersistence(unittest.TestCase):
@@ -256,8 +256,8 @@ class TestDailyProjectSwitcher(unittest.TestCase):
 
     @patch("harness_core.config_loader.has_active_credentials", return_value=True)
     @patch("sys.stdin.isatty", return_value=True)
-    @patch("harness_core.ui_selector.select_option", return_value=0)
-    @patch("harness_core.tui.HexConsole.start", return_value=0)
+    @patch("harness_core.client.ui_selector.select_option", return_value=0)
+    @patch("harness_core.client.tui.HexConsole.start", return_value=0)
     def test_daily_switcher_prompts_outside_project(self, mock_tui_start, mock_select, mock_isatty, mock_has_creds) -> None:
         p = self.tmp_dir / "workspace-1"
         p.mkdir()
@@ -282,8 +282,8 @@ class TestDailyProjectSwitcher(unittest.TestCase):
             os.chdir(orig_cwd)
 
     @patch("sys.stdin.isatty", return_value=True)
-    @patch("harness_core.ui_selector.select_option")
-    @patch("harness_core.tui.HexConsole.start", return_value=0)
+    @patch("harness_core.client.ui_selector.select_option")
+    @patch("harness_core.client.tui.HexConsole.start", return_value=0)
     def test_daily_switcher_bypassed_when_inside_project(self, mock_tui_start, mock_select, mock_isatty) -> None:
         proj_dir = self.tmp_dir / "enclosing-repo"
         proj_dir.mkdir()

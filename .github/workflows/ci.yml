@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - name: Check out repository
@@ -34,23 +34,38 @@ jobs:
       - name: Build native Rust TUI
         run: cargo build -p hex-tui
 
+      - name: Test Rust protocol and TUI crates
+        run: cargo test -p hex-protocol -p hex-tui
+
+      # GPUI needs the macOS toolchain/Metal; the desktop lane is macOS-only
+      # until Linux system-dependency support is verified.
+      - name: Build native Rust desktop (macOS)
+        if: runner.os == 'macOS'
+        run: cargo build -p hex-desktop
+
+      - name: Test Rust desktop crate (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test -p hex-desktop
+
       - name: Configure Git Committer
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global --add safe.directory "*"
 
+      # pytest collects both pytest-style functions and unittest.TestCase
+      # classes; unittest discovery silently skipped the pytest-style modules.
       - name: Run test suite
         env:
           HEX_TESTING: "1"
         run: |
           set -o pipefail
-          python -m unittest discover -v tests 2>&1 | tee test_run.log || {
+          python -m pytest tests -v 2>&1 | tee test_run.log || {
             echo "### ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             tail -n 120 test_run.log >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            fail_msg=$(grep -E "(FAIL|ERROR):" test_run.log -A 20 | head -n 35 | tr '\n' ' ')
+            fail_msg=$(grep -E "^FAILED" test_run.log | head -n 35 | tr '\n' ' ')
             echo "::error title=Test Failure::${fail_msg:-Test suite failed. Check step summary.}"
             exit 1
           }

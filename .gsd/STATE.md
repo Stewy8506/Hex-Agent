@@ -1,10 +1,10 @@
 # Current Project State: HEX Autonomous AI Workbench
 
 **Date:** 2026-11-16  
-**Current Milestone:** M13 (Autonomous Adaptive Setup & Reasoning Effort Parity) — COMPLETE & VERIFIED  
-**Status:** Phase 34 verified with 100% parity across all 16 criteria against Hermes Agent  
-**Active Phase:** None (Milestone M13 Achieved)  
-**Completed Milestones:** M1 through M13 Complete & Verified (All 50 Phase 34 tests passing, 71 onboarding/resilience tests passing)  
+**Current Milestone:** M15 (Resilience, Restructuring & Conversational Workflow Supremacy) — IN PROGRESS  
+**Status:** Phase 38 Plan 03 Complete & Verified on branch `experimental-features` (Modals, ACP Socket Bridge & macOS Shortcuts)  
+**Active Phase:** Phase 38: Native macOS GPUI Desktop Cockpit (Plans 01, 02, 03 Complete — Ready for Phase Verification)  
+**Completed Milestones:** M1 through M14 Complete & Verified; Phase 36 & Phase 37 Complete; Phase 38 Implementation Complete  
 
 ---
 
@@ -416,11 +416,138 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
     - **F-08**: Exact `MAX_SOUL_CHARS` budget reservation and explicit trust-tier provenance (`SoulProvenance.WORKSPACE_USER`).
     - Verified by independent `gsd-verifier` (`.gsd/phases/33-production-cognition-hardening/VERIFICATION.md`): 23/23 audit tests passed, 111/111 cognition suite tests passed, all 5 core strengths confirmed intact.
 
+- **Milestone M14 (Pixel-Perfect Functional TUI Redesign) [COMPLETE & VERIFIED]:**
+  - **Phase 35 (Pixel-Perfect Functional TUI Redesign) [COMPLETE & VERIFIED]:**
+    - **Plan 35-01 (Wave 1: Design Tokens, Animation Engine & ASCII Wordmarks)**: Exact Truecolor hex palette `#0e0e0e`, `#0c0c0c`, `#151515`, `#8fbf93`, `#c98b8b`, `#7aa7ff` with 256-color fallback. 10-step Braille spinner (`\u{280B}`..`\u{280F}`), 2.2s sine pulsing marker `[>]`, 550ms cursor blink, and thinking shimmer sweep. 3-row `StartWordmark` and 2-row `SessionWordmark`.
+    - **Plan 35-02 (Wave 2: Screen 0 Start & Screen 1 Session with Right Rail & Tinted Diff)**: Screen 0 with workspace telemetry, angled prompt box, shortcut badges, and interactive resume sessions. Screen 1 with top bar, 75/25 split, live streaming transcript, tool summary, bash runner, message composer, and 18-char context gauge (`▕██████░░░░░░░░░░▏`). Inline sage (`#171f18`) and rose (`#1c1616`) tinted diff widget.
+    - **Plan 35-03 (Wave 3: Modal Overlays, Diagnostics & Full Workspace Parity)**:
+      - Screen 2: 560px centered permission dialog with dynamic tool and command box, impact details, and 3-way radio selection.
+      - Screen 3: 580px top-anchored command palette with real-time query, bolded match characters, and categorized results.
+      - Screen 4: Diagnostic error card with bash exit code, test failure badge, assertion diffs (`expected` vs `received`), and collapsible stack trace.
+      - Screen 5: 660px x 520px subagent live inspection modal with prompt brief expansion (`e`), tool activity stream with soft fade, live Braille spinner, and stopwatch.
+      - Dynamic dialogue rendering supporting live chat messages and tool calls. Slash command suggestion popups across Start and Session composers.
+    - **Plan 35-04 (Wave 4 Gap Closure: Purging Hardcoded Data & Continuous Animation Clock)**:
+      - Replaced frame-local `AnimationState::new()` with `AnimationState::with_start(app.session_started)` in `crates/hex-tui/src/ui/mod.rs:29`, ensuring monotonic clock progression for spinners, cursors, pulses, and thinking shimmers across all screens.
+      - Completely purged all hardcoded TypeScript dummy data (`GraphBuilder`, `dataflow-visualiser`, `pnpm test`, `rm -rf dist`) across production code and test suites.
+      - Wired live telemetry in `crates/hex-tui/src/app.rs`: real workspace paths (`format_workspace_display`), porcelain git modifications (`detect_git_status_counts`), indexed files via `git ls-files`, working tree changes via `git diff --numstat`, active GSD plan tasks via `.gsd/phases/` parsing, and real ledger session tasks from `.hex/data/ledger.db`.
+      - Integrated Screen 4 (`DiagnosticFailure`) into `session.rs` so command and test failures render inline in the dialogue stream.
+      - Re-architected test suites to inject dynamic state rather than asserting static mock strings.
+      - **Hermes-Parity Live Context Window Resolution & Zero-Hardcoded Context**:
+        - Multi-tier dynamic resolution in `model_metadata.py` with `models.dev` cache (24h TTL, ETag), longest-prefix matching for Gemma 4 (256k), Gemini (1M/2M), Claude (200k/1M), GPT-4o (128k), DeepSeek (1M), Qwen (131k/1M), LLaMA (131k), and 128k fallback.
+        - Automatic launcher resolution in `tui_launcher.py` passing `--model` and `--max-tokens` to `hex-tui`.
+        - Ratatui CLI `--max-tokens` flag and alias `--context-window`, dynamic fallback resolution, `app.set_max_tokens()` for live ACP turns, and adaptive formatters (`256k`, `1.0M`, `2.1M`, `200k`).
+      - Verified by independent `gsd-verifier` subagent (`.gsd/phases/35-tui-redesign-mockup-parity/VERIFICATION.md`): 8/8 must-haves PASS, all 73 workspace tests pass cleanly.
+
+43. **Phase 36 Plan 36-01: Modular Package Restructuring & Backward Compatibility Layer Complete:**
+    - Decomposed flat `src/harness_core/` into 7 domain subpackages:
+      - `core/`: orchestrator, react_loop, router, models, subagent, reasoning_effort
+      - `storage/`: db, cow, sandbox, backup, gc, project_registry
+      - `cognition/`: soul, memory, reflection, skillspector, skill_synthesizer, prompt_builder, context_compressor
+      - `runtime/`: process_registry, code_kernel, daemon, worker_daemon, scheduler
+      - `client/`: acp, tui, tui_launcher, ui_selector, dashboard, asgi, server, cli, onboard, auto_setup, doctor
+      - `capabilities/`: browser, vision, voice, search, web_search, git_autopilot, github_action, proof, recipes, webhooks
+      - `models/`: model_metadata, with core domain models re-exports
+    - Eliminated circular imports using PEP 562 lazy loading in subpackage `__init__.py` files.
+    - Maintained 100% backward-compatibility across all 46 relocated modules using top-level forwarding stubs with `sys.modules[__name__] = _impl` transparent aliasing for `@patch` and identity stability.
+    - Hardened relative `Path(__file__)` resolution for migrations, schemas, built-in skills, and project roots across nested domain packages.
+    - Verified full regression test passes: 972/972 Python tests passed (1 skipped) and 68/68 Rust tests passed.
+
+44. **Phase 36 Plan 36-02: Multi-Credential Pool & Transient Endpoint Blackholing Complete:**
+    - Implemented `CredentialPool` in `src/harness_core/models/credential_pool.py` with multi-key pool management per provider and `CredentialEntry` dataclass.
+    - Supported flexible key ingestion from environment variables (`*_API_KEY`, `*_API_KEY_<N>`, `*_API_KEYS`), config dictionaries, or direct API registration.
+    - Built selection strategies: `STRATEGY_ROUND_ROBIN`, `STRATEGY_LEAST_USED`, and `STRATEGY_FILL_FIRST`.
+    - Integrated automatic failover rotation on HTTP 429 / quota exhaustion with jittered backoff, auto-recovery of expired keys to `STATUS_OK`, and permanent exclusion on terminal 401s (`STATUS_DEAD`).
+    - Implemented model-specific cooldown queues (`(provider, model) -> cooldown_until`) protecting sibling models on the same credentials from 503 / transient overload.
+    - Implemented 30-second transient endpoint blackholing (`_endpoint_blackholed`, `_note_endpoint_blackholed`, `_is_connect_timeout`) to eliminate TCP connection timeout storms and prevent orchestrator thread lockup on dead local/custom daemons.
+    - Maintained top-level backward-compatibility stub `src/harness_core/credential_pool.py` and exported symbols in `src/harness_core/models/__init__.py`.
+    - Authored 20 unit tests in `tests/test_credential_pool.py` passing 100% in 0.04s.
+
+45. **Phase 36 Plan 36-03: Local Socket Introspection & OS Keychain Vault Complete:**
+    - Implemented active local socket probes in `src/harness_core/models/model_metadata.py` querying live Ollama (`/api/show`, `/api/tags`, `/api/ps`), LM Studio (`/api/v0/models`), llama.cpp (`/props`), and vLLM (`/v1/models`) endpoints.
+    - Integrated socket probes with 30s transient endpoint blackholing (`_endpoint_blackholed`) to prevent orchestrator thread lockup on offline/dead servers.
+    - Implemented hardware/OS Keychain secure credential vault in `src/harness_core/storage/vault_keychain.py` backed by `keyring` (macOS Keychain, Linux Secret Service / KWallet, Windows DPAPI), with automatic migration from plaintext `credentials.env` and `config.yaml`.
+    - Authored 14 unit tests in `tests/test_local_socket_introspection.py` and `tests/test_vault_keychain.py`.
+
+46. **Phase 36 Subpackage Import Migration Sweep & Root Stub Cleanup Complete:**
+    - Migrated 111+ import locations across `tests/`, `src/`, and CLI tools to import directly from domain subpackages (`harness_core.storage.db`, `harness_core.core.orchestrator`, `harness_core.client.cli`, etc.).
+    - Safely removed all 36 root forwarding stubs from `src/harness_core/*.py`, achieving clean domain organization.
+    - Verified full test suites: 100% pass across pytest and cargo workspaces.
+
+47. **Phase 36 Independent Verification Passed:**
+    - Independent `gsd-verifier` subagent verified all 4 must-haves with zero failures or gaps.
+    - Verification report committed at `.gsd/phases/36-package-restructuring-and-resilience/VERIFICATION.md` (`52840e4`).
+
+48. **Phase 37 Plan 37-01: Conversational Timeline Rewind & Asynchronous Title Synthesis Complete:**
+    - Implemented `TimelineRewindManager` in `src/harness_core/storage/timeline_rewind.py` resolving relative offsets (`-N`) and absolute turn IDs (`turn_N`).
+    - Added `dialogue_turns` table with soft-branching (`is_active = 0`), unique branch IDs (`br_rewind_<uuid>`), uncommitted tool call reversal (`REVERTED`), and cryptographically hash-chained `TIMELINE_REWOUND` events in `LedgerStore` (`src/harness_core/storage/db.py`).
+    - Wired `/rewind` and `/undo` into `ReActLoop.rewind_to` and `HexConsole._cmd_rewind`.
+    - Implemented `SessionTitleSynthesizer` in `src/harness_core/cognition/title_synthesizer.py` with 2-stage title lifecycle (Stage 1 instant derived title `<= 48` chars; Stage 2 non-blocking background LLM title synthesis).
+    - Enforced strict title provenance hierarchy (`USER` > `LLM` > `DERIVED`) and anti-chatter / answer-rejection heuristics.
+    - Verified live retrieval for the Start screen resume list (`SELECT task_id, goal, created_at FROM tasks`).
+    - Authored 16 unit and integration tests across `tests/test_timeline_rewind.py` and `tests/test_title_synthesis.py` (100% passing).
+
+49. **Phase 37 Plan 37-02: Mixture-of-Agents & Repetition Sentry Complete:**
+    - Implemented `MixtureOfAgents` (`moa.py`) with parallel proposer model fan-out, fallback synthesis, and structured aggregation.
+    - Implemented `RepetitionGuard` / `repetition_sentry.py` intercepting token repetition, tool call thrashing, and action loops with out-of-band steering prompt injection and thinking tag (`<think>...</think>`) scrubbing.
+    - Authored comprehensive test suites in `tests/test_mixture_of_agents.py` and `tests/test_repetition_sentry.py` (100% passing).
+
+50. **Phase 37 Plan 37-03: Temporal Approval Leasing & Asynchronous Mobile Reaction Bridge Complete:**
+    - Implemented `ApprovalLease` and `ApprovalLeaseManager` in `src/harness_core/core/approval_lease.py` with command prefix and path matching, TTL expiration, explicit revocation, and `approval_leases` table in `LedgerStore` (`src/harness_core/storage/db.py`).
+    - Wired auto-approval into `ToolGateway` and `ReActLoop._execute_tool_call` with `policy_decision = "LEASE_APPROVED"` (0ms delay), and added `/lease` (`list`, `grant`, `revoke`, `cleanup`) to `HexConsole`.
+    - Implemented `ApprovalRequest`, `ApprovalDecision`, and `MobileApprovalBridge` in `src/harness_core/capabilities/gateways/reaction_listener.py`.
+    - Organized chat gateways into `src/harness_core/capabilities/gateways/`, wired button callback queries and reaction emojis (`👍`/`👎`) into `TelegramBotGateway` and `DiscordBotGateway`.
+    - Connected remote approval flow to `ToolGateway` with remote operator approval execution, denial halts (`PolicyBlockedError`), and timeout fallback (`ApprovalRequiredInterrupt`).
+    - Authored 20 unit and integration tests across `tests/test_approval_lease.py` and `tests/test_mobile_reaction_listener.py` (100% passing).
+
+51. **Phase 37 Independent Verification Passed:**
+    - Independent `gsd-verifier` subagent verified all 12 must-haves with 0 failures and 0 gaps.
+    - Verification report committed at `.gsd/phases/37-conversational-workflow-rewind-moa/VERIFICATION.md` (`7dcaf83`).
+
+52. **Phase 38 Plan 38-01: Crate Initialization, Metal Pipeline & Hermes Design System Complete:**
+    - Initialized `crates/hex-desktop` as active Cargo workspace member using Zed's `gpui` 0.2.2 framework.
+    - Configured `.cargo/config.toml` `DEVELOPER_DIR` for native macOS Metal shader compilation via Xcode toolchain.
+    - Implemented `WindowConfig` with default 1200x800 dimensions, centered display coordinates, 900x600 minimum size, `TitlebarOptions` with transparent titlebar and traffic light positioning (`point(px(14.0), px(16.0))`), `WindowBackgroundAppearance::Blurred` for native vibrancy, and 120 FPS target rate.
+    - Implemented `HermesTheme` porting Dark Zinc tokens (`#09090b` canvas, `#18181b` card, `#27272a` hover/border, `#3f3f46` structural border, `#fafafa` text, `#a1a1aa` muted, `#8fbf93` sage, `#c98b8b` rose, `#7aa7ff` accent, `rgba(0x18181be0)` frosted glass) and typography scales with `gpui::Global` integration.
+    - Implemented WCAG 2.1 relative luminance and contrast ratio algorithms verifying >19:1 on canvas and >16:1 on card.
+    - Authored unit and contract test suite in `crates/hex-desktop/tests/test_theme_and_window.rs` verifying tokens, contrast, window config, and `DesktopWindow` instantiation inside `gpui::TestAppContext` (83/83 workspace tests passing).
+
+53. **Phase 38 Plan 38-02: Dual-Pane Shell, Session History & Real-Time Message Feed Complete:**
+    - Implemented `SessionListView` with 4-way date categorization (`Today`, `Yesterday`, `Previous 7 Days`, `Older`) and search filtering.
+    - Implemented `SidebarView` (260px collapsible) with workspace directory pill, git branch tag, provider status indicator, token gauge, and new chat action.
+    - Implemented `MessageFeed` with auto-scrolling, `UserMessageCard`, and `AssistantMessageView`.
+    - Implemented `ThinkingDisclosure` for reasoning text and `ToolCallCard` with inline `DiffView` using sage green (#8fbf93) and rose red (#c98b8b) tints.
+    - Implemented `PromptComposer` with dynamic multiline expansion, `ModelSelectorPill`, and `SendButton`.
+    - Implemented dual-pane `AppShell` with collapsible sidebar.
+
+54. **Phase 38 Plan 38-03: Modals, ACP Socket Integration & macOS Shortcuts Complete:**
+    - Implemented `ToolApprovalModal` (`approval.rs`) with 3-way radio options (`Allow once`, `Allow all in session`, `Deny`) and 15m temporal lease auto-approval toggle (`lease_duration:900`).
+    - Implemented `CommandPaletteModal` (`palette.rs`) with real-time fuzzy filtering over actions, navigation, and sessions.
+    - Implemented `ModelPickerModal` (`model_picker.rs`) with provider groupings (Anthropic, OpenAI, Local MLX/Ollama, OpenRouter), context badges, and selection checkmarks.
+    - Implemented `AcpBridge` (`acp_bridge.rs`) supporting local Unix domain socket (`/tmp/hex-acp.sock`) and stdio child process spawning, handling capabilities handshake and converting streaming notifications into GPUI events.
+    - Wired global macOS shortcuts (`Cmd+K`, `Cmd+N`, `Cmd+Enter`, `Cmd+B`, `Cmd+,`, `Esc`) and native application menus (HEX Desktop, File, Edit, View).
+    - Authored comprehensive test suite in `tests/test_desktop_integration.rs` with 122/122 workspace Rust tests passing.
+
+55. **Phase 38 Independent Verification Passed:**
+    - Independent `gsd-verifier` subagent verified all 10 must-haves with 0 failures and 0 gaps.
+    - Verification report committed at `.gsd/phases/38-native-macos-gpui-desktop/VERIFICATION.md` (`f9208a7`).
+    - 122/122 Rust tests in workspace passing; native Metal window, shell, message feed, modals, and ACP bridge verified.
+
+56. **Milestone M15 Documentation Suite Overhaul:**
+    - Overhauled `README.md`: bumped version to 0.22.0, updated badge to 1,000+ tests passing, added feature spotlights for Native macOS GPUI Desktop Cockpit (`hex-desktop`, 120 FPS Metal, ~35MB RAM), Conversational Timeline Rewind (`/rewind`), Mixture-of-Agents (`/moa`), Temporal Approval Leases (`/lease`), and Multi-Key `CredentialPool`.
+    - Overhauled `docs/ARCHITECTURE.md`: documented the 5 architectural planes, native GPUI desktop cockpit layout and components, 7 clean domain subpackages in `src/harness_core/`, resilience engine, conversational engine, and storage lifecycle.
+    - Overhauled `docs/COMPARISON.md`: updated HEX vs. Hermes comparison matrix highlighting HEX's dual cockpits (GPUI ~35MB vs Electron ~400MB), CoW isolation (<10ms), timeline rewind, MoA, and credential resilience.
+    - Overhauled `docs/RUNBOOK.md`: added operations for `hex desktop`, `hex tui`, `/rewind`, `/lease`, `/moa`, credential pool administration, OS Keychain storage, and updated all python code snippets to clean subpackage paths (`harness_core.core.orchestrator`, `harness_core.client.asgi`).
+    - Updated `docs/ACP_INTEGRATION.md` and `docs/SUPPORTED_MODELS.md` with desktop bridge and credential pool details.
+    - Updated `pyproject.toml` version to `0.22.0`.
+
 ---
 
 ## 4. Next Actions
 
-- Milestone M12 is 100% Complete & Empirically Verified. All 8 findings from Claude Opus audit are fully resolved and verified.
+- Milestone M15 Documentation Suite Overhaul is complete and verified.
+- Next Phase: Phase 39: Expanded Connectors, Plugin Ecosystem & OS Automation (Slack/Discord gateways, streaming rate-limiting, 2,000+ plugin catalog, Anthropic OS computer use, battery sentry, and package manager abstraction).
+
+
 
 
 

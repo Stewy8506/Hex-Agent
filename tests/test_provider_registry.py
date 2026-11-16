@@ -144,7 +144,7 @@ class TestProviderRegistry(unittest.TestCase):
 
     def test_cli_provider_and_base_url_flags(self) -> None:
         """Verify CLI accepts --provider and --base-url across top-level and subcommands."""
-        from harness_core.cli import build_parser
+        from harness_core.client.cli import build_parser
 
         parser = build_parser()
 

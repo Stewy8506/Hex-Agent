@@ -1,0 +1,764 @@
+"""HTTP Control API Server & SSE Event Stream (PRD Section 15.1 & 15.2).
+
+Implements all 16 endpoints specified in PRD Section 15.1 plus `GET /` for the
+Local Web Control Surface dashboard using Python's built-in `http.server.ThreadingHTTPServer`
+so it runs out-of-the-box with zero external package installation required.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import html
+import json
+import logging
+import re
+import signal
+import threading
+import time
+import uuid
+from datetime import datetime
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from harness_core.client.dashboard import DASHBOARD_HTML
+from harness_core.storage.db import ConcurrencyFenceError
+from harness_core.core.models import TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
+
+logger = logging.getLogger(__name__)
+
+
+class HarnessAPIApp:
+    """Pure routing logic for all `/v1/*` endpoints so both HTTP server and tests can call it directly."""
+
+    def __init__(self, orchestrator: HarnessOrchestrator, auth_token: str | None = None):
+        self.orch = orchestrator
+        self.auth_token = auth_token
+        self.start_time = time.time()
+        self.is_draining = False
+
+    def handle_request(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, Any] | str, str]:
+        """Returns (status_code, payload_or_html, content_type)."""
+        parsed = urlparse(path)
+        route = parsed.path.rstrip("/") or "/"
+        query = parse_qs(parsed.query)
+        body = body or {}
+        headers = headers or {}
+
+        try:
+            # Check authentication if auth_token is configured
+            if self.auth_token is not None:
+                token = ""
+                for k, v in headers.items():
+                    if k.lower() == "x-worker-token":
+                        token = v
+                        break
+                    if k.lower() == "authorization" and v.startswith("Bearer "):
+                        token = v[7:].strip()
+                        break
+                if not token and "token" in query:
+                    token = query["token"][0]
+                if token != self.auth_token:
+                    is_worker_or_mutating = (
+                        (route in ("/v1/workers/register", "/v1/workers/heartbeat", "/v1/tasks/claim")
+                         or route.startswith("/v1/leases")
+                         or method in ("POST", "PUT", "DELETE"))
+                        and not re.fullmatch(r"/v1/approvals/([^/:]+):decide", route)
+                    )
+                    if is_worker_or_mutating:
+                        return (HTTPStatus.UNAUTHORIZED, {"error": "Unauthorized worker token"}, "application/json")
+
+            # Dashboard root
+            if method == "GET" and route == "/":
+                return (HTTPStatus.OK, DASHBOARD_HTML, "text/html; charset=utf-8")
+
+            # Liveness probe: GET /livez
+            if method == "GET" and route == "/livez":
+                uptime = round(time.time() - self.start_time, 2)
+                return (
+                    HTTPStatus.OK,
+                    {"status": "alive", "uptime_seconds": uptime, "version": "1.0.0"},
+                    "application/json",
+                )
+
+            # Readiness probe: GET /healthz
+            if method == "GET" and route == "/healthz":
+                if self.is_draining:
+                    return (
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"status": "draining", "error": "Server is shutting down and draining tasks"},
+                        "application/json",
+                    )
+
+                components: dict[str, Any] = {}
+                db_ok = True
+                cow_ok = True
+
+                # 1. database check
+                try:
+                    self.orch.ledger.list_workers()
+                    components["database"] = "ok"
+                except Exception as exc:
+                    db_ok = False
+                    components["database"] = {"status": "error", "error": str(exc)}
+
+                # 2. cow_storage check
+                try:
+                    if not self.orch.data_dir.is_dir():
+                        raise RuntimeError(f"Storage path {self.orch.data_dir} is not a directory")
+                    canary = self.orch.data_dir / ".health_canary"
+                    canary.write_text("healthz_probe")
+                    try:
+                        canary.unlink()
+                    except Exception:
+                        pass
+                    components["cow_storage"] = "ok"
+                except Exception as exc:
+                    cow_ok = False
+                    components["cow_storage"] = {"status": "error", "error": str(exc)}
+
+                # 3. workers check
+                try:
+                    workers = self.orch.ledger.list_workers()
+                    now = time.time()
+                    healthy = 0
+                    for w in workers:
+                        hb_raw = w.get("last_heartbeat_at")
+                        hb_ts = None
+                        if isinstance(hb_raw, (int, float)):
+                            hb_ts = float(hb_raw)
+                        elif isinstance(hb_raw, str):
+                            try:
+                                hb_ts = datetime.fromisoformat(hb_raw).timestamp()
+                            except Exception:
+                                hb_ts = None
+                        elif hasattr(hb_raw, "timestamp"):
+                            hb_ts = hb_raw.timestamp()
+                        if hb_ts is not None and (now - hb_ts) <= 300:
+                            healthy += 1
+                    components["workers"] = {
+                        "status": "ok",
+                        "total": len(workers),
+                        "healthy": healthy,
+                    }
+                except Exception as exc:
+                    components["workers"] = {"status": "error", "error": str(exc)}
+
+                if db_ok and cow_ok:
+                    return (
+                        HTTPStatus.OK,
+                        {"status": "healthy", "components": components},
+                        "application/json",
+                    )
+                else:
+                    return (
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"status": "unhealthy", "components": components},
+                        "application/json",
+                    )
+
+            # 1. POST /v1/tasks
+            if method == "POST" and route == "/v1/tasks":
+                idem = headers.get("Idempotency-Key") or headers.get("idempotency-key") or body.get("idempotency_key")
+                req = TaskSubmitRequest(
+                    goal=str(body.get("goal", "")),
+                    project_id=str(body.get("project_id", "default")),
+                    priority=int(body.get("priority", 50)),
+                    deadline_at=body.get("deadline_at"),
+                    deliverable=str(body.get("deliverable", "proof_bundle")),
+                    constraints=body.get("constraints") or {},
+                    budget=body.get("budget") or {},
+                    execution_mode=str(body.get("execution_mode", "auto")),
+                    approval_policy=str(body.get("approval_policy", "default")),
+                    idempotency_key=idem,
+                    workspace_root=body.get("workspace_root"),
+                    steps=body.get("steps"),
+                    skill_id=body.get("skill_id"),
+                )
+                auto_exec = bool(body.get("auto_execute", True))
+                task = self.orch.submit_and_run(req, auto_execute=auto_exec)
+                return (HTTPStatus.CREATED, task, "application/json")
+
+            # Claim task: POST /v1/tasks/claim
+            if method == "POST" and route == "/v1/tasks/claim":
+                worker_id = str(body.get("worker_id", "worker-default"))
+                ttl_seconds = int(body.get("ttl_seconds", 300))
+                claimed = self.orch.ledger.claim_next_task(worker_id=worker_id, ttl_seconds=ttl_seconds)
+                if claimed:
+                    return (HTTPStatus.OK, claimed, "application/json")
+                return (HTTPStatus.OK, {"task": None}, "application/json")
+
+            # GET /v1/tasks
+            if method == "GET" and route == "/v1/tasks":
+                status_filter = query.get("status", [None])[0]
+                tasks = self.orch.ledger.list_tasks(status=status_filter)
+                return (HTTPStatus.OK, {"tasks": tasks}, "application/json")
+
+            # Task-scoped routes: /v1/tasks/{task_id}...
+            m_task_action = re.fullmatch(r"/v1/tasks/([^/:]+):(pause|resume|fork|cancel|invoke-skill)", route)
+            if method == "POST" and m_task_action:
+                task_id, action = m_task_action.group(1), m_task_action.group(2)
+                if action == "pause":
+                    return (HTTPStatus.OK, self.orch.pause_task(task_id), "application/json")
+                if action == "resume":
+                    return (HTTPStatus.OK, self.orch.resume_task(task_id), "application/json")
+                if action == "cancel":
+                    return (HTTPStatus.OK, self.orch.cancel_task(task_id), "application/json")
+                if action == "fork":
+                    branches = body.get("branches") or []
+                    return (HTTPStatus.OK, self.orch.fork_speculative_branches(task_id, branches), "application/json")
+                if action == "invoke-skill":
+                    skill_id = str(body.get("skill_id", ""))
+                    skill = self.orch.scanner.verify_skill_runtime_integrity(skill_id)
+                    req = TaskSubmitRequest(
+                        goal=str(body.get("goal") or f"Invoke skill {skill['name']}"),
+                        project_id=str(body.get("project_id", "default")),
+                        skill_id=skill_id,
+                        parent_task_id=task_id,
+                        steps=body.get("steps"),
+                        workspace_root=body.get("workspace_root"),
+                    )
+                    created = self.orch.submit_and_run(req, auto_execute=bool(body.get("auto_execute", True)))
+                    return (HTTPStatus.CREATED, created, "application/json")
+
+            m_task_sub = re.fullmatch(r"/v1/tasks/([^/:]+)(?:/(events|proof|artifacts))?", route)
+            if method == "GET" and m_task_sub:
+                task_id, sub = m_task_sub.group(1), m_task_sub.group(2)
+                task = self.orch.ledger.get_task(task_id)
+                if not task:
+                    return (HTTPStatus.NOT_FOUND, {"error": f"Task not found: {task_id}"}, "application/json")
+                if sub is None:
+                    return (HTTPStatus.OK, task, "application/json")
+                if sub == "events":
+                    events = self.orch.ledger.list_events(task_id)
+                    calls = self.orch.ledger.list_tool_calls(task_id)
+                    return (
+                        HTTPStatus.OK,
+                        {"task_id": task_id, "events": events, "tool_calls": calls},
+                        "application/json",
+                    )
+                if sub == "proof":
+                    proof = self.orch.ledger.get_proof_bundle(task_id)
+                    return (HTTPStatus.OK, {"task_id": task_id, "proof": proof}, "application/json")
+                if sub == "artifacts":
+                    arts = self.orch.ledger.list_artifacts(task_id)
+                    return (HTTPStatus.OK, {"task_id": task_id, "artifacts": arts}, "application/json")
+
+            # Approvals: GET /v1/approvals & POST /v1/approvals/{approval_id}:decide
+            if method == "GET" and route == "/v1/approvals":
+                return (HTTPStatus.OK, {"approvals": self.orch.ledger.list_approvals()}, "application/json")
+
+            m_apr = re.fullmatch(r"/v1/approvals/([^/:]+):decide", route)
+            if method in ("GET", "POST") and m_apr:
+                apr_id = m_apr.group(1)
+                raw_decision = body.get("decision") or query.get("decision", [None])[0] or "APPROVED"
+                dec_str = str(raw_decision).strip().lower()
+                if dec_str in ("approve", "approved", "allow", "yes"):
+                    norm_decision = "APPROVED"
+                elif dec_str in ("reject", "rejected", "deny", "denied", "no"):
+                    norm_decision = "REJECTED"
+                else:
+                    norm_decision = str(raw_decision).strip().upper()
+
+                raw_comment = body.get("comment") or query.get("comment", [None])[0] or ""
+                comment = str(raw_comment).strip()
+
+                if "auto_resume" in body:
+                    auto_resume_val = body["auto_resume"]
+                elif "auto_resume" in query:
+                    auto_resume_val = query["auto_resume"][0]
+                else:
+                    auto_resume_val = True
+                auto_resume = str(auto_resume_val).lower() in ("true", "1", "yes")
+
+                decided = self.orch.ledger.decide_approval(apr_id, norm_decision, comment=comment)
+
+                task_resumed = False
+                if decided.get("decision") == "APPROVED" and auto_resume:
+                    try:
+                        self.orch.resume_task(decided["task_id"])
+                        task_resumed = True
+                    except Exception as resume_err:
+                        logger.warning("Auto-resume failed for task %s: %s", decided.get("task_id"), resume_err)
+
+                if getattr(self.orch, "webhook_notifier", None):
+                    try:
+                        self.orch.webhook_notifier.send_decision_broadcast(decided, norm_decision, comment=comment)
+                    except Exception as bcast_err:
+                        logger.warning("Failed to broadcast decision: %s", bcast_err)
+
+                accept_header = headers.get("Accept", "") or headers.get("accept", "")
+                wants_html = ("text/html" in accept_header) or (method == "GET" and "application/json" not in accept_header)
+
+                if wants_html:
+                    badge_class = "badge-approved" if norm_decision == "APPROVED" else "badge-rejected"
+                    lead_text = (
+                        "The requested privileged action has been authorized and task resumption initiated."
+                        if norm_decision == "APPROVED"
+                        else "The requested privileged action has been denied and task execution halted."
+                    )
+                    comment_html = (
+                        f'<div class="row"><span class="label">Comment</span><span class="value">{html.escape(comment)}</span></div>'
+                        if comment
+                        else ""
+                    )
+                    html_page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HEX Authorization - {norm_decision}</title>
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      box-sizing: border-box;
+    }}
+    .card {{
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      max-width: 520px;
+      width: 100%;
+      padding: 32px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }}
+    .badge {{
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-weight: 700;
+      font-size: 0.875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 16px;
+    }}
+    .badge-approved {{
+      background: #065f46;
+      color: #34d399;
+      border: 1px solid #059669;
+    }}
+    .badge-rejected {{
+      background: #7f1d1d;
+      color: #f87171;
+      border: 1px solid #dc2626;
+    }}
+    h1 {{
+      font-size: 1.5rem;
+      margin: 0 0 12px 0;
+      font-weight: 600;
+    }}
+    p.lead {{
+      color: #94a3b8;
+      font-size: 0.95rem;
+      margin: 0 0 24px 0;
+      line-height: 1.5;
+    }}
+    .details {{
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+      font-size: 0.875rem;
+    }}
+    .row {{
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid #1e293b;
+    }}
+    .row:last-child {{
+      border-bottom: none;
+    }}
+    .label {{
+      color: #64748b;
+    }}
+    .value {{
+      font-family: monospace;
+      color: #e2e8f0;
+      font-weight: 500;
+    }}
+    .btn {{
+      display: block;
+      width: 100%;
+      text-align: center;
+      background: #3b82f6;
+      color: #ffffff;
+      padding: 12px 0;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: background 0.15s ease;
+      box-sizing: border-box;
+    }}
+    .btn:hover {{
+      background: #2563eb;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge {badge_class}">{norm_decision}</div>
+    <h1>Approval {norm_decision}</h1>
+    <p class="lead">{lead_text}</p>
+    <div class="details">
+      <div class="row"><span class="label">Approval ID</span><span class="value">{html.escape(apr_id)}</span></div>
+      <div class="row"><span class="label">Task ID</span><span class="value">{html.escape(str(decided.get('task_id', '')))}</span></div>
+      <div class="row"><span class="label">Resumed</span><span class="value">{'Yes' if task_resumed else 'No'}</span></div>
+      <div class="row"><span class="label">Timestamp</span><span class="value">{html.escape(str(decided.get('decided_at', '')))}</span></div>
+      {comment_html}
+    </div>
+    <a href="/" class="btn">Return to Control Surface</a>
+  </div>
+</body>
+</html>"""
+                    return (HTTPStatus.OK, html_page, "text/html; charset=utf-8")
+
+                return (HTTPStatus.OK, decided, "application/json")
+
+            # Workers: GET /v1/workers, POST /v1/workers/register, POST /v1/workers/heartbeat
+            if method == "GET" and route == "/v1/workers":
+                return (HTTPStatus.OK, {"workers": self.orch.ledger.list_workers()}, "application/json")
+
+            if method == "POST" and route == "/v1/workers/register":
+                worker_id = str(body.get("worker_id") or f"worker-{uuid.uuid4().hex[:8]}")
+                machine_class = str(body.get("machine_class", "m4_air"))
+                cow_backend = str(body.get("cow_backend", "apfs_clone"))
+                capabilities = body.get("capabilities") or {}
+                local_llm_models = body.get("local_llm_models") or []
+                trust_level = str(body.get("trust_level", "trusted_local"))
+                res = self.orch.ledger.register_worker(
+                    worker_id=worker_id,
+                    machine_class=machine_class,
+                    cow_backend=cow_backend,
+                    capabilities=capabilities,
+                    local_llm_models=local_llm_models,
+                    trust_level=trust_level,
+                )
+                return (HTTPStatus.OK, res, "application/json")
+
+            if method == "POST" and route == "/v1/workers/heartbeat":
+                worker_id = str(body.get("worker_id", ""))
+                if not worker_id:
+                    return (HTTPStatus.BAD_REQUEST, {"error": "Missing worker_id"}, "application/json")
+                health = str(body.get("health", "HEALTHY"))
+                res = self.orch.ledger.heartbeat_worker(worker_id=worker_id, health=health)
+                return (HTTPStatus.OK, res, "application/json")
+
+            # Leases: POST /v1/leases/{lease_id}:renew & POST /v1/leases/{lease_id}:release
+            m_lease_renew = re.fullmatch(r"/v1/leases/([^/:]+):renew", route)
+            if method == "POST" and m_lease_renew:
+                lease_id = m_lease_renew.group(1)
+                fencing_token = int(body.get("fencing_token", 0))
+                ttl_seconds = int(body.get("ttl_seconds", 300))
+                res = self.orch.ledger.renew_lease(
+                    lease_id=lease_id,
+                    fencing_token=fencing_token,
+                    ttl_seconds=ttl_seconds,
+                )
+                return (HTTPStatus.OK, res, "application/json")
+
+            m_lease_release = re.fullmatch(r"/v1/leases/([^/:]+):release", route)
+            if method == "POST" and m_lease_release:
+                lease_id = m_lease_release.group(1)
+                fencing_token = int(body["fencing_token"]) if "fencing_token" in body and body["fencing_token"] is not None else None
+                res = self.orch.ledger.release_lease(
+                    lease_id=lease_id,
+                    fencing_token=fencing_token,
+                )
+                return (HTTPStatus.OK, res, "application/json")
+
+            # Skills & SkillSpector: GET /v1/skills, POST /v1/skills:import, GET /v1/skills/{skill_id}/scans|revisions
+            if method == "GET" and route == "/v1/skills":
+                with self.orch.ledger._lock:
+                    rows = self.orch.ledger.conn.execute(
+                        "SELECT * FROM skills ORDER BY created_at DESC"
+                    ).fetchall()
+                    skills = []
+                    for r in rows:
+                        d = self.orch.ledger._row_to_dict(r)
+                        if d and d.get("latest_scan_id"):
+                            sc_row = self.orch.ledger.conn.execute(
+                                "SELECT * FROM skill_scans WHERE scan_id = ?", (d["latest_scan_id"],)
+                            ).fetchone()
+                            d["scan"] = self.orch.ledger._row_to_dict(sc_row)
+                        if d:
+                            skills.append(d)
+                return (HTTPStatus.OK, {"skills": skills}, "application/json")
+
+            if method == "POST" and route == "/v1/skills:import":
+                disk_path = body.get("disk_path")
+                if not disk_path:
+                    return (HTTPStatus.BAD_REQUEST, {"error": "Missing disk_path"}, "application/json")
+                res = self.orch.scanner.scan_and_register_skill(Path(disk_path))
+                return (HTTPStatus.OK, res, "application/json")
+
+            m_skill_sub = re.fullmatch(r"/v1/skills/([^/:]+)/(scans|revisions)", route)
+            if method == "GET" and m_skill_sub:
+                skill_id, sub = m_skill_sub.group(1), m_skill_sub.group(2)
+                with self.orch.ledger._lock:
+                    if sub == "scans":
+                        rows = self.orch.ledger.conn.execute(
+                            "SELECT * FROM skill_scans WHERE skill_id = ? ORDER BY scanned_at DESC",
+                            (skill_id,),
+                        ).fetchall()
+                        return (
+                            HTTPStatus.OK,
+                            {"skill_id": skill_id, "scans": [self.orch.ledger._row_to_dict(r) for r in rows]},
+                            "application/json",
+                        )
+                    rows = self.orch.ledger.conn.execute(
+                        "SELECT * FROM skills WHERE skill_id = ? ORDER BY created_at DESC",
+                        (skill_id,),
+                    ).fetchall()
+                    return (
+                        HTTPStatus.OK,
+                        {"skill_id": skill_id, "revisions": [self.orch.ledger._row_to_dict(r) for r in rows]},
+                        "application/json",
+                    )
+
+            # Task State Transitions: POST /v1/tasks/{task_id}:transition
+            m_task_trans = re.fullmatch(r"/v1/tasks/([^/:]+):transition", route)
+            if method == "POST" and m_task_trans:
+                task_id = m_task_trans.group(1)
+                next_state = str(body.get("next_state", "SUCCEEDED"))
+                fencing_token = body.get("fencing_token")
+                if fencing_token is not None:
+                    fencing_token = int(fencing_token)
+                reason_code = str(body.get("reason_code", "WORKER_UPDATE"))
+                actor = str(body.get("actor", "worker"))
+                res = self.orch.ledger.transition_task(
+                    task_id=task_id,
+                    next_state=next_state,
+                    fencing_token=fencing_token,
+                    reason_code=reason_code,
+                    actor=actor,
+                    payload=body.get("payload"),
+                )
+                return (HTTPStatus.OK, res, "application/json")
+
+            # Artifacts: POST /v1/artifacts/delta & GET /v1/artifacts/{artifact_id}/file
+            if method == "POST" and route == "/v1/artifacts/delta":
+                task_id = "default"
+                content: bytes | None = None
+                if isinstance(body, bytes):
+                    content = body
+                    task_id = str(query.get("task_id", [None])[0] or headers.get("x-task-id") or headers.get("X-Task-Id") or "default")
+                elif isinstance(body, dict):
+                    task_id = str(body.get("task_id") or query.get("task_id", [None])[0] or headers.get("x-task-id") or headers.get("X-Task-Id") or "default")
+                    if "file_path" in body and body["file_path"]:
+                        fpath = Path(body["file_path"]).resolve()
+                        if not fpath.is_file():
+                            return (HTTPStatus.BAD_REQUEST, {"error": f"Delta archive file not found: {fpath}"}, "application/json")
+                        content = fpath.read_bytes()
+                    elif "payload_base64" in body and body["payload_base64"]:
+                        content = base64.b64decode(body["payload_base64"])
+                    elif "data_base64" in body and body["data_base64"]:
+                        content = base64.b64decode(body["data_base64"])
+                    elif "content" in body and isinstance(body["content"], (bytes, str)):
+                        content = body["content"].encode("utf-8") if isinstance(body["content"], str) else body["content"]
+
+                if not content:
+                    return (HTTPStatus.BAD_REQUEST, {"error": "Missing or empty delta archive payload"}, "application/json")
+
+                sha = hashlib.sha256(content).hexdigest()
+                cas_dir = self.orch.data_dir / "cas"
+                cas_dir.mkdir(parents=True, exist_ok=True)
+                dest_file = cas_dir / f"{sha}.tar.gz"
+                if not dest_file.exists():
+                    dest_file.write_bytes(content)
+
+                art = self.orch.ledger.record_artifact(
+                    task_id=task_id,
+                    kind="cow_delta_archive",
+                    uri=str(dest_file),
+                    sha256=sha,
+                    size_bytes=len(content),
+                    media_type="application/gzip",
+                    sensitivity="internal",
+                )
+                return (HTTPStatus.CREATED, art, "application/json")
+
+            m_art_file = re.fullmatch(r"/v1/artifacts/([^/:]+)/file", route)
+            if method == "GET" and m_art_file:
+                artifact_id = m_art_file.group(1)
+                art = self.orch.ledger.get_artifact(artifact_id)
+                if not art:
+                    return (HTTPStatus.NOT_FOUND, {"error": f"Artifact not found: {artifact_id}"}, "application/json")
+                fpath = Path(art["uri"]).resolve()
+                if not fpath.is_file():
+                    return (HTTPStatus.NOT_FOUND, {"error": f"Artifact file missing on disk: {fpath}"}, "application/json")
+                return (HTTPStatus.OK, fpath.read_bytes(), "application/gzip")
+
+            return (HTTPStatus.NOT_FOUND, {"error": f"Unknown endpoint: {method} {route}"}, "application/json")
+
+        except ConcurrencyFenceError as exc:
+            return (HTTPStatus.CONFLICT, {"error": "ConcurrencyFenceError", "detail": str(exc)}, "application/json")
+        except KeyError as exc:
+            return (HTTPStatus.NOT_FOUND, {"error": str(exc)}, "application/json")
+        except PermissionError as exc:
+            return (HTTPStatus.FORBIDDEN, {"error": str(exc)}, "application/json")
+        except Exception as exc:
+            return (HTTPStatus.BAD_REQUEST, {"error": f"{type(exc).__name__}: {exc}"}, "application/json")
+
+
+class GracefulServerRunner:
+    """Manages HTTP server lifecycle, signal interception (SIGINT, SIGTERM), traffic shedding, and graceful draining."""
+
+    def __init__(
+        self,
+        server: ThreadingHTTPServer,
+        app: HarnessAPIApp,
+        drain_timeout: float = 5.0,
+    ):
+        self.server = server
+        self.app = app
+        self.drain_timeout = max(0.0, float(drain_timeout))
+        self.is_running = False
+        self._stop_event = threading.Event()
+        self._orig_handlers: dict[int, Any] = {}
+
+    def _on_signal(self, signum: int, frame: Any) -> None:
+        logger.info("GracefulServerRunner: Caught signal %s. Initiating graceful drain...", signum)
+        self.initiate_drain()
+
+    def initiate_drain(self) -> None:
+        """Mark server as draining so /healthz immediately returns 503, wait drain timeout, and shut down."""
+        if self.app.is_draining and self._stop_event.is_set():
+            return
+        self.app.is_draining = True
+        logger.info("Server draining activated. /healthz returning 503. Draining for %.1fs...", self.drain_timeout)
+        self._stop_event.set()
+
+    def run(self) -> None:
+        """Run the server loop until a termination signal is received or stop() is called."""
+        self.is_running = True
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                self._orig_handlers[sig] = signal.signal(sig, self._on_signal)
+            except (ValueError, AttributeError):
+                pass
+
+        server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            while not self._stop_event.is_set():
+                self._stop_event.wait(timeout=0.2)
+        except KeyboardInterrupt:
+            self.initiate_drain()
+
+        if self.drain_timeout > 0:
+            time.sleep(self.drain_timeout)
+
+        try:
+            self.server.shutdown()
+        except Exception:
+            pass
+        server_thread.join(timeout=2.0)
+        try:
+            self.server.server_close()
+        except Exception:
+            pass
+        self.is_running = False
+
+        for sig, handler in self._orig_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except Exception:
+                pass
+        logger.info("Server shutdown complete.")
+
+    def stop(self) -> None:
+        """Programmatic trigger to drain and stop the server."""
+        self.initiate_drain()
+
+
+def run_http_server(
+    orchestrator: HarnessOrchestrator,
+    host: str = "127.0.0.1",
+    port: int = 8420,
+    auth_token: str | None = None,
+    drain_timeout: float = 5.0,
+) -> None:
+    app = HarnessAPIApp(orchestrator, auth_token=auth_token)
+
+    class Handler(BaseHTTPRequestHandler):
+        def _dispatch(self, method: str) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            content_type = self.headers.get("Content-Type", "")
+            raw = self.rfile.read(length) if length > 0 else b""
+            body: dict[str, Any] | bytes = {}
+            if "application/json" in content_type:
+                if raw:
+                    try:
+                        body = json.loads(raw.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        body = {}
+            elif "gzip" in content_type or "octet-stream" in content_type or "/v1/artifacts/delta" in self.path:
+                body = raw
+            else:
+                if raw:
+                    try:
+                        body = json.loads(raw.decode("utf-8"))
+                    except Exception:
+                        body = raw
+            hdrs = {k: v for k, v in self.headers.items()}
+
+            # Optional SSE mode on GET /v1/tasks/{task_id}/events?stream=true
+            if method == "GET" and "stream=true" in self.path:
+                status, payload, _ = app.handle_request(method, self.path, body, hdrs)
+                self.send_response(status)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                data_str = json.dumps(payload, default=str)
+                self.wfile.write(f"event: task_events\ndata: {data_str}\n\n".encode("utf-8"))
+                return
+
+            status, payload, res_type = app.handle_request(method, self.path, body, hdrs)
+            self.send_response(status)
+            self.send_header("Content-Type", res_type)
+            if res_type == "application/gzip":
+                self.send_header("Content-Disposition", 'attachment; filename="artifact.tar.gz"')
+            self.end_headers()
+            if isinstance(payload, bytes):
+                self.wfile.write(payload)
+            elif isinstance(payload, str):
+                self.wfile.write(payload.encode("utf-8"))
+            else:
+                self.wfile.write(json.dumps(payload, indent=2, default=str).encode("utf-8"))
+
+        def do_GET(self) -> None:  # noqa: N802
+            self._dispatch("GET")
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._dispatch("POST")
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"⚡ HEX Agent listening on http://{host}:{port}")
+    runner = GracefulServerRunner(server, app, drain_timeout=drain_timeout)
+    runner.run()

@@ -10,8 +10,8 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from harness_core.cli import main
-from harness_core.onboard import HardwareProfile, run_onboard_wizard
+from harness_core.client.cli import main
+from harness_core.client.onboard import HardwareProfile, run_onboard_wizard
 
 
 class TestHexCLI(unittest.TestCase):
@@ -54,9 +54,11 @@ class TestHexCLI(unittest.TestCase):
         self.assertTrue(cfg_path.is_file())
         self.assertTrue(creds_path.is_file())
 
-        cfg_text = cfg_path.read_text(encoding="utf-8")
-        self.assertTrue("HEX Agent Configuration" in cfg_text or "HEX Autonomous AI Workbench Configuration" in cfg_text)
-        self.assertIn("compressor_mode: \"deterministic\"", cfg_text)
+        from harness_core.config_loader import parse_config_yaml
+
+        parsed_cfg = parse_config_yaml(cfg_path)
+        self.assertIn("model", parsed_cfg)
+        self.assertEqual(parsed_cfg["model"]["compressor_mode"], "deterministic")
 
         # Check credentials file permissions on POSIX
         if os.name == "posix":
@@ -113,7 +115,7 @@ class TestHexCLI(unittest.TestCase):
         """Running 'hex' with no subcommands immediately launches the interactive TUI console like HEX."""
         from unittest.mock import patch
 
-        with patch("harness_core.tui.HexConsole.start", return_value=0) as mock_start:
+        with patch("harness_core.client.tui.HexConsole.start", return_value=0) as mock_start:
             ret = main([])
             self.assertEqual(ret, 0)
             self.assertTrue(mock_start.called, "Running bare 'hex' should start HexConsole")
@@ -122,8 +124,8 @@ class TestHexCLI(unittest.TestCase):
         """Top-level options like 'hex --skin matrix -Q' pass directly to HexConsole."""
         from unittest.mock import patch
 
-        with patch("harness_core.tui.HexConsole.__init__", return_value=None) as mock_init, \
-             patch("harness_core.tui.HexConsole.start", return_value=0):
+        with patch("harness_core.client.tui.HexConsole.__init__", return_value=None) as mock_init, \
+             patch("harness_core.client.tui.HexConsole.start", return_value=0):
             ret = main(["--skin", "matrix", "-Q"])
             self.assertEqual(ret, 0)
             kwargs = mock_init.call_args.kwargs
@@ -161,31 +163,32 @@ class TestHexCLI(unittest.TestCase):
             "model:\n  cloud_provider: anthropic\n  cloud_model_id: claude-3-5-sonnet\nweb_search:\n  provider: tavily\n"
         )
 
-        with patch("harness_core.onboard.fetch_available_models") as mock_fetch, \
-             patch("harness_core.onboard.prompt_secret", return_value="") as mock_prompt, \
-             patch("harness_core.onboard.select_option") as mock_sel:
+        with patch("harness_core.client.onboard.fetch_available_models") as mock_fetch, \
+             patch("harness_core.client.onboard.prompt_secret", return_value="") as mock_prompt, \
+             patch("harness_core.client.onboard.select_option") as mock_sel:
             mock_fetch.return_value = [("claude-3-5-sonnet", "Claude 3.5 Sonnet"), ("claude-3-7-sonnet", "Claude 3.7 Sonnet")]
-            # Provider selection: index 1 (Anthropic, which is default index)
+            # Category selection: index 1 (Recommended tier)
+            # Provider selection: index 1 (Anthropic in Recommended tier)
             # Model selection: index 0 ("Use currently configured")
             # Compressor: index 0 ("Use currently configured")
             # Search: index 0 ("Use currently configured")
             # Messaging: index 0 ("Keep currently configured")
-            mock_sel.side_effect = [1, 0, 0, 0, 0]
+            mock_sel.side_effect = [1, 1, 0, 0, 0, 0]
             res = run_onboard_wizard(config_dir=self.config_dir, non_interactive=False)
             self.assertEqual(res["cloud_provider"], "anthropic")
             self.assertEqual(res["cloud_model_id"], "claude-3-5-sonnet")
             self.assertEqual(res["web_search_provider"], "tavily")
 
-            # Check that provider selection passed default_index=1 (for Anthropic)
-            self.assertEqual(mock_sel.call_args_list[0][1].get("default_index"), 1)
+            # Check that category selection passed default_index=0 (Keep currently configured)
+            self.assertEqual(mock_sel.call_args_list[0][1].get("default_index"), 0)
 
             # Check that option 0 in model selection turn was 'keep'
-            model_options = mock_sel.call_args_list[1][0][1]
+            model_options = mock_sel.call_args_list[2][0][1]
             self.assertEqual(model_options[0][0], "keep")
             self.assertIn("currently configured", model_options[0][1])
 
             # Check that option 0 in search stage was 'keep'
-            search_options = mock_sel.call_args_list[3][0][1]
+            search_options = mock_sel.call_args_list[4][0][1]
             self.assertEqual(search_options[0][0], "keep")
             self.assertIn("currently configured", search_options[0][1])
 

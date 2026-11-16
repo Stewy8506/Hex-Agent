@@ -449,32 +449,111 @@
 
 ---
 
-## Milestone M13: Autonomous Adaptive Setup & Reasoning Effort Parity [100% COMPLETE]
+## Milestone M14: Pixel-Perfect Functional TUI Redesign [COMPLETE]
 
 ```
-[x] Phase 34: Autonomous Adaptive Setup & Reasoning Effort Parity
+[x] Phase 35: Pixel-Perfect Functional TUI Redesign
 ```
 
 ---
 
-### Phase 34: Autonomous Adaptive Setup & Reasoning Effort Parity
-- **Goal:** Reach complete parity with and surpass Hermes Agent's setup ergonomics, introducing native model reasoning effort control, autonomous agent self-configuration (`hex setup --auto`), ergonomic setup flags (`--quick`, `--blank-slate`), curated provider tiers, and live first-task verification.
+### Phase 35: Pixel-Perfect Functional TUI Redesign
+- **Goal:** Completely redesign the HEX Agent TUI system in Rust (`crates/hex-tui`) to achieve 100% pixel/character-perfect visual and functional parity with the HTML mockup (`Hex agent TUI.html`). Every element is functional and backed by live state.
 - **Must-haves:**
-  - **Task 1: Model Reasoning Effort Engine & Router Wire Clamping**:
-    - Port canonical reasoning ladder (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) into `src/harness_core/reasoning_effort.py`.
-    - Implement wire translation and nearest-level clamping for OpenAI (`reasoning_effort`), Claude 3.7 (`thinking.budget_tokens`), Gemini (`thinkingConfig`), and open-weight models.
-    - Wire `reasoning_effort` into `config.yaml`, `credentials.env`, and `router.py`.
-    - Add effort prompt to `onboard.py` after model selection and `/reasoning` command to `tui.py`.
-  - **Task 2: Autonomous Agent Self-Setup & Environment Auto-Discovery**:
-    - Build `src/harness_core/auto_setup.py` enabling headless non-blocking bootstrapping (`hex setup --auto`).
-    - Auto-discover hardware, compilers, devtools, package managers, and Antigravity IDE credentials.
-    - Auto-detect and validate Telegram & Discord bot credentials if available in environment.
-    - Wire interactive conversational setup intercept in Cockpit TUI when launching unconfigured.
-  - **Task 3: Setup Modularity, Curated Provider Hierarchy & First-Task Verification**:
-    - Add `--quick` (missing items only) and `--blank-slate` (minimal agent preset) to `hex setup`.
-    - Reorganize the 26-provider flat menu into 4 curated tiers (Recommended/Included, Unified Gateway, Local Offline, Enterprise).
-    - Implement guided First-Task verification beat running in isolated CoW workspace (`active_workspaces/ws_onboard_verify`).
-- **Verification:** Unit test suite covering reasoning effort clamping, router wire translation, auto-setup bootstrapping, and subagent parity audit against Hermes.
+  - **Plan 35-01: Visual Design Tokens, Truecolor Engine, ASCII Wordmarks & Dynamic Animation Ticks**:
+    - Port exact color tokens (`Color::Rgb` constants for Canvas `#0e0e0e`, Card `#0c0c0c`, Sage `#8fbf93`/`#171f18`, Rose `#c98b8b`/`#1c1616`, Electric Blue `#7aa7ff`) with auto 256-color fallback.
+    - Implement pixel-matched block ASCII wordmarks for Start screen and Session header.
+    - Build animation subsystem: 10-frame Braille spinner (90ms tick), 2.2s sine pulse marker `[>]`, 550ms cursor blink, and thinking shimmer sweep.
+  - **Plan 35-02: Screen 0 (Start Screen) & Screen 1 (Active Cockpit + Right Rail + Tinted Diff)**:
+    - Screen 0: Welcome view, Git repo status, angled/rounded prompt container with rotating placeholder, shortcut badges, interactive session resume selector.
+    - Screen 1: Top bar, 75/25 split, Left canvas streaming transcript, Sage/Rose inline diff widget with line-by-line background tinting, Bottom message composer.
+    - Right rail: Context progress bar (`▕██████░░░░░░░░░░▏`), GSD plan checklist with pulsing active marker `[>]`, Changed files list with diff stats, Multi-agent status list.
+  - **Plan 35-03: Modal Overlays & Diagnostics (Screens 2, 3, 4, 5)**:
+    - Screen 2: Tool approval dialog with bash command box, impact description, and 3-way radio selection (`Allow once`, `Allow rm`, `Deny`) with `y`/`a`/`n` hotkeys.
+    - Screen 3: Fuzzy command palette with grouped results (`agents`, `session`), match highlighting, and callbacks.
+    - Screen 4: Diagnostic error card with bash exit code, test failure header, assertion diffs (`expected` vs `received`), and collapsible stack trace.
+    - Screen 5: Subagent live inspection modal with brief expansion (`e`), live tool feed, soft fade scrollback, and live elapsed timer.
+  - **Plan 35-04: Gap Closure — Live Engine State Wiring & Continuous Animation Clock**:
+    - Derives `AnimationState` from persistent `app.session_started` in `crates/hex-tui/src/ui/mod.rs:29`, restoring continuous frame advances across all animations.
+    - Completely purges all hardcoded TypeScript mockup dummy data across production code and test suites.
+    - Wires real live telemetry in `app.rs`: real workspace paths (`format_workspace_display`), porcelain git modifications (`detect_git_status_counts`), indexed files via `git ls-files`, working tree changes via `git diff --numstat`, active GSD plan tasks via `.gsd/phases/` parsing, and real ledger session tasks from `.hex/data/ledger.db`.
+    - Integrates Screen 4 (`DiagnosticFailure`) inline into `session.rs` dialogue streams on tool failure.
+- **Verification:** Independent `gsd-verifier` report PASS (8/8 must-haves verified in `.gsd/phases/35-tui-redesign-mockup-parity/VERIFICATION.md`), full cargo workspace test suite passing cleanly (61/61 tests pass).
+
+---
+
+## Milestone M15: Full Hermes Parity & Native GPUI Desktop Application [IN PROGRESS]
+
+```
+[x] Phase 36: Clean Package Restructuring & Multi-Credential Resilience
+[x] Phase 37: Conversational Workflow Supremacy, Timeline Rewind & MoA
+[x] Phase 38: Native macOS GPUI Desktop Cockpit (crates/hex-desktop)
+[ ] Phase 39: Expanded Connectors, Plugin Ecosystem & OS Automation
+```
+
+---
+
+### Phase 36: Clean Package Restructuring & Multi-Credential Resilience
+- **Goal:** Reorganize the monolithic `src/harness_core/` into clean domain packages (`core/`, `storage/`, `cognition/`, `runtime/`, `capabilities/`, `gateways/`, `providers/`) with full backward-compatibility re-exports, implement multi-credential rotation pools, transient endpoint blackholing, local socket introspection, and OS Keychain integration.
+- **Must-haves:**
+  - **Plan 36-01: Modular Package Restructuring & Backward Compatibility Layer**:
+    - Restructure `src/harness_core/` into domain subpackages with top-level `__init__.py` facade re-exports preserving 100% of existing import paths.
+    - Validate with complete test suite passing (zero broken imports).
+  - **Plan 36-02: Multi-Credential Pool & Endpoint Blackholing**:
+    - Implement `CredentialPool` in `src/harness_core/` supporting multiple keys per provider, automatic round-robin / least-utilized dispatch, and cooldown queues on HTTP 429/overload.
+    - Implement 30s transient endpoint blackholing (`_endpoint_blackholed`) for failed local/custom server connections, preventing orchestrator thread freezes.
+  - **Plan 36-03: Local Server Socket Introspection & OS Keychain Vault**:
+    - Implement live local socket probes for Ollama (`/api/show` Modelfile `num_ctx` vs GGUF max), LM Studio (`/api/v0/models`), llama.cpp (`/props`), and vLLM (`/v1/models`).
+    - Implement OS Keychain secure credential storage (`keyring` on macOS Keychain, Linux Secret Service, Windows DPAPI), migrating plaintext credentials from `~/.hex/config.yaml`.
+- **Verification:** 100% pass across pytest and cargo test suites; live credential rotation and blackhole tests; zero broken imports.
+
+---
+
+### Phase 37: Conversational Workflow Supremacy, Timeline Rewind & MoA
+- **Goal:** Implement conversational timeline branching (`/rewind`), asynchronous LLM session title synthesis, Mixture-of-Agents (MoA) multi-model synthesis, degenerate loop/repetition sentries, and approval leasing.
+- **Must-haves:**
+  - **Plan 37-01: Conversational Rewind & Asynchronous Title Synthesis**:
+    - Implement `/rewind` command in engine and TUI, allowing rollback to any prior turn with historical timeline branching.
+    - Implement asynchronous background LLM session title generation (3-5 words) updating Start screen and session switchers.
+  - **Plan 37-02: Mixture-of-Agents (MoA) & Repetition Sentry**:
+    - Implement `MoALoop` in `src/harness_core/` enabling proposer-aggregator multi-model synthesis within a turn.
+    - Implement `RepetitionGuard` detecting token/action loops across consecutive turns with out-of-band steering injection, plus thinking tag scrubbers.
+  - **Plan 37-03: Temporal Approval Leasing & Mobile Async Reactions**:
+    - Implement approval leasing for command patterns and working directories with expiration timers.
+    - Implement asynchronous waiting for Telegram/Discord approval reactions with fallback timeouts.
+- **Verification:** Rewind timeline integrity tests; MoA multi-model synthesis verification; repetition breaker unit tests.
+
+---
+
+### Phase 38: Native macOS GPUI Desktop Cockpit (`crates/hex-desktop`)
+- **Goal:** Build an ultra-fast, GPU-accelerated desktop application for macOS using Zed's `gpui` framework rendering natively via Metal at 120 FPS, achieving 100% visual and functional parity with the HTML mockup and Ratatui cockpit.
+- **Must-haves:**
+  - **Plan 38-01: GPUI Workspace Setup, Metal Pipeline & Design Tokens**:
+    - Create `crates/hex-desktop` linking to `hex-protocol` and `gpui`.
+    - Configure macOS Metal rendering target, window vibrancy, Truecolor design tokens matching HTML mockup (`#0e0e0e`, `#0c0c0c`, `#151515`, `#8fbf93`, `#c98b8b`, `#7aa7ff`), and typography.
+  - **Plan 38-02: Screen 0 Start & Screen 1 Active Cockpit**:
+    - Screen 0 Start: Project telemetry, animated canvas, angled prompt card with rotating placeholder, shortcut badges, and interactive session resume selector.
+    - Screen 1 Cockpit: 75/25 split, streaming transcript with markdown formatting, inline sage/rose tinted diff widget, right rail telemetry with progress gauge (`▕██████░░░░░░░░░░▏`), and bottom message composer.
+  - **Plan 38-03: Modal Overlays, Global Hotkeys & macOS Integration**:
+    - Screen 2 Tool Approval dialog (3-way radio selection), Screen 3 Command Palette (fuzzy matching with group headers), Screen 4 Diagnostic card, Screen 5 Subagent inspection modal.
+    - Global macOS keyboard shortcut toggling, native menu bar, and ACP/socket connection to `harness_core`.
+- **Verification:** Native macOS GPUI app builds and launches at 120 FPS; all 6 screens render cleanly with Metal hardware acceleration; interactive actions functioning.
+
+---
+
+### Phase 39: Expanded Connectors, Plugin Ecosystem & OS Automation
+- **Goal:** Expand external messaging connectors (Slack, Discord Opus voice mixing, webhook streams), integrate the 2,000+ plugin marketplace catalog loader, add Anthropic OS-level Computer Use automation, battery sentry, and package manager abstraction.
+- **Must-haves:**
+  - **Plan 39-01: Expanded Gateways & Real-Time Stream Consumer**:
+    - Implement Slack gateway, Discord voice channel Opus audio mixing, and rate-limited typing/edit stream consumer (`stream_consumer.py`).
+  - **Plan 39-02: Curated Marketplace Plugin Catalog Loader**:
+    - Implement dynamic catalog parser and validator for 2,000+ plugins with sandboxed tool execution and dependency checks.
+  - **Plan 39-03: Anthropic OS Computer Use & System Sentries**:
+    - Implement Anthropic Computer Use protocol (macOS desktop screenshot capture, coordinate scaling, native mouse/keyboard events).
+    - Implement `BatterySentry` and unified package manager abstraction (`pm/` covering Homebrew, apt, etc.).
+- **Verification:** Live Slack/Discord streaming tests; plugin catalog validation; Computer Use screenshot and click verification on macOS.
+
+
 
 
 

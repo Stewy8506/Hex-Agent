@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from harness_core.memory import (
+from harness_core.cognition.memory import (
     ENTRY_DELIMITER,
     GUARDRAIL_CHAR_LIMIT,
     MEMORY_CHAR_LIMIT,
@@ -269,7 +269,7 @@ class TestReActLoopGuardrailsIntegration(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_guardrails_auto_capture_on_repeat_failure(self):
-        from harness_core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
+        from harness_core.core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
 
         guardrails_mgr = GuardrailsManager(workspace_root=self.workspace)
 
@@ -309,7 +309,7 @@ class TestReActLoopGuardrailsIntegration(unittest.TestCase):
         self.assertTrue(any("broken_tool" in r and "TypeError" in r for r in guardrails))
 
     def test_guardrails_ignore_transient_errors(self):
-        from harness_core.react_loop import ReActConfig, ReActLoop
+        from harness_core.core.react_loop import ReActConfig, ReActLoop
 
         guardrails_mgr = GuardrailsManager(workspace_root=self.workspace)
 
@@ -342,7 +342,7 @@ class TestReActLoopGuardrailsIntegration(unittest.TestCase):
         self.assertEqual(len(guardrails), 0, "Transient errors must not be saved into guardrails")
 
     def test_guardrails_rejected_diff_and_rollback(self):
-        from harness_core.react_loop import ReActLoop
+        from harness_core.core.react_loop import ReActLoop
 
         guardrails_mgr = GuardrailsManager(workspace_root=self.workspace)
         loop = ReActLoop(workspace_root=self.workspace, guardrails_manager=guardrails_mgr)
@@ -450,8 +450,8 @@ class TestPromptBuilderKVStability(unittest.TestCase):
 
     def test_prompt_builder_slot4_memory_and_prefix_hash_stability(self):
         import hashlib
-        from harness_core.prompt_builder import PromptBuilder
-        from harness_core.soul import SoulManager
+        from harness_core.cognition.prompt_builder import PromptBuilder
+        from harness_core.cognition.soul import SoulManager
 
         soul_mgr = SoulManager(global_home=self.global_home)
         store = CuratedMemoryStore(workspace_root=self.workspace, global_home=self.global_home)

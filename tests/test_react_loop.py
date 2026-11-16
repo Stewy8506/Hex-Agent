@@ -7,11 +7,11 @@ from typing import Any
 import unittest
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main as cli_main
-from harness_core.db import LedgerStore
+from harness_core.client.cli import main as cli_main
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import RiskClass, ToolGateway, ToolSpec
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.react_loop import (
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.core.react_loop import (
     ReActConfig,
     ReActLoop,
     ReActSessionResult,
@@ -19,7 +19,7 @@ from harness_core.react_loop import (
     ToolCallRequest,
     ToolCallResult,
 )
-from harness_core.tui import HexConsole
+from harness_core.client.tui import HexConsole
 
 
 class TestReActDataStructures(unittest.TestCase):
@@ -283,7 +283,7 @@ class TestMultiTurnReActLoop(unittest.TestCase):
         received_tokens = []
 
         def mock_model(messages: list[dict]) -> str:
-            from harness_core.context_compressor import estimate_messages_tokens
+            from harness_core.cognition.context_compressor import estimate_messages_tokens
             toks = estimate_messages_tokens(messages)
             received_tokens.append(toks)
             return "<finish>Handled safely after preflight hygiene</finish>"
@@ -676,8 +676,8 @@ class TestCLIReActFlags(unittest.TestCase):
     """Test CLI argument parsing and dispatch with --react."""
 
     def test_cli_top_level_react_flag(self) -> None:
-        with patch("harness_core.tui.HexConsole") as mock_console_cls, \
-             patch("harness_core.cli.HarnessOrchestrator"):
+        with patch("harness_core.client.tui.HexConsole") as mock_console_cls, \
+             patch("harness_core.client.cli.HarnessOrchestrator"):
             mock_inst = MagicMock()
             mock_inst.start.return_value = 0
             mock_console_cls.return_value = mock_inst
@@ -689,8 +689,8 @@ class TestCLIReActFlags(unittest.TestCase):
             self.assertTrue(kwargs.get("react_mode"))
 
     def test_cli_chat_react_flag(self) -> None:
-        with patch("harness_core.tui.HexConsole") as mock_console_cls, \
-             patch("harness_core.cli.HarnessOrchestrator"):
+        with patch("harness_core.client.tui.HexConsole") as mock_console_cls, \
+             patch("harness_core.client.cli.HarnessOrchestrator"):
             mock_inst = MagicMock()
             mock_inst.start.return_value = 0
             mock_console_cls.return_value = mock_inst
@@ -711,7 +711,7 @@ class TestCLIReActFlags(unittest.TestCase):
             "turns": [],
         }
 
-        with patch("harness_core.cli.HarnessOrchestrator", return_value=mock_orch):
+        with patch("harness_core.client.cli.HarnessOrchestrator", return_value=mock_orch):
             code = cli_main(["run", "--react", "Test autonomous goal"])
             self.assertEqual(code, 0)
             mock_orch.run_agent_loop.assert_called_once()

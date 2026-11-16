@@ -13,6 +13,107 @@ pub enum Focus {
     Approval,
 }
 
+/// Top-level screen view state in the HEX Cockpit matching mockup screens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenState {
+    Start,
+    Session,
+}
+
+/// Execution status of a GSD plan step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepStatus {
+    Completed,
+    Active,
+    Pending,
+}
+
+/// A plan step rendered in the right rail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanStep {
+    pub title: String,
+    pub status: StepStatus,
+}
+
+/// A modified/changed file tracking git delta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedFile {
+    pub path: String,
+    pub additions: usize,
+    pub deletions: usize,
+}
+
+/// Telemetry for a subagent in the right rail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentTelemetry {
+    pub name: String,
+    pub status: String,
+    pub detail: String,
+    pub is_running: bool,
+    pub has_failed: bool,
+}
+
+/// Historical or resumable session entry on the Start screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeSession {
+    pub title: String,
+    pub relative_time: String,
+    pub session_id: String,
+}
+
+/// Active drill-down inspection state for a subagent modal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentModalState {
+    pub name: String,
+    pub prompt: String,
+    pub is_expanded: bool,
+    pub activity_lines: Vec<String>,
+    pub elapsed_seconds: u64,
+}
+
+/// Diagnostic failure detail for failed commands and tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticFailure {
+    pub command: String,
+    pub exit_code: i32,
+    pub duration_str: String,
+    pub test_file: String,
+    pub test_name: String,
+    pub expected: String,
+    pub received: String,
+    pub stack_trace: Vec<String>,
+    pub hidden_frames_count: usize,
+    pub diagnosis: String,
+    pub next_investigation: String,
+}
+
+impl Default for DiagnosticFailure {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            exit_code: 1,
+            duration_str: "0.0s".to_string(),
+            test_file: String::new(),
+            test_name: String::new(),
+            expected: String::new(),
+            received: String::new(),
+            stack_trace: Vec::new(),
+            hidden_frames_count: 0,
+            diagnosis: String::new(),
+            next_investigation: String::new(),
+        }
+    }
+}
+
+/// Item in the command & navigation palette overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteItem {
+    pub category: String,
+    pub title: String,
+    pub shortcut: String,
+    pub command: String,
+}
+
 /// A regular conversational message item in dialogue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageItem {
@@ -54,138 +155,45 @@ pub struct ApprovalRequest {
 /// Slash command metadata for autocompletion popup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommand {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub usage: &'static str,
+    pub name: String,
+    pub description: String,
+    pub usage: String,
 }
 
-pub const AVAILABLE_SLASH_COMMANDS: &[SlashCommand] = &[
-    SlashCommand {
-        name: "/help",
-        description: "Show interactive help & keybindings",
-        usage: "/help",
-    },
-    SlashCommand {
-        name: "/status",
-        description: "Display current agent and task status",
-        usage: "/status",
-    },
-    SlashCommand {
-        name: "/diff",
-        description: "Toggle proposed CoW diff pane",
-        usage: "/diff",
-    },
-    SlashCommand {
-        name: "/sbs",
-        description: "Toggle side-by-side diff view",
-        usage: "/sbs",
-    },
-    SlashCommand {
-        name: "/blast",
-        description: "Render Active Graphify AST blast-radius tree",
-        usage: "/blast [sym|file]",
-    },
-    SlashCommand {
-        name: "/proof",
-        description: "Display cryptographic Proof-Carrying Artifact bundle",
-        usage: "/proof [task_id]",
-    },
-    SlashCommand {
-        name: "/rollback",
-        description: "Discard mutations and rollback CoW snapshot",
-        usage: "/rollback",
-    },
-    SlashCommand {
-        name: "/fork",
-        description: "Branch workspace snapshot into speculative attempt",
-        usage: "/fork",
-    },
-    SlashCommand {
-        name: "/skills",
-        description: "Display categorized available skills catalog",
-        usage: "/skills",
-    },
-    SlashCommand {
-        name: "/tools",
-        description: "Display categorized available tools catalog",
-        usage: "/tools",
-    },
-    SlashCommand {
-        name: "/scan",
-        description: "Scan and register a SKILL.md bundle via SkillSpector",
-        usage: "/scan <dir>",
-    },
-    SlashCommand {
-        name: "/model",
-        description: "Inspect or switch active model provider",
-        usage: "/model [name]",
-    },
-    SlashCommand {
-        name: "/budget",
-        description: "View token consumption and budget limits",
-        usage: "/budget",
-    },
-    SlashCommand {
-        name: "/quota",
-        description: "Inspect Google Antigravity OAuth session & quota windows",
-        usage: "/quota",
-    },
-    SlashCommand {
-        name: "/memory",
-        description: "Search governed memories with AST code-hash staleness",
-        usage: "/memory [query]",
-    },
-    SlashCommand {
-        name: "/remember",
-        description: "Record a governed project memory linked to AST nodes",
-        usage: "/remember <k>: <v>",
-    },
-    SlashCommand {
-        name: "/reflect",
-        description: "Run Graphify deterministic work-memory reflection",
-        usage: "/reflect",
-    },
-    SlashCommand {
-        name: "/search",
-        description: "Run SQLite FTS5 BM25 search across tasks and logs",
-        usage: "/search <query>",
-    },
-    SlashCommand {
-        name: "/doctor",
-        description: "Run 8-category system diagnostics and self-healing",
-        usage: "/doctor [--fix]",
-    },
-    SlashCommand {
-        name: "/recipe",
-        description: "Auto-detect project bootstrap, build, and test recipes",
-        usage: "/recipe",
-    },
-    SlashCommand {
-        name: "/lsp",
-        description: "Inspect language servers and compiler diagnostics",
-        usage: "/lsp [status|diag]",
-    },
-    SlashCommand {
-        name: "/subagents",
-        description: "Inspect autonomous subagent swarm workers",
-        usage: "/subagents",
-    },
-    SlashCommand {
-        name: "/react",
-        description: "Toggle autonomous multi-turn ReAct mode",
-        usage: "/react [on|off]",
-    },
-    SlashCommand {
-        name: "/clear",
-        description: "Clear dialogue history viewport",
-        usage: "/clear",
-    },
-    SlashCommand {
-        name: "/quit",
-        description: "Exit HEX terminal cockpit",
-        usage: "/quit",
-    },
-];
+/// TUI slash commands come from the shared command catalog (F06): the same
+/// JSON that drives Python console help/completion and ACP dispatch. Only
+/// entries marked supported on the `tui` surface are offered here.
+pub fn available_slash_commands() -> &'static [SlashCommand] {
+    static COMMANDS: std::sync::OnceLock<Vec<SlashCommand>> = std::sync::OnceLock::new();
+    COMMANDS.get_or_init(|| {
+        #[derive(serde::Deserialize)]
+        struct CatalogEntry {
+            name: String,
+            usage: String,
+            description: String,
+            #[serde(default)]
+            surfaces: std::collections::HashMap<String, String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Catalog {
+            commands: Vec<CatalogEntry>,
+        }
+        let catalog: Catalog = serde_json::from_str(include_str!(
+            "../../../src/harness_core/client/command_catalog.json"
+        ))
+        .expect("embedded command catalog must parse");
+        catalog
+            .commands
+            .into_iter()
+            .filter(|e| e.surfaces.get("tui").map(|s| s == "supported").unwrap_or(false))
+            .map(|e| SlashCommand {
+                name: e.name,
+                description: e.description,
+                usage: e.usage,
+            })
+            .collect()
+    })
+}
 
 /// Top-level application state.
 pub struct App {
@@ -207,6 +215,7 @@ pub struct App {
     pub skin_name: String,
 
     // Navigation and layout
+    pub screen_state: ScreenState,
     pub mode: String,
     pub focus: Focus,
     pub show_help: bool,
@@ -217,7 +226,7 @@ pub struct App {
     pub busy_started_at: Option<std::time::Instant>,
     pub status_message: String,
     pub active_turn_has_streamed: bool,
-    pub last_delta_received_at: Option<std::time::Instant>,
+    pub cancel_requested: bool,
 
     // Dialogue items and scrolling
     pub dialogue_items: Vec<DialogueItem>,
@@ -228,6 +237,28 @@ pub struct App {
     pub active_diff: Option<UnifiedDiff>,
     pub raw_diff: Option<String>,
     pub diff_scroll: usize,
+
+    // Right Rail & Telemetry
+    pub plan_steps: Vec<PlanStep>,
+    pub changed_files: Vec<ChangedFile>,
+    pub subagents: Vec<SubagentTelemetry>,
+    pub resume_sessions: Vec<ResumeSession>,
+    pub selected_resume_index: usize,
+    pub show_all_resume: bool,
+    pub tokens_used: usize,
+    pub max_tokens: usize,
+    pub modified_files_count: usize,
+    pub indexed_files_count: usize,
+    pub current_thought: Option<String>,
+    pub thinking_status: Option<String>,
+
+    // Overlay modals (Palette, Subagent, Permission)
+    pub show_palette: bool,
+    pub palette_query: String,
+    pub selected_palette_index: usize,
+    pub palette_items: Vec<PaletteItem>,
+    pub active_subagent_modal: Option<SubagentModalState>,
+    pub selected_permission_index: usize,
 
     // Command input & history
     pub input_buffer: String,
@@ -245,10 +276,25 @@ pub struct App {
     // Approval interrupt modal
     pub active_approval: Option<ApprovalRequest>,
 
+    // Inline diagnostic failure card
+    pub active_diagnostic: Option<DiagnosticFailure>,
+
     // One shared clock powers every animated surface.  Widgets never create
     // timers of their own, which keeps redraw cost predictable.
     pub animation_frame: u64,
     pub session_started: Instant,
+
+    // Mouse hover tracking and animated transitions
+    pub mouse_pos: Option<(u16, u16)>,
+    pub hovered_resume_row: Option<usize>,
+    pub hovered_delete_row: Option<usize>,
+    pub hovered_input_box: bool,
+    pub hovered_shortcut_hint: Option<usize>,
+    pub row_hover_levels: Vec<f32>,
+    pub delete_hover_levels: Vec<f32>,
+    pub input_hover_level: f32,
+    pub toggle_hover_level: f32,
+    pub shortcut_hover_levels: [f32; 4],
 }
 
 pub fn detect_git_info(dir: &std::path::Path) -> (String, String) {
@@ -303,6 +349,630 @@ pub fn detect_default_skin() -> String {
     }
 }
 
+pub fn detect_git_status_counts(dir: &std::path::Path) -> (usize, usize) {
+    let modified = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0);
+
+    let indexed = std::process::Command::new("git")
+        .args(["ls-files"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0);
+
+    (modified, indexed)
+}
+
+pub fn detect_changed_files_from_git(dir: &std::path::Path) -> Vec<ChangedFile> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--numstat", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .or_else(|| {
+            std::process::Command::new("git")
+                .args(["diff", "--numstat"])
+                .current_dir(dir)
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+        })
+        .unwrap_or_default();
+
+    let mut files = Vec::new();
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() == 3 {
+            let additions = parts[0].parse::<usize>().unwrap_or(0);
+            let deletions = parts[1].parse::<usize>().unwrap_or(0);
+            let path = parts[2].to_string();
+            files.push(ChangedFile {
+                path,
+                additions,
+                deletions,
+            });
+        }
+    }
+    files
+}
+
+pub fn extract_plan_steps_from_text(text: &str) -> Vec<PlanStep> {
+    let mut steps = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("- [x] ")
+            .or_else(|| trimmed.strip_prefix("* [x] "))
+            .or_else(|| trimmed.strip_prefix("[x] "))
+        {
+            steps.push(PlanStep {
+                title: rest.trim().to_string(),
+                status: StepStatus::Completed,
+            });
+        } else if let Some(rest) = trimmed.strip_prefix("- [>] ")
+            .or_else(|| trimmed.strip_prefix("* [>] "))
+            .or_else(|| trimmed.strip_prefix("[>] "))
+        {
+            steps.push(PlanStep {
+                title: rest.trim().to_string(),
+                status: StepStatus::Active,
+            });
+        } else if let Some(rest) = trimmed.strip_prefix("- [ ] ")
+            .or_else(|| trimmed.strip_prefix("* [ ] "))
+            .or_else(|| trimmed.strip_prefix("[ ] "))
+        {
+            steps.push(PlanStep {
+                title: rest.trim().to_string(),
+                status: StepStatus::Pending,
+            });
+        }
+    }
+    steps
+}
+
+pub fn detect_gsd_plan_steps(dir: &std::path::Path) -> Vec<PlanStep> {
+    let phases_dir = dir.join(".gsd").join("phases");
+    if !phases_dir.is_dir() {
+        return Vec::new();
+    }
+
+    let mut entries: Vec<_> = match std::fs::read_dir(&phases_dir) {
+        Ok(read_dir) => read_dir.filter_map(|e| e.ok()).collect(),
+        Err(_) => return Vec::new(),
+    };
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries.into_iter().rev() {
+        if entry.path().is_dir() {
+            if let Ok(plan_dir) = std::fs::read_dir(entry.path()) {
+                let mut plan_files: Vec<_> = plan_dir
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        name.ends_with("-PLAN.md") || name == "PLAN.md"
+                    })
+                    .collect();
+                plan_files.sort_by_key(|e| e.file_name());
+
+                if let Some(latest_plan) = plan_files.last() {
+                    if let Ok(content) = std::fs::read_to_string(latest_plan.path()) {
+                        let mut steps = Vec::new();
+                        for line in content.lines() {
+                            let trimmed = line.trim();
+                            if trimmed.starts_with("<task") && trimmed.contains("title=\"") {
+                                if let Some(start) = trimmed.find("title=\"") {
+                                    let rest = &trimmed[start + 7..];
+                                    if let Some(end) = rest.find('"') {
+                                        let title = rest[..end].to_string();
+                                        steps.push(PlanStep {
+                                            title,
+                                            status: StepStatus::Pending,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        if !steps.is_empty() {
+                            if let Some(first) = steps.first_mut() {
+                                first.status = StepStatus::Active;
+                            }
+                            return steps;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+pub fn fmt_relative_time(created_at_str: &str) -> String {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(created_at_str) {
+        let now = chrono::Utc::now();
+        let diff = now.signed_duration_since(dt.with_timezone(&chrono::Utc));
+        if diff.num_minutes() < 1 {
+            "just now".to_string()
+        } else if diff.num_minutes() < 60 {
+            format!("{}m", diff.num_minutes())
+        } else if diff.num_hours() < 24 {
+            format!("{}h", diff.num_hours())
+        } else if diff.num_days() == 1 {
+            "yesterday".to_string()
+        } else {
+            format!("{}d", diff.num_days())
+        }
+    } else {
+        "recently".to_string()
+    }
+}
+
+pub fn get_sqlite_command() -> std::process::Command {
+    // Prefer native system binaries with complete FTS5 extension support over stripped SDK binaries
+    for candidate in &["/usr/bin/sqlite3", "/opt/homebrew/bin/sqlite3", "/usr/local/bin/sqlite3"] {
+        if std::path::Path::new(candidate).exists() {
+            return std::process::Command::new(candidate);
+        }
+    }
+    std::process::Command::new("sqlite3")
+}
+
+pub fn load_real_resume_sessions(dir: &std::path::Path) -> Vec<ResumeSession> {
+    let db_path = dir.join(".hex").join("data").join("ledger.db");
+    if !db_path.exists() {
+        return Vec::new();
+    }
+
+    let mut cmd = get_sqlite_command();
+    let output = cmd
+        .args([
+            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
+            "-separator",
+            "|",
+            "SELECT task_id, goal, created_at FROM tasks ORDER BY created_at DESC LIMIT 50;",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+
+    let mut sessions = Vec::new();
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() >= 3 {
+            let session_id = parts[0].trim().to_string();
+            let title = parts[1].trim().to_string();
+            let created_at = parts[2].trim();
+            let relative_time = fmt_relative_time(created_at);
+            if !title.is_empty() {
+                sessions.push(ResumeSession {
+                    title,
+                    relative_time,
+                    session_id,
+                });
+            }
+        }
+    }
+    sessions
+}
+
+pub fn delete_session_from_db(dir: &std::path::Path, task_id: &str) -> bool {
+    let db_path = dir.join(".hex").join("data").join("ledger.db");
+    if !db_path.exists() {
+        return false;
+    }
+
+    let clean_id = task_id.replace('\'', "''");
+    // 1. Delete from standard relational tables (guaranteed standard tables, never dependent on FTS5)
+    let sql_core = format!(
+        "DELETE FROM tool_calls WHERE task_id = '{id}'; \
+         DELETE FROM task_events WHERE task_id = '{id}'; \
+         DELETE FROM attempts WHERE task_id = '{id}'; \
+         DELETE FROM plans WHERE task_id = '{id}'; \
+         DELETE FROM checkpoints WHERE task_id = '{id}'; \
+         DELETE FROM approvals WHERE task_id = '{id}'; \
+         DELETE FROM artifacts WHERE task_id = '{id}'; \
+         DELETE FROM proof_bundles WHERE task_id = '{id}'; \
+         DELETE FROM leases WHERE task_id = '{id}'; \
+         DELETE FROM tasks WHERE task_id = '{id}';",
+        id = clean_id
+    );
+
+    let mut cmd_core = get_sqlite_command();
+    let res = cmd_core
+        .args([db_path.to_str().unwrap_or(".hex/data/ledger.db"), &sql_core])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    let success = res.map(|o| o.status.success()).unwrap_or(false);
+
+    // 2. Best-effort deletion from task_search_fts without leaking stderr to terminal screen buffer
+    let sql_fts = format!(
+        "DELETE FROM task_search_fts WHERE task_id = '{id}';",
+        id = clean_id
+    );
+    let mut cmd_fts = get_sqlite_command();
+    let _ = cmd_fts
+        .args([db_path.to_str().unwrap_or(".hex/data/ledger.db"), &sql_fts])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    success
+}
+
+pub fn load_session_dialogue_from_db(dir: &std::path::Path, task_id: &str) -> Vec<DialogueItem> {
+    let db_path = dir.join(".hex").join("data").join("ledger.db");
+    if !db_path.exists() {
+        return Vec::new();
+    }
+
+    let mut items = Vec::new();
+    let clean_id = task_id.replace('\'', "''");
+
+    // 1. Fetch user goal from tasks table
+    let task_sql = format!(
+        "SELECT goal, created_at FROM tasks WHERE task_id = '{}';",
+        clean_id
+    );
+    let mut cmd_task = get_sqlite_command();
+    let task_out = cmd_task
+        .args([
+            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
+            "-json",
+            &task_sql,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+
+    let mut task_goal = String::new();
+    let mut task_time = String::new();
+    if let Ok(records) = serde_json::from_str::<Vec<serde_json::Value>>(&task_out) {
+        if let Some(first) = records.first() {
+            task_goal = first.get("goal").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            task_time = first.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        }
+    }
+
+    if !task_goal.is_empty() {
+        items.push(DialogueItem::Message(MessageItem {
+            role: Role::User,
+            content: task_goal,
+            timestamp: fmt_relative_time(&task_time),
+        }));
+    }
+
+    // 2. Fetch tool calls
+    let tc_sql = format!(
+        "SELECT call_id, tool_id, arguments_redacted_json, result_json, status FROM tool_calls WHERE task_id = '{}' ORDER BY started_at;",
+        clean_id
+    );
+    let mut cmd_tc = get_sqlite_command();
+    let tc_out = cmd_tc
+        .args([
+            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
+            "-json",
+            &tc_sql,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+
+    if let Ok(tc_records) = serde_json::from_str::<Vec<serde_json::Value>>(&tc_out) {
+        for r in tc_records {
+            let id = r.get("call_id").and_then(|v| v.as_str()).unwrap_or("tc").to_string();
+            let tool = r.get("tool_id").and_then(|v| v.as_str()).unwrap_or("tool").to_string();
+            let args_raw = r.get("arguments_redacted_json").and_then(|v| v.as_str()).unwrap_or("{}");
+            let res_raw = r.get("result_json").and_then(|v| v.as_str()).unwrap_or("");
+            let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("COMPLETED");
+
+            let args_display = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(args_raw) {
+                if let Some(p) = parsed.get("path").and_then(|v| v.as_str()) {
+                    p.to_string()
+                } else if let Some(c) = parsed.get("command").and_then(|v| v.as_str()) {
+                    c.to_string()
+                } else {
+                    args_raw.to_string()
+                }
+            } else {
+                args_raw.to_string()
+            };
+
+            items.push(DialogueItem::ToolCall(ToolCallItem {
+                id,
+                tool,
+                args: args_display,
+                result: if res_raw.is_empty() { None } else { Some(res_raw.to_string()) },
+                duration_ms: Some(120),
+                exit_status: Some(format!("exit {}", if status == "FAILED" { "1" } else { "0" })),
+                collapsed: true,
+                started_at: None,
+            }));
+        }
+    }
+
+    // 3. Fetch assistant output from task_events
+    let ev_sql = format!(
+        "SELECT event_type, payload_json, occurred_at FROM task_events WHERE task_id = '{}' AND event_type IN ('STATE_SUCCEEDED', 'STATE_FAILED') ORDER BY sequence_no DESC LIMIT 1;",
+        clean_id
+    );
+    let mut cmd_ev = get_sqlite_command();
+    let ev_out = cmd_ev
+        .args([
+            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
+            "-json",
+            &ev_sql,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+
+    if let Ok(ev_records) = serde_json::from_str::<Vec<serde_json::Value>>(&ev_out) {
+        if let Some(ev) = ev_records.first() {
+            let ev_type = ev.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+            let payload_str = ev.get("payload_json").and_then(|v| v.as_str()).unwrap_or("{}");
+            let occurred_at = ev.get("occurred_at").and_then(|v| v.as_str()).unwrap_or("");
+
+            let mut assistant_text = String::new();
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload_str) {
+                if let Some(r) = parsed.get("result").and_then(|v| v.as_str()) {
+                    assistant_text = r.to_string();
+                } else if let Some(e) = parsed.get("error").and_then(|v| v.as_str()) {
+                    assistant_text = format!("Error: {}", e);
+                }
+            }
+
+            if assistant_text.is_empty() {
+                assistant_text = if ev_type == "STATE_SUCCEEDED" {
+                    "Task execution completed successfully.".to_string()
+                } else {
+                    "Task execution ended with an error.".to_string()
+                };
+            }
+
+            items.push(DialogueItem::Message(MessageItem {
+                role: Role::Assistant,
+                content: assistant_text,
+                timestamp: fmt_relative_time(occurred_at),
+            }));
+        }
+    }
+
+    items
+}
+
+pub fn load_session_plan_from_db(dir: &std::path::Path, task_id: &str) -> Vec<PlanStep> {
+    let db_path = dir.join(".hex").join("data").join("ledger.db");
+    if !db_path.exists() {
+        return Vec::new();
+    }
+
+    let clean_id = task_id.replace('\'', "''");
+    let sql = format!(
+        "SELECT dag_json FROM plans WHERE task_id = '{}' ORDER BY revision DESC LIMIT 1;",
+        clean_id
+    );
+    let mut cmd_plan = get_sqlite_command();
+    let out = cmd_plan
+        .args([
+            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
+            "-json",
+            &sql,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+
+    if let Ok(records) = serde_json::from_str::<Vec<serde_json::Value>>(&out) {
+        if let Some(first) = records.first() {
+            if let Some(dag_raw) = first.get("dag_json").and_then(|v| v.as_str()) {
+                if let Ok(steps) = serde_json::from_str::<Vec<serde_json::Value>>(dag_raw) {
+                    return steps
+                        .into_iter()
+                        .filter_map(|s| {
+                            let title = s.get("title").and_then(|v| v.as_str())?.to_string();
+                            let st = match s
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("PENDING")
+                            {
+                                "COMPLETED" | "SUCCEEDED" => StepStatus::Completed,
+                                "RUNNING" | "ACTIVE" => StepStatus::Active,
+                                _ => StepStatus::Pending,
+                            };
+                            Some(PlanStep { title, status: st })
+                        })
+                        .collect();
+                }
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+pub fn format_workspace_display(workspace_path: &str, project_id: &str) -> (String, String) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let norm_path = if !home.is_empty() && workspace_path.starts_with(&home) {
+        format!("~{}", &workspace_path[home.len()..])
+    } else {
+        workspace_path.to_string()
+    };
+
+    let p = std::path::Path::new(&norm_path);
+    let parent = p.parent()
+        .and_then(|par| par.to_str())
+        .map(|s| if s.ends_with('/') { s.to_string() } else { format!("{}/", s) })
+        .unwrap_or_else(|| "~/".to_string());
+
+    let leaf = if !project_id.is_empty() && project_id != "default" {
+        project_id.to_string()
+    } else {
+        p.file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("project")
+            .to_string()
+    };
+
+    (parent, leaf)
+}
+
+pub fn build_default_palette_items(model_name: &str) -> Vec<PaletteItem> {
+    vec![
+        PaletteItem {
+            category: "modes".to_string(),
+            title: "Switch to Plan mode".to_string(),
+            shortcut: "plan".to_string(),
+            command: "mode:plan".to_string(),
+        },
+        PaletteItem {
+            category: "modes".to_string(),
+            title: "Switch to Agent mode".to_string(),
+            shortcut: "agent".to_string(),
+            command: "mode:agent".to_string(),
+        },
+        PaletteItem {
+            category: "modes".to_string(),
+            title: "Switch to Review mode".to_string(),
+            shortcut: "review".to_string(),
+            command: "mode:review".to_string(),
+        },
+        PaletteItem {
+            category: "models".to_string(),
+            title: format!("Current: {}", model_name),
+            shortcut: "ctrl+m".to_string(),
+            command: "switch_model".to_string(),
+        },
+        PaletteItem {
+            category: "models".to_string(),
+            title: "Switch to gemini-3.8-pro".to_string(),
+            shortcut: "pro".to_string(),
+            command: "model:gemini-3.8-pro".to_string(),
+        },
+        PaletteItem {
+            category: "session".to_string(),
+            title: "Switch session".to_string(),
+            shortcut: "ctrl+s".to_string(),
+            command: "switch_session".to_string(),
+        },
+        PaletteItem {
+            category: "session".to_string(),
+            title: "Clear dialogue history".to_string(),
+            shortcut: "/clear".to_string(),
+            command: "dialogue:clear".to_string(),
+        },
+        PaletteItem {
+            category: "tools".to_string(),
+            title: "Inspect LSP diagnostics".to_string(),
+            shortcut: "/lsp".to_string(),
+            command: "tool:lsp".to_string(),
+        },
+        PaletteItem {
+            category: "tools".to_string(),
+            title: "Run system diagnostics".to_string(),
+            shortcut: "/doctor".to_string(),
+            command: "tool:doctor".to_string(),
+        },
+        PaletteItem {
+            category: "tools".to_string(),
+            title: "Search AST memories".to_string(),
+            shortcut: "/memory".to_string(),
+            command: "tool:memory".to_string(),
+        },
+    ]
+}
+
+pub fn resolve_fallback_model_context(model: &str) -> usize {
+    let m = model.to_lowercase().replace('.', "-");
+    if m.contains("gemma-4") || m.contains("gemma4") {
+        256_000
+    } else if m.contains("gemma-3") {
+        131_072
+    } else if m.contains("gemma") {
+        8_192
+    } else if m.contains("gemini") {
+        1_048_576
+    } else if m.contains("claude-opus-4") || m.contains("claude-sonnet-4") || m.contains("claude-opus-5") || m.contains("claude-sonnet-5") {
+        1_000_000
+    } else if m.contains("claude") {
+        200_000
+    } else if m.contains("gpt-6") || m.contains("gpt-5-4") || m.contains("gpt-5-5") || m.contains("gpt-5-6") {
+        1_050_000
+    } else if m.contains("gpt-5-4-mini") || m.contains("gpt-5-4-nano") || m.contains("gpt-5") {
+        400_000
+    } else if m.contains("gpt-4-1") {
+        1_047_576
+    } else if m.contains("gpt-4") || m.contains("o1-mini") || m.contains("o1-preview") {
+        128_000
+    } else if m.contains("o3") || m.contains("o1") {
+        200_000
+    } else if m.contains("deepseek-v4") || m.contains("deepseek-chat") || m.contains("deepseek-reasoner") || m.contains("deepseek-flash") {
+        1_000_000
+    } else if m.contains("deepseek") {
+        128_000
+    } else if m.contains("grok-4-fast") || m.contains("grok-4-20") {
+        2_000_000
+    } else if m.contains("grok-4-6") || m.contains("grok-4-5") || m.contains("grok-build-latest") {
+        500_000
+    } else if m.contains("grok-4-3") {
+        1_000_000
+    } else if m.contains("grok-4") || m.contains("grok-build") || m.contains("grok-code-fast") {
+        256_000
+    } else if m.contains("grok-composer") {
+        200_000
+    } else if m.contains("grok") {
+        131_072
+    } else if m.contains("kimi-k3") || m.contains("muse-spark") || m.contains("inkling") {
+        1_048_576
+    } else if m.contains("kimi") || m.contains("qwen3-coder") || m.contains("qwen3-max") {
+        262_144
+    } else if m.contains("minimax-m3") {
+        1_000_000
+    } else if m.contains("minimax") {
+        204_800
+    } else if m.contains("solar-mini") {
+        32_768
+    } else if m.contains("solar-pro2") {
+        65_536
+    } else if m.contains("solar-pro3") {
+        131_072
+    } else if m.contains("solar") {
+        524_288
+    } else if m.contains("llama") || m.contains("nemotron") || m.contains("qwen2-5") || m.contains("qwen") {
+        131_072
+    } else if m.contains("qwen3") {
+        1_000_000
+    } else {
+        256_000
+    }
+}
+
 impl App {
     pub fn new(
         project_id: impl Into<String>,
@@ -322,6 +992,10 @@ impl App {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
         let (branch, sha) = detect_git_info(&ws);
+        let (modified_files_count, indexed_files_count) = detect_git_status_counts(&ws);
+        let changed_files = detect_changed_files_from_git(&ws);
+        let plan_steps = Vec::new(); // Starts empty; populated dynamically during session
+        let resume_sessions = load_real_resume_sessions(&ws);
 
         let model_str = model_name.into();
         let resolved_model = if model_str.is_empty() || model_str == "default" {
@@ -329,6 +1003,8 @@ impl App {
         } else {
             model_str
         };
+        let palette_items = build_default_palette_items(&resolved_model);
+        let default_max_tokens = resolve_fallback_model_context(&resolved_model);
 
         let mut app = Self {
             session_id: "ses_default".to_string(),
@@ -347,6 +1023,7 @@ impl App {
             connection_status: "Connected".to_string(),
             skin_name: detect_default_skin(),
 
+            screen_state: ScreenState::Start,
             mode: "agent".to_string(),
             focus: Focus::Input,
             show_help: false,
@@ -357,7 +1034,7 @@ impl App {
             busy_started_at: None,
             status_message: "Ready".to_string(),
             active_turn_has_streamed: false,
-            last_delta_received_at: None,
+            cancel_requested: false,
 
             dialogue_items: Vec::new(),
             dialogue_scroll: 0,
@@ -366,6 +1043,26 @@ impl App {
             active_diff: None,
             raw_diff: None,
             diff_scroll: 0,
+
+            plan_steps,
+            changed_files,
+            subagents: Vec::new(),
+            resume_sessions,
+            selected_resume_index: 0,
+            show_all_resume: false,
+            tokens_used: 0,
+            max_tokens: default_max_tokens,
+            modified_files_count,
+            indexed_files_count,
+            current_thought: None,
+            thinking_status: None,
+
+            show_palette: false,
+            palette_query: String::new(),
+            selected_palette_index: 0,
+            palette_items,
+            active_subagent_modal: None,
+            selected_permission_index: 0,
 
             input_buffer: String::new(),
             cursor_pos: 0,
@@ -377,8 +1074,20 @@ impl App {
             suggestion_index: 0,
 
             active_approval: None,
+            active_diagnostic: None,
             animation_frame: 0,
             session_started: Instant::now(),
+
+            mouse_pos: None,
+            hovered_resume_row: None,
+            hovered_delete_row: None,
+            hovered_input_box: false,
+            hovered_shortcut_hint: None,
+            row_hover_levels: vec![0.0; 12],
+            delete_hover_levels: vec![0.0; 12],
+            input_hover_level: 0.0,
+            toggle_hover_level: 0.0,
+            shortcut_hover_levels: [0.0; 4],
         };
 
         // Seed with welcome messages
@@ -394,6 +1103,7 @@ impl App {
 
     /// Add a user message to dialogue history.
     pub fn add_user_message(&mut self, content: &str) {
+        self.screen_state = ScreenState::Session;
         self.dialogue_items.push(DialogueItem::Message(MessageItem {
             role: Role::User,
             content: content.to_string(),
@@ -404,6 +1114,11 @@ impl App {
 
     /// Add an assistant response message to dialogue history.
     pub fn add_assistant_message(&mut self, content: &str) {
+        self.screen_state = ScreenState::Session;
+        let detected = extract_plan_steps_from_text(content);
+        if !detected.is_empty() {
+            self.plan_steps = detected;
+        }
         self.dialogue_items.push(DialogueItem::Message(MessageItem {
             role: Role::Assistant,
             content: content.to_string(),
@@ -412,10 +1127,21 @@ impl App {
         self.scroll_dialogue_to_bottom();
     }
 
+    /// Replay a loaded session transcript so resumed conversations keep their dialogue.
+    pub fn replay_session_history(&mut self, history: &[hex_protocol::models::SessionHistoryTurn]) {
+        for turn in history {
+            if !turn.prompt.is_empty() {
+                self.add_user_message(&turn.prompt);
+            }
+            if !turn.response.is_empty() {
+                self.add_assistant_message(&turn.response);
+            }
+        }
+    }
+
     /// Append a streaming token delta to the active Assistant message, or create one if none exists.
     pub fn append_assistant_delta(&mut self, delta: &str) {
         self.active_turn_has_streamed = true;
-        self.last_delta_received_at = Some(std::time::Instant::now());
         if let Some(DialogueItem::Message(msg)) = self.dialogue_items.last_mut() {
             if msg.role == Role::Assistant {
                 msg.content.push_str(delta);
@@ -436,6 +1162,350 @@ impl App {
         self.scroll_dialogue_to_bottom();
     }
 
+    /// Toggle between showing top 3 and all previous resume sessions.
+    pub fn toggle_show_all_resume(&mut self) {
+        self.show_all_resume = !self.show_all_resume;
+    }
+
+    /// Delete a session from local database and remove it from the resume list.
+    pub fn delete_resume_session(&mut self, idx: usize) -> bool {
+        if idx >= self.resume_sessions.len() {
+            return false;
+        }
+        let removed = self.resume_sessions.remove(idx);
+        if idx < self.row_hover_levels.len() {
+            self.row_hover_levels.remove(idx);
+        }
+        if idx < self.delete_hover_levels.len() {
+            self.delete_hover_levels.remove(idx);
+        }
+        let ws = std::path::PathBuf::from(&self.workspace_path);
+        delete_session_from_db(&ws, &removed.session_id);
+        if self.selected_resume_index >= self.resume_sessions.len() && !self.resume_sessions.is_empty() {
+            self.selected_resume_index = self.resume_sessions.len() - 1;
+        }
+        self.status_message = format!("Deleted session: {}", removed.title);
+        true
+    }
+
+    /// Recalculate context window token usage from live dialogue items.
+    pub fn recalculate_tokens(&mut self) {
+        let mut chars = 0;
+        for item in &self.dialogue_items {
+            match item {
+                DialogueItem::Message(m) => chars += m.content.len(),
+                DialogueItem::ToolCall(tc) => {
+                    chars += tc.args.len();
+                    if let Some(r) = &tc.result {
+                        chars += r.len();
+                    }
+                }
+            }
+        }
+        let est_tokens = chars / 4;
+        self.tokens_used = est_tokens.max(self.tokens_used);
+    }
+
+    /// Dynamically update the maximum context window ceiling (Hermes parity).
+    pub fn set_max_tokens(&mut self, tokens: usize) {
+        if tokens > 0 {
+            self.max_tokens = tokens;
+        }
+    }
+
+    /// Resume an existing session by loading its conversation history, tool calls, and plan from the local database.
+    pub fn resume_session(&mut self, session_id: &str) -> bool {
+        let ws = std::path::PathBuf::from(&self.workspace_path);
+        let items = load_session_dialogue_from_db(&ws, session_id);
+        self.session_id = session_id.to_string();
+        self.screen_state = ScreenState::Session;
+        if !items.is_empty() {
+            self.dialogue_items = items;
+        } else if let Some(s) = self.resume_sessions.iter().find(|s| s.session_id == session_id) {
+            self.dialogue_items = vec![
+                DialogueItem::Message(MessageItem {
+                    role: Role::User,
+                    content: s.title.clone(),
+                    timestamp: s.relative_time.clone(),
+                }),
+                DialogueItem::Message(MessageItem {
+                    role: Role::Assistant,
+                    content: "Resumed previous session.".to_string(),
+                    timestamp: "now".to_string(),
+                }),
+            ];
+        }
+        self.plan_steps = load_session_plan_from_db(&ws, session_id);
+        self.input_buffer.clear();
+        self.cursor_pos = 0;
+        self.recalculate_tokens();
+        self.scroll_dialogue_to_bottom();
+        self.status_message = format!("Resumed session {}", session_id);
+        true
+    }
+
+    /// Deterministically calculate the exact Rect bounds of the start screen resume section.
+    pub fn get_start_resume_area(&self, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+        let content_width = if area.width <= 70 {
+            area.width.saturating_sub(4)
+        } else if area.width <= 100 {
+            (area.width * 75 / 100).clamp(60, 76)
+        } else if area.width <= 140 {
+            (area.width * 60 / 100).clamp(72, 96)
+        } else {
+            (area.width * 52 / 100).clamp(80, 126)
+        };
+
+        let visible_sessions_count = if self.show_all_resume {
+            self.resume_sessions.len().min(10)
+        } else {
+            self.resume_sessions.len().min(3)
+        };
+        let has_toggle = self.resume_sessions.len() > 3;
+        let resume_rows = if self.resume_sessions.is_empty() {
+            2
+        } else {
+            1 + visible_sessions_count as u16 + if has_toggle { 1 } else { 0 }
+        };
+        let content_height = 23_u16;
+        let top_pad = area.height.saturating_sub(content_height) / 2;
+
+        let v_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(top_pad),
+                ratatui::layout::Constraint::Length(4),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(5),
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(resume_rows),
+                ratatui::layout::Constraint::Min(0),
+            ])
+            .split(area);
+
+        let w = content_width.min(v_chunks[8].width);
+        let x = v_chunks[8].x + (v_chunks[8].width.saturating_sub(w)) / 2;
+        ratatui::layout::Rect {
+            x,
+            y: v_chunks[8].y,
+            width: w,
+            height: v_chunks[8].height,
+        }
+    }
+
+    /// Calculate exact Rect bounds of the start screen prompt card.
+    pub fn get_start_prompt_area(&self, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+        let content_width = if area.width <= 70 {
+            area.width.saturating_sub(4)
+        } else if area.width <= 100 {
+            (area.width * 75 / 100).clamp(60, 76)
+        } else if area.width <= 140 {
+            (area.width * 60 / 100).clamp(72, 96)
+        } else {
+            (area.width * 52 / 100).clamp(80, 126)
+        };
+        let content_height = 23_u16;
+        let top_pad = area.height.saturating_sub(content_height) / 2;
+
+        let v_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(top_pad),
+                ratatui::layout::Constraint::Length(4),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(5),
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(5),
+                ratatui::layout::Constraint::Min(0),
+            ])
+            .split(area);
+
+        let w = content_width.min(v_chunks[5].width);
+        let x = v_chunks[5].x + (v_chunks[5].width.saturating_sub(w)) / 2;
+        ratatui::layout::Rect {
+            x,
+            y: v_chunks[5].y,
+            width: w,
+            height: v_chunks[5].height,
+        }
+    }
+
+    /// Calculate exact Rect bounds of the start screen keyboard shortcut hints.
+    pub fn get_start_hints_area(&self, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+        let content_width = if area.width <= 70 {
+            area.width.saturating_sub(4)
+        } else if area.width <= 100 {
+            (area.width * 75 / 100).clamp(60, 76)
+        } else if area.width <= 140 {
+            (area.width * 60 / 100).clamp(72, 96)
+        } else {
+            (area.width * 52 / 100).clamp(80, 126)
+        };
+        let content_height = 23_u16;
+        let top_pad = area.height.saturating_sub(content_height) / 2;
+
+        let v_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(top_pad),
+                ratatui::layout::Constraint::Length(4),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(5),
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(5),
+                ratatui::layout::Constraint::Min(0),
+            ])
+            .split(area);
+
+        let w = content_width.min(v_chunks[6].width);
+        let x = v_chunks[6].x + (v_chunks[6].width.saturating_sub(w)) / 2;
+        ratatui::layout::Rect {
+            x,
+            y: v_chunks[6].y,
+            width: w,
+            height: v_chunks[6].height,
+        }
+    }
+
+    /// Calculate exact Rect bounds of the session screen composer input card.
+    pub fn get_session_composer_area(&self, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+        let v_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Min(10),
+            ])
+            .split(area);
+        let rail_width = ((v_chunks[2].width as f32 * 0.23).round() as u16)
+            .clamp(28, 44)
+            .min(v_chunks[2].width.saturating_sub(40));
+        let h_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Min(40),
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(rail_width),
+            ])
+            .split(v_chunks[2]);
+        let c_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Min(6),
+                ratatui::layout::Constraint::Length(3),
+                ratatui::layout::Constraint::Length(1),
+            ])
+            .split(h_chunks[0]);
+        c_chunks[1]
+    }
+
+    /// Handle mouse move events and update interactive hover targeting.
+    pub fn handle_mouse_move(&mut self, col: u16, row: u16, term_rect: ratatui::layout::Rect) {
+        self.mouse_pos = Some((col, row));
+        if self.screen_state == ScreenState::Start {
+            let resume_rect = self.get_start_resume_area(term_rect);
+            let prompt_rect = self.get_start_prompt_area(term_rect);
+            let hints_rect = self.get_start_hints_area(term_rect);
+
+            // 1. Resume section hover hit-testing
+            if col >= resume_rect.x
+                && col < resume_rect.x + resume_rect.width
+                && row > resume_rect.y
+                && row < resume_rect.y + resume_rect.height
+            {
+                let relative_row = row.saturating_sub(resume_rect.y + 1) as usize;
+                let visible_count = if self.show_all_resume {
+                    self.resume_sessions.len().min(10)
+                } else {
+                    self.resume_sessions.len().min(3)
+                };
+                let has_toggle = self.resume_sessions.len() > 3;
+
+                if relative_row < visible_count && relative_row < self.resume_sessions.len() {
+                    self.hovered_resume_row = Some(relative_row);
+                    if col >= resume_rect.x + resume_rect.width.saturating_sub(6) {
+                        self.hovered_delete_row = Some(relative_row);
+                    } else {
+                        self.hovered_delete_row = None;
+                    }
+                } else if relative_row == visible_count && has_toggle {
+                    self.hovered_resume_row = Some(visible_count);
+                    self.hovered_delete_row = None;
+                } else {
+                    self.hovered_resume_row = None;
+                    self.hovered_delete_row = None;
+                }
+            } else {
+                self.hovered_resume_row = None;
+                self.hovered_delete_row = None;
+            }
+
+            // 2. Prompt card hover hit-testing
+            self.hovered_input_box = col >= prompt_rect.x
+                && col < prompt_rect.x + prompt_rect.width
+                && row >= prompt_rect.y
+                && row < prompt_rect.y + prompt_rect.height;
+
+            // 3. Shortcut hints hover hit-testing
+            if col >= hints_rect.x && col < hints_rect.x + hints_rect.width && row == hints_rect.y {
+                let seg_width = hints_rect.width / 4;
+                if seg_width > 0 {
+                    let seg_idx = (col.saturating_sub(hints_rect.x) / seg_width) as usize;
+                    self.hovered_shortcut_hint = if seg_idx < 4 { Some(seg_idx) } else { None };
+                } else {
+                    self.hovered_shortcut_hint = None;
+                }
+            } else {
+                self.hovered_shortcut_hint = None;
+            }
+        } else if self.screen_state == ScreenState::Session {
+            let composer_rect = self.get_session_composer_area(term_rect);
+            self.hovered_input_box = col >= composer_rect.x
+                && col < composer_rect.x + composer_rect.width
+                && row >= composer_rect.y
+                && row < composer_rect.y + composer_rect.height;
+        }
+    }
+
+    /// Handle mouse click inside the Start screen resume sessions area.
+    pub fn handle_start_mouse_click(&mut self, col: u16, row: u16, rect: ratatui::layout::Rect) -> bool {
+        if col >= rect.x && col < rect.x + rect.width && row > rect.y && row < rect.y + rect.height {
+            let relative_row = row.saturating_sub(rect.y + 1) as usize;
+            let visible_count = if self.show_all_resume {
+                self.resume_sessions.len().min(10)
+            } else {
+                self.resume_sessions.len().min(3)
+            };
+            let has_toggle = self.resume_sessions.len() > 3;
+
+            if relative_row < visible_count && relative_row < self.resume_sessions.len() {
+                // Rightmost 6 columns of the row is the '✕' delete button area
+                if col >= rect.x + rect.width.saturating_sub(6) {
+                    self.delete_resume_session(relative_row);
+                    return true;
+                } else {
+                    self.selected_resume_index = relative_row;
+                    let sid = self.resume_sessions[relative_row].session_id.clone();
+                    self.resume_session(&sid);
+                    return true;
+                }
+            } else if relative_row == visible_count && has_toggle {
+                self.toggle_show_all_resume();
+                return true;
+            }
+        }
+        false
+    }
+
     /// Add a tool call block to dialogue history.
     pub fn add_tool_call(
         &mut self,
@@ -445,6 +1515,7 @@ impl App {
         duration_ms: Option<u64>,
         status: Option<&str>,
     ) {
+        self.screen_state = ScreenState::Session;
         self.dialogue_items
             .push(DialogueItem::ToolCall(ToolCallItem {
                 id: id.to_string(),
@@ -565,6 +1636,7 @@ impl App {
 
     /// Load unified diff text into state and parse it.
     pub fn load_diff(&mut self, diff_text: &str) {
+        self.screen_state = ScreenState::Session;
         self.raw_diff = Some(diff_text.to_string());
         self.active_diff = Some(UnifiedDiff::parse(diff_text));
         self.show_diff = true;
@@ -749,6 +1821,7 @@ impl App {
             return None;
         }
 
+        self.screen_state = ScreenState::Session;
         self.suggestion_index = self.suggestion_index.wrapping_add(1);
         self.command_history.push(trimmed.clone());
         self.history_index = None;
@@ -759,22 +1832,26 @@ impl App {
         Some(trimmed)
     }
 
+    pub fn switch_screen(&mut self, screen: ScreenState) {
+        self.screen_state = screen;
+    }
+
     pub fn update_slash_suggestions(&mut self) {
         let trimmed = self.input_buffer.trim_start();
         if trimmed.starts_with('/') {
             let filter = trimmed.split_whitespace().next().unwrap_or("/");
             if filter == "/" {
-                self.slash_suggestions = AVAILABLE_SLASH_COMMANDS.to_vec();
+                self.slash_suggestions = available_slash_commands().to_vec();
             } else {
                 let query = filter.strip_prefix('/').unwrap_or(filter).to_lowercase();
                 let mut prefix_matches = Vec::new();
                 let mut subseq_matches = Vec::new();
 
-                for cmd in AVAILABLE_SLASH_COMMANDS {
+                for cmd in available_slash_commands() {
                     let cmd_name_clean = cmd
                         .name
                         .strip_prefix('/')
-                        .unwrap_or(cmd.name)
+                        .unwrap_or(cmd.name.as_str())
                         .to_lowercase();
                     if cmd_name_clean.starts_with(&query) {
                         prefix_matches.push(cmd.clone());
@@ -869,6 +1946,78 @@ impl App {
 
     pub fn advance_animation(&mut self) {
         self.animation_frame = self.animation_frame.wrapping_add(1);
+
+        let visible_sessions = if self.show_all_resume {
+            self.resume_sessions.len().min(10)
+        } else {
+            self.resume_sessions.len().min(3)
+        };
+        let total_interactive = visible_sessions + if self.resume_sessions.len() > 3 { 1 } else { 0 };
+
+        if self.row_hover_levels.len() < total_interactive {
+            self.row_hover_levels.resize(total_interactive, 0.0);
+        }
+        if self.delete_hover_levels.len() < visible_sessions {
+            self.delete_hover_levels.resize(visible_sessions, 0.0);
+        }
+
+        for idx in 0..visible_sessions {
+            let is_row_active = self.hovered_resume_row == Some(idx)
+                || (self.hovered_resume_row.is_none() && self.selected_resume_index == idx);
+            let target = if is_row_active { 1.0_f32 } else { 0.0_f32 };
+            let current = self.row_hover_levels[idx];
+            let delta = target - current;
+            self.row_hover_levels[idx] = if delta.abs() < 0.02 {
+                target
+            } else {
+                current + delta * 0.35
+            };
+
+            let is_del_active = self.hovered_delete_row == Some(idx);
+            let del_target = if is_del_active { 1.0_f32 } else { 0.0_f32 };
+            let del_current = self.delete_hover_levels[idx];
+            let del_delta = del_target - del_current;
+            self.delete_hover_levels[idx] = if del_delta.abs() < 0.02 {
+                del_target
+            } else {
+                del_current + del_delta * 0.4
+            };
+        }
+
+        // Toggle row hover (show all / show less)
+        if self.resume_sessions.len() > 3 {
+            let is_toggle_active = self.hovered_resume_row == Some(visible_sessions)
+                || (self.hovered_resume_row.is_none() && self.selected_resume_index == visible_sessions);
+            let toggle_target = if is_toggle_active { 1.0_f32 } else { 0.0_f32 };
+            let toggle_delta = toggle_target - self.toggle_hover_level;
+            self.toggle_hover_level = if toggle_delta.abs() < 0.02 {
+                toggle_target
+            } else {
+                self.toggle_hover_level + toggle_delta * 0.35
+            };
+        } else {
+            self.toggle_hover_level = 0.0;
+        }
+
+        // Input card border hover (smooth 300ms transition matching .ask:hover{border-color:#666})
+        let input_target = if self.hovered_input_box || !self.input_buffer.is_empty() { 1.0_f32 } else { 0.0_f32 };
+        let input_delta = input_target - self.input_hover_level;
+        self.input_hover_level = if input_delta.abs() < 0.02 {
+            input_target
+        } else {
+            self.input_hover_level + input_delta * 0.3
+        };
+
+        // Shortcut hint badges hover
+        for i in 0..4 {
+            let target = if self.hovered_shortcut_hint == Some(i) { 1.0_f32 } else { 0.0_f32 };
+            let delta = target - self.shortcut_hover_levels[i];
+            self.shortcut_hover_levels[i] = if delta.abs() < 0.02 {
+                target
+            } else {
+                self.shortcut_hover_levels[i] + delta * 0.35
+            };
+        }
     }
 }
 
@@ -955,7 +2104,7 @@ mod tests {
         app.input_buffer = "/".to_string();
         app.cursor_pos = 1;
         app.update_slash_suggestions();
-        assert_eq!(app.slash_suggestions.len(), AVAILABLE_SLASH_COMMANDS.len());
+        assert_eq!(app.slash_suggestions.len(), available_slash_commands().len());
 
         // Test fuzzy subsequence matches
         app.input_buffer = "/ast".to_string();
@@ -1048,6 +2197,218 @@ mod tests {
             assert_eq!(msg.content, "Hello world!");
         } else {
             panic!("Expected Message item");
+        }
+    }
+
+    #[test]
+    fn test_resume_session_and_recalculate_tokens() {
+        let mut app = App::new("p1", "m1", "cow");
+        assert_eq!(app.screen_state, ScreenState::Start);
+        app.resume_sessions = vec![
+            ResumeSession {
+                session_id: "test_sess_1".to_string(),
+                title: "Refactor backend stream".to_string(),
+                relative_time: "5m".to_string(),
+            },
+            ResumeSession {
+                session_id: "test_sess_2".to_string(),
+                title: "Profile render loop".to_string(),
+                relative_time: "1h".to_string(),
+            },
+        ];
+
+        let resumed = app.resume_session("test_sess_1");
+        assert!(resumed);
+        assert_eq!(app.screen_state, ScreenState::Session);
+        assert_eq!(app.session_id, "test_sess_1");
+        assert!(!app.dialogue_items.is_empty());
+        assert!(app.status_message.contains("Resumed session test_sess_1"));
+    }
+
+    #[test]
+    fn test_toggle_show_all_resume_sessions() {
+        let mut app = App::new("p1", "m1", "cow");
+        assert!(!app.show_all_resume);
+        app.toggle_show_all_resume();
+        assert!(app.show_all_resume);
+        app.toggle_show_all_resume();
+        assert!(!app.show_all_resume);
+    }
+
+    #[test]
+    fn test_delete_resume_session() {
+        let mut app = App::new("p1", "m1", "cow");
+        app.resume_sessions = vec![
+            ResumeSession {
+                session_id: "s1".to_string(),
+                title: "Task 1".to_string(),
+                relative_time: "1m".to_string(),
+            },
+            ResumeSession {
+                session_id: "s2".to_string(),
+                title: "Task 2".to_string(),
+                relative_time: "2m".to_string(),
+            },
+        ];
+        app.selected_resume_index = 1;
+
+        let deleted = app.delete_resume_session(1);
+        assert!(deleted);
+        assert_eq!(app.resume_sessions.len(), 1);
+        assert_eq!(app.resume_sessions[0].session_id, "s1");
+        assert_eq!(app.selected_resume_index, 0);
+        assert!(app.status_message.contains("Deleted session: Task 2"));
+
+        // Out of bounds deletion returns false
+        assert!(!app.delete_resume_session(99));
+    }
+
+    #[test]
+    fn test_get_start_resume_area_bounds() {
+        let mut app = App::new("p1", "m1", "cow");
+        app.resume_sessions = vec![
+            ResumeSession {
+                session_id: "s1".to_string(),
+                title: "Task 1".to_string(),
+                relative_time: "1m".to_string(),
+            },
+            ResumeSession {
+                session_id: "s2".to_string(),
+                title: "Task 2".to_string(),
+                relative_time: "2m".to_string(),
+            },
+            ResumeSession {
+                session_id: "s3".to_string(),
+                title: "Task 3".to_string(),
+                relative_time: "3m".to_string(),
+            },
+            ResumeSession {
+                session_id: "s4".to_string(),
+                title: "Task 4".to_string(),
+                relative_time: "4m".to_string(),
+            },
+        ];
+
+        let rect_241x68 = app.get_start_resume_area(ratatui::layout::Rect::new(0, 0, 241, 68));
+        assert!(rect_241x68.width > 50 && rect_241x68.width <= 126);
+        assert_eq!(rect_241x68.height, 5); // 1 header + 3 items + 1 toggle
+
+        // Expand show all
+        app.toggle_show_all_resume();
+        let rect_expanded = app.get_start_resume_area(ratatui::layout::Rect::new(0, 0, 241, 68));
+        assert_eq!(rect_expanded.height, 6); // 1 header + 4 items + 1 toggle
+    }
+
+    #[test]
+    fn test_hover_detection_and_smooth_animation_transitions() {
+        let mut app = App::new("p1", "m1", "cow");
+        app.resume_sessions = vec![
+            ResumeSession {
+                session_id: "s1".to_string(),
+                title: "Task 1".to_string(),
+                relative_time: "1m".to_string(),
+            },
+            ResumeSession {
+                session_id: "s2".to_string(),
+                title: "Task 2".to_string(),
+                relative_time: "2m".to_string(),
+            },
+            ResumeSession {
+                session_id: "s3".to_string(),
+                title: "Task 3".to_string(),
+                relative_time: "3m".to_string(),
+            },
+            ResumeSession {
+                session_id: "s4".to_string(),
+                title: "Task 4".to_string(),
+                relative_time: "4m".to_string(),
+            },
+        ];
+
+        let term_rect = ratatui::layout::Rect::new(0, 0, 120, 36);
+        let resume_rect = app.get_start_resume_area(term_rect);
+
+        // 1. Move mouse over row 1 (Task 2)
+        let row1_y = resume_rect.y + 2; // header is y, row 0 is y+1, row 1 is y+2
+        app.handle_mouse_move(resume_rect.x + 10, row1_y, term_rect);
+        assert_eq!(app.hovered_resume_row, Some(1));
+        assert_eq!(app.hovered_delete_row, None);
+
+        // Advance animation frame: hover level for row 1 should smoothly rise
+        let initial_row1 = app.row_hover_levels[1];
+        app.advance_animation();
+        assert!(app.row_hover_levels[1] > initial_row1);
+
+        // Advance several frames: row 1 approaches 1.0
+        for _ in 0..10 {
+            app.advance_animation();
+        }
+        assert!(app.row_hover_levels[1] > 0.9);
+
+        // 2. Move mouse directly over row 1's delete button '✕' (rightmost 5 cols)
+        let del_x = resume_rect.x + resume_rect.width - 2;
+        app.handle_mouse_move(del_x, row1_y, term_rect);
+        assert_eq!(app.hovered_delete_row, Some(1));
+
+        for _ in 0..10 {
+            app.advance_animation();
+        }
+        assert!(app.delete_hover_levels[1] > 0.9);
+
+        // 3. Move mouse away to prompt card
+        let prompt_rect = app.get_start_prompt_area(term_rect);
+        app.handle_mouse_move(prompt_rect.x + 5, prompt_rect.y + 1, term_rect);
+        assert!(app.hovered_input_box);
+        assert_eq!(app.hovered_resume_row, None);
+        assert_eq!(app.hovered_delete_row, None);
+
+        // Advance frames: prompt input level rises, row 1 and delete fade out towards 0.0
+        for _ in 0..15 {
+            app.advance_animation();
+        }
+        assert!(app.input_hover_level > 0.9);
+        assert!(app.row_hover_levels[1] < 0.1);
+        assert!(app.delete_hover_levels[1] < 0.1);
+    }
+
+    #[test]
+    fn tui_autocomplete_matches_shared_catalog() {
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            name: String,
+            #[serde(default)]
+            surfaces: std::collections::HashMap<String, String>,
+            #[serde(default)]
+            tui_local: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct Catalog {
+            commands: Vec<Entry>,
+        }
+        let catalog: Catalog = serde_json::from_str(include_str!(
+            "../../../src/harness_core/client/command_catalog.json"
+        ))
+        .unwrap();
+
+        let expected: Vec<&str> = catalog
+            .commands
+            .iter()
+            .filter(|e| e.surfaces.get("tui").map(|s| s == "supported").unwrap_or(false))
+            .map(|e| e.name.as_str())
+            .collect();
+        let offered: Vec<&str> = available_slash_commands().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(offered, expected, "TUI completion must mirror the shared catalog");
+
+        // Every TUI command is either handled locally or forwardable to ACP.
+        for e in &catalog.commands {
+            if e.surfaces.get("tui").map(|s| s == "supported").unwrap_or(false) {
+                let acp_ok = e.surfaces.get("acp").map(|s| s == "supported").unwrap_or(false);
+                assert!(
+                    e.tui_local || acp_ok,
+                    "{} is offered by the TUI but neither local nor ACP-supported",
+                    e.name
+                );
+            }
         }
     }
 }

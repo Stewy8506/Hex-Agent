@@ -28,14 +28,14 @@ if str(VENDOR_HARNESS2) not in sys.path and VENDOR_HARNESS2.is_dir():
     sys.path.insert(0, str(VENDOR_HARNESS2))
 
 from harness2.core.spec import BenchmarkAdapter, BenchSpec, RunView
-from harness_core.cli import main as cli_main
+from harness_core.client.cli import main as cli_main
 from harness_core.harness2_adapter import (
     LocalRouterProposer,
     OrchestratorBenchmarkAdapter,
     run_orchestrator_sweep,
 )
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.proof import OrchestratorBenchmarkAdapter as ProofBenchmarkAdapter
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.capabilities.proof import OrchestratorBenchmarkAdapter as ProofBenchmarkAdapter
 
 
 class TestHarness2BenchmarkAdapter(unittest.TestCase):
@@ -298,7 +298,7 @@ class TestHarness2BenchmarkAdapter(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_proof_reexport(self) -> None:
-        """Verify OrchestratorBenchmarkAdapter is re-exported from harness_core.proof."""
+        """Verify OrchestratorBenchmarkAdapter is re-exported from harness_core.capabilities.proof."""
         self.assertIs(ProofBenchmarkAdapter, OrchestratorBenchmarkAdapter)
 
 

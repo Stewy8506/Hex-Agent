@@ -5,7 +5,7 @@ import sys
 import time
 import unittest
 
-from harness_core.process_registry import (
+from harness_core.runtime.process_registry import (
     CircularOutputBuffer,
     ProcessRegistry,
     ProcessSession,

@@ -8,8 +8,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main as cli_main
-from harness_core.memory import (
+from harness_core.client.cli import main as cli_main
+from harness_core.cognition.memory import (
     AMEMController,
     CuratedMemoryStore,
     HistorySnapshotManager,
@@ -17,7 +17,7 @@ from harness_core.memory import (
     MemoryLifecycleManager,
     extract_wiki_tags,
 )
-from harness_core.tui import HexConsole
+from harness_core.client.tui import HexConsole
 
 
 class TestAMEMController(unittest.TestCase):

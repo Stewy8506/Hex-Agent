@@ -15,9 +15,9 @@ from harness_core.config_loader import (
     load_hex_environment,
     load_reasoning_effort,
 )
-from harness_core.onboard import update_config_yaml_model
+from harness_core.client.onboard import update_config_yaml_model
 from harness_core.providers.cloud_provider import CloudModelProvider, CloudProviderType
-from harness_core.reasoning_effort import (
+from harness_core.core.reasoning_effort import (
     ANTHROPIC_EFFORTS,
     DEEPSEEK_EFFORTS,
     EFFORT_LADDER,
@@ -30,8 +30,8 @@ from harness_core.reasoning_effort import (
     model_supports_reasoning,
     resolve_reasoning_effort,
 )
-from harness_core.router import TwoTierModelRouter
-from harness_core.tui import HexConsole
+from harness_core.core.router import TwoTierModelRouter
+from harness_core.client.tui import HexConsole
 
 
 class TestReasoningEffortLadderAndVocabularies(unittest.TestCase):

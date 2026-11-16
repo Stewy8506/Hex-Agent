@@ -246,7 +246,7 @@ class LanguageServerRegistry:
 
         # 1. Try detect_recipe if available
         try:
-            from harness_core.recipes import detect_recipe
+            from harness_core.capabilities.recipes import detect_recipe
 
             recipe = detect_recipe(root)
             if recipe:

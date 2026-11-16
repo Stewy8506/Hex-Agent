@@ -19,7 +19,7 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
-from harness_core.onboard import run_onboard_wizard
+from harness_core.client.onboard import run_onboard_wizard
 from harness_core.providers.antigravity_provider import (
     AntigravityModelProvider,
     AntigravityOAuthManager,
@@ -31,7 +31,7 @@ from harness_core.providers.cloud_provider import (
     CloudProviderType,
     fetch_available_models,
 )
-from harness_core.tui import HexConsole
+from harness_core.client.tui import HexConsole
 
 
 class MockHTTPResponse:
@@ -268,9 +268,9 @@ class TestInvertedOnboardingFlow(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    @patch("harness_core.onboard.fetch_available_models")
-    @patch("harness_core.onboard.prompt_secret")
-    @patch("harness_core.onboard.select_option")
+    @patch("harness_core.client.onboard.fetch_available_models")
+    @patch("harness_core.client.onboard.prompt_secret")
+    @patch("harness_core.client.onboard.select_option")
     def test_onboarding_authenticates_before_model_discovery(
         self,
         mock_select: MagicMock,
@@ -326,7 +326,7 @@ class TestTUIInteractiveModelSelector(unittest.TestCase):
         self.orchestrator.router = self.router
 
     @patch("harness_core.providers.cloud_provider.fetch_available_models")
-    @patch("harness_core.ui_selector.select_option")
+    @patch("harness_core.client.ui_selector.select_option")
     def test_interactive_model_switching(
         self,
         mock_select: MagicMock,

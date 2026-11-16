@@ -8,8 +8,10 @@ This runbook provides canonical operational instructions for deploying, monitori
 
 HEX operates as a resilient, distributed autonomous execution engine consisting of the following key planes:
 
-### 1.1 Control Plane
-- **CLI (`hex`)**: The primary command interface with specialized subcommands (`run`, `exec`, `task`, `chat`, `tui`, `voice`, `auth`, `quota`, `doctor`, `project`, `recipe`, `graphify`, `harness2-eval`, `gateway`, `server`, `daemon`, `uninstall`).
+### 1.1 Control Plane & Cockpits
+- **CLI (`hex`)**: The primary command interface with specialized subcommands (`run`/`exec`, `submit`, `status`, `chat`, `tui`, `voice`, `acp`, `up`, `auth`, `quota`, `doctor`, `project`, `recipe`, `graphify`, `eval`, `harness2-eval`, `gateway`, `schedule`, `daemon`, `gc`, `uninstall`).
+- **Native macOS GPUI Desktop Cockpit (experimental)**: GPU-accelerated native macOS application built with Zed's GPUI crate (`crates/hex-desktop`). The UI shell renders today; the live ACP chat flow is still being wired. Launch with `cargo run -p hex-desktop` — there is no `hex desktop` subcommand yet.
+- **Native Rust Terminal Cockpit (`hex tui`)**: 60 FPS Ratatui terminal cockpit (`crates/hex-tui`, <20MB RAM) with side-by-side split diffs (`/sbs`), fuzzy slash autocomplete, and true-color themes.
 - **REST API (`/v1/*`)**: Handles task submission (`POST /v1/tasks`), status inspection (`GET /v1/tasks/{id}`), dynamic DAG replanning, worker registration, and remote approval decisions on default port `8420`.
 - **SSE Event Stream (`GET /v1/tasks/{id}/events?stream=true`)**: Real-time event streaming for UI control surfaces and external monitors.
 - **Web Control Surface (`GET /`)**: Zero-dependency local dashboard for inspecting state machines, active DAG steps, and call journals.
@@ -45,9 +47,38 @@ HEX operates as a resilient, distributed autonomous execution engine consisting 
 
 ---
 
-## 2. Core CLI Operations Reference
+## 2. Core CLI & Cockpit Operations Reference
 
-### 2.1 Workspace & Project Administration
+### 2.1 Cockpit Interfaces: Native macOS GPUI Desktop & Ratatui TUI
+
+HEX provides two high-performance native frontends:
+
+#### 1. Native macOS GPUI Desktop Cockpit (experimental)
+Built with Zed's GPU-accelerated GPUI framework (`crates/hex-desktop`). The UI shell renders today; the live chat flow is still being wired to the ACP backend (see the fit-and-finish audit, F02/F04). There is no `hex desktop` subcommand yet.
+
+```bash
+# Compile and launch with Cargo (requires Xcode Metal toolchain):
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer cargo run -p hex-desktop
+```
+
+- **Features (UI shell)**: Metal rendering, blurred vibrancy (`WindowBackgroundAppearance::Blurred`), Dark Zinc styling, collapsible sidebar, streaming token feed layout, `<think>` reasoning folds, and ASCII token gauge layout. Live data wiring is in progress.
+- **Shortcuts (defined, wiring in progress)**: `⌘K` (Command Palette), `⌘N` (New Session), `⌘Enter` (Send), `⌘B` (Toggle Sidebar), `Esc` (Close Modal).
+- **Backend Bridge**: Spawns the Python ACP server as a stdio JSON-RPC 2.0 subprocess. Streaming deltas render; tool-call and completion events are being aligned with the server wire format.
+
+#### 2. Native Rust Terminal Cockpit (`hex tui`)
+Built with Ratatui (`crates/hex-tui`):
+
+```bash
+# Launch default interactive terminal session:
+hex
+
+# Explicitly launch Ratatui cockpit:
+hex tui
+```
+
+- **Features**: 60 FPS dual-buffer rendering, <20MB RAM footprint, natural history scrolling, fuzzy slash autocomplete (`/ast`, `/sbs`, `/rollback`), and side-by-side split diffs (`/sbs`).
+
+### 2.2 Workspace & Project Administration
 
 ```bash
 # List all registered projects
@@ -63,7 +94,7 @@ hex project use my-service
 hex project prune
 ```
 
-### 2.2 Model Provider Authentication & Quota Management
+### 2.3 Model Provider Authentication & Quota Management
 
 ```bash
 # Check active authentication session (Antigravity OAuth / API keys)
@@ -82,7 +113,7 @@ hex quota
 hex doctor
 ```
 
-### 2.3 Task Execution & Workflows
+### 2.4 Task Execution & Workflows
 
 ```bash
 # Submit an autonomous coding task in the active workspace
@@ -109,7 +140,7 @@ hex pin <task_id>
 hex unpin <task_id>
 ```
 
-### 2.4 Storage Hygiene, TTL Retention & Garbage Collection (`hex gc`)
+### 2.5 Storage Hygiene, TTL Retention & Garbage Collection (`hex gc`)
 
 HEX includes an automated, scoped retention engine to keep `.hex/data` lean without risking in-flight operations:
 
@@ -138,7 +169,7 @@ orphan_guard_seconds = 3600    # Protect unindexed scratchpads <1h old from race
 3. **Orphan Race Guard**: Ephemeral workspace directories created before database transaction commit are protected by a minimum age threshold (`mtime > 1h`).
 4. **Non-Blocking Vacuum Policy**: Background and startup sweeps run `PRAGMA incremental_vacuum;` to prevent SQLite lock contention; full `VACUUM` is strictly guarded.
 
-### 2.5 Controlled Self-Improvement (Google Research Harness²)
+### 2.6 Controlled Self-Improvement (Google Research Harness²)
 
 ```bash
 # Run parallel Propose-Probe-Compose sweep (k=2 iterations)
@@ -148,7 +179,7 @@ hex harness2-eval --task-id demo-1 --mode parallel --k 2
 hex harness2-eval --task-id ledger-1 --mode sequential --substrate codex --proposer llm --k 1 --json
 ```
 
-### 2.6 Polyglot Knowledge Graph & Blast-Radius Engine (Graphify)
+### 2.7 Polyglot Knowledge Graph & Blast-Radius Engine (Graphify)
 
 ```bash
 # Check Graphify CLI status and indexed graph stats
@@ -170,7 +201,7 @@ hex graphify affected calculate_discount
 hex graphify tree --out architecture.html
 ```
 
-### 2.7 Daemon & Service Management
+### 2.8 Daemon & Service Management
 
 ```bash
 # Start background worker daemon (processes background tasks and schedules)
@@ -189,17 +220,105 @@ hex daemon stop
 hex daemon uninstall
 ```
 
-### 2.8 Full System Teardown & Uninstallation
+### 2.9 Full System Teardown & Uninstallation
 
 ```bash
 # Dry-run inspection of uninstall actions
 hex uninstall --dry-run
 
-# Interactive uninstall preserving data directories
-hex uninstall
+# Non-interactive uninstall preserving configuration and history
+hex uninstall -y --keep-data
 
 # Complete purge removing all services, symlinks, and stored data (~/.hex, /var/lib/harness)
 hex uninstall -y --purge
+```
+
+Uninstall removes the CLI wrappers (`~/.local/bin/hex`, `harness`, `hex-tui`)
+and the installed native binaries under `~/.hex/bin` — these are program
+files, removed even with `--keep-data`. User configuration, credentials, and
+the ledger are preserved unless `--purge` is given. Remove the Python package
+itself with `pip uninstall -y hex-ai`.
+
+**Install / upgrade contract:** the wheel carries the CLI, ACP server, and
+vendored engines (no compiler needed). The native cockpit is a
+checksum-verified release artifact placed at `~/.hex/bin/hex-tui` by
+`install.sh` / `install.ps1`; re-running the installer upgrades both in
+place. Source builds are explicit developer options only
+(`./install.sh --build-native`, `hex tui --build`, `HEX_DEV_BUILD=1`). If the
+native binary is missing, HEX reports it honestly and `hex --legacy` (Python
+console) remains fully supported. The release pipeline smoke-tests this
+contract with an isolated home, outside the checkout, on a PATH without
+cargo (`.github/workflows/release.yml`).
+
+### 2.10 Conversational Timeline Rewind & Branching (`/rewind`)
+
+Rewind conversation dialogue buffers and rollback sandbox states:
+
+```bash
+# Inside interactive console or desktop:
+/rewind 3         # Rewind to specific turn 3
+/rewind -2        # Rewind back 2 turns from current turn
+
+# Operational verification of soft branching in SQLite ledger:
+sqlite3 ~/.hex/data/ledger.db "SELECT task_id, branch_id, goal, updated_at FROM tasks ORDER BY updated_at DESC LIMIT 5;"
+```
+
+- When rewound, historical branches remain queryable in the `tasks` table with hash-chained `TIMELINE_REWOUND` audit events.
+- Sandbox files and ReAct tool journals automatically roll back to the state at the target turn.
+
+### 2.11 Mixture-of-Agents (MoA) Multi-Model Synthesis (`/moa`)
+
+Enable multi-model parallel proposer generation with an aggregator synthesis model:
+
+```bash
+# Toggle MoA inside interactive session:
+/moa on
+/moa off
+
+# MoA configuration in ~/.hex/config.toml:
+[moa]
+enabled = true
+proposers = ["anthropic:claude-3-7-sonnet", "openai:gpt-4o", "gemini:gemini-2.5-pro"]
+aggregator = "anthropic:claude-3-7-sonnet"
+proposer_timeout_seconds = 15.0
+```
+
+- If an individual proposer encounters rate limiting or times out, the aggregator seamlessly synthesizes available proposals with fallback telemetry.
+
+### 2.12 Temporal Auto-Approval Leases (`/lease`)
+
+Temporarily auto-approve trusted commands or directory paths to reduce confirmation friction:
+
+```bash
+# Grant auto-approval lease for 15 minutes on a command prefix:
+/lease cargo test 15m
+
+# Grant auto-approval lease for 1 hour on git commands:
+/lease git 1h
+
+# Inspect active leases or revoke:
+/lease list
+/lease revoke <lease_id>
+```
+
+- Leases automatically lapse after their configured TTL, restoring default human-in-the-loop confirmation prompts.
+
+### 2.13 Multi-Key Credential Pool & OS Keychain Operations
+
+Manage multi-key failover and secure operating system keychain storage:
+
+```bash
+# Multi-key ingestion via environment variables:
+export ANTHROPIC_API_KEY_1="sk-ant-key1"
+export ANTHROPIC_API_KEY_2="sk-ant-key2"
+export OPENAI_API_KEY_1="sk-proj-key1"
+export OPENAI_API_KEY_2="sk-proj-key2"
+
+# Store provider secrets securely in OS Keychain (macOS Keychain / Linux Secret Service):
+python3 -c "from harness_core.storage.vault_keychain import store_secret; store_secret('anthropic', 'sk-ant-vault-key')"
+
+# Inspect live local model discovery probes:
+python3 -c "from harness_core.models.model_metadata import probe_local_endpoints; print('Discovered local daemons:', probe_local_endpoints())"
 ```
 
 ---
@@ -226,7 +345,7 @@ sudo systemctl stop hex.service
 pg_restore -h $PGHOST -U $PGUSER -d $PGDATABASE --clean --if-exists /backups/hex_20261101_040000.dump
 
 # 3. Verify cryptographic event chain integrity
-python3 -c "from harness_core.orchestrator import HarnessOrchestrator; orch = HarnessOrchestrator('$DATA_DIR'); tasks = orch.ledger.list_tasks(); assert all(orch.ledger.verify_event_chain(t['task_id']) for t in tasks); print('Cryptographic event chains intact.')"
+python3 -c "from harness_core.core.orchestrator import HarnessOrchestrator; orch = HarnessOrchestrator('$DATA_DIR'); tasks = orch.ledger.list_tasks(); assert all(orch.ledger.verify_event_chain(t['task_id']) for t in tasks); print('Cryptographic event chains intact.')"
 
 # 4. Restart service
 sudo systemctl start hex.service
@@ -305,7 +424,7 @@ Workers claim tasks with time-limited leases (default TTL: 300 seconds) and must
 
 ```bash
 # Automated lease reaping is executed by the control plane periodically:
-python3 -c "from harness_core.orchestrator import HarnessOrchestrator; orch = HarnessOrchestrator('$DATA_DIR'); expired = orch.ledger.reap_expired_leases(); print('Reaped expired leases:', expired)"
+python3 -c "from harness_core.core.orchestrator import HarnessOrchestrator; orch = HarnessOrchestrator('$DATA_DIR'); expired = orch.ledger.reap_expired_leases(); print('Reaped expired leases:', expired)"
 ```
 
 Any task with an expired lease is automatically re-queued as `SUBMITTED` with an incremented fencing token.
@@ -374,10 +493,10 @@ HEX provides a built-in production server command with graceful shutdown:
 hex server --host 0.0.0.0 --port 8420 --workers 4 --drain-timeout 10.0
 ```
 
-Or using `uvicorn` with `src/harness_core/asgi.py`:
+Or using `uvicorn` with `src/harness_core/client/asgi.py`:
 
 ```bash
-uvicorn harness_core.asgi:app \
+uvicorn harness_core.client.asgi:app \
   --host 0.0.0.0 \
   --port 8420 \
   --workers 4 \

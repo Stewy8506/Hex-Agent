@@ -20,10 +20,10 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.models import PlanNode, TaskState, TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.server import HarnessAPIApp
-from harness_core.webhooks import (
+from harness_core.core.models import PlanNode, TaskState, TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.client.server import HarnessAPIApp
+from harness_core.capabilities.webhooks import (
     WebhookConfig,
     WebhookNotifier,
     format_decision_broadcast,

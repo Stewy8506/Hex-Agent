@@ -1,136 +1,224 @@
-//! Integration tests for Ratatui frame rendering, layout splits, and widget states.
+//! Integration tests for Ratatui frame rendering, layout splits, and mockup screen parity.
 
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
-use hex_tui::app::{App, ApprovalRequest, Focus};
+use hex_tui::app::{App, ApprovalRequest, ScreenState, SubagentModalState};
 use hex_tui::ui;
+use hex_tui::ui::screens::error_view::{render_diagnostic_card, DiagnosticFailure};
+use hex_tui::ui::style::HexTheme;
 
 #[test]
-fn test_full_tui_layout_rendering() {
+fn test_screen_0_start_layout_rendering() {
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
 
-    let app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
+    let mut app = App::new("harness-project", "gemini-2.5-pro", "sandbox");
+    app.resume_sessions = vec![
+        hex_tui::app::ResumeSession {
+            title: "profile the render loop".to_string(),
+            relative_time: "3d".to_string(),
+            session_id: "ses_2e9d".to_string(),
+        },
+    ];
+    assert_eq!(app.screen_state, ScreenState::Start);
 
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(content.contains("HEX"), "Buffer must contain ASCII banner");
-    assert!(
-        content.contains("test_proj"),
-        "Buffer must contain project name"
-    );
-    assert!(
-        content.contains("gemini-2.5-pro"),
-        "Buffer must contain model name"
-    );
-    assert!(
-        content.contains("did you know"),
-        "Buffer must contain native HEX intro"
-    );
-    assert!(
-        content.contains("❯"),
-        "Buffer must contain input prompt prefix"
-    );
-    assert!(
-        content.contains("agent"),
-        "Buffer prompt footer must display active mode"
-    );
+    // 1. Block ASCII Wordmark
+    assert!(content.contains("██████") || content.contains("███") || content.contains("█ █ █▀▀ ▀▄▀"), "Buffer must contain ASCII banner");
+
+    // 2. Project path and telemetry
+    assert!(content.contains("harness-project"), "Buffer must contain project name");
+    assert!(content.contains("files indexed"), "Buffer must contain indexed file count");
+
+    // 3. Prompt container & shortcuts
+    assert!(content.contains("commands"), "Buffer must contain commands hint");
+    assert!(content.contains("files"), "Buffer must contain files hint");
+    assert!(content.contains("agent"), "Buffer must contain agent hint");
+    assert!(content.contains("history"), "Buffer must contain history hint");
+
+    // 4. Resume sessions
+    assert!(content.contains("resume"), "Buffer must contain resume section");
+    assert!(content.contains("profile the render loop"), "Buffer must list recent session");
 }
 
 #[test]
-fn test_diff_pane_split_rendering() {
+fn test_screen_1_session_and_right_rail_rendering() {
     let backend = TestBackend::new(140, 40);
     let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
 
-    let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
-    let sample_diff = "\
---- a/src/lib.rs
-+++ b/src/lib.rs
-@@ -1,3 +1,5 @@
- pub fn answer() -> u32 {
--    41
-+    42
- }";
-    app.load_diff(sample_diff);
-    assert!(app.show_diff);
+    let mut app = App::new("harness-project", "claude-3-7-sonnet", "sandbox");
+    app.screen_state = ScreenState::Session;
+    app.add_user_message("refactor the graph router");
+    app.plan_steps = vec![
+        hex_tui::app::PlanStep {
+            title: "audit memory graph".to_string(),
+            status: hex_tui::app::StepStatus::Completed,
+        },
+    ];
+    app.changed_files = vec![
+        hex_tui::app::ChangedFile {
+            path: "src/router.rs".to_string(),
+            additions: 12,
+            deletions: 4,
+        },
+    ];
+    app.subagents = vec![
+        hex_tui::app::SubagentTelemetry {
+            name: "ast-walker".to_string(),
+            status: "running".to_string(),
+            detail: "indexing AST nodes".to_string(),
+            is_running: true,
+            has_failed: false,
+        },
+    ];
+    app.tokens_used = 42_000;
+    app.max_tokens = 200_000;
 
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(
-        content.contains("Diff Viewer"),
-        "Must render diff pane header"
-    );
-    assert!(
-        content.contains("src/lib.rs"),
-        "Must render modified filename"
-    );
-    assert!(content.contains("42"), "Must render added diff content");
+    // 1. Top Bar
+    assert!(content.contains("hex"), "Top bar must render 'hex'");
+    assert!(content.contains(&app.git_branch), "Top bar must render branch");
+
+    // 2. Session Transcript & Wordmark
+    assert!(content.contains("0.4.2 · session"), "Transcript must render session version");
+    assert!(content.contains("refactor the graph router"), "Must render user prompt");
+
+    // 3. Right Rail Telemetry
+    assert!(content.contains("context"), "Right rail must contain context header");
+    assert!(content.contains("plan"), "Right rail must contain plan header");
+    assert!(content.contains("changed"), "Right rail must contain changed header");
+    assert!(content.contains("src/router.rs"), "Must render changed file");
+    assert!(content.contains("agents"), "Right rail must contain agents header");
+    assert!(content.contains("ast-walker"), "Must render subagent name");
+
+    // 4. Composer & Status Footer
+    assert!(content.contains("build"), "Footer must contain build mode");
+    assert!(content.contains("claude-3-7-sonnet"), "Footer must contain model name");
+    assert!(content.contains("tokens"), "Footer must contain token telemetry");
+    assert!(content.contains("ctrl+p commands"), "Footer must contain commands hint");
 }
 
 #[test]
-fn test_approval_modal_overlay_rendering() {
+fn test_screen_2_permission_modal_overlay() {
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
 
-    let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
-    app.set_approval_request(ApprovalRequest {
-        id: "appr_test_99".to_string(),
-        risk_level: "R4 - DESTRUCTIVE".to_string(),
-        tool_name: "rm -rf".to_string(),
-        parameters: "path=/tmp/build".to_string(),
-        reason: "Test safety gating".to_string(),
+    let mut app = App::new("harness-project", "claude-3-7-sonnet", "sandbox");
+    app.screen_state = ScreenState::Session;
+    app.active_approval = Some(ApprovalRequest {
+        id: "app-123".to_string(),
+        tool_name: "rm".to_string(),
+        parameters: "rm -rf dist/build".to_string(),
+        reason: "Deletes temporary build directory.".to_string(),
+        risk_level: "high".to_string(),
     });
-    assert_eq!(app.focus, Focus::Approval);
+    app.selected_permission_index = 0;
 
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(
-        content.contains("OPERATOR APPROVAL REQUIRED"),
-        "Must render modal title"
-    );
-    assert!(
-        content.contains("rm -rf"),
-        "Must render privileged tool name"
-    );
-    assert!(
-        content.contains("R4 - DESTRUCTIVE"),
-        "Must render risk level"
-    );
-    assert!(
-        content.contains("[y] Approve"),
-        "Must render approve action button"
-    );
-    assert!(
-        content.contains("[n] Reject"),
-        "Must render reject action button"
-    );
+    assert!(content.contains("Permission required"), "Must render permission modal header");
+    assert!(content.contains("rm"), "Must render tool name");
+    assert!(content.contains("rm -rf dist/build"), "Must render command preview");
+    assert!(content.contains("Deletes temporary build directory."), "Must render reason");
+    assert!(content.contains("Allow once"), "Must render Allow once radio option");
+    assert!(content.contains("Allow rm in this project"), "Must render dynamic Allow option");
+    assert!(content.contains("Deny"), "Must render Deny radio option");
 }
 
 #[test]
-fn test_help_modal_overlay_rendering() {
+fn test_screen_3_command_palette_overlay() {
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
 
-    let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
-    app.show_help = true;
+    let mut app = App::new("harness-project", "claude-3-7-sonnet", "sandbox");
+    app.screen_state = ScreenState::Session;
+    app.show_palette = true;
+    app.palette_query = "plan".to_string();
 
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    assert!(
-        content.contains("HELP & KEYBINDINGS"),
-        "Must render help title"
-    );
-    assert!(content.contains("/status"), "Must document slash commands");
-    assert!(content.contains("[Tab]"), "Must document keybindings");
+    assert!(content.contains("> plan"), "Must render palette query");
+    assert!(content.contains("modes"), "Must render modes category");
+    assert!(content.contains("Switch to Plan mode"), "Must render Switch to Plan mode");
+    assert!(content.contains("enter select · esc close"), "Must render footer hint");
+}
+
+#[test]
+fn test_screen_4_diagnostic_failure_card() {
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
+    let theme = HexTheme::default();
+    let diag = DiagnosticFailure {
+        command: "cargo check".to_string(),
+        exit_code: 1,
+        duration_str: "0.8s".to_string(),
+        test_file: "test_harness.rs".to_string(),
+        test_name: "test_pipeline".to_string(),
+        expected: "Ready".to_string(),
+        received: "Error".to_string(),
+        stack_trace: vec!["at pipeline.run (src/pipeline.rs:12:4)".to_string()],
+        hidden_frames_count: 2,
+        diagnosis: "Pipeline state was error instead of ready".to_string(),
+        next_investigation: "Check pipeline initialization".to_string(),
+    };
+
+    terminal
+        .draw(|f| {
+            render_diagnostic_card(&diag, &theme, f.area(), f.buffer_mut());
+        })
+        .expect("Draw failed");
+
+    let buffer = terminal.backend().buffer().clone();
+    let content = format!("{:?}", buffer);
+
+    assert!(content.contains("bash"), "Must render bash header");
+    assert!(content.contains("cargo check"), "Must render command");
+    assert!(content.contains("fail"), "Must render fail badge");
+    assert!(content.contains("test_harness.rs"), "Must render failing file");
+    assert!(content.contains("test_pipeline"), "Must render test name");
+    assert!(content.contains("expected"), "Must render expected diff");
+    assert!(content.contains("received"), "Must render received diff");
+}
+
+#[test]
+fn test_screen_5_subagent_inspection_modal() {
+    let backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
+
+    let mut app = App::new("harness-project", "claude-3-7-sonnet", "sandbox");
+    app.screen_state = ScreenState::Session;
+    app.active_subagent_modal = Some(SubagentModalState {
+        name: "test-debugger".to_string(),
+        prompt: "Diagnose why pipeline state was error.".to_string(),
+        is_expanded: false,
+        activity_lines: vec![
+            "read src/pipeline.rs 50 lines".to_string(),
+            "grep initialize src/".to_string(),
+        ],
+        elapsed_seconds: 15,
+    });
+
+    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
+    let buffer = terminal.backend().buffer().clone();
+    let content = format!("{:?}", buffer);
+
+    assert!(content.contains("prompt"), "Must render prompt label");
+    assert!(content.contains("e expand"), "Must render expand toggle hint");
+    assert!(content.contains("Diagnose why pipeline state was error"), "Must render prompt body");
+    assert!(content.contains("read src/pipeline.rs 50 lines"), "Must render tool activity");
+    assert!(content.contains("15s"), "Must render stopwatch elapsed time");
+    assert!(content.contains("up/down scroll · e expand prompt · esc close"), "Must render footer hints");
 }
 
 #[test]
@@ -175,217 +263,21 @@ fn test_slash_command_suggestion_rendering() {
 }
 
 #[test]
-fn test_collapsible_tool_calls_rendering() {
+fn test_help_modal_overlay_rendering() {
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
 
     let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
-    app.dialogue_items.clear();
-    app.dialogue_scroll = 0;
-    app.add_tool_call(
-        "tc_render_1",
-        "run_tests",
-        "suite=unit",
-        Some(120),
-        Some("OK"),
-    );
-    app.complete_tool_call("tc_render_1", "12 tests passed", 120, false);
-    app.dialogue_scroll = 0;
-
-    // Collapsed by default (clean Hermes tree without raw dump)
-    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
-    let buf1 = format!("{:?}", terminal.backend().buffer());
-    assert!(buf1.contains("run_tests"), "Must render tool name");
-    assert!(!buf1.contains("12 tests passed"), "Tool output is hidden by default");
-
-    // Expanded state after toggle
-    app.toggle_tool_call_collapse(0);
-    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
-    let buf2 = format!("{:?}", terminal.backend().buffer());
-    assert!(buf2.contains("12 tests passed"), "Must render tool result when expanded");
-    assert!(buf2.contains("expanded"), "Must indicate expanded state");
-}
-
-#[test]
-fn test_transcript_design_language_and_badges() {
-    let backend = TestBackend::new(120, 36);
-    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
-
-    let mut app = App::new("test_proj", "gemini-3.8-flash-tiered", "apfs_clone");
-    app.dialogue_items.clear();
-    app.dialogue_scroll = 0;
-
-    // Add user message
-    app.add_user_message("Refactor the parser loop");
-
-    // Add assistant message with markdown code block
-    app.add_assistant_message("Here is the updated implementation:\n```rust\nfn parse_token() -> bool {\n    true\n}\n```");
-
-    // Add tool call
-    app.add_tool_call("tc_1", "run_tests", "suite=all", Some(45), Some("OK"));
+    app.show_help = true;
 
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
-    // 1. Badges
     assert!(
-        content.contains("❯ You") || content.contains("❯ User"),
-        "Must render ❯ You or ❯ User badge"
+        content.contains("HELP & KEYBINDINGS"),
+        "Must render help title"
     );
-    assert!(
-        content.contains("⬢ HEX"),
-        "Must render ⬢ HEX agent card header"
-    );
-    assert!(content.contains("run_tests"), "Must render tool call");
-
-    // 2. Code gutter
-    assert!(
-        content.contains("│"),
-        "Must render vertical code gutter line"
-    );
-
-    // 3. Prompt box with prefix and placeholder
-    assert!(content.contains("❯"), "Must render ❯ input prefix");
-    assert!(
-        content.contains("Ask me anything") || content.contains("Type your objective"),
-        "Must render placeholder text when input is empty"
-    );
-
-    // 4. Composer footer dynamic telemetry
-    assert!(content.contains("main"), "Must render git branch");
-    assert!(
-        content.contains("gemini-3.8-flash-tiered"),
-        "Must render dynamic model"
-    );
-    assert!(content.contains("agent"), "Must render active mode");
-    assert!(content.contains("enter send"), "Must render hotkey hint");
-}
-
-#[test]
-fn test_composer_is_locked_to_terminal_bottom() {
-    let backend = TestBackend::new(100, 28);
-    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
-    let app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
-
-    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
-    let buffer = terminal.backend().buffer();
-
-    // The final three rows are always the composer: its top rounded border,
-    // input row, and bottom border. This is the invariant that stops streamed
-    // content from moving the input away from the operator.
-    let bottom_row = (0..100).map(|x| buffer[(x, 27)].symbol()).collect::<String>();
-    assert!(bottom_row.contains("agent · test_proj · main · gemini-2.5-pro"));
-    assert!(bottom_row.contains("enter send · tab mode · /help ╯"));
-    assert_eq!(buffer[(0, 25)].symbol(), "╭");
-    assert_eq!(buffer[(0, 27)].symbol(), "╰");
-    let input_row = (0..100).map(|x| buffer[(x, 26)].symbol()).collect::<String>();
-    assert!(input_row.contains('❯'));
-}
-
-#[test]
-fn test_animation_changes_busy_telemetry_and_rotates_prompt() {
-    let backend = TestBackend::new(120, 32);
-    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
-    let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
-    app.is_busy = true;
-    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
-    let first = format!("{:?}", terminal.backend().buffer());
-
-    for _ in 0..8 {
-        app.advance_animation();
-    }
-    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
-    let second = format!("{:?}", terminal.backend().buffer());
-
-    assert!(first.contains("Thinking") || first.contains("Analyzing"));
-    assert_ne!(
-        first, second,
-        "shared animation clock must change a visible frame"
-    );
-}
-
-#[test]
-fn test_three_tier_dialogue_hierarchy_and_user_card() {
-    let backend = TestBackend::new(120, 36);
-    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
-
-    let mut app = App::new("test_proj", "gemini-3.8-flash-tiered", "apfs_clone");
-    app.dialogue_items.clear();
-    app.dialogue_scroll = 0;
-
-    // 1. User message
-    app.add_user_message("hey what can you do?");
-
-    // 2. Assistant tool execution
-    app.add_tool_call(
-        "tc_files",
-        "list_files",
-        "{\"path\": \".\"}",
-        Some(120),
-        Some("OK"),
-    );
-
-    // 3. Assistant response
-    app.add_assistant_message("I am HEX, an autonomous engineering agent.");
-
-    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
-    let buffer = terminal.backend().buffer().clone();
-    let content = format!("{:?}", buffer);
-
-    // User Card assertions
-    assert!(content.contains("╭─ ❯ You"), "User card top border with '╭─ ❯ You'");
-    assert!(content.contains("hey what can you do?"), "User card contains query content");
-    assert!(content.contains("╰"), "User card contains bottom rounded corner '╰'");
-
-    // Assistant Working assertions
-    assert!(content.contains("⬢ HEX"), "Must render '⬢ HEX' header card");
-    assert!(content.contains("list_files (.)"), "Tool formatted as tree branch with args");
-    assert!(content.contains("✔"), "Tool completed with checkmark");
-
-    // Assistant Response indicator
-    assert!(!content.contains("▼"), "Floating arrow '▼' is eliminated in Option 1");
-    assert!(content.contains("I am HEX"), "Assistant response content");
-}
-
-#[test]
-fn test_hermes_style_live_animation_and_stopwatch() {
-    let backend = TestBackend::new(120, 36);
-    let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
-
-    let mut app = App::new("test_proj", "gemini-3.8-flash-tiered", "apfs_clone");
-    app.dialogue_items.clear();
-    app.dialogue_scroll = 0;
-
-    // 1. User submits prompt
-    app.add_user_message("Run analysis");
-    app.is_busy = true;
-    app.busy_started_at = Some(std::time::Instant::now());
-
-    // 2. Add an in-flight tool call (RUNNING)
-    app.add_tool_call(
-        "tc_check",
-        "read_file",
-        "{\"path\": \"src/main.rs\"}",
-        None,
-        Some("RUNNING"),
-    );
-
-    terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
-    let content = format!("{:?}", terminal.backend().buffer());
-
-    // Running tool must have Braille spinner and stopwatch
-    assert!(content.contains("read_file"), "Must render tool name");
-    assert!(content.contains("·"), "Must render duration separator dot");
-    assert!(content.contains("0.0s") || content.contains("0.1s"), "Must render live elapsed stopwatch");
-
-    // Thinking row must render rotating verb and stopwatch
-    assert!(
-        content.contains("Thinking") || content.contains("Analyzing") || content.contains("Exploring"),
-        "Must render rotating verb"
-    );
-
-    // Footer of input box must also reflect live telemetry
-    let bottom_row = (0..120).map(|x| terminal.backend().buffer()[(x, 35)].symbol()).collect::<String>();
-    assert!(bottom_row.contains("Thinking") || bottom_row.contains("Ready") || bottom_row.contains("·"), "Input footer must show live animation telemetry");
+    assert!(content.contains("/status"), "Must document slash commands");
+    assert!(content.contains("[Tab]"), "Must document keybindings");
 }

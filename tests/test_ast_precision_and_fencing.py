@@ -15,9 +15,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import ToolGateway
-from harness_core.memory import (
+from harness_core.cognition.memory import (
     ASTNodeMemory,
     ASTNodeMemoryStore,
     compute_code_fingerprint,

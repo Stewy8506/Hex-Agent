@@ -11,6 +11,8 @@ are populated into `os.environ` before any orchestrator or CLI command executes.
 from __future__ import annotations
 
 import os
+import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,18 @@ try:
     import yaml  # type: ignore
 except ImportError:
     yaml = None  # type: ignore
+
+
+class ConfigParseError(ValueError):
+    """Raised when a configuration file cannot be parsed into a typed mapping.
+
+    Carries the file path and (when available) the YAML error location so the
+    operator gets an actionable message instead of a silently empty config.
+    """
+
+    def __init__(self, path: Path | str, message: str) -> None:
+        self.path = str(path)
+        super().__init__(f"{self.path}: {message}")
 
 
 def parse_env_file(file_path: Path) -> dict[str, str]:
@@ -63,39 +77,89 @@ def parse_env_file(file_path: Path) -> dict[str, str]:
 
 
 def parse_config_yaml(file_path: Path) -> dict[str, Any]:
-    """Parse a config.yaml file safely."""
+    """Parse a config.yaml into typed values using PyYAML (a declared dependency).
+
+    Returns {} only when the file does not exist. Malformed YAML or a
+    non-mapping document raises ConfigParseError with an actionable message;
+    configuration failures are never silently reduced to an empty config.
+    """
     if not file_path.is_file():
         return {}
+    if yaml is None:
+        raise ConfigParseError(
+            file_path,
+            "PyYAML is required to parse configuration but is not installed. "
+            "Reinstall HEX (pip install -e .) or run: pip install 'pyyaml>=6.0'",
+        )
+    content = file_path.read_text(encoding="utf-8")
     try:
-        content = file_path.read_text(encoding="utf-8")
-        if yaml is not None:
-            data = yaml.safe_load(content)
-            return data if isinstance(data, dict) else {}
-        # Robust indentation-aware nested dict parser for YAML without pyyaml dependency
-        root: dict[str, Any] = {}
-        stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
-        for line in content.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            indent = len(line) - len(line.lstrip(" "))
-            if ":" not in stripped:
-                continue
-            key, val = stripped.split(":", 1)
-            key = key.strip()
-            val = val.strip().strip('"').strip("'")
-            while len(stack) > 1 and stack[-1][0] >= indent:
-                stack.pop()
-            parent = stack[-1][1]
-            if not val:
-                sub: dict[str, Any] = {}
-                parent[key] = sub
-                stack.append((indent, sub))
-            else:
-                parent[key] = val
-        return root
-    except Exception:
+        data = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        location = ""
+        mark = getattr(exc, "problem_mark", None)
+        if mark is not None:
+            location = f" (line {mark.line + 1}, column {mark.column + 1})"
+        problem = getattr(exc, "problem", None) or str(exc)
+        raise ConfigParseError(file_path, f"invalid YAML{location}: {problem}") from exc
+    if data is None:
         return {}
+    if not isinstance(data, dict):
+        raise ConfigParseError(
+            file_path,
+            f"configuration must be a YAML mapping, got {type(data).__name__}",
+        )
+    return data
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge override into base; override wins on scalar conflicts."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def write_config_text_atomic(file_path: Path, text: str) -> None:
+    """Atomically replace a config file: temp file in the same directory + os.replace."""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(file_path.parent), prefix=f".{file_path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp_name, file_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def write_config_yaml_atomic(file_path: Path, data: dict[str, Any], *, header: str | None = None) -> None:
+    """Render a typed mapping as YAML and atomically replace the config file."""
+    if yaml is None:
+        raise ConfigParseError(file_path, "PyYAML is required to write configuration but is not installed")
+    rendered = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    if header:
+        rendered = header.rstrip("\n") + "\n" + rendered
+    write_config_text_atomic(file_path, rendered)
+
+
+def update_config_yaml(
+    file_path: Path, updates: dict[str, Any], *, header: str | None = None
+) -> dict[str, Any]:
+    """Deep-merge updates into an existing config and write it atomically.
+
+    Refuses to write when the existing file cannot be parsed, so a failed read
+    can never erase user settings. Unrelated sections are preserved.
+    """
+    existing = parse_config_yaml(file_path)
+    merged = _deep_merge(existing, updates)
+    write_config_yaml_atomic(file_path, merged, header=header)
+    return merged
 
 
 def load_hex_environment(
@@ -140,11 +204,15 @@ def load_hex_environment(
             # choice; a project config needs project_override: true to take
             # precedence over the global config.
             parsed = {k: v for k, v in parsed.items() if k not in _MODEL_SELECTION_ENV_KEYS}
-            discovered.update(parsed)
+            for k, v in parsed.items():
+                val = v.strip()
+                # An empty value in a candidate file should never overwrite a valid non-empty value
+                if val:
+                    discovered[k] = val
 
     # Apply discovered variables to os.environ
     for k, v in discovered.items():
-        if override or k not in os.environ:
+        if v.strip() and (override or k not in os.environ or not os.environ[k].strip()):
             os.environ[k] = v
 
     # Also extract default provider / model from config.yaml if not set in environment or env files
@@ -155,7 +223,11 @@ def load_hex_environment(
     cfg_props: dict[str, str] = {}
     for cfg_file in candidate_config_files:
         if cfg_file.is_file():
-            cfg_data = parse_config_yaml(cfg_file)
+            try:
+                cfg_data = parse_config_yaml(cfg_file)
+            except ConfigParseError as exc:
+                print(f"[hex] WARNING: skipping malformed config: {exc}", file=sys.stderr)
+                continue
             model_section = cfg_data.get("model") or cfg_data.get("models") or {}
             if isinstance(model_section, dict):
                 is_project_file = cfg_file == local_dir / "config.yaml" and local_dir != global_dir
@@ -180,7 +252,7 @@ def load_hex_environment(
                         cfg_props["HEX_REASONING_EFFORT"] = str(model_section["reasoning_effort"]).strip().lower()
                     elif "HEX_REASONING_EFFORT" not in cfg_props and "HEX_REASONING_EFFORT" not in os.environ:
                         try:
-                            from .reasoning_effort import resolve_reasoning_effort
+                            from harness_core.core.reasoning_effort import resolve_reasoning_effort
                             m_prov = str(model_section.get("cloud_provider") or cfg_props.get("HEX_CLOUD_PROVIDER") or "")
                             m_id = str(model_section.get("cloud_model_id") or cfg_props.get("HEX_CLOUD_MODEL_ID") or "")
                             cfg_props["HEX_REASONING_EFFORT"] = resolve_reasoning_effort(m_prov, m_id)
@@ -203,7 +275,7 @@ def load_hex_environment(
                         cfg_props["HEX_AUTO_REFLECT"] = str(raw_ar).strip().lower()
 
     for k, v in cfg_props.items():
-        if override or k not in os.environ:
+        if override or k not in os.environ or not os.environ[k].strip():
             os.environ[k] = v
 
     for k, v in {**discovered, **cfg_props}.items():
@@ -300,7 +372,10 @@ def get_auto_reflect_policy(workspace_root: Path | str | None = None) -> str:
     ]
     for cfg_path in candidates:
         if cfg_path.is_file():
-            data = parse_config_yaml(cfg_path)
+            try:
+                data = parse_config_yaml(cfg_path)
+            except ConfigParseError:
+                continue
             learning = data.get("learning", {})
             if isinstance(learning, dict) and "auto_reflect" in learning:
                 return _normalize_policy(learning["auto_reflect"])
@@ -475,7 +550,10 @@ def load_reasoning_effort(
 
     for cfg_file in candidates:
         if cfg_file.is_file():
-            data = parse_config_yaml(cfg_file)
+            try:
+                data = parse_config_yaml(cfg_file)
+            except ConfigParseError:
+                continue
             m_sec = data.get("model") or data.get("models") or {}
             if isinstance(m_sec, dict):
                 if m_sec.get("reasoning_effort"):
@@ -484,7 +562,7 @@ def load_reasoning_effort(
                 mid = str(m_sec.get("cloud_model_id") or "")
                 if prov or mid:
                     try:
-                        from .reasoning_effort import resolve_reasoning_effort
+                        from harness_core.core.reasoning_effort import resolve_reasoning_effort
                         return resolve_reasoning_effort(prov, mid)
                     except Exception:
                         pass

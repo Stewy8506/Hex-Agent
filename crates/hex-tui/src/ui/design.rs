@@ -90,8 +90,31 @@ pub const LIGHT: Skin = Skin {
     prompt: "❯",
 };
 
+pub const HEX_DARK: Skin = Skin {
+    border: Color::Rgb(42, 42, 42),
+    heading: Color::Rgb(242, 242, 242),
+    accent: Color::Rgb(122, 167, 255),
+    category: Color::Rgb(140, 140, 140),
+    text: Color::Rgb(214, 214, 214),
+    muted: Color::Rgb(189, 189, 189),
+    success: Color::Rgb(143, 191, 147),
+    warn: Color::Rgb(245, 158, 11),
+    danger: Color::Rgb(201, 139, 139),
+    surface: Color::Rgb(14, 14, 14),
+    gradient: [
+        Color::Rgb(242, 242, 242),
+        Color::Rgb(214, 214, 214),
+        Color::Rgb(189, 189, 189),
+        Color::Rgb(140, 140, 140),
+        Color::Rgb(122, 167, 255),
+        Color::Rgb(74, 74, 74),
+    ],
+    prompt: ">",
+};
+
 pub fn skin(name: &str) -> Skin {
     match name.to_ascii_lowercase().as_str() {
+        "hex" | "hex_dark" | "dark" | "default" => HEX_DARK,
         "amber" => AMBER,
         "cyberpunk" => CYBERPUNK,
         "matrix" => MATRIX,
@@ -99,7 +122,7 @@ pub fn skin(name: &str) -> Skin {
         "mono" => MONO,
         "light" => LIGHT,
         "sapphire" => SAPPHIRE,
-        _ => SAPPHIRE,
+        _ => HEX_DARK,
     }
 }
 

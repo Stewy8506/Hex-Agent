@@ -486,10 +486,17 @@ class CloudModelProvider(ModelProvider):
     def get_capabilities(self) -> ProviderCapabilities:
         if self._antigravity_delegate is not None:
             return self._antigravity_delegate.get_capabilities()
+        from harness_core.models.model_metadata import get_model_context_length
+
+        max_ctx = get_model_context_length(
+            self.model_id,
+            provider=self.provider_name,
+            base_url=self.base_url,
+        )
         return ProviderCapabilities(
             supports_system_prompt=True,
             supports_streaming=False,
-            max_context_window=200_000,
+            max_context_window=max_ctx,
             quantization=None,
             local_unified_memory=False,
         )
@@ -775,12 +782,23 @@ class CloudModelProvider(ModelProvider):
                     },
                 }
             if system_prompt:
-                payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+                if "gemma" in str(self.model_id).lower():
+                    # Gemma models do not support systemInstruction / Developer Instruction on Gemini API
+                    if "contents" in payload and payload["contents"]:
+                        c0 = payload["contents"][0]
+                        if "parts" in c0 and c0["parts"]:
+                            c0["parts"][0]["text"] = f"{system_prompt}\n\n{c0['parts'][0]['text']}"
+                        else:
+                            c0["parts"] = [{"text": system_prompt}]
+                    else:
+                        payload["contents"] = [{"role": "user", "parts": [{"text": system_prompt}]}]
+                else:
+                    payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
             if stop_sequences:
                 payload["generationConfig"]["stopSequences"] = stop_sequences
             eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
             if eff:
-                from ..reasoning_effort import effort_to_gemini_thinking, model_supports_reasoning
+                from harness_core.core.reasoning_effort import effort_to_gemini_thinking, model_supports_reasoning
                 if model_supports_reasoning("gemini", self.model_id):
                     th_cfg = effort_to_gemini_thinking(eff)
                     if th_cfg is not None:
@@ -909,7 +927,7 @@ class CloudModelProvider(ModelProvider):
                     payload["stop_sequences"] = stop_sequences
                 eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
                 if eff:
-                    from ..reasoning_effort import effort_to_anthropic_thinking, model_supports_reasoning
+                    from harness_core.core.reasoning_effort import effort_to_anthropic_thinking, model_supports_reasoning
                     if model_supports_reasoning("anthropic", self.model_id):
                         th = effort_to_anthropic_thinking(eff)
                         if th is not None:
@@ -952,7 +970,7 @@ class CloudModelProvider(ModelProvider):
                 payload["stop_sequences"] = stop_sequences
             eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
             if eff:
-                from ..reasoning_effort import effort_to_anthropic_thinking, model_supports_reasoning
+                from harness_core.core.reasoning_effort import effort_to_anthropic_thinking, model_supports_reasoning
                 if model_supports_reasoning("anthropic", self.model_id):
                     th = effort_to_anthropic_thinking(eff)
                     if th is not None:
@@ -1001,7 +1019,7 @@ class CloudModelProvider(ModelProvider):
                     payload["stop"] = stop_sequences
                 eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
                 if eff:
-                    from ..reasoning_effort import OPENAI_EFFORTS, clamp_effort, model_supports_reasoning
+                    from harness_core.core.reasoning_effort import OPENAI_EFFORTS, clamp_effort, model_supports_reasoning
                     if model_supports_reasoning(self.provider_type.value, self.model_id):
                         payload["reasoning_effort"] = clamp_effort(eff, OPENAI_EFFORTS)
                 return url, headers, json.dumps(payload).encode("utf-8")
@@ -1023,7 +1041,7 @@ class CloudModelProvider(ModelProvider):
                 payload["stop"] = stop_sequences
             eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
             if eff:
-                from ..reasoning_effort import OPENAI_EFFORTS, clamp_effort, model_supports_reasoning
+                from harness_core.core.reasoning_effort import OPENAI_EFFORTS, clamp_effort, model_supports_reasoning
                 if model_supports_reasoning(self.provider_type.value, self.model_id):
                     payload["reasoning_effort"] = clamp_effort(eff, OPENAI_EFFORTS)
             return url, headers, json.dumps(payload).encode("utf-8")

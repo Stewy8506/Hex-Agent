@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness_core.soul import (
+from harness_core.cognition.soul import (
     DEFAULT_SOUL_MD,
     DEFAULT_SOUL_NAME,
     DEFAULT_USER_MD,

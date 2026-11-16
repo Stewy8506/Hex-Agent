@@ -26,13 +26,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from harness_core.db import LedgerStore
-from harness_core.skillspector import (
+from harness_core.storage.db import LedgerStore
+from harness_core.cognition.skillspector import (
     SkillScanReport,
     SkillSpectorScanner,
     parse_skill_frontmatter,
 )
-from harness_core.soul import get_hex_home
+from harness_core.cognition.soul import get_hex_home
 
 _MARKETING_WORDS_RE = re.compile(
     r"\b(powerful|comprehensive|seamless|advanced|robust)\b",

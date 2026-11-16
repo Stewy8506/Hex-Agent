@@ -9,7 +9,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from harness_core.context_compressor import (
+from harness_core.cognition.context_compressor import (
     CompactionConfig,
     ContextCompactor,
     HEX_COMPRESSION_MARKER_PREFIX,
@@ -417,7 +417,7 @@ class TestContextCompressorTailPruning(unittest.TestCase):
 
     def test_sanitize_tool_pairs(self):
         """Verify sanitize_tool_pairs removes orphan tool results and unresolved tool_calls."""
-        from harness_core.context_compressor import sanitize_tool_pairs
+        from harness_core.cognition.context_compressor import sanitize_tool_pairs
 
         dirty_messages = [
             # 1. Orphan tool result at very beginning (should be dropped)
@@ -451,7 +451,7 @@ class TestContextCompressorTailPruning(unittest.TestCase):
 
     def test_strip_historical_media(self):
         """Verify strip_historical_media replaces base64 images before tail_start."""
-        from harness_core.context_compressor import strip_historical_media
+        from harness_core.cognition.context_compressor import strip_historical_media
 
         messages = [
             {"role": "user", "content": "inspect screen"},

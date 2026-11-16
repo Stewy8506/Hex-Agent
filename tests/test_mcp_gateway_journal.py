@@ -33,11 +33,11 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from harness_core.db import LedgerStore, canonical_json, sha256_hex
+from harness_core.storage.db import LedgerStore, canonical_json, sha256_hex
 from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
 from harness_core.mcp_client import MCPClientAdapter, StdioMCPTransport
-from harness_core.models import RiskClass, TaskSubmitRequest
-from harness_core.skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
+from harness_core.core.models import RiskClass, TaskSubmitRequest
+from harness_core.cognition.skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
 
 
 MOCK_CLEAN_SERVER_SCRIPT = """

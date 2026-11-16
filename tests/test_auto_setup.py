@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from harness_core.auto_setup import (
+from harness_core.client.auto_setup import (
     EnvironmentSnapshot,
     detect_environment,
     execute_auto_setup,
@@ -97,7 +97,7 @@ class TestAutoSetup(unittest.TestCase):
         self.assertEqual(parsed_cfg["model"]["cloud_provider"], "anthropic")
         self.assertEqual(parsed_cfg["model"]["cloud_model_id"], "claude-3-7-sonnet")
         self.assertEqual(parsed_cfg["model"]["reasoning_effort"], "medium")
-        self.assertEqual(parsed_cfg["messaging"]["discord_enabled"], "true")
+        self.assertIs(parsed_cfg["messaging"]["discord_enabled"], True)
 
         parsed_creds = parse_env_file(cred_file)
         self.assertEqual(parsed_creds["HEX_CLOUD_PROVIDER"], "anthropic")
@@ -106,7 +106,7 @@ class TestAutoSetup(unittest.TestCase):
 
     def test_run_onboard_wizard_auto_mode(self) -> None:
         """run_onboard_wizard with auto_mode=True executes headless auto-setup."""
-        from harness_core.onboard import run_onboard_wizard
+        from harness_core.client.onboard import run_onboard_wizard
 
         env = EnvironmentSnapshot(
             os_name="Darwin",
@@ -114,7 +114,7 @@ class TestAutoSetup(unittest.TestCase):
             is_apple_silicon=True,
             openai_key="sk-openai-live",
         )
-        with patch("harness_core.auto_setup.detect_environment", return_value=env):
+        with patch("harness_core.client.auto_setup.detect_environment", return_value=env):
             res = run_onboard_wizard(config_dir=self.root, auto_mode=True)
             self.assertEqual(res["status"], "success")
             self.assertEqual(res["synthesized"]["model"]["cloud_provider"], "openai")

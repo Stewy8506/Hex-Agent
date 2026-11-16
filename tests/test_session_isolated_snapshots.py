@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness_core.memory import CuratedMemoryStore, MemorySnapshot
-from harness_core.prompt_builder import PromptBuilder
-from harness_core.soul import (
+from harness_core.cognition.memory import CuratedMemoryStore, MemorySnapshot
+from harness_core.cognition.prompt_builder import PromptBuilder
+from harness_core.cognition.soul import (
     MAX_SOUL_CHARS,
     TRUNCATION_MARKER,
     SoulManager,

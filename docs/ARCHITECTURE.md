@@ -6,27 +6,157 @@ This document provides a detailed overview of the core architectural subsystems 
 
 ## 1. High-Level Architecture Overview
 
-HEX is structured into four primary layers:
+HEX is structured into five primary architectural planes:
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│                 Presentation & Interaction Layer            │
-│    Native Rust TUI (hex-tui) · Web Control Surface · ACP   │
-├─────────────────────────────────────────────────────────────┤
-│                 Autonomous Orchestration Core               │
-│      ReAct Loop · Task Scheduler · Two-Tier Compression     │
-├─────────────────────────────────────────────────────────────┤
-│                 Safety & Isolation Sandboxing               │
-│     Copy-on-Write (CoW) · SkillSpector · Ring Buffer PTY    │
-├─────────────────────────────────────────────────────────────┤
-│                 Storage & Ledger Engine                     │
-│    PostgreSQL 16 · SQLite WAL · Cryptographic SHA-256 Chain │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       PRESENTATION & INTERACTION LAYER                      │
+│   Native macOS GPUI Cockpit (experimental) · Native Ratatui TUI             │
+│          Agent Client Protocol (ACP) JSON-RPC 2.0 · Web Control Surface     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                        AUTONOMOUS ORCHESTRATION CORE                        │
+│       ReAct Loop · Task Scheduler · Mixture-of-Agents (MoA) Multi-Model     │
+│  Timeline Rewind & Soft Branching · Approval Leases · Repetition Sentry     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                         ACTIVE COGNITION & MEMORY                           │
+│     Slot #4 Frozen Turn-0 Prompt · AST-Scoped Memory · Negative Guardrails   │
+│     Zettelkasten Contradiction Resolution · SkillSpector Gate · Verify Hooks │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                        MODEL RESILIENCE & INTEGRATION                       │
+│    Multi-Key CredentialPool · HTTP 429 Jittered Backoff · Model Cooldowns   │
+│     30s Endpoint Blackholing · Local Socket Probes · OS Keychain Vault      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                          STORAGE & ISOLATION ENGINE                         │
+│     Copy-on-Write (CoW APFS/OverlayFS) · PostgreSQL 16 + SQLite WAL Dual    │
+│     SHA-256 Hash Chaining · Scoped TTL Retention & CAS Mark-and-Sweep GC    │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Copy-on-Write (CoW) Filesystem Isolation
+## 2. Native macOS GPUI Desktop Cockpit (`crates/hex-desktop`) — Experimental
+
+HEX features a state-of-the-art native desktop application built using Zed's GPU-accelerated **GPUI** framework (`crates/hex-desktop`):
+
+```text
+┌───────────────────────────┬────────────────────────────────────────────────────────┐
+│  HEX DESKTOP  ● ● ●       │  Workspace: /Development/Harness  git:(main)  ● Claude │
+├───────────────────────────┼────────────────────────────────────────────────────────┤
+│  [+] New Session (⌘N)     │  ┌──────────────────────────────────────────────────┐  │
+│                           │  │ ❯ Add rate-limiting middleware to FastAPI router │  │
+│  TODAY                    │  └──────────────────────────────────────────────────┘  │
+│  ● Auth Rate Limiter  12m │  ┌─ 💭 Thinking Process (3.2s) ──────────────────────┐ │
+│  ● Database Schema    2h  │  │  Analyzing dependencies in pyproject.toml...      │ │
+│                           │  └───────────────────────────────────────────────────┘ │
+│  YESTERDAY                │  ┌─ 🔧 Tool: run_command (git status) ───────────────┐ │
+│  ● Timeline Rewind    1d  │  │  Status: [Completed] · Code: 0                   │ │
+│  ● GPUI Port M15      1d  │  └───────────────────────────────────────────────────┘ │
+│                           │  ┌─ 📝 Diff: src/router.py ──────────────────────────┐ │
+│  WORKSPACE                │  │  + from slowapi import Limiter                    │ │
+│  Files: 142               │  │  + limiter = Limiter(key_func=get_remote_address) │ │
+│  Sandboxes: 1 active      │  └───────────────────────────────────────────────────┘ │
+│                           ├────────────────────────────────────────────────────────┤
+│                           │  ❯ Type message...                                ⌘↵   │
+│                           │  ▕████████░░░░░░░░░░▏ 42.1k / 200k tok · claude-3-7   │
+└───────────────────────────┴────────────────────────────────────────────────────────┘
+```
+
+### 2.1 Hardware-Accelerated Rendering & macOS Vibrancy
+- **Metal Pipeline**: Renders natively on Apple Silicon Metal shaders via Zed's GPUI crate, eliminating the entire Chromium/Node.js stack.
+- **Blurred Vibrancy**: Configured with `WindowBackgroundAppearance::Blurred` and `TitlebarOptions` with transparent titlebar and traffic lights offset at `(14.0, 16.0)`.
+- **Memory Footprint**: Native Rust + Metal stack with no bundled browser runtime; substantially lighter than Electron-based agent desktop apps.
+
+> **Status:** The desktop cockpit is experimental. The UI shell described below renders today; live ACP chat wiring, input focus, and shortcut dispatch are in progress (fit-and-finish audit F02/F04/F11).
+
+### 2.2 Dark Zinc Design Tokens (`theme.rs`)
+Implements a Dark Zinc visual hierarchy:
+- **Canvas / Background**: `#09090b` (true zinc black)
+- **Card / Surface**: `#18181b` (subtle elevation)
+- **Elevated / Popover**: `#27272a` (modal cards and dropdowns)
+- **Structural Borders**: `#3f3f46` (crisp 1px hairline dividers)
+- **Typography**: `#fafafa` (high-contrast primary), `#a1a1aa` (muted secondary)
+- **Diff Colors**: `#8fbf93` (soft sage green insertions), `#c98b8b` (muted rose red deletions)
+- **Accent**: `#7aa7ff` (electric blue focus rings and active pills)
+
+### 2.3 Component Tree & Interactive Modals
+- **`AppShell`**: Manages the dual-pane layout, active modals, and ACP streaming dispatch.
+- **`SidebarView` & `SessionListView`**: 260px collapsible sidebar with workspace path, git branch tag, provider status indicator, and date-grouped session history (`Today`, `Yesterday`, `Previous 7 Days`).
+- **`MessageFeed`**: Renders streaming user prompts, assistant turns, collapsible `<think>` reasoning folds with elapsed execution counters, tool execution cards with status badges, and syntax-colored diffs.
+- **`ComposerView` & `TokenGaugeView`**: Multiline prompt editor with keyboard shortcuts (`⌘Enter` to send), active model selector pill, and ASCII progress bar gauge (`▕██████░░░░░░░░░░▏`).
+- **`ToolApprovalModal`**: 3-way security confirmation (`[y] Approve`, `[n] Reject`, `[d] Diff`) with a one-click **15-Minute Auto-Approval Lease Toggle** (`[l]`).
+- **`CommandPaletteModal`**: Fuzzy searchable command overlay (`⌘K`) for switching sessions, issuing commands, or changing models.
+- **`ModelPickerModal`**: Multi-provider model browser with context window capacities and active status.
+- **`AcpBridge`**: Handles JSON-RPC 2.0 protocol translation over a stdio subprocess (wire-format alignment with the Python server is in progress, F04).
+
+---
+
+## 3. Clean Domain Subpackage Layout (`src/harness_core/`)
+
+HEX's Python core is organized into 7 clean domain subpackages, eliminating monolithic files and circular dependencies:
+
+```text
+src/harness_core/
+├── core/
+│   ├── orchestrator.py        # Central coordination engine
+│   ├── react_loop.py          # Multi-turn autonomous tool execution loop
+│   ├── router.py              # Model selection and token routing
+│   ├── subagent.py            # Hierarchical child agent worker pools
+│   ├── moa.py                 # Mixture-of-Agents proposer/aggregator engine
+│   ├── approval_lease.py      # Temporal auto-approval lease manager
+│   ├── reasoning_effort.py    # Dynamic reasoning effort budgets
+│   └── models.py              # Task and execution data models
+├── storage/
+│   ├── db.py                  # Dual-driver PostgreSQL 16 + SQLite WAL ledger
+│   ├── cow.py                 # APFS clonefile / Linux OverlayFS sandboxing
+│   ├── sandbox.py             # Ephemeral workspace lifecycle management
+│   ├── timeline_rewind.py     # Conversational rewind and soft-branching
+│   ├── vault_keychain.py      # OS Keychain secure credential storage
+│   ├── gc.py                  # Scoped TTL retention and CAS garbage collection
+│   ├── backup.py              # Online backup and point-in-time recovery
+│   └── project_registry.py    # Multi-workspace directory tracking
+├── cognition/
+│   ├── soul.py                # Machine DNA and persona identity (SOUL.md)
+│   ├── memory.py              # Ast-scoped JIT memory and A-MEM CRUD
+│   ├── reflection.py          # Automatic failure friction post-mortems
+│   ├── skillspector.py        # NVIDIA AST security and malware gate
+│   ├── skill_synthesizer.py   # Closed-loop skill compiler with verify: hooks
+│   ├── prompt_builder.py      # 5-slot frozen Turn-0 prompt compiler
+│   ├── title_synthesizer.py   # Asynchronous 2-stage LLM session titling
+│   ├── repetition_sentry.py   # Loop detection and <think> tag scrubber
+│   └── context_compressor.py  # Two-tier AST and log traceback compression
+├── runtime/
+│   ├── process_registry.py    # Subprocess tracking and PID fencing
+│   ├── code_kernel.py         # Persistent Jupyter/Python execution kernel
+│   ├── daemon.py              # Background service daemon (launchd/systemd)
+│   ├── worker_daemon.py       # Distributed task worker process
+│   └── scheduler.py           # Scheduled cron and delayed automations
+├── client/
+│   ├── acp.py                 # Agent Client Protocol JSON-RPC 2.0 server
+│   ├── tui.py                 # Terminal user interface controller
+│   ├── tui_launcher.py        # TUI launcher and terminal mode detection
+│   ├── ui_selector.py         # Interactive UI selector (TUI vs Desktop vs CLI)
+│   ├── dashboard.py           # Zero-dependency local web dashboard
+│   ├── asgi.py                # FastAPI REST API and SSE event endpoints
+│   ├── cli.py                 # Main CLI command dispatcher
+│   ├── onboard.py             # Interactive terminal onboarding wizard
+│   ├── auto_setup.py          # One-click environment autodetection
+│   └── doctor.py              # Self-healing diagnostic repair engine
+├── capabilities/
+│   ├── browser.py             # Playwright headless browser with ariaSnapshot
+│   ├── vision.py              # Multimodal image and DOM visual diffing
+│   ├── voice.py               # Hands-free spoken pair programming console
+│   ├── search.py              # Fast ripgrep and semantic code search
+│   ├── git_autopilot.py       # Autonomous git branching, staging, and PRs
+│   ├── proof.py               # Cryptographic verification certificates
+│   └── gateways/              # Telegram & Discord webhook listeners
+└── models/
+    ├── credential_pool.py     # Multi-key pool, 429 rotation & cooldowns
+    └── model_metadata.py      # Provider catalog, socket probes, and specs
+```
+
+---
+
+## 4. Copy-on-Write (CoW) Filesystem Isolation
 
 Rather than editing source code in place, HEX spawns an ephemeral sandbox for every task or subagent attempt:
 
@@ -44,11 +174,76 @@ Rather than editing source code in place, HEX spawns an ephemeral sandbox for ev
 
 ---
 
-## 3. Storage & Cryptographic Event Ledger
+## 5. Model Resilience: Credential Pools, Socket Probes & Keychain
+
+Production reliability requires resilient handling of upstream provider rate limits, network outages, and credential management:
+
+```text
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                         CREDENTIAL POOL ROUTING                             │
+  │                                                                             │
+  │  [ Key Pool: k1, k2, k3 ] ──► Round-Robin / Least-Used Selection            │
+  │                                     │                                       │
+  │                                     ▼                                       │
+  │                            Execute Upstream Call                            │
+  │                                     │                                       │
+  │            ┌────────────────────────┴────────────────────────┐              │
+  │            ▼ (HTTP 200 OK)                                   ▼ (HTTP 429)   │
+  │       Success Return                               Rotate to Next Key       │
+  │                                              Calculate Jittered Backoff     │
+  │                                              Queue (Provider, Model) Cooldown│
+  │                                              30s Endpoint Blackholing Guard │
+  └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.1 Multi-Key Ingestion & Rotation (`credential_pool.py`)
+- **Key Pools**: Supports multiple keys per provider (e.g. `ANTHROPIC_API_KEY_1`, `ANTHROPIC_API_KEY_2`).
+- **Load Balancing**: Distributes calls across keys via round-robin or least-used balancing.
+- **Automatic 429 Rotation**: When an HTTP 429 occurs, the pool immediately shifts traffic to alternate keys while marking the failing key with an exponential backoff timer incorporating jitter.
+- **Model Cooldown Queues**: Throttled `(provider, model)` combinations enter a cooldown queue without impacting unrelated models on the same account.
+- **30s Endpoint Blackholing**: If an endpoint suffers consecutive connection timeouts, it is blackholed for 30s to prevent worker stalls.
+
+### 5.2 Local Socket Probes (`model_metadata.py`)
+HEX automatically queries local inference daemons to discover active models and context capacities:
+- **Ollama**: Queries `http://localhost:11434/api/show` for parameter sizes and context windows.
+- **LM Studio**: Queries `http://localhost:1234/v1/models` for loaded model identifiers.
+- **llama.cpp**: Queries `http://localhost:8080/props` for hardware acceleration state.
+- **vLLM**: Queries `http://localhost:8000/v1/models` for active served models.
+
+### 5.3 OS Keychain Vault (`vault_keychain.py`)
+API keys and OAuth tokens can be saved directly in the operating system's native secure credential storage (macOS Keychain, Linux Secret Service, Windows Credential Manager) via the `keyring` library, eliminating unencrypted plaintext secrets on disk.
+
+---
+
+## 6. Conversational Workflow: Rewind, MoA & Leases
+
+### 6.1 Conversational Timeline Rewind (`timeline_rewind.py`)
+- **Turn-Targeted Rollback**: Users can invoke `/rewind <turn | -N>` to restore conversation history to any historical checkpoint.
+- **Soft Branching in SQLite**: Historical turns are never hard-deleted; instead, they are preserved under a unique `branch_id` in the `tasks` table with cryptographic `TIMELINE_REWOUND` audit events.
+- **Sandbox State Synchronization**: Truncates dialogue buffers, resets the ReAct tool call journal, and reverts sandbox file modifications to match the selected turn.
+
+### 6.2 Mixture-of-Agents (MoA) Engine (`moa.py`)
+- **Proposer Layer**: Dispatches candidate generation to multiple diverse LLMs (e.g., Claude 3.7 Sonnet, GPT-4o, Gemini 2.5 Pro) in parallel.
+- **Aggregator Layer**: Feeds candidate proposals and critiques to an aggregator model that cross-examines solutions and compiles an optimal final output.
+- **Graceful Degradation**: Enforces per-proposer timeouts so slow or failing models do not stall the user experience.
+
+### 6.3 Temporal Approval Leases (`approval_lease.py`)
+- **Lease Creation**: Users grant time-bounded auto-approval leases (e.g., `/lease npm test 1h`, `/lease git status 15m`).
+- **Prefix & Path Matching**: Evaluates command prefixes and target directories against active leases.
+- **TTL Expiration**: Expired leases automatically lapse, restoring mandatory human-in-the-loop confirmation prompts.
+
+### 6.4 Repetition Sentry & `<think>` Scrubber (`repetition_sentry.py`)
+- **Loop Detection**: Monitors sliding token n-grams and tool call signatures to identify infinite loops and repetitive failure patterns.
+- **Steering Prompt Injection**: Injects out-of-band corrective prompts (`"You are repeating actions without making progress. Stop and change strategy."`).
+- **Thinking Tag Purification**: Strips raw `<think>...</think>` artifacts from model outputs before committing to conversation history.
+
+---
+
+## 7. Storage & Cryptographic Event Ledger
 
 HEX utilizes a dual-driver relational architecture designed for enterprise-grade durability and concurrency:
 
-### Dual-Driver DB (`harness_core.db.LedgerStore`)
+### Dual-Driver DB (`harness_core.storage.db.LedgerStore`)
 - **PostgreSQL 16+**: High-throughput distributed mode with `asyncpg` connection pooling and `SELECT ... FOR UPDATE SKIP LOCKED` task queue claiming.
 - **SQLite 3.35+ (WAL)**: Zero-config local embedded mode with Write-Ahead Logging and automatic checkpointing.
 - **Alembic Schema Parity**: All database migrations are fully reversible and tracked via Alembic revisions.
@@ -62,7 +257,7 @@ Any tampering with stored event logs breaks chain continuity and is caught by `s
 
 ---
 
-## 4. AST Code Intelligence (Graphify)
+## 8. AST Code Intelligence (Graphify)
 
 HEX incorporates an active code intelligence engine powered by tree-sitter:
 
@@ -72,22 +267,9 @@ HEX incorporates an active code intelligence engine powered by tree-sitter:
 
 ---
 
-## 5. Two-Tier Context Compression
+## 9. Next-Gen Cognition & Self-Evolution Architecture
 
-To operate within bounded model token budgets without losing critical failure context:
-
-1. **Deterministic Traceback Compression**:
-   - Strips redundant framework frames (e.g. standard library internals, pytest test runner plumbing).
-   - Retains failing assertions, variable representations, and exact diffs.
-   - Achieves a **75% to 88% token reduction** on compiler outputs and test traces.
-2. **Shadow Summary Deduplication**:
-   - In extended 30+ turn sessions, older compaction summaries are parsed and consolidated into a single unified summary block, eliminating stacked duplicate context.
-
----
-
-## 6. Next-Gen Cognition & Self-Evolution Architecture
-
-HEX fundamentally redesigns agent self-learning and memory away from static flat text buffers into a multi-tiered, active cognitive loop designed to eliminate prompt bloat, preserve KV-cache prefix stability, and turn learned experience into deterministic regression tests.
+HEX fundamentally redesigns agent self-learning away from static flat text buffers into a multi-tiered, active cognitive loop:
 
 ```text
   ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -111,64 +293,34 @@ HEX fundamentally redesigns agent self-learning and memory away from static flat
   └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### The 6 Architectural Pillars:
-
-#### 1. AST-Scoped Memory Injection (JIT Graph Retrieval)
-Instead of stuffing every project rule into a single 2,500-character `MEMORY.md` file, HEX partitions project memory into:
-- **Global Repo Memory**: Universal architectural facts kept in Slot #4.
-- **Node-Bound Memory**: File- and function-specific gotchas stored in SQLite/Graphify and retrieved Just-In-Time.
-- **Mechanism**: When the agent reads `src/orchestrator.py` or inspects a symbol, HEX automatically pulls any memory notes, invariants, or past bug post-mortems attached to that symbol or its 1-hop callers/callees. These are injected directly into the **`read_file` tool observation output**—not the system prompt.
-- **Benefit**: The system prompt stays 100% KV-cache frozen, while code-specific gotchas appear dynamically right when the model inspects or edits that file.
-
-#### 2. Negative Constraint Memory ("Anti-Patterns & Guardrails")
-Standard agent memories store positive facts (*"Use cargo nextest"*). Coding agents fail repeatedly because they forget what already failed.
-- **Mechanism**: HEX maintains `.hex/memories/GUARDRAILS.md`, populated automatically whenever a tool call or build command fails twice with the same signature, or when a user rejects a diff.
-- **Format**: `[AVOID] Do not use tokio::sync::Mutex across .await in router.rs — causes Send bound compile errors.`
-- **Benefit**: Negative invariants framed as explicit `[AVOID]` constraints right before execution dramatically cut repeat hallucination loops, especially on 8B–9B local models.
-
-#### 3. Zettelkasten-Style Linked Memory & Contradiction Resolution
-Flat bullet lists rot because new facts sit next to old facts that contradict them.
-- **Mechanism**: Memory writes follow the A-MEM / CRUD controller pattern (`ADD`, `UPDATE`, `DELETE`, `NOOP`). Before writing a new bullet to `MEMORY.md`, HEX executes a lightweight fast-path check against existing entries using FTS5 and tag overlap. If a new note contradicts an old one (e.g., *"Migrated database from MongoDB to SQLite"*), HEX executes an `UPDATE` or `DELETE` on the obsolete note rather than appending a conflicting line.
-- **Benefit**: Notes are linked with lightweight wiki-style tags (`[[auth-flow]]`, `[[webrtc-room]]`), so retrieving one pulls its immediate conceptual neighborhood without fact pollution.
-
-#### 4. Confidence Decay & "Promotion / Demotion" Lifecycle
-Not every learned insight deserves permanent real estate in your frozen system prompt.
-- **Mechanism**: Every memory entry carries an active hit counter and last-referenced timestamp.
-  - **Promotion**: If a reflection in `.hex/reflections/LESSONS.md` gets retrieved and helps solve a task across 3 separate sessions, HEX promotes it into `MEMORY.md` (or compiles it into a reusable `SKILL.md`).
-  - **Demotion (Archive)**: If a bullet in `MEMORY.md` goes unreferenced for 30 days—or its linked AST hash goes stale—it automatically demotes out of the active prompt into cold SQLite FTS5 archival storage.
-- **Benefit**: Active prompt context remains lean and relevant; old knowledge is preserved in cold search storage without bloating prompt tokens.
-
-#### 5. Deterministic Verification Hooks Attached to Skills
-Hermes `SKILL.md` files are purely instructional prose. In HEX, a learned skill carries executable verification assertions.
-- **Mechanism**: When `/learn` compiles a `SKILL.md` bundle (e.g. *"How to add a new RPC endpoint"*), it allows an optional `verify:` frontmatter block specifying a shell command, AST invariant, or test filter (e.g. `cargo test rpc_schema_sync`).
-- **Benefit**: Whenever HEX invokes that skill in the future, `SkillExecutionEngine` automatically runs the verification check with timeout protection after the agent finishes editing, turning passive documentation into an executable regression test.
-
-#### 6. Cross-Repo "Developer DNA" Sync (`USER.md` + Universal Skills)
-Separates machine-wide engineering habits from repository-specific trivia:
-- **`~/.hex/USER.md` + `~/.hex/skills/`**: Stores personal stack preferences (e.g. Rust error handling style, Neo-brutalist UI tokens, preferred CLI flags) and universal workflows across every project on the machine.
-- **`.hex/MEMORY.md` + `.hex/skills/`**: Tracked in git (or `.gitignored` per user choice) so project-specific architecture rules travel with the repository and can even be shared across teams.
+1. **AST-Scoped Memory Injection**: Injects symbol-specific invariants directly into `read_file` tool observation outputs rather than system prompts, keeping the prompt 100% KV-cache frozen.
+2. **Negative Constraint Memory**: Maintains `.hex/memories/GUARDRAILS.md` populated with `[AVOID]` invariants when commands fail repeatedly.
+3. **Zettelkasten Contradiction Resolution**: Implements the A-MEM pattern (`ADD`, `UPDATE`, `DELETE`, `NOOP`) with FTS5 keyword indexing to reconcile conflicting facts.
+4. **Confidence Decay**: Promotes validated lessons to `MEMORY.md` while demoting stale knowledge (>30d unreferenced) to cold SQLite FTS5 search storage.
+5. **Deterministic `verify:` Skill Hooks**: Executes automated validation assertions attached to `SKILL.md` bundles after agent editing.
+6. **Cross-Repo DNA**: Separates machine-wide engineering habits (`~/.hex/USER.md`) from repository-specific architecture rules (`.hex/MEMORY.md`).
 
 ---
 
-## 7. Supply-Chain Security & Hardware Protection
+## 10. Supply-Chain Security & Hardware Protection
 
 ### NVIDIA SkillSpector AST Safety Gate
-Before any synthesized or third-party skill bundle is written to disk, it is staged in an isolated scratchpad and scanned by the upstream NVIDIA SkillSpector engine (`vendor/skillspector`):
+Before any synthesized or third-party skill bundle is written to disk, it is staged in an isolated scratchpad and scanned by the upstream NVIDIA SkillSpector engine:
 - **AST Behavioral Analysis**: Runs Python AST taint checks on bundled scripts to detect socket exfiltration, shell spawns, and unauthorized reflection.
 - **Prompt Injection & Steganography**: Scans for zero-width Unicode characters, bidirectional overrides, and instruction override markers.
 - **OSV CVE Lookup**: Scans bundled dependencies against the live OSV advisory database.
 - **Deterministic Quarantine**: Any skill scoring High or Critical risk (`gate_decision == "QUARANTINE"`) is rejected and quarantined to `.hex/quarantine/<name>/` with a forensic `audit.json`.
 
 ### Hardware Gating (`auto_reflect = "cloud_only" | "idle" | "off"`)
-Spawning background reflection subagents on local hardware (e.g. Apple Silicon M-series or Ollama) competes for unified memory bandwidth and stalls active inference. HEX enforces strict hardware gating:
-- When running on local hardware under `cloud_only` or `off`, background LLM reflection is bypassed.
-- Candidate friction lessons are safely queued to `.hex/reflections/pending_reflections.json` for offline processing.
+Spawning background reflection subagents on local hardware competes for memory bandwidth. HEX enforces strict hardware profiling:
+- Under `cloud_only` or `off`, background LLM reflection is bypassed.
+- Candidate friction lessons are queued to `.hex/reflections/pending_reflections.json` for offline processing.
 
 ---
 
-## 8. Storage Lifecycle, Scoped TTL Retention & Garbage Collection
+## 11. Storage Lifecycle & Garbage Collection (`hex gc`)
 
-Because HEX operates as an ACID-style transactional flight recorder, task execution continuously produces Copy-on-Write snapshots, CAS delta tarballs, and proof bundles. To prevent unbounded disk growth while preserving forensic auditability, HEX implements an automated, scoped retention engine (`src/harness_core/gc.py`):
+Task execution continuously produces CoW snapshots, CAS delta tarballs, and proof bundles. To prevent unbounded disk growth while preserving auditability, HEX implements an automated, scoped retention engine (`src/harness_core/storage/gc.py`):
 
 ```text
   ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -193,9 +345,7 @@ Because HEX operates as an ACID-style transactional flight recorder, task execut
   └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Architectural Guarantees:
-1. **Active & Pinned Task Immunity**: Tasks with state `RUNNING`, `PAUSED`, `PENDING`, or `pinned = True` are strictly exempt from TTL deletion.
-2. **Reference-Counted CAS Mark-and-Sweep**: Blobs in `cas/` and `cas_artifacts/` are never deleted by mtime alone. Instead, a mark-and-sweep algorithm computes all SHA-256 hashes referenced across all active, pinned, or recent (< 7 days) tasks and proofs, pruning only unreferenced blobs older than `7d`.
-3. **Orphan Directory Race Guard**: Ephemeral workspace directories created before database transaction commit are protected by an orphan guard threshold (`mtime > 1h` or `workspace_ttl`), preventing races with in-flight worker tasks.
-4. **Non-Blocking Concurrency Policy**: Automated sweeps executed during TUI startup or worker idle loops execute `PRAGMA incremental_vacuum;` to reclaim unused database pages without acquiring table locks or blocking concurrent workers. Heavy exclusive `VACUUM` is strictly restricted to explicit `hex gc --full-vacuum` invocations when no worker leases exist.
-5. **Deterministic Delta Safety Filter**: The `export_delta_archive` process applies a recursive `_tar_filter` that excludes `IGNORE_DIRS` (`.hex`, `.git`, `.venv`), `.DS_Store`, and active SQLite WAL lockfiles (`*.db-wal`, `*.db-shm`), preventing file-system race conditions during snapshot bundling.
+1. **Active & Pinned Task Immunity**: Tasks in `RUNNING`, `PAUSED`, `PENDING`, or `pinned = True` are strictly exempt from TTL deletion.
+2. **Reference-Counted CAS Mark-and-Sweep**: Prunes only unreferenced blobs older than `7d`.
+3. **Orphan Directory Race Guard**: Ephemeral scratchpads created before database commit are protected by a minimum age threshold (`mtime > 1h`).
+4. **Non-Blocking Concurrency Policy**: Automated sweeps run `PRAGMA incremental_vacuum;` to reclaim unused database pages without acquiring exclusive table locks.

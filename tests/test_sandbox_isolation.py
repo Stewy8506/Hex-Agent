@@ -23,10 +23,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import PolicyBlockedError, ToolGateway
-from harness_core.models import TaskSubmitRequest
-from harness_core.sandbox import (
+from harness_core.core.models import TaskSubmitRequest
+from harness_core.storage.sandbox import (
     BubblewrapSandbox,
     DockerPodmanSandbox,
     ExecutionSandbox,

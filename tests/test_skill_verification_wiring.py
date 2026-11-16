@@ -6,17 +6,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness_core.db import LedgerStore
-from harness_core.models import TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.sandbox import RestrictedSubprocessSandbox
+from harness_core.storage.db import LedgerStore
+from harness_core.core.models import TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.storage.sandbox import RestrictedSubprocessSandbox
 from harness_core.skills.executor import (
     SecurityError,
     SkillExecutionEngine,
     SkillVerificationHook,
     build_minimal_skill_env,
 )
-from harness_core.skillspector import SkillSpectorScanner, compute_bundle_sha256
+from harness_core.cognition.skillspector import SkillSpectorScanner, compute_bundle_sha256
 
 
 class TestSkillVerificationWiring(unittest.TestCase):

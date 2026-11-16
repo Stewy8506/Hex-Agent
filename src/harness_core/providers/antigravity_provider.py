@@ -1463,7 +1463,7 @@ class AntigravityModelProvider(ModelProvider):
 
         eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
         if eff:
-            from ..reasoning_effort import effort_to_gemini_thinking, model_supports_reasoning
+            from harness_core.core.reasoning_effort import effort_to_gemini_thinking, model_supports_reasoning
             if model_supports_reasoning("antigravity", self.model_id):
                 th_cfg = effort_to_gemini_thinking(eff)
                 if th_cfg is not None:

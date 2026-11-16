@@ -253,3 +253,18 @@ CREATE TABLE IF NOT EXISTS evaluations (
     created_at TEXT NOT NULL,
     reviewer_id TEXT
 );
+
+CREATE TABLE IF NOT EXISTS approval_leases (
+    lease_id TEXT PRIMARY KEY,
+    task_id TEXT REFERENCES tasks(task_id),
+    command_prefix TEXT,
+    allowed_paths_json TEXT NOT NULL DEFAULT '[]',
+    scope TEXT NOT NULL DEFAULT 'temporal',
+    ttl_seconds INTEGER NOT NULL DEFAULT 900,
+    granted_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    is_revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approval_leases_lookup ON approval_leases (is_revoked, expires_at);
+

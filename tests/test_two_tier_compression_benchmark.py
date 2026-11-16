@@ -15,7 +15,7 @@ import json
 import unittest
 from typing import Any
 
-from harness_core.models import TaskBudget
+from harness_core.core.models import TaskBudget
 from harness_core.providers.base import PolicyBlockedError
 from harness_core.providers.cloud_provider import (
     CloudModelProvider,
@@ -25,7 +25,7 @@ from harness_core.providers.mlx_provider import (
     LocalMLXModelProvider,
     Tier1LogCompressor,
 )
-from harness_core.router import RouteDecision, TwoTierModelRouter
+from harness_core.core.router import RouteDecision, TwoTierModelRouter
 
 
 def generate_500_line_pytest_trace() -> str:

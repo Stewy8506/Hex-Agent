@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cow import (
+from harness_core.storage.cow import (
     APFSAndPortableCoWProvider,
     BtrfsSnapshotProvider,
     OverlayFSSnapshotProvider,
@@ -29,7 +29,7 @@ from harness_core.cow import (
     compute_tree_sha,
     get_default_snapshot_provider,
 )
-from harness_core.orchestrator import HarnessOrchestrator
+from harness_core.core.orchestrator import HarnessOrchestrator
 
 
 class TestWorkspaceSnapshotProviderContract(unittest.TestCase):

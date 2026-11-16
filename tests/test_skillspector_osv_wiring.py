@@ -22,8 +22,8 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from harness_core.db import LedgerStore
-from harness_core.skillspector import SkillSpectorScanner, UPSTREAM_OSV_AVAILABLE
+from harness_core.storage.db import LedgerStore
+from harness_core.cognition.skillspector import SkillSpectorScanner, UPSTREAM_OSV_AVAILABLE
 
 
 class TestSkillSpectorOSVWiring(unittest.TestCase):
@@ -76,7 +76,7 @@ class TestSkillSpectorOSVWiring(unittest.TestCase):
         """Verify fallback to local KNOWN_OSV_VULNS table when OSV.dev network times out."""
         bundle = self._create_bundle("offline_skill", "pyyaml==5.3\n")
 
-        with patch("harness_core.skillspector.osv_query_batch", side_effect=TimeoutError("Network unreachable")):
+        with patch("harness_core.cognition.skillspector.osv_query_batch", side_effect=TimeoutError("Network unreachable")):
             report = self.scanner.scan_bundle(bundle)
 
         self.assertTrue(len(report.osv_vulns) >= 1)

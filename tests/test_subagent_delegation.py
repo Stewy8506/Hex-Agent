@@ -19,11 +19,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cow import get_default_snapshot_provider
-from harness_core.db import LedgerStore
+from harness_core.storage.cow import get_default_snapshot_provider
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import PolicyBlockedError, ToolGateway
-from harness_core.models import RiskClass
-from harness_core.subagent import (
+from harness_core.core.models import RiskClass
+from harness_core.core.subagent import (
     MaxRecursionDepthExceededError,
     ROLE_ALLOWED_TOOLS,
     SubagentManager,

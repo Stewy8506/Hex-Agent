@@ -19,11 +19,11 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main
+from harness_core.client.cli import main
 from harness_core.gateway import ApprovalRequiredInterrupt
-from harness_core.onboard import detect_project_stack, init_project
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.tui import HexConsole
+from harness_core.client.onboard import detect_project_stack, init_project
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.client.tui import HexConsole
 
 
 class TestKeyboardApprovalsAndSubshell(unittest.TestCase):

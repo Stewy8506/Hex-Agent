@@ -10,19 +10,20 @@
                                           anv.dev
 ```
 
-### The Autonomous AI Terminal Agent That Tests Before It Touches Your Code
+### The Autonomous AI Engineering Agent That Tests Before It Touches Your Code
 
-[![Version](https://img.shields.io/badge/version-0.21.0-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.22.0-ffb703?style=flat-square&logo=semanticrelease&logoColor=white)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
-[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blueviolet?style=flat-square)](install.sh)
-[![Tests Passing](https://img.shields.io/badge/tests-918%20passing%20(100%25)-10b981?style=flat-square&logo=pytest&logoColor=white)](tests/)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-blueviolet?style=flat-square)](install.sh)
+[![CI](https://github.com/Stewy8506/Harness/actions/workflows/ci.yml/badge.svg)](https://github.com/Stewy8506/Harness/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
 
 <p align="center">
   <a href="#-quick-install"><strong>Quick Install</strong></a> ·
   <a href="#-getting-started-in-3-steps"><strong>Getting Started</strong></a> ·
-  <a href="#-the-3-modes-agent--plan--code"><strong>The 3 Modes</strong></a> ·
+  <a href="#-native-macos-gpui-desktop-app"><strong>Native GPUI Desktop</strong></a> ·
   <a href="#-terminal-cockpit"><strong>Terminal Cockpit</strong></a> ·
+  <a href="#-the-3-modes-agent--plan--code"><strong>The 3 Modes</strong></a> ·
   <a href="#-supported-models"><strong>Models</strong></a> ·
   <a href="#-daily-commands"><strong>Commands</strong></a> ·
   <a href="#-documentation-library"><strong>Documentation</strong></a>
@@ -34,24 +35,29 @@
 
 ### What is HEX?
 
-**HEX** is an autonomous AI pair-programmer in your terminal designed to make AI coding reliable, fast, and safe.
+**HEX** is an autonomous AI pair-programmer in your terminal and desktop designed to make AI coding reliable, fast, and safe.
 
 Most AI coding assistants edit your files in place. If an agent hallucinates or produces broken syntax, your working branch is trashed, git history is cluttered with dirty diffs, and you spend valuable time cleaning up.
 
 **HEX does the opposite:**
-- **Zero-Risk Scratchpad**: Every code change and test runs inside a high-speed, isolated sandbox.
+- **Zero-Risk Scratchpad**: Every code change and test runs inside an ultra-fast, isolated Copy-on-Write sandbox (<10ms).
 - **Proof Before Commit**: HEX executes your project's test suite. Only when tests pass are patches applied to your code.
-- **Model Freedom**: Connect directly to your existing Google Antigravity OAuth quota, frontier cloud models (Claude 3.7 Sonnet, GPT-4o, Gemini 2.5 Pro), or run 100% offline with local models (Ollama, Apple Metal, NVIDIA CUDA).
+- **Native Cockpits**: A Ratatui terminal TUI is the supported default. A native macOS GPUI desktop app is in **experimental** development (UI shell; chat integration in progress).
+- **Model Freedom**: Connect directly to your existing Google Antigravity OAuth quota, 26 cloud providers, or run 100% offline with local models (Ollama, Apple Silicon Metal, NVIDIA CUDA).
 
 <table>
 <tr><td><b>Isolated Sandboxing</b></td><td>Instant Copy-on-Write staging (macOS APFS / Linux OverlayFS in &lt;10ms). Broken patches are discarded with zero host pollution.</td></tr>
 <tr><td><b>Proof Before Commit</b></td><td>Verifies tests and diagnostics inside the sandbox before touching a single line of your working branch.</td></tr>
-<tr><td><b>Native Rust Cockpit</b></td><td>Ultra-responsive 60 FPS Ratatui terminal interface with multiline editing, fuzzy slash autocomplete, and side-by-side split diffs.</td></tr>
+<tr><td><b>Native GPUI Desktop Cockpit (experimental)</b></td><td>Native macOS app built with Zed's GPUI crate. The UI shell renders today; backend chat wiring is in progress. Not yet a supported daily surface.</td></tr>
+<tr><td><b>Native Rust Terminal Cockpit</b></td><td>Ultra-responsive 60 FPS Ratatui terminal interface with multiline editing, fuzzy slash autocomplete, and side-by-side split diffs.</td></tr>
+<tr><td><b>Timeline Rewind & Branching</b></td><td>Roll back conversation turns and code states with <code>/rewind &lt;turn | -N&gt;</code> (Python console), preserving historical attempts in soft branches.</td></tr>
+<tr><td><b>Mixture-of-Agents (MoA)</b></td><td>Core proposer/aggregator engine ships in the ReAct loop, enabled via configuration. A <code>/moa</code> toggle command is not yet exposed on any client surface.</td></tr>
+<tr><td><b>Temporal Approval Leases</b></td><td>Auto-approve trusted command prefixes or directory paths for 15m, 1h, or custom TTL (<code>/lease</code> in the Python console) without tedious confirmation friction.</td></tr>
+<tr><td><b>Multi-Key Resilience Pool</b></td><td>Round-robin credential routing, automatic HTTP 429 rotation with jittered backoff, model cooldown queues, and 30s endpoint blackholing.</td></tr>
 <tr><td><b>Active Cognition & Memory</b></td><td>JIT AST-scoped memory injection into tool observations (100% frozen KV-cache prompt), negative [AVOID] guardrails, and executable <code>verify:</code> skill hooks.</td></tr>
 <tr><td><b>Storage GC & Retention</b></td><td>Automated background TTL sweeps, reference-counted CAS pruning, task pinning, and zero-downtime incremental vacuum (<code>hex gc</code>).</td></tr>
 <tr><td><b>Model Independence</b></td><td>Use any cloud provider or local offline LLM. Switch anytime with <code>/model</code>—no code changes, zero lock-in.</td></tr>
 <tr><td><b>Editor Integration</b></td><td>Built-in Agent Client Protocol (ACP) server for seamless use inside Zed, Neovim, and VS Code.</td></tr>
-<tr><td><b>Headless Browser & Vision</b></td><td>Automate web testing, inspect DOM accessibility hierarchies, and evaluate visual UI regressions directly from the CLI.</td></tr>
 </table>
 
 ---
@@ -78,6 +84,21 @@ pipx install "git+https://github.com/Stewy8506/Harness.git[tui]"
 uv tool install "git+https://github.com/Stewy8506/Harness.git[tui]"
 ```
 
+**What gets installed (the install contract):**
+
+- The Python package (`hex-ai`) ships the CLI, ACP server, and vendored
+  engines in the wheel — no compiler or source checkout required.
+- The native Ratatui cockpit (`hex-tui`) is delivered as a checksum-verified
+  release artifact into `~/.hex/bin/hex-tui` by `install.sh` / `install.ps1`.
+  Building it from source is an explicit developer option
+  (`./install.sh --build-native`, `HEX_BUILD_NATIVE=1` on Windows, or
+  `hex tui --build`), never an automatic fallback.
+- If the native cockpit is absent, HEX says so plainly and the Python
+  console (`hex --legacy`) remains fully supported.
+- `hex uninstall` removes the CLI wrappers and native binaries; add
+  `--keep-data` to preserve `~/.hex` configuration and history, or `--purge`
+  to delete them.
+
 ---
 
 ## 🚀 Getting Started in 3 Steps
@@ -87,8 +108,17 @@ Navigate to any codebase on your machine and launch HEX:
 
 ```bash
 cd your-project
+
+# Launch the native terminal cockpit (default):
 hex
+
+# Experimental GPUI desktop (from a source checkout, macOS only):
+cargo run -p hex-desktop
 ```
+
+> The desktop app is experimental: it currently renders the UI shell and is
+> not yet wired into a working chat flow. There is no `hex desktop`
+> subcommand yet.
 
 ### 2. Choose Your Model (One-Time Setup)
 On your very first run, HEX opens an interactive terminal setup menu:
@@ -117,6 +147,65 @@ HEX will clone an isolated scratchpad, implement the code, run your test runner,
 
 ---
 
+## 🖥️ Native macOS GPUI Desktop Cockpit (`hex-desktop`) — Experimental
+
+> **Status: experimental.** The desktop currently renders its UI shell
+> (sidebar, message feed, composer, modals) but is not yet connected to a
+> working chat flow: input handling, backend session wiring, and action
+> handlers are in progress. Performance figures (FPS, RAM) have not been
+> benchmarked and are not claimed. The mockup below shows the target design.
+
+The desktop is built with Zed's **GPUI** framework (`crates/hex-desktop`):
+
+```text
+┌───────────────────────────┬────────────────────────────────────────────────────────┐
+│  HEX DESKTOP  ● ● ●       │  Workspace: /Development/my-app  git:(main)  ● Claude   │
+├───────────────────────────┼────────────────────────────────────────────────────────┤
+│  [+] New Session (⌘N)     │  ┌──────────────────────────────────────────────────┐  │
+│                           │  │ ❯ Add rate-limiting middleware to FastAPI router │  │
+│  TODAY                    │  └──────────────────────────────────────────────────┘  │
+│  ● Auth Rate Limiter  12m │  ┌─ 💭 Thinking Process (3.2s) ──────────────────────┐ │
+│  ● Database Schema    2h  │  │  Analyzing dependencies in pyproject.toml...      │ │
+│                           │  └───────────────────────────────────────────────────┘ │
+│  YESTERDAY                │  ┌─ 🔧 Tool: run_command (git status) ───────────────┐ │
+│  ● Timeline Rewind    1d  │  │  Status: [Completed] · Code: 0                   │ │
+│  ● GPUI Port M15      1d  │  └───────────────────────────────────────────────────┘ │
+│                           │  ┌─ 📝 Diff: src/router.py ──────────────────────────┐ │
+│  WORKSPACE                │  │  + from slowapi import Limiter                    │ │
+│  Files: 142               │  │  + limiter = Limiter(key_func=get_remote_address) │ │
+│  Sandboxes: 1 active      │  └───────────────────────────────────────────────────┘ │
+│                           ├────────────────────────────────────────────────────────┤
+│                           │  ❯ Type message...                                ⌘↵   │
+│                           │  ▕████████░░░░░░░░░░▏ 42.1k / 200k tok · claude-3-7   │
+└───────────────────────────┴────────────────────────────────────────────────────────┘
+```
+
+- **Hardware-Accelerated Metal Rendering**: GPU-accelerated GPUI rendering with blurred vibrancy (`WindowBackgroundAppearance::Blurred`) and native macOS traffic lights.
+- **Ultra-Lean Resource Footprint**: Native Rust + Metal stack with no bundled browser runtime; memory usage is far below Electron-based desktop apps.
+- **Dark Zinc Design Tokens**: Canvas `#09090b`, card `#18181b`, elevated `#27272a`, structural borders `#3f3f46`, sage green diffs `#8fbf93`, rose red diffs `#c98b8b`, electric blue accents `#7aa7ff`.
+- **Interactive Message Feed (rendered, wiring in progress)**: Streaming token display, `<think>` reasoning folds, tool execution cards with status badges, and syntax-highlighted inline diffs are implemented in the UI shell; the live ACP chat flow is not yet connected (see F02/F04 in the [fit-and-finish audit](audits/FIT_AND_FINISH_HERMES_VS_HEX_2026-11-16.md)).
+- **ASCII Token Gauge & Context Budget (mock data)**: Progress indicator layout is implemented; live token accounting against the active model context window is not yet wired.
+- **Interactive Modals (UI shell)**:
+  - **Command Palette (`⌘K`)**: Session/command/tool switching UI is rendered; keyboard wiring is in progress.
+  - **Tool Approval Modal**: 3-way confirmation layout (`[y] Approve`, `[n] Reject`, `[d] Diff`) with auto-approval lease toggle; approval round-trips are not yet connected to the backend.
+  - **Model Picker**: Filterable catalog UI; selection is not yet persisted to the backend.
+- **ACP Integration (stdio)**: The desktop client spawns the Python ACP server over stdio JSON-RPC 2.0. Streaming deltas render; tool-call events and authoritative completion handling are being aligned with the server wire format (F04).
+
+---
+
+## 📟 Native Rust Terminal Cockpit (`hex-tui`)
+
+For terminal purists, HEX includes a blazingly fast Ratatui terminal cockpit (`hex` or `hex tui`):
+
+- **60 FPS Dual-Buffer Rendering**: Ultra-responsive alt-screen terminal experience consuming <20MB of RAM.
+- **Natural History Scrolling**: Use `PageUp` / `PageDown` or arrow keys to scroll conversation history directly without leaving your input prompt.
+- **Fuzzy Slash Autocomplete**: Type `/` to open fuzzy command suggestions (`/ast` matches `/blast`, `/rb` matches `/rollback`). Press `Tab` to accept suggestions.
+- **Side-by-Side Split Diff (`/sbs`)**: Toggle synchronized two-column split diff views alongside unified diffs.
+- **Light & Dark Terminal Skins**: 7 themes featuring signature **Sapphire** monochrome (`sapphire` [default], `amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) with automatic background luminance detection.
+- **Interactive Security Approvals**: Centered modal overlay for high-risk operations (e.g. git pushes) with action keys (`[y] Approve`, `[n] Reject`, `[d] Diff`).
+
+---
+
 ## 🎯 The 3 Modes: `agent`, `plan`, `code`
 
 HEX separates developer intent into three focused interaction modes. Press **`Tab`** on an empty prompt line to cycle between them instantly:
@@ -133,20 +222,70 @@ HEX separates developer intent into three focused interaction modes. Press **`Ta
 | **`plan`** | **Golden / Amber** | Architecture, design reviews, code explanations | **Read-Only Guardrails**. Inspects files and AST relationships without modifying a single line of code. |
 | **`code`** | **Purple** | Direct code snippets, targeted patch creation | **Direct Synthesis**. Fast targeted code generation without conversational overhead. |
 
-> **Mode Commands:** You can also switch modes anytime using `/agent`, `/plan`, `/code`, or `/mode`.
+> **Mode Commands:** Switch modes anytime using `/agent`, `/plan`, `/code`, or `/mode`.
 
 ---
 
-## 🖥️ Terminal Cockpit
+## ⏪ Conversational Timeline Rewind & Soft Branching
 
-HEX includes a native Rust Ratatui cockpit (`hex tui`) designed for high-performance terminal workflows:
+Ever have an AI agent take a wrong path 5 turns into an architectural refactoring? Traditional agents make you delete your entire session and start over.
 
-- **60 FPS Dual-Buffer Rendering**: Ultra-responsive alt-screen terminal experience consuming <20MB of RAM.
-- **Natural History Scrolling**: Use `PageUp` / `PageDown` or arrow keys to scroll conversation history directly without leaving your input prompt.
-- **Fuzzy Slash Autocomplete**: Type `/` to open fuzzy command suggestions (`/ast` matches `/blast`, `/rb` matches `/rollback`). Press `Tab` to accept suggestions.
-- **Side-by-Side Split Diff (`/sbs`)**: Toggle synchronized two-column split diff views alongside unified diffs.
-- **Light & Dark Terminal Skins**: 7 themes featuring signature **Sapphire** monochrome (`sapphire` [default], `amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) with automatic background luminance detection.
-- **Policy Approvals**: Centered modal overlay for high-risk operations (e.g. git pushes) with action keys (`[y] Approve`, `[n] Reject`, `[d] Diff`).
+HEX features **Conversational Timeline Rewind** (`/rewind`, available in the Python console `hex chat`):
+- **Turn-Targeted Rollback**: Execute `/rewind 3` or `/rewind -2` to rewind dialogue buffers back to any previous turn.
+- **Soft Branching in SQLite**: Historical turns are never deleted; instead, they are preserved under a unique `branch_id` in the `tasks` table with cryptographic `TIMELINE_REWOUND` audit events.
+- **CoW Sandbox Synchronization**: Sandbox file modifications and step journals are reset in sync with conversation turns, giving you a clean slate to steer the agent in a new direction.
+
+---
+
+## 🤝 Mixture-of-Agents (MoA) Multi-Model Synthesis
+
+For critical architectural decisions, schema migrations, or subtle concurrency bugs, single models often suffer from blind spots.
+
+HEX ships a **Mixture-of-Agents** engine (`harness_core.core.moa`) that runs inside the ReAct loop when enabled via configuration:
+- **Parallel Proposer Generation**: Queries multiple diverse frontier models (e.g. Claude 3.7 Sonnet, GPT-4o, Gemini 2.5 Pro) in parallel scratchpads.
+- **Aggregator Synthesis**: Feeds candidate proposals and critiques to an aggregator model that cross-examines edge cases and compiles the optimal solution.
+- **Resilient Fallback**: If any secondary proposer times out or encounters rate limits, the aggregator seamlessly synthesizes available proposals without stalling the interaction.
+- **Ledger Evidence**: MoA synthesis steps and token metrics are recorded as `mixture_of_agents` tool events in the proof ledger.
+
+> **Status:** The engine is configuration-driven today. A `/moa` slash-command toggle is not yet implemented on any client surface.
+
+---
+
+## ⏱️ Temporal Auto-Approval Leases (`/lease`)
+
+Eliminate prompt fatigue during extended autonomous workflows without sacrificing security (available today in the Python console, `hex chat`):
+- **Time-Bounded Leases**: Use `/lease grant npm test 3600` to grant temporal auto-approvals for specific command prefixes or directory paths.
+- **Automatic Expiration**: Leases automatically expire after their TTL, restoring default confirmation prompts.
+- **Desktop UI Integration (planned)**: The Desktop Tool Approval Modal renders a lease toggle, but it is not yet connected to the backend lease service.
+
+---
+
+## 🛡️ Multi-Key Credential Pool & HTTP 429 Resilience
+
+Production agent reliability requires resilient upstream connectivity:
+- **Multi-Key Ingestion**: Configure multiple API keys per provider (e.g. `ANTHROPIC_API_KEY_1`, `ANTHROPIC_API_KEY_2`) with round-robin or least-used balancing.
+- **Intelligent 429 Failover**: Automatically rotates keys when HTTP 429 (Rate Limited) errors occur, calculating jittered exponential backoff based on upstream `Retry-After` headers.
+- **Model Cooldown Queues**: Places throttled `(provider, model)` pairs on cooldown queues without blocking other models.
+- **30-Second Endpoint Blackholing**: Temporarily blackholes unreachable or failing endpoints for 30s to prevent request pile-ups.
+- **Local Socket Probing**: Automatically detects and queries local inference engines on `localhost` (Ollama `/api/show`, LM Studio `/api/v0/models`, llama.cpp `/props`, vLLM `/v1/models`).
+- **OS Keychain Vault**: Store sensitive credentials securely in your operating system's native keychain (`keyring`).
+
+---
+
+## 🏗️ Clean Subpackage Architecture
+
+HEX's Python core (`src/harness_core/`) is organized into 7 clean domain subpackages, eliminating monolithic sprawl and namespace collisions:
+
+```text
+src/harness_core/
+├── core/           # Orchestrator, ReAct loop, router, subagents, MoA, approval leases
+├── storage/        # Dual-driver DB, CoW sandboxes, timeline rewind, GC, OS Keychain
+├── cognition/      # Memory, reflections, SkillSpector, title synthesizer, repetition sentry
+├── runtime/        # Process registry, code execution kernels, daemon, task scheduler
+├── client/         # ACP server, TUI launcher, UI selector, web dashboard, CLI, onboard
+├── capabilities/   # Browser, vision, voice, search, git autopilot, GitHub actions, gateways
+└── models/         # Model metadata, credential pool, provider routing
+```
 
 ---
 
@@ -164,9 +303,9 @@ HEX is completely provider- and model-agnostic. Switch models instantly on the f
 
 ---
 
-## 🧠 Next-Gen Cognition & Self-Evolution (The 6 Upgrades Over Hermes)
+## 🧠 Next-Gen Cognition & Self-Evolution
 
-Traditional AI coding agents (including Hermes Agent and OpenClaw) either dump flat bullet lists into system prompts until context runs out, or lose memory the moment you restart your terminal. 
+Traditional AI coding agents either dump flat bullet lists into system prompts until context runs out, or lose memory the moment you restart your terminal.
 
 HEX replaces flat memory files with an active **Cognitive Self-Evolution Engine** designed for long-lived codebases and local hardware:
 
@@ -190,77 +329,61 @@ HEX replaces flat memory files with an active **Cognitive Self-Evolution Engine*
   └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. AST-Scoped Memory Injection (JIT Graph Retrieval)
-Instead of stuffing every project rule into a single 2,500-character `MEMORY.md` file, HEX partitions project memory into **Global Repo Memory** (always in Slot #4) and **Node-Bound Memory** (stored in SQLite/Graphify, retrieved on demand).
-- **How it works**: When the agent opens `src/orchestrator.py` or queries an AST symbol via Graphify, HEX automatically pulls any memory notes, invariants, or past bug post-mortems attached to that specific symbol or its immediate 1-hop callers/callees, injecting them into the **tool observation output** (not the system prompt).
-- **Why it matters**: Your system prompt stays tiny and **100% KV-cache frozen**, while file-specific gotchas appear dynamically right when the model reads or edits that exact code.
-
-### 2. Negative Constraint Memory ("Anti-Patterns & Guardrails")
-Standard agent memories store positive facts (*"Use cargo nextest"*). Coding agents fail repeatedly because they forget what already failed.
-- **How it works**: HEX maintains a dedicated `.hex/memories/GUARDRAILS.md` populated automatically whenever a tool call or build command fails twice in the same way, or when you explicitly reject a proposed diff.
-- **Format**: `[AVOID] Do not use tokio::sync::Mutex across .await in router.rs — causes Send bound compile errors.`
-- **Why it matters**: Retrieved failure traces are usually advisory and easily ignored by smaller models (8B–9B); framing them as explicit **`[AVOID]` invariants** right before tool execution dramatically cuts repeat hallucination loops.
-
-### 3. Zettelkasten-Style Linked Memory & Contradiction Resolution
-Flat bullet lists rot because new facts sit next to old facts that contradict them.
-- **How it works**: Model memory writes follow the A-MEM / CRUD controller pattern (`ADD`, `UPDATE`, `DELETE`, `NOOP`). Before writing a new bullet to `MEMORY.md`, HEX runs a lightweight fast-path check against existing entries (using FTS5 + tag overlap). If a new note contradicts an old one (e.g., *"Migrated database from MongoDB to SQLite"*), HEX executes an `UPDATE` or `DELETE` on the obsolete MongoDB note rather than appending a conflicting line.
-- **Why it matters**: Notes are linked with lightweight wiki-style tags (`[[auth-flow]]`, `[[webrtc-room]]`), so retrieving one pulls its immediate conceptual neighborhood without fact pollution.
-
-### 4. Confidence Decay & "Promotion / Demotion" Lifecycle
-Not every learned insight deserves permanent real estate in your frozen system prompt.
-- **How it works**: Every memory entry carries an active hit counter and last-referenced timestamp.
-  - **Promotion**: If a reflection in `.hex/reflections/LESSONS.md` gets retrieved and helps solve a task across 3 separate sessions, HEX promotes it into `MEMORY.md` (or compiles it into a reusable `SKILL.md`).
-  - **Demotion (Archive)**: If a bullet in `MEMORY.md` goes unreferenced for 30 days—or its linked AST hash goes stale—it automatically demotes out of the active prompt into cold SQLite FTS5 archival storage.
-- **Why it matters**: Your active context never rots or overflows with obsolete trivia from months ago.
-
-### 5. Deterministic Verification Hooks Attached to Skills
-Hermes/OpenClaw `SKILL.md` files are purely instructional prose. In HEX, a learned skill carries executable verification assertions.
-- **How it works**: When `/learn` compiles a `SKILL.md` bundle (for example, *"How to add a new RPC endpoint"*), it allows an optional `verify:` frontmatter block specifying a shell command, AST invariant, or test filter (e.g. `cargo test rpc_schema_sync`).
-- **Why it matters**: Whenever HEX invokes that skill in the future, the harness automatically runs the verification check after the agent finishes editing, turning passive documentation into an **executable regression test**.
-
-### 6. Cross-Repo "Developer DNA" Sync (`USER.md` + Universal Skills)
-Separate machine-wide engineering habits from repository-specific trivia:
-- **`~/.hex/USER.md` + `~/.hex/skills/`**: Stores your personal stack preferences (e.g., Rust error handling style, Neo-brutalist UI tokens, preferred CLI flags) and universal workflows across every project you open.
-- **`.hex/MEMORY.md` + `.hex/skills/`**: Tracked in git (or `.gitignored` per user choice) so project-specific architecture rules travel with the repo and can even be shared across machines.
-
----
-
-## ⚡ Built-in Power Capabilities
-
-Beyond conversational coding, HEX includes production engineering superpowers built directly into the core:
-
-- **80+ Built-in Skills & NVIDIA SkillSpector**: Over 80 modular capabilities spanning software development, GitHub automation, Apple ecosystems, MLOps, and productivity. Third-party skills are scanned for AST vulnerabilities and OSV malware before execution (`hex scan-skill <dir>`).
-- **Graphify AST Knowledge Graph**: Polyglot code graph (Python, TypeScript, Rust, Go, C++) indexing functions, classes, and call hierarchies. Inspect blast-radius before editing (`hex graphify affected <symbol>`) or export interactive D3 architecture trees (`hex graphify tree`).
-- **Autonomous Git Autopilot**: Automatically branches, stages atomic commits, and creates formatted GitHub Pull Requests upon task completion (`hex run "Goal" --pr`).
-- **Polyglot Language Server Diagnostics**: Real-time compiler syntax errors, type mismatches, and hover documentation (`hex lsp diagnostics`).
-- **Hands-Free Voice Console**: Interactive spoken pair-programming with real-time vocal feedback (`hex voice` or `hex --voice`).
-- **Self-Healing Diagnostics**: Inspect system health, verify virtual environment integrity, and automatically repair configurations (`hex doctor --fix`).
-- **Safe Storage Retention & CAS Garbage Collection**: Automatic TTL retention sweeps for finished workspaces (default 24h) and unreferenced CAS blobs (default 7d), task debugging pinning (`hex pin <id>`), orphan directory race guards, non-blocking incremental vacuum, and on-demand reclamation (`hex gc`).
-- **Closed-Loop Autonomous Learning & Memory**: Synthesize reusable skills with deterministic `verify:` hooks (`hex learn <target>`), detect repair friction to auto-generate post-mortems in `.hex/reflections/LESSONS.md`, inject symbol invariants via AST-scoped memory, and enforce negative guardrails (`GUARDRAILS.md`).
+1. **AST-Scoped Memory Injection (JIT Graph Retrieval)**: File- and function-specific gotchas are injected directly into `read_file` tool observations—never polluting the system prompt. System prompt stays tiny and **100% KV-cache frozen**.
+2. **Negative Constraint Memory ("Anti-Patterns & Guardrails")**: Automatically writes `[AVOID]` invariants to `.hex/memories/GUARDRAILS.md` when tool executions or tests fail repeatedly, cutting repeat hallucination loops.
+3. **Zettelkasten Linked Memory & Contradiction Resolution**: Follows the A-MEM pattern (`ADD`, `UPDATE`, `DELETE`, `NOOP`) to update obsolete facts rather than accumulating conflicting bullet points.
+4. **Confidence Decay & Lifecycle**: Automatic promotion of proven reflection lessons to `MEMORY.md` and demotion of cold knowledge (>30d unreferenced) to SQLite FTS5 archival search.
+5. **Deterministic Verification Hooks on Skills**: Learned skills in `SKILL.md` carry executable `verify:` shell checks, turning documentation into automated regression tests.
+6. **Repetition Sentry & `<think>` Tag Scrubber**: Automatically detects token repetition and tool thrashing with out-of-band steering injection, and purifies reasoning artifacts from model responses.
 
 ---
 
 ## ⌨️ Daily Commands
 
-Inside the interactive console, type `/` to access commands:
+Slash commands differ by surface. Availability is declared once in
+[`src/harness_core/client/command_catalog.json`](src/harness_core/client/command_catalog.json) —
+the single source of truth that drives console help/completion, the Rust TUI's
+embedded autocomplete, and ACP dispatch (consistency-tested on both sides).
+The table below is a human-friendly summary of that catalog.
 
-| Command | Action |
-| :--- | :--- |
-| **`/mode`** | Cycle interaction mode (`agent`, `plan`, `code`) — or press `Tab` on empty line |
-| **`/diff`** | View unified colorized diff of uncommitted sandbox changes |
-| **`/sbs`** | Toggle side-by-side terminal split diff view |
-| **`/proof`** | View test results and cryptographic proof for the completed task |
-| **`/subagents`** | Inspect active and completed child subagents |
-| **`/react [on\|off]`** | Toggle continuous multi-turn autonomous ReAct tool loop |
-| **`/rollback`** | Discard sandbox changes and reset to active branch state |
-| **`/gc`** | Run on-demand storage garbage collection sweep to reclaim disk space |
-| **`/learn [target]`** | Compile reusable verified `SKILL.md` bundle with regression test hooks |
-| **`/memory`** | Inspect active notes, negative guardrails, and rolling snapshot history |
-| **`/rename <name>`** | Set persona or agent name across session and global `SOUL.md` |
-| **`/model`** | Inspect active model routing profile or switch providers |
-| **`/doctor`** | Run system health diagnostics and repair configurations |
-| **`/skin`** | Switch color theme (`sapphire` [default], `amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) |
-| **`/help`** | Display full table of slash commands |
+| Command | Action | Python console | Rust TUI | ACP (editors) |
+| :--- | :--- | :---: | :---: | :---: |
+| **`/help`** | Display full table of slash commands | ✅ | ✅ | ✅ |
+| **`/status`** | Inspect session and task state | ✅ | ✅ | ✅ |
+| **`/model`** | Inspect active model routing profile or switch providers | ✅ | ✅ | ✅ |
+| **`/budget`** | Inspect spend against configured budget | ✅ | ✅ | ✅ |
+| **`/quota`** | Inspect provider quota windows | ✅ | ✅ | ✅ |
+| **`/doctor`** | Run system health diagnostics and repair configurations | ✅ | ✅ | ✅ |
+| **`/diff`** | View unified colorized diff of uncommitted sandbox changes | ✅ | ✅ | ✅ |
+| **`/sbs`** | Side-by-side split diff view | ✅ | ✅ | ✅ |
+| **`/proof`** | View test results and cryptographic proof for the completed task | ✅ | ✅ | ✅ |
+| **`/blast`** | Inspect blast-radius analysis of pending changes | ✅ | ✅ | ✅ |
+| **`/rollback`** | Discard sandbox changes and reset to active branch state | ✅ | ✅ | ✅ |
+| **`/fork`** | Spawn speculative branches for a task | ✅ | ✅ | ✅ |
+| **`/skills`** | List registered skill bundles | ✅ | ✅ | ✅ |
+| **`/scan`** | Scan and register a SKILL.md directory via SkillSpector | ✅ | ✅ | ✅ |
+| **`/memory`** | Inspect governed memory notes and guardrails | ✅ | ✅ | ✅ |
+| **`/remember`** | Write a memory note | ✅ | ✅ | ✅ |
+| **`/reflect`** | Trigger reflection synthesis | ✅ | ✅ | ✅ |
+| **`/search`** | Full-text search across ledger tasks | ✅ | ✅ | ✅ |
+| **`/subagents`** | Inspect active and completed child subagents | ✅ | ✅ | ✅ |
+| **`/react [on\|off]`** | Toggle continuous multi-turn autonomous ReAct tool loop | ✅ | ✅ | ✅ |
+| **`/recipe`** | Detect project build/test recipe | ✅ | ✅ | ✅ |
+| **`/lsp`** | Inspect language-server status | ✅ | ✅ | ✅ |
+| **`/tools`** | List gateway tools | — | ✅ | — |
+| **`/clear`** | Clear the visible conversation buffer | ✅ | ✅ | — |
+| **`/quit`** | Exit the console | ✅ | ✅ | — |
+| **`/mode`** | Cycle interaction mode (`agent`, `plan`, `code`) | ✅ | ✅ | — |
+| **`/plan`**, **`/agent`**, **`/code`** | Jump straight to a specific interaction mode | ✅ | ✅ | — |
+| **`/compressor [mode]`** | Inspect or switch the context compressor mode | ✅ | ✅ | ✅ |
+| **`/rewind <turn>`** | Roll back conversation history and sandbox state to a previous turn | ✅ | — | — |
+| **`/lease grant <prefix> [ttl]`** | Grant temporary auto-approval lease for trusted commands or paths | ✅ | — | — |
+| **`/gc`** | Run on-demand storage garbage collection sweep | ✅ | — | — |
+| **`/learn [target]`** | Compile reusable verified `SKILL.md` bundle with regression hooks | ✅ | — | — |
+| **`/rename <name>`** | Set persona or agent name across session and global `SOUL.md` | ✅ | — | — |
+| **`/skin`** | Switch color theme (`sapphire`, `amber`, `cyberpunk`, `matrix`, `nord`, `mono`, `light`) | ✅ | — | — |
+
+> The GPUI desktop cockpit is experimental and does not yet expose slash commands (see the desktop section above). `/moa` is not implemented on any surface; MoA runs via configuration in the ReAct loop.
 
 ---
 
@@ -268,10 +391,10 @@ Inside the interactive console, type `/` to access commands:
 
 For comprehensive guides, architecture deep-dives, and production integrations:
 
-- 📖 **[Operator Runbook](docs/RUNBOOK.md)** — Production operations, CLI command reference, database backups, disaster recovery, and storage GC maintenance.
-- 🤖 **[Supported Models & 26 Providers](docs/SUPPORTED_MODELS.md)** — Complete catalog of 26 providers, curated model IDs, and environment variables.
-- 🏗️ **[System Architecture](docs/ARCHITECTURE.md)** — Copy-on-Write sandboxing, PostgreSQL/SQLite dual-driver storage, cryptographic hash chaining, and AST code intelligence.
+- 📖 **[Operator Runbook](docs/RUNBOOK.md)** — Production operations, CLI command reference, desktop build instructions, database backups, disaster recovery, and storage GC maintenance.
+- 🏗️ **[System Architecture](docs/ARCHITECTURE.md)** — GPUI Metal desktop architecture, Copy-on-Write sandboxing, 7 domain subpackages, cryptographic SHA-256 chain, and AST code intelligence.
 - ⚖️ **[Harness Comparison](docs/COMPARISON.md)** — In-depth architectural comparison against Hermes Agent, OpenClaw, Claude Code, and Aider.
+- 🤖 **[Supported Models & 26 Providers](docs/SUPPORTED_MODELS.md)** — Complete catalog of 26 providers, curated model IDs, and environment variables.
 - 🤖 **[Sub-Agent Delegation](docs/SUBAGENTS.md)** — Hierarchical child workers, role-based tool gating, and sandbox scratchpads.
 - 🌐 **[Browser & Vision](docs/BROWSER_AND_VISION.md)** — Headless browser automation, `ariaSnapshot` semantic DOM trees, and visual regression testing.
 - 🔌 **[IDE Integration (ACP)](docs/ACP_INTEGRATION.md)** — Configure HEX inside Zed, Neovim (`avante.nvim`), and VS Code via the Agent Client Protocol.

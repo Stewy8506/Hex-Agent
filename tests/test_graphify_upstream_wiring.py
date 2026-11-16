@@ -21,7 +21,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import main
+from harness_core.client.cli import main
 from harness_core.graphify import (
     ActiveGraphifyAdapter,
     GraphifyUpstreamRunner,

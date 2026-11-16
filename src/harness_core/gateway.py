@@ -28,13 +28,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from .webhooks import WebhookNotifier
-    from .subagent import SubagentManager
+    from harness_core.capabilities.webhooks import WebhookNotifier
+    from harness_core.core.subagent import SubagentManager
 
 logger = logging.getLogger(__name__)
 
-from .code_kernel import KernelRegistry, get_kernel_registry, stale_modules_warning
-from .db import LedgerStore, canonical_json, sha256_hex
+from harness_core.runtime.code_kernel import KernelRegistry, get_kernel_registry, stale_modules_warning
+from harness_core.storage.db import LedgerStore, canonical_json, sha256_hex
 from .graphify import (
     ActiveGraphifyAdapter,
     BlastRadiusReport,
@@ -42,11 +42,11 @@ from .graphify import (
 )
 from .lsp.manager import LSPManager
 from .mcp_client import MCPClientAdapter, MCPToolDefinition
-from .memory import format_jit_memories_block, query_jit_memories_for_file
-from .models import PolicyDecisionType, RiskClass
-from .process_registry import ProcessRegistry, get_process_registry
-from .sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
-from .skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
+from harness_core.cognition.memory import format_jit_memories_block, query_jit_memories_for_file
+from harness_core.core.models import PolicyDecisionType, RiskClass
+from harness_core.runtime.process_registry import ProcessRegistry, get_process_registry
+from harness_core.storage.sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
+from harness_core.cognition.skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
 
 
 SECRET_PATTERNS: list[re.Pattern[str]] = [
@@ -611,6 +611,8 @@ class ToolGateway:
         vision_engine: Any | None = None,
         process_registry: ProcessRegistry | None = None,
         kernel_registry: KernelRegistry | None = None,
+        approval_lease_manager: Any | None = None,
+        approval_bridge: Any | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
@@ -623,6 +625,8 @@ class ToolGateway:
         self.vision_engine = vision_engine
         self.process_registry = process_registry or get_process_registry()
         self.kernel_registry = kernel_registry or get_kernel_registry()
+        self.approval_lease_manager = approval_lease_manager
+        self.approval_bridge = approval_bridge
         self._active_session_key: str = ""
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
@@ -994,6 +998,11 @@ class ToolGateway:
                 f"Fast-Path tasks only permit R0/R1 tools; '{spec.tool_id}' is {spec.risk_class.value}",
             )
 
+        if getattr(self, "approval_lease_manager", None) is not None:
+            has_lease, lease_id = self.approval_lease_manager.check_lease(spec.tool_id, args)
+            if has_lease:
+                return (PolicyDecisionType.ALLOW, f"LEASE_APPROVED:{lease_id}")
+
         if spec.risk_class == RiskClass.R3:
             # Check if an approved approval record already exists for this exact action
             action_hash = sha256_hex(f"{task['task_id']}|{spec.tool_id}|{canonical_json(redact_secrets(args))}")
@@ -1064,7 +1073,40 @@ class ToolGateway:
                     self.notifier.send_approval_request(approval)
                 except Exception as exc:
                     logger.warning("Failed to dispatch approval webhook: %s", exc)
-            raise ApprovalRequiredInterrupt(approval)
+
+            if getattr(self, "approval_bridge", None) is not None:
+                from harness_core.capabilities.gateways.reaction_listener import ApprovalRequest
+                req = ApprovalRequest(
+                    request_id=approval["approval_id"],
+                    task_id=task_id,
+                    tool_name=tool_id,
+                    arguments=redacted_args,
+                    risk_class=spec.risk_class.value,
+                )
+                try:
+                    bridge_dec = self.approval_bridge.request_approval(req)
+                    if bridge_dec.decision == "APPROVE":
+                        self.ledger.decide_approval(
+                            approval["approval_id"],
+                            "APPROVED",
+                            decided_by=f"{bridge_dec.platform}:{bridge_dec.responder_id or 'remote'}",
+                        )
+                    elif bridge_dec.decision == "DENY":
+                        self.ledger.decide_approval(
+                            approval["approval_id"],
+                            "REJECTED",
+                            decided_by=f"{bridge_dec.platform}:{bridge_dec.responder_id or 'remote'}",
+                        )
+                        raise PolicyBlockedError(f"Remote operator denied action: {bridge_dec.reason or 'DENIED'}")
+                    else:  # TIMEOUT
+                        raise ApprovalRequiredInterrupt(approval)
+                except (PolicyBlockedError, ApprovalRequiredInterrupt):
+                    raise
+                except Exception as exc:
+                    logger.warning("MobileApprovalBridge request failed: %s; falling back to interrupt", exc)
+                    raise ApprovalRequiredInterrupt(approval)
+            else:
+                raise ApprovalRequiredInterrupt(approval)
 
         # 2. Check Gateway Call-Level Journal for a previously SEALED call (0ms deterministic replay)
         t0 = time.perf_counter()
@@ -1107,7 +1149,7 @@ class ToolGateway:
             risk_class=spec.risk_class.value,
             canonical_args_hash=args_hash,
             arguments_redacted=redacted_args,
-            policy_decision=f"ALLOW:{reason}",
+            policy_decision="LEASE_APPROVED" if reason.startswith("LEASE_APPROVED") else f"ALLOW:{reason}",
             idempotency_key=idem_key,
             fencing_token=fencing_token,
         )
@@ -1484,7 +1526,7 @@ class ToolGateway:
         }
 
     def _tool_web_search(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
-        from .web_search import execute_web_search
+        from harness_core.capabilities.web_search import execute_web_search
 
         query = str(args.get("query", "")).strip()
         max_results = int(args.get("max_results", 5))
@@ -1560,7 +1602,7 @@ class ToolGateway:
             }
 
     def _tool_memory(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
-        from .memory import CuratedMemoryStore
+        from harness_core.cognition.memory import CuratedMemoryStore
 
         target = str(args.get("target") or "memory").strip().lower()
         if target not in ("user", "memory", "guardrails", "all"):
@@ -1911,7 +1953,7 @@ class ToolGateway:
         return res
 
     def _tool_run_tests(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
-        from .recipes import detect_recipe
+        from harness_core.capabilities.recipes import detect_recipe
         import shlex
 
         recipe = detect_recipe(workspace_dir)
@@ -2180,7 +2222,7 @@ class ToolGateway:
 
     def _get_subagent_manager(self) -> SubagentManager:
         if self.subagent_manager is None:
-            from .subagent import SubagentManager
+            from harness_core.core.subagent import SubagentManager
             self.subagent_manager = SubagentManager(
                 ledger=self.ledger,
                 gateway=self,
@@ -2240,7 +2282,7 @@ class ToolGateway:
 
     def _get_browser_manager(self) -> Any:
         if self.browser_manager is None:
-            from .browser import BrowserManager
+            from harness_core.capabilities.browser import BrowserManager
             self.browser_manager = BrowserManager()
         return self.browser_manager
 
@@ -2291,7 +2333,7 @@ class ToolGateway:
 
     def _get_vision_engine(self) -> Any:
         if self.vision_engine is None:
-            from .vision import VisionEngine
+            from harness_core.capabilities.vision import VisionEngine
             self.vision_engine = VisionEngine()
         return self.vision_engine
 

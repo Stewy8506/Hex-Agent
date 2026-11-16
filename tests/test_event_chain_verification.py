@@ -11,8 +11,8 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 
-from harness_core.db import LedgerStore
-from harness_core.models import TaskSubmitRequest
+from harness_core.storage.db import LedgerStore
+from harness_core.core.models import TaskSubmitRequest
 
 # Import script runner directly
 _repo_root = Path(__file__).resolve().parents[1]

@@ -16,7 +16,7 @@ import urllib.error
 from harness_core.gateway import RiskClass, ToolGateway, ToolSpec
 from harness_core.providers.base import ProviderUnavailableError
 from harness_core.providers.cloud_provider import CloudModelProvider, CloudProviderType
-from harness_core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
+from harness_core.core.react_loop import ReActConfig, ReActLoop, ToolCallRequest
 
 
 class TestReActLoopResilience(unittest.TestCase):

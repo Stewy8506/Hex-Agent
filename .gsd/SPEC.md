@@ -215,6 +215,52 @@ Every implementation task must produce empirical verification output before mark
 ### 8.4 Guided First-Task Verification Beat
 - Onboarding concludes with an optional live verification task (`build` beat) running in an isolated CoW workspace (`active_workspaces/ws_onboard_verify`), confirming tool execution, CAS hashing, and ledger integrity with empirical proof.
 
+---
+
+## 9. Milestone M15: Hermes Parity & Native GPUI Desktop Application (Phases 36–39)
+
+### 9.1 Phase 36: Resilient Model Infrastructure & Multi-Credential Pool
+- **Multi-Credential Pool (`src/harness_core/credential_pool.py`):**
+  - Pool of API keys per provider with round-robin / least-utilized selection.
+  - Automatic rotation on HTTP 429 / quota exhaustion with exponential backoff and jitter.
+  - Model cooldown queues (`(provider, model) -> cooldown_until`) protecting against transient 503s without taking down the entire provider.
+- **Transient Endpoint Blackholing:**
+  - 30-second blackhole memo for timed-out custom/local server endpoints (`_endpoint_blackholed`), preventing orchestrator thread lockup.
+- **Live Local Server Socket & Model Introspection:**
+  - Active probes for Ollama (`/api/show` Modelfile `num_ctx` vs GGUF max), LM Studio (`/api/v0/models`), llama.cpp (`/props`), and vLLM (`/v1/models`).
+- **OS Keychain Secure Vault:**
+  - Integration with OS secure storage (`keyring` on macOS Keychain, Linux Secret Service, Windows DPAPI), migrating plaintext secrets from `~/.hex/config.yaml`.
+
+### 9.2 Phase 37: Conversational Workflow Supremacy, Rewind & MoA
+- **Conversational Timeline Rewind (`/rewind`):**
+  - Ability to roll back session state to any previous user or assistant turn, archiving post-rewind turns into a branched timeline.
+- **Asynchronous Session Title Synthesis:**
+  - Background LLM worker synthesizing clean 3–5 word session titles after Turn 1/2 for Start screen resume cards and session pickers.
+- **Mixture-of-Agents (MoA) Orchestration (`src/harness_core/moa.py`):**
+  - Proposer-Aggregator multi-model synthesis within a single turn.
+- **Degenerate Loop & Repetition Sentry (`src/harness_core/repetition_guard.py`):**
+  - Real-time n-gram and action repetition interceptors; thinking tag scrubber for reasoning models.
+- **Approval Leasing & Mobile Reaction Wait:**
+  - Temporal approval leases for safe command patterns; asynchronous waiting for mobile chat reactions.
+
+### 9.3 Phase 38: Native macOS GPUI Desktop Cockpit (`crates/hex-desktop`)
+- **GPU-Accelerated Rust Desktop Client:**
+  - Built with Zed's `gpui` framework rendering natively via Metal on macOS at 120 FPS.
+  - Architecture: `crates/hex-desktop` linking with `hex-protocol` and connecting via stdio ACP or Unix domain socket to `harness_core`.
+  - Full screen and visual parity with HTML mockup:
+    - Screen 0: Start screen with animated canvas, project telemetry, prompt input, shortcut badges, and recent sessions.
+    - Screen 1: Active cockpit with streaming transcript, sage/rose tinted inline diffs, right rail telemetry, and message composer.
+    - Screen 2-5: Overlay modals for tool approval, fuzzy command palette, diagnostic cards, and subagent inspection.
+  - macOS Integration: Global keyboard shortcut, native menu bar, window vibrancy/blur, and smooth Metal rendering.
+  - Target: macOS deployment first, with Windows DirectX/Vulkan abstractions structured for subsequent rollout.
+
+### 9.4 Phase 39: Expanded Connectors, Plugin Ecosystem & OS Automation
+- **Messaging Gateways:** Expanded platform connectors (Slack, Discord voice mixing, webhook consumer).
+- **Curated Plugin Marketplace:** Dynamic catalog loader and validator with 2,000+ ready-to-run integrations.
+- **Anthropic OS Computer Use:** Desktop screen capture, mouse, and keyboard automation on macOS.
+- **System Utilities:** Hardware battery sentry and multi-package manager abstraction (`pm/`).
+
+
 
 
 

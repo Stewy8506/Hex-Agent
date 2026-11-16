@@ -1,12 +1,18 @@
 //! Top-level UI orchestration and layout splits.
 
+pub mod animation;
 pub mod approval;
 pub mod design;
 pub mod dialogue;
 pub mod diff;
+pub mod footer;
 pub mod header;
 pub mod input;
+pub mod right_rail;
+pub mod screens;
 pub mod status_bar;
+pub mod style;
+pub mod widgets;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -14,51 +20,48 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, ScreenState};
 
 /// Primary render entrypoint called on each frame.
 pub fn draw(frame: &mut Frame, app: &App) {
     let size = frame.area();
+    let theme = style::HexTheme::detect();
+    let anim = animation::AnimationState::with_start(app.session_started);
 
-    // Clean, minimalist Hermes-style layout: open dialogue canvas + bottom composer
-    let root_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(6),    // Main viewport: Dialogue and Diff
-            Constraint::Length(3), // Composer locked to terminal bottom with integrated status footer
-        ])
-        .split(size);
-
-    // 1. Main Viewport: Dialogue and Diff
-    let main_area = root_chunks[0];
-    let show_diff = app.show_diff && (app.active_diff.is_some() || app.raw_diff.is_some());
-
-    if show_diff {
-        let h_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(55), // Dialogue history
-                Constraint::Percentage(45), // Unified Diff viewer
-            ])
-            .split(main_area);
-
-        dialogue::render(frame, app, h_chunks[0]);
-        diff::render(frame, app, h_chunks[1]);
-    } else {
-        dialogue::render(frame, app, main_area);
+    // Side-by-side dedicated diff inspection mode if toggled
+    if app.side_by_side && app.show_diff {
+        diff::render(frame, app, size);
+        return;
     }
 
-    // 2. Command Prompt with integrated bottom status border
-    input::render(frame, app, root_chunks[1]);
+    // 1. Render primary screen based on application screen state
+    match app.screen_state {
+        ScreenState::Start => {
+            screens::start::render(app, &theme, &anim, size, frame.buffer_mut());
+        }
+        ScreenState::Session => {
+            screens::session::render(app, &theme, &anim, size, frame.buffer_mut());
+        }
+    }
 
-    // 3. Help Modal Overlay
+    // 2. Command Palette Modal Overlay
+    if app.show_palette {
+        screens::palette::render(app, &theme, &anim, size, frame.buffer_mut());
+    }
+
+    // 3. Subagent Inspection Modal Overlay
+    if let Some(ref subagent_modal) = app.active_subagent_modal {
+        screens::subagent::render(app, subagent_modal, &theme, &anim, size, frame.buffer_mut());
+    }
+
+    // 4. Permission / Approval Dialog Overlay (highest modal z-index)
+    if app.active_approval.is_some() {
+        screens::permission::render(app, &theme, size, frame.buffer_mut());
+    }
+
+    // 5. Help Modal Overlay
     if app.show_help {
         render_help_overlay(frame, app, size);
-    }
-
-    // 4. Approval Dialog Overlay (highest z-index)
-    if app.active_approval.is_some() {
-        approval::render(frame, app, size);
     }
 }
 
@@ -81,7 +84,7 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![Span::styled(
             "Navigation & Focus:",
             Style::default()
@@ -114,7 +117,7 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  [Ctrl+C]         ", Style::default().fg(s.accent)),
-            Span::raw("Quit the HEX terminal cockpit"),
+            Span::raw("Cancel the active turn; press again to quit"),
         ]),
         Line::raw(""),
         Line::from(vec![Span::styled(
@@ -136,50 +139,40 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("Dismiss active dialog"),
         ]),
         Line::raw(""),
-        Line::from(vec![Span::styled(
-            "Interactive Slash Commands:",
-            Style::default()
-                .fg(s.accent)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled("  /help            ", Style::default().fg(s.category)),
-            Span::raw("Show keybindings and commands"),
-        ]),
-        Line::from(vec![
-            Span::styled("  /status          ", Style::default().fg(s.category)),
-            Span::raw("Display ledger and session status"),
-        ]),
-        Line::from(vec![
-            Span::styled("  /diff            ", Style::default().fg(s.category)),
-            Span::raw("Toggle unified diff viewer"),
-        ]),
-        Line::from(vec![
-            Span::styled("  /rollback        ", Style::default().fg(s.category)),
-            Span::raw("Discard workspace modifications"),
-        ]),
-        Line::from(vec![
-            Span::styled("  /skills          ", Style::default().fg(s.category)),
-            Span::raw("List NVIDIA SkillSpector registered skills"),
-        ]),
-        Line::from(vec![
-            Span::styled("  /react           ", Style::default().fg(s.category)),
-            Span::raw("Toggle continuous multi-turn ReAct mode"),
-        ]),
-        Line::from(vec![
-            Span::styled("  /clear           ", Style::default().fg(s.category)),
-            Span::raw("Clear conversation history"),
-        ]),
-        Line::from(vec![
-            Span::styled("  /quit            ", Style::default().fg(s.category)),
-            Span::raw("Exit application"),
-        ]),
-        Line::raw(""),
-        Line::from(vec![Span::styled(
-            "Press [Esc] or [F1] to close help.",
-            Style::default().fg(s.muted),
-        )]),
     ];
+
+    lines.push(Line::from(vec![Span::styled(
+        "Interactive Slash Commands:",
+        Style::default()
+            .fg(s.accent)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    let commands = crate::app::available_slash_commands();
+    let room = (inner.height as usize).saturating_sub(lines.len() + 2);
+    let shown = commands.len().min(room);
+    for cmd in &commands[..shown] {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:<16}", cmd.name),
+                Style::default().fg(s.category),
+            ),
+            Span::raw(cmd.description.clone()),
+        ]));
+    }
+    if shown < commands.len() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  ... {} more - type / for full completion",
+                commands.len() - shown
+            ),
+            Style::default().fg(s.muted),
+        )));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Press [Esc] or [F1] to close help.",
+        Style::default().fg(s.muted),
+    )));
 
     let p = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(p, inner);

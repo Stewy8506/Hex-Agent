@@ -22,16 +22,16 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from harness_core.backup import (
+from harness_core.storage.backup import (
     SecurityViolationError,
     create_backup,
     generate_dump,
     restore_backup,
 )
-from harness_core.cli import main as cli_main
-from harness_core.db import LedgerStore
-from harness_core.models import TaskState, TaskSubmitRequest
-from harness_core.search import (
+from harness_core.client.cli import main as cli_main
+from harness_core.storage.db import LedgerStore
+from harness_core.core.models import TaskState, TaskSubmitRequest
+from harness_core.capabilities.search import (
     TaskSearchIndex,
     TaskSearchResult,
     sanitize_fts5_query,

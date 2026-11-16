@@ -18,14 +18,14 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from harness_core.config_loader import load_hex_environment, parse_config_yaml
-from harness_core.cow import (
+from harness_core.storage.cow import (
     IGNORE_DIRS,
     APFSAndPortableCoWProvider,
     _cow_copy_tree,
     compute_tree_sha,
 )
-from harness_core.proof import VerificationAndProofService
-from harness_core.router import TwoTierModelRouter
+from harness_core.capabilities.proof import VerificationAndProofService
+from harness_core.core.router import TwoTierModelRouter
 
 
 class TestCoWRecursionPrevention(unittest.TestCase):
@@ -176,14 +176,14 @@ model:
 
     def test_detect_default_local_model_non_darwin(self):
         with unittest.mock.patch("sys.platform", "linux"):
-            from harness_core.router import _detect_default_local_model
+            from harness_core.core.router import _detect_default_local_model
             os.environ.pop("HEX_LOCAL_MODEL_ID", None)
             os.environ.pop("HARNESS_LOCAL_MODEL_ID", None)
             detected = _detect_default_local_model()
             self.assertEqual(detected, "local_deterministic_compressor")
 
     def test_user_prompt_submits_to_orchestrator(self):
-        from harness_core.tui import HexConsole
+        from harness_core.client.tui import HexConsole
         orch = MagicMock()
         orch.submit_and_run.return_value = {"status": "SUCCEEDED", "result": "Hello! How can I help you today?"}
         console = HexConsole(orch, project_id="test_proj", quiet=True)
@@ -192,7 +192,7 @@ model:
         orch.submit_and_run.assert_called_once()
 
     def test_ctrl_c_handled_gracefully_in_repl(self):
-        from harness_core.tui import HexConsole
+        from harness_core.client.tui import HexConsole
         orch = MagicMock()
         console = HexConsole(orch, project_id="test_proj", quiet=True)
         # Mock inputs: first raises KeyboardInterrupt, which exits cleanly

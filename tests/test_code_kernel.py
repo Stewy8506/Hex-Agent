@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 
-from harness_core.code_kernel import (
+from harness_core.runtime.code_kernel import (
     CodeKernel,
     KernelRegistry,
     _BoundedBuffer,

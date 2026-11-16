@@ -1,0 +1,2 @@
+{"jsonrpc": "2.0", "method": "session/update", "params": {"delta": "Fixture answer.", "sessionId": "ses_fixture", "status": "Ready", "updateType": "status"}}
+{"id": 1, "jsonrpc": "2.0", "result": {"content": [{"text": "Fixture answer.", "type": "text"}], "sessionId": "ses_fixture", "status": "completed", "taskId": "tsk_fixture"}}

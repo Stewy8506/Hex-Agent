@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.vendor_paths import (
     get_graphify_dir,
     get_harness2_dir,
@@ -122,7 +122,7 @@ class TestPackagingAndVendorResolution(unittest.TestCase):
         self.assertTrue(hex_bat.is_file(), "hex.bat must exist in repository root")
         bat_content = hex_bat.read_text(encoding="utf-8")
         self.assertIn(".venv\\Scripts\\python.exe", bat_content)
-        self.assertIn("harness_core.cli", bat_content)
+        self.assertIn("harness_core.client.cli", bat_content)
 
     def test_built_wheel_structure(self) -> None:
         """Wheel in dist/ contains all required package data (migrations, skills, console scripts)."""
@@ -137,8 +137,8 @@ class TestPackagingAndVendorResolution(unittest.TestCase):
 
             # Verify core modules
             self.assertIn("harness_core/__init__.py", namelist)
-            self.assertIn("harness_core/cli.py", namelist)
-            self.assertIn("harness_core/tui.py", namelist)
+            self.assertIn("harness_core/client/cli.py", namelist)
+            self.assertIn("harness_core/client/tui.py", namelist)
             self.assertIn("harness_core/vendor_paths.py", namelist)
 
             # Verify packaged initial schema
@@ -152,8 +152,8 @@ class TestPackagingAndVendorResolution(unittest.TestCase):
             entry_point_files = [n for n in namelist if n.endswith("entry_points.txt")]
             self.assertTrue(len(entry_point_files) > 0)
             entry_points_text = zf.read(entry_point_files[0]).decode("utf-8")
-            self.assertIn("hex = harness_core.cli:main", entry_points_text)
-            self.assertIn("harness = harness_core.cli:main", entry_points_text)
+            self.assertIn("hex = harness_core.client.cli:main", entry_points_text)
+            self.assertIn("harness = harness_core.client.cli:main", entry_points_text)
 
 
 if __name__ == "__main__":

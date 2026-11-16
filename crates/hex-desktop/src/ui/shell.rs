@@ -1,0 +1,424 @@
+//! Top-level GPUI dual-pane desktop application shell for HEX Desktop.
+//!
+//! Splits the viewport horizontally into:
+//! - Left pane: 260px collapsible sidebar with session history and provider chip.
+//! - Right pane: Flex-1 main conversation area hosting feed and composer.
+//!
+//! Supports collapsing sidebar (via Cmd+B / programmatic toggle), session switching,
+//! and Hermes dark zinc aesthetics.
+
+use gpui::*;
+
+use crate::acp_bridge::{AcpBridge, AcpEvent};
+use crate::theme::HermesTheme;
+use crate::ui::modals::{
+    render_modal_container, ActiveModal, CommandPaletteModal, ModelPickerModal, ToolApprovalModal,
+};
+use crate::ui::sidebar::{ProviderState, SidebarView};
+use crate::ui::tool_card::ToolCallCard;
+
+/// Active view within the main pane of the application shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShellView {
+    /// Conversation message feed and prompt composer.
+    #[default]
+    Chat,
+    /// Settings and configuration editor.
+    Settings,
+}
+
+/// Top-level application shell GPUI component.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppShell {
+    /// Left sidebar navigation view.
+    pub sidebar: SidebarView,
+    /// Message feed container.
+    pub feed: crate::ui::feed::MessageFeed,
+    /// Bottom multiline prompt composer.
+    pub composer: crate::ui::composer::PromptComposer,
+    /// Whether the left sidebar is currently collapsed (hidden).
+    pub sidebar_collapsed: bool,
+    /// Currently selected session ID, if any.
+    pub active_session_id: Option<String>,
+    /// Currently active main pane view.
+    pub active_view: ShellView,
+    /// Currently displayed modal overlay (Command Palette, Tool Approval, Model Picker).
+    pub active_modal: ActiveModal,
+    /// ACP communication bridge connecting to harness_core runtime.
+    pub acp_bridge: Option<AcpBridge>,
+}
+
+impl Default for AppShell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AppShell {
+    /// Construct a new default application shell.
+    pub fn new() -> Self {
+        Self {
+            sidebar: SidebarView::new(),
+            feed: crate::ui::feed::MessageFeed::new(),
+            composer: crate::ui::composer::PromptComposer::new(),
+            sidebar_collapsed: false,
+            active_session_id: None,
+            active_view: ShellView::Chat,
+            active_modal: ActiveModal::None,
+            acp_bridge: None,
+        }
+    }
+
+    /// Construct a shell with a specific workspace name and git branch.
+    pub fn with_workspace(
+        workspace_name: impl Into<String>,
+        git_branch: impl Into<String>,
+    ) -> Self {
+        Self {
+            sidebar: SidebarView::with_workspace(workspace_name, git_branch),
+            feed: crate::ui::feed::MessageFeed::new(),
+            composer: crate::ui::composer::PromptComposer::new(),
+            sidebar_collapsed: false,
+            active_session_id: None,
+            active_view: ShellView::Chat,
+            active_modal: ActiveModal::None,
+            acp_bridge: None,
+        }
+    }
+
+    /// Attach ACP bridge to application shell.
+    pub fn with_acp_bridge(mut self, bridge: AcpBridge) -> Self {
+        self.acp_bridge = Some(bridge);
+        self
+    }
+
+    /// Open Command Palette (Cmd+K).
+    pub fn open_command_palette(&mut self) {
+        let mut palette = CommandPaletteModal::new();
+        palette.populate_sessions(&self.sidebar.session_list.sessions);
+        self.active_modal = ActiveModal::Palette(palette);
+    }
+
+    /// Open Model Picker.
+    pub fn open_model_picker(&mut self) {
+        let current_model = self.composer.model_pill.model_name.clone();
+        self.active_modal = ActiveModal::ModelPicker(ModelPickerModal::new(current_model));
+    }
+
+    /// Open Tool Approval modal.
+    pub fn open_approval(&mut self, modal: ToolApprovalModal) {
+        self.active_modal = ActiveModal::Approval(modal);
+    }
+
+    /// Dismiss any currently active modal dialog.
+    pub fn dismiss_modal(&mut self) {
+        self.active_modal.close();
+    }
+
+    /// Handle high-level events incoming from ACP bridge.
+    pub fn handle_acp_event(&mut self, event: AcpEvent) {
+        match event {
+            AcpEvent::Connected { server_name, .. } => {
+                self.sidebar.provider_status.state = ProviderState::Connected;
+                self.sidebar.provider_status.provider_name = server_name;
+            }
+            AcpEvent::Disconnected { .. } => {
+                self.sidebar.provider_status.state = ProviderState::Offline;
+            }
+            AcpEvent::TokenChunk { text, .. } => {
+                if !self.feed.is_streaming {
+                    self.feed.start_assistant_streaming();
+                }
+                self.feed.append_streaming_chunk(&text);
+            }
+            AcpEvent::TurnComplete { .. } => {
+                self.feed.finish_streaming();
+            }
+            AcpEvent::ToolCall { call_id, tool_name, arguments_json, .. } => {
+                let card = ToolCallCard::new(call_id, tool_name, arguments_json);
+                self.feed.add_tool_call(card);
+            }
+            AcpEvent::ToolResult { call_id, output_text, is_error, .. } => {
+                self.feed.update_tool_result(&call_id, &output_text, is_error);
+            }
+            AcpEvent::ApprovalRequest { approval_id, tool_name, risk_level, command, description, .. } => {
+                let mut modal = ToolApprovalModal::new(approval_id, tool_name, command, risk_level);
+                if let Some(desc) = description {
+                    modal = modal.with_description(desc);
+                }
+                self.open_approval(modal);
+            }
+            AcpEvent::StatusUpdate { provider_name, is_healthy, .. } => {
+                self.sidebar.provider_status.provider_name = provider_name;
+                self.sidebar.provider_status.state = if is_healthy {
+                    ProviderState::Connected
+                } else {
+                    ProviderState::Offline
+                };
+            }
+        }
+    }
+
+    /// Toggle the collapsed state of the left sidebar (e.g. Cmd+B shortcut).
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+    }
+
+    /// Explicitly set the collapsed state of the left sidebar.
+    pub fn set_sidebar_collapsed(&mut self, collapsed: bool) {
+        self.sidebar_collapsed = collapsed;
+    }
+
+    /// Select an active session by ID.
+    pub fn select_session(&mut self, session_id: impl Into<String>) {
+        let id = session_id.into();
+        self.sidebar.select_session(id.clone());
+        self.active_session_id = Some(id);
+    }
+
+    /// Create and switch to a brand new conversation session.
+    pub fn new_chat(&mut self, title: impl Into<String>) -> String {
+        let new_id = format!("ses_{}", chrono::Utc::now().timestamp_millis());
+        let item = crate::ui::session_list::SessionItem::new(new_id.clone(), title);
+        self.sidebar.add_session(item);
+        self.select_session(new_id.clone());
+        new_id
+    }
+
+    /// Render the main conversation right pane (header, feed area, and composer area).
+    fn render_main_pane(&self, theme: &HermesTheme) -> Div {
+        let active_title = self
+            .sidebar
+            .session_list
+            .selected_session()
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| "New Session".to_string());
+
+        div()
+            .flex_1()
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(theme.canvas_bg())
+            // Top Navigation / Titlebar Strip
+            .child(
+                div()
+                    .w_full()
+                    .h(px(40.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_4()
+                    .border_b_1()
+                    .border_color(theme.border_subtle())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                // Sidebar Toggle Icon Button
+                                div()
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .text_color(theme.text_muted())
+                                    .hover(|s| s.text_color(theme.text_primary()))
+                                    .child(if self.sidebar_collapsed { "▶" } else { "◀" }),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.text_primary())
+                                    .child(active_title),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.text_dim())
+                                    .child(self.sidebar.provider_status.display_label()),
+                            ),
+                    ),
+            )
+            // Center Conversation Feed (Task 2 connects MessageFeed)
+            .child(self.feed.render(theme))
+            // Bottom Prompt Composer
+            .child(
+                div()
+                    .w_full()
+                    .p_4()
+                    .border_t_1()
+                    .border_color(theme.border_subtle())
+                    .child(self.composer.render(theme)),
+            )
+    }
+
+    /// Renders the AppShell horizontal split container.
+    pub fn render_shell(&self, theme: &HermesTheme) -> Div {
+        let mut shell_container = div()
+            .size_full()
+            .bg(theme.canvas_bg())
+            .flex()
+            .flex_row()
+            .overflow_hidden();
+
+        // 1. Left Sidebar (rendered when not collapsed)
+        if !self.sidebar_collapsed {
+            shell_container = shell_container
+                .child(self.sidebar.render(theme))
+                .child(
+                    // Split Divider
+                    div()
+                        .w(px(1.0))
+                        .h_full()
+                        .bg(theme.border_subtle()),
+                );
+        }
+
+        // 2. Right Main Content Area
+        shell_container = shell_container.child(self.render_main_pane(theme));
+
+        // 3. Active Modal Overlay (Backdrop + Centered Card)
+        if let Some(modal_overlay) = self.render_active_modal(theme) {
+            shell_container = shell_container.child(modal_overlay);
+        }
+
+        shell_container
+    }
+
+    /// Render currently active modal overlay wrapped in backdrop container.
+    fn render_active_modal(&self, theme: &HermesTheme) -> Option<Div> {
+        match &self.active_modal {
+            ActiveModal::None => None,
+            ActiveModal::Approval(modal) => Some(render_modal_container(modal.render(theme), theme)),
+            ActiveModal::Palette(palette) => Some(render_modal_container(palette.render(theme), theme)),
+            ActiveModal::ModelPicker(picker) => Some(render_modal_container(picker.render(theme), theme)),
+        }
+    }
+}
+
+impl Render for AppShell {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = HermesTheme::get(cx);
+        self.render_shell(theme)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    #[test]
+    fn test_app_shell_defaults_and_toggles() {
+        let mut shell = AppShell::new();
+        assert!(!shell.sidebar_collapsed);
+        assert_eq!(shell.active_view, ShellView::Chat);
+        assert!(shell.active_session_id.is_none());
+
+        // Toggle sidebar (Cmd+B)
+        shell.toggle_sidebar();
+        assert!(shell.sidebar_collapsed);
+        shell.toggle_sidebar();
+        assert!(!shell.sidebar_collapsed);
+
+        shell.set_sidebar_collapsed(true);
+        assert!(shell.sidebar_collapsed);
+
+        // New chat creation
+        let session_id = shell.new_chat("First Exploration");
+        assert_eq!(shell.active_session_id.as_deref(), Some(session_id.as_str()));
+        assert_eq!(
+            shell.sidebar.session_list.selected_session().unwrap().title,
+            "First Exploration"
+        );
+    }
+
+    #[test]
+    fn test_app_shell_modal_management() {
+        let mut shell = AppShell::new();
+        assert_eq!(shell.active_modal, ActiveModal::None);
+
+        // Open Command Palette
+        shell.open_command_palette();
+        assert!(matches!(shell.active_modal, ActiveModal::Palette(_)));
+
+        // Dismiss Modal
+        shell.dismiss_modal();
+        assert_eq!(shell.active_modal, ActiveModal::None);
+
+        // Open Model Picker
+        shell.open_model_picker();
+        assert!(matches!(shell.active_modal, ActiveModal::ModelPicker(_)));
+
+        shell.dismiss_modal();
+        assert_eq!(shell.active_modal, ActiveModal::None);
+
+        // Open Approval
+        let approval = ToolApprovalModal::new("req_1", "bash", "cargo build", "R3");
+        shell.open_approval(approval);
+        assert!(matches!(shell.active_modal, ActiveModal::Approval(_)));
+    }
+
+    #[test]
+    fn test_app_shell_handle_acp_events() {
+        let mut shell = AppShell::new();
+
+        // 1. Connection status
+        shell.handle_acp_event(AcpEvent::Connected {
+            server_name: "harness_core_acp".to_string(),
+            server_version: "2.0".to_string(),
+        });
+        assert_eq!(shell.sidebar.provider_status.state, ProviderState::Connected);
+        assert_eq!(shell.sidebar.provider_status.provider_name, "harness_core_acp");
+
+        // 2. Token chunks
+        shell.handle_acp_event(AcpEvent::TokenChunk {
+            session_id: "ses_1".to_string(),
+            text: "Hello from ACP".to_string(),
+        });
+        assert_eq!(shell.feed.len(), 1);
+        assert!(shell.feed.is_streaming);
+
+        // 3. Turn complete
+        shell.handle_acp_event(AcpEvent::TurnComplete {
+            session_id: "ses_1".to_string(),
+        });
+        assert!(!shell.feed.is_streaming);
+
+        // 4. Tool call
+        shell.handle_acp_event(AcpEvent::ToolCall {
+            session_id: "ses_1".to_string(),
+            call_id: "tc_1".to_string(),
+            tool_name: "bash".to_string(),
+            arguments_json: r#"{"command": "ls -la"}"#.to_string(),
+        });
+        // 5. Tool result
+        shell.handle_acp_event(AcpEvent::ToolResult {
+            session_id: "ses_1".to_string(),
+            call_id: "tc_1".to_string(),
+            output_text: "file1.rs\nfile2.rs".to_string(),
+            is_error: false,
+        });
+
+        // 6. Approval request
+        shell.handle_acp_event(AcpEvent::ApprovalRequest {
+            session_id: "ses_1".to_string(),
+            approval_id: "appr_1".to_string(),
+            tool_name: "rm".to_string(),
+            risk_level: "R4".to_string(),
+            command: "rm -rf /".to_string(),
+            description: Some("Dangerous root deletion".to_string()),
+        });
+        assert!(matches!(shell.active_modal, ActiveModal::Approval(_)));
+    }
+}

@@ -22,16 +22,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from harness_core.cli import build_parser, main
+from harness_core.client.cli import build_parser, main
 from harness_core.config_loader import load_retention_config
-from harness_core.db import LedgerStore
-from harness_core.gc import (
+from harness_core.storage.db import LedgerStore
+from harness_core.storage.gc import (
     GCReport,
     GarbageCollector,
     format_bytes,
     parse_ttl_seconds,
 )
-from harness_core.models import TaskSubmitRequest
+from harness_core.core.models import TaskSubmitRequest
 
 
 class TestGarbageCollection(unittest.TestCase):

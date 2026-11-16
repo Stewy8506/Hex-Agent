@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from harness_core.skillspector import (
+from harness_core.cognition.skillspector import (
     SkillSpectorScanner,
     compute_bundle_sha256,
     get_approved_skill_hash,

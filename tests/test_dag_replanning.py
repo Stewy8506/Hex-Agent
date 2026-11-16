@@ -15,9 +15,9 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from harness_core.db import LedgerStore, compute_event_hash, canonical_json
-from harness_core.models import PlanNode, TaskState, TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
+from harness_core.storage.db import LedgerStore, compute_event_hash, canonical_json
+from harness_core.core.models import PlanNode, TaskState, TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
 
 
 class TestDAGReplanning(unittest.TestCase):

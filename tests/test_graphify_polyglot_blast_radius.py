@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness_core.db import LedgerStore
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import ActiveBlastRadiusInterceptor, ToolGateway
 from harness_core.graphify import (
     ActiveGraphifyAdapter,

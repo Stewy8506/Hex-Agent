@@ -21,15 +21,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness_core.cli import main as cli_main
-from harness_core.db import LedgerStore
+from harness_core.client.cli import main as cli_main
+from harness_core.storage.db import LedgerStore
 from harness_core.gateway import ToolGateway
 from harness_core.lsp.client import path_to_uri
 from harness_core.lsp.manager import LSPManager
 from harness_core.lsp.registry import LanguageServerRegistry, LanguageServerSpec
-from harness_core.models import RiskClass, TaskState, TaskSubmitRequest
-from harness_core.orchestrator import HarnessOrchestrator
-from harness_core.tui import HexConsole
+from harness_core.core.models import RiskClass, TaskState, TaskSubmitRequest
+from harness_core.core.orchestrator import HarnessOrchestrator
+from harness_core.client.tui import HexConsole
 
 MOCK_LSP_SERVER_CODE = """
 import sys, json

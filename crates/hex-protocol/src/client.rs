@@ -231,7 +231,7 @@ impl AcpClient {
         start_path
     }
 
-    /// Spawn the Python backend ACP server (`python3 -m harness_core.cli acp`).
+    /// Spawn the Python backend ACP server (`python3 -m harness_core.client.cli acp`).
     pub async fn spawn_acp_server(workspace_root: Option<&Path>) -> Result<Self, AcpError> {
         let repo_root = Self::resolve_repo_root(workspace_root);
 
@@ -246,7 +246,7 @@ impl AcpClient {
         };
 
         let mut cmd = Command::new(&py_bin);
-        cmd.args(["-m", "harness_core.cli", "acp"])
+        cmd.args(["-m", "harness_core.client.cli", "acp"])
             .current_dir(&repo_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

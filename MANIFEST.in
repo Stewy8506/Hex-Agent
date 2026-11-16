@@ -1,0 +1,15 @@
+include README.md
+include install.sh
+include install.ps1
+include hex.bat
+graft vendor
+prune vendor/graphify/tests
+prune vendor/graphify/docs
+prune vendor/graphify/worked
+prune vendor/skillspector/tests
+prune vendor/skillspector/docs
+prune vendor/harness2/tests
+prune vendor/harness2/docs
+prune vendor/harness2/assets
+global-exclude *.pyc
+global-exclude __pycache__
