@@ -231,19 +231,70 @@ impl AcpClient {
         start_path
     }
 
+    /// Whether `python` can import the server and its config parser.
+    async fn interpreter_can_run_server(
+        python: &str,
+        repo_root: &Path,
+        pythonpath: Option<&str>,
+    ) -> bool {
+        let mut cmd = Command::new(python);
+        cmd.args(["-c", "import harness_core, yaml"])
+            .current_dir(repo_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(path) = pythonpath {
+            cmd.env("PYTHONPATH", path);
+        }
+        matches!(cmd.status().await, Ok(status) if status.success())
+    }
+
     /// Spawn the Python backend ACP server (`python3 -m harness_core.client.cli acp`).
     pub async fn spawn_acp_server(workspace_root: Option<&Path>) -> Result<Self, AcpError> {
         let repo_root = Self::resolve_repo_root(workspace_root);
 
-        let py_bin = if let Ok(bin_env) = std::env::var("HEX_PYTHON_BIN") {
-            bin_env
-        } else if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
-            format!("{}/bin/python", venv)
-        } else if repo_root.join(".venv/bin/python").exists() {
-            repo_root.join(".venv/bin/python").to_string_lossy().to_string()
+        let src_dir = repo_root.join("src");
+        let pythonpath = if src_dir.exists() {
+            let current = std::env::var("PYTHONPATH").unwrap_or_default();
+            Some(if current.is_empty() {
+                src_dir.to_string_lossy().to_string()
+            } else {
+                format!("{}:{}", src_dir.to_string_lossy(), current)
+            })
         } else {
-            "python3".to_string()
+            None
         };
+
+        // An interpreter that cannot import the server's dependencies would start
+        // a degraded runtime that silently ignores the configured model, so probe
+        // the candidates instead of trusting the first one that exists.
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(bin_env) = std::env::var("HEX_PYTHON_BIN") {
+            candidates.push(bin_env);
+        }
+        if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
+            candidates.push(format!("{}/bin/python", venv));
+        }
+        let venv_python = repo_root.join(".venv/bin/python");
+        if venv_python.exists() {
+            candidates.push(venv_python.to_string_lossy().to_string());
+        }
+        candidates.push("python3".to_string());
+
+        let mut py_bin = None;
+        for candidate in candidates {
+            if Self::interpreter_can_run_server(&candidate, &repo_root, pythonpath.as_deref()).await {
+                py_bin = Some(candidate);
+                break;
+            }
+        }
+        let py_bin = py_bin.ok_or_else(|| {
+            AcpError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No Python interpreter can run the HEX server (needs harness_core and PyYAML). \
+                 Set HEX_PYTHON_BIN to the python in your HEX virtualenv.",
+            ))
+        })?;
 
         let mut cmd = Command::new(&py_bin);
         cmd.args(["-m", "harness_core.client.cli", "acp"])
@@ -252,15 +303,8 @@ impl AcpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let src_dir = repo_root.join("src");
-        if src_dir.exists() {
-            let current_pythonpath = std::env::var("PYTHONPATH").unwrap_or_default();
-            let new_pythonpath = if current_pythonpath.is_empty() {
-                src_dir.to_string_lossy().to_string()
-            } else {
-                format!("{}:{}", src_dir.to_string_lossy(), current_pythonpath)
-            };
-            cmd.env("PYTHONPATH", new_pythonpath);
+        if let Some(path) = &pythonpath {
+            cmd.env("PYTHONPATH", path);
         }
 
         let mut child = cmd.spawn()?;

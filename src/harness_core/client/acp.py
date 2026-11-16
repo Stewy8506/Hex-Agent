@@ -248,7 +248,7 @@ class ACPServer:
         cow_backend = getattr(self.orchestrator.cow, "backend_name", "apfs_clone") if hasattr(self.orchestrator, "cow") else "apfs_clone"
 
         router_model = getattr(getattr(self.orchestrator, "router", None), "cloud_model_id", None)
-        active_model = model if model and model not in ("default", "gemini-2.5-pro") else (router_model or "gemini-3.8-flash-tiered")
+        active_model = model or router_model or ""
 
         from harness_core.client.tui import _resolve_provider_label, render_hex_splash
         provider_label = _resolve_provider_label(self.orchestrator, active_model)

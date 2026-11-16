@@ -1191,10 +1191,12 @@ impl App {
 
     /// Model label for display. Empty means the runtime has not reported one.
     pub fn model_label(&self) -> &str {
-        if self.model_name.is_empty() {
-            "connecting…"
-        } else {
+        if !self.model_name.is_empty() {
             &self.model_name
+        } else if self.connection_status == "Standalone" {
+            "no runtime"
+        } else {
+            "connecting…"
         }
     }
 
@@ -2464,6 +2466,15 @@ mod tests {
         assert_eq!(app.model_label(), "connecting…");
         assert_eq!(app.provider_label(), "unknown provider");
         assert_eq!(app.connection_status, "Connecting");
+    }
+
+    #[test]
+    fn test_standalone_says_no_runtime_instead_of_connecting() {
+        let mut app = App::new("p1", "", "cow");
+        app.connection_status = "Standalone".to_string();
+        assert_eq!(app.model_label(), "no runtime");
+        app.model_name = "nvidia/nemotron-3-ultra-550b-a55b:free".to_string();
+        assert_eq!(app.model_label(), "nvidia/nemotron-3-ultra-550b-a55b:free");
     }
 
     #[test]

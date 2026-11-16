@@ -246,7 +246,7 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_tui.add_argument("--check", action="store_true", default=False, help="Run headless virtual verification and exit 0")
     p_tui.add_argument("--project", default="default", help="Project ID")
     p_tui.add_argument("--workspace", default=None, help="Workspace path (defaults to repository root)")
-    p_tui.add_argument("--model", default="gemini-2.5-pro", help="Model routing profile override")
+    p_tui.add_argument("--model", default=None, help="Model routing profile override (defaults to the configured model)")
     p_tui.add_argument("--skin", default="sapphire", choices=["sapphire", "amber", "cyberpunk", "matrix", "nord", "mono"], help="HEX visual skin")
     p_tui.add_argument("--cow", default="OverlayFS", help="CoW snapshot provider backend")
     p_tui.add_argument("--session", default=None, help="Session ID to attach or resume")

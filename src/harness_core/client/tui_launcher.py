@@ -8,6 +8,7 @@ an implicit rescue for a missing installation.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 BINARY_NAME = "hex-tui.exe" if os.name == "nt" else "hex-tui"
+
+logger = logging.getLogger(__name__)
 
 
 def installed_binary_dir() -> Path:
@@ -159,8 +162,8 @@ def build_tui_cmd_args(args: Any, bin_path: Path) -> List[str]:
                         provider = provider or msec.get("cloud_provider") or msec.get("provider")
                         if model:
                             break
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Could not read model config (%s); launching without a model override.", exc)
 
     if model:
         cmd.extend(["--model", str(model)])

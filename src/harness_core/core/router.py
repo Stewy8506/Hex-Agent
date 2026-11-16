@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import re
@@ -32,6 +33,9 @@ from harness_core.providers.base import ModelProvider, ModelResponse, PolicyBloc
 from harness_core.providers.cloud_provider import CloudModelProvider
 from harness_core.providers.local_provider import LocalModelProvider, Tier1LogCompressor
 from harness_core.providers.mlx_provider import LocalMLXModelProvider
+
+
+logger = logging.getLogger(__name__)
 
 
 PONYTAIL_YAGNI_DIRECTIVE: str = (
@@ -217,8 +221,14 @@ class TwoTierModelRouter:
                         if m and isinstance(m, str) and m.strip():
                             resolved_cloud_model = m.strip()
                             break
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # A config we cannot read must not silently become a
+                        # different model: say so before falling back.
+                        logger.warning(
+                            "Could not read %s (%s); falling back to provider defaults.",
+                            cfg_candidate,
+                            exc,
+                        )
 
         # The configuration fallback above can reintroduce an ID that belongs to
         # another provider. Validate again before discovery/default selection.
