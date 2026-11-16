@@ -54,3 +54,13 @@ against the code during G03/G04/G06:
   now shows four keymap-derived badges.
 - "100% mockup parity" was not established: the diagnostic card and subagent
   modal still had no live data source at the time of writing (G05).
+
+### Follow-up (2026-11-17, plan closed)
+G05 (`d1f2f38`) gave both orphans a real data source: the Python gateway now
+emits `error` tool events, `session/subagents` returns the session's own
+subagent records, and the diagnostic card is transcript content that scrolls
+with its tool row. G07 (`f8afd11`) added the entrance rise, the one-row top
+mask, tool-row hover and `HEX_REDUCED_MOTION`. Two deviations remain open and
+are recorded in `audits/TUI_UI_IMPROVEMENT_PLAN_2026-11-16.md` §6: denied
+approvals end the turn instead of continuing it, and agent-mode DAG turns still
+emit no tool events.

@@ -234,3 +234,43 @@ mockup → **commit** (per your standing rule).
    tests; they must be rewritten, not deleted silently.
 5. Phase 35's STATE.md marks 35-04 "COMPLETE & VERIFIED" while diagnostic wiring
    and palette fuzziness are absent — correct the record when P2/P4 land.
+
+---
+
+## 6. Closure record (2026-11-17)
+
+All seven gaps are implemented, tested and committed on `main`, one commit per
+gap as requested:
+
+| Gap | Commit | What landed |
+|---|---|---|
+| G01 | `5c3b05e` | model output rendered as markdown (headings, lists, code, tables) |
+| G02 | `9ccba1e` | transcript/composer/footer spacing and block rhythm |
+| G03 | `c214574` | 62-column top-anchored palette on `/` and `Ctrl+P`, fuzzy match highlight |
+| G06 | `6b38894` | footer hints derived from the key handler's real bindings |
+| G04 | `27388c6` | approval end to end: ACP request/decision, leases, working modal keys |
+| G05 | `d1f2f38` | failure card and Tab agents drill-down fed by real server data |
+| G07 | `f8afd11` | entrance rise + stagger, one-row top mask, tool-row hover, reduced motion |
+
+Verification at closure: 235 Rust tests (`hex-tui` + `hex-protocol`), 1177 Python
+tests passed / 1 skipped in the hermetic recipe, `cargo check -p hex-desktop`
+clean, and pty captures with per-cell colour reconstruction at 120x24 and 80x24
+(full motion and `HEX_REDUCED_MOTION=1`), 14/14 checks each. The real ledger was
+left untouched at 75 tasks throughout.
+
+### Decisions taken
+- **Tab** opens the agents/subagent modal (your call). Mode cycling lives on
+  `F3` and the palette's `/mode`, so the two surfaces no longer compete.
+
+### Deviations from this plan, still open
+1. **G04 deny semantics.** Denying travels the existing `PolicyBlockedError`
+   path: the CoW snapshot rolls back and the turn ends FAILED with the denial
+   reason. The plan asked for "tool result denied by operator, turn continues";
+   continuing the turn needs ReAct-loop surgery (`react_loop.py` classifies
+   `PolicyBlockedError` as non-transient). Not done.
+2. **Tool events only on the fast path.** Only `_execute_fast_path` consumes
+   `tool_callback`, so agent-mode DAG turns still emit no tool rows and the
+   failure card has nothing to attach to on those turns. G05 fixed the events
+   that exist; it did not add them to the DAG executor.
+3. **Risk 5 discharged.** The phase-35 record was corrected in `4508ddc` and
+   again at closure; `.gsd/STATE.md` now carries the amendment.

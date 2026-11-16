@@ -437,6 +437,7 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
         - Automatic launcher resolution in `tui_launcher.py` passing `--model` and `--max-tokens` to `hex-tui`.
         - Ratatui CLI `--max-tokens` flag and alias `--context-window`, dynamic fallback resolution, `app.set_max_tokens()` for live ACP turns, and adaptive formatters (`256k`, `1.0M`, `2.1M`, `200k`).
       - Verified by independent `gsd-verifier` subagent (`.gsd/phases/35-tui-redesign-mockup-parity/VERIFICATION.md`): 8/8 must-haves PASS, all 73 workspace tests pass cleanly.
+      - **Amendment (2026-11-17):** the "COMPLETE & VERIFIED" label above covered rendered surfaces, not working features. An audit (`audits/TUI_UI_IMPROVEMENT_PLAN_2026-11-16.md`) found the approval modal inert end to end, no palette on `/`, unformatted model output, and a diagnostic card and subagent modal with no data source. Gaps G01-G07 were closed in `5c3b05e`, `9ccba1e`, `c214574`, `6b38894`, `27388c6`, `d1f2f38`, `f8afd11`; see that plan's §6 for the verification totals and the two deviations still open (denied approvals end the turn; agent-mode DAG turns emit no tool events).
 
 43. **Phase 36 Plan 36-01: Modular Package Restructuring & Backward Compatibility Layer Complete:**
     - Decomposed flat `src/harness_core/` into 7 domain subpackages:
