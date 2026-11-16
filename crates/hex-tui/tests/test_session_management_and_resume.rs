@@ -167,6 +167,8 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
         CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, task_id TEXT);
         CREATE TABLE proof_bundles (bundle_id TEXT PRIMARY KEY, task_id TEXT);
         CREATE TABLE leases (lease_id TEXT PRIMARY KEY, task_id TEXT);
+        CREATE TABLE approval_leases (lease_id TEXT PRIMARY KEY, task_id TEXT);
+        CREATE TABLE dialogue_turns (turn_id TEXT PRIMARY KEY, task_id TEXT, turn_index INTEGER, role TEXT, content TEXT);
         CREATE TABLE task_search_fts (task_id TEXT, goal TEXT);
     ";
 
@@ -189,6 +191,9 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
         INSERT INTO artifacts VALUES ('art1', '{id}');
         INSERT INTO proof_bundles VALUES ('pb1', '{id}');
         INSERT INTO leases VALUES ('l1', '{id}');
+        INSERT INTO approval_leases VALUES ('al1', '{id}');
+        INSERT INTO dialogue_turns VALUES ('t1', '{id}', 0, 'user', 'Target task goal');
+        INSERT INTO dialogue_turns VALUES ('t2', '{id}', 1, 'assistant', 'Done.');
         INSERT INTO task_search_fts VALUES ('{id}', 'Target task goal');
     ", id = target_id);
 
@@ -217,18 +222,23 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
     let area = Rect::new(0, 0, 100, 30);
     let resume_area = app.get_start_resume_area(area);
 
-    // Click the delete button '✕' (rightmost 6 cols of row 0)
+    // First click arms deletion; nothing is removed until it is confirmed.
     let del_click_x = resume_area.x + resume_area.width - 2;
     let del_click_y = resume_area.y + 1;
     let handled = app.handle_start_mouse_click(del_click_x, del_click_y, resume_area);
     assert!(handled, "Clicking delete button must be handled");
+    assert_eq!(app.resume_sessions.len(), 2, "first click must not delete");
+    assert!(app.status_message.contains("Press d or Delete again to confirm"));
+
+    let handled = app.handle_start_mouse_click(del_click_x, del_click_y, resume_area);
+    assert!(handled, "Confirming click must be handled");
 
     // UI list removed the target session
     assert_eq!(app.resume_sessions.len(), 1);
     assert_eq!(app.resume_sessions[0].session_id, "other_task");
     assert!(app.status_message.contains("Deleted session: Target task goal"));
 
-    // 3. Verify SQLite DB: target task is completely wiped across all 11 tables
+    // 3. Verify SQLite DB: target task is completely wiped, conversation included
     let tables = [
         "tasks",
         "tool_calls",
@@ -240,6 +250,8 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
         "artifacts",
         "proof_bundles",
         "leases",
+        "approval_leases",
+        "dialogue_turns",
         "task_search_fts",
     ];
 

@@ -41,12 +41,8 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         (area.width * 52 / 100).clamp(80, 126)
     };
 
-    let visible_sessions_count = if app.show_all_resume {
-        app.resume_sessions.len().min(10)
-    } else {
-        app.resume_sessions.len().min(3)
-    };
-    let has_toggle = app.resume_sessions.len() > 3;
+    let visible_sessions_count = app.resume_visible_count();
+    let has_toggle = app.resume_toggle_index().is_some();
     let resume_rows = if app.resume_sessions.is_empty() {
         2
     } else {
@@ -219,6 +215,28 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
     // 4. Keyboard Shortcut Badges below prompt
     // ─────────────────────────────────────────────
     let hints_area = center_horizontally(v_chunks[6], content_width);
+    if let Some(armed_idx) = app.pending_delete_index {
+        let suffix = "? press d again · esc cancel";
+        let budget = (hints_area.width as usize).saturating_sub(9 + suffix.chars().count());
+        let title = app
+            .resume_sessions
+            .get(armed_idx)
+            .map(|s| s.title.as_str())
+            .unwrap_or("session");
+        let prompt = Line::from(Span::styled(
+            format!(
+                "Delete \"{}\"{}",
+                crate::app::ellipsize(title, budget.max(1)),
+                suffix
+            ),
+            Style::default()
+                .fg(Color::Rgb(255, 123, 114))
+                .add_modifier(Modifier::BOLD),
+        ));
+        Paragraph::new(prompt)
+            .alignment(Alignment::Center)
+            .render(hints_area, buf);
+    } else {
     let badges = [
         ("/", " commands    ", 0),
         ("@", " files    ", 1),
@@ -248,6 +266,7 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
     Paragraph::new(Line::from(hints_spans))
         .alignment(Alignment::Center)
         .render(hints_area, buf);
+    }
 
     // ─────────────────────────────────────────────
     // 5. Resume Previous Sessions Section
@@ -266,7 +285,16 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         ]);
         buf.set_line(resume_area.x, resume_area.y + 1, &empty_line, resume_area.width);
     } else {
-        for (idx, session) in app.resume_sessions.iter().take(visible_sessions_count).enumerate() {
+        let (window_offset, window_count) = app.resume_window();
+        for (screen_idx, session) in app
+            .resume_sessions
+            .iter()
+            .enumerate()
+            .skip(window_offset)
+            .take(window_count)
+            .map(|(abs_idx, s)| (abs_idx - window_offset, s))
+        {
+            let idx = screen_idx;
             let row_y = resume_area.y + 1 + idx as u16;
             if row_y >= resume_area.bottom() {
                 break;
@@ -274,7 +302,7 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
 
             // Smooth animated hover factor (from mouse hover or keyboard selection)
             let hover_factor = app.row_hover_levels.get(idx).copied().unwrap_or(
-                if idx == app.selected_resume_index { 1.0 } else { 0.0 }
+                if idx + window_offset == app.selected_resume_index { 1.0 } else { 0.0 }
             );
             let del_hover_factor = app.delete_hover_levels.get(idx).copied().unwrap_or(0.0);
 
@@ -289,15 +317,22 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
                 buf[(x, row_y)].set_bg(row_bg);
             }
 
-            // Title color smoothly lerps from #bdbdbd to #f2f2f2 (.row:hover .nm transition: color .2s ease)
-            let title_color = crate::ui::animation::interpolate_color(
-                Color::Rgb(189, 189, 189),
-                Color::Rgb(242, 242, 242),
-                hover_factor,
-            );
+            let armed = app.pending_delete_index == Some(idx + window_offset);
 
+            // Title color smoothly lerps from #bdbdbd to #f2f2f2 (.row:hover .nm transition: color .2s ease)
+            let title_color = if armed {
+                Color::Rgb(255, 123, 114)
+            } else {
+                crate::ui::animation::interpolate_color(
+                    Color::Rgb(189, 189, 189),
+                    Color::Rgb(242, 242, 242),
+                    hover_factor,
+                )
+            };
+
+            let del_glyph = if armed { "✕?" } else { "✕" };
             let time_width = session.relative_time.chars().count();
-            let right_text_width = time_width + 5; // time + "  ✕  " (2 spaces + 1 char + 2 spaces)
+            let right_text_width = time_width + 4 + del_glyph.chars().count(); // time + "  " + glyph + "  "
             let max_title_len = (resume_area.width as usize).saturating_sub(right_text_width + 4);
             let display_title = if session.title.chars().count() > max_title_len && max_title_len > 4 {
                 let truncated: String = session.title.chars().take(max_title_len - 1).collect();
@@ -329,7 +364,11 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
             } else {
                 base_del
             };
-            let del_style = if del_hover_factor > 0.3 {
+            let del_style = if armed {
+                Style::default()
+                    .fg(Color::Rgb(255, 123, 114))
+                    .add_modifier(Modifier::BOLD)
+            } else if del_hover_factor > 0.3 {
                 Style::default().fg(del_color).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(del_color)
@@ -338,7 +377,7 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
             spans.push(Span::raw(" ".repeat(spaces)));
             spans.push(Span::styled(&session.relative_time, Style::default().fg(Color::Rgb(140, 140, 140))));
             spans.push(Span::raw("  "));
-            spans.push(Span::styled("✕", del_style));
+            spans.push(Span::styled(del_glyph, del_style));
             spans.push(Span::raw("  "));
 
             buf.set_line(resume_area.x, row_y, &Line::from(spans), resume_area.width);
@@ -363,10 +402,16 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
                     buf[(x, toggle_y)].set_bg(toggle_bg);
                 }
 
+                let total = app.resume_sessions.len();
                 let toggle_label = if app.show_all_resume {
-                    "  − show less".to_string()
+                    format!(
+                        "  − show less ({}–{} of {})",
+                        window_offset + 1,
+                        window_offset + window_count,
+                        total
+                    )
                 } else {
-                    format!("  + show all ({})", app.resume_sessions.len())
+                    format!("  + show all ({total})")
                 };
 
                 let toggle_style = if toggle_factor > 0.3 {

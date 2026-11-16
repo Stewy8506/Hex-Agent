@@ -474,6 +474,9 @@ async fn handle_key_event(
             app.add_system_message("Operator dismissed approval dialog.");
             return Ok(());
         }
+        if app.cancel_pending_delete() {
+            return Ok(());
+        }
         if app.is_busy {
             app.cancel_requested = true;
             request_turn_cancel(app, acp_client);
@@ -589,18 +592,14 @@ async fn handle_key_event(
                     }
 
                     if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        let visible_count = if app.show_all_resume {
-                            app.resume_sessions.len().min(10)
-                        } else {
-                            app.resume_sessions.len().min(3)
-                        };
-                        let has_toggle = app.resume_sessions.len() > 3;
+                        let visible_count = app.resume_visible_count();
+                        let has_toggle = app.resume_toggle_index().is_some();
 
-                        if app.selected_resume_index < visible_count && app.selected_resume_index < app.resume_sessions.len() {
+                        if app.selected_resume_index < app.resume_sessions.len() {
                             let session = app.resume_sessions[app.selected_resume_index].clone();
                             app.resume_session(&session.session_id);
                             return Ok(());
-                        } else if app.selected_resume_index == visible_count && has_toggle {
+                        } else if has_toggle && app.selected_resume_index == visible_count {
                             app.toggle_show_all_resume();
                             return Ok(());
                         }
@@ -612,13 +611,8 @@ async fn handle_key_event(
                 }
                 KeyCode::Char('d') => {
                     if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        let visible_count = if app.show_all_resume {
-                            app.resume_sessions.len().min(10)
-                        } else {
-                            app.resume_sessions.len().min(3)
-                        };
-                        if app.selected_resume_index < visible_count && app.selected_resume_index < app.resume_sessions.len() {
-                            app.delete_resume_session(app.selected_resume_index);
+                        if app.selected_resume_index < app.resume_sessions.len() {
+                            app.request_delete_resume_session(app.selected_resume_index);
                             return Ok(());
                         }
                     }
@@ -628,13 +622,8 @@ async fn handle_key_event(
                 KeyCode::Backspace => app.delete_char(),
                 KeyCode::Delete => {
                     if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        let visible_count = if app.show_all_resume {
-                            app.resume_sessions.len().min(10)
-                        } else {
-                            app.resume_sessions.len().min(3)
-                        };
-                        if app.selected_resume_index < visible_count && app.selected_resume_index < app.resume_sessions.len() {
-                            app.delete_resume_session(app.selected_resume_index);
+                        if app.selected_resume_index < app.resume_sessions.len() {
+                            app.request_delete_resume_session(app.selected_resume_index);
                             return Ok(());
                         }
                     }
@@ -646,14 +635,9 @@ async fn handle_key_event(
                 KeyCode::End => app.move_cursor_end(),
                 KeyCode::Up => {
                     if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        let visible_count = if app.show_all_resume {
-                            app.resume_sessions.len().min(10)
-                        } else {
-                            app.resume_sessions.len().min(3)
-                        };
-                        let has_toggle = app.resume_sessions.len() > 3;
-                        let total = if has_toggle { visible_count + 1 } else { visible_count };
+                        let total = app.resume_sessions.len() + usize::from(app.resume_toggle_index().is_some());
                         if total > 0 {
+                            app.pending_delete_index = None;
                             app.selected_resume_index = (app.selected_resume_index + total - 1) % total;
                         }
                     } else if app.input_buffer.is_empty() {
@@ -664,14 +648,9 @@ async fn handle_key_event(
                 }
                 KeyCode::Down => {
                     if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        let visible_count = if app.show_all_resume {
-                            app.resume_sessions.len().min(10)
-                        } else {
-                            app.resume_sessions.len().min(3)
-                        };
-                        let has_toggle = app.resume_sessions.len() > 3;
-                        let total = if has_toggle { visible_count + 1 } else { visible_count };
+                        let total = app.resume_sessions.len() + usize::from(app.resume_toggle_index().is_some());
                         if total > 0 {
+                            app.pending_delete_index = None;
                             app.selected_resume_index = (app.selected_resume_index + 1) % total;
                         }
                     } else if app.input_buffer.is_empty() {

@@ -245,6 +245,8 @@ pub struct App {
     pub resume_sessions: Vec<ResumeSession>,
     pub selected_resume_index: usize,
     pub show_all_resume: bool,
+    pub resume_window_offset: usize,
+    pub pending_delete_index: Option<usize>,
     pub tokens_used: usize,
     pub max_tokens: usize,
     pub modified_files_count: usize,
@@ -537,7 +539,7 @@ pub fn load_real_resume_sessions(dir: &std::path::Path) -> Vec<ResumeSession> {
             db_path.to_str().unwrap_or(".hex/data/ledger.db"),
             "-separator",
             "|",
-            "SELECT task_id, goal, created_at FROM tasks ORDER BY created_at DESC LIMIT 50;",
+            "SELECT task_id, goal, created_at FROM tasks ORDER BY created_at DESC;",
         ])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -566,6 +568,14 @@ pub fn load_real_resume_sessions(dir: &std::path::Path) -> Vec<ResumeSession> {
     sessions
 }
 
+pub(crate) fn ellipsize(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
 pub fn delete_session_from_db(dir: &std::path::Path, task_id: &str) -> bool {
     let db_path = dir.join(".hex").join("data").join("ledger.db");
     if !db_path.exists() {
@@ -573,45 +583,59 @@ pub fn delete_session_from_db(dir: &std::path::Path, task_id: &str) -> bool {
     }
 
     let clean_id = task_id.replace('\'', "''");
-    // 1. Delete from standard relational tables (guaranteed standard tables, never dependent on FTS5)
-    let sql_core = format!(
-        "DELETE FROM tool_calls WHERE task_id = '{id}'; \
-         DELETE FROM task_events WHERE task_id = '{id}'; \
-         DELETE FROM attempts WHERE task_id = '{id}'; \
-         DELETE FROM plans WHERE task_id = '{id}'; \
-         DELETE FROM checkpoints WHERE task_id = '{id}'; \
-         DELETE FROM approvals WHERE task_id = '{id}'; \
-         DELETE FROM artifacts WHERE task_id = '{id}'; \
-         DELETE FROM proof_bundles WHERE task_id = '{id}'; \
-         DELETE FROM leases WHERE task_id = '{id}'; \
-         DELETE FROM tasks WHERE task_id = '{id}';",
-        id = clean_id
-    );
+    let path_arg = db_path.to_str().unwrap_or(".hex/data/ledger.db");
+    let run_sql = |sql: &str| -> String {
+        let mut cmd = get_sqlite_command();
+        cmd.args([path_arg, sql])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
 
-    let mut cmd_core = get_sqlite_command();
-    let res = cmd_core
-        .args([db_path.to_str().unwrap_or(".hex/data/ledger.db"), &sql_core])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
+    let count_sql = format!("SELECT COUNT(*) FROM tasks WHERE task_id = '{clean_id}';");
+    // Nothing to delete is not a successful deletion.
+    if run_sql(&count_sql) != "1" {
+        return false;
+    }
 
-    let success = res.map(|o| o.status.success()).unwrap_or(false);
+    // A statement naming an absent table aborts the whole sqlite3 batch, so only
+    // reference tables this ledger actually has (older ledgers lack newer ones).
+    let present = run_sql("SELECT name FROM sqlite_master WHERE type IN ('table', 'view');");
+    let has = |name: &str| present.lines().any(|l| l.trim() == name);
 
-    // 2. Best-effort deletion from task_search_fts without leaking stderr to terminal screen buffer
-    let sql_fts = format!(
-        "DELETE FROM task_search_fts WHERE task_id = '{id}';",
-        id = clean_id
-    );
-    let mut cmd_fts = get_sqlite_command();
-    let _ = cmd_fts
-        .args([db_path.to_str().unwrap_or(".hex/data/ledger.db"), &sql_fts])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
+    let scoped = [
+        "dialogue_turns",
+        "tool_calls",
+        "task_events",
+        "attempts",
+        "plans",
+        "checkpoints",
+        "approvals",
+        "artifacts",
+        "proof_bundles",
+        "leases",
+        "approval_leases",
+        "task_search_fts",
+        "tasks",
+    ];
 
-    success
+    let mut batch = String::from("BEGIN IMMEDIATE; ");
+    for table in scoped.iter().filter(|t| has(t)) {
+        batch.push_str(&format!(
+            "DELETE FROM {table} WHERE task_id = '{clean_id}'; "
+        ));
+    }
+    batch.push_str("COMMIT;");
+    run_sql(&batch);
+
+    // Only claim success when the task row is actually gone.
+    run_sql(&count_sql) == "0"
 }
 
 pub fn load_session_dialogue_from_db(dir: &std::path::Path, task_id: &str) -> Vec<DialogueItem> {
@@ -1051,6 +1075,8 @@ impl App {
             resume_sessions,
             selected_resume_index: 0,
             show_all_resume: false,
+            resume_window_offset: 0,
+            pending_delete_index: None,
             tokens_used: 0,
             max_tokens: default_max_tokens,
             modified_files_count,
@@ -1181,14 +1207,85 @@ impl App {
         }
     }
 
-    /// Toggle between showing top 3 and all previous resume sessions.
+    /// Toggle between showing top 3 and a scrollable window of previous sessions.
     pub fn toggle_show_all_resume(&mut self) {
         self.show_all_resume = !self.show_all_resume;
+        self.resume_window_offset = 0;
+    }
+
+    /// Number of session rows drawn at once.
+    pub fn resume_visible_count(&self) -> usize {
+        let cap = if self.show_all_resume { 10 } else { 3 };
+        self.resume_sessions.len().min(cap)
+    }
+
+    /// Index of the show-all/show-less row, when there is one.
+    pub fn resume_toggle_index(&self) -> Option<usize> {
+        if self.resume_sessions.len() > 3 {
+            Some(self.resume_visible_count())
+        } else {
+            None
+        }
+    }
+
+    /// First session index drawn. The window follows the selection so every
+    /// session stays reachable instead of only the first ten.
+    pub fn resume_window(&self) -> (usize, usize) {
+        let count = self.resume_visible_count();
+        if count == 0 {
+            return (0, 0);
+        }
+        let max_offset = self.resume_sessions.len().saturating_sub(count);
+        let mut offset = self.resume_window_offset.min(max_offset);
+        let selected = self.selected_resume_index.min(self.resume_sessions.len().saturating_sub(1));
+        if selected < offset {
+            offset = selected;
+        } else if selected >= offset + count {
+            offset = selected + 1 - count;
+        }
+        (offset.min(max_offset), count)
+    }
+
+    /// Arm deletion of a session; a second call on the same row performs it.
+    /// Returns true when the session was actually deleted.
+    pub fn request_delete_resume_session(&mut self, idx: usize) -> bool {
+        if idx >= self.resume_sessions.len() {
+            return false;
+        }
+        if self.pending_delete_index != Some(idx) {
+            self.pending_delete_index = Some(idx);
+            self.status_message = format!(
+                "Delete \"{}\"? Press d or Delete again to confirm.",
+                ellipsize(&self.resume_sessions[idx].title, 40)
+            );
+            return false;
+        }
+        self.delete_resume_session(idx)
+    }
+
+    /// Abandon an armed delete without touching the ledger.
+    pub fn cancel_pending_delete(&mut self) -> bool {
+        if self.pending_delete_index.take().is_none() {
+            return false;
+        }
+        self.status_message = "Delete cancelled.".to_string();
+        true
     }
 
     /// Delete a session from local database and remove it from the resume list.
+    /// The row is only dropped when the database confirms the delete.
     pub fn delete_resume_session(&mut self, idx: usize) -> bool {
+        self.pending_delete_index = None;
         if idx >= self.resume_sessions.len() {
+            return false;
+        }
+        let ws = std::path::PathBuf::from(&self.workspace_path);
+        let target = &self.resume_sessions[idx];
+        if !delete_session_from_db(&ws, &target.session_id) {
+            self.status_message = format!(
+                "Could not delete \"{}\" — it is still in the ledger.",
+                ellipsize(&target.title, 40)
+            );
             return false;
         }
         let removed = self.resume_sessions.remove(idx);
@@ -1198,12 +1295,15 @@ impl App {
         if idx < self.delete_hover_levels.len() {
             self.delete_hover_levels.remove(idx);
         }
-        let ws = std::path::PathBuf::from(&self.workspace_path);
-        delete_session_from_db(&ws, &removed.session_id);
         if self.selected_resume_index >= self.resume_sessions.len() && !self.resume_sessions.is_empty() {
             self.selected_resume_index = self.resume_sessions.len() - 1;
         }
-        self.status_message = format!("Deleted session: {}", removed.title);
+        let max_offset = self
+            .resume_sessions
+            .len()
+            .saturating_sub(self.resume_visible_count());
+        self.resume_window_offset = self.resume_window_offset.min(max_offset);
+        self.status_message = format!("Deleted session: {}", ellipsize(&removed.title, 40));
         true
     }
 
@@ -1233,26 +1333,29 @@ impl App {
     }
 
     /// Resume an existing session by loading its conversation history, tool calls, and plan from the local database.
+    ///
+    /// The ledger stores one task per turn, not an ACP conversation. The stored
+    /// transcript is shown as history; the next prompt starts a new turn on the
+    /// runtime, which has no memory of it.
     pub fn resume_session(&mut self, session_id: &str) -> bool {
         let ws = std::path::PathBuf::from(&self.workspace_path);
         let items = load_session_dialogue_from_db(&ws, session_id);
         self.session_id = session_id.to_string();
         self.screen_state = ScreenState::Session;
-        if !items.is_empty() {
+        self.pending_delete_index = None;
+        if items.is_empty() {
+            self.dialogue_items = vec![DialogueItem::Message(MessageItem {
+                role: Role::System,
+                content: format!("No transcript stored for {session_id}."),
+                timestamp: "now".to_string(),
+            })];
+        } else {
             self.dialogue_items = items;
-        } else if let Some(s) = self.resume_sessions.iter().find(|s| s.session_id == session_id) {
-            self.dialogue_items = vec![
-                DialogueItem::Message(MessageItem {
-                    role: Role::User,
-                    content: s.title.clone(),
-                    timestamp: s.relative_time.clone(),
-                }),
-                DialogueItem::Message(MessageItem {
-                    role: Role::Assistant,
-                    content: "Resumed previous session.".to_string(),
-                    timestamp: "now".to_string(),
-                }),
-            ];
+            self.dialogue_items.push(DialogueItem::Message(MessageItem {
+                role: Role::System,
+                content: "Showing stored history. Your next message starts a new turn; the runtime does not remember this conversation.".to_string(),
+                timestamp: "now".to_string(),
+            }));
         }
         self.plan_steps = load_session_plan_from_db(&ws, session_id);
         self.input_buffer.clear();
@@ -1275,12 +1378,8 @@ impl App {
             (area.width * 52 / 100).clamp(80, 126)
         };
 
-        let visible_sessions_count = if self.show_all_resume {
-            self.resume_sessions.len().min(10)
-        } else {
-            self.resume_sessions.len().min(3)
-        };
-        let has_toggle = self.resume_sessions.len() > 3;
+        let visible_sessions_count = self.resume_visible_count();
+        let has_toggle = self.resume_toggle_index().is_some();
         let resume_rows = if self.resume_sessions.is_empty() {
             2
         } else {
@@ -1442,12 +1541,8 @@ impl App {
                 && row < resume_rect.y + resume_rect.height
             {
                 let relative_row = row.saturating_sub(resume_rect.y + 1) as usize;
-                let visible_count = if self.show_all_resume {
-                    self.resume_sessions.len().min(10)
-                } else {
-                    self.resume_sessions.len().min(3)
-                };
-                let has_toggle = self.resume_sessions.len() > 3;
+                let visible_count = self.resume_visible_count();
+                let has_toggle = self.resume_toggle_index().is_some();
 
                 if relative_row < visible_count && relative_row < self.resume_sessions.len() {
                     self.hovered_resume_row = Some(relative_row);
@@ -1499,21 +1594,19 @@ impl App {
     pub fn handle_start_mouse_click(&mut self, col: u16, row: u16, rect: ratatui::layout::Rect) -> bool {
         if col >= rect.x && col < rect.x + rect.width && row > rect.y && row < rect.y + rect.height {
             let relative_row = row.saturating_sub(rect.y + 1) as usize;
-            let visible_count = if self.show_all_resume {
-                self.resume_sessions.len().min(10)
-            } else {
-                self.resume_sessions.len().min(3)
-            };
-            let has_toggle = self.resume_sessions.len() > 3;
+            let visible_count = self.resume_visible_count();
+            let has_toggle = self.resume_toggle_index().is_some();
+            let (window_offset, _) = self.resume_window();
+            let absolute_row = window_offset + relative_row;
 
-            if relative_row < visible_count && relative_row < self.resume_sessions.len() {
+            if relative_row < visible_count && absolute_row < self.resume_sessions.len() {
                 // Rightmost 6 columns of the row is the '✕' delete button area
                 if col >= rect.x + rect.width.saturating_sub(6) {
-                    self.delete_resume_session(relative_row);
+                    self.request_delete_resume_session(absolute_row);
                     return true;
                 } else {
-                    self.selected_resume_index = relative_row;
-                    let sid = self.resume_sessions[relative_row].session_id.clone();
+                    self.selected_resume_index = absolute_row;
+                    let sid = self.resume_sessions[absolute_row].session_id.clone();
                     self.resume_session(&sid);
                     return true;
                 }
@@ -1756,6 +1849,7 @@ impl App {
     // -----------------------------------------------------------------------
 
     pub fn insert_char(&mut self, c: char) {
+        self.pending_delete_index = None;
         let byte = char_to_byte(&self.input_buffer, self.cursor_pos);
         self.input_buffer.insert(byte, c);
         self.cursor_pos += 1;
@@ -1966,12 +2060,9 @@ impl App {
     pub fn advance_animation(&mut self) {
         self.animation_frame = self.animation_frame.wrapping_add(1);
 
-        let visible_sessions = if self.show_all_resume {
-            self.resume_sessions.len().min(10)
-        } else {
-            self.resume_sessions.len().min(3)
-        };
-        let total_interactive = visible_sessions + if self.resume_sessions.len() > 3 { 1 } else { 0 };
+        let visible_sessions = self.resume_visible_count();
+        let (window_offset, _) = self.resume_window();
+        let total_interactive = visible_sessions + if self.resume_toggle_index().is_some() { 1 } else { 0 };
 
         if self.row_hover_levels.len() < total_interactive {
             self.row_hover_levels.resize(total_interactive, 0.0);
@@ -1982,7 +2073,7 @@ impl App {
 
         for idx in 0..visible_sessions {
             let is_row_active = self.hovered_resume_row == Some(idx)
-                || (self.hovered_resume_row.is_none() && self.selected_resume_index == idx);
+                || (self.hovered_resume_row.is_none() && self.selected_resume_index == window_offset + idx);
             let target = if is_row_active { 1.0_f32 } else { 0.0_f32 };
             let current = self.row_hover_levels[idx];
             let delta = target - current;
@@ -2004,9 +2095,9 @@ impl App {
         }
 
         // Toggle row hover (show all / show less)
-        if self.resume_sessions.len() > 3 {
-            let is_toggle_active = self.hovered_resume_row == Some(visible_sessions)
-                || (self.hovered_resume_row.is_none() && self.selected_resume_index == visible_sessions);
+        if let Some(toggle_idx) = self.resume_toggle_index() {
+            let is_toggle_active = self.hovered_resume_row == Some(toggle_idx)
+                || (self.hovered_resume_row.is_none() && self.selected_resume_index == toggle_idx);
             let toggle_target = if is_toggle_active { 1.0_f32 } else { 0.0_f32 };
             let toggle_delta = toggle_target - self.toggle_hover_level;
             self.toggle_hover_level = if toggle_delta.abs() < 0.02 {
@@ -2255,8 +2346,14 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_resume_session() {
+    fn test_delete_resume_session_requires_a_real_ledger_row() {
+        // Without a ledger the delete cannot succeed, so the row must stay and
+        // the status must say so rather than claiming a deletion.
         let mut app = App::new("p1", "m1", "cow");
+        app.workspace_path = std::env::temp_dir()
+            .join(format!("hex_absent_ledger_{}", std::process::id()))
+            .to_string_lossy()
+            .to_string();
         app.resume_sessions = vec![
             ResumeSession {
                 session_id: "s1".to_string(),
@@ -2271,15 +2368,56 @@ mod tests {
         ];
         app.selected_resume_index = 1;
 
-        let deleted = app.delete_resume_session(1);
-        assert!(deleted);
-        assert_eq!(app.resume_sessions.len(), 1);
-        assert_eq!(app.resume_sessions[0].session_id, "s1");
-        assert_eq!(app.selected_resume_index, 0);
-        assert!(app.status_message.contains("Deleted session: Task 2"));
+        assert!(!app.delete_resume_session(1));
+        assert_eq!(app.resume_sessions.len(), 2, "row must survive a failed delete");
+        assert!(app.status_message.contains("Could not delete"));
 
         // Out of bounds deletion returns false
         assert!(!app.delete_resume_session(99));
+    }
+
+    #[test]
+    fn test_delete_confirmation_arms_before_deleting() {
+        let mut app = App::new("p1", "m1", "cow");
+        app.resume_sessions = vec![ResumeSession {
+            session_id: "s1".to_string(),
+            title: "Task 1".to_string(),
+            relative_time: "1m".to_string(),
+        }];
+
+        assert!(!app.request_delete_resume_session(0));
+        assert_eq!(app.pending_delete_index, Some(0));
+        assert_eq!(app.resume_sessions.len(), 1);
+        assert!(app.status_message.contains("confirm"));
+
+        // Second request targets the same row and attempts the real delete.
+        assert!(!app.request_delete_resume_session(0), "no ledger, so it fails");
+        assert_eq!(app.pending_delete_index, None);
+        assert!(app.status_message.contains("Could not delete"));
+    }
+
+    #[test]
+    fn test_resume_window_reaches_every_session() {
+        let mut app = App::new("p1", "m1", "cow");
+        app.resume_sessions = (0..25)
+            .map(|i| ResumeSession {
+                session_id: format!("s{i}"),
+                title: format!("Task {i}"),
+                relative_time: "1m".to_string(),
+            })
+            .collect();
+
+        assert_eq!(app.resume_window(), (0, 3), "collapsed shows three");
+        app.toggle_show_all_resume();
+        assert_eq!(app.resume_window(), (0, 10));
+
+        // Selecting past the window scrolls it instead of hiding the session.
+        app.selected_resume_index = 14;
+        assert_eq!(app.resume_window(), (5, 10));
+        app.selected_resume_index = 24;
+        assert_eq!(app.resume_window(), (15, 10));
+        app.selected_resume_index = 2;
+        assert_eq!(app.resume_window(), (0, 10), "jumping back into view scrolls minimally");
     }
 
     #[test]
