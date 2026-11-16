@@ -15,6 +15,13 @@ use crate::ui::diff::{render_mockup_inline_diff, MockupDiffLine};
 use crate::ui::right_rail;
 use crate::ui::style::HexTheme;
 
+/// Canvas breathing room: 3 columns each side, 1 row on top (mockup 28px/14px).
+const CANVAS_PAD_X: u16 = 3;
+const CANVAS_PAD_TOP: u16 = 1;
+/// Below this window width the right rail is dropped instead of squeezing the
+/// transcript into an unreadable column.
+const MIN_WIDTH_FOR_RAIL: u16 = 92;
+
 pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, buf: &mut Buffer) {
     if area.height < 15 || area.width < 50 {
         let msg = Paragraph::new("HEX AGENT - Expand terminal to view Cockpit")
@@ -66,62 +73,128 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
     // ─────────────────────────────────────────────
     // 2. Main Viewport: Canvas vs Right Rail
     // ─────────────────────────────────────────────
-    let rail_width = ((v_chunks[2].width as f32 * 0.23).round() as u16)
-        .clamp(28, 44)
-        .min(v_chunks[2].width.saturating_sub(40));
+    let show_rail = v_chunks[2].width >= MIN_WIDTH_FOR_RAIL.saturating_sub(2);
+    let rail_width = if show_rail {
+        ((v_chunks[2].width as f32 * 0.23).round() as u16)
+            .clamp(28, 44)
+            .min(v_chunks[2].width.saturating_sub(40))
+    } else {
+        0
+    };
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(40),               // Left canvas
-            Constraint::Length(1),             // Vertical rail divider
-            Constraint::Length(rail_width),    // Right rail
-        ])
+        .constraints(if show_rail {
+            vec![
+                Constraint::Min(40),            // Left canvas
+                Constraint::Length(1),          // Vertical rail divider
+                Constraint::Length(rail_width), // Right rail
+            ]
+        } else {
+            vec![Constraint::Min(40)]
+        })
         .split(v_chunks[2]);
 
-    // Draw vertical divider between canvas and right rail (#1c1c1c)
-    let div_x = h_chunks[1].x;
-    for y in h_chunks[1].top()..h_chunks[1].bottom() {
-        buf[(div_x, y)].set_symbol("│");
-        buf[(div_x, y)].set_fg(theme.border_low);
+    if show_rail {
+        // Draw vertical divider between canvas and right rail (#1c1c1c)
+        let div_x = h_chunks[1].x;
+        for y in h_chunks[1].top()..h_chunks[1].bottom() {
+            buf[(div_x, y)].set_symbol("│");
+            buf[(div_x, y)].set_fg(theme.border_low);
+        }
     }
 
     // Render Left Canvas
     render_left_canvas(app, theme, anim, h_chunks[0], buf);
 
     // Render Right Rail
-    right_rail::render(app, theme, anim, h_chunks[2], buf);
+    if show_rail {
+        right_rail::render(app, theme, anim, h_chunks[2], buf);
+    }
 }
 
 fn render_top_bar(app: &App, theme: &HexTheme, area: Rect, buf: &mut Buffer) {
-    let left_span = Span::styled("hex", Style::default().fg(theme.text_dim));
-    let center_span = Span::styled(&app.workspace_path, Style::default().fg(theme.text_dim));
-    let right_span = Span::styled(&app.git_branch, Style::default().fg(theme.text_extra_dim));
+    let left = "hex";
+    let right = app.git_branch.as_str();
+    let pad = CANVAS_PAD_X.min(area.width / 4);
+    let usable = area.width.saturating_sub(pad * 2);
+    let right_w = right.chars().count().min(usable as usize / 3) as u16;
+    let center_max = usable.saturating_sub(left.len() as u16 + right_w + 4);
 
-    buf.set_string(area.x, area.y, left_span.content, Style::default().fg(theme.text_dim));
+    let center = truncate_middle(&app.workspace_path, center_max as usize);
 
-    let center_x = area.x + (area.width.saturating_sub(center_span.content.len() as u16)) / 2;
-    buf.set_string(center_x, area.y, center_span.content, Style::default().fg(theme.text_dim));
+    buf.set_string(
+        area.x + pad,
+        area.y,
+        left,
+        Style::default().fg(theme.text_dim),
+    );
+    if center_max > 0 {
+        let center_x = area.x + pad + left.len() as u16 + 2;
+        buf.set_string(
+            center_x,
+            area.y,
+            &center,
+            Style::default().fg(theme.text_dim),
+        );
+    }
+    if right_w > 0 {
+        let tail: String = right
+            .chars()
+            .rev()
+            .take(right_w as usize)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        buf.set_string(
+            area.right().saturating_sub(pad + right_w),
+            area.y,
+            &tail,
+            Style::default().fg(theme.text_extra_dim),
+        );
+    }
+}
 
-    let right_x = area.right().saturating_sub(right_span.content.len() as u16);
-    buf.set_string(right_x, area.y, right_span.content, Style::default().fg(theme.text_extra_dim));
+/// Keep the tail of a long path, marking the cut with an ellipsis.
+fn truncate_middle(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max || max == 0 {
+        return if max == 0 { String::new() } else { text.to_string() };
+    }
+    if max <= 1 {
+        return "…".to_string();
+    }
+    let tail: String = text.chars().skip(count - (max - 1)).collect();
+    format!("…{tail}")
 }
 
 fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, buf: &mut Buffer) {
     // Vertical split for canvas:
     // 1. Scrollable Transcript & Activity Stream (Flexible)
-    // 2. Message Composer Box (3 rows)
+    // 2. Message Composer Box (5 rows: border, pad, content, pad, border)
     // 3. Status Bar Footer (1 row)
     let c_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(6),    // Transcript / diff stream
-            Constraint::Length(3), // Prompt input box
+            Constraint::Length(5), // Prompt input box
             Constraint::Length(1), // Bottom telemetry / hint footer
         ])
         .split(area);
 
-    let stream_area = c_chunks[0];
-    let composer_area = c_chunks[1];
+    let pad_x = CANVAS_PAD_X.min(c_chunks[0].width / 4);
+    let stream_area = Rect::new(
+        c_chunks[0].x + pad_x,
+        c_chunks[0].y + CANVAS_PAD_TOP.min(c_chunks[0].height),
+        c_chunks[0].width.saturating_sub(pad_x * 2),
+        c_chunks[0].height.saturating_sub(CANVAS_PAD_TOP),
+    );
+    let composer_area = Rect::new(
+        c_chunks[1].x + pad_x,
+        c_chunks[1].y,
+        c_chunks[1].width.saturating_sub(pad_x * 2),
+        c_chunks[1].height,
+    );
     let footer_area = c_chunks[2];
 
     // Render Transcript items
@@ -147,16 +220,23 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
             Span::styled("Ready for instructions. Type your goal or /help for interactive commands.", Style::default().fg(theme.text_dim)),
         ]));
     } else {
+        let mut block_started = false;
+
         // Agent Thought / Commentary
         if let Some(ref thought) = app.current_thought {
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(thought, Style::default().fg(theme.text_muted)),
             ]));
+            block_started = true;
         }
 
-        // Dialogue messages and tool invocations
+        // Dialogue messages and tool invocations, one blank row between blocks.
         for item in &app.dialogue_items {
+            if block_started {
+                lines.push(Line::raw(""));
+            }
+            block_started = true;
             match item {
                 DialogueItem::Message(m) => {
                     if m.role == Role::User {
@@ -203,6 +283,9 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
         }
 
         // Active Thinking & Progress Indicator with Braille Spinner & Shimmer Sweep
+        if block_started && (app.is_busy || app.thinking_status.is_some()) {
+            lines.push(Line::raw(""));
+        }
         if app.is_busy {
             let elapsed_str = if let Some(started) = app.busy_started_at {
                 let s = started.elapsed().as_secs_f64();
@@ -274,9 +357,9 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
             }
             let filename = file.new_path.as_deref().unwrap_or("diff");
             let diff_area = Rect::new(
-                stream_area.x + 4,
+                stream_area.x,
                 stream_area.bottom().saturating_sub(8),
-                stream_area.width.saturating_sub(8),
+                stream_area.width,
                 8,
             );
             render_mockup_inline_diff(
@@ -294,9 +377,9 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
     // Inline Diagnostic Error Card (if any command or test failed)
     if let Some(ref diag) = app.active_diagnostic {
         let diag_area = Rect::new(
-            stream_area.x + 4,
+            stream_area.x,
             stream_area.bottom().saturating_sub(10),
-            stream_area.width.saturating_sub(8),
+            stream_area.width,
             10,
         );
         crate::ui::screens::error_view::render_diagnostic_card(diag, theme, diag_area, buf);
@@ -342,7 +425,11 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
             cursor_span,
         ])
     };
-    buf.set_line(comp_inner.x, comp_inner.y, &prompt_line, comp_inner.width);
+    // Content sits on the middle row with a 2-column inner left pad.
+    let text_x = comp_inner.x + 2;
+    let text_y = comp_inner.y + comp_inner.height / 2;
+    let text_w = comp_inner.width.saturating_sub(4);
+    buf.set_line(text_x, text_y, &prompt_line, text_w);
 
     // Render slash command suggestions popup if typing slash
     if !app.slash_suggestions.is_empty() {
@@ -401,14 +488,23 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
     ];
 
     let footer_right = if app.active_approval.is_some() {
-        "up/down select   ·   enter confirm   ·   esc deny"
+        "up/down select · enter confirm · esc deny"
     } else {
-        "esc interrupt   ·   ctrl+p commands   ·   tab agents"
+        "esc interrupt · ctrl+p commands · tab agents"
     };
-    let left_len = 5 + 3 + app.model_label().chars().count() + 3 + 12;
-    let spaces = (footer_area.width as usize).saturating_sub(left_len + footer_right.len());
-    footer_left.push(Span::raw(" ".repeat(spaces)));
-    footer_left.push(Span::styled(footer_right, Style::default().fg(theme.text_dim)));
+    let footer_pad = CANVAS_PAD_X.min(footer_area.width / 4);
+    let footer_width = footer_area.width.saturating_sub(footer_pad * 2) as usize;
+    let left_len: usize = footer_left.iter().map(|s| s.content.chars().count()).sum();
+    let right_len = footer_right.chars().count();
+    if left_len + right_len + 2 <= footer_width {
+        footer_left.push(Span::raw(" ".repeat(footer_width - left_len - right_len)));
+        footer_left.push(Span::styled(footer_right, Style::default().fg(theme.text_dim)));
+    }
 
-    buf.set_line(footer_area.x, footer_area.y, &Line::from(footer_left), footer_area.width);
+    buf.set_line(
+        footer_area.x + footer_pad,
+        footer_area.y,
+        &Line::from(footer_left),
+        footer_width as u16,
+    );
 }
