@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -517,6 +518,17 @@ def _is_test_runner() -> bool:
     )
 
 
+_TEST_DATA_DIR: tempfile.TemporaryDirectory | None = None
+
+
+def _test_data_dir() -> str:
+    """Scratch ledger for test runs, so they never append to a real one."""
+    global _TEST_DATA_DIR
+    if _TEST_DATA_DIR is None:
+        _TEST_DATA_DIR = tempfile.TemporaryDirectory(prefix="hex_test_data_")
+    return _TEST_DATA_DIR.name
+
+
 def _maybe_first_run_setup(args: Any, *, force_interactive: bool) -> None:
     """Offer first-run setup before any interactive surface launches (F06).
 
@@ -561,7 +573,8 @@ def _maybe_first_run_setup(args: Any, *, force_interactive: bool) -> None:
 
 
 def _main_impl(argv: list[str] | None = None) -> int:
-    default_dir = os.environ.get("HEX_DATA_DIR") or os.environ.get("HARNESS_DATA_DIR")
+    env_data_dir = os.environ.get("HEX_DATA_DIR") or os.environ.get("HARNESS_DATA_DIR")
+    default_dir = env_data_dir
     if not default_dir:
         cwd = Path.cwd()
         cwd_hex = cwd / ".hex_data"
@@ -587,6 +600,11 @@ def _main_impl(argv: list[str] | None = None) -> int:
             default_dir = str(repo_data)
         else:
             default_dir = str(Path.home() / ".hex" / "data")
+
+    isolated_test_dir = None
+    if _is_test_runner() and not env_data_dir:
+        isolated_test_dir = _test_data_dir()
+        default_dir = isolated_test_dir
 
     parser = build_parser(default_dir)
     args = parser.parse_args(argv)
@@ -910,7 +928,13 @@ def _main_impl(argv: list[str] | None = None) -> int:
                 ws_root = repo_root
 
     bound_data_dir = args.data_dir
-    if ws_root and (ws_root / ".hex" / "data").is_dir() and args.data_dir == default_dir:
+    if (
+        ws_root
+        and isolated_test_dir is None
+        and not env_data_dir
+        and (ws_root / ".hex" / "data").is_dir()
+        and args.data_dir == default_dir
+    ):
         bound_data_dir = str(ws_root / ".hex" / "data")
 
     if ws_root:
