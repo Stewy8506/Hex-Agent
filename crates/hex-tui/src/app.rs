@@ -232,6 +232,10 @@ pub struct App {
     pub dialogue_items: Vec<DialogueItem>,
     pub dialogue_scroll: usize,
     pub follow_dialogue: bool,
+    /// (total transcript rows, viewport rows) as last measured by the renderer.
+    /// Wrapping depends on the terminal width, so only the renderer knows the
+    /// real bottom offset.
+    pub dialogue_metrics: std::cell::Cell<(usize, usize)>,
 
     // Diff inspection
     pub active_diff: Option<UnifiedDiff>,
@@ -1064,6 +1068,7 @@ impl App {
             dialogue_items: Vec::new(),
             dialogue_scroll: 0,
             follow_dialogue: true,
+            dialogue_metrics: std::cell::Cell::new((0, 0)),
 
             active_diff: None,
             raw_diff: None,
@@ -2055,6 +2060,11 @@ impl App {
     pub fn scroll_up(&mut self) {
         match self.focus {
             Focus::Dialogue | Focus::Input => {
+                let (total, viewport) = self.dialogue_metrics.get();
+                if self.follow_dialogue && self.dialogue_scroll == 0 && total > viewport {
+                    // Leaving the pinned bottom: start from the real last row.
+                    self.dialogue_scroll = total - viewport;
+                }
                 self.dialogue_scroll = self.dialogue_scroll.saturating_sub(1);
                 self.follow_dialogue = false;
             }
@@ -2069,6 +2079,11 @@ impl App {
         match self.focus {
             Focus::Dialogue | Focus::Input => {
                 self.dialogue_scroll = self.dialogue_scroll.saturating_add(1);
+                let (total, viewport) = self.dialogue_metrics.get();
+                if total > viewport && self.dialogue_scroll >= total - viewport {
+                    self.scroll_dialogue_to_bottom();
+                    self.dialogue_scroll = 0;
+                }
             }
             Focus::Diff => {
                 self.diff_scroll = self.diff_scroll.saturating_add(1);

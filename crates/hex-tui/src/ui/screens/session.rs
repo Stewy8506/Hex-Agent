@@ -165,10 +165,11 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                             Span::styled(&m.content, Style::default().fg(theme.text_bright)),
                         ]));
                     } else {
-                        lines.push(Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(&m.content, Style::default().fg(theme.text_muted)),
-                        ]));
+                        lines.extend(crate::ui::markdown::render_markdown(
+                            &m.content,
+                            stream_area.width as usize,
+                            theme,
+                        ));
                     }
                 }
                 DialogueItem::ToolCall(t) => {
@@ -239,12 +240,22 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
         }
     }
 
+    let total_rows = lines.len();
+    let viewport_rows = stream_area.height as usize;
+    app.dialogue_metrics.set((total_rows, viewport_rows));
+    let max_scroll = total_rows.saturating_sub(viewport_rows);
+    let scroll = if app.follow_dialogue {
+        max_scroll
+    } else {
+        app.dialogue_scroll.min(max_scroll)
+    };
+
     let p = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .scroll((app.dialogue_scroll as u16, 0));
+        .scroll((scroll as u16, 0));
     p.render(stream_area, buf);
 
-    if app.dialogue_scroll > 0 {
+    if scroll > 0 {
         crate::ui::animation::apply_top_fade(stream_area, 2, theme.window_bg, buf);
     }
 

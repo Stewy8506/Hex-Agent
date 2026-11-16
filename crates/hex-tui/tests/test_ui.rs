@@ -156,10 +156,13 @@ fn test_visual_wrapped_lines_scroll_calculation() {
     let buffer = terminal.backend().buffer().clone();
     let content = format!("{:?}", buffer);
 
+    // Every word survives the wrap; a phrase may straddle two visual rows.
+    for word in long_text.split_whitespace() {
+        assert!(content.contains(word), "word lost while wrapping: {word}");
+    }
     assert!(content.contains("definitely"));
     assert!(content.contains("fifty characters"));
     assert!(content.contains("constrained"));
-    assert!(content.contains("terminal viewport"));
 }
 
 #[test]
