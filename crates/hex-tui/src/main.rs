@@ -309,12 +309,20 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 }
                 AppEvent::Mouse(mouse) => match mouse.kind {
                     crossterm::event::MouseEventKind::ScrollUp => {
-                        app.scroll_up();
-                        app.scroll_up();
+                        if app.screen_state == ScreenState::Start && !app.resume_sessions.is_empty() {
+                            app.scroll_resume(-3);
+                        } else {
+                            app.scroll_up();
+                            app.scroll_up();
+                        }
                     }
                     crossterm::event::MouseEventKind::ScrollDown => {
-                        app.scroll_down();
-                        app.scroll_down();
+                        if app.screen_state == ScreenState::Start && !app.resume_sessions.is_empty() {
+                            app.scroll_resume(3);
+                        } else {
+                            app.scroll_down();
+                            app.scroll_down();
+                        }
                     }
                     crossterm::event::MouseEventKind::Moved
                     | crossterm::event::MouseEventKind::Drag(_) => {
@@ -548,13 +556,18 @@ async fn handle_key_event(
         return Ok(());
     }
 
-    if key.code == KeyCode::PageUp {
-        app.handle_page_up();
-        return Ok(());
-    }
-
-    if key.code == KeyCode::PageDown {
-        app.handle_page_down();
+    if key.code == KeyCode::PageUp || key.code == KeyCode::PageDown {
+        let on_resume_list = app.screen_state == ScreenState::Start
+            && app.input_buffer.is_empty()
+            && !app.resume_sessions.is_empty();
+        if on_resume_list {
+            let page = app.resume_visible_count().max(1) as i32;
+            app.scroll_resume(if key.code == KeyCode::PageUp { -page } else { page });
+        } else if key.code == KeyCode::PageUp {
+            app.handle_page_up();
+        } else {
+            app.handle_page_down();
+        }
         return Ok(());
     }
 
@@ -592,14 +605,11 @@ async fn handle_key_event(
                     }
 
                     if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        let visible_count = app.resume_visible_count();
-                        let has_toggle = app.resume_toggle_index().is_some();
-
                         if app.selected_resume_index < app.resume_sessions.len() {
                             let session = app.resume_sessions[app.selected_resume_index].clone();
                             app.resume_session(&session.session_id);
                             return Ok(());
-                        } else if has_toggle && app.selected_resume_index == visible_count {
+                        } else if Some(app.selected_resume_index) == app.resume_toggle_index() {
                             app.toggle_show_all_resume();
                             return Ok(());
                         }
@@ -635,11 +645,7 @@ async fn handle_key_event(
                 KeyCode::End => app.move_cursor_end(),
                 KeyCode::Up => {
                     if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        let total = app.resume_sessions.len() + usize::from(app.resume_toggle_index().is_some());
-                        if total > 0 {
-                            app.pending_delete_index = None;
-                            app.selected_resume_index = (app.selected_resume_index + total - 1) % total;
-                        }
+                        app.move_resume_selection(-1);
                     } else if app.input_buffer.is_empty() {
                         app.scroll_up();
                     } else {
@@ -648,11 +654,7 @@ async fn handle_key_event(
                 }
                 KeyCode::Down => {
                     if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        let total = app.resume_sessions.len() + usize::from(app.resume_toggle_index().is_some());
-                        if total > 0 {
-                            app.pending_delete_index = None;
-                            app.selected_resume_index = (app.selected_resume_index + 1) % total;
-                        }
+                        app.move_resume_selection(1);
                     } else if app.input_buffer.is_empty() {
                         app.scroll_down();
                     } else {

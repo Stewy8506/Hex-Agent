@@ -1211,6 +1211,8 @@ impl App {
     pub fn toggle_show_all_resume(&mut self) {
         self.show_all_resume = !self.show_all_resume;
         self.resume_window_offset = 0;
+        let total = self.resume_sessions.len() + usize::from(self.resume_toggle_index().is_some());
+        self.selected_resume_index = self.selected_resume_index.min(total.saturating_sub(1));
     }
 
     /// Number of session rows drawn at once.
@@ -1219,13 +1221,47 @@ impl App {
         self.resume_sessions.len().min(cap)
     }
 
-    /// Index of the show-all/show-less row, when there is one.
+    /// Selection index of the show-all/show-less row: one past the last session.
     pub fn resume_toggle_index(&self) -> Option<usize> {
         if self.resume_sessions.len() > 3 {
-            Some(self.resume_visible_count())
+            Some(self.resume_sessions.len())
         } else {
             None
         }
+    }
+
+    /// Move the keyboard selection by `delta` rows, wrapping across the toggle row.
+    /// Keyboard input takes over from a stale mouse hover so the highlight moves.
+    pub fn move_resume_selection(&mut self, delta: i32) {
+        let total = self.resume_sessions.len() + usize::from(self.resume_toggle_index().is_some());
+        if total == 0 {
+            return;
+        }
+        self.hovered_resume_row = None;
+        self.hovered_delete_row = None;
+        self.pending_delete_index = None;
+        let current = self.selected_resume_index.min(total - 1) as i32;
+        let next = (current + delta).rem_euclid(total as i32);
+        self.selected_resume_index = next as usize;
+    }
+
+    /// Scroll the list by `delta` rows without wrapping, for wheel and page keys.
+    pub fn scroll_resume(&mut self, delta: i32) {
+        let total = self.resume_sessions.len() + usize::from(self.resume_toggle_index().is_some());
+        if total == 0 {
+            return;
+        }
+        // Scrolling past the collapsed preview reveals the rest of the history.
+        if delta > 0 && !self.show_all_resume && self.resume_sessions.len() > 3 {
+            self.show_all_resume = true;
+            self.resume_window_offset = 0;
+        }
+        self.hovered_resume_row = None;
+        self.hovered_delete_row = None;
+        self.pending_delete_index = None;
+        let current = self.selected_resume_index.min(total - 1) as i32;
+        let next = (current + delta).clamp(0, total as i32 - 1);
+        self.selected_resume_index = next as usize;
     }
 
     /// First session index drawn. The window follows the selection so every
@@ -2094,9 +2130,10 @@ impl App {
             };
         }
 
-        // Toggle row hover (show all / show less)
+        // Toggle row hover (show all / show less). Mouse hover is in screen rows,
+        // keyboard selection is an absolute session index.
         if let Some(toggle_idx) = self.resume_toggle_index() {
-            let is_toggle_active = self.hovered_resume_row == Some(toggle_idx)
+            let is_toggle_active = self.hovered_resume_row == Some(visible_sessions)
                 || (self.hovered_resume_row.is_none() && self.selected_resume_index == toggle_idx);
             let toggle_target = if is_toggle_active { 1.0_f32 } else { 0.0_f32 };
             let toggle_delta = toggle_target - self.toggle_hover_level;
