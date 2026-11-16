@@ -178,6 +178,8 @@ fn run_headless_check(args: Args) -> Result<()> {
         tool_name: "rm -rf".to_string(),
         parameters: "target=/data/cache".to_string(),
         reason: "Test approval trigger".to_string(),
+        blast_radius: String::new(),
+        cwd: String::new(),
     });
     terminal.draw(|f| ui::draw(f, &app))?;
     let approval_buffer = terminal.backend().buffer().clone();
@@ -370,6 +372,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     app.active_turn_has_streamed = false;
                     app.cancel_requested = false;
                     app.close_running_tool_calls();
+                    app.clear_approval_request();
                     app.is_busy = false;
                     app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
@@ -378,12 +381,14 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     app.active_turn_has_streamed = false;
                     app.cancel_requested = false;
                     app.close_running_tool_calls();
+                    app.clear_approval_request();
                     app.is_busy = false;
                     app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
                 AppEvent::AcpMessage(msg) => {
                     app.close_running_tool_calls();
+                    app.clear_approval_request();
                     app.add_system_message(&msg);
                     app.is_busy = false;
                     app.busy_started_at = None;
@@ -391,6 +396,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 }
                 AppEvent::Error(err) => {
                     app.close_running_tool_calls();
+                    app.clear_approval_request();
                     app.add_system_message(&format!("Error: {}", err));
                     app.cancel_requested = false;
                     app.is_busy = false;
@@ -429,10 +435,52 @@ fn request_turn_cancel(app: &mut App, acp_client: Option<&AcpClient>) {
         app.active_turn_has_streamed = false;
         app.cancel_requested = false;
         app.close_running_tool_calls();
+        app.clear_approval_request();
         app.is_busy = false;
         app.busy_started_at = None;
         app.status_message = "Ready".to_string();
         app.add_system_message("Execution cancelled by operator.");
+    }
+}
+
+/// Send the operator's approval choice and close the modal. The turn stays
+/// busy: only the server's terminal event seals it.
+fn submit_approval_decision(app: &mut App, acp_client: Option<&AcpClient>, option: usize) {
+    let req = match app.active_approval.take() {
+        Some(r) => r,
+        None => return,
+    };
+    app.focus = Focus::Input;
+    let (decision, message, status) = match option {
+        0 => (
+            "approve",
+            format!("Approved execution of tool '{}'.", req.tool_name),
+            "Tool execution approved",
+        ),
+        1 => (
+            "approve_scope",
+            format!(
+                "Approved '{}' for this project; later calls skip the prompt.",
+                req.tool_name
+            ),
+            "Tool approved for this project",
+        ),
+        _ => (
+            "reject",
+            format!("Denied execution of tool '{}'.", req.tool_name),
+            "Tool execution denied",
+        ),
+    };
+    app.add_system_message(&message);
+    app.status_message = status.to_string();
+    if let Some(client) = acp_client {
+        let client_clone = client.clone();
+        let approval_id = req.id.clone();
+        tokio::spawn(async move {
+            let _ = client_clone
+                .session_approval_decision(&approval_id, decision, None)
+                .await;
+        });
     }
 }
 
@@ -482,8 +530,7 @@ async fn handle_key_event(
             return Ok(());
         }
         if app.active_approval.is_some() {
-            app.clear_approval_request();
-            app.add_system_message("Operator dismissed approval dialog.");
+            submit_approval_decision(app, acp_client, 2);
             return Ok(());
         }
         if app.cancel_pending_delete() {
@@ -496,47 +543,16 @@ async fn handle_key_event(
         }
     }
 
-    // Modal approval controls
+    // Modal approval controls: arrows move the radio, Enter confirms it,
+    // y/a/n pick an option directly, d reveals the pending diff.
     if app.active_approval.is_some() {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                if let Some(req) = app.active_approval.take() {
-                    app.focus = Focus::Input;
-                    app.add_system_message(&format!(
-                        "Approved execution of tool '{}'.",
-                        req.tool_name
-                    ));
-                    app.status_message = "Tool execution approved".to_string();
-                    if let Some(client) = acp_client {
-                        let client_clone = client.clone();
-                        let approval_id = req.id.clone();
-                        tokio::spawn(async move {
-                            let _ = client_clone
-                                .session_approval_decision(&approval_id, "approve", None)
-                                .await;
-                        });
-                    }
-                }
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') => {
-                if let Some(req) = app.active_approval.take() {
-                    app.focus = Focus::Input;
-                    app.add_system_message(&format!(
-                        "Rejected execution of tool '{}'. Rolled back.",
-                        req.tool_name
-                    ));
-                    app.status_message = "Tool execution rejected".to_string();
-                    if let Some(client) = acp_client {
-                        let client_clone = client.clone();
-                        let approval_id = req.id.clone();
-                        tokio::spawn(async move {
-                            let _ = client_clone
-                                .session_approval_decision(&approval_id, "reject", None)
-                                .await;
-                        });
-                    }
-                }
-            }
+            KeyCode::Up => app.move_permission_selection(-1),
+            KeyCode::Down => app.move_permission_selection(1),
+            KeyCode::Enter => submit_approval_decision(app, acp_client, app.selected_permission_index),
+            KeyCode::Char('y') | KeyCode::Char('Y') => submit_approval_decision(app, acp_client, 0),
+            KeyCode::Char('a') | KeyCode::Char('A') => submit_approval_decision(app, acp_client, 1),
+            KeyCode::Char('n') | KeyCode::Char('N') => submit_approval_decision(app, acp_client, 2),
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 app.show_diff = true;
             }
@@ -967,6 +983,7 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                     app.active_turn_has_streamed = false;
                     app.cancel_requested = false;
                     app.close_running_tool_calls();
+                    app.clear_approval_request();
                     app.is_busy = false;
                     app.busy_started_at = None;
                     let st = status_val.as_deref().unwrap_or("Ready");
@@ -996,6 +1013,8 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                     tool_name: appr.tool_name,
                     parameters: appr.parameters,
                     reason: appr.reason,
+                    blast_radius: appr.blast_radius,
+                    cwd: appr.cwd,
                 });
             }
         }
@@ -1360,6 +1379,8 @@ mod keymap_truth_tests {
                     tool_name: "bash".to_string(),
                     parameters: "rm -rf dist".to_string(),
                     reason: "cleanup".to_string(),
+                    blast_radius: String::new(),
+                    cwd: String::new(),
                 });
             }
             Scope::Global => {}
@@ -1398,8 +1419,11 @@ mod keymap_truth_tests {
                 assert_eq!(app.selected_palette_index, 1)
             }
             (Scope::Palette, "backspace") => assert!(app.palette_query.is_empty()),
-            (Scope::Approval, "y") | (Scope::Approval, "n") | (Scope::Approval, "esc") => {
-                assert!(app.active_approval.is_none())
+            (Scope::Approval, "up/down") => assert_eq!(app.selected_permission_index, 2),
+            (Scope::Approval, "down") => assert_eq!(app.selected_permission_index, 1),
+            (Scope::Approval, "enter") | (Scope::Approval, "y") | (Scope::Approval, "a")
+            | (Scope::Approval, "n") | (Scope::Approval, "esc") => {
+                assert!(app.active_approval.is_none(), "{} left the modal open", b.label)
             }
             (Scope::Approval, "d") => assert!(app.show_diff),
             other => panic!("advertised binding {other:?} has no verified effect"),
@@ -1421,7 +1445,7 @@ mod keymap_truth_tests {
         for scope in [Scope::Session, Scope::Start, Scope::Palette, Scope::Approval] {
             let hints = keymap::footer_hints(scope);
             assert!(!hints.is_empty());
-            for stale in ["tab agents", "ctrl+r", "@ files", "up/down select"] {
+            for stale in ["tab agents", "ctrl+r", "@ files", "esc dismiss"] {
                 assert!(!hints.contains(stale), "{scope:?} still advertises {stale:?}");
             }
         }

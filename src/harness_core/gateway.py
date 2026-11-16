@@ -1082,6 +1082,7 @@ class ToolGateway:
                     tool_name=tool_id,
                     arguments=redacted_args,
                     risk_class=spec.risk_class.value,
+                    blast_radius=str(approval.get("blast_radius_summary") or ""),
                 )
                 try:
                     bridge_dec = self.approval_bridge.request_approval(req)
@@ -1103,7 +1104,7 @@ class ToolGateway:
                 except (PolicyBlockedError, ApprovalRequiredInterrupt):
                     raise
                 except Exception as exc:
-                    logger.warning("MobileApprovalBridge request failed: %s; falling back to interrupt", exc)
+                    logger.warning("Approval bridge request failed: %s; falling back to interrupt", exc)
                     raise ApprovalRequiredInterrupt(approval)
             else:
                 raise ApprovalRequiredInterrupt(approval)

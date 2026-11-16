@@ -623,9 +623,16 @@ pub struct ApprovalRequestNotification {
     pub parameters: String,
     #[serde(default)]
     pub reason: String,
+    #[serde(default)]
+    pub blast_radius: String,
+    #[serde(default)]
+    pub cwd: String,
 }
 
 /// Parameters for `session/approvalDecision` method request sent from client to server.
+///
+/// `decision` is `approve` (this call only), `approve_scope` (also grant a
+/// project lease for the same command prefix), or `reject`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalDecisionParams {

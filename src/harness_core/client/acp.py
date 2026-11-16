@@ -63,6 +63,7 @@ class ACPServer:
         self._orchestrator = orchestrator
         self.sessions: dict[str, ACPSession] = {}
         self.pending_approvals: dict[str, Any] = {}
+        self.approval_bridge: Any | None = None
         self._lock = threading.Lock()
         self._write_lock = threading.Lock()
 
@@ -137,7 +138,35 @@ class ACPServer:
                 data_dir=data_dir,
                 default_workspace=self.workspace_root,
             )
+        self._wire_approval_bridge(self._orchestrator)
         return self._orchestrator
+
+    def _wire_approval_bridge(self, orchestrator: Any) -> None:
+        """Route the gateway's approval interrupts to this server's ACP client."""
+        gateway = getattr(orchestrator, "gateway", None)
+        if gateway is None or getattr(gateway, "approval_bridge", None) is not None:
+            return
+        from harness_core.client.acp_approval import AcpApprovalBridge
+        from harness_core.core.approval_lease import ApprovalLeaseManager
+
+        if getattr(gateway, "approval_lease_manager", None) is None:
+            gateway.approval_lease_manager = ApprovalLeaseManager(getattr(orchestrator, "ledger", None))
+        self.approval_bridge = AcpApprovalBridge(
+            emit=self._emit,
+            session_for_task=self._session_for_task,
+            workspace_root=self.workspace_root,
+            lease_manager=gateway.approval_lease_manager,
+        )
+        gateway.approval_bridge = self.approval_bridge
+
+    def _session_for_task(self, task_id: str | None) -> str | None:
+        if not task_id:
+            return None
+        with self._lock:
+            for sess in self.sessions.values():
+                if sess.last_task_id == task_id:
+                    return sess.session_id
+        return None
 
     def handle_request(self, req: dict[str, Any]) -> dict[str, Any]:
         """Process incoming JSON-RPC 2.0 request and return structured response."""
@@ -614,47 +643,15 @@ class ACPServer:
                 "status": "decided",
             }
 
+        applied = False
+        if self.approval_bridge is not None:
+            applied = self.approval_bridge.resolve(approval_id, decision, reason or None)
+
         return {
             "approvalId": approval_id,
             "decision": decision,
-            "status": "acknowledged",
+            "status": "applied" if applied else "acknowledged",
         }
-
-    def request_approval(
-        self,
-        session_id: str,
-        tool_name: str,
-        parameters: str = "",
-        risk_level: str = "R3 - ELEVATED",
-        reason: str = "",
-    ) -> str:
-        """Trigger an operator approval request and notify ACP client."""
-        approval_id = f"appr_{uuid.uuid4().hex[:8]}"
-        with self._lock:
-            self.pending_approvals[approval_id] = {
-                "session_id": session_id,
-                "tool_name": tool_name,
-                "parameters": parameters,
-                "risk_level": risk_level,
-                "reason": reason,
-                "status": "pending",
-                "created_at": time.time(),
-            }
-
-        notif = {
-            "jsonrpc": "2.0",
-            "method": "session/approvalRequest",
-            "params": {
-                "sessionId": session_id,
-                "approvalId": approval_id,
-                "toolName": tool_name,
-                "riskLevel": risk_level,
-                "parameters": parameters,
-                "reason": reason,
-            },
-        }
-        self._emit(notif)
-        return approval_id
 
     def _handle_session_command(self, params: dict[str, Any]) -> dict[str, Any]:
         sid = params.get("sessionId") or params.get("session_id", "default")

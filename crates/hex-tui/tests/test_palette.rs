@@ -54,6 +54,24 @@ fn palette_app(query: &str) -> App {
     app
 }
 
+/// Only the palette interior: the rail behind it prints real workspace paths,
+/// which can contain a command name by coincidence.
+fn panel_rows(screen: &[String]) -> Vec<String> {
+    let top = screen
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, r)| r.contains('╭'))
+        .map(|(i, _)| i)
+        .expect("palette panel");
+    let left = col_of(&screen[top], "╭") + 1;
+    let right = col_of(&screen[top], "╮");
+    screen
+        .iter()
+        .map(|r| r.chars().skip(left).take(right - left).collect())
+        .collect()
+}
+
 #[test]
 fn panel_is_top_anchored_and_sixty_two_columns_wide() {
     let app = palette_app("");
@@ -249,7 +267,7 @@ fn selection_scrolls_into_view_when_the_list_outgrows_the_panel() {
     let last = app.palette_items[results[results.len() - 1].item_index].shortcut.clone();
 
     app.selected_palette_index = results.len() - 1;
-    let scrolled = rows(&render(&app, 120, 24));
+    let scrolled = panel_rows(&rows(&render(&app, 120, 24)));
     assert!(
         scrolled.iter().any(|r| r.contains(&last)),
         "the selected entry must be scrolled into view\n{}",
@@ -257,11 +275,12 @@ fn selection_scrolls_into_view_when_the_list_outgrows_the_panel() {
     );
     assert!(
         !scrolled.iter().any(|r| r.contains(&first)),
-        "entries above the fold must scroll away"
+        "entries above the fold must scroll away\n{}",
+        scrolled.join("\n")
     );
 
     app.selected_palette_index = 0;
-    let back_at_top = rows(&render(&app, 120, 24));
+    let back_at_top = panel_rows(&rows(&render(&app, 120, 24)));
     assert!(back_at_top.iter().any(|r| r.contains(&first)), "wrapping back scrolls to the top");
 }
 

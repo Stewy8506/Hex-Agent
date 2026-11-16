@@ -119,6 +119,8 @@ fn test_screen_2_permission_modal_overlay() {
         tool_name: "rm".to_string(),
         parameters: "rm -rf dist/build".to_string(),
         reason: "Deletes temporary build directory.".to_string(),
+        blast_radius: String::new(),
+        cwd: String::new(),
         risk_level: "high".to_string(),
     });
     app.selected_permission_index = 0;

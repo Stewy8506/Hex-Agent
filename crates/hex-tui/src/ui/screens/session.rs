@@ -261,12 +261,18 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                     } else {
                         Span::raw("  ")
                     };
+                    // The call parked on an approval is the one the operator must act on.
+                    let awaiting = app.active_approval.is_some() && t.result.is_none();
+                    let wait_part = if awaiting { " · waiting for permission" } else { "" };
 
                     lines.push(Line::from(vec![
                         spinner,
-                        Span::styled(format!("{:<7}", t.tool), Style::default().fg(theme.text_dim)),
+                        Span::styled(
+                            format!("{:<7} ", t.tool),
+                            Style::default().fg(if awaiting { theme.accent_blue } else { theme.text_dim }),
+                        ),
                         Span::styled(&t.args, Style::default().fg(theme.text_bright)),
-                        Span::styled(format!("{}{}", duration_part, status_part), Style::default().fg(theme.text_extra_dim)),
+                        Span::styled(format!("{}{}{}", duration_part, status_part, wait_part), Style::default().fg(theme.text_extra_dim)),
                     ]));
 
                     if let Some(ref res) = t.result {
@@ -300,7 +306,9 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                 Style::default().fg(theme.accent_blue),
             );
 
-            let status_text = if let Some(ref status) = app.thinking_status {
+            let status_text = if app.active_approval.is_some() {
+                "Waiting for permission"
+            } else if let Some(ref status) = app.thinking_status {
                 status.as_str()
             } else {
                 let verbs = [

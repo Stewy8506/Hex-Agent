@@ -81,14 +81,31 @@ pub fn render(app: &App, theme: &HexTheme, area: Rect, buf: &mut Buffer) {
     let cmd_inner = cmd_box_block.inner(chunks[2]);
     cmd_box_block.render(chunks[2], buf);
 
-    let cmd_line = Line::from(vec![
+    let cmd_text = head_ellipsize(cmd_str, cmd_inner.width as usize);
+    let mut cmd_spans = vec![
         Span::styled("$ ", Style::default().fg(theme.text_dim)),
-        Span::styled(cmd_str.as_str(), Style::default().fg(theme.text_bright)),
-    ]);
-    buf.set_line(cmd_inner.x, cmd_inner.y, &cmd_line, cmd_inner.width);
+        Span::styled(cmd_text.as_str(), Style::default().fg(theme.text_bright)),
+    ];
+    // The working directory rides along on the right when there is room for it.
+    let cwd = req.cwd.trim();
+    if !cwd.is_empty() {
+        let used = 2 + cmd_text.chars().count();
+        let room = (cmd_inner.width as usize).saturating_sub(used + 2);
+        let cwd_len = cwd.chars().count();
+        if cwd_len <= room {
+            cmd_spans.push(Span::raw(" ".repeat(room - cwd_len + 2)));
+            cmd_spans.push(Span::styled(cwd, Style::default().fg(theme.text_extra_dim)));
+        }
+    }
+    buf.set_line(cmd_inner.x, cmd_inner.y, &Line::from(cmd_spans), cmd_inner.width);
 
     // 3. Impact Description
-    let desc_str = &req.reason;
+    let impact = if req.blast_radius.trim().is_empty() {
+        req.reason.as_str()
+    } else {
+        req.blast_radius.as_str()
+    };
+    let desc_str = head_ellipsize(impact, inner.width as usize);
     let desc_line = Line::from(vec![Span::styled(desc_str.as_str(), Style::default().fg(theme.text_dim))]);
     Paragraph::new(desc_line).render(chunks[3], buf);
 
@@ -112,13 +129,14 @@ pub fn render(app: &App, theme: &HexTheme, area: Rect, buf: &mut Buffer) {
         ("Deny", "n"),
     ];
 
+    let selected = app.selected_permission_index.min(options.len() - 1);
     for (idx, (label, hotkey)) in options.iter().enumerate() {
         let opt_y = chunks[5].y + idx as u16;
         if opt_y >= chunks[5].bottom() {
             break;
         }
 
-        let is_selected = idx == app.selected_permission_index;
+        let is_selected = idx == selected;
         let row_bg = if is_selected {
             theme.selection_bg
         } else {
@@ -136,14 +154,31 @@ pub fn render(app: &App, theme: &HexTheme, area: Rect, buf: &mut Buffer) {
         };
 
         let mut spans = vec![
-            Span::styled(format!("{} ", marker), Style::default().fg(theme.accent_blue).bg(row_bg)),
+            Span::styled(
+                format!("{} ", marker),
+                Style::default()
+                    .fg(if is_selected { theme.accent_blue } else { row_bg })
+                    .bg(row_bg),
+            ),
             Span::styled(*label, Style::default().fg(title_color).bg(row_bg)),
         ];
 
-        let spaces = (inner.width as usize).saturating_sub(label.len() + 3 + hotkey.len());
-        spans.push(Span::raw(" ".repeat(spaces)));
+        let spaces = (inner.width as usize).saturating_sub(label.chars().count() + 2 + hotkey.chars().count());
+        spans.push(Span::styled(" ".repeat(spaces), Style::default().bg(row_bg)));
         spans.push(Span::styled(*hotkey, Style::default().fg(theme.text_dim).bg(row_bg)));
 
         buf.set_line(inner.x, opt_y, &Line::from(spans), inner.width);
     }
+}
+
+/// Clip a single-line string to `width` columns, marking the cut with an ellipsis.
+fn head_ellipsize(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}…")
 }

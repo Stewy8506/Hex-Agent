@@ -27,6 +27,7 @@ class ApprovalRequest:
     tool_name: str = ""
     arguments: dict[str, Any] = field(default_factory=dict)
     risk_class: str = "R3"
+    blast_radius: str = ""
     created_at: float = field(default_factory=time.time)
     timeout_seconds: float | None = None
 

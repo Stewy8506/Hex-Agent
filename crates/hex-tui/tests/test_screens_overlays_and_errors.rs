@@ -14,6 +14,8 @@ fn test_screen_2_permission_modal_rendering() {
         tool_name: "cargo".to_string(),
         parameters: "cargo check --workspace".to_string(),
         reason: "Validates syntax and types across crates.".to_string(),
+        blast_radius: String::new(),
+        cwd: String::new(),
         risk_level: "low".to_string(),
     });
     app.selected_permission_index = 0;

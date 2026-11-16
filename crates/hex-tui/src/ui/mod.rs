@@ -68,7 +68,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let popup = centered_rect(70, 70, area);
+    // Tall enough that the binding table does not squeeze out the command list.
+    let popup = centered_rect(70, 85, area);
     frame.render_widget(Clear, popup);
 
     let s = design::skin(&app.skin_name);

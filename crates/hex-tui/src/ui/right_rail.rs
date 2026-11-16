@@ -207,6 +207,15 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         current_y += 1;
     }
 
+    if app.active_approval.is_some() && current_y < area.bottom() {
+        let blocked = Line::from(vec![Span::styled(
+            "blocked / waiting on you",
+            Style::default().fg(theme.accent_blue),
+        )]);
+        buf.set_line(area.x, current_y, &blocked, area.width);
+        current_y += 1;
+    }
+
     if app.subagents.is_empty() {
         if current_y < area.bottom() {
             let empty_line = Line::from(vec![Span::styled("none active", Style::default().fg(theme.text_extra_dim))]);

@@ -158,6 +158,8 @@ pub struct ApprovalRequest {
     pub tool_name: String,
     pub parameters: String,
     pub reason: String,
+    pub blast_radius: String,
+    pub cwd: String,
 }
 
 /// Slash command metadata for autocompletion popup.
@@ -1811,7 +1813,14 @@ impl App {
     /// Set active approval request modal.
     pub fn set_approval_request(&mut self, req: ApprovalRequest) {
         self.active_approval = Some(req);
+        self.selected_permission_index = 0;
         self.focus = Focus::Approval;
+    }
+
+    /// Move the approval radio selection, wrapping over the three options.
+    pub fn move_permission_selection(&mut self, delta: i32) {
+        self.selected_permission_index =
+            (self.selected_permission_index as i32 + delta).rem_euclid(3) as usize;
     }
 
     /// Clear active approval request.
@@ -2382,6 +2391,8 @@ mod tests {
             tool_name: "rm -rf".to_string(),
             parameters: "target=/data".to_string(),
             reason: "Directory deletion requested".to_string(),
+            blast_radius: "Removes /data recursively".to_string(),
+            cwd: "/data".to_string(),
         };
         app.set_approval_request(req);
         assert_eq!(app.focus, Focus::Approval);

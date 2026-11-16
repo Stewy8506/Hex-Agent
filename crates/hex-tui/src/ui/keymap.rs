@@ -72,10 +72,14 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyCode::Down, ctrl: false, label: "down", action: "next", scope: Scope::Palette, footer: false },
     Binding { key: KeyCode::Tab, ctrl: false, label: "tab", action: "next", scope: Scope::Palette, footer: false },
     Binding { key: KeyCode::Backspace, ctrl: false, label: "backspace", action: "edit query", scope: Scope::Palette, footer: false },
-    Binding { key: KeyCode::Char('y'), ctrl: false, label: "y", action: "approve", scope: Scope::Approval, footer: true },
-    Binding { key: KeyCode::Char('n'), ctrl: false, label: "n", action: "deny", scope: Scope::Approval, footer: true },
-    Binding { key: KeyCode::Char('d'), ctrl: false, label: "d", action: "diff", scope: Scope::Approval, footer: true },
-    Binding { key: KeyCode::Esc, ctrl: false, label: "esc", action: "dismiss", scope: Scope::Approval, footer: true },
+    Binding { key: KeyCode::Up, ctrl: false, label: "up/down", action: "select", scope: Scope::Approval, footer: true },
+    Binding { key: KeyCode::Down, ctrl: false, label: "down", action: "select", scope: Scope::Approval, footer: false },
+    Binding { key: KeyCode::Enter, ctrl: false, label: "enter", action: "confirm", scope: Scope::Approval, footer: true },
+    Binding { key: KeyCode::Char('y'), ctrl: false, label: "y", action: "approve once", scope: Scope::Approval, footer: false },
+    Binding { key: KeyCode::Char('a'), ctrl: false, label: "a", action: "allow in project", scope: Scope::Approval, footer: false },
+    Binding { key: KeyCode::Char('n'), ctrl: false, label: "n", action: "deny", scope: Scope::Approval, footer: false },
+    Binding { key: KeyCode::Char('d'), ctrl: false, label: "d", action: "diff", scope: Scope::Approval, footer: false },
+    Binding { key: KeyCode::Esc, ctrl: false, label: "esc", action: "deny", scope: Scope::Approval, footer: true },
 ];
 
 /// One-line hint string for a footer or badge row.
