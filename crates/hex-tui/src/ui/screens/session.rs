@@ -1,7 +1,7 @@
 //! Screen 1: Active Cockpit Session matching the HEX Agent HTML mockup.
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
@@ -10,7 +10,10 @@ use hex_protocol::diff::DiffLineType;
 use hex_protocol::models::Role;
 
 use crate::app::{App, DialogueItem};
-use crate::ui::animation::AnimationState;
+use crate::ui::animation::{
+    self, apply_entrance_fade, rise_factor, AnimationState, MAX_ENTRANCE_BLOCKS, RISE_STAGGER_MS,
+    TOOL_HOVER_BG,
+};
 use crate::ui::diff::{render_mockup_inline_diff, MockupDiffLine};
 use crate::ui::keymap;
 use crate::ui::right_rail;
@@ -200,6 +203,8 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
 
     // Render Transcript items
     let mut lines = Vec::new();
+    // Plain text of each tool row, so a mouse hover can recognise one.
+    let mut tool_rows: Vec<String> = Vec::new();
 
     // Mini Wordmark & Session Header
     lines.push(Line::from(vec![Span::styled("█ █ █▀▀ ▀▄▀", Style::default().fg(theme.text_bright))]));
@@ -243,11 +248,13 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
         }
 
         // Dialogue messages and tool invocations, one blank row between blocks.
+        let mut block_starts: Vec<usize> = Vec::new();
         for (index, item) in app.dialogue_items.iter().enumerate() {
             if block_started {
                 lines.push(Line::raw(""));
             }
             block_started = true;
+            block_starts.push(lines.len());
             match item {
                 DialogueItem::Message(m) => {
                     if m.role == Role::User {
@@ -283,12 +290,14 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                         theme.text_dim
                     };
 
-                    lines.push(Line::from(vec![
+                    let tool_line = Line::from(vec![
                         spinner,
                         Span::styled(format!("{:<7} ", t.tool), Style::default().fg(verb_color)),
                         Span::styled(crate::app::tool_args_label(&t.args), Style::default().fg(theme.text_bright)),
                         Span::styled(format!("{}{}{}", duration_part, status_part, wait_part), Style::default().fg(theme.text_extra_dim)),
-                    ]));
+                    ]);
+                    tool_rows.push(tool_line.spans.iter().map(|s| s.content.as_ref()).collect::<String>());
+                    lines.push(tool_line);
 
                     if let Some(ref res) = t.result {
                         if !t.collapsed {
@@ -311,6 +320,31 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                             diag_placed = true;
                         }
                     }
+                }
+            }
+        }
+
+        // Newest blocks rise into place, staggered in reading order.
+        let dialogue_end = lines.len();
+        let count = app.dialogue_items.len();
+        let (seen, born_at) = app.observe_dialogue_entrance(count);
+        if !anim.is_reduced() && seen < count {
+            let first = seen.max(count.saturating_sub(MAX_ENTRANCE_BLOCKS));
+            let age = born_at.elapsed();
+            for i in first..count {
+                let delay = std::time::Duration::from_millis(RISE_STAGGER_MS * (i - first) as u64);
+                let factor = rise_factor(age, delay);
+                if factor >= 1.0 {
+                    continue;
+                }
+                let start = block_starts[i];
+                let end = block_starts
+                    .get(i + 1)
+                    .copied()
+                    .unwrap_or(dialogue_end)
+                    .min(dialogue_end);
+                for line in &mut lines[start..end] {
+                    apply_entrance_fade(line, factor, theme.window_bg);
                 }
             }
         }
@@ -388,7 +422,25 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
     p.render(stream_area, buf);
 
     if scroll > 0 {
-        crate::ui::animation::apply_top_fade(stream_area, 2, theme.window_bg, buf);
+        // The mockup masks the top 16px of the scroll container, under one cell row.
+        animation::apply_top_fade(stream_area, 1, theme.window_bg, buf);
+    }
+
+    // Mockup `.hl:hover`: the tool row under the pointer takes #141414.
+    if let Some((mx, my)) = app.mouse_pos {
+        if stream_area.contains(Position::new(mx, my)) && !tool_rows.is_empty() {
+            let row: String = (stream_area.left()..stream_area.right())
+                .map(|x| buf[(x, my)].symbol())
+                .collect();
+            let text = row.trim_end();
+            // Match on the row's own text: a wrapped tool line's first row still
+            // carries its prefix, later rows and message rows do not.
+            if !text.is_empty() && tool_rows.iter().any(|t| t.starts_with(text)) {
+                for x in stream_area.left()..stream_area.right() {
+                    buf[(x, my)].set_bg(TOOL_HOVER_BG);
+                }
+            }
+        }
     }
 
     // Active Diff (sage/rose tinted)

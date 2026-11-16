@@ -172,6 +172,8 @@ fn the_pending_tool_row_says_why_it_stalls() {
     let mut app = approval_app();
     app.is_busy = true;
     app.add_tool_call("terminal_1", "terminal", "rm -rf ./dist", None, Some("RUNNING"));
+    // Steady-state colours: let the line entrance finish before asserting them.
+    app.dialogue_entrance.set((app.dialogue_items.len(), None));
 
     // Render the session screen alone: the modal would cover the transcript.
     let area = Rect::new(0, 0, 120, 36);

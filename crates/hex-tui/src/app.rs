@@ -486,6 +486,9 @@ pub struct App {
     /// Wrapping depends on the terminal width, so only the renderer knows the
     /// real bottom offset.
     pub dialogue_metrics: std::cell::Cell<(usize, usize)>,
+    /// (blocks that have finished rising, when the current batch arrived).
+    /// `None` once the batch lands, so the next arrival starts a fresh rise.
+    pub dialogue_entrance: std::cell::Cell<(usize, Option<std::time::Instant>)>,
 
     // Diff inspection
     pub active_diff: Option<UnifiedDiff>,
@@ -1297,6 +1300,7 @@ impl App {
             dialogue_scroll: 0,
             follow_dialogue: true,
             dialogue_metrics: std::cell::Cell::new((0, 0)),
+            dialogue_entrance: std::cell::Cell::new((0, None)),
 
             active_diff: None,
             raw_diff: None,
@@ -2508,6 +2512,36 @@ impl App {
         // Paragraph wrapping is width-dependent.  Let the renderer calculate
         // the bottom offset from the real viewport instead of guessing 24 rows.
         self.follow_dialogue = true;
+    }
+
+    /// Note the transcript length and return the entrance window: how many
+    /// blocks are already settled, and when the rising ones arrived.
+    ///
+    /// The baseline holds until the whole batch has risen, so the fade advances
+    /// across frames instead of restarting every time the screen is drawn.
+    pub fn observe_dialogue_entrance(&self, len: usize) -> (usize, std::time::Instant) {
+        use crate::ui::animation::{MAX_ENTRANCE_BLOCKS, RISE_MS, RISE_STAGGER_MS};
+        let (settled, born_at) = self.dialogue_entrance.get();
+        let now = std::time::Instant::now();
+        let Some(born) = born_at else {
+            if len > settled {
+                self.dialogue_entrance.set((settled, Some(now)));
+                return (settled, now);
+            }
+            self.dialogue_entrance.set((len, None));
+            return (len, now);
+        };
+        if len <= settled {
+            self.dialogue_entrance.set((len, None));
+            return (len, born);
+        }
+        let rising = (len - settled).min(MAX_ENTRANCE_BLOCKS);
+        let span = std::time::Duration::from_millis(RISE_MS + RISE_STAGGER_MS * (rising - 1) as u64);
+        if born.elapsed() >= span {
+            self.dialogue_entrance.set((len, None));
+            return (len, born);
+        }
+        (settled, born)
     }
 
     pub fn advance_animation(&mut self) {
