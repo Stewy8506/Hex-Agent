@@ -39,3 +39,18 @@
    - Slash command suggestion popups rendered above composer across both Start and Session screens.
    - Dynamic dialogue rendering supporting real user/assistant messages and tool calls.
    - Updated integration test suite to validate the 100% mockup parity design.
+
+## Correction (2026-11-17, after the TUI UI improvement plan)
+The claims above described rendered surfaces, not working features. Verified
+against the code during G03/G04/G06:
+- The permission modal was **inert**: the ACP server never emitted
+  `session/approvalRequest`, `session/approvalDecision` was recorded and never
+  consumed, and `up/down`, `Enter` and `a` did nothing. G04 (`27388c6`) wired
+  the gateway approval hook to a blocking ACP bridge, persisted project-scope
+  grants in `approval_leases`, and made every advertised key work.
+- The palette is **62 columns**, not 58, and is opened with `/` or `Ctrl+P` as
+  a top-anchored modal. The composer-anchored "slash suggestion popups" on the
+  Start and Session screens were removed in G03 (`c214574`); the Start screen
+  now shows four keymap-derived badges.
+- "100% mockup parity" was not established: the diagnostic card and subagent
+  modal still had no live data source at the time of writing (G05).
