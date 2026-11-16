@@ -473,6 +473,10 @@ async fn handle_key_event(
 
     // Modal dismiss / help dismiss / interrupt busy execution
     if key.code == KeyCode::Esc {
+        if app.show_palette {
+            app.close_palette();
+            return Ok(());
+        }
         if app.show_help {
             app.show_help = false;
             return Ok(());
@@ -541,6 +545,33 @@ async fn handle_key_event(
         return Ok(());
     }
 
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
+        if app.show_palette {
+            app.close_palette();
+        } else {
+            app.open_palette();
+        }
+        return Ok(());
+    }
+
+    // Command palette: typing edits the query, not the composer.
+    if app.show_palette {
+        match key.code {
+            KeyCode::Enter => {
+                if let Some(item) = app.palette_selected() {
+                    app.close_palette();
+                    execute_palette_command(app, &item.command, acp_client, event_tx).await?;
+                }
+            }
+            KeyCode::Up => app.palette_move(-1),
+            KeyCode::Down | KeyCode::Tab => app.palette_move(1),
+            KeyCode::Backspace => app.palette_backspace(),
+            KeyCode::Char(c) => app.palette_push_char(c),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // Help modal dismiss
     if app.show_help {
         if key.code == KeyCode::Esc || key.code == KeyCode::Enter || key.code == KeyCode::Char('q')
@@ -574,31 +605,8 @@ async fn handle_key_event(
     // Focus-specific key actions
     match app.focus {
         Focus::Input => {
-            // Slash suggestions navigation
-            if !app.slash_suggestions.is_empty() {
-                match key.code {
-                    KeyCode::Up => {
-                        app.prev_slash_suggestion();
-                        return Ok(());
-                    }
-                    KeyCode::Down => {
-                        app.next_slash_suggestion();
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-            }
-
             match key.code {
                 KeyCode::Enter => {
-                    if !app.slash_suggestions.is_empty()
-                        && app.input_buffer.starts_with('/')
-                        && !app.input_buffer.contains(' ')
-                    {
-                        app.accept_slash_suggestion();
-                        return Ok(());
-                    }
-
                     if app.is_busy {
                         app.status_message = "Agent busy - please wait... (Esc to cancel)".to_string();
                         return Ok(());
@@ -628,6 +636,7 @@ async fn handle_key_event(
                     }
                     app.insert_char('d');
                 }
+                KeyCode::Char('/') if app.input_buffer.is_empty() => app.open_palette(),
                 KeyCode::Char(c) => app.insert_char(c),
                 KeyCode::Backspace => app.delete_char(),
                 KeyCode::Delete => {
@@ -682,6 +691,21 @@ async fn handle_key_event(
     }
 
     Ok(())
+}
+
+/// Run a palette entry through the same dispatcher as typed slash commands.
+async fn execute_palette_command(
+    app: &mut App,
+    command: &str,
+    acp_client: Option<&AcpClient>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+) -> Result<()> {
+    if command == "session:switch" {
+        app.switch_screen(ScreenState::Start);
+        app.status_message = "Pick a session to resume".to_string();
+        return Ok(());
+    }
+    execute_submitted_text(app, command.to_string(), acp_client, event_tx).await
 }
 
 /// Execute user entered text (slash commands or regular prompt).
@@ -1154,6 +1178,101 @@ mod session_lifecycle_tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         handle_key_event(&mut app, ctrl_c(), None, tx).await.unwrap();
         assert!(app.should_quit);
+    }
+
+    fn key(code: KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[tokio::test]
+    async fn slash_on_an_empty_composer_opens_the_palette_on_both_screens() {
+        for screen in [ScreenState::Start, ScreenState::Session] {
+            let mut app = App::new("p", "m", "cow");
+            app.screen_state = screen;
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            handle_key_event(&mut app, key(KeyCode::Char('/')), None, tx).await.unwrap();
+            assert!(app.show_palette, "palette must open on {screen:?}");
+            assert!(app.input_buffer.is_empty(), "the slash is not typed into the composer");
+            assert!(app.palette_query.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn slash_inside_existing_text_stays_literal() {
+        let mut app = App::new("p", "m", "cow");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        for c in "path".chars() {
+            handle_key_event(&mut app, key(KeyCode::Char(c)), None, tx.clone()).await.unwrap();
+        }
+        handle_key_event(&mut app, key(KeyCode::Char('/')), None, tx).await.unwrap();
+        assert!(!app.show_palette);
+        assert_eq!(app.input_buffer, "path/");
+    }
+
+    #[tokio::test]
+    async fn palette_query_filters_and_enter_runs_the_real_command() {
+        let mut app = App::new("p", "m", "cow");
+        app.add_assistant_message("some earlier output");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_key_event(&mut app, key(KeyCode::Char('/')), None, tx.clone()).await.unwrap();
+        for c in "clr".chars() {
+            handle_key_event(&mut app, key(KeyCode::Char(c)), None, tx.clone()).await.unwrap();
+        }
+        assert_eq!(app.palette_query, "clr");
+        assert!(app.input_buffer.is_empty(), "typing belongs to the palette");
+        assert_eq!(app.palette_selected().map(|i| i.command), Some("/clear".to_string()));
+
+        handle_key_event(&mut app, key(KeyCode::Enter), None, tx).await.unwrap();
+        assert!(!app.show_palette);
+        assert!(app.dialogue_items.iter().any(|d| matches!(d, DialogueItem::Message(m)
+            if m.role == Role::System && m.content.contains("cleared"))));
+    }
+
+    #[tokio::test]
+    async fn esc_closes_the_palette_and_restores_the_composer() {
+        let mut app = App::new("p", "m", "cow");
+        app.input_buffer = "draft goal".to_string();
+        app.cursor_pos = app.input_buffer.len();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_key_event(&mut app, ctrl_p(), None, tx.clone()).await.unwrap();
+        assert!(app.show_palette);
+        handle_key_event(&mut app, key(KeyCode::Char('x')), None, tx.clone()).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Esc), None, tx).await.unwrap();
+        assert!(!app.show_palette);
+        assert_eq!(app.input_buffer, "draft goal", "the composer is untouched");
+        assert!(app.palette_query.is_empty());
+    }
+
+    #[tokio::test]
+    async fn backspace_on_an_empty_query_closes_the_palette() {
+        let mut app = App::new("p", "m", "cow");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_key_event(&mut app, ctrl_p(), None, tx.clone()).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Char('a')), None, tx.clone()).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Backspace), None, tx.clone()).await.unwrap();
+        assert!(app.show_palette, "first backspace only clears the query");
+        handle_key_event(&mut app, key(KeyCode::Backspace), None, tx).await.unwrap();
+        assert!(!app.show_palette);
+    }
+
+    #[tokio::test]
+    async fn ctrl_p_toggles_and_arrows_move_the_selection() {
+        let mut app = App::new("p", "m", "cow");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_key_event(&mut app, ctrl_p(), None, tx.clone()).await.unwrap();
+        assert!(app.show_palette);
+        handle_key_event(&mut app, key(KeyCode::Down), None, tx.clone()).await.unwrap();
+        assert_eq!(app.selected_palette_index, 1);
+        handle_key_event(&mut app, key(KeyCode::Up), None, tx.clone()).await.unwrap();
+        assert_eq!(app.selected_palette_index, 0);
+        handle_key_event(&mut app, key(KeyCode::Up), None, tx.clone()).await.unwrap();
+        assert_eq!(app.selected_palette_index, app.palette_results().len() - 1, "wraps around");
+        handle_key_event(&mut app, ctrl_p(), None, tx).await.unwrap();
+        assert!(!app.show_palette);
+    }
+
+    fn ctrl_p() -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)
     }
 
     #[test]

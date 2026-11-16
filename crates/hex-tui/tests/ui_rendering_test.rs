@@ -149,8 +149,11 @@ fn test_screen_3_command_palette_overlay() {
     let content = format!("{:?}", buffer);
 
     assert!(content.contains("> plan"), "Must render palette query");
-    assert!(content.contains("modes"), "Must render modes category");
-    assert!(content.contains("Switch to Plan mode"), "Must render Switch to Plan mode");
+    assert!(content.contains("/plan"), "Must render the matching command shortcut");
+    assert!(
+        content.contains("Switch to read-only architecture planning mode"),
+        "Must render the catalog description for /plan"
+    );
     assert!(content.contains("enter select · esc close"), "Must render footer hint");
 }
 
@@ -243,14 +246,15 @@ fn test_tab_mode_cycling() {
 }
 
 #[test]
-fn test_slash_command_suggestion_rendering() {
+fn test_slash_opens_the_command_palette() {
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
 
     let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
-    app.insert_char('/');
-    app.insert_char('r');
-    assert!(!app.slash_suggestions.is_empty());
+    app.open_palette();
+    app.palette_push_char('r');
+    assert!(app.input_buffer.is_empty(), "the query never touches the composer");
+    assert!(!app.palette_results().is_empty());
 
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
     let buffer = terminal.backend().buffer().clone();
@@ -258,8 +262,9 @@ fn test_slash_command_suggestion_rendering() {
 
     assert!(
         content.contains("/rollback") || content.contains("/react"),
-        "Must render slash suggestion popup"
+        "Must render matching commands in the palette"
     );
+    assert!(content.contains("> r"), "Must render the palette query");
 }
 
 #[test]

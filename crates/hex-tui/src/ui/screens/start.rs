@@ -172,45 +172,6 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         buf.set_line(p_inner.x, p_inner.y + p_inner.height - 1, &bottom_line, p_inner.width);
     }
 
-    // Slash command suggestions popup if typing slash
-    if !app.slash_suggestions.is_empty() {
-        let pop_height = (app.slash_suggestions.len() as u16 + 2).min(8);
-        let pop_width = prompt_area.width.min(56);
-        let pop_y = prompt_area.y.saturating_sub(pop_height);
-        let pop_rect = Rect::new(prompt_area.x, pop_y, pop_width, pop_height);
-
-        let pop_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border_modal))
-            .style(Style::default().bg(theme.card_bg))
-            .title(Span::styled(" Commands ", Style::default().fg(theme.text_dim)));
-        let pop_inner = pop_block.inner(pop_rect);
-        pop_block.render(pop_rect, buf);
-
-        for (i, cmd) in app.slash_suggestions.iter().enumerate() {
-            let row_y = pop_inner.y + i as u16;
-            if row_y >= pop_inner.bottom() {
-                break;
-            }
-            let is_sel = i == app.selected_slash_index;
-            let (bg, name_fg, desc_fg) = if is_sel {
-                (theme.hover_bg, theme.accent_blue, theme.text_bright)
-            } else {
-                (theme.card_bg, theme.text_bright, theme.text_dim)
-            };
-
-            for x in pop_inner.left()..pop_inner.right() {
-                buf[(x, row_y)].set_bg(bg);
-            }
-            let line = Line::from(vec![
-                Span::styled(format!(" {:<12}", cmd.name), Style::default().fg(name_fg).bg(bg)),
-                Span::styled(cmd.description.as_str(), Style::default().fg(desc_fg).bg(bg)),
-            ]);
-            buf.set_line(pop_inner.x, row_y, &line, pop_inner.width);
-        }
-    }
-
     // ─────────────────────────────────────────────
     // 4. Keyboard Shortcut Badges below prompt
     // ─────────────────────────────────────────────

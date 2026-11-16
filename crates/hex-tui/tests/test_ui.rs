@@ -96,14 +96,6 @@ fn test_tab_key_mode_cycling() {
     app.handle_tab();
     assert_eq!(app.mode, "agent");
     assert_eq!(app.status_message, "Switched mode to: AGENT");
-
-    // If slash suggestions are open, Tab accepts suggestion instead of switching mode
-    app.insert_char('/');
-    app.insert_char('d');
-    assert!(!app.slash_suggestions.is_empty());
-    app.handle_tab();
-    assert_eq!(app.input_buffer, "/diff ");
-    assert_eq!(app.mode, "agent");
 }
 
 #[test]
@@ -166,56 +158,53 @@ fn test_visual_wrapped_lines_scroll_calculation() {
 }
 
 #[test]
-fn test_fuzzy_slash_suggestions_ranking_and_subsequence() {
+fn test_palette_fuzzy_ranking_and_subsequence() {
     let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
+    app.open_palette();
 
-    // 1. Filter is just "/" -> all commands returned
-    app.input_buffer = "/".to_string();
-    app.cursor_pos = 1;
-    app.update_slash_suggestions();
+    // 1. Empty query -> every catalog command plus the session switch entry
+    assert_eq!(app.palette_results().len(), app.palette_items.len());
     assert_eq!(
-        app.slash_suggestions.len(),
-        hex_tui::app::available_slash_commands().len(),
-        "Filter '/' must return all available slash commands"
+        app.palette_items.len(),
+        hex_tui::app::available_slash_commands().len() + 1,
+        "Palette must be built from the real command catalog"
     );
 
     // 2. Subsequence match: 'ast' matches '/blast'
-    app.input_buffer = "/ast".to_string();
-    app.cursor_pos = 4;
-    app.update_slash_suggestions();
+    app.palette_query = "ast".to_string();
     assert!(
-        app.slash_suggestions.iter().any(|cmd| cmd.name == "/blast"),
+        app.palette_results()
+            .iter()
+            .any(|m| app.palette_items[m.item_index].shortcut == "/blast"),
         "'ast' must match '/blast' via subsequence"
     );
 
     // 3. Subsequence match: 'rb' matches '/rollback'
-    app.input_buffer = "/rb".to_string();
-    app.cursor_pos = 3;
-    app.update_slash_suggestions();
+    app.palette_query = "rb".to_string();
     assert!(
-        app.slash_suggestions.iter().any(|cmd| cmd.name == "/rollback"),
+        app.palette_results()
+            .iter()
+            .any(|m| app.palette_items[m.item_index].shortcut == "/rollback"),
         "'rb' must match '/rollback' via subsequence"
     );
 
-    // 4. Ranking: prefix matches rank ahead of subsequence matches
-    // '/mem' prefix-matches '/memory' and subsequence-matches '/remember'
-    app.input_buffer = "/mem".to_string();
-    app.cursor_pos = 4;
-    app.update_slash_suggestions();
-    assert!(
-        !app.slash_suggestions.is_empty(),
-        "Suggestions must not be empty for '/mem'"
-    );
+    // 4. Ranking: the typed command name outranks description matches
+    app.palette_query = "mem".to_string();
+    let results = app.palette_results();
+    assert!(!results.is_empty(), "Results must not be empty for 'mem'");
     assert_eq!(
-        app.slash_suggestions[0].name, "/memory",
-        "Exact prefix match '/memory' must be ranked first before subsequence matches"
+        app.palette_items[results[0].item_index].shortcut,
+        "/memory",
+        "'/memory' must be ranked first before subsequence matches"
     );
     assert!(
-        app.slash_suggestions.iter().any(|cmd| cmd.name == "/remember"),
-        "Subsequence match '/remember' must also be included in suggestions"
+        results
+            .iter()
+            .any(|m| app.palette_items[m.item_index].shortcut == "/remember"),
+        "Subsequence match '/remember' must also be included"
     );
 
-    // 5. Test rendering suggestions in terminal
+    // 5. The panel renders the ranked results
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");
@@ -223,7 +212,11 @@ fn test_fuzzy_slash_suggestions_ranking_and_subsequence() {
     let content = format!("{:?}", buffer);
     assert!(
         content.contains("/memory"),
-        "Buffer must render top slash suggestion popup"
+        "Buffer must render the top palette result"
+    );
+    assert!(
+        content.contains("> mem"),
+        "Buffer must render the palette query"
     );
 }
 

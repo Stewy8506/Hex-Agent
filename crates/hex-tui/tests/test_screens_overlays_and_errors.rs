@@ -78,8 +78,12 @@ fn test_screen_3_palette_modal_rendering() {
         .join("\n");
 
     assert!(content.contains("> plan"), "Content was:\n{}", content);
-    assert!(content.contains("modes"), "Content was:\n{}", content);
-    assert!(content.contains("Switch to Plan mode"), "Content was:\n{}", content);
+    assert!(content.contains("/plan"), "Content was:\n{}", content);
+    assert!(
+        content.contains("Switch to read-only architecture planning mode"),
+        "Content was:\n{}",
+        content
+    );
     assert!(content.contains("enter select · esc close"), "Content was:\n{}", content);
 }
 

@@ -1,14 +1,26 @@
-//! Screen 3: Command & Navigation Palette Modal matching the HEX Agent HTML mockup.
+//! Screen 3: Command & Navigation Palette matching the HEX Agent HTML mockup.
+//!
+//! Opened with `/` on an empty composer or Ctrl+P. While it is open the query
+//! owns the keyboard, so the composer underneath is never disturbed.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Widget};
 
 use crate::app::App;
 use crate::ui::animation::AnimationState;
 use crate::ui::style::HexTheme;
+
+/// Mockup panel width (660px) and its anchor below the header.
+const PANEL_WIDTH: u16 = 62;
+const PANEL_TOP: u16 = 4;
+
+enum Row<'a> {
+    Header(&'a str),
+    Item(usize),
+}
 
 pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, buf: &mut Buffer) {
     if area.height < 14 || area.width < 45 {
@@ -23,13 +35,32 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         }
     }
 
-    // 2. Top-anchored modal (width ~58 cols, anchored 2-4 rows below header)
-    let modal_width = 58_u16.min(area.width.saturating_sub(4));
-    let modal_height = 14_u16.min(area.height.saturating_sub(6));
+    let results = app.palette_results();
+    let grouped = app.palette_query.trim().is_empty();
+
+    // Flatten to display rows: one per result, plus a header per category when
+    // browsing, so the selection can be scrolled into view as a single unit.
+    let mut rows: Vec<Row<'_>> = Vec::new();
+    let mut last_category = "";
+    for (idx, m) in results.iter().enumerate() {
+        let item = &app.palette_items[m.item_index];
+        if grouped && item.category != last_category {
+            rows.push(Row::Header(&item.category));
+            last_category = &item.category;
+        }
+        rows.push(Row::Item(idx));
+    }
+
+    // 2. Top-anchored modal, sized to its content.
+    let modal_width = PANEL_WIDTH.min(area.width.saturating_sub(4));
+    let chrome = 6u16; // border x2, search, divider, divider, footer
+    let max_height = area.height.saturating_sub(PANEL_TOP + 1);
+    let modal_height = ((rows.len() as u16).saturating_add(chrome))
+        .min(max_height)
+        .max(chrome + 2);
 
     let modal_x = area.x + (area.width.saturating_sub(modal_width)) / 2;
-    let modal_y = area.y + 3; // Top-anchored 72px equivalent
-    let modal_rect = Rect::new(modal_x, modal_y, modal_width, modal_height);
+    let modal_rect = Rect::new(modal_x, area.y + PANEL_TOP, modal_width, modal_height);
 
     Clear.render(modal_rect, buf);
 
@@ -46,142 +77,158 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         .constraints([
             Constraint::Length(1), // Search input
             Constraint::Length(1), // Divider
-            Constraint::Min(4),    // Categorized results
+            Constraint::Min(1),    // Results
             Constraint::Length(1), // Divider
-            Constraint::Length(1), // Footer: "3 results" ... "enter select · esc close"
+            Constraint::Length(1), // Footer
         ])
         .split(inner);
 
-    // 1. Search Bar
+    // 1. Search bar
     let cursor_span = if anim.cursor_visible() {
         Span::styled("█", Style::default().fg(theme.accent_blue))
     } else {
         Span::raw(" ")
     };
-
-    let query_display = &app.palette_query;
-
     let search_line = Line::from(vec![
         Span::styled("> ", Style::default().fg(theme.text_dim)),
-        Span::styled(query_display, Style::default().fg(theme.text_bright).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            app.palette_query.as_str(),
+            Style::default().fg(theme.text_bright).add_modifier(Modifier::BOLD),
+        ),
         cursor_span,
     ]);
-    buf.set_line(chunks[0].x, chunks[0].y, &search_line, chunks[0].width);
+    buf.set_line(chunks[0].x + 1, chunks[0].y, &search_line, chunks[0].width.saturating_sub(2));
 
-    // Divider under search bar
-    for x in chunks[1].left()..chunks[1].right() {
-        buf[(x, chunks[1].y)].set_symbol("─");
-        buf[(x, chunks[1].y)].set_fg(theme.border_low);
-    }
+    draw_rule(buf, chunks[1], theme.border_low);
 
-    // 2. Categorized Results
+    // 2. Results, scrolled so the selection is always on screen.
     let results_area = chunks[2];
-    let mut current_y = results_area.y;
-
-    let q_lower = app.palette_query.to_lowercase();
-    let filtered_items: Vec<_> = app
-        .palette_items
+    let visible = results_area.height as usize;
+    let selected_pos = rows
         .iter()
-        .filter(|item| {
-            if q_lower.is_empty() {
-                true
-            } else {
-                item.title.to_lowercase().contains(&q_lower)
-                    || item.category.to_lowercase().contains(&q_lower)
-                    || item.shortcut.to_lowercase().contains(&q_lower)
+        .position(|r| matches!(r, Row::Item(i) if *i == app.selected_palette_index))
+        .unwrap_or(0);
+    let max_offset = rows.len().saturating_sub(visible);
+    let offset = selected_pos
+        .saturating_sub(visible.saturating_sub(1))
+        .min(max_offset);
+
+    let mut current_y = results_area.y;
+    for row in rows.iter().skip(offset) {
+        if current_y >= results_area.bottom() {
+            break;
+        }
+        let idx = match row {
+            Row::Header(category) => {
+                let header = Line::from(Span::styled(
+                    *category,
+                    Style::default().fg(theme.text_extra_dim),
+                ));
+                buf.set_line(results_area.x + 1, current_y, &header, results_area.width.saturating_sub(2));
+                current_y += 1;
+                continue;
             }
-        })
-        .collect();
-
-    // Group items by category
-    let mut current_cat = "";
-    for (idx, item) in filtered_items.iter().enumerate() {
-        if current_y >= results_area.bottom() {
-            break;
-        }
-
-        // Category Header
-        if item.category != current_cat {
-            current_cat = &item.category;
-            let cat_line = Line::from(vec![Span::styled(&item.category, theme.apfel_header_style())]);
-            buf.set_line(results_area.x + 1, current_y, &cat_line, results_area.width.saturating_sub(2));
-            current_y += 1;
-        }
-
-        if current_y >= results_area.bottom() {
-            break;
-        }
+            Row::Item(idx) => *idx,
+        };
+        let m = &results[idx];
+        let item = &app.palette_items[m.item_index];
 
         let is_selected = idx == app.selected_palette_index;
-        let row_bg = if is_selected {
-            theme.selection_bg
-        } else {
-            theme.card_bg
-        };
-
+        let row_bg = if is_selected { theme.selection_bg } else { theme.card_bg };
         for x in results_area.left()..results_area.right() {
             buf[(x, current_y)].set_bg(row_bg);
         }
 
-        let marker = if is_selected {
+        let width = results_area.width as usize;
+        let hint: Vec<char> = item.shortcut.chars().collect();
+        let hint_w = hint.len();
+        let title_max = width.saturating_sub(2 + hint_w + 3);
+        let title: Vec<char> = item.title.chars().collect();
+        let truncated = title.len() > title_max;
+        let shown: Vec<char> = if truncated {
+            let mut t: Vec<char> = title[..title_max.saturating_sub(1)].to_vec();
+            t.push('…');
+            t
+        } else {
+            title.clone()
+        };
+
+        let mut spans = vec![if is_selected {
             Span::styled("> ", Style::default().fg(theme.accent_blue).bg(row_bg))
         } else {
             Span::styled("  ", Style::default().bg(row_bg))
-        };
+        }];
+        spans.extend(highlight(&shown, &m.title_matched, theme, row_bg, theme.text_muted));
 
-        // Highlight matched characters in title
-        let title_spans = highlight_matches(&item.title, query_display, theme, row_bg);
+        let used = 2 + shown.len();
+        let gap = width.saturating_sub(used + hint_w + 1);
+        spans.push(Span::styled(" ".repeat(gap), Style::default().bg(row_bg)));
+        if hint_w > 0 {
+            spans.push(Span::styled(" ", Style::default().bg(row_bg)));
+            spans.extend(highlight(&hint, &m.shortcut_matched, theme, row_bg, theme.text_dim));
+        }
 
-        let mut row_spans = vec![marker];
-        row_spans.extend(title_spans);
-
-        let spaces = (results_area.width as usize).saturating_sub(item.title.len() + 4 + item.shortcut.len());
-        row_spans.push(Span::raw(" ".repeat(spaces)));
-        row_spans.push(Span::styled(&item.shortcut, Style::default().fg(theme.text_dim).bg(row_bg)));
-
-        buf.set_line(results_area.x, current_y, &Line::from(row_spans), results_area.width);
+        buf.set_line(results_area.x, current_y, &Line::from(spans), results_area.width);
         current_y += 1;
     }
 
-    // Divider above footer
-    for x in chunks[3].left()..chunks[3].right() {
-        buf[(x, chunks[3].y)].set_symbol("─");
-        buf[(x, chunks[3].y)].set_fg(theme.border_low);
+    if results.is_empty() && results_area.height > 0 {
+        let empty = Line::from(Span::styled(
+            "no matching command",
+            Style::default().fg(theme.text_extra_dim),
+        ));
+        buf.set_line(results_area.x + 1, results_area.y, &empty, results_area.width.saturating_sub(2));
     }
+
+    draw_rule(buf, chunks[3], theme.border_low);
 
     // 3. Footer
-    let count_span = Span::styled(
-        format!("{} results", filtered_items.len()),
-        Style::default().fg(theme.text_dim),
+    let count = format!(
+        "{} result{}",
+        results.len(),
+        if results.len() == 1 { "" } else { "s" }
     );
-    let nav_span = Span::styled("enter select · esc close", Style::default().fg(theme.text_dim));
-
-    let footer_spans = vec![
-        count_span,
-        Span::raw(" ".repeat((inner.width as usize).saturating_sub(9 + 25))),
-        nav_span,
-    ];
-    buf.set_line(chunks[4].x, chunks[4].y, &Line::from(footer_spans), chunks[4].width);
+    let nav = "enter select · esc close";
+    let footer_width = chunks[4].width as usize;
+    let gap = footer_width.saturating_sub(count.chars().count() + nav.chars().count() + 2);
+    let footer = Line::from(vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(count, Style::default().fg(theme.text_dim)),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(nav, Style::default().fg(theme.text_dim)),
+        Span::styled(" ", Style::default()),
+    ]);
+    buf.set_line(chunks[4].x, chunks[4].y, &footer, chunks[4].width);
 }
 
-fn highlight_matches<'a>(text: &'a str, query: &str, theme: &HexTheme, bg: ratatui::style::Color) -> Vec<Span<'a>> {
-    let q_lower = query.to_lowercase();
-    let mut spans = Vec::new();
+fn draw_rule(buf: &mut Buffer, area: Rect, color: Color) {
+    for x in area.left()..area.right() {
+        buf[(x, area.y)].set_symbol("─");
+        buf[(x, area.y)].set_fg(color);
+    }
+}
 
-    for c in text.chars() {
-        let is_match = q_lower.contains(c.to_ascii_lowercase());
-        if is_match {
-            spans.push(Span::styled(
-                c.to_string(),
-                Style::default()
-                    .fg(theme.text_bright)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD),
-            ));
+/// Bold the characters the query actually matched, in order — not every letter
+/// that happens to appear in the query.
+fn highlight(
+    chars: &[char],
+    matched: &[usize],
+    theme: &HexTheme,
+    bg: Color,
+    base_fg: Color,
+) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, c) in chars.iter().enumerate() {
+        let is_match = matched.contains(&i);
+        let style = if is_match {
+            Style::default().fg(theme.text_bright).bg(bg).add_modifier(Modifier::BOLD)
         } else {
-            spans.push(Span::styled(c.to_string(), Style::default().fg(theme.text_muted).bg(bg)));
+            Style::default().fg(base_fg).bg(bg)
+        };
+        match spans.last_mut() {
+            Some(last) if last.style == style => last.content.to_mut().push(*c),
+            _ => spans.push(Span::styled(c.to_string(), style)),
         }
     }
-
     spans
 }

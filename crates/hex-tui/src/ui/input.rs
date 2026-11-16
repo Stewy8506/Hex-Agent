@@ -3,12 +3,12 @@
 use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Focus};
-use crate::ui::design::{skin, Skin, PROMPTS, SPINNER};
+use crate::ui::design::{skin, PROMPTS, SPINNER};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let skin = skin(&app.skin_name);
@@ -108,7 +108,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             frame.set_cursor_position(Position::new(x, inner.y));
         }
     }
-    render_suggestions(frame, app, area, skin);
 }
 
 fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) {
@@ -143,46 +142,3 @@ fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) {
     (out, 1 + UnicodeWidthStr::width(before.as_str()))
 }
 
-fn render_suggestions(frame: &mut Frame, app: &App, composer: Rect, skin: Skin) {
-    if app.focus != Focus::Input || app.slash_suggestions.is_empty() {
-        return;
-    }
-    let height = (app.slash_suggestions.len() as u16 + 2).min(7);
-    let width = composer.width.saturating_sub(4).min(58);
-    if width < 18 || composer.y < height {
-        return;
-    }
-    let popup = Rect::new(composer.x + 2, composer.y - height, width, height);
-    frame.render_widget(Clear, popup);
-    let items = app
-        .slash_suggestions
-        .iter()
-        .enumerate()
-        .map(|(i, cmd)| {
-            let selected = i == app.selected_slash_index;
-            let bg = if selected { skin.accent } else { skin.surface };
-            let fg = if selected { skin.surface } else { skin.text };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{:<11}", cmd.name),
-                    Style::default()
-                        .fg(if selected { skin.surface } else { skin.accent })
-                        .bg(bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(cmd.description.as_str(), Style::default().fg(fg).bg(bg)),
-            ]))
-            .style(Style::default().bg(skin.surface))
-        })
-        .collect::<Vec<_>>();
-    frame.render_widget(
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(skin.border))
-                .title(" Commands "),
-        ),
-        popup,
-    );
-}

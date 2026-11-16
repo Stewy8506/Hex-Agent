@@ -114,6 +114,14 @@ pub struct PaletteItem {
     pub command: String,
 }
 
+/// A palette entry plus the character positions the query matched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteMatch {
+    pub item_index: usize,
+    pub title_matched: Vec<usize>,
+    pub shortcut_matched: Vec<usize>,
+}
+
 /// A regular conversational message item in dialogue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageItem {
@@ -271,10 +279,6 @@ pub struct App {
     pub cursor_pos: usize,
     pub command_history: Vec<String>,
     pub history_index: Option<usize>,
-
-    // Slash command popup
-    pub slash_suggestions: Vec<SlashCommand>,
-    pub selected_slash_index: usize,
 
     // Suggestion rotation (advances per submitted prompt)
     pub suggestion_index: usize,
@@ -871,69 +875,51 @@ pub fn format_workspace_display(workspace_path: &str, project_id: &str) -> (Stri
     (parent, leaf)
 }
 
-pub fn build_default_palette_items(model_name: &str) -> Vec<PaletteItem> {
-    vec![
-        PaletteItem {
-            category: "modes".to_string(),
-            title: "Switch to Plan mode".to_string(),
-            shortcut: "plan".to_string(),
-            command: "mode:plan".to_string(),
-        },
-        PaletteItem {
-            category: "modes".to_string(),
-            title: "Switch to Agent mode".to_string(),
-            shortcut: "agent".to_string(),
-            command: "mode:agent".to_string(),
-        },
-        PaletteItem {
-            category: "modes".to_string(),
-            title: "Switch to Review mode".to_string(),
-            shortcut: "review".to_string(),
-            command: "mode:review".to_string(),
-        },
-        PaletteItem {
-            category: "models".to_string(),
-            title: format!("Current: {}", model_name),
-            shortcut: "ctrl+m".to_string(),
-            command: "switch_model".to_string(),
-        },
-        PaletteItem {
-            category: "models".to_string(),
-            title: "Switch to gemini-3.8-pro".to_string(),
-            shortcut: "pro".to_string(),
-            command: "model:gemini-3.8-pro".to_string(),
-        },
-        PaletteItem {
-            category: "session".to_string(),
-            title: "Switch session".to_string(),
-            shortcut: "ctrl+s".to_string(),
-            command: "switch_session".to_string(),
-        },
-        PaletteItem {
-            category: "session".to_string(),
-            title: "Clear dialogue history".to_string(),
-            shortcut: "/clear".to_string(),
-            command: "dialogue:clear".to_string(),
-        },
-        PaletteItem {
-            category: "tools".to_string(),
-            title: "Inspect LSP diagnostics".to_string(),
-            shortcut: "/lsp".to_string(),
-            command: "tool:lsp".to_string(),
-        },
-        PaletteItem {
-            category: "tools".to_string(),
-            title: "Run system diagnostics".to_string(),
-            shortcut: "/doctor".to_string(),
-            command: "tool:doctor".to_string(),
-        },
-        PaletteItem {
-            category: "tools".to_string(),
-            title: "Search AST memories".to_string(),
-            shortcut: "/memory".to_string(),
-            command: "tool:memory".to_string(),
-        },
-    ]
+/// Palette entries: every slash command this surface really supports, plus
+/// navigation actions. Nothing here may offer an action the runtime lacks.
+pub fn build_palette_items() -> Vec<PaletteItem> {
+    let mut items: Vec<PaletteItem> = available_slash_commands()
+        .iter()
+        .map(|cmd| PaletteItem {
+            category: palette_category(&cmd.name).to_string(),
+            title: if cmd.description.is_empty() {
+                cmd.name.clone()
+            } else {
+                cmd.description.clone()
+            },
+            shortcut: cmd.name.clone(),
+            command: cmd.name.clone(),
+        })
+        .collect();
+    items.push(PaletteItem {
+        category: "session".to_string(),
+        title: "Switch session".to_string(),
+        shortcut: String::new(),
+        command: "session:switch".to_string(),
+    });
+    items
+}
+
+fn palette_category(name: &str) -> &'static str {
+    match name {
+        "/mode" | "/plan" | "/agent" | "/code" => "modes",
+        "/subagents" | "/react" => "agents",
+        "/skills" | "/tools" | "/memory" | "/remember" | "/reflect" | "/recipe" => "knowledge",
+        "/diff" | "/sbs" | "/rollback" | "/blast" | "/proof" | "/scan" | "/search" | "/lsp"
+        | "/doctor" => "workspace",
+        _ => "session",
+    }
+}
+
+fn palette_category_rank(category: &str) -> u8 {
+    match category {
+        "modes" => 0,
+        "agents" => 1,
+        "session" => 2,
+        "workspace" => 3,
+        "knowledge" => 4,
+        _ => 5,
+    }
 }
 
 pub fn resolve_fallback_model_context(model: &str) -> usize {
@@ -1032,7 +1018,7 @@ impl App {
         } else {
             model_str
         };
-        let palette_items = build_default_palette_items(&resolved_model);
+        let palette_items = build_palette_items();
         let default_max_tokens = resolve_fallback_model_context(&resolved_model);
 
         let mut app = Self {
@@ -1101,8 +1087,6 @@ impl App {
             command_history: Vec::new(),
             history_index: None,
 
-            slash_suggestions: Vec::new(),
-            selected_slash_index: 0,
             suggestion_index: 0,
 
             active_approval: None,
@@ -1877,14 +1861,10 @@ impl App {
         };
     }
 
-    /// Handle Tab key: accept slash suggestion if active, otherwise cycle mode (agent -> plan -> code).
+    /// Handle Tab key: cycle mode (agent -> plan -> code).
     pub fn handle_tab(&mut self) {
-        if !self.slash_suggestions.is_empty() {
-            self.accept_slash_suggestion();
-        } else {
-            let next_mode = self.cycle_mode();
-            self.status_message = format!("Switched mode to: {}", next_mode.to_uppercase());
-        }
+        let next_mode = self.cycle_mode();
+        self.status_message = format!("Switched mode to: {}", next_mode.to_uppercase());
     }
 
     // -----------------------------------------------------------------------
@@ -1896,7 +1876,6 @@ impl App {
         let byte = char_to_byte(&self.input_buffer, self.cursor_pos);
         self.input_buffer.insert(byte, c);
         self.cursor_pos += 1;
-        self.update_slash_suggestions();
     }
 
     pub fn delete_char(&mut self) {
@@ -1904,16 +1883,14 @@ impl App {
             let byte = char_to_byte(&self.input_buffer, self.cursor_pos - 1);
             self.input_buffer.remove(byte);
             self.cursor_pos -= 1;
-            self.update_slash_suggestions();
-        }
+            }
     }
 
     pub fn delete_char_forward(&mut self) {
         if self.cursor_pos < self.input_buffer.chars().count() {
             let byte = char_to_byte(&self.input_buffer, self.cursor_pos);
             self.input_buffer.remove(byte);
-            self.update_slash_suggestions();
-        }
+            }
     }
 
     pub fn move_cursor_left(&mut self) {
@@ -1948,8 +1925,7 @@ impl App {
         if let Some(cmd) = self.command_history.get(next_idx) {
             self.input_buffer = cmd.clone();
             self.cursor_pos = self.input_buffer.len();
-            self.update_slash_suggestions();
-        }
+            }
     }
 
     pub fn history_down(&mut self) {
@@ -1960,14 +1936,12 @@ impl App {
                 if let Some(cmd) = self.command_history.get(next_idx) {
                     self.input_buffer = cmd.clone();
                     self.cursor_pos = self.input_buffer.len();
-                    self.update_slash_suggestions();
-                }
+                            }
             } else {
                 self.history_index = None;
                 self.input_buffer.clear();
                 self.cursor_pos = 0;
-                self.update_slash_suggestions();
-            }
+                    }
         }
     }
 
@@ -1983,7 +1957,6 @@ impl App {
         self.history_index = None;
         self.input_buffer.clear();
         self.cursor_pos = 0;
-        self.slash_suggestions.clear();
 
         Some(trimmed)
     }
@@ -1992,65 +1965,112 @@ impl App {
         self.screen_state = screen;
     }
 
-    pub fn update_slash_suggestions(&mut self) {
-        let trimmed = self.input_buffer.trim_start();
-        if trimmed.starts_with('/') {
-            let filter = trimmed.split_whitespace().next().unwrap_or("/");
-            if filter == "/" {
-                self.slash_suggestions = available_slash_commands().to_vec();
+    // -----------------------------------------------------------------------
+    // Command palette
+    // -----------------------------------------------------------------------
+
+    /// Open the palette. The composer is left untouched so closing restores it.
+    pub fn open_palette(&mut self) {
+        self.show_palette = true;
+        self.palette_query.clear();
+        self.selected_palette_index = 0;
+    }
+
+    pub fn close_palette(&mut self) {
+        self.show_palette = false;
+        self.palette_query.clear();
+        self.selected_palette_index = 0;
+    }
+
+    pub fn palette_push_char(&mut self, c: char) {
+        self.palette_query.push(c);
+        self.selected_palette_index = 0;
+    }
+
+    /// Backspace edits the query; on an empty query it closes the palette.
+    pub fn palette_backspace(&mut self) {
+        if self.palette_query.pop().is_none() {
+            self.close_palette();
+        }
+        self.selected_palette_index = 0;
+    }
+
+    pub fn palette_move(&mut self, delta: i32) {
+        let count = self.palette_results().len() as i32;
+        if count == 0 {
+            self.selected_palette_index = 0;
+            return;
+        }
+        let next = self.selected_palette_index as i32 + delta;
+        self.selected_palette_index = next.rem_euclid(count) as usize;
+    }
+
+    pub fn palette_selected(&self) -> Option<PaletteItem> {
+        self.palette_results()
+            .get(self.selected_palette_index)
+            .map(|m| self.palette_items[m.item_index].clone())
+    }
+
+    /// Fuzzy-ranked palette entries, with the character positions that matched
+    /// so the panel can highlight them instead of every letter of the query.
+    pub fn palette_results(&self) -> Vec<PaletteMatch> {
+        let query = self.palette_query.trim().to_lowercase();
+        let mut scored: Vec<(u8, u8, usize, usize, usize, PaletteMatch)> = Vec::new();
+
+        for (index, item) in self.palette_items.iter().enumerate() {
+            let title = item.title.to_lowercase();
+            let shortcut = item.shortcut.trim_start_matches('/').to_lowercase();
+
+            // A typed command name ("/pl") must beat an incidental subsequence
+            // inside a long description, so prefix ranks come first.
+            let title_pos = fuzzy_match(&query, &title);
+            let shortcut_pos = fuzzy_match(&query, &shortcut);
+            let title_rank = title_pos.as_ref().map(|_| if title.starts_with(&query) { 0 } else { 2 });
+            let shortcut_rank = shortcut_pos.as_ref().map(|_| if shortcut.starts_with(&query) { 1 } else { 3 });
+            let rank = match (title_rank, shortcut_rank) {
+                (Some(a), Some(b)) => a.min(b),
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
+                (None, None) => continue,
+            };
+            let matched = PaletteMatch {
+                item_index: index,
+                title_matched: title_pos.unwrap_or_default(),
+                // Positions are reported against the rendered shortcut, which
+                // still carries its leading slash.
+                shortcut_matched: shortcut_pos
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| p + item.shortcut.len() - shortcut.len())
+                    .collect(),
+            };
+
+            let positions = if matched.title_matched.is_empty() {
+                &matched.shortcut_matched
             } else {
-                let query = filter.strip_prefix('/').unwrap_or(filter).to_lowercase();
-                let mut prefix_matches = Vec::new();
-                let mut subseq_matches = Vec::new();
-
-                for cmd in available_slash_commands() {
-                    let cmd_name_clean = cmd
-                        .name
-                        .strip_prefix('/')
-                        .unwrap_or(cmd.name.as_str())
-                        .to_lowercase();
-                    if cmd_name_clean.starts_with(&query) {
-                        prefix_matches.push(cmd.clone());
-                    } else if is_subsequence(&query, &cmd_name_clean) {
-                        subseq_matches.push(cmd.clone());
-                    }
-                }
-                prefix_matches.extend(subseq_matches);
-                self.slash_suggestions = prefix_matches;
-            }
-            self.selected_slash_index = 0;
-        } else {
-            self.slash_suggestions.clear();
-            self.selected_slash_index = 0;
-        }
-    }
-
-    pub fn next_slash_suggestion(&mut self) {
-        if !self.slash_suggestions.is_empty() {
-            self.selected_slash_index =
-                (self.selected_slash_index + 1) % self.slash_suggestions.len();
-        }
-    }
-
-    pub fn prev_slash_suggestion(&mut self) {
-        if !self.slash_suggestions.is_empty() {
-            if self.selected_slash_index == 0 {
-                self.selected_slash_index = self.slash_suggestions.len() - 1;
+                &matched.title_matched
+            };
+            let span = positions
+                .last()
+                .and_then(|last| positions.first().map(|first| last - first))
+                .unwrap_or(0);
+            let group = palette_category_rank(&item.category);
+            // Between equally tight matches the shorter label is the more
+            // precise answer ("sw" -> "Switch session", not a long description).
+            let target_len = if matched.title_matched.is_empty() {
+                shortcut.chars().count()
             } else {
-                self.selected_slash_index -= 1;
-            }
+                title.chars().count()
+            };
+            scored.push((rank, group, span, target_len, index, matched));
         }
-    }
 
-    pub fn accept_slash_suggestion(&mut self) -> bool {
-        if let Some(cmd) = self.slash_suggestions.get(self.selected_slash_index) {
-            self.input_buffer = format!("{} ", cmd.name);
-            self.cursor_pos = self.input_buffer.len();
-            self.slash_suggestions.clear();
-            true
+        if query.is_empty() {
+            scored.sort_by_key(|(_, group, _, _, index, _)| (*group, *index));
         } else {
-            false
+            scored.sort_by_key(|(rank, _, span, len, index, _)| (*rank, *span, *len, *index));
         }
+        scored.into_iter().map(|(_, _, _, _, _, m)| m).collect()
     }
 
     // -----------------------------------------------------------------------
@@ -2192,15 +2212,21 @@ fn char_to_byte(text: &str, char_index: usize) -> usize {
         .unwrap_or(text.len())
 }
 
-/// Check if characters of `query` appear in order within `target`.
-pub fn is_subsequence(query: &str, target: &str) -> bool {
-    let mut target_chars = target.chars();
-    for qc in query.chars() {
-        if !target_chars.any(|tc| tc == qc) {
-            return false;
-        }
+/// Subsequence match returning the positions in `target` that matched, in
+/// order. Both sides are expected to be lowercased by the caller.
+pub fn fuzzy_match(query: &str, target: &str) -> Option<Vec<usize>> {
+    if query.is_empty() {
+        return Some(Vec::new());
     }
-    true
+    let chars: Vec<char> = target.chars().collect();
+    let mut positions = Vec::new();
+    let mut from = 0;
+    for qc in query.chars() {
+        let found = chars[from..].iter().position(|tc| *tc == qc)?;
+        positions.push(from + found);
+        from += found + 1;
+    }
+    Some(positions)
 }
 
 fn chrono_now() -> String {
@@ -2254,39 +2280,60 @@ mod tests {
     }
 
     #[test]
-    fn test_slash_suggestions() {
+    fn test_palette_fuzzy_ranking_and_selection() {
         let mut app = App::new("p1", "m1", "cow");
-        app.insert_char('/');
-        app.insert_char('d');
-        assert!(!app.slash_suggestions.is_empty());
-        assert_eq!(app.slash_suggestions[0].name, "/diff");
+        app.open_palette();
+        assert!(app.show_palette);
+        assert_eq!(app.palette_results().len(), app.palette_items.len());
 
-        assert!(app.accept_slash_suggestion());
-        assert_eq!(app.input_buffer, "/diff ");
+        // Prefix matches outrank scattered subsequence matches.
+        app.palette_query = "mem".to_string();
+        let results = app.palette_results();
+        let first = &app.palette_items[results[0].item_index];
+        assert_eq!(first.shortcut, "/memory");
+        assert!(results.iter().any(|m| app.palette_items[m.item_index].shortcut == "/remember"));
 
-        // Test '/' shows all commands
-        app.input_buffer = "/".to_string();
-        app.cursor_pos = 1;
-        app.update_slash_suggestions();
-        assert_eq!(app.slash_suggestions.len(), available_slash_commands().len());
+        // Subsequence still finds the command, and reports matched positions.
+        app.palette_query = "ast".to_string();
+        let results = app.palette_results();
+        let blast = results
+            .iter()
+            .find(|m| app.palette_items[m.item_index].shortcut == "/blast")
+            .expect("/blast matches 'ast'");
+        assert!(!blast.shortcut_matched.is_empty());
 
-        // Test fuzzy subsequence matches
-        app.input_buffer = "/ast".to_string();
-        app.cursor_pos = 4;
-        app.update_slash_suggestions();
-        assert!(app.slash_suggestions.iter().any(|cmd| cmd.name == "/blast"));
+        // Typing a command name beats a description that merely contains it.
+        app.palette_query = "plan".to_string();
+        let results = app.palette_results();
+        let plan = &app.palette_items[results[0].item_index];
+        assert_eq!(plan.shortcut, "/plan");
+        // Highlight positions index the rendered shortcut, slash included.
+        assert_eq!(results[0].shortcut_matched, vec![1, 2, 3, 4]);
 
-        app.input_buffer = "/rb".to_string();
-        app.cursor_pos = 3;
-        app.update_slash_suggestions();
-        assert!(app.slash_suggestions.iter().any(|cmd| cmd.name == "/rollback"));
+        app.palette_query = "sw".to_string();
+        let results = app.palette_results();
+        assert_eq!(
+            app.palette_items[results[0].item_index].title, "Switch session",
+            "the shortest precise prefix match wins the tie"
+        );
 
-        // Test ranking: prefix match before subsequence match
-        app.input_buffer = "/mem".to_string();
-        app.cursor_pos = 4;
-        app.update_slash_suggestions();
-        assert_eq!(app.slash_suggestions[0].name, "/memory");
-        assert!(app.slash_suggestions.iter().any(|cmd| cmd.name == "/remember"));
+        // Editing the query resets the selection; backspace on empty closes.
+        app.palette_move(1);
+        assert_eq!(app.selected_palette_index, 1);
+        app.palette_push_char('x');
+        assert_eq!(app.selected_palette_index, 0);
+        app.palette_query.clear();
+        app.palette_backspace();
+        assert!(!app.show_palette);
+
+        // Every entry maps to a real command or a real navigation action.
+        for item in &app.palette_items {
+            assert!(
+                item.command.starts_with('/') || item.command == "session:switch",
+                "palette offers an unknown action: {}",
+                item.command
+            );
+        }
     }
 
     #[test]
