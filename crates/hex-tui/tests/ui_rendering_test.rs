@@ -178,6 +178,7 @@ fn test_screen_4_diagnostic_failure_card() {
         hidden_frames_count: 2,
         diagnosis: "Pipeline state was error instead of ready".to_string(),
         next_investigation: "Check pipeline initialization".to_string(),
+        detail_lines: Vec::new(),
     };
 
     terminal
@@ -214,6 +215,9 @@ fn test_screen_5_subagent_inspection_modal() {
             "grep initialize src/".to_string(),
         ],
         elapsed_seconds: 15,
+        status: "running".to_string(),
+        is_running: true,
+        activity_scroll: 0,
     });
 
     terminal.draw(|f| ui::draw(f, &app)).expect("Draw failed");

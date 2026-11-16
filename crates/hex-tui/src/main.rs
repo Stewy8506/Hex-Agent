@@ -377,6 +377,19 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     app.busy_started_at = None;
                     app.status_message = "Ready".to_string();
                 }
+                AppEvent::Subagents(Ok(agents)) => {
+                    app.set_subagent_telemetry(&agents);
+                    app.open_subagent_modal(&agents);
+                    app.status_message = if agents.is_empty() {
+                        "No subagents in this session".to_string()
+                    } else {
+                        format!("{} subagent(s)", agents.len())
+                    };
+                }
+                AppEvent::Subagents(Err(err)) => {
+                    app.status_message = "Ready".to_string();
+                    app.add_system_message(&err);
+                }
                 AppEvent::Ready => {
                     app.active_turn_has_streamed = false;
                     app.cancel_requested = false;
@@ -519,6 +532,19 @@ async fn handle_key_event(
         return Ok(());
     }
 
+    // Agents drill-down: arrows scroll the activity tail, e expands the prompt,
+    // Esc or Tab closes it. Checked before Esc so closing never interrupts a turn.
+    if app.active_subagent_modal.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Tab => app.close_subagent_modal(),
+            KeyCode::Up => app.scroll_subagent_activity(1),
+            KeyCode::Down => app.scroll_subagent_activity(-1),
+            KeyCode::Char('e') | KeyCode::Char('E') => app.toggle_subagent_prompt(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // Modal dismiss / help dismiss / interrupt busy execution
     if key.code == KeyCode::Esc {
         if app.show_palette {
@@ -597,9 +623,14 @@ async fn handle_key_event(
         return Ok(());
     }
 
-    // Tab key: accept slash suggestion if active, otherwise cycle mode (agent -> plan -> code)
+    // Tab: in a session it opens the agents drill-down (mode cycling lives on
+    // F3 and the palette's /mode); the start screen keeps cycling the mode.
     if key.code == KeyCode::Tab {
-        app.handle_tab();
+        if app.screen_state == ScreenState::Session {
+            open_agents_modal(app, acp_client, event_tx);
+        } else {
+            app.handle_tab();
+        }
         return Ok(());
     }
 
@@ -707,6 +738,30 @@ async fn handle_key_event(
     }
 
     Ok(())
+}
+
+/// Open the agents drill-down. With a live connection the records come from the
+/// server's SubagentManager; standalone has no subagents, so the modal says so.
+fn open_agents_modal(
+    app: &mut App,
+    acp_client: Option<&AcpClient>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+) {
+    match acp_client {
+        Some(client) => {
+            let client_clone = client.clone();
+            let sess_id = app.session_id.clone();
+            app.status_message = "Loading agents...".to_string();
+            tokio::spawn(async move {
+                let result = client_clone
+                    .session_subagents(&sess_id)
+                    .await
+                    .map_err(|err| format!("Could not load subagents: {}", err));
+                let _ = event_tx.send(AppEvent::Subagents(result));
+            });
+        }
+        None => app.open_subagent_modal(&[]),
+    }
 }
 
 /// Run a palette entry through the same dispatcher as typed slash commands.
@@ -975,6 +1030,7 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                             app.complete_tool_call(call_id, payload_str, dur.unwrap_or(0), false);
                         } else if ev_type == "error" {
                             app.complete_tool_call(call_id, payload_str, dur.unwrap_or(0), true);
+                            app.record_tool_failure(call_id, payload_str, dur.unwrap_or(0));
                         }
                     }
                 }
@@ -1383,6 +1439,23 @@ mod keymap_truth_tests {
                     cwd: String::new(),
                 });
             }
+            Scope::Agents => {
+                app.screen_state = ScreenState::Session;
+                app.active_subagent_modal = Some(hex_tui::app::SubagentModalState {
+                    name: "researcher".to_string(),
+                    prompt: "map every caller of GraphBuilder.edges".to_string(),
+                    is_expanded: false,
+                    activity_lines: vec![
+                        "read src/graph/index.ts".to_string(),
+                        "grep GraphBuilder".to_string(),
+                        "status   running".to_string(),
+                    ],
+                    elapsed_seconds: 42,
+                    status: "running".to_string(),
+                    is_running: true,
+                    activity_scroll: if b.label == "down" { 2 } else { 0 },
+                });
+            }
             Scope::Global => {}
         }
         if b.label == "f2" {
@@ -1397,7 +1470,10 @@ mod keymap_truth_tests {
             (Scope::Global, "ctrl+c") => assert!(app.should_quit),
             (Scope::Global, "f1") | (Scope::Start, "f1") => assert!(app.show_help),
             (_, "f2") => assert!(app.show_diff),
-            (Scope::Global, "f3") | (Scope::Session, "tab") => assert_ne!(app.mode, "agent"),
+            (Scope::Global, "f3") => assert_ne!(app.mode, "agent"),
+            (Scope::Session, "tab") => {
+                assert!(app.active_subagent_modal.is_some(), "tab must open the agents drill-down")
+            }
             (Scope::Session, "ctrl+p") => assert!(app.show_palette),
             (Scope::Session, "esc") => assert!(!app.is_busy),
             (Scope::Session, "enter") => assert!(app.dialogue_items.iter().any(|d| matches!(d,
@@ -1426,6 +1502,18 @@ mod keymap_truth_tests {
                 assert!(app.active_approval.is_none(), "{} left the modal open", b.label)
             }
             (Scope::Approval, "d") => assert!(app.show_diff),
+            (Scope::Agents, "up/down") => {
+                assert_eq!(app.active_subagent_modal.as_ref().unwrap().activity_scroll, 1)
+            }
+            (Scope::Agents, "down") => {
+                assert_eq!(app.active_subagent_modal.as_ref().unwrap().activity_scroll, 1)
+            }
+            (Scope::Agents, "e") => {
+                assert!(app.active_subagent_modal.as_ref().unwrap().is_expanded)
+            }
+            (Scope::Agents, "esc") | (Scope::Agents, "tab") => {
+                assert!(app.active_subagent_modal.is_none(), "{} left the modal open", b.label)
+            }
             other => panic!("advertised binding {other:?} has no verified effect"),
         }
     }
@@ -1442,13 +1530,14 @@ mod keymap_truth_tests {
 
     #[test]
     fn no_surface_advertises_a_binding_that_was_removed() {
-        for scope in [Scope::Session, Scope::Start, Scope::Palette, Scope::Approval] {
+        for scope in [Scope::Session, Scope::Start, Scope::Palette, Scope::Approval, Scope::Agents] {
             let hints = keymap::footer_hints(scope);
             assert!(!hints.is_empty());
-            for stale in ["tab agents", "ctrl+r", "@ files", "esc dismiss"] {
+            for stale in ["tab mode", "ctrl+r", "@ files", "esc dismiss"] {
                 assert!(!hints.contains(stale), "{scope:?} still advertises {stale:?}");
             }
         }
+        assert!(keymap::footer_hints(Scope::Session).contains("tab agents"));
         let listed: usize = keymap::help_sections().iter().map(|(_, rows)| rows.len()).sum();
         assert_eq!(listed, BINDINGS.len(), "help must list the whole table");
     }

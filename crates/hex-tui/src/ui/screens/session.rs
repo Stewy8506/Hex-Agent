@@ -223,6 +223,16 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
     } else {
         let mut block_started = false;
 
+        // The failure card belongs to the tool row that produced it, so it
+        // scrolls with the transcript instead of covering the newest lines.
+        let diag_target = app.active_diagnostic.as_ref().and_then(|diag| {
+            let status = format!("exit {}", diag.exit_code);
+            app.dialogue_items.iter().rposition(|item| {
+                matches!(item, DialogueItem::ToolCall(t) if t.exit_status.as_deref() == Some(status.as_str()))
+            })
+        });
+        let mut diag_placed = false;
+
         // Agent Thought / Commentary
         if let Some(ref thought) = app.current_thought {
             lines.push(Line::from(vec![
@@ -233,7 +243,7 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
         }
 
         // Dialogue messages and tool invocations, one blank row between blocks.
-        for item in &app.dialogue_items {
+        for (index, item) in app.dialogue_items.iter().enumerate() {
             if block_started {
                 lines.push(Line::raw(""));
             }
@@ -263,15 +273,20 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                     };
                     // The call parked on an approval is the one the operator must act on.
                     let awaiting = app.active_approval.is_some() && t.result.is_none();
+                    let failed = t.exit_status.as_deref().is_some_and(|s| s.starts_with("exit ") && s != "exit 0");
                     let wait_part = if awaiting { " · waiting for permission" } else { "" };
+                    let verb_color = if awaiting {
+                        theme.accent_blue
+                    } else if failed {
+                        theme.rose_fg
+                    } else {
+                        theme.text_dim
+                    };
 
                     lines.push(Line::from(vec![
                         spinner,
-                        Span::styled(
-                            format!("{:<7} ", t.tool),
-                            Style::default().fg(if awaiting { theme.accent_blue } else { theme.text_dim }),
-                        ),
-                        Span::styled(&t.args, Style::default().fg(theme.text_bright)),
+                        Span::styled(format!("{:<7} ", t.tool), Style::default().fg(verb_color)),
+                        Span::styled(crate::app::tool_args_label(&t.args), Style::default().fg(theme.text_bright)),
                         Span::styled(format!("{}{}{}", duration_part, status_part, wait_part), Style::default().fg(theme.text_extra_dim)),
                     ]));
 
@@ -285,7 +300,32 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                             }
                         }
                     }
+
+                    if Some(index) == diag_target {
+                        if let Some(ref diag) = app.active_diagnostic {
+                            lines.extend(crate::ui::screens::error_view::diagnostic_lines(
+                                diag,
+                                theme,
+                                stream_area.width as usize,
+                            ));
+                            diag_placed = true;
+                        }
+                    }
                 }
+            }
+        }
+
+        // A failure whose tool row is gone still gets its card.
+        if !diag_placed {
+            if let Some(ref diag) = app.active_diagnostic {
+                if block_started {
+                    lines.push(Line::raw(""));
+                }
+                lines.extend(crate::ui::screens::error_view::diagnostic_lines(
+                    diag,
+                    theme,
+                    stream_area.width as usize,
+                ));
             }
         }
 
@@ -381,17 +421,6 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                 buf,
             );
         }
-    }
-
-    // Inline Diagnostic Error Card (if any command or test failed)
-    if let Some(ref diag) = app.active_diagnostic {
-        let diag_area = Rect::new(
-            stream_area.x,
-            stream_area.bottom().saturating_sub(10),
-            stream_area.width,
-            10,
-        );
-        crate::ui::screens::error_view::render_diagnostic_card(diag, theme, diag_area, buf);
     }
 
     // ─────────────────────────────────────────────

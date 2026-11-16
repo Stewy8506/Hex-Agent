@@ -672,6 +672,87 @@ pub struct SessionCommandResponse {
     pub is_error: Option<bool>,
 }
 
+/// Parameters for `session/subagents`, the cockpit's agents drill-down query.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSubagentsParams {
+    pub session_id: String,
+}
+
+/// Structured outcome of a finished subagent run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentResultInfo {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub findings: Vec<String>,
+    #[serde(default)]
+    pub diff_summary: String,
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+    #[serde(default)]
+    pub duration_seconds: f64,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// One subagent record as the server's SubagentManager holds it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentInfo {
+    pub subagent_id: String,
+    #[serde(default)]
+    pub parent_task_id: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
+    pub depth: u32,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub started_at: f64,
+    #[serde(default)]
+    pub ended_at: Option<f64>,
+    #[serde(default)]
+    pub interrupted: bool,
+    #[serde(default)]
+    pub tool_calls_count: u64,
+    #[serde(default)]
+    pub result: Option<SubagentResultInfo>,
+}
+
+impl SubagentInfo {
+    /// True while the run is still in flight (the modal shows a spinner).
+    pub fn is_running(&self) -> bool {
+        matches!(self.status.as_str(), "pending" | "running")
+    }
+
+    /// Wall-clock seconds the run has taken, frozen once it ends.
+    pub fn elapsed_seconds(&self, now_epoch: f64) -> u64 {
+        // The server sends 0.0 when it never recorded a start; measuring from
+        // the epoch would print a billion-second run.
+        if self.started_at <= 0.0 {
+            return 0;
+        }
+        let end = self.ended_at.unwrap_or(now_epoch);
+        (end - self.started_at).max(0.0).round() as u64
+    }
+}
+
+/// Response returned from `session/subagents`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSubagentsResponse {
+    pub session_id: String,
+    #[serde(default)]
+    pub subagents: Vec<SubagentInfo>,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -69,6 +69,11 @@ pub struct SubagentModalState {
     pub is_expanded: bool,
     pub activity_lines: Vec<String>,
     pub elapsed_seconds: u64,
+    /// Lifecycle word from the server (`running`, `completed`, `failed`, …).
+    pub status: String,
+    pub is_running: bool,
+    /// Rows scrolled back from the newest activity line.
+    pub activity_scroll: usize,
 }
 
 /// Diagnostic failure detail for failed commands and tests.
@@ -85,6 +90,8 @@ pub struct DiagnosticFailure {
     pub hidden_frames_count: usize,
     pub diagnosis: String,
     pub next_investigation: String,
+    /// Raw failure output shown when no assertion structure could be parsed.
+    pub detail_lines: Vec<String>,
 }
 
 impl Default for DiagnosticFailure {
@@ -101,8 +108,241 @@ impl Default for DiagnosticFailure {
             hidden_frames_count: 0,
             diagnosis: String::new(),
             next_investigation: String::new(),
+            detail_lines: Vec::new(),
         }
     }
+}
+
+impl DiagnosticFailure {
+    /// Build the card from a tool's error payload. Every field comes from the
+    /// command, its arguments or its output — nothing is invented.
+    pub fn from_tool_error(tool: &str, args: &str, payload: &str, duration_ms: u64) -> Self {
+        let value: Option<serde_json::Value> = serde_json::from_str(payload).ok();
+        let field = |key: &str| -> String {
+            value
+                .as_ref()
+                .and_then(|v| v.get(key))
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => String::new(),
+                    other => other.to_string(),
+                })
+                .unwrap_or_default()
+        };
+
+        let exit_code = value
+            .as_ref()
+            .and_then(|v| v.get("exit_code"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1) as i32;
+
+        let command = command_text(args).unwrap_or_else(|| {
+            if args.trim().is_empty() { tool.to_string() } else { args.trim().to_string() }
+        });
+
+        // A terminal failure puts the output in stdout/stderr while `error` may
+        // hold only a short summary; read all of them so the detail is not lost.
+        let combined = ["stdout", "stderr", "error"]
+            .iter()
+            .map(|k| field(k))
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let error_text = if combined.trim().is_empty() {
+            payload.trim().to_string()
+        } else {
+            combined
+        };
+
+        let mut diag = Self {
+            command,
+            exit_code,
+            duration_str: format!("{:.1}s", duration_ms as f64 / 1000.0),
+            ..Self::default()
+        };
+
+        let mut detail: Vec<String> = Vec::new();
+        for raw in error_text.lines() {
+            let line = raw.trim_end();
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let lower = trimmed.to_lowercase();
+            if let Some(rest) = strip_prefix_ci(trimmed, "expected:") {
+                diag.expected = rest.trim().to_string();
+                continue;
+            }
+            if let Some(rest) = strip_prefix_ci(trimmed, "received:") {
+                diag.received = rest.trim().to_string();
+                continue;
+            }
+            // pytest: `E   assert ['b.ts'] == ['a.ts']`. Tests are written
+            // `assert actual == expected`, so the left operand is what arrived.
+            if let Some(rest) = trimmed.strip_prefix("E ").map(str::trim) {
+                if let Some(assertion) = rest.strip_prefix("assert ") {
+                    if let Some((lhs, rhs)) = assertion.split_once(" == ") {
+                        diag.expected = rhs.trim().to_string();
+                        diag.received = lhs.trim().to_string();
+                        continue;
+                    }
+                }
+            }
+            if trimmed.starts_with("at ") || trimmed.starts_with("File \"") {
+                diag.stack_trace.push(trimmed.to_string());
+                continue;
+            }
+            // pytest writes `FAILED path::name` in its summary and
+            // `path::name FAILED` per test under -q.
+            let locus = trimmed
+                .strip_prefix("FAILED ")
+                .map(|rest| rest.split(" - ").next().unwrap_or(rest).trim())
+                .or_else(|| trimmed.strip_suffix(" FAILED").map(str::trim));
+            if let Some(locus) = locus {
+                if let Some((file, name)) = locus.split_once("::") {
+                    diag.test_file = file.trim().to_string();
+                    diag.test_name = name.trim().to_string();
+                } else {
+                    diag.test_file = locus.to_string();
+                }
+                continue;
+            }
+            if lower.starts_with("error:") || lower.starts_with("failed:") {
+                if diag.diagnosis.is_empty() {
+                    diag.diagnosis = trimmed.to_string();
+                }
+            }
+            if detail.len() < 4 {
+                detail.push(trimmed.to_string());
+            }
+        }
+
+        // A stack frame names the file the failure came from.
+        if diag.test_file.is_empty() {
+            if let Some(frame) = diag.stack_trace.first() {
+                if let Some(path) = frame_path(frame) {
+                    diag.test_file = path;
+                }
+            }
+        }
+        diag.hidden_frames_count = diag.stack_trace.len().saturating_sub(1);
+        if diag.diagnosis.is_empty() {
+            diag.diagnosis = field("error");
+        }
+        if diag.diagnosis.is_empty() {
+            diag.diagnosis = detail.first().cloned().unwrap_or_default();
+        }
+        diag.detail_lines = detail;
+        diag
+    }
+}
+
+/// First non-empty line of a summary, clamped for the rail's detail row.
+fn first_line(text: &str, max: usize) -> String {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    clamp_chars(line, max)
+}
+
+fn clamp_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let tail: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{tail}…")
+}
+
+/// The drill-down transcript: only fields the SubagentManager actually recorded.
+fn subagent_activity(a: &hex_protocol::models::SubagentInfo) -> Vec<String> {
+    let mut lines = vec![format!("spawned  role={} depth={}", a.role, a.depth)];
+    if a.tool_calls_count > 0 {
+        lines.push(format!("tools    {} calls", a.tool_calls_count));
+    }
+    if let Some(r) = &a.result {
+        for finding in &r.findings {
+            if !finding.trim().is_empty() {
+                lines.push(finding.trim().to_string());
+            }
+        }
+        if !r.diff_summary.trim().is_empty() {
+            lines.push(format!("diff     {}", r.diff_summary.trim()));
+        }
+        for artifact in &r.artifacts {
+            lines.push(format!("artifact {artifact}"));
+        }
+        if !r.summary.trim().is_empty() {
+            lines.push(r.summary.trim().to_string());
+        }
+        if let Some(err) = r.error.as_ref().filter(|e| !e.trim().is_empty()) {
+            lines.push(format!("error    {}", err.trim()));
+        }
+    }
+    lines.push(format!("status   {}", a.status));
+    lines
+}
+
+/// What the transcript prints for a tool's arguments: the command or path the
+/// call names, rather than the raw JSON envelope the server sends.
+pub fn tool_args_label(args: &str) -> String {
+    if let Some(cmd) = command_text(args) {
+        return cmd;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(args) {
+        for key in ["path", "file_path", "pattern", "query", "symbol", "url"] {
+            if let Some(text) = value.get(key).and_then(|v| v.as_str()) {
+                if !text.is_empty() {
+                    return text.to_string();
+                }
+            }
+        }
+    }
+    args.to_string()
+}
+
+/// The command a tool invocation was asked to run, if its arguments name one.
+fn command_text(args: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(args).ok()?;
+    for key in ["command", "cmd", "command_line", "script"] {
+        if let Some(cmd) = value.get(key) {
+            let text = match cmd {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Array(items) => items
+                    .iter()
+                    .map(|i| i.as_str().unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                _ => continue,
+            };
+            if !text.trim().is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
+fn strip_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    if text.len() >= prefix.len() && text[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&text[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+/// Pull `path:line:col` out of a JS `at fn (path:1:2)` or Python `File "path", line N` frame.
+fn frame_path(frame: &str) -> Option<String> {
+    if let Some(start) = frame.find("File \"") {
+        let rest = &frame[start + 6..];
+        let end = rest.find('"')?;
+        return Some(rest[..end].to_string());
+    }
+    let open = frame.rfind('(')?;
+    let close = frame.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let locus = &frame[open + 1..close];
+    let path = locus.split(':').next()?.trim();
+    if path.is_empty() { None } else { Some(path.to_string()) }
 }
 
 /// Item in the command & navigation palette overlay.
@@ -1831,6 +2071,134 @@ impl App {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Agents drill-down
+    // -----------------------------------------------------------------------
+
+    /// Refresh the rail's agents section from the server's subagent records.
+    pub fn set_subagent_telemetry(&mut self, agents: &[hex_protocol::models::SubagentInfo]) {
+        self.subagents = agents
+            .iter()
+            .map(|a| {
+                let failed = matches!(a.status.as_str(), "failed" | "timed_out" | "interrupted")
+                    || a.result.as_ref().and_then(|r| r.error.as_ref()).is_some();
+                let status = if a.is_running() {
+                    "running".to_string()
+                } else if failed {
+                    "fail".to_string()
+                } else if a.status == "completed" {
+                    "pass".to_string()
+                } else {
+                    a.status.clone()
+                };
+                let detail = a
+                    .result
+                    .as_ref()
+                    .map(|r| r.summary.clone())
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| a.goal.clone());
+                SubagentTelemetry {
+                    name: if a.role.is_empty() { a.subagent_id.clone() } else { a.role.clone() },
+                    status,
+                    detail: first_line(&detail, 48),
+                    is_running: a.is_running(),
+                    has_failed: failed,
+                }
+            })
+            .collect();
+    }
+
+    /// Open the drill-down on the newest live subagent, or the newest record.
+    /// An empty registry opens the modal's honest empty state.
+    pub fn open_subagent_modal(&mut self, agents: &[hex_protocol::models::SubagentInfo]) {
+        let chosen = agents
+            .iter()
+            .find(|a| a.is_running())
+            .or_else(|| agents.last());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        self.active_subagent_modal = Some(match chosen {
+            None => SubagentModalState {
+                name: String::new(),
+                prompt: String::new(),
+                is_expanded: false,
+                activity_lines: Vec::new(),
+                elapsed_seconds: 0,
+                status: "idle".to_string(),
+                is_running: false,
+                activity_scroll: 0,
+            },
+            Some(a) => SubagentModalState {
+                name: if a.role.is_empty() { a.subagent_id.clone() } else { a.role.clone() },
+                prompt: a.goal.clone(),
+                is_expanded: false,
+                activity_lines: subagent_activity(a),
+                elapsed_seconds: a.elapsed_seconds(now),
+                status: a.status.clone(),
+                is_running: a.is_running(),
+                activity_scroll: 0,
+            },
+        });
+    }
+
+    pub fn close_subagent_modal(&mut self) {
+        self.active_subagent_modal = None;
+    }
+
+    /// Scroll the activity tail: positive moves back toward older lines.
+    pub fn scroll_subagent_activity(&mut self, delta: i32) {
+        if let Some(modal) = self.active_subagent_modal.as_mut() {
+            let max = modal.activity_lines.len().saturating_sub(1) as i32;
+            modal.activity_scroll =
+                (modal.activity_scroll as i32 + delta).clamp(0, max) as usize;
+        }
+    }
+
+    pub fn toggle_subagent_prompt(&mut self) {
+        if let Some(modal) = self.active_subagent_modal.as_mut() {
+            modal.is_expanded = !modal.is_expanded;
+        }
+    }
+
+    /// Record a failed tool call as the inline diagnostic card.
+    pub fn record_tool_failure(&mut self, call_id: &str, payload: &str, duration_ms: u64) {
+        let (tool, args) = self
+            .dialogue_items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                DialogueItem::ToolCall(tc) if tc.id == call_id => {
+                    Some((tc.tool.clone(), tc.args.clone()))
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                self.dialogue_items.iter().rev().find_map(|item| match item {
+                    DialogueItem::ToolCall(tc) if tc.exit_status.as_deref() == Some("ERROR") => {
+                        Some((tc.tool.clone(), tc.args.clone()))
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or_else(|| ("tool".to_string(), String::new()));
+
+        let diag = DiagnosticFailure::from_tool_error(&tool, &args, payload, duration_ms);
+        // The transcript row carries the exit code, as the mockup's header does.
+        let status = format!("exit {}", diag.exit_code);
+        for item in self.dialogue_items.iter_mut().rev() {
+            if let DialogueItem::ToolCall(tc) = item {
+                if tc.id == call_id || tc.exit_status.as_deref() == Some("ERROR") {
+                    tc.exit_status = Some(status);
+                    break;
+                }
+            }
+        }
+        self.active_diagnostic = Some(diag);
+        self.scroll_dialogue_to_bottom();
+    }
+
     /// Cycle agent execution mode: agent -> plan -> code -> agent
     pub fn cycle_mode(&mut self) -> String {
         self.mode = match self.mode.as_str() {
@@ -1870,7 +2238,8 @@ impl App {
         };
     }
 
-    /// Handle Tab key: cycle mode (agent -> plan -> code).
+    /// Handle Tab on the start screen: cycle mode (agent -> plan -> code).
+    /// In a session Tab opens the agents drill-down instead (see main.rs).
     pub fn handle_tab(&mut self) {
         let next_mode = self.cycle_mode();
         self.status_message = format!("Switched mode to: {}", next_mode.to_uppercase());
@@ -1966,6 +2335,8 @@ impl App {
         self.history_index = None;
         self.input_buffer.clear();
         self.cursor_pos = 0;
+        // A new prompt retires the previous turn's failure card.
+        self.active_diagnostic = None;
 
         Some(trimmed)
     }

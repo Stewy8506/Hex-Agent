@@ -13,6 +13,7 @@ pub enum Scope {
     Start,
     Palette,
     Approval,
+    Agents,
 }
 
 impl Scope {
@@ -23,6 +24,7 @@ impl Scope {
             Scope::Start => "Start screen",
             Scope::Palette => "Command palette",
             Scope::Approval => "Operator approvals",
+            Scope::Agents => "Agents drill-down",
         }
     }
 }
@@ -55,7 +57,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyCode::F(2), ctrl: false, label: "f2", action: "diff pane", scope: Scope::Global, footer: false },
     Binding { key: KeyCode::F(3), ctrl: false, label: "f3", action: "cycle mode", scope: Scope::Global, footer: false },
     Binding { key: KeyCode::Char('p'), ctrl: true, label: "ctrl+p", action: "commands", scope: Scope::Session, footer: true },
-    Binding { key: KeyCode::Tab, ctrl: false, label: "tab", action: "mode", scope: Scope::Session, footer: true },
+    Binding { key: KeyCode::Tab, ctrl: false, label: "tab", action: "agents", scope: Scope::Session, footer: true },
     Binding { key: KeyCode::Esc, ctrl: false, label: "esc", action: "interrupt", scope: Scope::Session, footer: true },
     Binding { key: KeyCode::Enter, ctrl: false, label: "enter", action: "send", scope: Scope::Session, footer: false },
     Binding { key: KeyCode::PageUp, ctrl: false, label: "pgup", action: "scroll up", scope: Scope::Session, footer: false },
@@ -80,6 +82,11 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyCode::Char('n'), ctrl: false, label: "n", action: "deny", scope: Scope::Approval, footer: false },
     Binding { key: KeyCode::Char('d'), ctrl: false, label: "d", action: "diff", scope: Scope::Approval, footer: false },
     Binding { key: KeyCode::Esc, ctrl: false, label: "esc", action: "deny", scope: Scope::Approval, footer: true },
+    Binding { key: KeyCode::Up, ctrl: false, label: "up/down", action: "scroll", scope: Scope::Agents, footer: true },
+    Binding { key: KeyCode::Down, ctrl: false, label: "down", action: "scroll", scope: Scope::Agents, footer: false },
+    Binding { key: KeyCode::Char('e'), ctrl: false, label: "e", action: "expand prompt", scope: Scope::Agents, footer: true },
+    Binding { key: KeyCode::Esc, ctrl: false, label: "esc", action: "close", scope: Scope::Agents, footer: true },
+    Binding { key: KeyCode::Tab, ctrl: false, label: "tab", action: "close", scope: Scope::Agents, footer: false },
 ];
 
 /// One-line hint string for a footer or badge row.
@@ -98,7 +105,7 @@ pub fn start_badges() -> Vec<&'static Binding> {
 }
 
 pub fn help_sections() -> Vec<(Scope, Vec<&'static Binding>)> {
-    [Scope::Global, Scope::Session, Scope::Start, Scope::Palette, Scope::Approval]
+    [Scope::Global, Scope::Session, Scope::Start, Scope::Palette, Scope::Approval, Scope::Agents]
         .iter()
         .map(|scope| (*scope, BINDINGS.iter().filter(|b| b.scope == *scope).collect()))
         .collect()
@@ -123,7 +130,7 @@ mod tests {
 
     #[test]
     fn every_scope_has_a_footer_and_no_duplicate_keys() {
-        for scope in [Scope::Session, Scope::Start, Scope::Palette, Scope::Approval] {
+        for scope in [Scope::Session, Scope::Start, Scope::Palette, Scope::Approval, Scope::Agents] {
             let hints = footer_hints(scope);
             assert!(!hints.is_empty(), "{scope:?} has no footer hints");
             let mut keys: Vec<(KeyCode, bool)> = BINDINGS

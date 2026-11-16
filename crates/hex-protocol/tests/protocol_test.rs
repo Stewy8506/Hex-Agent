@@ -257,3 +257,94 @@ deleted file mode 100644
     assert_eq!(rows[0].left_type, Some(DiffLineType::Deleted));
     assert_eq!(rows[0].right_content, None);
 }
+
+#[tokio::test]
+async fn test_session_subagents_wire_contract() {
+    let (client_read, mut server_write) = tokio::io::duplex(16384);
+    let (server_read, client_write) = tokio::io::duplex(16384);
+    let client = AcpClient::from_streams(client_read, client_write);
+
+    // Exactly the shape harness_core.client.acp._subagent_wire emits.
+    let payload = serde_json::json!({
+        "sessionId": "ses_1",
+        "subagents": [
+            {
+                "subagentId": "sub_1",
+                "parentTaskId": "tsk_1",
+                "role": "researcher",
+                "goal": "Map the approval flow.",
+                "depth": 1,
+                "status": "running",
+                "startedAt": 1000.0,
+                "endedAt": null,
+                "interrupted": false,
+                "toolCallsCount": 7
+            },
+            {
+                "subagentId": "sub_2",
+                "parentTaskId": "tsk_1",
+                "role": "test-verifier",
+                "goal": "Verify the ordering assertions.",
+                "depth": 2,
+                "status": "completed",
+                "startedAt": 1000.0,
+                "endedAt": 1042.0,
+                "interrupted": false,
+                "toolCallsCount": 3,
+                "result": {
+                    "status": "completed",
+                    "summary": "All ordering assertions hold.",
+                    "findings": ["paths sort case-sensitively"],
+                    "diffSummary": "1 file changed",
+                    "artifacts": ["report.md"],
+                    "durationSeconds": 42.0,
+                    "error": null
+                }
+            }
+        ]
+    });
+
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let line = lines.next_line().await.unwrap().unwrap();
+        let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+        assert_eq!(req.method, "session/subagents");
+        let params = req.params.unwrap();
+        assert_eq!(params["sessionId"], "ses_1");
+        let resp = serde_json::json!({"jsonrpc": "2.0", "id": req.id, "result": payload});
+        let text = serde_json::to_string(&resp).unwrap() + "\n";
+        server_write.write_all(text.as_bytes()).await.unwrap();
+    });
+
+    let agents = client.session_subagents("ses_1").await.unwrap();
+    assert_eq!(agents.len(), 2);
+
+    assert!(agents[0].is_running());
+    assert!(agents[0].result.is_none());
+    assert_eq!(agents[0].tool_calls_count, 7);
+    assert_eq!(agents[0].elapsed_seconds(1042.0), 42);
+
+    assert!(!agents[1].is_running());
+    assert_eq!(agents[1].depth, 2);
+    assert_eq!(agents[1].elapsed_seconds(9999.0), 42);
+    let result = agents[1].result.as_ref().unwrap();
+    assert_eq!(result.summary, "All ordering assertions hold.");
+    assert_eq!(result.findings, vec!["paths sort case-sensitively"]);
+    assert_eq!(result.diff_summary, "1 file changed");
+    assert_eq!(result.artifacts, vec!["report.md"]);
+    assert_eq!(result.duration_seconds, 42.0);
+    assert!(result.error.is_none());
+}
+
+#[test]
+fn test_subagent_record_tolerates_missing_optional_fields() {
+    // list_active_subagents omits the result block entirely.
+    let raw = r#"{"sessionId":"s","subagents":[{"subagentId":"sub_9"}]}"#;
+    let resp: hex_protocol::models::SessionSubagentsResponse = serde_json::from_str(raw).unwrap();
+    let agent = &resp.subagents[0];
+    assert_eq!(agent.subagent_id, "sub_9");
+    assert_eq!(agent.status, "");
+    assert!(!agent.is_running());
+    assert!(agent.result.is_none());
+    assert_eq!(agent.elapsed_seconds(50.0), 0);
+}

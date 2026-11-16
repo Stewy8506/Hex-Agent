@@ -104,6 +104,7 @@ fn test_screen_4_diagnostic_failure_card_rendering() {
         hidden_frames_count: 4,
         diagnosis: "Telemetry mismatch in test harness".to_string(),
         next_investigation: "Investigate tests/test_screens.rs".to_string(),
+        detail_lines: Vec::new(),
     };
 
     let backend = TestBackend::new(100, 20);
@@ -152,6 +153,9 @@ fn test_screen_5_subagent_modal_rendering() {
             "check telemetry counts".to_string(),
         ],
         elapsed_seconds: 42,
+        status: "running".to_string(),
+        is_running: true,
+        activity_scroll: 0,
     });
 
     let backend = TestBackend::new(120, 36);

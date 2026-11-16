@@ -202,6 +202,8 @@ class ACPServer:
                 res = self._handle_session_approval_decision(params)
             elif method == "session/command":
                 res = self._handle_session_command(params)
+            elif method == "session/subagents":
+                res = self._handle_session_subagents(params)
             elif method == "ping":
                 res = {"pong": True}
             else:
@@ -422,6 +424,14 @@ class ACPServer:
             else:
                 call_id = active_tool_calls.pop(tool_id, f"{tool_id}_{int(time.time() * 1000)}")
 
+            if isinstance(payload, (dict, list)):
+                payload_text = json.dumps(payload, default=str)
+            else:
+                payload_text = str(payload)
+            # A failure carries the stderr/exit detail the client's diagnostic
+            # card renders; successful calls only need the short result chip.
+            payload_limit = 4000 if event_type == "error" else 300
+
             self._emit({
                 "jsonrpc": "2.0",
                 "method": "session/update",
@@ -433,7 +443,7 @@ class ACPServer:
                         "toolId": tool_id,
                         "callId": call_id,
                         "durationMs": dur_ms,
-                        "payload": json.dumps(payload, default=str)[:300] if isinstance(payload, (dict, list)) else str(payload)[:300],
+                        "payload": payload_text[:payload_limit],
                     },
                 },
             })
@@ -652,6 +662,67 @@ class ACPServer:
             "decision": decision,
             "status": "applied" if applied else "acknowledged",
         }
+
+    def _handle_session_subagents(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Structured subagent telemetry for this session's own tasks.
+
+        The cockpit's agents rail and drill-down modal render from this, so it
+        reports only what the SubagentManager recorded — never invented activity.
+        """
+        sid = params.get("sessionId") or params.get("session_id") or "default"
+        with self._lock:
+            sess = self.sessions.get(sid)
+        if sess is None:
+            sess = self._load_session_from_disk(sid)
+
+        task_ids: set[str] = set()
+        if sess is not None:
+            if sess.last_task_id:
+                task_ids.add(str(sess.last_task_id))
+            for turn in sess.history:
+                tid = turn.get("task_id")
+                if tid:
+                    task_ids.add(str(tid))
+
+        records: list[dict[str, Any]] = []
+        mgr = getattr(self.orchestrator, "subagent_manager", None)
+        if mgr is not None and task_ids:
+            for rec in mgr.list_active_subagents():
+                if rec.get("parent_task_id") not in task_ids:
+                    continue
+                try:
+                    full = mgr.get_subagent_status(rec["subagent_id"])
+                except Exception:
+                    full = dict(rec)
+                records.append(self._subagent_wire(full))
+        return {"sessionId": sid, "subagents": records}
+
+    @staticmethod
+    def _subagent_wire(rec: dict[str, Any]) -> dict[str, Any]:
+        wire: dict[str, Any] = {
+            "subagentId": rec.get("subagent_id", ""),
+            "parentTaskId": rec.get("parent_task_id", ""),
+            "role": rec.get("role", "general"),
+            "goal": rec.get("goal", ""),
+            "depth": int(rec.get("depth") or 0),
+            "status": rec.get("status", "pending"),
+            "startedAt": float(rec.get("started_at") or 0.0),
+            "endedAt": rec.get("ended_at"),
+            "interrupted": bool(rec.get("interrupted")),
+            "toolCallsCount": int(rec.get("tool_calls_count") or 0),
+        }
+        result = rec.get("result")
+        if result:
+            wire["result"] = {
+                "status": result.get("status", wire["status"]),
+                "summary": result.get("summary", ""),
+                "findings": list(result.get("findings") or []),
+                "diffSummary": result.get("diff_summary", ""),
+                "artifacts": list(result.get("artifacts") or []),
+                "durationSeconds": float(result.get("duration_seconds") or 0.0),
+                "error": result.get("error"),
+            }
+        return wire
 
     def _handle_session_command(self, params: dict[str, Any]) -> dict[str, Any]:
         sid = params.get("sessionId") or params.get("session_id", "default")

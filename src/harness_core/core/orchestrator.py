@@ -1040,18 +1040,28 @@ class HarnessOrchestrator:
                 t0 = time.time()
                 if tool_cb:
                     tool_cb("start", tid, st.get("args", {}))
-                inv_res = self.gateway.invoke(
-                    task_id=task_id,
-                    attempt_id=attempt_id,
-                    step_id=st.get("step_id", f"fp_{idx}"),
-                    sequence_in_step=idx,
-                    tool_id=tid,
-                    args=st.get("args", {}),
-                    workspace_dir=source_ws,
-                )
+                try:
+                    inv_res = self.gateway.invoke(
+                        task_id=task_id,
+                        attempt_id=attempt_id,
+                        step_id=st.get("step_id", f"fp_{idx}"),
+                        sequence_in_step=idx,
+                        tool_id=tid,
+                        args=st.get("args", {}),
+                        workspace_dir=source_ws,
+                    )
+                except (PolicyBlockedError, ApprovalRequiredInterrupt):
+                    # Operator-facing policy outcomes are reported by the
+                    # approval flow, not as a tool diagnostic.
+                    raise
+                except Exception as exc:
+                    if tool_cb:
+                        tool_cb("error", tid, {"ok": False, "error": str(exc)}, int((time.time() - t0) * 1000))
+                    raise
                 dur_ms = int((time.time() - t0) * 1000)
                 if tool_cb:
-                    tool_cb("complete", tid, inv_res, dur_ms)
+                    failed = isinstance(inv_res, dict) and inv_res.get("ok") is False
+                    tool_cb("error" if failed else "complete", tid, inv_res, dur_ms)
                 tool_results.append({
                     "step_id": st.get("step_id", f"fp_{idx}"),
                     "tool_id": tid,

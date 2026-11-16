@@ -5,7 +5,7 @@ use futures::{FutureExt, StreamExt};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use hex_protocol::models::JsonRpcNotification;
+use hex_protocol::models::{JsonRpcNotification, SubagentInfo};
 
 /// Unified event type delivered to the main loop.
 #[derive(Debug, Clone)]
@@ -17,6 +17,8 @@ pub enum AppEvent {
     Notification(JsonRpcNotification),
     AcpMessage(String),
     AssistantResponse(String),
+    /// Result of the agents drill-down query: records, or why they are unavailable.
+    Subagents(Result<Vec<SubagentInfo>, String>),
     Ready,
     Error(String),
 }

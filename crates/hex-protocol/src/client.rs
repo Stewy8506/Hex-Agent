@@ -20,8 +20,9 @@ use crate::models::{
     InitializeResponse, JsonRpcNotification, JsonRpcRequest, RequestId, SessionCancelParams,
     SessionCancelResponse, SessionCommandParams, SessionCommandResponse, SessionListItem,
     SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
-    SessionNewResponse, SessionPromptParams, SessionPromptResponse, ToolCallParams,
-    ToolCallResponse, ToolDefinition, ToolsListResponse,
+    SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionSubagentsParams,
+    SessionSubagentsResponse, SubagentInfo, ToolCallParams, ToolCallResponse, ToolDefinition,
+    ToolsListResponse,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -526,6 +527,15 @@ impl AcpClient {
             args: args.map(|s| s.to_string()),
         };
         self.send_request("session/command", params).await
+    }
+
+    /// Query the subagents this session's tasks have spawned.
+    pub async fn session_subagents(&self, session_id: &str) -> Result<Vec<SubagentInfo>, AcpError> {
+        let params = SessionSubagentsParams {
+            session_id: session_id.to_string(),
+        };
+        let resp: SessionSubagentsResponse = self.send_request("session/subagents", params).await?;
+        Ok(resp.subagents)
     }
 
     /// Ping server for liveness check.
