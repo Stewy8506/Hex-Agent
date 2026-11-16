@@ -840,18 +840,23 @@ def _resolve_provider_label(orchestrator: Any = None, model_id: str = "") -> str
     if router is not None:
         c_prov = getattr(router, "cloud_provider", None)
         if c_prov is not None:
-            pid = getattr(c_prov, "provider_id", "") or ""
-            ptype = str(getattr(c_prov, "provider_type", "") or "")
+            pid = str(getattr(c_prov, "provider_id", "") or "")
+            raw_ptype = getattr(c_prov, "provider_type", "")
+            # provider_type may be an enum whose str() is "CloudProviderType.X".
+            ptype = str(getattr(raw_ptype, "value", raw_ptype) or "")
             cls_name = type(c_prov).__name__.lower()
             if "antigravity" in pid or "antigravity" in ptype or "antigravity" in cls_name:
                 return "Google Antigravity"
-            if "anthropic" in pid or "anthropic" in ptype:
-                return "Anthropic"
-            if "openai" in pid or "openai" in ptype:
-                return "OpenAI"
-            if "gemini" in pid or "gemini" in ptype:
-                return "Google Gemini"
-            if "local" in pid or "mlx" in pid or "ollama" in pid:
+            from harness_core.providers.registry import get_provider_spec
+
+            for candidate in (ptype, pid):
+                key = candidate.strip().lower()
+                if not key:
+                    continue
+                spec = get_provider_spec(key)
+                if spec is not None:
+                    return spec.display_name
+            if "local" in pid or "mlx" in pid or "ollama" in pid or "local" in cls_name:
                 return "Local AI"
     mid = (model_id or "").lower()
     if "claude" in mid or "sonnet" in mid or "haiku" in mid:
@@ -862,7 +867,7 @@ def _resolve_provider_label(orchestrator: Any = None, model_id: str = "") -> str
         if (Path.home() / ".gemini" / "antigravity").exists():
             return "Google Antigravity"
         return "Google Gemini"
-    return "Google Antigravity"
+    return "Unknown provider"
 
 
 def render_hex_splash(

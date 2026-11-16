@@ -101,7 +101,7 @@ fn run_headless_check(args: Args) -> Result<()> {
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend)?;
 
-    let model_str = args.model.as_deref().unwrap_or("gemini-3.8-flash-tiered");
+    let model_str = args.model.as_deref().unwrap_or("");
     let mut app = App::with_workspace(
         &args.project,
         model_str,
@@ -193,7 +193,7 @@ fn run_headless_check(args: Args) -> Result<()> {
 
 /// Primary interactive application loop.
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) -> Result<()> {
-    let model_str = args.model.as_deref().unwrap_or("gemini-3.8-flash-tiered");
+    let model_str = args.model.as_deref().unwrap_or("");
     let mut app = App::with_workspace(
         &args.project,
         model_str,

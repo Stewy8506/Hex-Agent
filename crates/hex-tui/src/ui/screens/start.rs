@@ -158,10 +158,10 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
             Span::raw("  "),
             Span::styled("build", Style::default().fg(Color::Rgb(242, 242, 242))),
             Span::styled(" · ", Style::default().fg(Color::Rgb(74, 74, 74))),
-            Span::styled(&app.model_name, Style::default().fg(Color::Rgb(140, 140, 140))),
+            Span::styled(app.model_label(), Style::default().fg(Color::Rgb(140, 140, 140))),
         ];
 
-        let left_len = 2 + 5 + 3 + app.model_name.len();
+        let left_len = 2 + 5 + 3 + app.model_label().chars().count();
         let right_label = "enter send  ";
         let spaces_needed = (p_inner.width as usize)
             .saturating_sub(left_len + right_label.len());

@@ -73,7 +73,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let telemetry_spans = vec![
         Span::styled("Model: ", Style::default().fg(s.muted)),
         Span::styled(
-            format!("[{}] ", app.model_name),
+            format!("[{}] ", app.model_label()),
             Style::default()
                 .fg(s.accent)
                 .add_modifier(Modifier::BOLD),

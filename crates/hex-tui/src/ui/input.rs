@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("{} ", app.git_branch), Style::default().fg(skin.accent)),
         Span::styled("· ", Style::default().fg(skin.muted)),
         Span::styled(
-            format!("{} ", app.model_name),
+            format!("{} ", app.model_label()),
             Style::default().fg(skin.heading),
         ),
     ]).alignment(Alignment::Left);

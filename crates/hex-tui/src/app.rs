@@ -998,8 +998,9 @@ impl App {
         let resume_sessions = load_real_resume_sessions(&ws);
 
         let model_str = model_name.into();
+        // Unknown until the runtime reports it; never invent a model.
         let resolved_model = if model_str.is_empty() || model_str == "default" {
-            "gemini-3.8-flash-tiered".to_string()
+            String::new()
         } else {
             model_str
         };
@@ -1011,7 +1012,7 @@ impl App {
             project_id: project_id.into(),
             model_name: resolved_model,
             agent_name: std::env::var("HEX_AGENT_NAME").unwrap_or_else(|_| "HEX".to_string()),
-            provider_name: "Google Antigravity".to_string(),
+            provider_name: String::new(),
             cow_mode: cow_mode.into(),
             git_branch: branch,
             git_sha: sha,
@@ -1020,7 +1021,7 @@ impl App {
             skills_count: 83,
             splash_text: None,
             fencing_token: 1,
-            connection_status: "Connected".to_string(),
+            connection_status: "Connecting".to_string(),
             skin_name: detect_default_skin(),
 
             screen_state: ScreenState::Start,
@@ -1160,6 +1161,24 @@ impl App {
             timestamp: chrono_now(),
         }));
         self.scroll_dialogue_to_bottom();
+    }
+
+    /// Model label for display. Empty means the runtime has not reported one.
+    pub fn model_label(&self) -> &str {
+        if self.model_name.is_empty() {
+            "connecting…"
+        } else {
+            &self.model_name
+        }
+    }
+
+    /// Provider label for display, or a placeholder until the runtime reports it.
+    pub fn provider_label(&self) -> &str {
+        if self.provider_name.is_empty() {
+            "unknown provider"
+        } else {
+            &self.provider_name
+        }
     }
 
     /// Toggle between showing top 3 and all previous resume sessions.
@@ -2261,6 +2280,15 @@ mod tests {
 
         // Out of bounds deletion returns false
         assert!(!app.delete_resume_session(99));
+    }
+
+    #[test]
+    fn test_identity_labels_are_unknown_until_reported() {
+        let app = App::new("p1", "", "cow");
+        assert_eq!(app.model_name, "", "must not invent a model");
+        assert_eq!(app.model_label(), "connecting…");
+        assert_eq!(app.provider_label(), "unknown provider");
+        assert_eq!(app.connection_status, "Connecting");
     }
 
     #[test]

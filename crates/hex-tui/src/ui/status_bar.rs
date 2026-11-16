@@ -46,7 +46,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(s.category).add_modifier(Modifier::BOLD),
         ),
         Span::styled("· ", Style::default().fg(s.muted)),
-        Span::styled(format!("{} ", app.model_name), Style::default().fg(s.text)),
+        Span::styled(format!("{} ", app.model_label()), Style::default().fg(s.text)),
         Span::styled("│ ", Style::default().fg(s.border)),
         Span::styled(
             activity,

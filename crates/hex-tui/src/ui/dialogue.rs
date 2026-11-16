@@ -647,9 +647,9 @@ fn render_hex_intro_fallback(app: &App, width: u16) -> Vec<Line<'static>> {
             Style::default().fg(s.heading).add_modifier(Modifier::BOLD),
         )));
         out.push(Line::from(vec![
-            Span::styled(format!("{} ", app.model_name), Style::default().fg(s.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} ", app.model_label()), Style::default().fg(s.accent).add_modifier(Modifier::BOLD)),
             Span::styled("· ", Style::default().fg(s.muted)),
-            Span::styled(app.provider_name.clone(), Style::default().fg(s.category)),
+            Span::styled(app.provider_label().to_string(), Style::default().fg(s.category)),
         ]));
         out.push(Line::from(Span::styled(
             format!("{} tools · {} skills", app.tools_count, app.skills_count),
@@ -706,9 +706,9 @@ fn render_hex_intro_fallback(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::styled(format!("  (upstream {})", app.git_sha), Style::default().fg(s.muted)),
     ]));
     right_lines.push(Line::from(vec![
-        Span::styled(format!("{} ", app.model_name), Style::default().fg(s.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{} ", app.model_label()), Style::default().fg(s.accent).add_modifier(Modifier::BOLD)),
         Span::styled("· ", Style::default().fg(s.muted)),
-        Span::styled(app.provider_name.clone(), Style::default().fg(s.category)),
+        Span::styled(app.provider_label().to_string(), Style::default().fg(s.category)),
     ]));
     right_lines.push(Line::from(Span::styled(app.workspace_path.clone(), Style::default().fg(s.muted))));
     right_lines.push(Line::from(Span::styled(format!("Session: {}", app.session_id), Style::default().fg(s.muted))));

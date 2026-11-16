@@ -384,7 +384,7 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
     let mut footer_left = vec![
         status_tag,
         Span::styled(" · ", Style::default().fg(theme.text_extra_dim)),
-        Span::styled(&app.model_name, Style::default().fg(theme.text_dim)),
+        Span::styled(app.model_label(), Style::default().fg(theme.text_dim)),
         Span::styled(" · ", Style::default().fg(theme.text_extra_dim)),
         Span::styled(format!("{:.1}k tokens", app.tokens_used as f64 / 1000.0), Style::default().fg(theme.text_dim)),
     ];
@@ -394,7 +394,7 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
     } else {
         "esc interrupt   ·   ctrl+p commands   ·   tab agents"
     };
-    let left_len = 5 + 3 + app.model_name.len() + 3 + 12;
+    let left_len = 5 + 3 + app.model_label().chars().count() + 3 + 12;
     let spaces = (footer_area.width as usize).saturating_sub(left_len + footer_right.len());
     footer_left.push(Span::raw(" ".repeat(spaces)));
     footer_left.push(Span::styled(footer_right, Style::default().fg(theme.text_dim)));
