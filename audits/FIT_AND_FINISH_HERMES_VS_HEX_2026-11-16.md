@@ -5,6 +5,24 @@
 **Hermes reference snapshot:** `71b67652`, local checkout under `benchmarks/hermes-agent`  
 **Scope:** Product completeness, interaction reliability, distribution, engineering workflow, documentation credibility, and repository organization.
 
+## Resolution status (16 November 2026)
+
+This audit describes the `57cbfdb` snapshot and is kept as written. All eleven findings were addressed on `experimental-features` (one commit per finding) and squash-merged into `main` as `79e91da`.
+
+| Finding | Fix commit | Remaining follow-ups |
+| --- | --- | --- |
+| F01 Simulated command success | `2fd174c` | — |
+| F02 Desktop is a rendered shell | `721c7b3` | Source builds only; no `hex desktop` subcommand or packaged binary. |
+| F03 Distribution gap | `85e8529` | — |
+| F04 Wire-protocol disagreement | `644c702` | — |
+| F05 Conversation lifecycle | `8ef4ccc` | — |
+| F06 Inconsistent surfaces | `adaf46e` | — |
+| F07 Narrow CI | `4978c67` | — |
+| F08 Environment-dependent config | `b4af826` | — |
+| F09 Onboarding over-reporting | `6f8afc0` | — |
+| F10 Documentation credibility | `9dabf2e` | — |
+| F11 Interaction design | `150b9cf` | Desktop token gauge, reasoning folds, and inline diffs are not yet fed by ACP events; the approval lease toggle is not yet honored server-side; Settings is unavailable. |
+
 ## Executive verdict
 
 **HEX does not primarily have a styling problem. It has a product-completion problem: substantial infrastructure is not consistently connected to the interfaces, installers, and promises presented to users.**

@@ -2,7 +2,7 @@
 
 An in-depth architectural and empirical comparison between **HEX Agent** and leading autonomous engineering agents: **Hermes Agent** (Nous Research), **OpenClaw**, **Claude Code** (Anthropic), and **Aider**.
 
-> **Accuracy note (2026-11-16):** This document predates the empirical fit-and-finish audit and contains aspirational claims. Verified gaps and current status are tracked in [audits/FIT_AND_FINISH_HERMES_VS_HEX_2026-11-16.md](../audits/FIT_AND_FINISH_HERMES_VS_HEX_2026-11-16.md). In particular: the GPUI desktop cockpit is experimental (UI shell only, chat wiring in progress), performance figures below are design targets rather than measured results, and HEX does not claim full feature parity with Hermes.
+> **Accuracy note (2026-11-16):** This document predates the empirical fit-and-finish audit and contains aspirational claims. Verified gaps and current status are tracked in [audits/FIT_AND_FINISH_HERMES_VS_HEX_2026-11-16.md](../audits/FIT_AND_FINISH_HERMES_VS_HEX_2026-11-16.md). In particular: the GPUI desktop cockpit is experimental (working ACP chat flow, source builds only), performance figures below are design targets rather than measured results, and HEX does not claim full feature parity with Hermes.
 
 ---
 
@@ -12,7 +12,7 @@ An in-depth architectural and empirical comparison between **HEX Agent** and lea
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Workspace Sandbox** | **Copy-on-Write (CoW)**<br>APFS clone / OverlayFS in <10ms | Host execution / Docker container | In-place repo edits | In-place repo edits | In-place repo edits |
 | **Verification Gate** | **Proof-Before-Commit**<br>0ms instant rollback on failure | Manual or agent self-check | Post-edit git commits | Interactive prompt confirmation | Git commit / rollback prompts |
-| **UI & Client Cockpits** | **Native Rust Cockpits**<br>Ratatui TUI (supported) &<br>GPUI Desktop (experimental shell) | Electron Desktop (~400MB) or Python CLI | Terminal CLI | Terminal CLI | Terminal CLI |
+| **UI & Client Cockpits** | **Native Rust Cockpits**<br>Ratatui TUI (supported) &<br>GPUI Desktop (experimental) | Electron Desktop (~400MB) or Python CLI | Terminal CLI | Terminal CLI | Terminal CLI |
 | **Timeline & Branching** | **Conversational Rewind (`/rewind`)**<br>Soft branching in SQLite + state reset | Linear session history | Linear session history | Sliding window truncation | Git undo commands |
 | **Multi-Model Synthesis** | **Mixture-of-Agents engine (config-driven)**<br>Parallel proposers + aggregator synthesis; no `/moa` command yet | Single active model | Single active model | Anthropic only | Single active model |
 | **Approval Automation** | **Temporal Approval Leases (`/lease`)**<br>Time-bounded auto-approval with TTL | Per-action prompt | Per-action prompt | Approval flags | Git auto-commit mode |
@@ -37,7 +37,7 @@ HEX differentiates itself with architectural bets on isolation, verifiable execu
 
 #### 1. Native GPUI Desktop vs. Electron Overhead:
 - **Hermes**: Packages an Electron-based desktop application consuming **~400MB of RAM**, bundled with a full Chromium engine, Node.js runtime, and web layout pipeline.
-- **HEX**: Implements a native macOS desktop cockpit (`crates/hex-desktop`) using Zed's **GPUI** framework, rendering directly via Apple Silicon Metal shaders with no bundled browser runtime. The cockpit is **experimental**: the UI shell renders today, and the live chat flow is still being wired (audit F02/F04). Memory-footprint advantages are expected from the architecture but not yet benchmarked.
+- **HEX**: Implements a native macOS desktop cockpit (`crates/hex-desktop`) using Zed's **GPUI** framework, rendering directly via Apple Silicon Metal shaders with no bundled browser runtime. The cockpit is **experimental**: it runs real chat sessions over ACP but ships from source only, and some panels (token gauge, reasoning folds) are not yet fed by live data. Memory-footprint advantages are expected from the architecture but not yet benchmarked.
 - **Terminal Alternative**: In addition to the desktop app, HEX provides a standalone Ratatui TUI (`hex-tui`) for terminal purists — this is the supported daily terminal surface.
 
 #### 2. Filesystem Isolation (CoW vs. Host Mutations):

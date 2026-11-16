@@ -10,7 +10,7 @@ HEX operates as a resilient, distributed autonomous execution engine consisting 
 
 ### 1.1 Control Plane & Cockpits
 - **CLI (`hex`)**: The primary command interface with specialized subcommands (`run`/`exec`, `submit`, `status`, `chat`, `tui`, `voice`, `acp`, `up`, `auth`, `quota`, `doctor`, `project`, `recipe`, `graphify`, `eval`, `harness2-eval`, `gateway`, `schedule`, `daemon`, `gc`, `uninstall`).
-- **Native macOS GPUI Desktop Cockpit (experimental)**: GPU-accelerated native macOS application built with Zed's GPUI crate (`crates/hex-desktop`). The UI shell renders today; the live ACP chat flow is still being wired. Launch with `cargo run -p hex-desktop` — there is no `hex desktop` subcommand yet.
+- **Native macOS GPUI Desktop Cockpit (experimental)**: GPU-accelerated native macOS application built with Zed's GPUI crate (`crates/hex-desktop`). The desktop runs a working ACP chat flow against the Python engine; it is distributed from source only. Launch with `cargo run -p hex-desktop` — there is no `hex desktop` subcommand yet.
 - **Native Rust Terminal Cockpit (`hex tui`)**: 60 FPS Ratatui terminal cockpit (`crates/hex-tui`, <20MB RAM) with side-by-side split diffs (`/sbs`), fuzzy slash autocomplete, and true-color themes.
 - **REST API (`/v1/*`)**: Handles task submission (`POST /v1/tasks`), status inspection (`GET /v1/tasks/{id}`), dynamic DAG replanning, worker registration, and remote approval decisions on default port `8420`.
 - **SSE Event Stream (`GET /v1/tasks/{id}/events?stream=true`)**: Real-time event streaming for UI control surfaces and external monitors.
@@ -54,16 +54,18 @@ HEX operates as a resilient, distributed autonomous execution engine consisting 
 HEX provides two high-performance native frontends:
 
 #### 1. Native macOS GPUI Desktop Cockpit (experimental)
-Built with Zed's GPU-accelerated GPUI framework (`crates/hex-desktop`). The UI shell renders today; the live chat flow is still being wired to the ACP backend (see the fit-and-finish audit, F02/F04). There is no `hex desktop` subcommand yet.
+Built with Zed's GPU-accelerated GPUI framework (`crates/hex-desktop`). It runs real chat sessions over ACP and is exercised end to end by `crates/hex-desktop/tests/test_chat_flow.rs`. There is no `hex desktop` subcommand or packaged binary yet.
 
 ```bash
 # Compile and launch with Cargo (requires Xcode Metal toolchain):
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer cargo run -p hex-desktop
 ```
 
-- **Features (UI shell)**: Metal rendering, blurred vibrancy (`WindowBackgroundAppearance::Blurred`), Dark Zinc styling, collapsible sidebar, streaming token feed layout, `<think>` reasoning folds, and ASCII token gauge layout. Live data wiring is in progress.
-- **Shortcuts (defined, wiring in progress)**: `⌘K` (Command Palette), `⌘N` (New Session), `⌘Enter` (Send), `⌘B` (Toggle Sidebar), `Esc` (Close Modal).
-- **Backend Bridge**: Spawns the Python ACP server as a stdio JSON-RPC 2.0 subprocess. Streaming deltas render; tool-call and completion events are being aligned with the server wire format.
+- **Backend Bridge**: Attaches to `/tmp/hex-acp.sock` if present, otherwise spawns `python -m harness_core.client.cli acp` as a stdio JSON-RPC 2.0 subprocess. Python is resolved from `HEX_PYTHON_BIN`, `$VIRTUAL_ENV`, the repo's `.venv/bin/python`, then `python3`. Set `HEX_PYTHON_BIN` if the engine is installed elsewhere.
+- **Connection states**: The model pill shows `connecting…` at startup, `not connected` if the engine could not be started, and `no session` if `session/new` failed. A dropped connection adds a notice to the feed.
+- **Working today**: Streaming replies and tool cards, approvals (`y` once, `a` session, `n` deny), `Esc` to cancel a running turn, per-session drafts, auto-titled sessions, copy and regenerate.
+- **Shortcuts**: `Enter` (Send), `Shift+Enter` (Newline), `⌘Enter` (Send), `⌘K` (Command Palette), `⌘N` (New Session), `⌘B` (Toggle Sidebar), `Esc` (Cancel turn / Close modal).
+- **Not yet live**: Token gauge (placeholder budget), reasoning folds and inline diffs from ACP events, Settings (`⌘,`), and the approval modal's 15-minute lease toggle (sent, but not honored by the server).
 
 #### 2. Native Rust Terminal Cockpit (`hex tui`)
 Built with Ratatui (`crates/hex-tui`):

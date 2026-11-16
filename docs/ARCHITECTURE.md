@@ -66,7 +66,7 @@ HEX features a state-of-the-art native desktop application built using Zed's GPU
 - **Blurred Vibrancy**: Configured with `WindowBackgroundAppearance::Blurred` and `TitlebarOptions` with transparent titlebar and traffic lights offset at `(14.0, 16.0)`.
 - **Memory Footprint**: Native Rust + Metal stack with no bundled browser runtime; substantially lighter than Electron-based agent desktop apps.
 
-> **Status:** The desktop cockpit is experimental. The UI shell described below renders today; live ACP chat wiring, input focus, and shortcut dispatch are in progress (fit-and-finish audit F02/F04/F11).
+> **Status:** The desktop cockpit is experimental and distributed from source only. `ChatView` (`chat.rs`) is the root view: it owns the composer editor, focus, keybindings, and the `AcpBridge`, and runs a working chat flow covered end to end by `tests/test_chat_flow.rs`. The token gauge, reasoning folds, and inline diff views are implemented but not yet fed by live ACP events.
 
 ### 2.2 Dark Zinc Design Tokens (`theme.rs`)
 Implements a Dark Zinc visual hierarchy:
@@ -79,14 +79,15 @@ Implements a Dark Zinc visual hierarchy:
 - **Accent**: `#7aa7ff` (electric blue focus rings and active pills)
 
 ### 2.3 Component Tree & Interactive Modals
-- **`AppShell`**: Manages the dual-pane layout, active modals, and ACP streaming dispatch.
+- **`ChatView`**: Root GPUI view. Routes ACP events to the session they belong to, reconciles streamed updates with the authoritative prompt response, keeps per-session drafts, and moves focus between the composer and any open modal (`Composer` and `Modal` key contexts).
+- **`AppShell`**: Manages the dual-pane layout, active modals, and per-session feeds.
 - **`SidebarView` & `SessionListView`**: 260px collapsible sidebar with workspace path, git branch tag, provider status indicator, and date-grouped session history (`Today`, `Yesterday`, `Previous 7 Days`).
-- **`MessageFeed`**: Renders streaming user prompts, assistant turns, collapsible `<think>` reasoning folds with elapsed execution counters, tool execution cards with status badges, and syntax-colored diffs.
-- **`ComposerView` & `TokenGaugeView`**: Multiline prompt editor with keyboard shortcuts (`⌘Enter` to send), active model selector pill, and ASCII progress bar gauge (`▕██████░░░░░░░░░░▏`).
-- **`ToolApprovalModal`**: 3-way security confirmation (`[y] Approve`, `[n] Reject`, `[d] Diff`) with a one-click **15-Minute Auto-Approval Lease Toggle** (`[l]`).
-- **`CommandPaletteModal`**: Fuzzy searchable command overlay (`⌘K`) for switching sessions, issuing commands, or changing models.
-- **`ModelPickerModal`**: Multi-provider model browser with context window capacities and active status.
-- **`AcpBridge`**: Handles JSON-RPC 2.0 protocol translation over a stdio subprocess (wire-format alignment with the Python server is in progress, F04).
+- **`MessageFeed`**: Renders user prompts, streaming assistant turns labelled with the runtime-reported model, fenced code blocks, tool execution cards with status badges, and system notices for cancelled, failed, and disconnected states. Collapsible `<think>` folds and syntax-colored diffs are available as components but not yet fed by ACP events.
+- **`ComposerView` & `TokenGaugeView`**: Multiline prompt editor (`Enter` sends, `Shift+Enter` newline, `⌘Enter` also sends), active model selector pill, and ASCII progress bar gauge (`▕██████░░░░░░░░░░▏`, placeholder budget for now).
+- **`ToolApprovalModal`**: 3-way security confirmation (`[y]` allow once, `[a]` allow for session, `[n]` deny) with a **15-Minute Auto-Approval Lease Toggle** (`[l]`). Decisions are sent via `session/approvalDecision`; the lease reason is transmitted but not yet honored server-side.
+- **`CommandPaletteModal`**: Fuzzy searchable command overlay (`⌘K`) for switching sessions and running desktop actions; unavailable actions report that plainly.
+- **`ModelPickerModal`**: Multi-provider model browser with context window capacities; the chosen model applies to sessions started afterwards.
+- **`AcpBridge`**: Handles JSON-RPC 2.0 over a stdio subprocess (or `/tmp/hex-acp.sock`), using the canonical wire contract shared with the Python server (see [ACP Integration](ACP_INTEGRATION.md)).
 
 ---
 

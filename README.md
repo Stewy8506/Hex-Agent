@@ -42,13 +42,13 @@ Most AI coding assistants edit your files in place. If an agent hallucinates or 
 **HEX does the opposite:**
 - **Zero-Risk Scratchpad**: Every code change and test runs inside an ultra-fast, isolated Copy-on-Write sandbox (<10ms).
 - **Proof Before Commit**: HEX executes your project's test suite. Only when tests pass are patches applied to your code.
-- **Native Cockpits**: A Ratatui terminal TUI is the supported default. A native macOS GPUI desktop app is in **experimental** development (UI shell; chat integration in progress).
+- **Native Cockpits**: A Ratatui terminal TUI is the supported default. A native macOS GPUI desktop app is **experimental**: it runs real chat sessions over ACP, but ships from source only.
 - **Model Freedom**: Connect directly to your existing Google Antigravity OAuth quota, 26 cloud providers, or run 100% offline with local models (Ollama, Apple Silicon Metal, NVIDIA CUDA).
 
 <table>
 <tr><td><b>Isolated Sandboxing</b></td><td>Instant Copy-on-Write staging (macOS APFS / Linux OverlayFS in &lt;10ms). Broken patches are discarded with zero host pollution.</td></tr>
 <tr><td><b>Proof Before Commit</b></td><td>Verifies tests and diagnostics inside the sandbox before touching a single line of your working branch.</td></tr>
-<tr><td><b>Native GPUI Desktop Cockpit (experimental)</b></td><td>Native macOS app built with Zed's GPUI crate. The UI shell renders today; backend chat wiring is in progress. Not yet a supported daily surface.</td></tr>
+<tr><td><b>Native GPUI Desktop Cockpit (experimental)</b></td><td>Native macOS app built with Zed's GPUI crate. Streams real ACP chat sessions with tool cards, approvals, cancellation, and per-session drafts. Source builds only; not yet a supported daily surface.</td></tr>
 <tr><td><b>Native Rust Terminal Cockpit</b></td><td>Ultra-responsive 60 FPS Ratatui terminal interface with multiline editing, fuzzy slash autocomplete, and side-by-side split diffs.</td></tr>
 <tr><td><b>Timeline Rewind & Branching</b></td><td>Roll back conversation turns and code states with <code>/rewind &lt;turn | -N&gt;</code> (Python console), preserving historical attempts in soft branches.</td></tr>
 <tr><td><b>Mixture-of-Agents (MoA)</b></td><td>Core proposer/aggregator engine ships in the ReAct loop, enabled via configuration. A <code>/moa</code> toggle command is not yet exposed on any client surface.</td></tr>
@@ -116,9 +116,9 @@ hex
 cargo run -p hex-desktop
 ```
 
-> The desktop app is experimental: it currently renders the UI shell and is
-> not yet wired into a working chat flow. There is no `hex desktop`
-> subcommand yet.
+> The desktop app is experimental and runs from a source checkout only; there
+> is no `hex desktop` subcommand or packaged binary yet. It starts the Python
+> engine for you (see the desktop section below).
 
 ### 2. Choose Your Model (One-Time Setup)
 On your very first run, HEX opens an interactive terminal setup menu:
@@ -149,11 +149,22 @@ HEX will clone an isolated scratchpad, implement the code, run your test runner,
 
 ## 🖥️ Native macOS GPUI Desktop Cockpit (`hex-desktop`) — Experimental
 
-> **Status: experimental.** The desktop currently renders its UI shell
-> (sidebar, message feed, composer, modals) but is not yet connected to a
-> working chat flow: input handling, backend session wiring, and action
-> handlers are in progress. Performance figures (FPS, RAM) have not been
+> **Status: experimental.** The desktop runs a working chat flow against the
+> Python engine over ACP, covered end to end by `crates/hex-desktop/tests/test_chat_flow.rs`.
+> It is distributed from source only, and some panels are not yet fed by live
+> data (see *Not yet live* below). Performance figures (FPS, RAM) have not been
 > benchmarked and are not claimed. The mockup below shows the target design.
+
+```bash
+cargo run -p hex-desktop
+# If Metal shader compilation fails, point at the full Xcode toolchain:
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer cargo run -p hex-desktop
+```
+
+The app attaches to `/tmp/hex-acp.sock` if present, otherwise it spawns
+`python -m harness_core.client.cli acp`. The interpreter is chosen from
+`HEX_PYTHON_BIN`, then `$VIRTUAL_ENV`, then the repo's `.venv/bin/python`,
+then `python3`.
 
 The desktop is built with Zed's **GPUI** framework (`crates/hex-desktop`):
 
@@ -183,13 +194,16 @@ The desktop is built with Zed's **GPUI** framework (`crates/hex-desktop`):
 - **Hardware-Accelerated Metal Rendering**: GPU-accelerated GPUI rendering with blurred vibrancy (`WindowBackgroundAppearance::Blurred`) and native macOS traffic lights.
 - **Ultra-Lean Resource Footprint**: Native Rust + Metal stack with no bundled browser runtime; memory usage is far below Electron-based desktop apps.
 - **Dark Zinc Design Tokens**: Canvas `#09090b`, card `#18181b`, elevated `#27272a`, structural borders `#3f3f46`, sage green diffs `#8fbf93`, rose red diffs `#c98b8b`, electric blue accents `#7aa7ff`.
-- **Interactive Message Feed (rendered, wiring in progress)**: Streaming token display, `<think>` reasoning folds, tool execution cards with status badges, and syntax-highlighted inline diffs are implemented in the UI shell; the live ACP chat flow is not yet connected (see F02/F04 in the [fit-and-finish audit](audits/FIT_AND_FINISH_HERMES_VS_HEX_2026-11-16.md)).
-- **ASCII Token Gauge & Context Budget (mock data)**: Progress indicator layout is implemented; live token accounting against the active model context window is not yet wired.
-- **Interactive Modals (UI shell)**:
-  - **Command Palette (`⌘K`)**: Session/command/tool switching UI is rendered; keyboard wiring is in progress.
-  - **Tool Approval Modal**: 3-way confirmation layout (`[y] Approve`, `[n] Reject`, `[d] Diff`) with auto-approval lease toggle; approval round-trips are not yet connected to the backend.
-  - **Model Picker**: Filterable catalog UI; selection is not yet persisted to the backend.
-- **ACP Integration (stdio)**: The desktop client spawns the Python ACP server over stdio JSON-RPC 2.0. Streaming deltas render; tool-call events and authoritative completion handling are being aligned with the server wire format (F04).
+- **Live Chat Feed**: Streaming replies, tool execution cards with running/completed/failed status, fenced code rendered as code blocks, and explicit cancelled, failed, and disconnected states. Assistant messages show the model the runtime reported, never a guessed one.
+- **Composer**: Enter sends, Shift+Enter inserts a newline, `⌘A`/`⌘C`/`⌘X`/`⌘V` edit text, and drafts are kept per session when you switch away and back. `Esc` cancels a running turn.
+- **Sessions**: `⌘N` starts a session, the sidebar and palette switch between them, and new sessions get an automatic title from the first prompt.
+- **Modals**: Each modal takes keyboard focus while open and hands it back to the composer on close.
+  - **Command Palette (`⌘K`)**: Fuzzy search over sessions and actions (new chat, toggle sidebar, clear history). Actions the desktop cannot perform yet say so instead of pretending.
+  - **Tool Approval**: Allow once (`y`/`1`), allow for this session (`a`/`2`), or deny (`n`/`3`); decisions are sent to the runtime via `session/approvalDecision`. The 15-minute lease toggle (`l`) is sent along but not yet honored by the server.
+  - **Model Picker**: Filterable catalog; the chosen model is used for sessions started afterwards.
+- **Message Actions**: Copy a reply to the clipboard or regenerate it from the preceding prompt.
+- **ACP Integration (stdio)**: Speaks the canonical `session/update` wire contract shared with the Python server and `hex-tui` (see [ACP Integration](docs/ACP_INTEGRATION.md)).
+- **Not yet live**: The token gauge shows a placeholder budget, `<think>` reasoning folds and inline diff views are implemented but not yet fed by ACP events, and Settings (`⌘,`) is not available.
 
 ---
 
@@ -256,7 +270,7 @@ HEX ships a **Mixture-of-Agents** engine (`harness_core.core.moa`) that runs ins
 Eliminate prompt fatigue during extended autonomous workflows without sacrificing security (available today in the Python console, `hex chat`):
 - **Time-Bounded Leases**: Use `/lease grant npm test 3600` to grant temporal auto-approvals for specific command prefixes or directory paths.
 - **Automatic Expiration**: Leases automatically expire after their TTL, restoring default confirmation prompts.
-- **Desktop UI Integration (planned)**: The Desktop Tool Approval Modal renders a lease toggle, but it is not yet connected to the backend lease service.
+- **Desktop UI Integration (partial)**: The Desktop Tool Approval Modal's lease toggle sends a `lease_duration:900` reason with the decision, but the server does not yet grant a lease from it.
 
 ---
 
