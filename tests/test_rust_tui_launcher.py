@@ -83,6 +83,50 @@ class TestRustTuiLauncher(unittest.TestCase):
         self.assertIn("--session", cmd)
         self.assertEqual(cmd[cmd.index("--session") + 1], "ses_test_123")
 
+    def test_stale_project_config_does_not_shadow_global_model(self):
+        with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as home_dir:
+            ws, home = Path(ws_dir), Path(home_dir)
+            (ws / ".hex").mkdir()
+            (ws / ".hex" / "config.yaml").write_text(
+                'model:\n  cloud_provider: "antigravity"\n  cloud_model_id: "gemini-3.8-flash-tiered"\n',
+                encoding="utf-8",
+            )
+            (home / ".hex").mkdir()
+            (home / ".hex" / "config.yaml").write_text(
+                'model:\n  cloud_provider: "openrouter"\n'
+                '  cloud_model_id: "nvidia/nemotron-3-ultra-550b-a55b:free"\n',
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(model=None, provider=None, workspace=str(ws))
+            with patch.object(Path, "home", return_value=home):
+                cmd = build_tui_cmd_args(args, Path("/usr/local/bin/hex-tui"))
+            self.assertIn("--model", cmd)
+            self.assertEqual(
+                cmd[cmd.index("--model") + 1],
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "a project config without project_override must not defeat the global model",
+            )
+
+    def test_project_override_true_does_shadow_global_model(self):
+        with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as home_dir:
+            ws, home = Path(ws_dir), Path(home_dir)
+            (ws / ".hex").mkdir()
+            (ws / ".hex" / "config.yaml").write_text(
+                'model:\n  project_override: true\n'
+                '  cloud_provider: "antigravity"\n  cloud_model_id: "gemini-3.8-flash-tiered"\n',
+                encoding="utf-8",
+            )
+            (home / ".hex").mkdir()
+            (home / ".hex" / "config.yaml").write_text(
+                'model:\n  cloud_provider: "openrouter"\n'
+                '  cloud_model_id: "nvidia/nemotron-3-ultra-550b-a55b:free"\n',
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(model=None, provider=None, workspace=str(ws))
+            with patch.object(Path, "home", return_value=home):
+                cmd = build_tui_cmd_args(args, Path("/usr/local/bin/hex-tui"))
+            self.assertEqual(cmd[cmd.index("--model") + 1], "gemini-3.8-flash-tiered")
+
     def test_direct_headless_check_launch(self):
         args = argparse.Namespace(
             check=True,

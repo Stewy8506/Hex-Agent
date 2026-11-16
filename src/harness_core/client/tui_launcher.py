@@ -150,14 +150,23 @@ def build_tui_cmd_args(args: Any, bin_path: Path) -> List[str]:
     if not model:
         try:
             from harness_core.config_loader import parse_config_yaml
+            global_cfg = Path.home() / ".hex" / "config.yaml"
             for cfg_path in [
                 Path(workspace) / ".hex" / "config.yaml",
-                Path.home() / ".hex" / "config.yaml",
+                global_cfg,
             ]:
                 if cfg_path.is_file():
                     cfg_data = parse_config_yaml(cfg_path)
                     msec = cfg_data.get("model") or cfg_data.get("models") or {}
                     if isinstance(msec, dict):
+                        # A project inherits the global model unless it opts in,
+                        # matching config_loader and the router.
+                        is_project = cfg_path != global_cfg
+                        opted_in = msec.get("project_override") is True or str(
+                            msec.get("project_override", "")
+                        ).lower() == "true"
+                        if is_project and not opted_in:
+                            continue
                         model = msec.get("cloud_model_id") or msec.get("selected_model") or msec.get("model_id")
                         provider = provider or msec.get("cloud_provider") or msec.get("provider")
                         if model:
