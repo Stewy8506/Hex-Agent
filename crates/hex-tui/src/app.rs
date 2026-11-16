@@ -538,8 +538,8 @@ pub fn load_real_resume_sessions(dir: &std::path::Path) -> Vec<ResumeSession> {
         .args([
             db_path.to_str().unwrap_or(".hex/data/ledger.db"),
             "-separator",
-            "|",
-            "SELECT task_id, goal, created_at FROM tasks ORDER BY created_at DESC;",
+            "\u{1f}",
+            "SELECT task_id, replace(replace(replace(goal, char(10), ' '), char(13), ' '), char(31), ' '), created_at FROM tasks ORDER BY created_at DESC;",
         ])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -550,8 +550,8 @@ pub fn load_real_resume_sessions(dir: &std::path::Path) -> Vec<ResumeSession> {
 
     let mut sessions = Vec::new();
     for line in output.lines() {
-        let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() >= 3 {
+        let parts: Vec<&str> = line.split('\u{1f}').collect();
+        if parts.len() == 3 {
             let session_id = parts[0].trim().to_string();
             let title = parts[1].trim().to_string();
             let created_at = parts[2].trim();

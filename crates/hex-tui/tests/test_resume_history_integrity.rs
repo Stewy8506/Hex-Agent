@@ -177,3 +177,29 @@ fn test_delete_failure_keeps_the_row_visible() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn test_multiline_and_pipe_goals_are_not_dropped() {
+    let dir = temp_workspace("awkward");
+    let db = dir.join(".hex").join("data").join("ledger.db");
+    sqlite(
+        &db,
+        "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, goal TEXT, created_at TEXT);",
+    );
+    sqlite(
+        &db,
+        "INSERT INTO tasks VALUES ('tsk_plan', '[MODE: PLAN]' || char(10) || 'read only' || char(13) || 'no writes', '2026-11-03T10:00:00Z');
+         INSERT INTO tasks VALUES ('tsk_pipe', 'a | b | c', '2026-11-02T10:00:00Z');
+         INSERT INTO tasks VALUES ('tsk_plain', 'plain goal', '2026-11-01T10:00:00Z');",
+    );
+
+    let sessions = load_real_resume_sessions(&dir);
+    assert_eq!(sessions.len(), 3, "a goal spanning several lines must still be listed");
+    assert_eq!(sessions[0].session_id, "tsk_plan");
+    assert_eq!(sessions[0].title, "[MODE: PLAN] read only no writes");
+    assert_eq!(sessions[1].session_id, "tsk_pipe");
+    assert_eq!(sessions[1].title, "a | b | c", "a pipe in the goal must not shift the timestamp field");
+    assert_eq!(sessions[2].session_id, "tsk_plain");
+
+    let _ = fs::remove_dir_all(&dir);
+}
