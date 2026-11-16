@@ -8,6 +8,7 @@ pub mod diff;
 pub mod footer;
 pub mod header;
 pub mod input;
+pub mod keymap;
 pub mod markdown;
 pub mod right_rail;
 pub mod screens;
@@ -85,62 +86,29 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let mut lines = vec![
-        Line::from(vec![Span::styled(
-            "Navigation & Focus:",
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (scope, bindings) in keymap::help_sections() {
+        lines.push(Line::from(Span::styled(
+            scope.heading(),
             Style::default()
                 .fg(s.accent)
                 .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled("  [Tab]            ", Style::default().fg(s.accent)),
-            Span::raw("Cycle viewport focus (Input -> Dialogue -> Diff)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  [F3]             ", Style::default().fg(s.accent)),
-            Span::raw("Cycle execution mode: agent -> plan -> code"),
-        ]),
-        Line::from(vec![
-            Span::styled("  [Mouse / PgUp/Dn]", Style::default().fg(s.accent)),
-            Span::raw("Scroll dialogue transcript naturally"),
-        ]),
-        Line::from(vec![
-            Span::styled("  [↑ / ↓]          ", Style::default().fg(s.accent)),
-            Span::raw("Navigate command history or scroll when empty"),
-        ]),
-        Line::from(vec![
-            Span::styled("  [F1]             ", Style::default().fg(s.accent)),
-            Span::raw("Toggle this Help modal"),
-        ]),
-        Line::from(vec![
-            Span::styled("  [F2] / [d]       ", Style::default().fg(s.accent)),
-            Span::raw("Toggle proposed CoW diff pane"),
-        ]),
-        Line::from(vec![
-            Span::styled("  [Ctrl+C]         ", Style::default().fg(s.accent)),
-            Span::raw("Cancel the active turn; press again to quit"),
-        ]),
-        Line::raw(""),
-        Line::from(vec![Span::styled(
-            "Operator Approvals (R3/R4 Policy):",
-            Style::default()
-                .fg(s.accent)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled("  [y]              ", Style::default().fg(s.success)),
-            Span::raw("Approve tool execution and resume agent loop"),
-        ]),
-        Line::from(vec![
-            Span::styled("  [n]              ", Style::default().fg(s.danger)),
-            Span::raw("Reject tool execution and trigger rollback"),
-        ]),
-        Line::from(vec![
-            Span::styled("  [Esc]            ", Style::default().fg(s.muted)),
-            Span::raw("Dismiss active dialog"),
-        ]),
-        Line::raw(""),
-    ];
+        )));
+        let joined = bindings
+            .iter()
+            .map(|b| b.hint())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        lines.push(Line::from(Span::styled(
+            format!("  {joined}"),
+            Style::default().fg(s.text),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "Mouse wheel scrolls the transcript and the resume list.",
+        Style::default().fg(s.muted),
+    )));
+    lines.push(Line::raw(""));
 
     lines.push(Line::from(vec![Span::styled(
         "Interactive Slash Commands:",
@@ -149,7 +117,16 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             .add_modifier(Modifier::BOLD),
     )]));
     let commands = crate::app::available_slash_commands();
-    let room = (inner.height as usize).saturating_sub(lines.len() + 2);
+    // Paragraph wraps, so budget real rows rather than line count.
+    let width = (inner.width as usize).max(1);
+    let used: usize = lines
+        .iter()
+        .map(|l| {
+            let chars: usize = l.spans.iter().map(|sp| sp.content.chars().count()).sum();
+            chars.max(1).div_ceil(width)
+        })
+        .sum();
+    let room = (inner.height as usize).saturating_sub(used + 3);
     let shown = commands.len().min(room);
     for cmd in &commands[..shown] {
         lines.push(Line::from(vec![
@@ -163,7 +140,7 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
     if shown < commands.len() {
         lines.push(Line::from(Span::styled(
             format!(
-                "  ... {} more - type / for full completion",
+                "  ... {} more - press / for the command palette",
                 commands.len() - shown
             ),
             Style::default().fg(s.muted),

@@ -1309,3 +1309,123 @@ mod session_lifecycle_tests {
         assert_eq!(tail[3], (Role::Assistant, "second answer".to_string()));
     }
 }
+
+#[cfg(test)]
+mod keymap_truth_tests {
+    //! G06: every hint the UI prints must survive a real key press.
+    use super::*;
+    use hex_protocol::models::Role;
+    use hex_tui::app::{DialogueItem, ResumeSession};
+    use hex_tui::ui::keymap::{self, Binding, Scope, BINDINGS};
+
+    const DIFF: &str = "--- a/f.rs\n+++ b/f.rs\n@@ -1,2 +1,2 @@\n-old\n+new\n";
+
+    fn fixture(b: &Binding) -> App {
+        let mut app = App::new("p", "m", "cow");
+        match b.scope {
+            Scope::Session => {
+                app.screen_state = ScreenState::Session;
+                match b.label {
+                    "esc" => app.is_busy = true,
+                    "enter" => {
+                        app.input_buffer = "hello".to_string();
+                        app.cursor_pos = 5;
+                    }
+                    "pgdn" | "down" => {
+                        // Already scrolled up: paging down moves toward the bottom.
+                        app.follow_dialogue = false;
+                        app.dialogue_scroll = 0;
+                        app.dialogue_metrics.set((40, 10));
+                    }
+                    _ => {}
+                }
+            }
+            Scope::Start => {
+                app.resume_sessions = vec![ResumeSession {
+                    title: "earlier task".to_string(),
+                    relative_time: "1h".to_string(),
+                    session_id: "tsk_earlier".to_string(),
+                }];
+            }
+            Scope::Palette => {
+                app.open_palette();
+                if b.label == "backspace" {
+                    app.palette_push_char('x');
+                }
+            }
+            Scope::Approval => {
+                app.active_approval = Some(ApprovalRequest {
+                    id: "ap1".to_string(),
+                    risk_level: "high".to_string(),
+                    tool_name: "bash".to_string(),
+                    parameters: "rm -rf dist".to_string(),
+                    reason: "cleanup".to_string(),
+                });
+            }
+            Scope::Global => {}
+        }
+        if b.label == "f2" {
+            app.load_diff(DIFF);
+            app.show_diff = false; // a diff exists, the pane is hidden
+        }
+        app
+    }
+
+    fn assert_effect(app: &App, b: &Binding) {
+        match (b.scope, b.label) {
+            (Scope::Global, "ctrl+c") => assert!(app.should_quit),
+            (Scope::Global, "f1") | (Scope::Start, "f1") => assert!(app.show_help),
+            (_, "f2") => assert!(app.show_diff),
+            (Scope::Global, "f3") | (Scope::Session, "tab") => assert_ne!(app.mode, "agent"),
+            (Scope::Session, "ctrl+p") => assert!(app.show_palette),
+            (Scope::Session, "esc") => assert!(!app.is_busy),
+            (Scope::Session, "enter") => assert!(app.dialogue_items.iter().any(|d| matches!(d,
+                DialogueItem::Message(m) if m.role == Role::User && m.content == "hello"))),
+            (Scope::Session, "pgup" | "up") => {
+                assert!(!app.follow_dialogue, "{} did not leave the pinned bottom", b.label)
+            }
+            (Scope::Session, "pgdn" | "down") => {
+                assert!(app.dialogue_scroll > 0, "{} did not scroll down", b.label)
+            }
+            (Scope::Start, "/") => assert!(app.show_palette),
+            (Scope::Start, "enter") => assert_eq!(app.screen_state, ScreenState::Session),
+            (Scope::Start, "d") => assert_eq!(app.pending_delete_index, Some(0)),
+            (Scope::Palette, "enter") | (Scope::Palette, "esc") => assert!(!app.show_palette),
+            (Scope::Palette, "up") => {
+                assert_eq!(app.selected_palette_index, app.palette_results().len() - 1)
+            }
+            (Scope::Palette, "down") | (Scope::Palette, "tab") => {
+                assert_eq!(app.selected_palette_index, 1)
+            }
+            (Scope::Palette, "backspace") => assert!(app.palette_query.is_empty()),
+            (Scope::Approval, "y") | (Scope::Approval, "n") | (Scope::Approval, "esc") => {
+                assert!(app.active_approval.is_none())
+            }
+            (Scope::Approval, "d") => assert!(app.show_diff),
+            other => panic!("advertised binding {other:?} has no verified effect"),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_advertised_binding_really_works() {
+        for b in BINDINGS {
+            let mut app = fixture(b);
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            handle_key_event(&mut app, b.event(), None, tx).await.unwrap();
+            assert_effect(&app, b);
+        }
+    }
+
+    #[test]
+    fn no_surface_advertises_a_binding_that_was_removed() {
+        for scope in [Scope::Session, Scope::Start, Scope::Palette, Scope::Approval] {
+            let hints = keymap::footer_hints(scope);
+            assert!(!hints.is_empty());
+            for stale in ["tab agents", "ctrl+r", "@ files", "up/down select"] {
+                assert!(!hints.contains(stale), "{scope:?} still advertises {stale:?}");
+            }
+        }
+        let listed: usize = keymap::help_sections().iter().map(|(_, rows)| rows.len()).sum();
+        assert_eq!(listed, BINDINGS.len(), "help must list the whole table");
+    }
+}

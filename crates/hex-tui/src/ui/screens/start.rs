@@ -198,14 +198,9 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
             .alignment(Alignment::Center)
             .render(hints_area, buf);
     } else {
-    let badges = [
-        ("/", " commands    ", 0),
-        ("@", " files    ", 1),
-        ("tab", " agent    ", 2),
-        ("ctrl+r", " history", 3),
-    ];
+    let badges = crate::ui::keymap::start_badges();
     let mut hints_spans = Vec::new();
-    for (key, label, idx) in badges {
+    for (idx, badge) in badges.iter().enumerate() {
         let factor = app.shortcut_hover_levels[idx];
         let key_color = crate::ui::animation::interpolate_color(
             Color::Rgb(242, 242, 242),
@@ -221,8 +216,12 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         if factor > 0.4 {
             key_style = key_style.add_modifier(Modifier::UNDERLINED);
         }
-        hints_spans.push(Span::styled(format!("{} ", key), key_style));
-        hints_spans.push(Span::styled(label, Style::default().fg(label_color)));
+        let separator = if idx + 1 < badges.len() { "    " } else { "" };
+        hints_spans.push(Span::styled(format!("{} ", badge.label), key_style));
+        hints_spans.push(Span::styled(
+            format!("{}{}", badge.action, separator),
+            Style::default().fg(label_color),
+        ));
     }
     Paragraph::new(Line::from(hints_spans))
         .alignment(Alignment::Center)

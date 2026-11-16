@@ -35,10 +35,12 @@ fn test_screen_0_start_layout_rendering() {
     assert!(content.contains("files indexed"), "Buffer must contain indexed file count");
 
     // 3. Prompt container & shortcuts
-    assert!(content.contains("commands"), "Buffer must contain commands hint");
-    assert!(content.contains("files"), "Buffer must contain files hint");
-    assert!(content.contains("agent"), "Buffer must contain agent hint");
-    assert!(content.contains("history"), "Buffer must contain history hint");
+    for hint in ["commands", "resume", "delete", "help"] {
+        assert!(content.contains(hint), "Buffer must contain {hint} hint");
+    }
+    for stale in ["ctrl+r", "@ files", "tab agent"] {
+        assert!(!content.contains(stale), "Buffer must not advertise {stale}");
+    }
 
     // 4. Resume sessions
     assert!(content.contains("resume"), "Buffer must contain resume section");
@@ -284,5 +286,7 @@ fn test_help_modal_overlay_rendering() {
         "Must render help title"
     );
     assert!(content.contains("/status"), "Must document slash commands");
-    assert!(content.contains("[Tab]"), "Must document keybindings");
+    assert!(content.contains("ctrl+p"), "Must document the palette binding");
+    assert!(content.contains("Cockpit session"), "Must group bindings by surface");
+    assert!(!content.contains("[Tab]"), "Must not document removed bracket-style bindings");
 }

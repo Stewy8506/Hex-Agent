@@ -12,6 +12,7 @@ use hex_protocol::models::Role;
 use crate::app::{App, DialogueItem};
 use crate::ui::animation::AnimationState;
 use crate::ui::diff::{render_mockup_inline_diff, MockupDiffLine};
+use crate::ui::keymap;
 use crate::ui::right_rail;
 use crate::ui::style::HexTheme;
 
@@ -448,11 +449,12 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
         Span::styled(format!("{:.1}k tokens", app.tokens_used as f64 / 1000.0), Style::default().fg(theme.text_dim)),
     ];
 
-    let footer_right = if app.active_approval.is_some() {
-        "up/down select · enter confirm · esc deny"
+    let hint_scope = if app.active_approval.is_some() {
+        keymap::Scope::Approval
     } else {
-        "esc interrupt · ctrl+p commands · tab agents"
+        keymap::Scope::Session
     };
+    let footer_right = keymap::footer_hints(hint_scope);
     let footer_pad = CANVAS_PAD_X.min(footer_area.width / 4);
     let footer_width = footer_area.width.saturating_sub(footer_pad * 2) as usize;
     let left_len: usize = footer_left.iter().map(|s| s.content.chars().count()).sum();

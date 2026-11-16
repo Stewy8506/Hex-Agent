@@ -45,11 +45,13 @@ fn test_screen_0_start_rendering() {
     assert!(full_text.contains("modified"), "Must show modified file count");
     assert!(full_text.contains("files indexed"), "Must show indexed count");
 
-    // 3. Verify keyboard shortcut badges
-    assert!(full_text.contains("commands"), "Must show commands shortcut");
-    assert!(full_text.contains("files"), "Must show files shortcut");
-    assert!(full_text.contains("agent"), "Must show agent shortcut");
-    assert!(full_text.contains("history"), "Must show history shortcut");
+    // 3. Verify keyboard shortcut badges advertise real bindings only
+    for hint in ["commands", "resume", "delete", "help"] {
+        assert!(full_text.contains(hint), "Must show {hint} shortcut");
+    }
+    for stale in ["ctrl+r", "@ files", "tab agent"] {
+        assert!(!full_text.contains(stale), "Must not advertise {stale}");
+    }
 
     // 4. Verify resume previous sessions section
     assert!(full_text.contains("resume"), "Must show resume header");

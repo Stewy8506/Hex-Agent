@@ -188,7 +188,7 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         results.len(),
         if results.len() == 1 { "" } else { "s" }
     );
-    let nav = "enter select · esc close";
+    let nav = crate::ui::keymap::footer_hints(crate::ui::keymap::Scope::Palette);
     let footer_width = chunks[4].width as usize;
     let gap = footer_width.saturating_sub(count.chars().count() + nav.chars().count() + 2);
     let footer = Line::from(vec![
