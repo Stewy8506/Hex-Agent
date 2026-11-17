@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget};
 
-use crate::app::App;
+use crate::app::{App, Focus};
 use crate::ui::animation::AnimationState;
 use crate::ui::style::HexTheme;
 use crate::ui::widgets::ascii_logo::StartWordmark;
@@ -125,8 +125,9 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
     prompt_block.render(prompt_area, buf);
 
     if p_inner.height >= 3 {
+        let input_focused = app.focus == Focus::Input && !app.show_palette && !app.show_help;
         // Cursor logic
-        let cursor_span = if anim.cursor_visible() {
+        let cursor_span = if input_focused && anim.cursor_visible() {
             Span::styled("█", Style::default().fg(theme.accent_blue))
         } else {
             Span::raw(" ")
@@ -138,7 +139,6 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
                 Span::raw("  "),
                 Span::styled("> ", Style::default().fg(Color::Rgb(140, 140, 140))),
                 Span::styled(anim.placeholder_prompt(), Style::default().fg(Color::Rgb(140, 140, 140))),
-                cursor_span,
             ])
         } else {
             Line::from(vec![
@@ -149,16 +149,15 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
             ])
         };
 
-        // Bottom line: "build · sonnet" left, "enter send" right
         let mut bottom_spans = vec![
             Span::raw("  "),
-            Span::styled("build", Style::default().fg(Color::Rgb(242, 242, 242))),
+            Span::styled(&app.mode, Style::default().fg(Color::Rgb(242, 242, 242))),
             Span::styled(" · ", Style::default().fg(Color::Rgb(74, 74, 74))),
             Span::styled(app.model_label(), Style::default().fg(Color::Rgb(140, 140, 140))),
         ];
 
-        let left_len = 2 + 5 + 3 + app.model_label().chars().count();
-        let right_label = "enter send  ";
+        let left_len = 2 + app.mode.chars().count() + 3 + app.model_label().chars().count();
+        let right_label = if app.focus == Focus::Input { "enter send  " } else { "" };
         let spaces_needed = (p_inner.width as usize)
             .saturating_sub(left_len + right_label.len());
         bottom_spans.push(Span::raw(" ".repeat(spaces_needed)));
@@ -168,6 +167,11 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
 
         // Render input on top row of inner card
         buf.set_line(p_inner.x, p_inner.y, &input_line, p_inner.width);
+        if input_focused && app.input_buffer.is_empty() && anim.cursor_visible() && p_inner.width > 4 {
+            buf[(p_inner.x + 4, p_inner.y)]
+                .set_fg(Color::Rgb(12, 12, 12))
+                .set_bg(theme.accent_blue);
+        }
         // Render footer on bottom row of inner card
         buf.set_line(p_inner.x, p_inner.y + p_inner.height - 1, &bottom_line, p_inner.width);
     }
@@ -198,7 +202,7 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
             .alignment(Alignment::Center)
             .render(hints_area, buf);
     } else {
-    let badges = crate::ui::keymap::start_badges();
+    let badges = crate::ui::keymap::start_badges(app.focus);
     let mut hints_spans = Vec::new();
     for (idx, badge) in badges.iter().enumerate() {
         let factor = app.shortcut_hover_levels[idx];
@@ -218,8 +222,14 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         }
         let separator = if idx + 1 < badges.len() { "    " } else { "" };
         hints_spans.push(Span::styled(format!("{} ", badge.label), key_style));
+        let action = match badge.label {
+            "enter" if app.focus == Focus::Resume => "resume",
+            "enter" => "send",
+            "up/down" => "resume",
+            _ => badge.action,
+        };
         hints_spans.push(Span::styled(
-            format!("{}{}", badge.action, separator),
+            format!("{action}{separator}"),
             Style::default().fg(label_color),
         ));
     }
@@ -262,7 +272,7 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
 
             // Smooth animated hover factor (from mouse hover or keyboard selection)
             let hover_factor = app.row_hover_levels.get(idx).copied().unwrap_or(
-                if idx + window_offset == app.selected_resume_index { 1.0 } else { 0.0 }
+                if app.focus == Focus::Resume && idx + window_offset == app.selected_resume_index { 1.0 } else { 0.0 }
             );
             let del_hover_factor = app.delete_hover_levels.get(idx).copied().unwrap_or(0.0);
 

@@ -5,6 +5,7 @@
 //! cannot outlive its binding.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::app::Focus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -57,7 +58,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyCode::F(2), ctrl: false, label: "f2", action: "diff pane", scope: Scope::Global, footer: false },
     Binding { key: KeyCode::F(3), ctrl: false, label: "f3", action: "cycle mode", scope: Scope::Global, footer: false },
     Binding { key: KeyCode::Char('p'), ctrl: true, label: "ctrl+p", action: "commands", scope: Scope::Session, footer: true },
-    Binding { key: KeyCode::Tab, ctrl: false, label: "tab", action: "agents", scope: Scope::Session, footer: true },
+    Binding { key: KeyCode::Tab, ctrl: false, label: "tab", action: "mode", scope: Scope::Session, footer: true },
     Binding { key: KeyCode::Esc, ctrl: false, label: "esc", action: "interrupt", scope: Scope::Session, footer: true },
     Binding { key: KeyCode::Enter, ctrl: false, label: "enter", action: "send", scope: Scope::Session, footer: false },
     Binding { key: KeyCode::PageUp, ctrl: false, label: "pgup", action: "scroll up", scope: Scope::Session, footer: false },
@@ -65,8 +66,11 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyCode::Up, ctrl: false, label: "up", action: "history / scroll", scope: Scope::Session, footer: false },
     Binding { key: KeyCode::Down, ctrl: false, label: "down", action: "history / scroll", scope: Scope::Session, footer: false },
     Binding { key: KeyCode::Char('/'), ctrl: false, label: "/", action: "commands", scope: Scope::Start, footer: true },
-    Binding { key: KeyCode::Enter, ctrl: false, label: "enter", action: "resume", scope: Scope::Start, footer: true },
+    Binding { key: KeyCode::Enter, ctrl: false, label: "enter", action: "send / resume", scope: Scope::Start, footer: true },
     Binding { key: KeyCode::Char('d'), ctrl: false, label: "d", action: "delete", scope: Scope::Start, footer: true },
+    Binding { key: KeyCode::Tab, ctrl: false, label: "tab", action: "cycle mode", scope: Scope::Start, footer: false },
+    Binding { key: KeyCode::Up, ctrl: false, label: "up/down", action: "resume / input at top", scope: Scope::Start, footer: false },
+    Binding { key: KeyCode::Down, ctrl: false, label: "down", action: "next session", scope: Scope::Start, footer: false },
     Binding { key: KeyCode::F(1), ctrl: false, label: "f1", action: "help", scope: Scope::Start, footer: true },
     Binding { key: KeyCode::Enter, ctrl: false, label: "enter", action: "select", scope: Scope::Palette, footer: true },
     Binding { key: KeyCode::Esc, ctrl: false, label: "esc", action: "close", scope: Scope::Palette, footer: true },
@@ -100,8 +104,15 @@ pub fn footer_hints(scope: Scope) -> String {
 }
 
 /// Badges for the start screen, in hover-index order.
-pub fn start_badges() -> Vec<&'static Binding> {
-    BINDINGS.iter().filter(|b| b.scope == Scope::Start && b.footer).collect()
+pub fn start_badges(focus: Focus) -> Vec<&'static Binding> {
+    BINDINGS.iter().filter(|b| b.scope == Scope::Start && b.footer)
+        .map(|binding| {
+            if focus == Focus::Input && binding.key == KeyCode::Char('d') {
+                BINDINGS.iter().find(|b| b.scope == Scope::Start && b.key == KeyCode::Up).unwrap()
+            } else {
+                binding
+            }
+        }).collect()
 }
 
 pub fn help_sections() -> Vec<(Scope, Vec<&'static Binding>)> {
@@ -147,7 +158,9 @@ mod tests {
 
     #[test]
     fn start_badges_match_the_hover_slots() {
-        assert_eq!(start_badges().len(), 4, "app.shortcut_hover_levels has four slots");
+        for focus in [Focus::Input, Focus::Resume] {
+            assert_eq!(start_badges(focus).len(), 4, "app.shortcut_hover_levels has four slots");
+        }
     }
 
     #[test]

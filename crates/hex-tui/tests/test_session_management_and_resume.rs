@@ -1,6 +1,6 @@
 //! Empirical validation for Session click-to-resume, top-3 toggle, cascading delete, and title truncation.
 
-use hex_tui::app::{App, ResumeSession, ScreenState};
+use hex_tui::app::{App, Focus, ResumeSession, ScreenState};
 use hex_tui::ui::animation::AnimationState;
 use hex_tui::ui::screens::start;
 use hex_tui::ui::style::HexTheme;
@@ -50,6 +50,7 @@ fn test_top_3_sessions_default_and_toggle_expand_collapse() {
     let handled = app.handle_start_mouse_click(resume_area.x + 5, toggle_y, resume_area);
     assert!(handled, "Clicking toggle row must be handled");
     assert!(app.show_all_resume, "app.show_all_resume must now be true");
+    assert_eq!(app.focus, Focus::Resume);
 
     // 3. Expanded view: shows all 6 sessions and "− show less"
     let mut buf2 = Buffer::empty(area);
@@ -100,6 +101,7 @@ fn test_session_click_to_resume_and_token_recalculation() {
 
     // Screen transitions to Session
     assert_eq!(app.screen_state, ScreenState::Session);
+    assert_eq!(app.focus, Focus::Input);
     assert_eq!(app.session_id, "tsk_demo_resume");
     assert!(!app.dialogue_items.is_empty(), "Dialogue history must be populated");
     assert!(app.status_message.contains("Resumed session tsk_demo_resume"));
@@ -270,6 +272,24 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
             tbl, target_id
         );
     }
+
+    app.resume_sessions = vec![ResumeSession {
+        session_id: "last_task".to_string(),
+        title: "Last task".to_string(),
+        relative_time: "1m".to_string(),
+    }];
+    let status = Command::new("sqlite3")
+        .args([db_path.to_str().unwrap(), "INSERT INTO tasks VALUES ('last_task', 'Last task', '2026-11-16T10:00:00Z');"])
+        .status().unwrap();
+    assert!(status.success());
+    app.input_buffer = "preserved draft".to_string();
+    app.cursor_pos = 3;
+    app.request_delete_resume_session(0);
+    assert!(app.request_delete_resume_session(0));
+    assert!(app.resume_sessions.is_empty());
+    assert_eq!(app.focus, Focus::Input);
+    assert_eq!(app.input_buffer, "preserved draft");
+    assert_eq!(app.cursor_pos, 3);
 
     // Clean up temp dir
     let _ = fs::remove_dir_all(&temp_dir);

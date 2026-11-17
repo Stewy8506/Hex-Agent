@@ -82,7 +82,10 @@ fn test_inline_code_and_fences_are_tinted() {
         .unwrap();
     assert_eq!(inline.style.bg, Some(t.hover_bg));
 
-    let code_row = lines.iter().find(|l| l.to_string().contains("fn main")).unwrap();
+    let code_row = lines
+        .iter()
+        .find(|l| l.to_string().contains("fn main"))
+        .unwrap();
     assert_eq!(code_row.width(), 60, "a fence row is tinted edge to edge");
     for span in &code_row.spans {
         assert_eq!(span.style.bg, Some(t.hover_bg));
@@ -93,7 +96,10 @@ fn test_inline_code_and_fences_are_tinted() {
 fn test_unterminated_fence_stays_tinted_while_streaming() {
     let t = theme();
     let lines = render_markdown("```python\nprint('partial')", 50, &t);
-    let code = lines.iter().find(|l| l.to_string().contains("print")).unwrap();
+    let code = lines
+        .iter()
+        .find(|l| l.to_string().contains("print"))
+        .unwrap();
     assert_eq!(code.width(), 50);
     assert!(code.spans.iter().all(|s| s.style.bg == Some(t.hover_bg)));
 }
@@ -106,20 +112,26 @@ fn test_bullets_hang_under_their_text() {
         &theme(),
     );
     let text = rows(&lines);
-    assert!(text.iter().any(|r| r.contains('•')), "bullets use a real marker");
+    assert!(
+        text.iter().any(|r| r.contains('•')),
+        "bullets use a real marker"
+    );
     assert!(!text.iter().any(|r| r.trim_start().starts_with("- ")));
 
-    let first = text.iter().position(|r| r.contains("a first bullet")).unwrap();
-    let marker_col = text[first].chars().position(|c| c == '•').unwrap();
-    let body_col = text[first]
-        .chars()
-        .position(|c| c == 'a')
+    let first = text
+        .iter()
+        .position(|r| r.contains("a first bullet"))
         .unwrap();
+    let marker_col = text[first].chars().position(|c| c == '•').unwrap();
+    let body_col = text[first].chars().position(|c| c == 'a').unwrap();
     assert_eq!(marker_col, 2, "assistant prose indent");
     assert_eq!(body_col, 4);
     if text.len() > first + 1 && !text[first + 1].contains("second") {
         let cont_col = text[first + 1].chars().take_while(|c| *c == ' ').count();
-        assert_eq!(cont_col, body_col, "continuation aligns under the text, not the marker");
+        assert_eq!(
+            cont_col, body_col,
+            "continuation aligns under the text, not the marker"
+        );
     }
 }
 
@@ -147,9 +159,17 @@ fn test_prose_wraps_inside_the_canvas_without_splitting_words() {
 
 #[test]
 fn test_wide_glyphs_are_measured_by_display_width() {
-    let lines = render_markdown("日本語のテキストはとても長いので折り返される必要があります", 20, &theme());
+    let lines = render_markdown(
+        "日本語のテキストはとても長いので折り返される必要があります",
+        20,
+        &theme(),
+    );
     for line in &lines {
-        assert!(line.width() <= 20, "double-width glyphs overflowed: {}", line);
+        assert!(
+            line.width() <= 20,
+            "double-width glyphs overflowed: {}",
+            line
+        );
     }
 }
 
@@ -164,7 +184,10 @@ fn test_identifiers_and_paths_are_not_mangled() {
     assert!(text.contains("parse_config_yaml"));
     assert!(text.contains("harness_core/config_loader.py"));
     assert!(
-        lines.iter().flat_map(|l| l.spans.iter()).all(|s| !s.style.add_modifier.contains(Modifier::ITALIC)),
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .all(|s| !s.style.add_modifier.contains(Modifier::ITALIC)),
         "underscores inside identifiers must not become emphasis"
     );
 }
@@ -214,43 +237,79 @@ fn test_plain_text_is_unchanged() {
 }
 
 #[test]
-fn test_system_notices_are_italic_on_every_wrapped_row_without_affecting_other_roles() {
-    for width in [60, 120] {
-        let mut app = session_with("ordinary assistant response");
-        app.dialogue_items.clear();
-        app.add_user_message("operator input");
-        app.add_tool_call("files", "list_files", "{}", None, None);
-        app.complete_tool_call("files", "done", 100, false);
-        app.add_assistant_message("ordinary assistant response");
-        app.add_system_message(
+fn test_system_notices_are_dimmer_flush_left_and_italic_on_every_wrapped_row() {
+    for t in [HexTheme::truecolor(), HexTheme::color_256()] {
+        for width in [60, 120] {
+            let mut app = session_with("ordinary assistant response");
+            app.dialogue_items.clear();
+            app.add_user_message("operator input");
+            app.add_tool_call("files", "list_files", "{}", None, None);
+            app.complete_tool_call("files", "done", 100, false);
+            app.add_assistant_message("ordinary assistant response");
+            app.add_system_message(
             "Showing stored history. Previous messages remain visible, but the next prompt starts a fresh conversation without runtime memory.",
         );
-        app.dialogue_entrance.set((app.dialogue_items.len(), None));
-        app.dialogue_scroll = 0;
-        let buf = screen(&app, width, 40);
-        let first = (0..buf.area.height)
-            .find(|y| row_text(&buf, *y).contains("Showing stored history.")).unwrap();
-        let last = (first..buf.area.height)
-            .find(|y| row_text(&buf, *y).contains("memory.")).unwrap();
-        assert!(last > first, "the notice should wrap at width {width}");
-        for y in first..=last {
-            for x in 6..buf.area.width - 1 {
-                let cell = &buf[(x, y)];
-                if cell.symbol() == "│" {
-                    break;
-                }
-                if !cell.symbol().trim().is_empty() {
-                    assert!(cell.modifier.contains(Modifier::ITALIC), "notice cell at {x},{y} must be italic");
+            app.dialogue_entrance.set((app.dialogue_items.len(), None));
+            app.dialogue_scroll = 0;
+            let area = Rect::new(0, 0, width, 40);
+            let mut buf = Buffer::empty(area);
+            session::render(&app, &t, &AnimationState::new(), area, &mut buf);
+            let first = (0..buf.area.height)
+                .find(|y| row_text(&buf, *y).contains("Showing stored history."))
+                .unwrap();
+            let last = (first..buf.area.height)
+                .find(|y| row_text(&buf, *y).contains("memory."))
+                .unwrap();
+            assert!(last > first, "the notice should wrap at width {width}");
+            let notice_x = row_text(&buf, first)
+                .split_once("Showing stored history.")
+                .unwrap()
+                .0
+                .chars()
+                .count() as u16;
+            for y in first..=last {
+                assert!(
+                    !buf[(notice_x, y)].symbol().trim().is_empty(),
+                    "wrapped notices must stay flush left"
+                );
+                for x in notice_x..buf.area.width - 1 {
+                    let cell = &buf[(x, y)];
+                    if cell.symbol() == "│" {
+                        break;
+                    }
+                    if !cell.symbol().trim().is_empty() {
+                        assert!(
+                            cell.modifier.contains(Modifier::ITALIC),
+                            "notice cell at {x},{y} must be italic"
+                        );
+                        assert_eq!(cell.fg, t.text_system, "system text must be subtly dimmer");
+                    }
                 }
             }
-        }
-        for text in ["operator input", "list_files", "ordinary assistant response"] {
-            let y = (0..buf.area.height).find(|y| row_text(&buf, *y).contains(text)).unwrap();
-            let chars: Vec<_> = row_text(&buf, y).chars().collect();
-            let needle: Vec<_> = text.chars().collect();
-            let x = chars.windows(needle.len()).position(|part| part == needle).unwrap() as u16;
-            for offset in 0..needle.len() as u16 {
-                assert!(!buf[(x + offset, y)].modifier.contains(Modifier::ITALIC), "{text} must not inherit system styling");
+            for text in [
+                "operator input",
+                "list_files",
+                "ordinary assistant response",
+            ] {
+                let y = (0..buf.area.height)
+                    .find(|y| row_text(&buf, *y).contains(text))
+                    .unwrap();
+                let chars: Vec<_> = row_text(&buf, y).chars().collect();
+                let needle: Vec<_> = text.chars().collect();
+                let x = chars
+                    .windows(needle.len())
+                    .position(|part| part == needle)
+                    .unwrap() as u16;
+                for offset in 0..needle.len() as u16 {
+                    assert!(
+                        !buf[(x + offset, y)].modifier.contains(Modifier::ITALIC),
+                        "{text} must not inherit system styling"
+                    );
+                }
+                if text == "ordinary assistant response" {
+                    assert_eq!(x, notice_x + 2, "only system notices lose the prose indent");
+                    assert_eq!(buf[(x, y)].fg, t.text_muted);
+                }
             }
         }
     }
@@ -262,36 +321,59 @@ fn test_italic_system_markdown_preserves_existing_emphasis_and_accents() {
         let mut app = session_with("");
         app.dialogue_items.clear();
         app.add_system_message(
-            "# System report\n\n**Approved** `safe_tool`\n\n- tool_allowed\n\n> retained_history\n\n```text\ncommand_output\n```\n\n[details](https://example.com/hex)",
+            "# System report\n\n**Approved** `safe_tool`\n\n- tool_allowed\n  - nested_allowed\n\n> retained_history\n\n```text\n    command_output\n```\n\n[details](https://example.com/hex)",
         );
         app.dialogue_entrance.set((app.dialogue_items.len(), None));
         app.dialogue_scroll = 0;
         let area = Rect::new(0, 0, 120, 40);
         let mut buf = Buffer::empty(area);
         session::render(&app, &t, &AnimationState::new(), area, &mut buf);
+        let heading_y = (0..area.height)
+            .find(|y| row_text(&buf, *y).contains("System report"))
+            .unwrap();
+        let notice_x = row_text(&buf, heading_y)
+            .split_once("System report")
+            .unwrap()
+            .0
+            .chars()
+            .count() as u16;
         for (text, emphasis) in [
             ("System report", Modifier::BOLD),
             ("Approved", Modifier::BOLD),
             ("safe_tool", Modifier::empty()),
             ("•", Modifier::empty()),
             ("tool_allowed", Modifier::empty()),
+            ("nested_allowed", Modifier::empty()),
             ("│ retained_history", Modifier::empty()),
             ("command_output", Modifier::empty()),
             ("details", Modifier::UNDERLINED),
         ] {
-            let y = (0..area.height).find(|y| row_text(&buf, *y).contains(text)).unwrap();
+            let y = (0..area.height)
+                .find(|y| row_text(&buf, *y).contains(text))
+                .unwrap();
             let chars: Vec<_> = row_text(&buf, y).chars().collect();
             let needle: Vec<_> = text.chars().collect();
-            let x = chars.windows(needle.len()).position(|part| part == needle).unwrap() as u16;
+            let x = chars
+                .windows(needle.len())
+                .position(|part| part == needle)
+                .unwrap() as u16;
             for offset in 0..needle.len() as u16 {
                 let cell = &buf[(x + offset, y)];
-                assert!(cell.modifier.contains(Modifier::ITALIC | emphasis), "{text} must preserve emphasis and be italic");
+                assert!(
+                    cell.modifier.contains(Modifier::ITALIC | emphasis),
+                    "{text} must preserve emphasis and be italic"
+                );
                 if matches!(text, "safe_tool" | "command_output") {
                     assert_eq!(cell.bg, t.hover_bg);
                 }
             }
             if matches!(text, "•" | "│ retained_history" | "details") {
                 assert_eq!(buf[(x, y)].fg, t.accent_blue);
+            } else {
+                assert_eq!(buf[(x, y)].fg, t.text_system);
+            }
+            if text == "command_output" {
+                assert_eq!(x, notice_x + 4, "code indentation must remain intact");
             }
         }
     }
@@ -309,6 +391,9 @@ fn test_transcript_shows_the_newest_formatted_message() {
     }
     let buf = screen(&app, 120, 40);
     let text: String = (0..buf.area.height).map(|y| row_text(&buf, y)).collect();
-    assert!(text.contains("Answer 11"), "the newest message must be on screen");
+    assert!(
+        text.contains("Answer 11"),
+        "the newest message must be on screen"
+    );
     assert!(!text.contains("**"));
 }

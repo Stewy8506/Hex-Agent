@@ -429,7 +429,22 @@ fn item_lines(
             }
         }
         DialogueItem::Message(m) => {
-            let mut rendered = render_markdown(&m.content, width as usize, theme);
+            let mut rendered = if m.role == Role::System {
+                let system_theme = HexTheme {
+                    text_bright: theme.text_system,
+                    text_primary: theme.text_system,
+                    text_muted: theme.text_system,
+                    ..*theme
+                };
+                super::markdown::render_markdown_indented(
+                    &m.content,
+                    width as usize,
+                    &system_theme,
+                    0,
+                )
+            } else {
+                render_markdown(&m.content, width as usize, theme)
+            };
             if m.role == Role::System {
                 for line in &mut rendered {
                     line.style = line.style.add_modifier(Modifier::ITALIC);

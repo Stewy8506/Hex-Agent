@@ -30,6 +30,7 @@ pub struct HexTheme {
     pub text_primary: Color,
     /// Muted secondary text / thought explanation (#bdbdbd)
     pub text_muted: Color,
+    pub text_system: Color,
     /// Dim metadata, timestamps, token counts (#8c8c8c)
     pub text_dim: Color,
     /// Extra dim separators, hidden frames, bullets (#7d7d7d / #4a4a4a)
@@ -90,6 +91,7 @@ impl HexTheme {
             text_bright: Color::Rgb(242, 242, 242),
             text_primary: Color::Rgb(214, 214, 214),
             text_muted: Color::Rgb(189, 189, 189),
+            text_system: Color::Rgb(168, 168, 168),
             text_dim: Color::Rgb(140, 140, 140),
             text_extra_dim: Color::Rgb(74, 74, 74),
             accent_blue: Color::Rgb(122, 167, 255),
@@ -117,6 +119,7 @@ impl HexTheme {
             text_bright: Color::Indexed(255),    // #eeeeee
             text_primary: Color::Indexed(252),   // #d0d0d0
             text_muted: Color::Indexed(249),     // #b2b2b2
+            text_system: Color::Indexed(248),
             text_dim: Color::Indexed(244),       // #808080
             text_extra_dim: Color::Indexed(240), // #585858
             accent_blue: Color::Indexed(111),    // #87afff

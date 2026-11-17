@@ -8,13 +8,14 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Widget};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::ui::animation::AnimationState;
 use crate::ui::style::HexTheme;
 
-/// Mockup panel width (660px) and its anchor below the header.
-const PANEL_WIDTH: u16 = 62;
+const PANEL_MIN_WIDTH: u16 = 80;
+const PANEL_MAX_WIDTH: u16 = 120;
 const PANEL_TOP: u16 = 4;
 
 enum Row<'a> {
@@ -36,7 +37,7 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
     }
 
     let results = app.palette_results();
-    let grouped = app.palette_query.trim().is_empty();
+    let grouped = app.palette_query.trim().trim_start_matches('/').is_empty();
 
     // Flatten to display rows: one per result, plus a header per category when
     // browsing, so the selection can be scrolled into view as a single unit.
@@ -52,7 +53,9 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
     }
 
     // 2. Top-anchored modal, sized to its content.
-    let modal_width = PANEL_WIDTH.min(area.width.saturating_sub(4));
+    let modal_width = ((u32::from(area.width) * 3 / 5) as u16)
+        .clamp(PANEL_MIN_WIDTH, PANEL_MAX_WIDTH)
+        .min(area.width.saturating_sub(4));
     let chrome = 6u16; // border x2, search, divider, divider, footer
     let max_height = area.height.saturating_sub(PANEL_TOP + 1);
     let modal_height = ((rows.len() as u16).saturating_add(chrome))
@@ -139,18 +142,22 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
             buf[(x, current_y)].set_bg(row_bg);
         }
 
-        let width = results_area.width as usize;
-        let hint: Vec<char> = item.shortcut.chars().collect();
-        let hint_w = hint.len();
-        let title_max = width.saturating_sub(2 + hint_w + 3);
-        let title: Vec<char> = item.title.chars().collect();
-        let truncated = title.len() > title_max;
-        let shown: Vec<char> = if truncated {
-            let mut t: Vec<char> = title[..title_max.saturating_sub(1)].to_vec();
-            t.push('…');
-            t
+        let title_max = results_area.width.saturating_sub(3) as usize;
+        let shown: Vec<char> = if item.title.width() > title_max {
+            let mut chars = Vec::new();
+            let mut used = 0;
+            for c in item.title.chars() {
+                let width = c.width().unwrap_or(0);
+                if used + width > title_max.saturating_sub(1) {
+                    break;
+                }
+                chars.push(c);
+                used += width;
+            }
+            chars.push('…');
+            chars
         } else {
-            title.clone()
+            item.title.chars().collect()
         };
 
         let mut spans = vec![if is_selected {
@@ -159,14 +166,6 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
             Span::styled("  ", Style::default().bg(row_bg))
         }];
         spans.extend(highlight(&shown, &m.title_matched, theme, row_bg, theme.text_muted));
-
-        let used = 2 + shown.len();
-        let gap = width.saturating_sub(used + hint_w + 1);
-        spans.push(Span::styled(" ".repeat(gap), Style::default().bg(row_bg)));
-        if hint_w > 0 {
-            spans.push(Span::styled(" ", Style::default().bg(row_bg)));
-            spans.extend(highlight(&hint, &m.shortcut_matched, theme, row_bg, theme.text_dim));
-        }
 
         buf.set_line(results_area.x, current_y, &Line::from(spans), results_area.width);
         current_y += 1;

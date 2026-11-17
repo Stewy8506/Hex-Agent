@@ -46,7 +46,7 @@ fn test_screen_0_start_rendering() {
     assert!(full_text.contains("files indexed"), "Must show indexed count");
 
     // 3. Verify keyboard shortcut badges advertise real bindings only
-    for hint in ["commands", "resume", "delete", "help"] {
+    for hint in ["commands", "resume", "send", "help"] {
         assert!(full_text.contains(hint), "Must show {hint} shortcut");
     }
     for stale in ["ctrl+r", "@ files", "tab agent"] {
@@ -281,5 +281,76 @@ fn test_start_screen_hover_and_pulse_animation_styles() {
     assert_eq!(toggle_cell.bg, Color::Rgb(21, 21, 21), "Toggle bg should be #151515 when active");
     assert_eq!(toggle_cell.fg, theme.accent_blue, "Toggle fg should be accent_blue when active");
     assert!(toggle_cell.modifier.contains(Modifier::BOLD), "Toggle text should be BOLD when active");
+}
+
+#[test]
+fn empty_composer_caret_stays_at_the_hint_start_when_typing_and_clearing() {
+    use std::time::{Duration, Instant};
+    use ratatui::style::Color;
+
+    for width in [60, 120] {
+        for theme in [HexTheme::truecolor(), HexTheme::color_256()] {
+            for state in [ScreenState::Start, ScreenState::Session] {
+                for visible in [true, false] {
+                    let mut app = App::new("caret-test", "model", "sandbox");
+                    app.screen_state = state;
+                    let anim = AnimationState::with_start(if visible {
+                        Instant::now() + Duration::from_secs(60)
+                    } else {
+                        Instant::now() - Duration::from_millis(700)
+                    });
+                    let area = Rect::new(3, 2, width, 40);
+                    let hint = if state == ScreenState::Start {
+                        anim.placeholder_prompt()
+                    } else {
+                        "Message hex"
+                    };
+                    let background = if state == ScreenState::Start {
+                        Color::Rgb(12, 12, 12)
+                    } else {
+                        theme.card_bg
+                    };
+                    let render = |app: &App| {
+                        let mut buf = Buffer::empty(area);
+                        if state == ScreenState::Start {
+                            start::render(app, &theme, &anim, area, &mut buf);
+                        } else {
+                            session::render(app, &theme, &anim, area, &mut buf);
+                        }
+                        buf
+                    };
+                    let row = |buf: &Buffer, y| {
+                        (area.x..area.right()).map(|x| buf[(x, y)].symbol()).collect::<String>()
+                    };
+                    let empty = render(&app);
+                    let needle = format!("> {hint}");
+                    let y = (area.y..area.bottom()).find(|y| row(&empty, *y).contains(&needle)).unwrap();
+                    let text = row(&empty, y);
+                    let prefix = text.find(&needle).unwrap();
+                    let x = area.x + text[..prefix].chars().count() as u16 + 2;
+                    assert_eq!(empty[(x, y)].symbol(), &hint[..1]);
+                    assert_eq!(empty[(x, y)].bg, if anim.cursor_visible() { theme.accent_blue } else { background });
+                    assert_eq!(empty[(x + 1, y)].bg, background, "the hint must not shift right");
+                    assert!(!text.contains('█'), "no caret may remain after the placeholder");
+
+                    app.insert_char('世');
+                    let typed = render(&app);
+                    assert_eq!(typed[(x, y)].symbol(), "世", "typing must start at the hint's first column");
+                    assert_eq!(typed[(x, y)].bg, background);
+                    assert!(!row(&typed, y).contains(hint), "typing must remove the entire hint");
+                    if anim.cursor_visible() {
+                        assert_eq!(typed[(x + 2, y)].symbol(), "█", "typed caret follows display width");
+                        assert_eq!(typed[(x + 2, y)].fg, theme.accent_blue);
+                    }
+
+                    app.delete_char();
+                    let cleared = render(&app);
+                    assert!(row(&cleared, y).contains(&needle));
+                    assert_eq!(cleared[(x, y)].bg, if anim.cursor_visible() { theme.accent_blue } else { background });
+                    assert_eq!(app.cursor_pos, 0);
+                }
+            }
+        }
+    }
 }
 

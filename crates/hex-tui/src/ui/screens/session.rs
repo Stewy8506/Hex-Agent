@@ -261,7 +261,6 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
         Line::from(vec![
             Span::styled("> ", Style::default().fg(theme.text_dim)),
             Span::styled("Message hex", Style::default().fg(theme.text_extra_dim)),
-            cursor_span,
         ])
     } else {
         Line::from(vec![
@@ -275,6 +274,15 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
     let text_y = comp_inner.y + comp_inner.height / 2;
     let text_w = comp_inner.width.saturating_sub(4);
     buf.set_line(text_x, text_y, &prompt_line, text_w);
+    if app.active_approval.is_none()
+        && app.input_buffer.is_empty()
+        && anim.cursor_visible()
+        && text_w > 2
+    {
+        buf[(text_x + 2, text_y)]
+            .set_fg(theme.card_bg)
+            .set_bg(theme.accent_blue);
+    }
 
     // ─────────────────────────────────────────────
     // 4. Status Bar Footer

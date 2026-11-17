@@ -301,7 +301,7 @@ fn test_card_box_is_not_reflowed_by_wrapping() {
 }
 
 #[test]
-fn test_tab_opens_the_agents_modal_on_the_running_subagent() {
+fn test_agents_modal_opens_on_the_running_subagent() {
     let mut app = session_app();
     let agents = vec![verifier(), researcher()];
     app.set_subagent_telemetry(&agents);
@@ -431,6 +431,6 @@ fn test_agents_modal_reports_a_failed_run() {
 fn test_agents_footer_hints_come_from_the_keymap() {
     let hints = keymap::footer_hints(keymap::Scope::Agents);
     assert_eq!(hints, "up/down scroll · e expand prompt · esc close");
-    assert!(keymap::footer_hints(keymap::Scope::Session).contains("tab agents"));
-    assert!(!keymap::footer_hints(keymap::Scope::Session).contains("tab mode"));
+    assert!(keymap::footer_hints(keymap::Scope::Session).contains("tab mode"));
+    assert!(!keymap::footer_hints(keymap::Scope::Session).contains("tab agents"));
 }

@@ -1,7 +1,7 @@
 //! The resume list must be navigable: arrows, wheel and page keys move the
 //! highlight and scroll the window, even when the mouse is parked over a row.
 
-use hex_tui::app::{App, ResumeSession};
+use hex_tui::app::{App, Focus, ResumeSession};
 use hex_tui::ui::animation::AnimationState;
 use hex_tui::ui::screens::start;
 use hex_tui::ui::style::HexTheme;
@@ -17,6 +17,7 @@ fn app_with(count: usize) -> App {
             relative_time: "1m".to_string(),
         })
         .collect();
+    app.set_start_focus(Focus::Resume);
     app
 }
 
@@ -45,6 +46,60 @@ fn highlighted_row(app: &App) -> Option<usize> {
     app.row_hover_levels
         .iter()
         .position(|&level| level > 0.9)
+}
+
+#[test]
+fn test_input_caret_and_history_selection_are_mutually_exclusive() {
+    for theme in [HexTheme::truecolor(), HexTheme::color_256()] {
+        for width in [60, 120, 241] {
+            let mut app = app_with(6);
+            app.set_start_focus(Focus::Input);
+            let area = Rect::new(3, 2, width, 40);
+            let prompt = app.get_start_prompt_area(area);
+            let resume = app.get_start_resume_area(area);
+            let caret = (prompt.x + 5, prompt.y + 1);
+            let row = (resume.x + 2, resume.y + 1);
+            settle(&mut app);
+            let mut buf = Buffer::empty(area);
+            start::render(&app, &theme, &AnimationState::new(), area, &mut buf);
+            assert_eq!(buf[caret].bg, theme.accent_blue);
+            assert_eq!(buf[row].bg, theme.canvas_bg);
+            assert_eq!(highlighted_row(&app), None);
+
+            app.move_resume_selection(1);
+            settle(&mut app);
+            start::render(&app, &theme, &AnimationState::new(), area, &mut buf);
+            assert_ne!(buf[caret].bg, theme.accent_blue);
+            assert_ne!(buf[row].bg, theme.canvas_bg);
+            assert_eq!(highlighted_row(&app), Some(0));
+
+            app.input_buffer = "世 draft".to_string();
+            app.cursor_pos = 2;
+            settle(&mut app);
+            assert_eq!(app.input_hover_level, 0.0, "an unfocused draft must not light the input");
+            app.move_resume_selection(-1);
+            start::render(&app, &theme, &AnimationState::new(), area, &mut buf);
+            assert_eq!(buf[row].bg, theme.canvas_bg, "selection clears without an animation delay");
+            assert_eq!(app.input_buffer, "世 draft");
+            assert_eq!(app.cursor_pos, 2);
+            assert_eq!(app.focus, Focus::Input);
+        }
+    }
+}
+
+#[test]
+fn test_mouse_hover_does_not_steal_input_focus() {
+    let mut app = app_with(6);
+    app.set_start_focus(Focus::Input);
+    let area = Rect::new(0, 0, 120, 40);
+    let resume = app.get_start_resume_area(area);
+    app.handle_mouse_move(resume.x + 10, resume.y + 1, area);
+    settle(&mut app);
+    assert_eq!(app.focus, Focus::Input);
+    assert_eq!(highlighted_row(&app), Some(0));
+    app.move_resume_selection(1);
+    assert_eq!(app.focus, Focus::Resume);
+    assert_eq!(app.hovered_resume_row, None);
 }
 
 #[test]
@@ -146,18 +201,25 @@ fn test_toggle_row_is_reachable_by_keyboard_in_both_directions() {
     let toggle = app.resume_toggle_index().expect("toggle exists");
     assert_eq!(toggle, 234, "toggle sits one past the last session");
 
-    // Up from the first session wraps onto the toggle row.
     app.move_resume_selection(-1);
+    assert_eq!(app.focus, Focus::Input);
+    assert_eq!(app.selected_resume_index, 0);
+    app.move_resume_selection(1);
+    assert_eq!(app.focus, Focus::Resume);
+    for _ in 0..toggle {
+        app.move_resume_selection(1);
+    }
     assert_eq!(app.selected_resume_index, toggle);
     settle(&mut app);
     assert!(app.toggle_hover_level > 0.9, "toggle row shows the keyboard selection");
     assert_eq!(app.resume_window().0 + app.resume_visible_count(), 234);
 
-    // Down from the toggle wraps back to the first session.
     app.move_resume_selection(1);
-    assert_eq!(app.selected_resume_index, 0);
+    assert_eq!(app.selected_resume_index, toggle, "Down clamps at the toggle");
+    app.move_resume_selection(-1);
+    assert_eq!(app.selected_resume_index, toggle - 1);
     settle(&mut app);
-    assert_eq!(highlighted_row(&app), Some(0));
+    assert_eq!(highlighted_row(&app), Some(9));
 
     // Collapsing keeps the selection inside the shortened list.
     app.selected_resume_index = toggle;

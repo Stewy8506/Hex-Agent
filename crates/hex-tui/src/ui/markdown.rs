@@ -18,6 +18,15 @@ const PROSE_INDENT: usize = 2;
 
 /// Render a markdown message into lines that fit `width` columns.
 pub fn render_markdown(text: &str, width: usize, theme: &HexTheme) -> Vec<Line<'static>> {
+    render_markdown_indented(text, width, theme, PROSE_INDENT)
+}
+
+pub(super) fn render_markdown_indented(
+    text: &str,
+    width: usize,
+    theme: &HexTheme,
+    prose_indent: usize,
+) -> Vec<Line<'static>> {
     let width = width.max(8);
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut paragraph: Vec<String> = Vec::new();
@@ -37,27 +46,27 @@ pub fn render_markdown(text: &str, width: usize, theme: &HexTheme) -> Vec<Line<'
         }
 
         if let Some(marker) = fence_open(trimmed) {
-            flush_paragraph(&mut paragraph, &mut out, width, theme);
+            flush_paragraph(&mut paragraph, &mut out, width, theme, prose_indent);
             fence = Some(marker);
             continue;
         }
 
         if trimmed.is_empty() {
-            flush_paragraph(&mut paragraph, &mut out, width, theme);
+            flush_paragraph(&mut paragraph, &mut out, width, theme, prose_indent);
             push_blank(&mut out);
             continue;
         }
 
         if let Some(level) = heading_level(trimmed) {
-            flush_paragraph(&mut paragraph, &mut out, width, theme);
+            flush_paragraph(&mut paragraph, &mut out, width, theme, prose_indent);
             push_blank(&mut out);
             let body = trimmed[level + 1..].trim();
             let style = Style::default()
                 .fg(theme.text_bright)
                 .add_modifier(Modifier::BOLD);
             let spans = inline_spans(body, style, theme);
-            for row in wrap_spans(spans, width, PROSE_INDENT, PROSE_INDENT) {
-                let mut line = vec![Span::raw(" ".repeat(PROSE_INDENT))];
+            for row in wrap_spans(spans, width, prose_indent, prose_indent) {
+                let mut line = vec![Span::raw(" ".repeat(prose_indent))];
                 line.extend(row);
                 out.push(Line::from(line));
             }
@@ -65,7 +74,7 @@ pub fn render_markdown(text: &str, width: usize, theme: &HexTheme) -> Vec<Line<'
         }
 
         if is_rule(trimmed) {
-            flush_paragraph(&mut paragraph, &mut out, width, theme);
+            flush_paragraph(&mut paragraph, &mut out, width, theme, prose_indent);
             push_blank(&mut out);
             out.push(Line::from(Span::styled(
                 "─".repeat(width),
@@ -76,9 +85,9 @@ pub fn render_markdown(text: &str, width: usize, theme: &HexTheme) -> Vec<Line<'
         }
 
         if let Some(item) = list_item(trimmed) {
-            flush_paragraph(&mut paragraph, &mut out, width, theme);
+            flush_paragraph(&mut paragraph, &mut out, width, theme, prose_indent);
             let depth = (indent_cols / 2).min(4);
-            let marker_indent = PROSE_INDENT + depth * 2;
+            let marker_indent = prose_indent + depth * 2;
             let text_indent = marker_indent + item.marker_width + 1;
             let marker_style = Style::default().fg(theme.accent_blue);
             let spans = inline_spans(&item.body, Style::default().fg(theme.text_muted), theme);
@@ -100,11 +109,11 @@ pub fn render_markdown(text: &str, width: usize, theme: &HexTheme) -> Vec<Line<'
         }
 
         if let Some(quoted) = trimmed.strip_prefix("> ") {
-            flush_paragraph(&mut paragraph, &mut out, width, theme);
+            flush_paragraph(&mut paragraph, &mut out, width, theme, prose_indent);
             let spans = inline_spans(quoted, Style::default().fg(theme.text_muted), theme);
-            for row in wrap_spans(spans, width, PROSE_INDENT + 2, PROSE_INDENT + 2) {
+            for row in wrap_spans(spans, width, prose_indent + 2, prose_indent + 2) {
                 let mut line = vec![
-                    Span::raw(" ".repeat(PROSE_INDENT)),
+                    Span::raw(" ".repeat(prose_indent)),
                     Span::styled("│ ", Style::default().fg(theme.accent_blue)),
                 ];
                 line.extend(row);
@@ -116,7 +125,7 @@ pub fn render_markdown(text: &str, width: usize, theme: &HexTheme) -> Vec<Line<'
         paragraph.push(trimmed.to_string());
     }
 
-    flush_paragraph(&mut paragraph, &mut out, width, theme);
+    flush_paragraph(&mut paragraph, &mut out, width, theme, prose_indent);
     while out.last().map(|l| l.width() == 0).unwrap_or(false) {
         out.pop();
     }
@@ -128,6 +137,7 @@ fn flush_paragraph(
     out: &mut Vec<Line<'static>>,
     width: usize,
     theme: &HexTheme,
+    prose_indent: usize,
 ) {
     if paragraph.is_empty() {
         return;
@@ -135,8 +145,8 @@ fn flush_paragraph(
     let joined = paragraph.join(" ");
     paragraph.clear();
     let spans = inline_spans(&joined, Style::default().fg(theme.text_muted), theme);
-    for row in wrap_spans(spans, width, PROSE_INDENT, PROSE_INDENT) {
-        let mut line = vec![Span::raw(" ".repeat(PROSE_INDENT))];
+    for row in wrap_spans(spans, width, prose_indent, prose_indent) {
+        let mut line = vec![Span::raw(" ".repeat(prose_indent))];
         line.extend(row);
         out.push(Line::from(line));
     }

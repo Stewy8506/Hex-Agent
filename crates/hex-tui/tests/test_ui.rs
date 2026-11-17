@@ -175,7 +175,7 @@ fn test_palette_fuzzy_ranking_and_subsequence() {
     assert!(
         app.palette_results()
             .iter()
-            .any(|m| app.palette_items[m.item_index].shortcut == "/blast"),
+            .any(|m| app.palette_items[m.item_index].command == "/blast"),
         "'ast' must match '/blast' via subsequence"
     );
 
@@ -184,7 +184,7 @@ fn test_palette_fuzzy_ranking_and_subsequence() {
     assert!(
         app.palette_results()
             .iter()
-            .any(|m| app.palette_items[m.item_index].shortcut == "/rollback"),
+            .any(|m| app.palette_items[m.item_index].command == "/rollback"),
         "'rb' must match '/rollback' via subsequence"
     );
 
@@ -193,14 +193,14 @@ fn test_palette_fuzzy_ranking_and_subsequence() {
     let results = app.palette_results();
     assert!(!results.is_empty(), "Results must not be empty for 'mem'");
     assert_eq!(
-        app.palette_items[results[0].item_index].shortcut,
+        app.palette_items[results[0].item_index].command,
         "/memory",
         "'/memory' must be ranked first before subsequence matches"
     );
     assert!(
         results
             .iter()
-            .any(|m| app.palette_items[m.item_index].shortcut == "/remember"),
+            .any(|m| app.palette_items[m.item_index].command == "/remember"),
         "Subsequence match '/remember' must also be included"
     );
 

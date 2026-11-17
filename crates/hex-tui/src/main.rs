@@ -412,12 +412,11 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                                 .size()
                                 .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
                                 .unwrap_or(ratatui::layout::Rect::new(0, 0, 120, 36));
-                            let resume_rect = app.get_start_resume_area(term_rect);
                             handle_start_mouse_click(
                                 &mut app,
                                 mouse.column,
                                 mouse.row,
-                                resume_rect,
+                                term_rect,
                             );
                         }
                         _ => {}
@@ -715,8 +714,9 @@ async fn handle_key_event(
     if app.show_palette {
         match key.code {
             KeyCode::Enter => {
+                let query = app.palette_query.trim().trim_start_matches('/');
                 if matches!(
-                    app.palette_query.split_whitespace().next(),
+                    query.split_whitespace().next(),
                     Some(
                         "tool-result"
                             | "history"
@@ -725,7 +725,7 @@ async fn handle_key_event(
                             | "history-turn"
                     )
                 ) {
-                    let command = format!("/{}", app.palette_query);
+                    let command = format!("/{query}");
                     app.close_palette();
                     execute_submitted_text(app, command, acp_client, event_tx).await?;
                 } else if let Some(item) = app.palette_selected() {
@@ -751,28 +751,17 @@ async fn handle_key_event(
         return Ok(());
     }
 
-    // Tab: in a session it opens the agents drill-down (mode cycling lives on
-    // F3 and the palette's /mode); the start screen keeps cycling the mode.
     if key.code == KeyCode::Tab {
-        if app.screen_state == ScreenState::Session {
-            open_agents_modal(app, acp_client, event_tx);
-        } else {
-            app.handle_tab();
-        }
+        app.handle_tab();
         return Ok(());
     }
 
     if key.code == KeyCode::PageUp || key.code == KeyCode::PageDown {
-        let on_resume_list = app.screen_state == ScreenState::Start
-            && app.input_buffer.is_empty()
-            && !app.resume_sessions.is_empty();
-        if on_resume_list {
-            let page = app.resume_visible_count().max(1) as i32;
-            app.scroll_resume(if key.code == KeyCode::PageUp {
-                -page
-            } else {
-                page
-            });
+        if app.screen_state == ScreenState::Start {
+            if app.focus == Focus::Resume {
+                let page = app.resume_visible_count().max(1) as i32;
+                app.scroll_resume(if key.code == KeyCode::PageUp { -page } else { page });
+            }
         } else if key.code == KeyCode::PageUp {
             app.handle_page_up();
         } else {
@@ -790,60 +779,20 @@ async fn handle_key_event(
                     return Ok(());
                 }
 
-                if app.screen_state == ScreenState::Start
-                    && app.input_buffer.is_empty()
-                    && !app.resume_sessions.is_empty()
-                {
-                    if app.selected_resume_index < app.resume_sessions.len() {
-                        let session = app.resume_sessions[app.selected_resume_index].clone();
-                        app.resume_session(&session.session_id);
-                        return Ok(());
-                    } else if Some(app.selected_resume_index) == app.resume_toggle_index() {
-                        app.toggle_show_all_resume();
-                        return Ok(());
-                    }
-                }
-
                 if let Some(text) = app.submit_input() {
                     execute_submitted_text(app, text, acp_client, event_tx).await?;
                 }
             }
-            KeyCode::Char('d') => {
-                if app.screen_state == ScreenState::Start
-                    && app.input_buffer.is_empty()
-                    && !app.resume_sessions.is_empty()
-                {
-                    if app.selected_resume_index < app.resume_sessions.len() {
-                        app.request_delete_resume_session(app.selected_resume_index);
-                        return Ok(());
-                    }
-                }
-                app.insert_char('d');
-            }
             KeyCode::Char('/') if app.input_buffer.is_empty() => app.open_palette(),
             KeyCode::Char(c) => app.insert_char(c),
             KeyCode::Backspace => app.delete_char(),
-            KeyCode::Delete => {
-                if app.screen_state == ScreenState::Start
-                    && app.input_buffer.is_empty()
-                    && !app.resume_sessions.is_empty()
-                {
-                    if app.selected_resume_index < app.resume_sessions.len() {
-                        app.request_delete_resume_session(app.selected_resume_index);
-                        return Ok(());
-                    }
-                }
-                app.delete_char_forward();
-            }
+            KeyCode::Delete => app.delete_char_forward(),
             KeyCode::Left => app.move_cursor_left(),
             KeyCode::Right => app.move_cursor_right(),
             KeyCode::Home => app.move_cursor_start(),
             KeyCode::End => app.move_cursor_end(),
             KeyCode::Up => {
-                if app.screen_state == ScreenState::Start
-                    && app.input_buffer.is_empty()
-                    && !app.resume_sessions.is_empty()
-                {
+                if app.screen_state == ScreenState::Start {
                     app.move_resume_selection(-1);
                 } else if app.input_buffer.is_empty() {
                     app.scroll_up();
@@ -852,10 +801,7 @@ async fn handle_key_event(
                 }
             }
             KeyCode::Down => {
-                if app.screen_state == ScreenState::Start
-                    && app.input_buffer.is_empty()
-                    && !app.resume_sessions.is_empty()
-                {
+                if app.screen_state == ScreenState::Start {
                     app.move_resume_selection(1);
                 } else if app.input_buffer.is_empty() {
                     app.scroll_down();
@@ -863,6 +809,28 @@ async fn handle_key_event(
                     app.history_down();
                 }
             }
+            _ => {}
+        },
+        Focus::Resume => match key.code {
+            KeyCode::Up => app.move_resume_selection(-1),
+            KeyCode::Down => app.move_resume_selection(1),
+            KeyCode::Enter => {
+                if let Some(session) = app.resume_sessions.get(app.selected_resume_index) {
+                    let session_id = session.session_id.clone();
+                    app.resume_session(&session_id);
+                } else if Some(app.selected_resume_index) == app.resume_toggle_index() {
+                    app.toggle_show_all_resume();
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                app.request_delete_resume_session(app.selected_resume_index);
+            }
+            KeyCode::Char('/') => app.open_palette(),
+            KeyCode::Char(c) => {
+                app.set_start_focus(Focus::Input);
+                app.insert_char(c);
+            }
+            KeyCode::Esc => app.set_start_focus(Focus::Input),
             _ => {}
         },
         Focus::Dialogue => match key.code {
@@ -918,6 +886,8 @@ async fn execute_palette_command(
 ) -> Result<()> {
     if command == "session:switch" {
         app.switch_screen(ScreenState::Start);
+        let focus = if app.resume_sessions.is_empty() { Focus::Input } else { Focus::Resume };
+        app.set_start_focus(focus);
         app.status_message = "Pick a session to resume".to_string();
         return Ok(());
     }
@@ -975,6 +945,10 @@ async fn execute_submitted_text(
 
         // Local TUI interface commands
         match cmd {
+            "/subagents" => {
+                open_agents_modal(app, acp_client, event_tx);
+                return Ok(());
+            }
             "/diff" => {
                 app.toggle_diff_pane();
                 return Ok(());
@@ -1532,8 +1506,14 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     Ok(())
 }
 
-fn handle_start_mouse_click(app: &mut App, col: u16, row: u16, rect: ratatui::layout::Rect) {
-    app.handle_start_mouse_click(col, row, rect);
+fn handle_start_mouse_click(app: &mut App, col: u16, row: u16, area: ratatui::layout::Rect) {
+    let prompt = app.get_start_prompt_area(area);
+    if prompt.contains(ratatui::layout::Position::new(col, row)) {
+        app.set_start_focus(Focus::Input);
+        return;
+    }
+    let resume = app.get_start_resume_area(area);
+    app.handle_start_mouse_click(col, row, resume);
 }
 
 #[cfg(test)]
@@ -1646,22 +1626,25 @@ mod wire_contract_tests {
 
     #[tokio::test]
     async fn palette_accepts_tool_result_arguments() {
-        let mut app = App::new("p", "m", "cow");
-        app.open_palette();
-        app.palette_query = "tool-result unknown 4096".to_string();
-        let (tx, _rx) = tokio::sync::mpsc::channel(128);
-        handle_key_event(
-            &mut app,
-            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            None,
-            tx,
-        )
-        .await
-        .unwrap();
-        assert!(!app.show_palette);
-        assert!(
-            matches!(app.dialogue_items.last(), Some(DialogueItem::Message(m)) if m.content.contains("No stored tool result reference"))
-        );
+        for query in ["tool-result unknown 4096", "/tool-result unknown 4096"] {
+            let mut app = App::new("p", "m", "cow");
+            app.open_palette();
+            app.palette_query = query.to_string();
+            assert_eq!(app.palette_selected().unwrap().command, "/tool-result");
+            let (tx, _rx) = tokio::sync::mpsc::channel(128);
+            handle_key_event(
+                &mut app,
+                crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                None,
+                tx,
+            )
+            .await
+            .unwrap();
+            assert!(!app.show_palette);
+            assert!(
+                matches!(app.dialogue_items.last(), Some(DialogueItem::Message(m)) if m.content.contains("No stored tool result reference"))
+            );
+        }
     }
 
     #[test]
@@ -1975,6 +1958,7 @@ mod keymap_truth_tests {
     use hex_protocol::models::Role;
     use hex_tui::app::{DialogueItem, ResumeSession};
     use hex_tui::ui::keymap::{self, Binding, Scope, BINDINGS};
+    use crossterm::event::KeyEvent;
 
     const DIFF: &str = "--- a/f.rs\n+++ b/f.rs\n@@ -1,2 +1,2 @@\n-old\n+new\n";
 
@@ -2004,6 +1988,9 @@ mod keymap_truth_tests {
                     relative_time: "1h".to_string(),
                     session_id: "tsk_earlier".to_string(),
                 }];
+                if matches!(b.label, "enter" | "d") {
+                    app.set_start_focus(Focus::Resume);
+                }
             }
             Scope::Palette => {
                 app.open_palette();
@@ -2054,11 +2041,14 @@ mod keymap_truth_tests {
             (Scope::Global, "f1") | (Scope::Start, "f1") => assert!(app.show_help),
             (_, "f2") => assert!(app.show_diff),
             (Scope::Global, "f3") => assert_ne!(app.mode, "agent"),
-            (Scope::Session, "tab") => {
-                assert!(
-                    app.active_subagent_modal.is_some(),
-                    "tab must open the agents drill-down"
-                )
+            (Scope::Session | Scope::Start, "tab") => {
+                assert_eq!(app.mode, "plan");
+                assert!(app.active_subagent_modal.is_none());
+                assert_eq!(app.focus, Focus::Input);
+            }
+            (Scope::Start, "up/down" | "down") => {
+                assert_eq!(app.focus, Focus::Resume);
+                assert_eq!(app.selected_resume_index, 0);
             }
             (Scope::Session, "ctrl+p") => assert!(app.show_palette),
             (Scope::Session, "esc") => assert!(!app.is_busy),
@@ -2137,6 +2127,111 @@ mod keymap_truth_tests {
         }
     }
 
+    async fn press(app: &mut App, code: KeyCode) {
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
+        handle_key_event(app, KeyEvent::new(code, KeyModifiers::NONE), None, tx)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn start_arrows_transfer_focus_and_tab_only_cycles_mode() {
+        for entry in [KeyCode::Up, KeyCode::Down] {
+            let mut app = App::new("p", "m", "cow");
+            app.resume_sessions = (0..3).map(|i| ResumeSession {
+                title: format!("task {i}"),
+                relative_time: "1m".to_string(),
+                session_id: format!("tsk_{i}"),
+            }).collect();
+            app.input_buffer = "世 draft".to_string();
+            app.cursor_pos = 2;
+            press(&mut app, entry).await;
+            assert_eq!(app.focus, Focus::Resume);
+            assert_eq!(app.selected_resume_index, 0);
+            press(&mut app, KeyCode::Tab).await;
+            assert_eq!(app.mode, "plan");
+            assert_eq!(app.focus, Focus::Resume);
+            assert!(app.active_subagent_modal.is_none());
+            press(&mut app, KeyCode::Down).await;
+            assert_eq!(app.selected_resume_index, 1);
+            press(&mut app, KeyCode::Up).await;
+            assert_eq!(app.selected_resume_index, 0);
+            press(&mut app, KeyCode::Up).await;
+            assert_eq!(app.focus, Focus::Input);
+            assert_eq!(app.input_buffer, "世 draft");
+            assert_eq!(app.cursor_pos, 2);
+            assert!(app.row_hover_levels.iter().all(|level| *level == 0.0));
+            press(&mut app, KeyCode::Tab).await;
+            assert_eq!(app.mode, "code");
+            assert_eq!(app.focus, Focus::Input);
+        }
+        let mut empty = App::new("p", "m", "cow");
+        for key in [KeyCode::Up, KeyCode::Down] {
+            press(&mut empty, key).await;
+            assert_eq!(empty.focus, Focus::Input);
+        }
+    }
+
+    #[tokio::test]
+    async fn start_input_cannot_resume_or_delete_a_selected_session() {
+        let binding = BINDINGS.iter().find(|b| b.scope == Scope::Start && b.key == KeyCode::Down).unwrap();
+        let mut app = fixture(binding);
+        press(&mut app, KeyCode::Enter).await;
+        assert_eq!(app.screen_state, ScreenState::Start);
+        press(&mut app, KeyCode::Char('d')).await;
+        assert_eq!(app.input_buffer, "d");
+        assert_eq!(app.pending_delete_index, None);
+        app.cursor_pos = 0;
+        press(&mut app, KeyCode::Delete).await;
+        assert!(app.input_buffer.is_empty());
+        assert_eq!(app.pending_delete_index, None);
+        press(&mut app, KeyCode::Down).await;
+        press(&mut app, KeyCode::Char('d')).await;
+        assert_eq!(app.pending_delete_index, Some(0));
+        press(&mut app, KeyCode::Esc).await;
+        assert_eq!(app.pending_delete_index, None);
+        assert_eq!(app.focus, Focus::Resume);
+        press(&mut app, KeyCode::Up).await;
+        assert_eq!(app.focus, Focus::Input);
+        press(&mut app, KeyCode::Down).await;
+        press(&mut app, KeyCode::Enter).await;
+        assert_eq!(app.screen_state, ScreenState::Session);
+        assert_eq!(app.focus, Focus::Input);
+        press(&mut app, KeyCode::Char('x')).await;
+        assert_eq!(app.input_buffer, "x");
+    }
+
+    #[tokio::test]
+    async fn start_palette_preserves_focus_and_prompt_click_returns_to_input() {
+        for focus in [Focus::Input, Focus::Resume] {
+            let mut app = App::new("p", "m", "cow");
+            app.set_start_focus(focus);
+            app.input_buffer = "draft".to_string();
+            app.cursor_pos = 5;
+            let (tx, _rx) = tokio::sync::mpsc::channel(128);
+            handle_key_event(&mut app, KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL), None, tx).await.unwrap();
+            assert!(app.show_palette);
+            press(&mut app, KeyCode::Esc).await;
+            assert_eq!(app.focus, focus);
+            assert_eq!(app.input_buffer, "draft");
+            let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+            let prompt = app.get_start_prompt_area(area);
+            handle_start_mouse_click(&mut app, prompt.x + 5, prompt.y + 1, area);
+            assert_eq!(app.focus, Focus::Input);
+            assert_eq!(app.input_buffer, "draft");
+        }
+    }
+
+    #[tokio::test]
+    async fn subagents_command_keeps_the_agents_drill_down_reachable() {
+        let mut app = App::new("p", "m", "cow");
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
+        execute_submitted_text(&mut app, "/subagents".to_string(), None, tx).await.unwrap();
+        assert!(app.active_subagent_modal.is_some());
+        press(&mut app, KeyCode::Esc).await;
+        assert!(app.active_subagent_modal.is_none());
+    }
+
     #[test]
     fn no_surface_advertises_a_binding_that_was_removed() {
         for scope in [
@@ -2148,14 +2243,14 @@ mod keymap_truth_tests {
         ] {
             let hints = keymap::footer_hints(scope);
             assert!(!hints.is_empty());
-            for stale in ["tab mode", "ctrl+r", "@ files", "esc dismiss"] {
+            for stale in ["tab agents", "ctrl+r", "@ files", "esc dismiss"] {
                 assert!(
                     !hints.contains(stale),
                     "{scope:?} still advertises {stale:?}"
                 );
             }
         }
-        assert!(keymap::footer_hints(Scope::Session).contains("tab agents"));
+        assert!(keymap::footer_hints(Scope::Session).contains("tab mode"));
         let listed: usize = keymap::help_sections()
             .iter()
             .map(|(_, rows)| rows.len())

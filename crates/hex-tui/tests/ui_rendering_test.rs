@@ -35,7 +35,7 @@ fn test_screen_0_start_layout_rendering() {
     assert!(content.contains("files indexed"), "Buffer must contain indexed file count");
 
     // 3. Prompt container & shortcuts
-    for hint in ["commands", "resume", "delete", "help"] {
+    for hint in ["commands", "resume", "send", "help"] {
         assert!(content.contains(hint), "Buffer must contain {hint} hint");
     }
     for stale in ["ctrl+r", "@ files", "tab agent"] {
@@ -155,8 +155,8 @@ fn test_screen_3_command_palette_overlay() {
     assert!(content.contains("> plan"), "Must render palette query");
     assert!(content.contains("/plan"), "Must render the matching command shortcut");
     assert!(
-        content.contains("Switch to read-only architecture planning mode"),
-        "Must render the catalog description for /plan"
+        !content.contains("Switch to read-only architecture planning mode"),
+        "Must render command names without verbose help prose"
     );
     assert!(content.contains("enter select · esc close"), "Must render footer hint");
 }

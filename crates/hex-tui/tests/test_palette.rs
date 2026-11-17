@@ -6,7 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 use ratatui::Terminal;
 
-use hex_tui::app::{App, ScreenState};
+use hex_tui::app::{App, PaletteItem, ScreenState};
 use hex_tui::ui;
 use hex_tui::ui::style::HexTheme;
 
@@ -73,24 +73,22 @@ fn panel_rows(screen: &[String]) -> Vec<String> {
 }
 
 #[test]
-fn panel_is_top_anchored_and_sixty_two_columns_wide() {
-    let app = palette_app("");
-    let buf = render(&app, 120, 36);
-    let rows = rows(&buf);
-
-    let top = rows
-        .iter()
-        .enumerate()
-        .skip(1) // row 0 is the session window border
-        .find(|(_, r)| r.contains('╭') && r.contains('╮'))
-        .map(|(y, _)| y)
-        .expect("rounded panel border");
-    assert_eq!(top, 4, "panel hangs below the header, not centred");
-
-    let left = col_of(&rows[top], "╭");
-    let right = col_of(&rows[top], "╮");
-    assert_eq!(right - left + 1, 62, "mockup panel width");
-    assert_eq!(left, (120 - 62) / 2, "horizontally centred");
+fn panel_is_top_anchored_wider_and_responsive() {
+    for (width, expected) in [(45, 41), (60, 56), (120, 80), (160, 96), (241, 120), (400, 120)] {
+        for state in [ScreenState::Start, ScreenState::Session] {
+            let mut app = palette_app("");
+            app.screen_state = state;
+            let rows = rows(&render(&app, width, 68));
+            let top = rows.iter().enumerate().skip(1)
+                .find(|(_, r)| r.contains('╭') && r.contains('╮'))
+                .map(|(y, _)| y).expect("rounded panel border");
+            assert_eq!(top, 4, "panel hangs below the header");
+            let left = col_of(&rows[top], "╭");
+            let right = col_of(&rows[top], "╮");
+            assert_eq!(right - left + 1, expected, "terminal width {width}");
+            assert_eq!(left, (width as usize - expected) / 2, "horizontally centred");
+        }
+    }
 }
 
 #[test]
@@ -122,7 +120,7 @@ fn only_the_matched_characters_are_bold() {
 }
 
 #[test]
-fn shortcut_hint_is_highlighted_at_its_rendered_positions() {
+fn command_name_is_highlighted_at_its_rendered_positions() {
     let app = palette_app("plan");
     let buf = render(&app, 120, 36);
     let rows = rows(&buf);
@@ -204,25 +202,47 @@ fn a_query_with_no_match_says_so() {
 }
 
 #[test]
-fn long_titles_truncate_instead_of_pushing_the_hint_off_panel() {
+fn long_labels_truncate_without_crossing_the_panel_border() {
+    for label in ["command".repeat(30), "世界".repeat(30)] {
+        let prefix = format!("> {}", label.chars().next().unwrap());
+        let mut app = palette_app("");
+        app.palette_items = vec![PaletteItem {
+            category: "session".to_string(),
+            title: label,
+            command: "session:switch".to_string(),
+        }];
+        let buf = render(&app, 60, 36);
+        let rows = rows(&buf);
+        let y = row_of(&rows, &prefix);
+        assert!(rows[y].contains('…'));
+        let right = col_of(&rows[4], "╮");
+        assert_eq!(cell(&buf, right, y).symbol(), "│", "label must not overwrite the border");
+        assert!(right < 60);
+    }
+}
+
+#[test]
+fn browsing_lists_command_names_once_without_help_prose() {
     let app = palette_app("");
-    let buf = render(&app, 60, 36);
-    let rows = rows(&buf);
-    assert!(
-        rows.iter().any(|r| r.contains('…')),
-        "narrow panel must ellipsize long descriptions"
-    );
-    let top = rows
-        .iter()
-        .enumerate()
-        .skip(1) // row 0 is the session window border
-        .find(|(_, r)| r.contains('╭'))
-        .map(|(y, _)| y)
-        .expect("panel border");
-    let width = col_of(&rows[top], "╮") - col_of(&rows[top], "╭") + 1;
-    assert!(width <= 60, "panel must stay inside the terminal");
-    for row in &rows {
-        assert!(row.chars().count() <= 60);
+    let panel = panel_rows(&rows(&render(&app, 241, 68)));
+    for item in &app.palette_items {
+        let label = item.title.as_str();
+        let y = row_of(&panel, label);
+        let row = panel[y].trim().trim_start_matches("> ");
+        assert_eq!(row, label, "rows must contain only the action label");
+        assert_eq!(panel.iter().filter(|row| row.trim().trim_start_matches("> ") == label).count(), 1);
+    }
+}
+
+#[test]
+fn fuzzy_search_uses_command_names_not_help_descriptions() {
+    for query in ["autonomous", "SQLite", "governed", "read-only"] {
+        let app = palette_app(query);
+        assert!(app.palette_results().is_empty(), "description matched {query:?}");
+    }
+    for query in ["pln", "/pln", "PLN"] {
+        let app = palette_app(query);
+        assert_eq!(app.palette_selected().unwrap().command, "/plan");
     }
 }
 
@@ -241,30 +261,20 @@ fn the_composer_underneath_keeps_its_draft() {
 }
 
 #[test]
-fn sw_surfaces_every_switch_command() {
+fn sw_matches_session_navigation_without_incidental_description_matches() {
     let app = palette_app("sw");
     let results = app.palette_results();
-    let titles: Vec<&str> = results
-        .iter()
-        .map(|m| app.palette_items[m.item_index].title.as_str())
-        .collect();
-    assert_eq!(titles[0], "Switch session");
-    for expected in [
-        "Switch to autonomous agent execution mode",
-        "Inspect or switch the active model",
-    ] {
-        assert!(titles.contains(&expected), "missing {expected:?} in {titles:?}");
-    }
-    // Every surviving row reports the characters it actually matched.
-    assert!(results.iter().all(|m| !m.title_matched.is_empty() || !m.shortcut_matched.is_empty()));
+    assert_eq!(results.len(), 1);
+    assert_eq!(app.palette_selected().unwrap().command, "session:switch");
+    assert_eq!(results[0].title_matched, vec![0, 1]);
 }
 
 #[test]
 fn selection_scrolls_into_view_when_the_list_outgrows_the_panel() {
     let mut app = palette_app("");
     let results = app.palette_results();
-    let first = app.palette_items[results[0].item_index].shortcut.clone();
-    let last = app.palette_items[results[results.len() - 1].item_index].shortcut.clone();
+    let first = app.palette_items[results[0].item_index].title.clone();
+    let last = app.palette_items[results[results.len() - 1].item_index].title.clone();
 
     app.selected_palette_index = results.len() - 1;
     let scrolled = panel_rows(&rows(&render(&app, 120, 24)));

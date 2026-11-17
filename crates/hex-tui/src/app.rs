@@ -9,6 +9,7 @@ pub use crate::history::TranscriptStore;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Input,
+    Resume,
     Dialogue,
     Diff,
     Approval,
@@ -351,7 +352,6 @@ fn frame_path(frame: &str) -> Option<String> {
 pub struct PaletteItem {
     pub category: String,
     pub title: String,
-    pub shortcut: String,
     pub command: String,
 }
 
@@ -360,7 +360,6 @@ pub struct PaletteItem {
 pub struct PaletteMatch {
     pub item_index: usize,
     pub title_matched: Vec<usize>,
-    pub shortcut_matched: Vec<usize>,
 }
 
 /// A regular conversational message item in dialogue.
@@ -1197,19 +1196,13 @@ pub fn build_palette_items() -> Vec<PaletteItem> {
         .iter()
         .map(|cmd| PaletteItem {
             category: palette_category(&cmd.name).to_string(),
-            title: if cmd.description.is_empty() {
-                cmd.name.clone()
-            } else {
-                cmd.description.clone()
-            },
-            shortcut: cmd.name.clone(),
+            title: cmd.name.clone(),
             command: cmd.name.clone(),
         })
         .collect();
     items.push(PaletteItem {
         category: "session".to_string(),
         title: "Switch session".to_string(),
-        shortcut: String::new(),
         command: "session:switch".to_string(),
     });
     items
@@ -1544,6 +1537,7 @@ impl App {
 
     /// Toggle between showing top 3 and a scrollable window of previous sessions.
     pub fn toggle_show_all_resume(&mut self) {
+        self.set_start_focus(Focus::Resume);
         self.show_all_resume = !self.show_all_resume;
         self.resume_window_offset = 0;
         let total = self.resume_sessions.len() + usize::from(self.resume_toggle_index().is_some());
@@ -1565,19 +1559,24 @@ impl App {
         }
     }
 
-    /// Move the keyboard selection by `delta` rows, wrapping across the toggle row.
-    /// Keyboard input takes over from a stale mouse hover so the highlight moves.
     pub fn move_resume_selection(&mut self, delta: i32) {
         let total = self.resume_sessions.len() + usize::from(self.resume_toggle_index().is_some());
         if total == 0 {
             return;
         }
-        self.hovered_resume_row = None;
-        self.hovered_delete_row = None;
+        if self.focus != Focus::Resume {
+            self.set_start_focus(Focus::Resume);
+            self.selected_resume_index = 0;
+            return;
+        }
+        if delta < 0 && self.selected_resume_index == 0 {
+            self.set_start_focus(Focus::Input);
+            return;
+        }
+        self.set_start_focus(Focus::Resume);
         self.pending_delete_index = None;
         let current = self.selected_resume_index.min(total - 1) as i32;
-        let next = (current + delta).rem_euclid(total as i32);
-        self.selected_resume_index = next as usize;
+        self.selected_resume_index = (current + delta).clamp(0, total as i32 - 1) as usize;
     }
 
     /// Scroll the list by `delta` rows without wrapping, for wheel and page keys.
@@ -1591,8 +1590,7 @@ impl App {
             self.show_all_resume = true;
             self.resume_window_offset = 0;
         }
-        self.hovered_resume_row = None;
-        self.hovered_delete_row = None;
+        self.set_start_focus(Focus::Resume);
         self.pending_delete_index = None;
         let current = self.selected_resume_index.min(total - 1) as i32;
         let next = (current + delta).clamp(0, total as i32 - 1);
@@ -1623,6 +1621,8 @@ impl App {
         if idx >= self.resume_sessions.len() {
             return false;
         }
+        self.set_start_focus(Focus::Resume);
+        self.selected_resume_index = idx;
         if self.pending_delete_index != Some(idx) {
             self.pending_delete_index = Some(idx);
             self.status_message = format!(
@@ -1674,6 +1674,10 @@ impl App {
             .len()
             .saturating_sub(self.resume_visible_count());
         self.resume_window_offset = self.resume_window_offset.min(max_offset);
+        if self.resume_sessions.is_empty() {
+            self.selected_resume_index = 0;
+            self.set_start_focus(Focus::Input);
+        }
         self.status_message = format!("Deleted session: {}", ellipsize(&removed.title, 40));
         true
     }
@@ -1745,6 +1749,7 @@ impl App {
         self.dialogue_entrance.set((0, None));
         self.session_id = session_id.to_string();
         self.screen_state = ScreenState::Session;
+        self.focus = Focus::Input;
         self.pending_delete_index = None;
         if items.is_empty() {
             self.dialogue_items = vec![DialogueItem::Message(MessageItem {
@@ -2372,9 +2377,33 @@ impl App {
         }
     }
 
+    pub fn set_start_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+        self.hovered_resume_row = None;
+        self.hovered_delete_row = None;
+        self.hovered_input_box = false;
+        if focus == Focus::Input {
+            self.cancel_pending_delete();
+            self.row_hover_levels.fill(0.0);
+            self.delete_hover_levels.fill(0.0);
+            self.toggle_hover_level = 0.0;
+        } else {
+            self.input_hover_level = 0.0;
+        }
+    }
+
     /// Cycle focused pane.
     pub fn switch_focus(&mut self) {
         if self.active_approval.is_some() {
+            return;
+        }
+        if self.screen_state == ScreenState::Start {
+            let focus = if self.focus == Focus::Input && !self.resume_sessions.is_empty() {
+                Focus::Resume
+            } else {
+                Focus::Input
+            };
+            self.set_start_focus(focus);
             return;
         }
         self.focus = match self.focus {
@@ -2386,13 +2415,10 @@ impl App {
                     Focus::Input
                 }
             }
-            Focus::Diff => Focus::Input,
-            Focus::Approval => Focus::Input,
+            Focus::Resume | Focus::Diff | Focus::Approval => Focus::Input,
         };
     }
 
-    /// Handle Tab on the start screen: cycle mode (agent -> plan -> code).
-    /// In a session Tab opens the agents drill-down instead (see main.rs).
     pub fn handle_tab(&mut self) {
         let next_mode = self.cycle_mode();
         self.status_message = format!("Switched mode to: {}", next_mode.to_uppercase());
@@ -2548,55 +2574,28 @@ impl App {
     /// Fuzzy-ranked palette entries, with the character positions that matched
     /// so the panel can highlight them instead of every letter of the query.
     pub fn palette_results(&self) -> Vec<PaletteMatch> {
-        let query = self.palette_query.trim().to_lowercase();
+        let query = self.palette_query.trim().trim_start_matches('/')
+            .split_whitespace().next().unwrap_or("").to_lowercase();
         let mut scored: Vec<(u8, u8, usize, usize, usize, PaletteMatch)> = Vec::new();
 
         for (index, item) in self.palette_items.iter().enumerate() {
-            let title = item.title.to_lowercase();
-            let shortcut = item.shortcut.trim_start_matches('/').to_lowercase();
-
-            // A typed command name ("/pl") must beat an incidental subsequence
-            // inside a long description, so prefix ranks come first.
-            let title_pos = fuzzy_match(&query, &title);
-            let shortcut_pos = fuzzy_match(&query, &shortcut);
-            let title_rank = title_pos.as_ref().map(|_| if title.starts_with(&query) { 0 } else { 2 });
-            let shortcut_rank = shortcut_pos.as_ref().map(|_| if shortcut.starts_with(&query) { 1 } else { 3 });
-            let rank = match (title_rank, shortcut_rank) {
-                (Some(a), Some(b)) => a.min(b),
-                (Some(a), None) => a,
-                (None, Some(b)) => b,
-                (None, None) => continue,
+            let label = item.title.trim_start_matches('/');
+            let title = label.to_lowercase();
+            let Some(positions) = fuzzy_match(&query, &title) else {
+                continue;
             };
-            let matched = PaletteMatch {
-                item_index: index,
-                title_matched: title_pos.unwrap_or_default(),
-                // Positions are reported against the rendered shortcut, which
-                // still carries its leading slash.
-                shortcut_matched: shortcut_pos
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|p| p + item.shortcut.len() - shortcut.len())
-                    .collect(),
-            };
-
-            let positions = if matched.title_matched.is_empty() {
-                &matched.shortcut_matched
-            } else {
-                &matched.title_matched
-            };
+            let rank = if title.starts_with(&query) { 0 } else { 1 };
             let span = positions
                 .last()
                 .and_then(|last| positions.first().map(|first| last - first))
                 .unwrap_or(0);
-            let group = palette_category_rank(&item.category);
-            // Between equally tight matches the shorter label is the more
-            // precise answer ("sw" -> "Switch session", not a long description).
-            let target_len = if matched.title_matched.is_empty() {
-                shortcut.chars().count()
-            } else {
-                title.chars().count()
+            let prefix = item.title.chars().count() - label.chars().count();
+            let matched = PaletteMatch {
+                item_index: index,
+                title_matched: positions.into_iter().map(|p| p + prefix).collect(),
             };
-            scored.push((rank, group, span, target_len, index, matched));
+            let group = palette_category_rank(&item.category);
+            scored.push((rank, group, span, title.chars().count(), index, matched));
         }
 
         if query.is_empty() {
@@ -2719,7 +2718,8 @@ impl App {
 
         for idx in 0..visible_sessions {
             let is_row_active = self.hovered_resume_row == Some(idx)
-                || (self.hovered_resume_row.is_none() && self.selected_resume_index == window_offset + idx);
+                || (self.focus == Focus::Resume && self.hovered_resume_row.is_none()
+                    && self.selected_resume_index == window_offset + idx);
             let target = if is_row_active { 1.0_f32 } else { 0.0_f32 };
             let current = self.row_hover_levels[idx];
             let delta = target - current;
@@ -2744,7 +2744,8 @@ impl App {
         // keyboard selection is an absolute session index.
         if let Some(toggle_idx) = self.resume_toggle_index() {
             let is_toggle_active = self.hovered_resume_row == Some(visible_sessions)
-                || (self.hovered_resume_row.is_none() && self.selected_resume_index == toggle_idx);
+                || (self.focus == Focus::Resume && self.hovered_resume_row.is_none()
+                    && self.selected_resume_index == toggle_idx);
             let toggle_target = if is_toggle_active { 1.0_f32 } else { 0.0_f32 };
             let toggle_delta = toggle_target - self.toggle_hover_level;
             self.toggle_hover_level = if toggle_delta.abs() < 0.02 {
@@ -2757,7 +2758,10 @@ impl App {
         }
 
         // Input card border hover (smooth 300ms transition matching .ask:hover{border-color:#666})
-        let input_target = if self.hovered_input_box || !self.input_buffer.is_empty() { 1.0_f32 } else { 0.0_f32 };
+        let input_target = if self.hovered_input_box
+            || (!self.input_buffer.is_empty()
+                && (self.screen_state != ScreenState::Start || self.focus == Focus::Input))
+        { 1.0_f32 } else { 0.0_f32 };
         let input_delta = input_target - self.input_hover_level;
         self.input_hover_level = if input_delta.abs() < 0.02 {
             input_target
@@ -2859,29 +2863,33 @@ mod tests {
         assert!(app.show_palette);
         assert_eq!(app.palette_results().len(), app.palette_items.len());
 
-        // Prefix matches outrank scattered subsequence matches.
         app.palette_query = "mem".to_string();
         let results = app.palette_results();
         let first = &app.palette_items[results[0].item_index];
-        assert_eq!(first.shortcut, "/memory");
-        assert!(results.iter().any(|m| app.palette_items[m.item_index].shortcut == "/remember"));
+        assert_eq!(first.title, "/memory");
+        assert!(results.iter().any(|m| app.palette_items[m.item_index].title == "/remember"));
 
-        // Subsequence still finds the command, and reports matched positions.
         app.palette_query = "ast".to_string();
         let results = app.palette_results();
         let blast = results
             .iter()
-            .find(|m| app.palette_items[m.item_index].shortcut == "/blast")
+            .find(|m| app.palette_items[m.item_index].title == "/blast")
             .expect("/blast matches 'ast'");
-        assert!(!blast.shortcut_matched.is_empty());
+        assert_eq!(blast.title_matched, vec![3, 4, 5]);
 
-        // Typing a command name beats a description that merely contains it.
-        app.palette_query = "plan".to_string();
-        let results = app.palette_results();
-        let plan = &app.palette_items[results[0].item_index];
-        assert_eq!(plan.shortcut, "/plan");
-        // Highlight positions index the rendered shortcut, slash included.
-        assert_eq!(results[0].shortcut_matched, vec![1, 2, 3, 4]);
+        for query in ["plan", "/plan", "PLAN"] {
+            app.palette_query = query.to_string();
+            let results = app.palette_results();
+            let plan = &app.palette_items[results[0].item_index];
+            assert_eq!(plan.title, "/plan");
+            assert_eq!(results[0].title_matched, vec![1, 2, 3, 4]);
+        }
+        app.palette_query = "/history-turn 12 response 4096".to_string();
+        assert_eq!(app.palette_selected().unwrap().command, "/history-turn");
+        app.palette_query = "autonomous".to_string();
+        assert!(app.palette_results().is_empty(), "help prose must not produce matches");
+        assert!(app.palette_items.iter().filter(|item| item.command.starts_with('/'))
+            .all(|item| item.title == item.command));
 
         app.palette_query = "sw".to_string();
         let results = app.palette_results();
@@ -2891,6 +2899,7 @@ mod tests {
         );
 
         // Editing the query resets the selection; backspace on empty closes.
+        app.palette_query = "mem".to_string();
         app.palette_move(1);
         assert_eq!(app.selected_palette_index, 1);
         app.palette_push_char('x');
