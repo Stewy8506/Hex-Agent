@@ -18,31 +18,31 @@ An independent empirical verification was conducted on branch `experimental-feat
    - Evaluated `/rewind <turn_id | -N>` rollback mechanics across relative and absolute turn targets.
    - Verified that superseded turns are non-destructively soft-branched (`is_active = 0`, archived under a unique `branch_id` like `br_rewind_<uuid>`), while corresponding tool calls are marked `REVERTED` and a cryptographically hash-chained `TIMELINE_REWOUND` event is registered in `task_events`.
    - Clamping guards safely prevent rewinding past Turn 0 or ahead of the latest turn.
-   - Verified 8/8 tests passing in `tests/test_timeline_rewind.py`.
+   - Verified 8/8 tests passing in `tests/storage/test_timeline_rewind.py`.
 2. **Asynchronous Background LLM Session Title Synthesis:**
    - Evaluated 2-stage title lifecycle: instant deterministic extraction (Stage 1, `<= 48` chars) on initial user prompt submission, followed by non-blocking background LLM synthesis (Stage 2) generating concise 3-5 word session titles.
    - Enforced strict provenance hierarchy (`USER` [rank 3] > `LLM` [rank 2] > `DERIVED` [rank 1]), preventing automated workers from overwriting user-specified titles.
    - Validated anti-chatter / answer-rejection heuristics (rejecting openings like "Certainly", "Here is", multi-line answers, and length > 12 words / 20 CJK chars).
-   - Verified 8/8 tests passing in `tests/test_title_synthesis.py`.
+   - Verified 8/8 tests passing in `tests/cognition/test_title_synthesis.py`.
 3. **Mixture-of-Agents (MoA) Multi-Model Synthesis:**
    - Evaluated parallel proposer querying under bounded worker pools with individual timeout deadlines.
    - Verified partial proposer failure and timeout resilience (succeeds as long as `min_proposers_required` succeed) and graceful direct fallback to the primary aggregator if all proposers fail.
    - Verified aggregator prompt synthesis reconciling disparate candidate outputs, with complete per-model token consumption and latency attribution logged to `task_events` as `MOA_SYNTHESIS_COMPLETED`.
-   - Verified 7/7 tests passing in `tests/test_mixture_of_agents.py`.
+   - Verified 7/7 tests passing in `tests/core/test_mixture_of_agents.py`.
 4. **Degenerate Loop Sentry & Thinking Tag Scrubber:**
    - Evaluated runaway token repetition detection across line-echo, 60-character sliding-window, and periodic anchor scans, with distinct line ratio gating preventing false positives on legitimate batch inserts or markdown tables.
    - Evaluated action thrashing detection (repeated identical calls $\ge 3$ times with error/empty output) and ping-pong cycles ($\ge 2$ sequences), halting redundant executions and injecting authoritative out-of-band steering prompts (`[SYSTEM STEERING: ...]`).
    - Validated thinking tag scrubbing (`<think>...</think>`, `<thought>`, `<reasoning>`, and unclosed streaming tails `<think>...$`), isolating reasoning scratchpads from user dialogue and ledger persistence.
-   - Verified 16/16 tests passing in `tests/test_repetition_sentry.py`.
+   - Verified 16/16 tests passing in `tests/cognition/test_repetition_sentry.py`.
 5. **Temporal Approval Leasing Engine:**
    - Evaluated time-bounded auto-approval leases for command prefixes (e.g. `pytest`, `cargo`) and directory paths with configurable TTL (default 900s).
    - Verified that tool calls matching active leases execute immediately with `policy_decision = "LEASE_APPROVED"` (0ms delay), while expired or revoked leases immediately enforce policy checks.
    - Leases are stored in the `approval_leases` ledger table and managed via `/lease` slash commands.
-   - Verified 11/11 tests passing in `tests/test_approval_lease.py`.
+   - Verified 11/11 tests passing in `tests/core/test_approval_lease.py`.
 6. **Mobile Reaction Listener Bridge:**
    - Evaluated `MobileApprovalBridge` dispatching interactive approval cards to Telegram and Discord gateways with inline action buttons (`[Approve]`, `[Deny]`, `[View Diff]`) and reaction emojis (`👍`/`👎`).
    - Verified thread-safe asynchronous waiting, authorized user whitelist enforcement, in-place message card status updates, and automatic fallback timeout to CLI `ApprovalRequiredInterrupt`.
-   - Verified 9/9 tests passing in `tests/test_mobile_reaction_listener.py`.
+   - Verified 9/9 tests passing in `tests/capabilities/test_mobile_reaction_listener.py`.
 7. **Full Test Suite Regressions:**
    - Python Pytest Suite: **1069 passed, 1 skipped** in 204.46s (0:03:24). Zero failures.
    - Rust Cargo Workspace Suite: **69 passed, 0 failed** in 2.65s. Zero failures.
@@ -54,7 +54,7 @@ An independent empirical verification was conducted on branch `experimental-feat
 ### 2.1 Verification Evidence
 Command executed:
 ```bash
-.venv/bin/pytest tests/test_timeline_rewind.py tests/test_title_synthesis.py -v
+.venv/bin/pytest tests/storage/test_timeline_rewind.py tests/cognition/test_title_synthesis.py -v
 ```
 
 Output:
@@ -67,22 +67,22 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 16 items                                                             
 
-tests/test_timeline_rewind.py::test_group_messages_by_turn PASSED        [  6%]
-tests/test_timeline_rewind.py::test_relative_rewind_single_turn PASSED   [ 12%]
-tests/test_timeline_rewind.py::test_relative_rewind_multiple_turns PASSED [ 18%]
-tests/test_timeline_rewind.py::test_absolute_rewind PASSED               [ 25%]
-tests/test_timeline_rewind.py::test_boundary_clamping PASSED             [ 31%]
-tests/test_timeline_rewind.py::test_branch_ledger_integrity_and_tool_reversal PASSED [ 37%]
-tests/test_timeline_rewind.py::test_react_loop_rewind_to PASSED          [ 43%]
-tests/test_timeline_rewind.py::test_hex_console_rewind_slash_command PASSED [ 50%]
-tests/test_title_synthesis.py::test_derive_instant_title_clean_cases PASSED [ 56%]
-tests/test_title_synthesis.py::test_derive_instant_title_word_boundary_truncation PASSED [ 62%]
-tests/test_title_synthesis.py::test_validate_synthesized_title_guards PASSED [ 68%]
-tests/test_title_synthesis.py::test_provenance_hierarchy_in_ledger PASSED [ 75%]
-tests/test_title_synthesis.py::test_session_title_synthesizer_async PASSED [ 81%]
-tests/test_title_synthesis.py::test_non_blocking_behavior PASSED         [ 87%]
-tests/test_title_synthesis.py::test_react_loop_title_synthesis_integration PASSED [ 93%]
-tests/test_title_synthesis.py::test_start_screen_resume_query_retrieval PASSED [100%]
+tests/storage/test_timeline_rewind.py::test_group_messages_by_turn PASSED        [  6%]
+tests/storage/test_timeline_rewind.py::test_relative_rewind_single_turn PASSED   [ 12%]
+tests/storage/test_timeline_rewind.py::test_relative_rewind_multiple_turns PASSED [ 18%]
+tests/storage/test_timeline_rewind.py::test_absolute_rewind PASSED               [ 25%]
+tests/storage/test_timeline_rewind.py::test_boundary_clamping PASSED             [ 31%]
+tests/storage/test_timeline_rewind.py::test_branch_ledger_integrity_and_tool_reversal PASSED [ 37%]
+tests/storage/test_timeline_rewind.py::test_react_loop_rewind_to PASSED          [ 43%]
+tests/storage/test_timeline_rewind.py::test_hex_console_rewind_slash_command PASSED [ 50%]
+tests/cognition/test_title_synthesis.py::test_derive_instant_title_clean_cases PASSED [ 56%]
+tests/cognition/test_title_synthesis.py::test_derive_instant_title_word_boundary_truncation PASSED [ 62%]
+tests/cognition/test_title_synthesis.py::test_validate_synthesized_title_guards PASSED [ 68%]
+tests/cognition/test_title_synthesis.py::test_provenance_hierarchy_in_ledger PASSED [ 75%]
+tests/cognition/test_title_synthesis.py::test_session_title_synthesizer_async PASSED [ 81%]
+tests/cognition/test_title_synthesis.py::test_non_blocking_behavior PASSED         [ 87%]
+tests/cognition/test_title_synthesis.py::test_react_loop_title_synthesis_integration PASSED [ 93%]
+tests/cognition/test_title_synthesis.py::test_start_screen_resume_query_retrieval PASSED [100%]
 
 ============================== 16 passed in 1.72s ==============================
 ```
@@ -108,7 +108,7 @@ tests/test_title_synthesis.py::test_start_screen_resume_query_retrieval PASSED [
 ### 3.1 Verification Evidence
 Command executed:
 ```bash
-.venv/bin/pytest tests/test_mixture_of_agents.py tests/test_repetition_sentry.py -v
+.venv/bin/pytest tests/core/test_mixture_of_agents.py tests/cognition/test_repetition_sentry.py -v
 ```
 
 Output:
@@ -121,29 +121,29 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 23 items                                                             
 
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_parallel_proposer_execution_and_synthesis PASSED [  4%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_partial_proposer_failure_resilience PASSED [  8%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_timeout_proposer_handled_gracefully PASSED [ 13%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_fallback_when_all_proposers_fail PASSED [ 17%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_build_aggregator_prompt_structure PASSED [ 21%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_react_loop_with_moa_integration PASSED [ 26%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_orchestrator_run_agent_loop_wires_moa PASSED [ 30%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_line_repetition_dominated PASSED [ 34%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_window_repetition_without_newlines PASSED [ 39%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_legitimate_batch_inserts_not_flagged PASSED [ 43%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_legitimate_markdown_table_not_flagged PASSED [ 47%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_short_fragments_fail_open PASSED [ 52%]
-tests/test_repetition_sentry.py::TestActionLoopDetector::test_identical_call_repetition_detected PASSED [ 56%]
-tests/test_repetition_sentry.py::TestActionLoopDetector::test_successful_calls_do_not_trip_identical_repetition PASSED [ 60%]
-tests/test_repetition_sentry.py::TestActionLoopDetector::test_ping_pong_action_cycle_detected PASSED [ 65%]
-tests/test_repetition_sentry.py::TestActionLoopDetector::test_generate_steering_prompt_authoritative PASSED [ 69%]
-tests/test_repetition_sentry.py::TestThinkingTagScrubber::test_closed_thinking_tags_scrubbed PASSED [ 73%]
-tests/test_repetition_sentry.py::TestThinkingTagScrubber::test_case_insensitive_and_alternate_tags PASSED [ 78%]
-tests/test_repetition_sentry.py::TestThinkingTagScrubber::test_unclosed_streaming_tail_scrubbed PASSED [ 82%]
-tests/test_repetition_sentry.py::TestThinkingTagScrubber::test_text_without_thinking_tags_untouched PASSED [ 86%]
-tests/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_intercepts_runaway_token_repetition PASSED [ 91%]
-tests/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_intercepts_action_thrashing_with_steering PASSED [ 95%]
-tests/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_scrubs_thinking_tags_from_history PASSED [100%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_parallel_proposer_execution_and_synthesis PASSED [  4%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_partial_proposer_failure_resilience PASSED [  8%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_timeout_proposer_handled_gracefully PASSED [ 13%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_fallback_when_all_proposers_fail PASSED [ 17%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_build_aggregator_prompt_structure PASSED [ 21%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_react_loop_with_moa_integration PASSED [ 26%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_orchestrator_run_agent_loop_wires_moa PASSED [ 30%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_line_repetition_dominated PASSED [ 34%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_window_repetition_without_newlines PASSED [ 39%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_legitimate_batch_inserts_not_flagged PASSED [ 43%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_legitimate_markdown_table_not_flagged PASSED [ 47%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_short_fragments_fail_open PASSED [ 52%]
+tests/cognition/test_repetition_sentry.py::TestActionLoopDetector::test_identical_call_repetition_detected PASSED [ 56%]
+tests/cognition/test_repetition_sentry.py::TestActionLoopDetector::test_successful_calls_do_not_trip_identical_repetition PASSED [ 60%]
+tests/cognition/test_repetition_sentry.py::TestActionLoopDetector::test_ping_pong_action_cycle_detected PASSED [ 65%]
+tests/cognition/test_repetition_sentry.py::TestActionLoopDetector::test_generate_steering_prompt_authoritative PASSED [ 69%]
+tests/cognition/test_repetition_sentry.py::TestThinkingTagScrubber::test_closed_thinking_tags_scrubbed PASSED [ 73%]
+tests/cognition/test_repetition_sentry.py::TestThinkingTagScrubber::test_case_insensitive_and_alternate_tags PASSED [ 78%]
+tests/cognition/test_repetition_sentry.py::TestThinkingTagScrubber::test_unclosed_streaming_tail_scrubbed PASSED [ 82%]
+tests/cognition/test_repetition_sentry.py::TestThinkingTagScrubber::test_text_without_thinking_tags_untouched PASSED [ 86%]
+tests/cognition/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_intercepts_runaway_token_repetition PASSED [ 91%]
+tests/cognition/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_intercepts_action_thrashing_with_steering PASSED [ 95%]
+tests/cognition/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_scrubs_thinking_tags_from_history PASSED [100%]
 
 ============================== 23 passed in 1.86s ==============================
 ```
@@ -168,7 +168,7 @@ tests/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_
 ### 4.1 Verification Evidence
 Command executed:
 ```bash
-.venv/bin/pytest tests/test_approval_lease.py tests/test_mobile_reaction_listener.py -v
+.venv/bin/pytest tests/core/test_approval_lease.py tests/capabilities/test_mobile_reaction_listener.py -v
 ```
 
 Output:
@@ -181,26 +181,26 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 20 items                                                             
 
-tests/test_approval_lease.py::test_approval_lease_dataclass_defaults_and_validation PASSED [  5%]
-tests/test_approval_lease.py::test_approval_lease_manager_grant_and_list PASSED [ 10%]
-tests/test_approval_lease.py::test_command_prefix_matching PASSED        [ 15%]
-tests/test_approval_lease.py::test_multi_word_prefix_matching PASSED     [ 20%]
-tests/test_approval_lease.py::test_path_based_lease_matching PASSED      [ 25%]
-tests/test_approval_lease.py::test_lease_expiration_behavior PASSED      [ 30%]
-tests/test_approval_lease.py::test_explicit_lease_revocation PASSED      [ 35%]
-tests/test_approval_lease.py::test_ledger_store_approval_lease_persistence PASSED [ 40%]
-tests/test_approval_lease.py::test_react_loop_auto_approval_with_active_lease PASSED [ 45%]
-tests/test_approval_lease.py::test_tool_gateway_policy_evaluation_with_lease PASSED [ 50%]
-tests/test_approval_lease.py::test_hex_console_slash_lease PASSED        [ 55%]
-tests/test_mobile_reaction_listener.py::test_approval_request_and_decision_models PASSED [ 60%]
-tests/test_mobile_reaction_listener.py::test_mobile_approval_bridge_resolve_and_unblock PASSED [ 65%]
-tests/test_mobile_reaction_listener.py::test_mobile_approval_bridge_denial PASSED [ 70%]
-tests/test_mobile_reaction_listener.py::test_mobile_approval_bridge_timeout_fallback PASSED [ 75%]
-tests/test_mobile_reaction_listener.py::test_telegram_callback_and_reaction_integration PASSED [ 80%]
-tests/test_mobile_reaction_listener.py::test_discord_interaction_and_reaction_integration PASSED [ 85%]
-tests/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_approval_execution PASSED [ 90%]
-tests/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_denial_halts_execution PASSED [ 95%]
-tests/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_timeout_fallback_to_interrupt PASSED [100%]
+tests/core/test_approval_lease.py::test_approval_lease_dataclass_defaults_and_validation PASSED [  5%]
+tests/core/test_approval_lease.py::test_approval_lease_manager_grant_and_list PASSED [ 10%]
+tests/core/test_approval_lease.py::test_command_prefix_matching PASSED        [ 15%]
+tests/core/test_approval_lease.py::test_multi_word_prefix_matching PASSED     [ 20%]
+tests/core/test_approval_lease.py::test_path_based_lease_matching PASSED      [ 25%]
+tests/core/test_approval_lease.py::test_lease_expiration_behavior PASSED      [ 30%]
+tests/core/test_approval_lease.py::test_explicit_lease_revocation PASSED      [ 35%]
+tests/core/test_approval_lease.py::test_ledger_store_approval_lease_persistence PASSED [ 40%]
+tests/core/test_approval_lease.py::test_react_loop_auto_approval_with_active_lease PASSED [ 45%]
+tests/core/test_approval_lease.py::test_tool_gateway_policy_evaluation_with_lease PASSED [ 50%]
+tests/core/test_approval_lease.py::test_hex_console_slash_lease PASSED        [ 55%]
+tests/capabilities/test_mobile_reaction_listener.py::test_approval_request_and_decision_models PASSED [ 60%]
+tests/capabilities/test_mobile_reaction_listener.py::test_mobile_approval_bridge_resolve_and_unblock PASSED [ 65%]
+tests/capabilities/test_mobile_reaction_listener.py::test_mobile_approval_bridge_denial PASSED [ 70%]
+tests/capabilities/test_mobile_reaction_listener.py::test_mobile_approval_bridge_timeout_fallback PASSED [ 75%]
+tests/capabilities/test_mobile_reaction_listener.py::test_telegram_callback_and_reaction_integration PASSED [ 80%]
+tests/capabilities/test_mobile_reaction_listener.py::test_discord_interaction_and_reaction_integration PASSED [ 85%]
+tests/capabilities/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_approval_execution PASSED [ 90%]
+tests/capabilities/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_denial_halts_execution PASSED [ 95%]
+tests/capabilities/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_timeout_fallback_to_interrupt PASSED [100%]
 
 ============================== 20 passed in 2.74s ==============================
 ```
@@ -235,7 +235,7 @@ Result:
 ```
 - Total tests executed: 1,070
 - Passed: 1,069
-- Skipped: 1 (`tests/test_packaging_and_installer.py::test_installer_macos_pkg` due to absent pkgbuild on non-packaging host)
+- Skipped: 1 (`tests/packaging/test_packaging_and_installer.py::test_installer_macos_pkg` due to absent pkgbuild on non-packaging host)
 - Failures: 0
 - Execution duration: 204.46 seconds
 
@@ -273,17 +273,17 @@ test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 | Must-Have Requirement | Source Plan | Artifacts Verified | Status |
 |---|---|---|---|
 | Conversational timeline rewind (`/rewind <turn_id \| -N>`) safely rolls back dialogue history, uncommitted tool outputs, and in-memory execution states without data loss | `37-01` | `src/harness_core/storage/timeline_rewind.py`, `src/harness_core/core/react_loop.py`, `src/harness_core/client/tui.py` | **PASS** |
-| Rewinding preserves abandoned turns under historical branch IDs in the SQLite ledger rather than performing hard destructive deletes | `37-01` | `src/harness_core/storage/db.py`, `src/harness_core/storage/timeline_rewind.py`, `tests/test_timeline_rewind.py` | **PASS** |
-| Asynchronous background LLM session title synthesis spawns a non-blocking worker after Turn 1, updating `tasks.goal` with a clean 3-5 word title in the ledger | `37-01` | `src/harness_core/cognition/title_synthesizer.py`, `src/harness_core/storage/db.py`, `tests/test_title_synthesis.py` | **PASS** |
-| Synthesized session titles are queryable and immediately reflected in the Start screen resume list and session switchers | `37-01` | `src/harness_core/cognition/title_synthesizer.py`, `tests/test_title_synthesis.py` | **PASS** |
-| Mixture-of-Agents (`moa.py`) executes concurrent queries across multiple proposer models and synthesizes candidate responses through a primary aggregator model | `37-02` | `src/harness_core/core/moa.py`, `src/harness_core/core/orchestrator.py`, `tests/test_mixture_of_agents.py` | **PASS** |
-| Partial proposer timeouts or failures are gracefully handled with fallback synthesis, attributing per-model token consumption and latency | `37-02` | `src/harness_core/core/moa.py`, `tests/test_mixture_of_agents.py` | **PASS** |
-| Repetition sentry (`repetition_sentry.py`) detects runaway token repetition, tool call thrashing, and cyclical ping-pong action loops across turns | `37-02` | `src/harness_core/cognition/repetition_sentry.py`, `tests/test_repetition_sentry.py` | **PASS** |
-| Degenerate loops trigger out-of-band steering prompt injections to force alternative problem-solving strategies, and thinking tags are stripped cleanly from output | `37-02` | `src/harness_core/cognition/repetition_sentry.py`, `src/harness_core/core/react_loop.py`, `tests/test_repetition_sentry.py` | **PASS** |
-| Temporal approval leasing (`approval_lease.py`) grants time-bounded auto-approval leases for safe command prefixes and working directories | `37-03` | `src/harness_core/core/approval_lease.py`, `src/harness_core/storage/db.py`, `tests/test_approval_lease.py` | **PASS** |
-| Tool calls matching an active lease execute immediately with `policy_decision='LEASE_APPROVED'` without blocking for human input until the lease TTL expires | `37-03` | `src/harness_core/core/approval_lease.py`, `src/harness_core/core/react_loop.py`, `tests/test_approval_lease.py` | **PASS** |
-| Mobile reaction listener bridge (`reaction_listener.py`) dispatches interactive approval requests to Telegram and Discord and awaits external operator confirmation | `37-03` | `src/harness_core/capabilities/gateways/reaction_listener.py`, `src/harness_core/capabilities/gateways/telegram_bot.py`, `src/harness_core/capabilities/gateways/discord_bot.py`, `tests/test_mobile_reaction_listener.py` | **PASS** |
-| If mobile operator response is not received within the configurable fallback timeout, the wait cleanly expires and safely falls back to default-deny or CLI input | `37-03` | `src/harness_core/capabilities/gateways/reaction_listener.py`, `tests/test_mobile_reaction_listener.py` | **PASS** |
+| Rewinding preserves abandoned turns under historical branch IDs in the SQLite ledger rather than performing hard destructive deletes | `37-01` | `src/harness_core/storage/db.py`, `src/harness_core/storage/timeline_rewind.py`, `tests/storage/test_timeline_rewind.py` | **PASS** |
+| Asynchronous background LLM session title synthesis spawns a non-blocking worker after Turn 1, updating `tasks.goal` with a clean 3-5 word title in the ledger | `37-01` | `src/harness_core/cognition/title_synthesizer.py`, `src/harness_core/storage/db.py`, `tests/cognition/test_title_synthesis.py` | **PASS** |
+| Synthesized session titles are queryable and immediately reflected in the Start screen resume list and session switchers | `37-01` | `src/harness_core/cognition/title_synthesizer.py`, `tests/cognition/test_title_synthesis.py` | **PASS** |
+| Mixture-of-Agents (`moa.py`) executes concurrent queries across multiple proposer models and synthesizes candidate responses through a primary aggregator model | `37-02` | `src/harness_core/core/moa.py`, `src/harness_core/core/orchestrator.py`, `tests/core/test_mixture_of_agents.py` | **PASS** |
+| Partial proposer timeouts or failures are gracefully handled with fallback synthesis, attributing per-model token consumption and latency | `37-02` | `src/harness_core/core/moa.py`, `tests/core/test_mixture_of_agents.py` | **PASS** |
+| Repetition sentry (`repetition_sentry.py`) detects runaway token repetition, tool call thrashing, and cyclical ping-pong action loops across turns | `37-02` | `src/harness_core/cognition/repetition_sentry.py`, `tests/cognition/test_repetition_sentry.py` | **PASS** |
+| Degenerate loops trigger out-of-band steering prompt injections to force alternative problem-solving strategies, and thinking tags are stripped cleanly from output | `37-02` | `src/harness_core/cognition/repetition_sentry.py`, `src/harness_core/core/react_loop.py`, `tests/cognition/test_repetition_sentry.py` | **PASS** |
+| Temporal approval leasing (`approval_lease.py`) grants time-bounded auto-approval leases for safe command prefixes and working directories | `37-03` | `src/harness_core/core/approval_lease.py`, `src/harness_core/storage/db.py`, `tests/core/test_approval_lease.py` | **PASS** |
+| Tool calls matching an active lease execute immediately with `policy_decision='LEASE_APPROVED'` without blocking for human input until the lease TTL expires | `37-03` | `src/harness_core/core/approval_lease.py`, `src/harness_core/core/react_loop.py`, `tests/core/test_approval_lease.py` | **PASS** |
+| Mobile reaction listener bridge (`reaction_listener.py`) dispatches interactive approval requests to Telegram and Discord and awaits external operator confirmation | `37-03` | `src/harness_core/capabilities/gateways/reaction_listener.py`, `src/harness_core/capabilities/gateways/telegram_bot.py`, `src/harness_core/capabilities/gateways/discord_bot.py`, `tests/capabilities/test_mobile_reaction_listener.py` | **PASS** |
+| If mobile operator response is not received within the configurable fallback timeout, the wait cleanly expires and safely falls back to default-deny or CLI input | `37-03` | `src/harness_core/capabilities/gateways/reaction_listener.py`, `tests/capabilities/test_mobile_reaction_listener.py` | **PASS** |
 
 ---
 

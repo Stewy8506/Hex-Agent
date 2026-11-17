@@ -17,7 +17,7 @@ Establish first-class identity and persona modulation in HEX without prompt bloa
   5. Machine-wide Developer DNA (`~/.hex/USER.md`): load personal engineering conventions into user profile context.
 - **Verification:**
   ```bash
-  pytest tests/test_soul_manager.py -v
+  pytest tests/cognition/test_soul_manager.py -v
   ```
 - **Done Criteria:**
   - `SoulManager` seamlessly resolves global and workspace souls.
@@ -45,7 +45,7 @@ Establish first-class identity and persona modulation in HEX without prompt bloa
   3. Integration into `HarnessOrchestrator.run_agent_loop`, `ReActConfig`, and TUI `/rename` / `/mode`.
 - **Verification:**
   ```bash
-  pytest tests/test_prompt_builder.py -v
+  pytest tests/cognition/test_prompt_builder.py -v
   ```
 - **Done Criteria:**
   - `PromptBuilder.build_system_prompt()` outputs strictly ordered slots with prefix stability.

@@ -338,9 +338,9 @@ MUST-HAVE 6: PASSED
 ---
 
 ### Must-Have 7: Test Suite Clean Passes
-- **Command 1:** `.venv/bin/python -m unittest tests/test_ui_selector_and_web_search.py`
+- **Command 1:** `.venv/bin/python -m unittest tests/capabilities/test_ui_selector_and_web_search.py`
   - **Output:** `Ran 14 tests in 0.017s - OK`
-- **Command 2:** `.venv/bin/python -m unittest tests/test_auto_setup_and_polish.py`
+- **Command 2:** `.venv/bin/python -m unittest tests/client/test_auto_setup_and_polish.py`
   - **Output:** `Ran 7 tests in 0.345s - OK`
 - **Command 3:** `.venv/bin/python -m unittest discover tests`
   - **Output:** `Ran 415 tests in 32.133s - OK`

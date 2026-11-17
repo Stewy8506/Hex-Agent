@@ -15,11 +15,11 @@ Delivered the persistent REPL code kernel engine and bounded kernel registry in 
 - **Process Group & Timeout Termination:** Configured `start_new_session=True` on POSIX and `_kill_process_tree` with escalation from SIGTERM to SIGKILL (`os.killpg`), preventing orphaned or wedged processes on execution timeouts.
 - **Commit:** `29d44d5 feat(phase-28): persistent repl code kernel subprocess engine and kernel registry`
 
-### Task 2: KernelRegistry, LRU / Idle Eviction, Stale Warning Formatter & Unit Test Suite (`src/harness_core/code_kernel.py`, `tests/test_code_kernel.py`)
+### Task 2: KernelRegistry, LRU / Idle Eviction, Stale Warning Formatter & Unit Test Suite (`src/harness_core/code_kernel.py`, `tests/runtime/test_code_kernel.py`)
 - **KernelRegistry Lifecycle & LRU Pooling:** Built thread-safe registry keyed by `(owner, cwd)` with bounded capacity (`max_kernels=4`), idle timeout sweeping (`idle_timeout=1800`), unpinned LRU eviction, and graceful shutdown.
 - **Background Idle Reaper:** Periodic background daemon thread sweeping expired idle kernels without blocking interactive execution.
 - **Stale Module Warning Formatter:** Implemented `stale_modules_warning(stale_modules)` producing model-friendly advisories with secret redaction.
-- **Comprehensive Test Suite:** Authored 12 unit and integration tests in `tests/test_code_kernel.py` covering:
+- **Comprehensive Test Suite:** Authored 12 unit and integration tests in `tests/runtime/test_code_kernel.py` covering:
   - Cross-call variable and function persistence.
   - Independent stdout and stderr stream separation.
   - 1 MB output clipping and on-disk file spilling.
@@ -29,7 +29,7 @@ Delivered the persistent REPL code kernel engine and bounded kernel registry in 
   - Multi-owner isolation and LRU capacity eviction.
   - SyntaxError and RuntimeError traceback reporting without process termination.
   - Clean SystemExit handling.
-- **Full Verification:** All 12/12 tests in `tests/test_code_kernel.py` passed in 1.25s. Verified zero regressions across the entire repository test suite (723/723 tests passed in 599s).
+- **Full Verification:** All 12/12 tests in `tests/runtime/test_code_kernel.py` passed in 1.25s. Verified zero regressions across the entire repository test suite (723/723 tests passed in 599s).
 - **Commit:** `1012d8e feat(phase-28): kernel registry lru eviction stale warning formatter and unit test suite`
 
 ## 3. Deviations from Plan
@@ -40,7 +40,7 @@ None. All implementations and unit tests strictly adhered to specification and t
   `.venv/bin/python -c "from harness_core.code_kernel import CodeKernel; k = CodeKernel(); res = k.execute('x = 42\nprint(x)'); assert '42' in res['stdout'], res; res2 = k.execute('print(x + 8)'); assert '50' in res2['stdout'], res2; k.close(); print('VERIFICATION SUCCESS')"`
   Result: `VERIFICATION SUCCESS`
 - Task 2 `<verify>` command:
-  `.venv/bin/python -m unittest tests/test_code_kernel.py`
+  `.venv/bin/python -m unittest tests/runtime/test_code_kernel.py`
   Result: `Ran 12 tests in 1.227s - OK`
 - Full test discovery:
   `.venv/bin/python -m unittest discover -s tests`

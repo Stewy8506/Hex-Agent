@@ -28,7 +28,7 @@
   - Added `/subagents` command to `HexConsole.SLASH_COMMANDS` and tab auto-complete.
   - Implemented `_cmd_subagents()` displaying structured agent status, depth, calls, and goal table.
   - Added `CockpitTUI = HexConsole` alias for backward compatibility.
-- Created `tests/test_subagent_delegation.py`:
+- Created `tests/core/test_subagent_delegation.py`:
   - 8/8 comprehensive unit and integration tests covering role constraints, sync/async runs, CoW branch isolation, depth enforcement, and interruptions.
 
 ---
@@ -36,7 +36,7 @@
 ## 2. Empirical Verification Evidence
 
 ```bash
-$ .venv/bin/python -m unittest tests/test_subagent_delegation.py
+$ .venv/bin/python -m unittest tests/core/test_subagent_delegation.py
 ........
 ----------------------------------------------------------------------
 Ran 8 tests in 2.287s

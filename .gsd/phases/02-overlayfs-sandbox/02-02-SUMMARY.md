@@ -21,7 +21,7 @@ Plan 02-02 delivers the container and process isolation execution engine for unt
    - Delegated `_tool_run_tests` to `self.sandbox.execute(...)`, returning structured `SandboxResult` metadata (`timed_out`, `violation_detected`, `sandbox_backend`), raising `PolicyBlockedError` on security violations, and running secret redaction over combined outputs.
 3. **Orchestrator Sandbox Integration (`src/harness_core/orchestrator.py`):**
    - Injected `ExecutionSandbox` into `HarnessOrchestrator`, passing it to `ToolGateway` and registering active sandbox capabilities (`sandbox_backend`) on local worker registration.
-4. **Zero-Escape Verification Test Suite (`tests/test_sandbox_isolation.py`):**
+4. **Zero-Escape Verification Test Suite (`tests/storage/test_sandbox_isolation.py`):**
    - 18 empirical tests verifying workspace containment, path traversal blocking, parent/passed environment purging, timeout process termination, resource exhaustion handling, bwrap/docker command assembly, tool gateway secret redaction, and auto-detection fallbacks.
 
 ---
@@ -32,7 +32,7 @@ Plan 02-02 delivers the container and process isolation execution engine for unt
 |------|-------------|--------|--------|
 | Task 1 | Implement Container Sandbox Isolation Engine in `src/harness_core/sandbox.py` | Complete | `c063f5c` |
 | Task 2 | Integrate `ExecutionSandbox` into `ToolGateway` and `Orchestrator` | Complete | `bf077fc` |
-| Task 3 | Author zero-escape and sandbox isolation verification test suite in `tests/test_sandbox_isolation.py` | Complete | `5cbeaed` |
+| Task 3 | Author zero-escape and sandbox isolation verification test suite in `tests/storage/test_sandbox_isolation.py` | Complete | `5cbeaed` |
 
 ---
 
@@ -52,7 +52,7 @@ Orchestrator and Gateway successfully wired with sandbox
 
 ### Task 3: Sandbox Isolation Verification Suite (18 tests)
 ```bash
-$ .venv/bin/python -m unittest tests/test_sandbox_isolation.py -v
+$ .venv/bin/python -m unittest tests/storage/test_sandbox_isolation.py -v
 test_bubblewrap_mock_execution_returns_sandbox_result ... ok
 test_build_bwrap_args_includes_isolation_flags ... ok
 test_build_container_args_includes_isolation_flags ... ok

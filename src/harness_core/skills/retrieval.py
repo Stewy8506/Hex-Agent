@@ -2,7 +2,7 @@
 
 Implements HybridLearningRetriever according to:
 - PRD Section 7.3 & FR-039..FR-039e
-- HERMES_LEARNING_AND_SOUL_ANALYSIS.md (Part 4 Pillar 3: Hybrid Cross-Session Retrieval)
+- docs/research/HERMES_LEARNING_AND_SOUL_ANALYSIS.md (Part 4 Pillar 3: Hybrid Cross-Session Retrieval)
 - Merges SQLite FTS5 BM25 lexical full-text ranking across skills, reflections/lessons,
   and memories with Active Graphify AST 1-hop caller/callee traversal.
 """

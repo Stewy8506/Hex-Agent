@@ -78,7 +78,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 6. HexDoctor Audio Diagnostics (Category 9)
 - **Requirement:** HexDoctor inspects speech synthesis, audio player, and audio capture devices as Category 9 (`audio: "AUDIO HARDWARE & SPEECH ENGINES"`). Missing hardware reports benign `warning` status, never breaking CI runner health.
-- **Files:** `src/harness_core/doctor.py`, `tests/test_doctor_and_recipes.py`
+- **Files:** `src/harness_core/doctor.py`, `tests/client/test_doctor_and_recipes.py`
 - **Empirical Command & Real Output:**
   ```bash
   python -m harness_core.cli doctor
@@ -133,8 +133,8 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 ### 11. Test Suite Coverage & Regression Gating
 - **Requirement:** Unit and integration test suites covering voice engine, doctor checks, TUI integration, and CLI argument parsing, maintaining full test suite health across the repository.
 - **Test Execution Metrics:**
-  - `tests/test_voice_engine.py`: **10 / 10 passed** in 2.49s.
-  - `tests/test_doctor_and_recipes.py`: **12 / 12 passed** in 5.46s.
+  - `tests/capabilities/test_voice_engine.py`: **10 / 10 passed** in 2.49s.
+  - `tests/client/test_doctor_and_recipes.py`: **12 / 12 passed** in 5.46s.
   - **Full Test Suite (`tests/test_*.py`):** **491 / 491 passed** in 124.68s.
 - **Result:** PASSED (100% test pass rate with zero errors and zero regressions).
 

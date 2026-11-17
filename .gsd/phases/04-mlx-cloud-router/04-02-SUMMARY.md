@@ -28,12 +28,12 @@
 - Implemented `execute_routed_request` orchestrating route evaluation, tier dispatch, local $0 execution vs. governed cloud escalation, strict privacy boundary defense, and comprehensive telemetry recording.
 
 ### Task 3: Cloud Provider Contract Tests & Real 500-Line Pytest Benchmark
-- Extended `tests/test_model_providers.py` with:
+- Extended `tests/providers/test_model_providers.py` with:
   - Unit tests for `TaskBudgetTracker` (request limits, cost ceilings, token caps, pricing math).
   - Multi-backend dispatch contract tests verifying payload structures, headers, and responses for Anthropic, OpenAI, and Gemini backends.
   - Privacy gating tests proving zero network calls for sensitive/secret data classifications.
   - Outbound credential scrubbing tests proving live keys and passwords are systematically replaced with `[REDACTED_SECRET]`.
-- Authored comprehensive benchmark suite in `tests/test_two_tier_compression_benchmark.py`:
+- Authored comprehensive benchmark suite in `tests/integration/test_two_tier_compression_benchmark.py`:
   - Synthetic realistic 500-line pytest failure log generator (>2,000 raw tokens, 45 passing tests, 3 distinct failure tracebacks, embedded live secret).
   - Validated >70% token savings (>75% achieved) with 100% preservation of all 3 failing test files (`test_tax.py`, `test_tokens.py`, `test_checkout.py`), line numbers (`42`, `108`, `215`), and assertion messages (`120.0 != 100.0`, `Token expired != Token valid`, `5 != 4`).
   - Proved live credentials (`sk-test-live-key1234567890`) are scrubbed before reaching any tier.
@@ -57,7 +57,7 @@
 
 3. **Task 3 Verification:**
    ```bash
-   .venv/bin/python -m unittest tests/test_model_providers.py tests/test_two_tier_compression_benchmark.py
+   .venv/bin/python -m unittest tests/providers/test_model_providers.py tests/integration/test_two_tier_compression_benchmark.py
    # Output: Ran 29 tests in 0.016s -> OK
    ```
 

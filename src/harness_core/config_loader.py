@@ -11,6 +11,7 @@ are populated into `os.environ` before any orchestrator or CLI command executes.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -160,6 +161,85 @@ def update_config_yaml(
     merged = _deep_merge(existing, updates)
     write_config_yaml_atomic(file_path, merged, header=header)
     return merged
+
+
+def update_config_yaml_model(
+    config_path: Path,
+    *,
+    cloud_provider: str,
+    cloud_model_id: str,
+    profile: str,
+    cloud_base_url: str | None = None,
+    project_override: bool = False,
+    reasoning_effort: str | None = None,
+) -> bool:
+    """Safely patch the model section in config.yaml, preserving comments and unrelated sections."""
+    try:
+        def _clean_val(v: str) -> str:
+            return v.strip(' \t\n\r"\'\\')
+
+        import yaml as _yaml
+
+        if config_path.is_file():
+            content = config_path.read_text(encoding="utf-8")
+            # Refuse to patch a document we cannot read, or whose model section
+            # is not a block mapping (patching would create duplicate keys).
+            try:
+                original = _yaml.safe_load(content)
+            except _yaml.YAMLError:
+                return False
+            if original is not None and not isinstance(original, dict):
+                return False
+            if isinstance(original, dict) and "model" in original and not isinstance(original["model"], dict):
+                return False
+        else:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            content = "# HEX Project Configuration\nmodel:\n"
+
+        header = re.search(r"(?m)^model:\s*(?:#.*)?$", content)
+        if not header:
+            content = content.rstrip() + "\nmodel:\n"
+            header = re.search(r"(?m)^model:\s*(?:#.*)?$", content)
+        assert header is not None
+        next_section = re.search(r"(?m)^[^ \t#][^\n]*:\s*(?:#.*)?$", content[header.end():])
+        block_end = header.end() + next_section.start() if next_section else len(content)
+        block = content[header.end():block_end]
+
+        def _set_field(block_text: str, name: str, value: str) -> str:
+            pattern = rf"(?m)^(  {re.escape(name)}:\s*)[^\n]*$"
+            if re.search(pattern, block_text):
+                return re.sub(pattern, rf'\g<1>{value}', block_text)
+            return block_text.rstrip("\n") + f"\n  {name}: {value}\n"
+
+        block = _set_field(block, "cloud_provider", f'"{_clean_val(cloud_provider)}"')
+        block = _set_field(block, "cloud_model_id", f'"{_clean_val(cloud_model_id)}"')
+        block = _set_field(block, "profile", f'"{_clean_val(profile)}"')
+        if reasoning_effort is not None:
+            if reasoning_effort.strip():
+                block = _set_field(block, "reasoning_effort", f'"{_clean_val(reasoning_effort)}"')
+            else:
+                pattern = r"(?m)^  reasoning_effort:\s*[^\n]*\n?"
+                block = re.sub(pattern, "", block)
+        if cloud_base_url is not None:
+            if cloud_base_url.strip():
+                block = _set_field(block, "cloud_base_url", f'"{_clean_val(cloud_base_url)}"')
+            else:
+                pattern = r"(?m)^  cloud_base_url:\s*[^\n]*\n?"
+                block = re.sub(pattern, "", block)
+        if project_override:
+            block = _set_field(block, "project_override", "true")
+        content = content[:header.end()] + block + content[block_end:]
+        # Validate the patched document before touching the file: a failed
+        # patch must never leave a corrupted config behind.
+        import yaml as _yaml
+
+        parsed = _yaml.safe_load(content)
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("model"), dict):
+            return False
+        write_config_text_atomic(config_path, content)
+        return True
+    except Exception:
+        return False
 
 
 def load_hex_environment(

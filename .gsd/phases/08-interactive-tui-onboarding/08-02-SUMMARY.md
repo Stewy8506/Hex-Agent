@@ -4,7 +4,7 @@
 **Plan:** 08-02 (Wave 2)  
 **Status:** Complete  
 **Commits:** `df28736`, `b9dfea4`, `44d2459`  
-**Tests:** 225/225 passed (15 new tests in `tests/test_tui_approvals_and_init.py`, 0 regressions)
+**Tests:** 225/225 passed (15 new tests in `tests/client/test_tui_approvals_and_init.py`, 0 regressions)
 
 ---
 
@@ -36,7 +36,7 @@
    - Enhanced `create_approval` and `create_approval_async` to accept `risk_class` and keyword arguments.
    - Added `get_approval` and `get_approval_async` methods to `LedgerStore` with dual-driver SQLite and PostgreSQL support.
 
-4. **Unit & Integration Test Suite (`tests/test_tui_approvals_and_init.py`):**
+4. **Unit & Integration Test Suite (`tests/client/test_tui_approvals_and_init.py`):**
    - Authored 15 tests covering all approval keyboard flows (`[y]`, `[n]`, `[d]`, `[s]`, `[q]`), EOF handling, stack detection across all supported languages, project file creation, `--force` overwrite behavior, and CLI `hex init` execution.
 
 ---
@@ -78,7 +78,7 @@ PROJECT_INIT_OK
 
 ### Task 3 Verify Command:
 ```bash
-.venv/bin/python -m unittest tests/test_tui_approvals_and_init.py
+.venv/bin/python -m unittest tests/client/test_tui_approvals_and_init.py
 ```
 **Output:**
 ```

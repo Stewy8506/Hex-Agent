@@ -37,7 +37,7 @@
    - Verified formatted JSON status reporting and single-cycle polling mode.
 
 5. **Empirical Verification & Zero Regressions:**
-   - Authored comprehensive test suite in `tests/test_discord_and_gateway_manager.py` with 21 unit and integration tests passing in 1.59s.
+   - Authored comprehensive test suite in `tests/capabilities/test_discord_and_gateway_manager.py` with 21 unit and integration tests passing in 1.59s.
    - Verified the complete repository test suite: **263/263 tests passing cleanly in 22.66s with zero regressions**.
 
 ---
@@ -113,7 +113,7 @@ CLI Start Once Command:
 
 ### Task 3: Comprehensive Test Suite Verification
 ```bash
-.venv/bin/python -m unittest tests/test_discord_and_gateway_manager.py
+.venv/bin/python -m unittest tests/capabilities/test_discord_and_gateway_manager.py
 ```
 **Output:**
 ```

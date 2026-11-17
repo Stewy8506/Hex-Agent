@@ -1,7 +1,7 @@
 # Phase 17 Plan 02 Summary: Interactive TUI Voice Mode, CLI Ergonomics & End-to-End Test Suite
 
 ## Executive Overview
-Successfully delivered interactive real-time hands-free voice mode and CLI ergonomics for HEX (`src/harness_core/tui.py`, `src/harness_core/cli.py`), completing Milestone M7. Developers can now activate voice mode via `/voice` TUI slash commands, launch directly with `hex voice` or `hex chat --voice`, observe live microphone and TTS status badges in both the session header and bottom status bar, and receive non-blocking, natural spoken commentary summarizing completed tasks with code fences and ANSI escapes cleanly stripped. Comprehensive unit and integration tests (`tests/test_voice_engine.py`) verify all voice capabilities with 100% offline determinism and zero failures.
+Successfully delivered interactive real-time hands-free voice mode and CLI ergonomics for HEX (`src/harness_core/tui.py`, `src/harness_core/cli.py`), completing Milestone M7. Developers can now activate voice mode via `/voice` TUI slash commands, launch directly with `hex voice` or `hex chat --voice`, observe live microphone and TTS status badges in both the session header and bottom status bar, and receive non-blocking, natural spoken commentary summarizing completed tasks with code fences and ANSI escapes cleanly stripped. Comprehensive unit and integration tests (`tests/capabilities/test_voice_engine.py`) verify all voice capabilities with 100% offline determinism and zero failures.
 
 ## Executed Tasks
 
@@ -31,7 +31,7 @@ Successfully delivered interactive real-time hands-free voice mode and CLI ergon
   - Ensured keyboard-only workflows remain 100% identical when `--voice` is omitted.
 
 ### Task 3: Author Comprehensive Unit & Integration Test Suite
-- **Files Modified:** `tests/test_voice_engine.py`, `tests/test_ui_selector_and_web_search.py`
+- **Files Modified:** `tests/capabilities/test_voice_engine.py`, `tests/capabilities/test_ui_selector_and_web_search.py`
 - **Commit:** `a4ce8fb` (`test(phase-17): author comprehensive unit and integration test suite for voice engine and tui`)
 - **Key Deliverables:**
   - Authored complete test suite covering:
@@ -63,7 +63,7 @@ Successfully delivered interactive real-time hands-free voice mode and CLI ergon
   ```
 - **Task 3 Verification:**
   ```bash
-  python -m unittest tests/test_voice_engine.py -v
+  python -m unittest tests/capabilities/test_voice_engine.py -v
   # Output: Ran 10 tests in 2.150s - OK (10/10 green)
   ```
 

@@ -42,7 +42,7 @@ Implemented a thread-safe asynchronous pseudo-terminal (PTY) process supervisor 
      - `get_process_registry()` singleton and `reset_process_registry()` for test isolation
      - `atexit.register(self.cleanup_all)` ensuring zero orphaned background processes on session exit.
 
-4. **Comprehensive Test Suite (`tests/test_process_registry.py`):**
+4. **Comprehensive Test Suite (`tests/runtime/test_process_registry.py`):**
    - 13 unit and integration tests covering:
      - Buffer rollover and cumulative character tracking at 200 KB threshold
      - Slice reads and EOF boundaries
@@ -67,7 +67,7 @@ Implemented a thread-safe asynchronous pseudo-terminal (PTY) process supervisor 
 
 - **Task 2 Verification:**
   ```bash
-  .venv/bin/python -m unittest tests/test_process_registry.py
+  .venv/bin/python -m unittest tests/runtime/test_process_registry.py
   # Output: Ran 13 tests in 0.360s -- OK
   ```
 

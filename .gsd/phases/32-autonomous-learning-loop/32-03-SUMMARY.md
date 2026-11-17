@@ -12,12 +12,12 @@
 
 | Must-Have Requirement | Status | Evidence / Verification |
 |---|---|---|
-| **HybridLearningRetriever** combines SQLite FTS5 BM25 ranking with Active Graphify AST 1-hop caller/callee traversal | **Delivered** | `src/harness_core/skills/retrieval.py`, `tests/test_autonomous_learning.py::test_hybrid_retrieval_lexical_and_ast_ranking` |
+| **HybridLearningRetriever** combines SQLite FTS5 BM25 ranking with Active Graphify AST 1-hop caller/callee traversal | **Delivered** | `src/harness_core/skills/retrieval.py`, `tests/cognition/test_autonomous_learning.py::test_hybrid_retrieval_lexical_and_ast_ranking` |
 | Querying learned skills and memories surfaces both lexical keyword matches and connected AST caller/callee gotchas | **Delivered** | `HybridLearningRetriever.query()` fuses BM25 lexical scores with structural AST proximity boost (`2.5` direct, `1.8` 1-hop caller/callee) |
-| CLI command `hex learn <target>` compiles skills with `--name`, `--global`, `--verify`, `--dry-run`, and `--json` flags | **Delivered** | `src/harness_core/cli.py`, 4 unit tests in `tests/test_skill_synthesis.py` |
-| TUI slash command `/learn <target>` provides interactive skill preview, dry-run toggle, and status indicators in HexConsole | **Delivered** | `src/harness_core/tui.py`, `tests/test_autonomous_learning.py::test_tui_learn_slash_command` |
-| `/skills` command displays `[VERIFY: <cmd>]` tag when a skill carries a `verify:` hook | **Delivered** | `src/harness_core/tui.py::_cmd_skills()`, `tests/test_autonomous_learning.py::test_tui_skills_display_with_verify_tag` |
-| Complete test suites in `tests/test_skill_synthesis.py` and `tests/test_autonomous_learning.py` pass 100% cleanly | **Delivered** | 55/55 tests green (0 regressions across 800+ repo tests) |
+| CLI command `hex learn <target>` compiles skills with `--name`, `--global`, `--verify`, `--dry-run`, and `--json` flags | **Delivered** | `src/harness_core/cli.py`, 4 unit tests in `tests/skills/test_skill_synthesis.py` |
+| TUI slash command `/learn <target>` provides interactive skill preview, dry-run toggle, and status indicators in HexConsole | **Delivered** | `src/harness_core/tui.py`, `tests/cognition/test_autonomous_learning.py::test_tui_learn_slash_command` |
+| `/skills` command displays `[VERIFY: <cmd>]` tag when a skill carries a `verify:` hook | **Delivered** | `src/harness_core/tui.py::_cmd_skills()`, `tests/cognition/test_autonomous_learning.py::test_tui_skills_display_with_verify_tag` |
+| Complete test suites in `tests/skills/test_skill_synthesis.py` and `tests/cognition/test_autonomous_learning.py` pass 100% cleanly | **Delivered** | 55/55 tests green (0 regressions across 800+ repo tests) |
 
 ---
 
@@ -51,68 +51,68 @@
 ## 3. Empirical Verification Results
 
 ```bash
-.venv/bin/pytest tests/test_skill_synthesis.py tests/test_autonomous_learning.py -v
+.venv/bin/pytest tests/skills/test_skill_synthesis.py tests/cognition/test_autonomous_learning.py -v
 ```
 Output:
 ```
 ============================= test session starts ==============================
 collected 55 items
 
-tests/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_determine_risk_class PASSED
-tests/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_extract_task_context_completed_task PASSED
-tests/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_extract_task_context_nonexistent_task PASSED
-tests/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_extract_task_context_not_completed PASSED
-tests/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_generate_skill_markdown PASSED
-tests/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_slugify_helper PASSED
-tests/test_skill_synthesis.py::TestSkillSynthesizerGating::test_adversarial_prompt_injection_quarantined PASSED
-tests/test_skill_synthesis.py::TestSkillSynthesizerGating::test_clean_skill_synthesis PASSED
-tests/test_skill_synthesis.py::TestSkillSynthesizerGating::test_clean_skill_synthesis_dry_run PASSED
-tests/test_skill_synthesis.py::TestSkillSynthesizerGating::test_shell_exfiltration_pattern_quarantined PASSED
-tests/test_skill_synthesis.py::TestSkillListing::test_list_skills_enumeration PASSED
-tests/test_skill_synthesis.py::TestSkillCLI::test_cli_learn_dry_run_json PASSED
-tests/test_skill_synthesis.py::TestSkillCLI::test_cli_learn_formatted_output PASSED
-tests/test_skill_synthesis.py::TestSkillCLI::test_cli_learn_security_quarantine PASSED
-tests/test_skill_synthesis.py::TestSkillCLI::test_cli_learn_with_verify_hook PASSED
-tests/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_list PASSED
-tests/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_scan_bundle PASSED
-tests/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_synthesize_dry_run PASSED
-tests/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_synthesize_missing_task_error PASSED
-tests/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_synthesize_persistence PASSED
-tests/test_skill_synthesis.py::TestSkillCompilerUnit::test_compiler_dry_run_mode PASSED
-tests/test_skill_synthesis.py::TestSkillCompilerUnit::test_compiler_global_vs_project_scopes PASSED
-tests/test_skill_synthesis.py::TestSkillCompilerUnit::test_compiler_hermes_invariants PASSED
-tests/test_skill_synthesis.py::TestSkillCompilerUnit::test_compiler_knowledge_base_references_and_scripts PASSED
-tests/test_skill_synthesis.py::TestSkillFrontmatterVerifyParsing::test_frontmatter_concise_string_verify PASSED
-tests/test_skill_synthesis.py::TestSkillFrontmatterVerifyParsing::test_frontmatter_nested_verify_block PASSED
-tests/test_skill_synthesis.py::TestSkillCompilerSkillspectorGate::test_skillspector_gate_clean_allow PASSED
-tests/test_skill_synthesis.py::TestSkillCompilerSkillspectorGate::test_skillspector_gate_quarantine_malicious_script PASSED
-tests/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_assert_skill_regression_free PASSED
-tests/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_ast_invariant_pass_and_fail PASSED
-tests/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_extract_verification_hook PASSED
-tests/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_run_failing_verification_hook PASSED
-tests/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_run_passing_verification_hook PASSED
-tests/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_timeout_protection PASSED
-tests/test_autonomous_learning.py::test_hardware_gating_policy_parsing PASSED
-tests/test_autonomous_learning.py::test_hardware_gating_decision_off PASSED
-tests/test_autonomous_learning.py::test_hardware_gating_decision_idle PASSED
-tests/test_autonomous_learning.py::test_hardware_gating_decision_cloud_only_local PASSED
-tests/test_autonomous_learning.py::test_hardware_gating_decision_cloud_only_cloud PASSED
-tests/test_autonomous_learning.py::test_friction_sensor_retry_count PASSED
-tests/test_autonomous_learning.py::test_friction_sensor_repeat_tool_failure PASSED
-tests/test_autonomous_learning.py::test_friction_sensor_resolved_tool_failure PASSED
-tests/test_autonomous_learning.py::test_friction_sensor_compiler_errors PASSED
-tests/test_autonomous_learning.py::test_react_session_result_exposes_friction_info PASSED
-tests/test_autonomous_learning.py::test_orchestrator_friction_handling_suppressed PASSED
-tests/test_autonomous_learning.py::test_lesson_synthesis_llm PASSED
-tests/test_autonomous_learning.py::test_lesson_synthesis_deterministic PASSED
-tests/test_autonomous_learning.py::test_append_to_lessons_md PASSED
-tests/test_autonomous_learning.py::test_lifecycle_integration_auto_registration PASSED
-tests/test_autonomous_learning.py::test_lifecycle_integration_hit_counter_and_promotion PASSED
-tests/test_autonomous_learning.py::test_lifecycle_integration_promote_to_skill PASSED
-tests/test_autonomous_learning.py::test_hybrid_retrieval_lexical_and_ast_ranking PASSED
-tests/test_autonomous_learning.py::test_tui_learn_slash_command PASSED
-tests/test_autonomous_learning.py::test_tui_skills_display_with_verify_tag PASSED
-tests/test_autonomous_learning.py::test_tui_help_command_lists_learn PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_determine_risk_class PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_extract_task_context_completed_task PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_extract_task_context_nonexistent_task PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_extract_task_context_not_completed PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_generate_skill_markdown PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerUnit::test_slugify_helper PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerGating::test_adversarial_prompt_injection_quarantined PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerGating::test_clean_skill_synthesis PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerGating::test_clean_skill_synthesis_dry_run PASSED
+tests/skills/test_skill_synthesis.py::TestSkillSynthesizerGating::test_shell_exfiltration_pattern_quarantined PASSED
+tests/skills/test_skill_synthesis.py::TestSkillListing::test_list_skills_enumeration PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCLI::test_cli_learn_dry_run_json PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCLI::test_cli_learn_formatted_output PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCLI::test_cli_learn_security_quarantine PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCLI::test_cli_learn_with_verify_hook PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_list PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_scan_bundle PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_synthesize_dry_run PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_synthesize_missing_task_error PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCLI::test_cli_skill_synthesize_persistence PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCompilerUnit::test_compiler_dry_run_mode PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCompilerUnit::test_compiler_global_vs_project_scopes PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCompilerUnit::test_compiler_hermes_invariants PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCompilerUnit::test_compiler_knowledge_base_references_and_scripts PASSED
+tests/skills/test_skill_synthesis.py::TestSkillFrontmatterVerifyParsing::test_frontmatter_concise_string_verify PASSED
+tests/skills/test_skill_synthesis.py::TestSkillFrontmatterVerifyParsing::test_frontmatter_nested_verify_block PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCompilerSkillspectorGate::test_skillspector_gate_clean_allow PASSED
+tests/skills/test_skill_synthesis.py::TestSkillCompilerSkillspectorGate::test_skillspector_gate_quarantine_malicious_script PASSED
+tests/skills/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_assert_skill_regression_free PASSED
+tests/skills/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_ast_invariant_pass_and_fail PASSED
+tests/skills/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_extract_verification_hook PASSED
+tests/skills/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_run_failing_verification_hook PASSED
+tests/skills/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_run_passing_verification_hook PASSED
+tests/skills/test_skill_synthesis.py::TestSkillExecutionEngineVerifyHooks::test_executor_timeout_protection PASSED
+tests/cognition/test_autonomous_learning.py::test_hardware_gating_policy_parsing PASSED
+tests/cognition/test_autonomous_learning.py::test_hardware_gating_decision_off PASSED
+tests/cognition/test_autonomous_learning.py::test_hardware_gating_decision_idle PASSED
+tests/cognition/test_autonomous_learning.py::test_hardware_gating_decision_cloud_only_local PASSED
+tests/cognition/test_autonomous_learning.py::test_hardware_gating_decision_cloud_only_cloud PASSED
+tests/cognition/test_autonomous_learning.py::test_friction_sensor_retry_count PASSED
+tests/cognition/test_autonomous_learning.py::test_friction_sensor_repeat_tool_failure PASSED
+tests/cognition/test_autonomous_learning.py::test_friction_sensor_resolved_tool_failure PASSED
+tests/cognition/test_autonomous_learning.py::test_friction_sensor_compiler_errors PASSED
+tests/cognition/test_autonomous_learning.py::test_react_session_result_exposes_friction_info PASSED
+tests/cognition/test_autonomous_learning.py::test_orchestrator_friction_handling_suppressed PASSED
+tests/cognition/test_autonomous_learning.py::test_lesson_synthesis_llm PASSED
+tests/cognition/test_autonomous_learning.py::test_lesson_synthesis_deterministic PASSED
+tests/cognition/test_autonomous_learning.py::test_append_to_lessons_md PASSED
+tests/cognition/test_autonomous_learning.py::test_lifecycle_integration_auto_registration PASSED
+tests/cognition/test_autonomous_learning.py::test_lifecycle_integration_hit_counter_and_promotion PASSED
+tests/cognition/test_autonomous_learning.py::test_lifecycle_integration_promote_to_skill PASSED
+tests/cognition/test_autonomous_learning.py::test_hybrid_retrieval_lexical_and_ast_ranking PASSED
+tests/cognition/test_autonomous_learning.py::test_tui_learn_slash_command PASSED
+tests/cognition/test_autonomous_learning.py::test_tui_skills_display_with_verify_tag PASSED
+tests/cognition/test_autonomous_learning.py::test_tui_help_command_lists_learn PASSED
 
 ============================== 55 passed in 6.76s ==============================
 ```

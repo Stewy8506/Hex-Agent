@@ -126,7 +126,7 @@ HEX centralizes all provider configurations into a declarative specification (`s
   - *Local Offline:* Ollama, LM Studio, Local AI / Apple Silicon MLX, Custom OpenAI-compatible proxy.
 - **Credential Storage Security:**
   - Credentials saved to `~/.hex/credentials.env`.
-  - On POSIX systems, permissions are strictly clamped to `0600` (read/write by owner only), verified in `tests/test_hex_cli.py:61-65`.
+  - On POSIX systems, permissions are strictly clamped to `0600` (read/write by owner only), verified in `tests/client/test_hex_cli.py:61-65`.
 
 ---
 
@@ -249,7 +249,7 @@ event_sha = compute_event_hash(
 
 #### Tamper-Evidence Verification:
 - If any past record, payload, timestamp, or state transition is altered in the database, the hash chain breaks at that node and all downstream event hashes become invalid.
-- Formally tested and proven in `tests/test_db_dual_driver.py:393-436` (`TestHashChainingIntegrity`) and `tests/test_postgres_concurrency.py:560-575`.
+- Formally tested and proven in `tests/storage/test_db_dual_driver.py:393-436` (`TestHashChainingIntegrity`) and `tests/storage/test_postgres_concurrency.py:560-575`.
 - **Hermes Parity:** Hermes Agent maintains plain SQLite event/mutation rows with zero cryptographic hash linking.
 
 ---
@@ -314,7 +314,7 @@ HEX implements an architected PTY Process Supervisor (`ProcessRegistry`):
 5. **Deterministic Host Cleanup:**
    - Hooks `atexit.register(self.cleanup_all)` on initialization (`process_registry.py:216`).
    - Guarantees zero orphaned child processes or zombie PTY file descriptors upon workbench shutdown.
-   - Verified in `tests/test_process_registry.py:143-200`.
+   - Verified in `tests/runtime/test_process_registry.py:143-200`.
 
 ---
 
@@ -385,15 +385,15 @@ HEX integrates three industry-standard upstream evaluation and analysis engines,
 └───────────────────────────┴────────────────────────────┴───────────────────────────────┘
 ```
 
-1. **Google Research Harness² Integration (`tests/test_harness2_library_wiring.py`, `test_harness_stages.py`):**
+1. **Google Research Harness² Integration (`tests/integration/test_harness2_library_wiring.py`, `test_harness_stages.py`):**
    - Implements `OrchestratorBenchmarkAdapter` conforming to `harness2.core.spec.BenchmarkAdapter`.
    - Executes candidate rollouts inside isolated CoW workspaces with trajectory logging.
    - Runmark rollout caching prevents redundant compute when `(run_id, harness_fingerprint)` matches.
    - Command `hex harness2-eval` runs automated candidate sweeps.
-2. **NVIDIA SkillSpector Safety Gate (`tests/test_skillspector_ast_wiring.py`):**
+2. **NVIDIA SkillSpector Safety Gate (`tests/skills/test_skillspector_ast_wiring.py`):**
    - AST dangerous execution analyzer detects reflective sinks, code injection, and gadget chains before any skill is admitted to the runtime.
    - Automated quarantine blocks high-risk tools from executing.
-3. **Graphify Blast-Radius Analysis (`tests/test_graphify_upstream.py`, `test_graphify_efficiency.py`):**
+3. **Graphify Blast-Radius Analysis (`tests/tools/test_graphify_upstream.py`, `test_graphify_efficiency.py`):**
    - Parses multi-language ASTs across 6 language families.
    - Accurately computes architectural impact and affected test suites before code modifications land.
 

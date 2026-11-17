@@ -49,7 +49,7 @@
     7. RECENT ERRORS (terminal reasons and failed task diagnostics)
 - Wired `hex backup`, `hex restore <archive>`, and `hex dump` subcommands into `src/harness_core/cli.py`.
 
-### D. Verification & Test Suite (`tests/test_search_and_backup.py`)
+### D. Verification & Test Suite (`tests/storage/test_search_and_backup.py`)
 - Authored 16 comprehensive unit and integration tests covering:
   - FTS5 virtual table creation and unicode61 tokenizer.
   - Query sanitization against special characters, unmatched quotes, prefix tokens, and boolean edge cases.
@@ -70,7 +70,7 @@
 ## 2. Verification Proof
 
 - **Plan Unit & Integration Tests:**
-  `python3 -m unittest tests/test_search_and_backup.py`
+  `python3 -m unittest tests/storage/test_search_and_backup.py`
   Result: 16/16 tests passing (OK in 1.20s).
 
 - **Full Regression Test Suite:**

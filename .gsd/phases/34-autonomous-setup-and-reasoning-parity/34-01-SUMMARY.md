@@ -19,5 +19,5 @@
    - `onboard.py`: Added interactive reasoning effort picker when selecting models that support extended thinking.
    - `tui.py`: Added `/reasoning [level]` (aliases `/effort`, `/thinking`) to inspect and dynamically switch reasoning effort.
 3. **Verification Evidence:**
-   - 40/40 unit tests passing in `tests/test_reasoning_effort.py`.
-   - 21/21 tests passing in `tests/test_antigravity_oauth_and_tui_resilience.py` and `tests/test_live_model_discovery.py`.
+   - 40/40 unit tests passing in `tests/core/test_reasoning_effort.py`.
+   - 21/21 tests passing in `tests/integration/test_antigravity_oauth_and_tui_resilience.py` and `tests/client/test_live_model_discovery.py`.

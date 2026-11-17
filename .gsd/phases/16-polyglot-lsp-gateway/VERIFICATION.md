@@ -7,7 +7,7 @@
 **Verification Target:** Milestone M7 / Phase 16 (`16-01-PLAN.md`, `16-02-PLAN.md`)  
 **Commit Range:** `961223e..853e56c`  
 **Total Tests Passing:** 480/480 (100% green, 0 failures, 0 errors, 0 regressions)  
-**LSP Specific Tests:** 25/25 (12/12 in `tests/test_lsp_client.py`, 13/13 in `tests/test_lsp_gateway_and_repair.py`)
+**LSP Specific Tests:** 25/25 (12/12 in `tests/lsp/test_lsp_client.py`, 13/13 in `tests/lsp/test_lsp_gateway_and_repair.py`)
 
 ---
 
@@ -43,22 +43,22 @@ All 5 core capabilities and 7 verification objectives mandated in `.gsd/ROADMAP.
   - Notification subscriber parses `textDocument/publishDiagnostics` into `LSPDiagnostic` models with severity normalization (1=ERROR, 2=WARNING, 3=INFO, 4=HINT).
 - **Command Evidence:**
   ```bash
-  .venv/bin/python -m unittest tests/test_lsp_client.py -v
+  .venv/bin/python -m unittest tests/lsp/test_lsp_client.py -v
   ```
   **Output:**
   ```text
-  test_lsp_diagnostic_model (tests.test_lsp_client.TestLSPFramingAndModels.test_lsp_diagnostic_model) ... ok
-  test_lsp_message_serialization (tests.test_lsp_client.TestLSPFramingAndModels.test_lsp_message_serialization) ... ok
-  test_uri_conversions (tests.test_lsp_client.TestLSPFramingAndModels.test_uri_conversions) ... ok
-  test_manager_context_and_close (tests.test_lsp_client.TestLSPManager.test_manager_context_and_close) ... ok
-  test_default_specs_coverage (tests.test_lsp_client.TestLanguageServerRegistry.test_default_specs_coverage) ... ok
-  test_detect_workspace_servers (tests.test_lsp_client.TestLanguageServerRegistry.test_detect_workspace_servers) ... ok
-  test_find_server_by_extension_uninstalled_lookup (tests.test_lsp_client.TestLanguageServerRegistry.test_find_server_by_extension_uninstalled_lookup) ... ok
-  test_find_server_for_file_with_env_override (tests.test_lsp_client.TestLanguageServerRegistry.test_find_server_for_file_with_env_override) ... ok
-  test_client_lifecycle_and_document_sync (tests.test_lsp_client.TestStdioTransportAndClient.test_client_lifecycle_and_document_sync) ... ok
-  test_transport_error_response (tests.test_lsp_client.TestStdioTransportAndClient.test_transport_error_response) ... ok
-  test_transport_send_request_and_response (tests.test_lsp_client.TestStdioTransportAndClient.test_transport_send_request_and_response) ... ok
-  test_transport_timeout (tests.test_lsp_client.TestStdioTransportAndClient.test_transport_timeout) ... ok
+  test_lsp_diagnostic_model (tests.lsp.test_lsp_client.TestLSPFramingAndModels.test_lsp_diagnostic_model) ... ok
+  test_lsp_message_serialization (tests.lsp.test_lsp_client.TestLSPFramingAndModels.test_lsp_message_serialization) ... ok
+  test_uri_conversions (tests.lsp.test_lsp_client.TestLSPFramingAndModels.test_uri_conversions) ... ok
+  test_manager_context_and_close (tests.lsp.test_lsp_client.TestLSPManager.test_manager_context_and_close) ... ok
+  test_default_specs_coverage (tests.lsp.test_lsp_client.TestLanguageServerRegistry.test_default_specs_coverage) ... ok
+  test_detect_workspace_servers (tests.lsp.test_lsp_client.TestLanguageServerRegistry.test_detect_workspace_servers) ... ok
+  test_find_server_by_extension_uninstalled_lookup (tests.lsp.test_lsp_client.TestLanguageServerRegistry.test_find_server_by_extension_uninstalled_lookup) ... ok
+  test_find_server_for_file_with_env_override (tests.lsp.test_lsp_client.TestLanguageServerRegistry.test_find_server_for_file_with_env_override) ... ok
+  test_client_lifecycle_and_document_sync (tests.lsp.test_lsp_client.TestStdioTransportAndClient.test_client_lifecycle_and_document_sync) ... ok
+  test_transport_error_response (tests.lsp.test_lsp_client.TestStdioTransportAndClient.test_transport_error_response) ... ok
+  test_transport_send_request_and_response (tests.lsp.test_lsp_client.TestStdioTransportAndClient.test_transport_send_request_and_response) ... ok
+  test_transport_timeout (tests.lsp.test_lsp_client.TestStdioTransportAndClient.test_transport_timeout) ... ok
 
   Ran 12 tests in 1.051s - OK
   ```
@@ -135,7 +135,7 @@ All 5 core capabilities and 7 verification objectives mandated in `.gsd/ROADMAP.
   ```text
   True
   ```
-  Tests in `tests/test_lsp_gateway_and_repair.py` verify that `test_repair_short_circuits_and_logs_event` and `test_preflight_detects_compiler_errors` pass with 100% precision.
+  Tests in `tests/lsp/test_lsp_gateway_and_repair.py` verify that `test_repair_short_circuits_and_logs_event` and `test_preflight_detects_compiler_errors` pass with 100% precision.
 
 ---
 

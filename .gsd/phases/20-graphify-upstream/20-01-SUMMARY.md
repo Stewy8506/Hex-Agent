@@ -26,5 +26,5 @@
    - `hex graphify tree`: generates interactive D3 HTML architecture explorer.
 
 4. **Empirical Verification**:
-   - Authored comprehensive test suite in `tests/test_graphify_upstream_wiring.py` covering runner discovery, in-process fallback, JSON ingestion, missing graph fallback, and CLI commands (5/5 tests passing).
+   - Authored comprehensive test suite in `tests/tools/test_graphify_upstream_wiring.py` covering runner discovery, in-process fallback, JSON ingestion, missing graph fallback, and CLI commands (5/5 tests passing).
    - Ran full test suite: 537/537 tests passing with zero regressions across the repository.

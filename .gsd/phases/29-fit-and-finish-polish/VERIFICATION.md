@@ -12,7 +12,7 @@
 Phase 29 delivered extensive fit & finish polish across two critical architectural pillars:
 1. **Plan 29-01 (Rust Terminal Cockpit & Scrolling Ergonomics):** Complete and empirically validated. Ratatui vertical layout in `crates/hex-tui/src/ui/mod.rs` was upgraded to a responsive 4-tier constraint hierarchy (header, dialogue/diff, status bar, input). The dialogue view in `crates/hex-tui/src/ui/dialogue.rs` was upgraded to compute total visual wrapped lines across character widths, eliminating line clipping when pinning to the bottom. Tab focus cycling (`Input -> Dialogue -> Diff`), PageUp/PageDown 5-row jumps, and natural mouse-wheel / input-focus scrolling were implemented. All 39 Rust workspace tests pass, headless virtual verification passes, and all 8 Python launcher integration tests pass.
 2. **Plan 29-02 (ReAct Loop Native Tool Schema & Retry Resilience):** Mostly complete, but introduced a regression in downstream multi-turn ReAct consumers. The ReAct loop in `src/harness_core/react_loop.py` successfully emits native `role: "tool"` with `tool_call_id`, `name`, and `content`, while `_call_model` retries transient 429/502/503/504/529 and timeout errors with exponential backoff and jitter. In `src/harness_core/providers/cloud_provider.py`, Anthropic thinking block signatures are preserved and unsigned blocks are safely stripped.
-3. **Detected Regression (Gap):** When `self.messages.append` in `ReActLoop.run` was updated to emit native `role: "tool"`, it replaced `"tool_name"` with `"name"` and `"call_id"` with `"tool_call_id"`. Downstream tests and consumers expecting `msg.get("tool_name")` (specifically `tests/test_gateway_process_tools.py:test_react_loop_end_to_end_multi_turn_session`) fail because `tool_names` evaluates to `[None]`, causing the loop to repeatedly invoke `start_process` until max turns are exhausted.
+3. **Detected Regression (Gap):** When `self.messages.append` in `ReActLoop.run` was updated to emit native `role: "tool"`, it replaced `"tool_name"` with `"name"` and `"call_id"` with `"tool_call_id"`. Downstream tests and consumers expecting `msg.get("tool_name")` (specifically `tests/tools/test_gateway_process_tools.py:test_react_loop_end_to_end_multi_turn_session`) fail because `tool_names` evaluates to `[None]`, causing the loop to repeatedly invoke `start_process` until max turns are exhausted.
 4. **Resolution:** Gap closure plan `29-03-PLAN.md` has been authored to retain `tool_name` and `call_id` as backward-compatible dictionary aliases alongside native `name` and `tool_call_id`.
 
 ---
@@ -26,10 +26,10 @@ Phase 29 delivered extensive fit & finish polish across two critical architectur
 | **3. Tab key cycles active viewport focus between Input, Dialogue, and Diff panes** | **PASS** | `crates/hex-tui/src/app.rs` line 524 (`switch_focus`, `handle_tab`); `main.rs` line 417; `test_tab_key_focus_cycling` passes. |
 | **4. PageUp and PageDown scroll dialogue or diff viewport by 5 rows** | **PASS** | `crates/hex-tui/src/app.rs` lines 724-734 (`handle_page_up`/`handle_page_down`); `test_page_up_page_down_steps` passes. |
 | **5. Dialogue max_scroll calculation accounts for visually wrapped lines** | **PASS** | `crates/hex-tui/src/ui/dialogue.rs` lines 356-378 iterates lines computing visual wrapped rows against `area.width`; `test_visual_wrapped_lines_scroll_calculation` passes. |
-| **6. ReAct loop tool results emit native role 'tool' with tool_call_id and name for cloud provider compliance** | **FAIL** | Emits `role: "tool"`, `tool_call_id`, `name`, but omits backward-compatible `tool_name` and `call_id` keys, breaking `tests/test_gateway_process_tools.py`. |
+| **6. ReAct loop tool results emit native role 'tool' with tool_call_id and name for cloud provider compliance** | **FAIL** | Emits `role: "tool"`, `tool_call_id`, `name`, but omits backward-compatible `tool_name` and `call_id` keys, breaking `tests/tools/test_gateway_process_tools.py`. |
 | **7. ReAct loop model calls automatically retry up to 3 times on transient 429, 503, or timeout errors with exponential backoff and jitter** | **PASS** | `src/harness_core/react_loop.py` lines 464-575 (`_is_transient_error` + `_call_model`); `test_transient_retry_429_success` passes. |
 | **8. Anthropic request builder preserves valid thinking block signatures and safely strips unsigned or corrupted thinking blocks** | **PASS** | `src/harness_core/providers/cloud_provider.py` lines 810-865 and lines 1022-1040; `test_anthropic_thinking_signature_preserved` passes. |
-| **9. ReAct resilience test suite passes verifying retry recovery, retry exhaustion, and thinking block preservation** | **PASS** | `tests/test_react_loop_resilience.py` (9/9 passing) and `tests/test_react_loop.py` (31/31 passing). |
+| **9. ReAct resilience test suite passes verifying retry recovery, retry exhaustion, and thinking block preservation** | **PASS** | `tests/core/test_react_loop_resilience.py` (9/9 passing) and `tests/core/test_react_loop.py` (31/31 passing). |
 
 ---
 
@@ -52,13 +52,13 @@ HEX TUI headless verification passed: 1 virtual frame rendered successfully.
 Exit status: 0
 ```
 
-### 3.3 Python Launcher Integration Tests (`.venv/bin/python -m unittest tests/test_rust_tui_launcher.py`)
+### 3.3 Python Launcher Integration Tests (`.venv/bin/python -m unittest tests/client/test_rust_tui_launcher.py`)
 ```text
 Ran 8 tests in 0.121s
 OK
 ```
 
-### 3.4 ReAct Loop Resilience Tests (`.venv/bin/python -m unittest tests/test_react_loop_resilience.py`)
+### 3.4 ReAct Loop Resilience Tests (`.venv/bin/python -m unittest tests/core/test_react_loop_resilience.py`)
 ```text
 Ran 9 tests in 0.019s
 OK
@@ -74,19 +74,19 @@ Tests verified:
 - `test_anthropic_tool_message_translation`: Verified `role: "tool"` converted to `tool_result` block.
 - `test_anthropic_parse_response_retains_thinking_signature`: Verified response thinking blocks indexed.
 
-### 3.5 ReAct Loop Core Suite (`.venv/bin/python -m unittest tests/test_react_loop.py`)
+### 3.5 ReAct Loop Core Suite (`.venv/bin/python -m unittest tests/core/test_react_loop.py`)
 ```text
 Ran 31 tests in 2.517s
 OK
 ```
 
-### 3.6 Downstream Regression Detection (`.venv/bin/python -m unittest tests/test_gateway_process_tools.py`)
+### 3.6 Downstream Regression Detection (`.venv/bin/python -m unittest tests/tools/test_gateway_process_tools.py`)
 ```text
-FAIL: test_react_loop_end_to_end_multi_turn_session (tests.test_gateway_process_tools.TestGatewayProcessTools.test_react_loop_end_to_end_multi_turn_session)
+FAIL: test_react_loop_end_to_end_multi_turn_session (tests.tools.test_gateway_process_tools.TestGatewayProcessTools.test_react_loop_end_to_end_multi_turn_session)
 Test full multi-turn autonomous ReAct loop session managing background process lifecycle.
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/anv./Development/Harness/tests/test_gateway_process_tools.py", line 305, in test_react_loop_end_to_end_multi_turn_session
+  File "/Users/anv./Development/Harness/tests/tools/test_gateway_process_tools.py", line 305, in test_react_loop_end_to_end_multi_turn_session
     self.assertTrue(res.success)
 AssertionError: False is not true
 
@@ -127,5 +127,5 @@ The failure has been isolated and packaged into:
 - **Plan File:** `.gsd/phases/29-fit-and-finish-polish/29-03-PLAN.md` (`gap_closure: true`)
 - **Required Action:**
   1. Add `"tool_name": tool_res.name` and `"call_id": tool_res.call_id` to `self.messages.append` in `src/harness_core/react_loop.py`.
-  2. Update `tests/test_gateway_process_tools.py` line 269 to inspect `m.get("tool_name") or m.get("name")`.
-  3. Re-run `.venv/bin/python -m unittest tests/test_gateway_process_tools.py tests/test_react_loop.py tests/test_react_loop_resilience.py`.
+  2. Update `tests/tools/test_gateway_process_tools.py` line 269 to inspect `m.get("tool_name") or m.get("name")`.
+  3. Re-run `.venv/bin/python -m unittest tests/tools/test_gateway_process_tools.py tests/core/test_react_loop.py tests/core/test_react_loop_resilience.py`.

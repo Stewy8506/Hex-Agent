@@ -33,7 +33,7 @@ Plan 12-01 successfully brings HEX Agent parity and advanced Active Graphify per
    - Implemented persistent on-disk caching in `.hex/graph.json` with mtime and SHA validation.
    - Warm repository startup reloads from `.hex/graph.json` in **< 30ms** (< 5ms observed) with 100% cache hits on unchanged files.
    - Enhanced multi-language symbol extraction across TypeScript/React (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`), Rust (`.rs`), and Go (`.go`) alongside Python.
-   - Authored comprehensive 11-test unit and integration suite in `tests/test_doctor_and_recipes.py`.
+   - Authored comprehensive 11-test unit and integration suite in `tests/client/test_doctor_and_recipes.py`.
 
 ---
 
@@ -49,9 +49,9 @@ Plan 12-01 successfully brings HEX Agent parity and advanced Active Graphify per
 
 ## 3. Empirical Verification Evidence
 
-1. **Plan Test Suite (`tests/test_doctor_and_recipes.py`):**
+1. **Plan Test Suite (`tests/client/test_doctor_and_recipes.py`):**
    ```bash
-   .venv/bin/python -m unittest tests/test_doctor_and_recipes.py -v
+   .venv/bin/python -m unittest tests/client/test_doctor_and_recipes.py -v
    ```
    Output:
    ```

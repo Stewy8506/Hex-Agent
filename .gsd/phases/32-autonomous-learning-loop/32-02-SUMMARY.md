@@ -56,7 +56,7 @@ To protect Apple Silicon unified memory (e.g. M4 / M-series MacBook Air) and loc
 
 ### Test Suite Execution:
 ```bash
-$ .venv/bin/pytest tests/test_autonomous_learning.py -v
+$ .venv/bin/pytest tests/cognition/test_autonomous_learning.py -v
 ============================== 17 passed in 0.87s ==============================
 ```
 
@@ -81,7 +81,7 @@ $ .venv/bin/pytest tests/test_autonomous_learning.py -v
 
 ### Regression Verification:
 ```bash
-$ .venv/bin/pytest tests/test_ast_scoped_memory.py tests/test_curated_memory.py tests/test_react_loop.py tests/test_react_loop_resilience.py tests/test_skill_synthesis.py tests/test_skillspector_ast_wiring.py tests/test_skillspector_osv_wiring.py
+$ .venv/bin/pytest tests/cognition/test_ast_scoped_memory.py tests/cognition/test_curated_memory.py tests/core/test_react_loop.py tests/core/test_react_loop_resilience.py tests/skills/test_skill_synthesis.py tests/skills/test_skillspector_ast_wiring.py tests/skills/test_skillspector_osv_wiring.py
 ============================= 109 passed in 11.72s =============================
 ```
 Zero regressions across all existing memory, react loop, and skillspector suites.

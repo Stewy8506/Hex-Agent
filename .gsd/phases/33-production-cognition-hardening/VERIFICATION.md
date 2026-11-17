@@ -60,7 +60,7 @@ Additionally, all 5 core strengths (`PromptBuilder` 5-slot order, curated memory
 
 ### A. Independent Audit Verification Suite
 ```
-.venv/bin/pytest tests/test_phase33_independent_audit.py -v
+.venv/bin/pytest tests/integration/test_phase33_independent_audit.py -v
 ```
 Output:
 ```text
@@ -72,29 +72,29 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 23 items                                                             
 
-tests/test_phase33_independent_audit.py::TestF01SkillVerificationHardening::test_minimal_environment_strips_all_secrets PASSED [  4%]
-tests/test_phase33_independent_audit.py::TestF01SkillVerificationHardening::test_sandboxed_hook_execution PASSED [  8%]
-tests/test_phase33_independent_audit.py::TestF01SkillVerificationHardening::test_tampered_bundle_fails_hash_check PASSED [ 13%]
-tests/test_phase33_independent_audit.py::TestF01SkillVerificationHardening::test_orchestrator_blocks_task_success_on_failing_hook PASSED [ 17%]
-tests/test_phase33_independent_audit.py::TestF02DurableLifecycleAndArchival::test_archive_before_delete_guarantee PASSED [ 21%]
-tests/test_phase33_independent_audit.py::TestF02DurableLifecycleAndArchival::test_fts5_archive_idempotency_no_duplicate_rows PASSED [ 26%]
-tests/test_phase33_independent_audit.py::TestF02DurableLifecycleAndArchival::test_lifecycle_promotion_at_task_completion PASSED [ 30%]
-tests/test_phase33_independent_audit.py::TestF03ASTSymbolPrecisionAndSQLiteFTS::test_symbol_body_fingerprinting_ignores_unrelated_edits PASSED [ 34%]
-tests/test_phase33_independent_audit.py::TestF03ASTSymbolPrecisionAndSQLiteFTS::test_sqlite_fts5_storage_and_search PASSED [ 39%]
-tests/test_phase33_independent_audit.py::TestF04SessionScopedSnapshots::test_intra_session_freeze_and_cross_session_hydration PASSED [ 43%]
-tests/test_phase33_independent_audit.py::TestF05TransactionalBatchMutations::test_all_or_nothing_batch_rollback_on_failure PASSED [ 47%]
-tests/test_phase33_independent_audit.py::TestF05TransactionalBatchMutations::test_amem_controller_verified_physical_deletion PASSED [ 52%]
-tests/test_phase33_independent_audit.py::TestF06IdleReflectionWorker::test_idle_worker_drains_candidates PASSED [ 56%]
-tests/test_phase33_independent_audit.py::TestF06IdleReflectionWorker::test_non_idle_system_suppresses_drain PASSED [ 60%]
-tests/test_phase33_independent_audit.py::TestF07UntrustedObservationFencing::test_write_time_prompt_injection_rejection PASSED [ 65%]
-tests/test_phase33_independent_audit.py::TestF07UntrustedObservationFencing::test_xml_untrusted_data_fence_and_tag_escaping PASSED [ 69%]
-tests/test_phase33_independent_audit.py::TestF07UntrustedObservationFencing::test_byte_caps_and_priority_ordering PASSED [ 73%]
-tests/test_phase33_independent_audit.py::TestF07UntrustedObservationFencing::test_gateway_read_file_injection_fencing PASSED [ 78%]
-tests/test_phase33_independent_audit.py::TestF08SoulBudgetAndProvenance::test_soul_budget_exact_cap_reservation PASSED [ 82%]
-tests/test_phase33_independent_audit.py::TestF08SoulBudgetAndProvenance::test_workspace_soul_user_authored_trust_tier PASSED [ 86%]
-tests/test_phase33_independent_audit.py::TestPreservedCoreStrengths::test_prompt_builder_strict_5_slot_order PASSED [ 91%]
-tests/test_phase33_independent_audit.py::TestPreservedCoreStrengths::test_guardrails_auto_capture_and_dedup PASSED [ 95%]
-tests/test_phase33_independent_audit.py::TestPreservedCoreStrengths::test_reflection_synthesizer_deterministic_fallback PASSED [100%]
+tests/integration/test_phase33_independent_audit.py::TestF01SkillVerificationHardening::test_minimal_environment_strips_all_secrets PASSED [  4%]
+tests/integration/test_phase33_independent_audit.py::TestF01SkillVerificationHardening::test_sandboxed_hook_execution PASSED [  8%]
+tests/integration/test_phase33_independent_audit.py::TestF01SkillVerificationHardening::test_tampered_bundle_fails_hash_check PASSED [ 13%]
+tests/integration/test_phase33_independent_audit.py::TestF01SkillVerificationHardening::test_orchestrator_blocks_task_success_on_failing_hook PASSED [ 17%]
+tests/integration/test_phase33_independent_audit.py::TestF02DurableLifecycleAndArchival::test_archive_before_delete_guarantee PASSED [ 21%]
+tests/integration/test_phase33_independent_audit.py::TestF02DurableLifecycleAndArchival::test_fts5_archive_idempotency_no_duplicate_rows PASSED [ 26%]
+tests/integration/test_phase33_independent_audit.py::TestF02DurableLifecycleAndArchival::test_lifecycle_promotion_at_task_completion PASSED [ 30%]
+tests/integration/test_phase33_independent_audit.py::TestF03ASTSymbolPrecisionAndSQLiteFTS::test_symbol_body_fingerprinting_ignores_unrelated_edits PASSED [ 34%]
+tests/integration/test_phase33_independent_audit.py::TestF03ASTSymbolPrecisionAndSQLiteFTS::test_sqlite_fts5_storage_and_search PASSED [ 39%]
+tests/integration/test_phase33_independent_audit.py::TestF04SessionScopedSnapshots::test_intra_session_freeze_and_cross_session_hydration PASSED [ 43%]
+tests/integration/test_phase33_independent_audit.py::TestF05TransactionalBatchMutations::test_all_or_nothing_batch_rollback_on_failure PASSED [ 47%]
+tests/integration/test_phase33_independent_audit.py::TestF05TransactionalBatchMutations::test_amem_controller_verified_physical_deletion PASSED [ 52%]
+tests/integration/test_phase33_independent_audit.py::TestF06IdleReflectionWorker::test_idle_worker_drains_candidates PASSED [ 56%]
+tests/integration/test_phase33_independent_audit.py::TestF06IdleReflectionWorker::test_non_idle_system_suppresses_drain PASSED [ 60%]
+tests/integration/test_phase33_independent_audit.py::TestF07UntrustedObservationFencing::test_write_time_prompt_injection_rejection PASSED [ 65%]
+tests/integration/test_phase33_independent_audit.py::TestF07UntrustedObservationFencing::test_xml_untrusted_data_fence_and_tag_escaping PASSED [ 69%]
+tests/integration/test_phase33_independent_audit.py::TestF07UntrustedObservationFencing::test_byte_caps_and_priority_ordering PASSED [ 73%]
+tests/integration/test_phase33_independent_audit.py::TestF07UntrustedObservationFencing::test_gateway_read_file_injection_fencing PASSED [ 78%]
+tests/integration/test_phase33_independent_audit.py::TestF08SoulBudgetAndProvenance::test_soul_budget_exact_cap_reservation PASSED [ 82%]
+tests/integration/test_phase33_independent_audit.py::TestF08SoulBudgetAndProvenance::test_workspace_soul_user_authored_trust_tier PASSED [ 86%]
+tests/integration/test_phase33_independent_audit.py::TestPreservedCoreStrengths::test_prompt_builder_strict_5_slot_order PASSED [ 91%]
+tests/integration/test_phase33_independent_audit.py::TestPreservedCoreStrengths::test_guardrails_auto_capture_and_dedup PASSED [ 95%]
+tests/integration/test_phase33_independent_audit.py::TestPreservedCoreStrengths::test_reflection_synthesizer_deterministic_fallback PASSED [100%]
 
 ============================== 23 passed in 0.89s ==============================
 ```
@@ -102,18 +102,18 @@ tests/test_phase33_independent_audit.py::TestPreservedCoreStrengths::test_reflec
 ### B. Complete Cognition & Memory Regression Suite (156 Tests)
 ```
 .venv/bin/pytest \
-  tests/test_phase33_independent_audit.py \
-  tests/test_skill_verification_wiring.py \
-  tests/test_session_isolated_snapshots.py \
-  tests/test_ast_precision_and_fencing.py \
-  tests/test_durable_lifecycle_and_reflection.py \
-  tests/test_soul_manager.py \
-  tests/test_prompt_builder.py \
-  tests/test_curated_memory.py \
-  tests/test_ast_scoped_memory.py \
-  tests/test_amem_and_lifecycle.py \
-  tests/test_skill_synthesis.py \
-  tests/test_autonomous_learning.py
+  tests/integration/test_phase33_independent_audit.py \
+  tests/skills/test_skill_verification_wiring.py \
+  tests/cognition/test_session_isolated_snapshots.py \
+  tests/cognition/test_ast_precision_and_fencing.py \
+  tests/cognition/test_durable_lifecycle_and_reflection.py \
+  tests/cognition/test_soul_manager.py \
+  tests/cognition/test_prompt_builder.py \
+  tests/cognition/test_curated_memory.py \
+  tests/cognition/test_ast_scoped_memory.py \
+  tests/cognition/test_amem_and_lifecycle.py \
+  tests/skills/test_skill_synthesis.py \
+  tests/cognition/test_autonomous_learning.py
 ```
 Output:
 ```text

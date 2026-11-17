@@ -40,7 +40,7 @@ Plan 11-01 delivers the continuous background scheduling and OS residency founda
   - `DaemonInstaller.get_daemon_status`: Inspects active OS service status via `launchctl` or `systemctl`.
 
 ### Task 3: CLI Integration and Comprehensive Unit & Integration Tests
-- **Source:** [`src/harness_core/cli.py`](file:///Users/anv./Development/Harness/src/harness_core/cli.py) and [`tests/test_scheduler_and_daemon.py`](file:///Users/anv./Development/Harness/tests/test_scheduler_and_daemon.py)
+- **Source:** [`src/harness_core/cli.py`](file:///Users/anv./Development/Harness/src/harness_core/cli.py) and [`tests/runtime/test_scheduler_and_daemon.py`](file:///Users/anv./Development/Harness/tests/runtime/test_scheduler_and_daemon.py)
 - **CLI Commands Wired:**
   - `hex schedule add <cron> --goal <desc> [--project <id>] [--storage-path <path>]`: Registers new scheduled job and prints JSON output with `job_id` and `next_run`.
   - `hex schedule list [--all] [--storage-path <path>]`: Lists all registered scheduled jobs in JSON format.
@@ -49,7 +49,7 @@ Plan 11-01 delivers the continuous background scheduling and OS residency founda
   - `hex daemon install [--launchd] [--systemd] [--user|--system] [--dry-run] [--path <path>]`: Generates or installs OS background service.
   - `hex daemon status`: Inspects and returns JSON status of OS service descriptor.
 - **Test Suite Authored:**
-  - 25 test cases in `tests/test_scheduler_and_daemon.py` covering all edge cases for cron parsing, `next_run_after` jumps, scheduler persistence, job execution and webhook alerting, daemon unit generation, and CLI subcommands.
+  - 25 test cases in `tests/runtime/test_scheduler_and_daemon.py` covering all edge cases for cron parsing, `next_run_after` jumps, scheduler persistence, job execution and webhook alerting, daemon unit generation, and CLI subcommands.
 
 ---
 
@@ -67,9 +67,9 @@ Plan 11-01 delivers the continuous background scheduling and OS residency founda
    ```
    *Result:* `DAEMON_CORE_OK`
 
-3. **Plan Test Suite (`tests/test_scheduler_and_daemon.py`):**
+3. **Plan Test Suite (`tests/runtime/test_scheduler_and_daemon.py`):**
    ```bash
-   .venv/bin/python -m unittest tests/test_scheduler_and_daemon.py
+   .venv/bin/python -m unittest tests/runtime/test_scheduler_and_daemon.py
    ```
    *Output:*
    ```text
@@ -103,5 +103,5 @@ Plan 11-01 delivers the continuous background scheduling and OS residency founda
 | `src/harness_core/daemon.py` | Created | `DaemonConfig` and `DaemonInstaller` generating macOS LaunchAgent plist and Linux systemd service units with dry-run support |
 | `src/harness_core/webhooks.py` | Modified | Added `send_alert` method for Telegram HTML and Discord embed failure alerting |
 | `src/harness_core/cli.py` | Modified | Added `hex schedule` and `hex daemon` command parsers and dispatch logic |
-| `tests/test_scheduler_and_daemon.py` | Created | 25 unit and integration tests for cron parsing, scheduling engine, daemon installer, and CLI invocations |
+| `tests/runtime/test_scheduler_and_daemon.py` | Created | 25 unit and integration tests for cron parsing, scheduling engine, daemon installer, and CLI invocations |
 | `.gsd/phases/11-autonomous-automations-skills/11-01-SUMMARY.md` | Created | This verification and execution summary |

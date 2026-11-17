@@ -24,10 +24,10 @@ Successfully integrated Google Research Harness²'s per-domain Experience Librar
   - Wired domain lessons retrieval into `generate_repair_patch()`, injecting proven domain lessons into `cacheable_context_prefix` alongside architecture summaries and AST blast radius reports.
 
 ### Task 3: Author Comprehensive Unit and Integration Test Suite for Experience Library Wiring
-- **Files Modified:** `tests/test_harness2_library_wiring.py`
+- **Files Modified:** `tests/integration/test_harness2_library_wiring.py`
 - **Commit:** `cf27fbc` (`test(phase-18): add comprehensive unit and integration test suite for harness2 library wiring`)
 - **Key Deliverables:**
-  - Authored comprehensive test suite in `tests/test_harness2_library_wiring.py` with 5 rigorous test cases:
+  - Authored comprehensive test suite in `tests/integration/test_harness2_library_wiring.py` with 5 rigorous test cases:
     1. `test_library_initialization_defaults_and_custom_root`: Verifies default and custom library roots, domain normalization, and instance caching.
     2. `test_record_task_experience_validation_and_persistence`: Tests rejection of incomplete experience dicts, successful writing of `EXPERIENCE.md`, adopted harness tree, and `INDEX.md` generation.
     3. `test_pre_task_experience_retrieval`: Proves empty domain behavior and multi-entry retrieval with `max_entries` clamping.
@@ -47,7 +47,7 @@ Successfully integrated Google Research Harness²'s per-domain Experience Librar
   ```
 - **Task 3 Verification:**
   ```bash
-  .venv/bin/python -m unittest tests/test_harness2_library_wiring.py -v
+  .venv/bin/python -m unittest tests/integration/test_harness2_library_wiring.py -v
   # Output: Ran 5 tests in 3.135s - OK (5/5 green)
   ```
 

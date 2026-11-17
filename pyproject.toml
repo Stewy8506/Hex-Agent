@@ -65,15 +65,38 @@ harness = "harness_core.client.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["harness_core*"]
+# Skill bundles are data, including their scripts, not importable engine packages.
+exclude = [
+    "harness_core.skills.*",
+    "harness_core.optional_skills",
+    "harness_core.optional_skills.*",
+    "harness_core.resources.skills",
+    "harness_core.resources.skills.*",
+]
 
 [tool.setuptools.package-data]
 harness_core = [
     "migrations/*.sql",
     "client/command_catalog.json",
-    "skills/**/*.md",
-    "skills/**/*.yaml",
-    "skills/**/*.yml",
+]
+"harness_core.resources" = [
+    # Ship every extension and extensionless asset, plus hidden bundle files.
+    "skills/builtin/**/*",
+    "skills/builtin/**/.*",
+    "skills/optional/**/*",
+    "skills/optional/**/.*",
+]
+
+[tool.setuptools.exclude-package-data]
+"harness_core.resources" = [
+    "skills/**/__pycache__/*",
+    "skills/**/*.pyc",
+    "skills/**/*.pyo",
+    "skills/**/.DS_Store",
 ]

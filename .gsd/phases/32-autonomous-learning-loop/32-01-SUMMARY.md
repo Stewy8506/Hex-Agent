@@ -51,7 +51,7 @@ Implemented the explicit `/learn` skill compilation engine (`SkillCompiler`) and
 
 ### Test Suite Execution:
 ```bash
-$ .venv/bin/pytest tests/test_skill_synthesis.py -v
+$ .venv/bin/pytest tests/skills/test_skill_synthesis.py -v
 ============================== 30 passed in 3.36s ==============================
 ```
 
@@ -74,7 +74,7 @@ $ .venv/bin/pytest tests/test_skill_synthesis.py -v
 
 ### Regression Checks:
 ```bash
-$ .venv/bin/pytest tests/test_skillspector_ast_wiring.py tests/test_skillspector_osv_wiring.py -v
+$ .venv/bin/pytest tests/skills/test_skillspector_ast_wiring.py tests/skills/test_skillspector_osv_wiring.py -v
 ============================== 10 passed in 5.77s ==============================
 ```
 
@@ -97,4 +97,4 @@ $ .venv/bin/pytest tests/test_skillspector_ast_wiring.py tests/test_skillspector
 - `src/harness_core/skills/compiler.py`
 - `src/harness_core/skills/executor.py`
 - `src/harness_core/skillspector.py` (updated frontmatter parsing and OSV checking)
-- `tests/test_skill_synthesis.py` (30 test cases)
+- `tests/skills/test_skill_synthesis.py` (30 test cases)

@@ -51,11 +51,11 @@ Phase 36 Plan 03 implemented live local server socket and model introspection pr
   - Exported symbols cleanly in `src/harness_core/storage/__init__.py`.
 
 ### Task 3: Comprehensive Unit Test Suites
-- **Files Created / Modified:** `tests/test_local_socket_introspection.py`, `tests/test_vault_keychain.py`, `src/harness_core/models/model_metadata.py`, `src/harness_core/storage/vault_keychain.py`
+- **Files Created / Modified:** `tests/models/test_local_socket_introspection.py`, `tests/storage/test_vault_keychain.py`, `src/harness_core/models/model_metadata.py`, `src/harness_core/storage/vault_keychain.py`
 - **Commit:** `a743cb5` (`feat(phase-36): author comprehensive unit tests for local socket introspection and OS keychain vault`)
 - **Key Deliverables:**
-  - 10 unit tests in `tests/test_local_socket_introspection.py` covering Ollama `num_ctx`, Ollama GGUF fallback, Ollama tags/ps discovery, LM Studio v0 and v1 context extraction, llama.cpp `/props`, vLLM `/v1/models`, connect timeout 30s blackholing, probe caching, and `get_model_context_length` integration.
-  - 8 unit tests in `tests/test_vault_keychain.py` covering account derivation, backend validation, store/get/delete lifecycle, null/fail backend rejection, write readback mismatch detection, YAML config scrubbing and 0600 permissions, `.env` file scrubbing, and graceful handling when keychain is unavailable.
+  - 10 unit tests in `tests/models/test_local_socket_introspection.py` covering Ollama `num_ctx`, Ollama GGUF fallback, Ollama tags/ps discovery, LM Studio v0 and v1 context extraction, llama.cpp `/props`, vLLM `/v1/models`, connect timeout 30s blackholing, probe caching, and `get_model_context_length` integration.
+  - 8 unit tests in `tests/storage/test_vault_keychain.py` covering account derivation, backend validation, store/get/delete lifecycle, null/fail backend rejection, write readback mismatch detection, YAML config scrubbing and 0600 permissions, `.env` file scrubbing, and graceful handling when keychain is unavailable.
 
 ---
 
@@ -63,7 +63,7 @@ Phase 36 Plan 03 implemented live local server socket and model introspection pr
 
 1. **Phase 36-03 Pytest Suite:**
    ```bash
-   .venv/bin/pytest tests/test_local_socket_introspection.py tests/test_vault_keychain.py -v
+   .venv/bin/pytest tests/models/test_local_socket_introspection.py tests/storage/test_vault_keychain.py -v
    ```
    **Output:**
    ```
@@ -92,7 +92,7 @@ Phase 36 Plan 03 implemented live local server socket and model introspection pr
 
 3. **Related Model Metadata & Credential Pool Test Suite:**
    ```bash
-   .venv/bin/pytest tests/test_model_metadata.py tests/test_credential_pool.py -v
+   .venv/bin/pytest tests/models/test_model_metadata.py tests/models/test_credential_pool.py -v
    ```
    **Output:**
    ```

@@ -222,7 +222,7 @@ Empirical proof of verified components during this audit:
 
 ```bash
 # 1. Python ACP Server, Subagent Delegation, and GatewayManager Test Suite
-python -m unittest tests/test_acp_server.py tests/test_subagent_delegation.py tests/test_discord_and_gateway_manager.py
+python -m unittest tests/client/test_acp_server.py tests/core/test_subagent_delegation.py tests/capabilities/test_discord_and_gateway_manager.py
 # Result: Ran 38 tests in 47.602s. OK (38 passed, 0 failed).
 
 # 2. Rust ACP Protocol, Diff Parsing, and Stdio Client Test Suite

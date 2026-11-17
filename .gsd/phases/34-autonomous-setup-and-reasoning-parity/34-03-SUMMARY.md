@@ -25,6 +25,6 @@
    - Indexes and archives the diagnostic blob with SHA-256 in CAS (`cas/`, `cas_artifacts/`).
    - Transitions task from `QUEUED` -> `RUNNING` -> `VERIFYING` -> `SUCCEEDED` in `ledger.db` and journals the artifact with full cryptographic proof.
 4. **Verification Evidence:**
-   - 5/5 unit tests passing in `tests/test_onboarding_ergonomics.py`.
-   - 5/5 unit tests passing in `tests/test_auto_setup.py`.
-   - 40/40 unit tests passing in `tests/test_reasoning_effort.py`.
+   - 5/5 unit tests passing in `tests/client/test_onboarding_ergonomics.py`.
+   - 5/5 unit tests passing in `tests/client/test_auto_setup.py`.
+   - 40/40 unit tests passing in `tests/core/test_reasoning_effort.py`.

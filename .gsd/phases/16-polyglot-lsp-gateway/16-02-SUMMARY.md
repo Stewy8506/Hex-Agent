@@ -4,7 +4,7 @@
 **Plan:** 16-02  
 **Status:** Completed  
 **Commits:** `3a36aab`, `075d29f`, `2f57cd0`  
-**Tests:** 13/13 in `tests/test_lsp_gateway_and_repair.py`, 25/25 total LSP tests (480/480 full test suite green, 0 regressions)
+**Tests:** 13/13 in `tests/lsp/test_lsp_gateway_and_repair.py`, 25/25 total LSP tests (480/480 full test suite green, 0 regressions)
 
 ---
 
@@ -40,7 +40,7 @@ Key Deliverables:
      * `/lsp`: Displays high-level language server matrix and top compiler errors.
      * Updated `/help` command catalog and capability splash cards with `lsp_compiler` category.
 
-4. **Integration Test Suite (`tests/test_lsp_gateway_and_repair.py`):**
+4. **Integration Test Suite (`tests/lsp/test_lsp_gateway_and_repair.py`):**
    - Authored 13 end-to-end integration tests verifying tool invocation through `ToolGateway`, compiler pre-flight interceptor short-circuiting test runner, ledger event recording, CLI invocations, and TUI slash commands.
 
 ---
@@ -51,7 +51,7 @@ Key Deliverables:
 |------|------|-------|---------|
 | 1 | Register Read-Only LSP Tools in ToolGateway | `src/harness_core/gateway.py`, `src/harness_core/lsp/manager.py` | `3a36aab` |
 | 2 | Integrate Pre-Flight Compiler Diagnostic Interceptor into Autonomous Repair Loop | `src/harness_core/orchestrator.py`, `src/harness_core/db.py` | `075d29f` |
-| 3 | Implement CLI Commands, TUI `/lsp` Slash Command & Comprehensive Integration Test Suite | `src/harness_core/cli.py`, `src/harness_core/gateway.py`, `src/harness_core/tui.py`, `tests/test_lsp_gateway_and_repair.py` | `2f57cd0` |
+| 3 | Implement CLI Commands, TUI `/lsp` Slash Command & Comprehensive Integration Test Suite | `src/harness_core/cli.py`, `src/harness_core/gateway.py`, `src/harness_core/tui.py`, `tests/lsp/test_lsp_gateway_and_repair.py` | `2f57cd0` |
 
 ---
 
@@ -76,9 +76,9 @@ Key Deliverables:
    # rust         rust-analyzer              [INSTALLED]    .rs
    # cpp          clangd                     [INSTALLED]    .c, .cpp, .cc, .cxx, .h, .hpp, .hxx
    ```
-4. **Integration Test Suite (`tests/test_lsp_gateway_and_repair.py`):**
+4. **Integration Test Suite (`tests/lsp/test_lsp_gateway_and_repair.py`):**
    ```bash
-   PYTHONPATH=src .venv/bin/python -m unittest tests/test_lsp_gateway_and_repair.py -v
+   PYTHONPATH=src .venv/bin/python -m unittest tests/lsp/test_lsp_gateway_and_repair.py -v
    # Ran 13 tests in 4.810s - OK (13 passed, 0 failed)
    ```
 5. **Full Repository Regression Suite:**

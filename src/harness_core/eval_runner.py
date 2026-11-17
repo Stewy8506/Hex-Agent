@@ -63,23 +63,23 @@ def _load_module_tests(loader: unittest.TestLoader, mod_name: str) -> unittest.T
 
 EVAL_SUITES: dict[str, list[str]] = {
     "core": [
-        "tests.test_model_providers",
-        "tests.test_cow_providers",
-        "tests.test_db_dual_driver",
-        "tests.test_packaging_and_installer",
+        "tests.providers.test_model_providers",
+        "tests.storage.test_cow_providers",
+        "tests.storage.test_db_dual_driver",
+        "tests.packaging.test_packaging_and_installer",
     ],
     "resilience": [
-        "tests.test_react_loop_resilience",
-        "tests.test_antigravity_oauth_and_tui_resilience",
+        "tests.core.test_react_loop_resilience",
+        "tests.integration.test_antigravity_oauth_and_tui_resilience",
     ],
     "compaction": [
-        "tests.test_context_compressor_integration",
-        "tests.test_context_compressor_tail_pruning",
-        "tests.test_two_tier_compression_benchmark",
+        "tests.cognition.test_context_compressor_integration",
+        "tests.cognition.test_context_compressor_tail_pruning",
+        "tests.integration.test_two_tier_compression_benchmark",
     ],
     "tui": [
-        "tests.test_rust_tui_launcher",
-        "tests.test_tui_approvals_and_init",
+        "tests.client.test_rust_tui_launcher",
+        "tests.client.test_tui_approvals_and_init",
     ],
 }
 

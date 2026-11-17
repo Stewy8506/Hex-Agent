@@ -26,5 +26,5 @@
      - `[3] Blank Slate`
    - Added summary banner to `onboard.py` reporting discovered hardware, active model, effort, compressor, search, and bot integrations.
 3. **Verification Evidence:**
-   - 5/5 unit tests passing in `tests/test_auto_setup.py`.
+   - 5/5 unit tests passing in `tests/client/test_auto_setup.py`.
    - Live CLI test verified via `hex setup --auto --config-dir /tmp/test_hex_cli_auto`.

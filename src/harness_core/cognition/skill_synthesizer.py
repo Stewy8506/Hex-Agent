@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from harness_core.resources import bundled_skills_dir
 from harness_core.storage.db import LedgerStore
 from harness_core.cognition.skillspector import (
     RISK_ORDER,
@@ -420,18 +421,7 @@ class SkillSynthesizer:
         }
 
         # 1. Built-in skills
-        repo_root = None
-        for p in Path(__file__).resolve().parents:
-            if (p / "pyproject.toml").is_file():
-                repo_root = p
-                break
-        if not repo_root:
-            repo_root = Path(__file__).resolve().parents[2]
-        builtin_root = Path(__file__).resolve().parent / "skills"
-        if not builtin_root.is_dir():
-            builtin_root = Path(__file__).resolve().parent.parent / "skills"
-        if not builtin_root.is_dir():
-            builtin_root = repo_root / "skills"
+        builtin_root = bundled_skills_dir()
         if builtin_root.is_dir():
             for skill_file in sorted(builtin_root.rglob("SKILL.md")):
                 if "custom" in skill_file.parts or ".git" in skill_file.parts:

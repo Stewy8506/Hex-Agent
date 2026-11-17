@@ -40,9 +40,9 @@ Every must-have was validated via live CLI commands, unit test runners, and sour
   - If a thinking block lacks a signature or has an empty signature, it is safely stripped/suppressed from the outbound payload, preventing Anthropic API HTTP 400 rejection (`"thinking block requires signature"`).
   - On incoming streaming responses, thinking blocks and signatures are parsed and saved to `data["signature"]` and `data["thinking_blocks"]`.
 - **Empirical Proof:**
-  - `tests/test_react_loop_resilience.py:test_anthropic_thinking_signature_preserved` -> PASS
-  - `tests/test_react_loop_resilience.py:test_anthropic_thinking_signature_suppressed_when_missing` -> PASS
-  - `tests/test_react_loop_resilience.py:test_anthropic_parse_response_retains_thinking_signature` -> PASS
+  - `tests/core/test_react_loop_resilience.py:test_anthropic_thinking_signature_preserved` -> PASS
+  - `tests/core/test_react_loop_resilience.py:test_anthropic_thinking_signature_suppressed_when_missing` -> PASS
+  - `tests/core/test_react_loop_resilience.py:test_anthropic_parse_response_retains_thinking_signature` -> PASS
 
 #### 2. Transient Error Retry Backoff & Jitter Decorrelation
 - **Source Citation:** [`src/harness_core/react_loop.py:473-585`](file:///Users/anv./Development/Harness/src/harness_core/react_loop.py#L473-L585).
@@ -53,10 +53,10 @@ Every must-have was validated via live CLI commands, unit test runners, and sour
     $$\text{delay} = \text{initial\_delay} \times (\text{backoff\_factor}^{\text{attempt}}) + \text{Uniform}(0, \text{jitter})$$
   - Model caller retries up to `max_retries` (default: 3) before marking termination reason as `"error"`.
 - **Empirical Proof:**
-  - `tests/test_react_loop_resilience.py:test_transient_retry_429_success` -> PASS
-  - `tests/test_react_loop_resilience.py:test_transient_retry_503_and_timeout` -> PASS
-  - `tests/test_react_loop_resilience.py:test_retry_exhaustion_reports_error` -> PASS
-  - `tests/test_react_loop_resilience.py:test_non_transient_no_retry` -> PASS
+  - `tests/core/test_react_loop_resilience.py:test_transient_retry_429_success` -> PASS
+  - `tests/core/test_react_loop_resilience.py:test_transient_retry_503_and_timeout` -> PASS
+  - `tests/core/test_react_loop_resilience.py:test_retry_exhaustion_reports_error` -> PASS
+  - `tests/core/test_react_loop_resilience.py:test_non_transient_no_retry` -> PASS
 
 #### 3. Shadow Summary Deduplication & Pre-Flight Session Hygiene
 - **Source Citation:** [`src/harness_core/context_compressor.py:799-883`](file:///Users/anv./Development/Harness/src/harness_core/context_compressor.py#L799-L883) and [`src/harness_core/react_loop.py:833-850, 921-926`](file:///Users/anv./Development/Harness/src/harness_core/react_loop.py#L833-L850).
@@ -64,18 +64,18 @@ Every must-have was validated via live CLI commands, unit test runners, and sour
   - `_prune_shadowed_summaries` scans message history across multiple compaction rounds, identifying older summary messages overshadowed by subsequent compaction passes. Older shadow summaries are purged or merged into the latest consolidated state checkpoint.
   - `_apply_preflight_session_hygiene` executes prior to Turn 1 in `ReActLoop.run`: if incoming initial messages exceed 85% of `budget_tokens`, severed tool call/result pairs are repaired via `sanitize_tool_pairs` and pre-compaction deduplication is applied before model invocation.
 - **Empirical Proof:**
-  - `tests/test_context_compressor_tail_pruning.py` (11/11 tests pass) -> PASS
+  - `tests/cognition/test_context_compressor_tail_pruning.py` (11/11 tests pass) -> PASS
 
 #### 4. ReAct Streaming Events (`on_event` callback)
 - **Source Citation:** [`src/harness_core/react_loop.py:824-831, 934, 969, 982, 1037, 1054, 1104`](file:///Users/anv./Development/Harness/src/harness_core/react_loop.py#L824-L831).
 - **Mechanism:**
   - `_emit_event(event_type, data)` dispatches structured events (`turn_start`, `thought`, `tool_start`, `tool_end`, `turn_complete`) containing timestamps, tool IDs, and turn latency deltas to registered callbacks.
 - **Empirical Proof:**
-  - `tests/test_react_loop.py:test_react_streaming_events` -> PASS
+  - `tests/core/test_react_loop.py:test_react_streaming_events` -> PASS
 
 #### Test Execution Command & Output:
 ```bash
-.venv/bin/python -m unittest tests/test_react_loop.py tests/test_react_loop_resilience.py tests/test_context_compressor_tail_pruning.py
+.venv/bin/python -m unittest tests/core/test_react_loop.py tests/core/test_react_loop_resilience.py tests/cognition/test_context_compressor_tail_pruning.py
 ```
 ```text
 Ran 53 tests in 2.361s
@@ -160,7 +160,7 @@ Total: 43 passed; 0 failed; 0 ignored; finished in 1.48s
 ```
 
 ```bash
-.venv/bin/python -m unittest tests/test_rust_tui_launcher.py tests/test_tui_approvals_and_init.py
+.venv/bin/python -m unittest tests/client/test_rust_tui_launcher.py tests/client/test_tui_approvals_and_init.py
 ```
 ```text
 Ran 23 tests in 4.342s
@@ -185,12 +185,12 @@ OK
     - `"observation": obs_content`
   - This ensures 100% cloud provider compliance without breaking internal multi-turn test assertions and downstream gateway consumers.
 - **Empirical Proof:**
-  - `tests/test_gateway_process_tools.py:test_react_loop_end_to_end_multi_turn_session` -> PASS
-  - `tests/test_gateway_tools.py` (14/14 tests) -> PASS
+  - `tests/tools/test_gateway_process_tools.py:test_react_loop_end_to_end_multi_turn_session` -> PASS
+  - `tests/tools/test_gateway_tools.py` (14/14 tests) -> PASS
 
 #### Test Execution Command & Output:
 ```bash
-.venv/bin/python -m unittest tests/test_gateway_process_tools.py tests/test_gateway_tools.py
+.venv/bin/python -m unittest tests/tools/test_gateway_process_tools.py tests/tools/test_gateway_tools.py
 ```
 ```text
 Ran 25 tests in 9.326s
@@ -226,8 +226,8 @@ OK
   - `install.ps1`: Detects Windows x64/arm64 architecture, verifies Git, detects Python 3.10+ via `py -3`, `python`, `python3`, builds `crates/hex-tui` via Cargo release mode, installs virtualenv dependencies, and configures `.local\bin` path.
   - `hex.bat`: Searches local repository `.venv\Scripts\python.exe`, `%USERPROFILE%\.hex\env\Scripts\python.exe`, and PATH, invoking `harness_core.cli %*`.
 - **Empirical Proof:**
-  - `tests/test_packaging_and_installer.py:test_install_powershell_script_exists_and_valid_syntax` -> PASS
-  - `tests/test_packaging_and_installer.py:test_hex_bat_launcher_exists_and_valid` -> PASS
+  - `tests/packaging/test_packaging_and_installer.py:test_install_powershell_script_exists_and_valid_syntax` -> PASS
+  - `tests/packaging/test_packaging_and_installer.py:test_hex_bat_launcher_exists_and_valid` -> PASS
 
 #### 2. Unified Benchmark Evaluation Suite Runner (`hex eval`)
 - **Source Citation:** [`src/harness_core/eval_runner.py`](file:///Users/anv./Development/Harness/src/harness_core/eval_runner.py) and [`src/harness_core/cli.py:191-209, 1079-1087`](file:///Users/anv./Development/Harness/src/harness_core/cli.py#L191-L209).
@@ -246,12 +246,12 @@ OK
     3. Recomputes SHA-256 over all event metadata and payload.
   - `scripts/verify_event_chain.py` validates chain integrity and checks Alembic migration parity against `alembic heads`.
 - **Empirical Proof:**
-  - `tests/test_event_chain_verification.py` (4/4 tests pass) -> PASS
+  - `tests/storage/test_event_chain_verification.py` (4/4 tests pass) -> PASS
   - Direct execution of `scripts/verify_event_chain.py` passes with exit code 0.
 
 #### Test Execution Commands & Outputs:
 ```bash
-.venv/bin/python -m unittest tests/test_packaging_and_installer.py tests/test_cli.py tests/test_event_chain_verification.py
+.venv/bin/python -m unittest tests/packaging/test_packaging_and_installer.py tests/client/test_cli.py tests/storage/test_event_chain_verification.py
 ```
 ```text
 Ran 17 tests in 3.045s
@@ -269,10 +269,10 @@ Suite: core | Modules: 4 | Total Tests: 65 | Latency: 0.929s
 ----------------------------------------------------------------------------------------
 Module                                      Total  Passed  Failed  Errors    Latency   Status
 ----------------------------------------------------------------------------------------
-tests.test_model_providers                     25      25       0       0     0.013s   PASSED
-tests.test_cow_providers                       19      19       0       0     0.883s   PASSED
-tests.test_db_dual_driver                      14      14       0       0     0.020s   PASSED
-tests.test_packaging_and_installer              7       6       0       0     0.009s   PASSED
+tests.providers.test_model_providers                     25      25       0       0     0.013s   PASSED
+tests.storage.test_cow_providers                       19      19       0       0     0.883s   PASSED
+tests.storage.test_db_dual_driver                      14      14       0       0     0.020s   PASSED
+tests.packaging.test_packaging_and_installer              7       6       0       0     0.009s   PASSED
 ----------------------------------------------------------------------------------------
 TOTAL / SUMMARY                                65      64       0       0     0.929s   PASSED
 ========================================================================================
@@ -290,17 +290,17 @@ Suite: all | Modules: 11 | Total Tests: 127 | Latency: 36.219s
 ----------------------------------------------------------------------------------------
 Module                                      Total  Passed  Failed  Errors    Latency   Status
 ----------------------------------------------------------------------------------------
-tests.test_model_providers                     25      25       0       0     0.013s   PASSED
-tests.test_cow_providers                       19      19       0       0     0.870s   PASSED
-tests.test_db_dual_driver                      14      14       0       0     0.019s   PASSED
-tests.test_packaging_and_installer              7       6       0       0     0.009s   PASSED
-tests.test_react_loop_resilience                9       9       0       0     0.019s   PASSED
+tests.providers.test_model_providers                     25      25       0       0     0.013s   PASSED
+tests.storage.test_cow_providers                       19      19       0       0     0.870s   PASSED
+tests.storage.test_db_dual_driver                      14      14       0       0     0.019s   PASSED
+tests.packaging.test_packaging_and_installer              7       6       0       0     0.009s   PASSED
+tests.core.test_react_loop_resilience                9       9       0       0     0.019s   PASSED
 ..._antigravity_oauth_and_tui_resilience        7       7       0       0     1.891s   PASSED
 ...s.test_context_compressor_integration        6       6       0       0    30.093s   PASSED
 ....test_context_compressor_tail_pruning       11      11       0       0     0.002s   PASSED
 ...s.test_two_tier_compression_benchmark        6       6       0       0     0.027s   PASSED
-tests.test_rust_tui_launcher                    8       8       0       0     0.145s   PASSED
-tests.test_tui_approvals_and_init              15      15       0       0     3.120s   PASSED
+tests.client.test_rust_tui_launcher                    8       8       0       0     0.145s   PASSED
+tests.client.test_tui_approvals_and_init              15      15       0       0     3.120s   PASSED
 ----------------------------------------------------------------------------------------
 TOTAL / SUMMARY                               127     126       0       0    36.219s   PASSED
 ========================================================================================

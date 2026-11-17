@@ -17,7 +17,7 @@ Phase 37 Plan 02 delivers two high-impact cognitive systems for reasoning and ex
   - `src/harness_core/core/__init__.py`: Exported MoA classes and configuration models via lazy loader and `__all__`.
   - `src/harness_core/core/orchestrator.py`: Wired `moa_config` through `HarnessOrchestrator.__init__` and `run_agent_loop`.
   - `src/harness_core/core/react_loop.py`: Added `moa_config` to `ReActConfig`, attached `moa_result` to `ReActTurn`, routed reasoning turns through `MixtureOfAgents.synthesize`, recorded `_record_moa_in_ledger` with `MOA_SYNTHESIS_COMPLETED` hash-chained ledger events, and enabled dictionary subscripting / contains on `ReActTurn` and `MoAResult`.
-  - `tests/test_mixture_of_agents.py`: Authored 7 comprehensive unit and integration tests covering parallel execution, partial proposer resilience, timeout isolation, fallback when all proposers fail, aggregator prompt compilation, ReActLoop integration with ledger validation, and orchestrator wiring.
+  - `tests/core/test_mixture_of_agents.py`: Authored 7 comprehensive unit and integration tests covering parallel execution, partial proposer resilience, timeout isolation, fallback when all proposers fail, aggregator prompt compilation, ReActLoop integration with ledger validation, and orchestrator wiring.
 - **Commit:** `8aa5b65 feat(phase-37): implement mixture-of-agents proposer-aggregator engine`
 
 ### Task 2: Degenerate Loop / Repetition Sentry & Thinking Tag Scrubber
@@ -26,7 +26,7 @@ Phase 37 Plan 02 delivers two high-impact cognitive systems for reasoning and ex
   - `src/harness_core/cognition/__init__.py`: Exported `RepetitionSentry`, `ActionLoopDetector`, `strip_thinking_tags`, and related symbols in lazy loader and `__all__`.
   - `src/harness_core/core/react_loop.py`: Wired `is_runaway_repetition` and token repetition steering into `_invoke_caller`, integrated `ActionLoopDetector` into tool invocation cycles to intercept thrashing and inject out-of-band steering prompts without redundant execution, and cleaned assistant outputs with `strip_thinking_tags` before persisting to `messages` and `turns`.
   - `src/harness_core/client/tui.py`: Filtered assistant outputs and ReAct results with `strip_thinking_tags` before console display and message history persistence.
-  - `tests/test_repetition_sentry.py`: Authored 16 unit and integration tests covering verbatim line repeats, window dominance, legitimate batch inserts and markdown tables without false positives, action thrashing, ping-pong cycle detection, authoritative steering prompts, closed and unclosed thinking tag extraction, and ReActLoop integration.
+  - `tests/cognition/test_repetition_sentry.py`: Authored 16 unit and integration tests covering verbatim line repeats, window dominance, legitimate batch inserts and markdown tables without false positives, action thrashing, ping-pong cycle detection, authoritative steering prompts, closed and unclosed thinking tag extraction, and ReActLoop integration.
 - **Commit:** `32a8da2 feat(phase-37): implement repetition sentry and thinking tag scrubber`
 
 ---
@@ -35,7 +35,7 @@ Phase 37 Plan 02 delivers two high-impact cognitive systems for reasoning and ex
 
 ### Pytest Verification Suite
 ```bash
-.venv/bin/pytest tests/test_mixture_of_agents.py tests/test_repetition_sentry.py -v
+.venv/bin/pytest tests/core/test_mixture_of_agents.py tests/cognition/test_repetition_sentry.py -v
 ```
 **Output:**
 ```
@@ -47,29 +47,29 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 23 items
 
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_parallel_proposer_execution_and_synthesis PASSED [  4%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_partial_proposer_failure_resilience PASSED [  8%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_timeout_proposer_handled_gracefully PASSED [ 13%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_fallback_when_all_proposers_fail PASSED [ 17%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_build_aggregator_prompt_structure PASSED [ 21%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_react_loop_with_moa_integration PASSED [ 26%]
-tests/test_mixture_of_agents.py::TestMixtureOfAgents::test_orchestrator_run_agent_loop_wires_moa PASSED [ 30%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_line_repetition_dominated PASSED [ 34%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_window_repetition_without_newlines PASSED [ 39%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_legitimate_batch_inserts_not_flagged PASSED [ 43%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_legitimate_markdown_table_not_flagged PASSED [ 47%]
-tests/test_repetition_sentry.py::TestRepetitionSentry::test_short_fragments_fail_open PASSED [ 52%]
-tests/test_repetition_sentry.py::TestActionLoopDetector::test_identical_call_repetition_detected PASSED [ 56%]
-tests/test_repetition_sentry.py::TestActionLoopDetector::test_successful_calls_do_not_trip_identical_repetition PASSED [ 60%]
-tests/test_repetition_sentry.py::TestActionLoopDetector::test_ping_pong_action_cycle_detected PASSED [ 65%]
-tests/test_repetition_sentry.py::TestActionLoopDetector::test_generate_steering_prompt_authoritative PASSED [ 69%]
-tests/test_repetition_sentry.py::TestThinkingTagScrubber::test_closed_thinking_tags_scrubbed PASSED [ 73%]
-tests/test_repetition_sentry.py::TestThinkingTagScrubber::test_case_insensitive_and_alternate_tags PASSED [ 78%]
-tests/test_repetition_sentry.py::TestThinkingTagScrubber::test_unclosed_streaming_tail_scrubbed PASSED [ 82%]
-tests/test_repetition_sentry.py::TestThinkingTagScrubber::test_text_without_thinking_tags_untouched PASSED [ 86%]
-tests/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_intercepts_runaway_token_repetition PASSED [ 91%]
-tests/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_intercepts_action_thrashing_with_steering PASSED [ 95%]
-tests/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_scrubs_thinking_tags_from_history PASSED [100%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_parallel_proposer_execution_and_synthesis PASSED [  4%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_partial_proposer_failure_resilience PASSED [  8%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_timeout_proposer_handled_gracefully PASSED [ 13%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_fallback_when_all_proposers_fail PASSED [ 17%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_build_aggregator_prompt_structure PASSED [ 21%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_react_loop_with_moa_integration PASSED [ 26%]
+tests/core/test_mixture_of_agents.py::TestMixtureOfAgents::test_orchestrator_run_agent_loop_wires_moa PASSED [ 30%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_line_repetition_dominated PASSED [ 34%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_window_repetition_without_newlines PASSED [ 39%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_legitimate_batch_inserts_not_flagged PASSED [ 43%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_legitimate_markdown_table_not_flagged PASSED [ 47%]
+tests/cognition/test_repetition_sentry.py::TestRepetitionSentry::test_short_fragments_fail_open PASSED [ 52%]
+tests/cognition/test_repetition_sentry.py::TestActionLoopDetector::test_identical_call_repetition_detected PASSED [ 56%]
+tests/cognition/test_repetition_sentry.py::TestActionLoopDetector::test_successful_calls_do_not_trip_identical_repetition PASSED [ 60%]
+tests/cognition/test_repetition_sentry.py::TestActionLoopDetector::test_ping_pong_action_cycle_detected PASSED [ 65%]
+tests/cognition/test_repetition_sentry.py::TestActionLoopDetector::test_generate_steering_prompt_authoritative PASSED [ 69%]
+tests/cognition/test_repetition_sentry.py::TestThinkingTagScrubber::test_closed_thinking_tags_scrubbed PASSED [ 73%]
+tests/cognition/test_repetition_sentry.py::TestThinkingTagScrubber::test_case_insensitive_and_alternate_tags PASSED [ 78%]
+tests/cognition/test_repetition_sentry.py::TestThinkingTagScrubber::test_unclosed_streaming_tail_scrubbed PASSED [ 82%]
+tests/cognition/test_repetition_sentry.py::TestThinkingTagScrubber::test_text_without_thinking_tags_untouched PASSED [ 86%]
+tests/cognition/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_intercepts_runaway_token_repetition PASSED [ 91%]
+tests/cognition/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_intercepts_action_thrashing_with_steering PASSED [ 95%]
+tests/cognition/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::test_react_loop_scrubs_thinking_tags_from_history PASSED [100%]
 
 ============================== 23 passed in 1.97s ==============================
 ```

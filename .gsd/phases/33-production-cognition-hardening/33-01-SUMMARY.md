@@ -34,7 +34,7 @@ Plan 33-01 addressed three critical execution boundary findings from `audit.md`:
   - `src/harness_core/orchestrator.py`:
     - Added `_run_skill_verifications()` to match referenced skills (from constraints, metadata, or AST invariants touching modified files).
     - Wired skill verification into `_execute_standard_dag()` during task verification: if `must_pass: True` and the hook fails, records `SKILL_VERIFICATION_FAILED` in the ledger and marks `ver_outcome["passed"] = False`, blocking transition to `SUCCEEDED` and triggering autonomous repair.
-  - `tests/test_skill_verification_wiring.py`:
+  - `tests/skills/test_skill_verification_wiring.py`:
     - Created 6-test suite verifying minimal env sanitization, sandbox containment, bundle tampering rejection, unapproved skill rejection, and orchestrator task gating.
 
 ### Task 2: Session-scoped Turn-0 memory snapshotting (`session_id`), exact `MAX_SOUL_CHARS` budget reservation, and explicit user-authored provenance for workspace souls (Fixes F-04, F-08)
@@ -55,7 +55,7 @@ Plan 33-01 addressed three critical execution boundary findings from `audit.md`:
     - Slot #4: Passes `session_id` to `MemorySnapshot.build_frozen_snapshot(..., session_id=session_id)`.
   - `src/harness_core/orchestrator.py`:
     - Passed `session_id=active_task_id` into `PromptBuilder.build_system_prompt()` in `run_agent_loop`.
-  - `tests/test_session_isolated_snapshots.py`:
+  - `tests/cognition/test_session_isolated_snapshots.py`:
     - Created 4-test suite verifying session-isolated frozen snapshots, disk mutation isolation between Session A and B, exact soul budget caps, and workspace soul user-authored provenance.
 
 ---
@@ -64,7 +64,7 @@ Plan 33-01 addressed three critical execution boundary findings from `audit.md`:
 
 ### Test Suite Execution
 ```bash
-.venv/bin/pytest tests/test_skill_verification_wiring.py tests/test_session_isolated_snapshots.py -v
+.venv/bin/pytest tests/skills/test_skill_verification_wiring.py tests/cognition/test_session_isolated_snapshots.py -v
 ```
 
 Output:
@@ -77,23 +77,23 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 10 items                                                             
 
-tests/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_minimal_environment_strips_secrets_and_provider_keys PASSED [ 10%]
-tests/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_orchestrator_gates_task_completion_on_skill_verification PASSED [ 20%]
-tests/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_run_skill_verification_executes_with_minimal_env PASSED [ 30%]
-tests/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_run_skill_verification_in_sandbox PASSED [ 40%]
-tests/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_tampered_skill_bundle_triggers_hash_verification_failure PASSED [ 50%]
-tests/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_unapproved_skill_bundle_raises_security_error PASSED [ 60%]
-tests/test_session_isolated_snapshots.py::TestSessionIsolatedSnapshots::test_curated_memory_store_get_frozen_turn0_snapshot PASSED [ 70%]
-tests/test_session_isolated_snapshots.py::TestSessionIsolatedSnapshots::test_session_scoped_snapshots_isolate_frozen_memory PASSED [ 80%]
-tests/test_session_isolated_snapshots.py::TestSessionIsolatedSnapshots::test_soul_enforce_budget_exact_cap_reservation PASSED [ 90%]
-tests/test_session_isolated_snapshots.py::TestSessionIsolatedSnapshots::test_soul_provenance_workspace_user_trust_tier PASSED [100%]
+tests/skills/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_minimal_environment_strips_secrets_and_provider_keys PASSED [ 10%]
+tests/skills/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_orchestrator_gates_task_completion_on_skill_verification PASSED [ 20%]
+tests/skills/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_run_skill_verification_executes_with_minimal_env PASSED [ 30%]
+tests/skills/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_run_skill_verification_in_sandbox PASSED [ 40%]
+tests/skills/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_tampered_skill_bundle_triggers_hash_verification_failure PASSED [ 50%]
+tests/skills/test_skill_verification_wiring.py::TestSkillVerificationWiring::test_unapproved_skill_bundle_raises_security_error PASSED [ 60%]
+tests/cognition/test_session_isolated_snapshots.py::TestSessionIsolatedSnapshots::test_curated_memory_store_get_frozen_turn0_snapshot PASSED [ 70%]
+tests/cognition/test_session_isolated_snapshots.py::TestSessionIsolatedSnapshots::test_session_scoped_snapshots_isolate_frozen_memory PASSED [ 80%]
+tests/cognition/test_session_isolated_snapshots.py::TestSessionIsolatedSnapshots::test_soul_enforce_budget_exact_cap_reservation PASSED [ 90%]
+tests/cognition/test_session_isolated_snapshots.py::TestSessionIsolatedSnapshots::test_soul_provenance_workspace_user_trust_tier PASSED [100%]
 
 ============================== 10 passed in 1.39s ==============================
 ```
 
 ### Full Regression Test Suite Execution
 ```bash
-.venv/bin/pytest tests/test_curated_memory.py tests/test_soul_manager.py tests/test_prompt_builder.py tests/test_skill_synthesis.py -v
+.venv/bin/pytest tests/cognition/test_curated_memory.py tests/cognition/test_soul_manager.py tests/cognition/test_prompt_builder.py tests/skills/test_skill_synthesis.py -v
 ```
 
 Output:

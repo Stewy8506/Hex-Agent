@@ -21,4 +21,4 @@
    - Registered `web_search` as an R1 (read-only) tool in `ToolGateway` (`src/harness_core/gateway.py`).
 
 4. **Testing:**
-   - 14/14 unit and integration tests passing in `tests/test_ui_selector_and_web_search.py`.
+   - 14/14 unit and integration tests passing in `tests/capabilities/test_ui_selector_and_web_search.py`.

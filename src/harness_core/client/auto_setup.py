@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from harness_core.config_loader import parse_config_yaml, parse_env_file
-from harness_core.client.onboard import HardwareProfile
+from harness_core.platform.hardware import HardwareProfile
 from harness_core.providers.antigravity_provider import AntigravityCredential, AntigravityOAuthManager
 
 

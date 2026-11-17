@@ -3,7 +3,7 @@
 **Execution Date:** 2026-11-03  
 **Status:** Complete  
 **Tasks Completed:** 2/2  
-**Test Suite:** 16/16 tests passing in `tests/test_skill_synthesis.py`; 346/346 total repository tests passing with zero regressions.
+**Test Suite:** 16/16 tests passing in `tests/skills/test_skill_synthesis.py`; 346/346 total repository tests passing with zero regressions.
 
 ---
 
@@ -18,7 +18,7 @@ Key capabilities delivered:
 4. **Clean Skill Active Registration:** Clean skills (`gate_decision == "ALLOW"`, `risk_score < 25`) are written to `skills/custom/<name>/SKILL.md` and indexed in the ledger `skills` table for prompt grounding.
 5. **Adversarial Quarantine Isolation:** Suspicious, injection, or high-risk skills (`gate_decision in ("QUARANTINE", "REQUIRE_APPROVAL")`, `risk_score >= 25`) are blocked from active registration and quarantined in `.hex/quarantine/<name>/SKILL.md` alongside an `audit.json` forensic scan report.
 6. **HEX CLI Integration:** Wired `hex skill` (`synthesize`, `list`, `scan`) subcommands into `src/harness_core/cli.py` with SkillSpector status badges (`[ACTIVE]`, `[QUARANTINED]`, `[PENDING]`).
-7. **Empirical Validation:** Comprehensive 16-test suite in `tests/test_skill_synthesis.py` and 346/346 full repository tests green.
+7. **Empirical Validation:** Comprehensive 16-test suite in `tests/skills/test_skill_synthesis.py` and 346/346 full repository tests green.
 
 ---
 
@@ -46,7 +46,7 @@ Key capabilities delivered:
   - `scan`: scans candidate directory or file and outputs full audit report.
 - Supported file or directory path resolution for `hex skill scan` and `hex scan-skill`.
 
-### E. Test Suite (`tests/test_skill_synthesis.py`)
+### E. Test Suite (`tests/skills/test_skill_synthesis.py`)
 - 16 comprehensive unit and integration tests covering:
   - Context extraction for completed tasks and error handling for incomplete/missing tasks.
   - Valid YAML frontmatter and section generation.
@@ -70,7 +70,7 @@ Key capabilities delivered:
 
 2. **Skill Synthesis Test Suite:**
    ```
-   .venv/bin/python -m unittest tests/test_skill_synthesis.py
+   .venv/bin/python -m unittest tests/skills/test_skill_synthesis.py
    ................
    Ran 16 tests in 0.168s
    OK

@@ -13,7 +13,7 @@
 1. **Clean Codebase Foundation & Prior Milestones (M1–M10):**
    - Full 16-table PostgreSQL schema, transactional LedgerStore, CoW snapshots, Active Graphify, SkillSpector, Google Research Harness², real-time hands-free voice engine, autonomous repair, 4-phase context compactor, PTY process supervisor, persistent REPL code kernel, and comprehensive fit-and-finish polish.
 2. **Cognition & Self-Evolution Research (Docs & Architectural Spec):**
-   - Completed exhaustive code trace of Hermes Agent soul and memory loops in `docs/HERMES_LEARNING_AND_SOUL_ANALYSIS.md`.
+   - Completed exhaustive code trace of Hermes Agent soul and memory loops in `docs/research/HERMES_LEARNING_AND_SOUL_ANALYSIS.md`.
    - Designed 3-phase cognition overhaul: Multi-Tier Soul Engine (Phase 30), AST-Scoped Memory & Guardrails (Phase 31), and Closed-Loop Autonomous Learning (Phase 32).
 
 2. **Milestone M9: Parity & Next-Gen Capabilities (Tiers C, B, A):**
@@ -29,53 +29,53 @@
      - CLI subcommand `hex acp` with `--check` diagnostics and `--setup` editor config generator.
 
 3. **Empirical Verification:**
-   - Complete 10/10 acceptance test suite passing in `tests/test_harness_stages.py` covering all 5 stages.
+   - Complete 10/10 acceptance test suite passing in `tests/integration/test_harness_stages.py` covering all 5 stages.
 
 4. **Phase 01 Migrations Baseline Complete (Plan 01-01):**
    - Configured Alembic migration infrastructure (`alembic.ini`, `migrations/env.py`, `migrations/script.py.mako`).
    - Authored initial migration `migrations/versions/0001_initial_schema.py` representing all 16 authoritative tables with reverse foreign key downgrades.
-   - Verified automated upgrade to head and downgrade to base in `tests/test_alembic_migrations.py` (13/13 test suite passing).
+   - Verified automated upgrade to head and downgrade to base in `tests/storage/test_alembic_migrations.py` (13/13 test suite passing).
 
 5. **Phase 01 Dual-Driver Engine Complete (Plan 01-02):**
    - Implemented dual-driver routing (`postgresql://`, `postgres://`, `postgresql+asyncpg://` -> PostgreSQL; otherwise SQLite WAL) in `src/harness_core/db.py`.
    - Maintained zero-dependency SQLite local profile while integrating `asyncpg` connection pool with configurable limits.
    - Built query parameter translation (`?` -> `$1, $2, ...`), canonical JSON serialization, and background `_SyncRunner` bridge.
    - Implemented 27 async methods across `LedgerStore` with full sync parity and verified cryptographic hash chaining.
-   - Authored comprehensive test suite in `tests/test_db_dual_driver.py` (27/27 total repository tests passing).
+   - Authored comprehensive test suite in `tests/storage/test_db_dual_driver.py` (27/27 total repository tests passing).
 
 6. **Phase 01 Concurrent Lease Claims & Concurrency Control Complete (Plan 01-03):**
    - Implemented `claim_next_task` and `claim_next_task_async` in `src/harness_core/db.py` using `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1` (Postgres) and atomic `BEGIN IMMEDIATE` (SQLite).
    - Monotonic fencing token increments and atomic CAS transitions to `RUNNING` with `STATE_RUNNING` (`QUEUE_CLAIMED`) hash-chained task events.
    - Hardened `begin_tool_call` and `seal_tool_call` against stale fencing tokens, raising `ConcurrencyFenceError`.
-   - Built comprehensive multi-worker concurrency stress test suite in `tests/test_postgres_concurrency.py` (35/35 repository tests passing).
+   - Built comprehensive multi-worker concurrency stress test suite in `tests/storage/test_postgres_concurrency.py` (35/35 repository tests passing).
 
 7. **Phase 02 CoW Providers Complete (Plan 02-01):**
    - Implemented `OverlayFSSnapshotProvider` with lower, upper, work, and merged layer mounts, unshare user namespace/FUSE support, and instant rollback.
    - Implemented `BtrfsSnapshotProvider` with read-only snapshots and subvolume branching.
    - Built platform detection factory `get_default_snapshot_provider` and dependency injection in `HarnessOrchestrator`.
-   - Authored contract test suite in `tests/test_cow_providers.py` (58/58 repository tests passing).
+   - Authored contract test suite in `tests/storage/test_cow_providers.py` (58/58 repository tests passing).
 
 8. **Phase 02 Sandbox Isolation & ToolGateway Complete (Plan 02-02):**
    - Implemented `BubblewrapSandbox`, `DockerPodmanSandbox`, `RestrictedSubprocessSandbox`, and `get_default_sandbox` in `src/harness_core/sandbox.py`.
    - Wired sandbox containment and secret redaction into `ToolGateway._tool_run_tests` and `HarnessOrchestrator`.
    - Hardened `_resolve_confined_path` with strict `Path.relative_to` verification.
-   - Authored zero-escape verification test suite in `tests/test_sandbox_isolation.py` (76/76 total repository tests passing).
+   - Authored zero-escape verification test suite in `tests/storage/test_sandbox_isolation.py` (76/76 total repository tests passing).
 
 9. **Phase 03 MCP Client Adapters & Dynamic Tool Discovery Complete (Plan 03-01):**
    - Implemented `MCPClientAdapter`, `StdioMCPTransport`, `HttpSSEMCPTransport`, and dynamic `R0–R4` risk mapping with heuristic rules and per-server overrides in `src/harness_core/mcp_client.py`.
    - Built thread-safe JSON-RPC 2.0 message demuxing, stdout reader thread, rolling stderr diagnostics, and timeout enforcement.
-   - Authored mock MCP server and unit test suite in `tests/test_mcp_client.py` verifying handshake, discovery, tool execution, timeouts, and clean process teardown (82/82 repository tests passing).
+   - Authored mock MCP server and unit test suite in `tests/tools/test_mcp_client.py` verifying handshake, discovery, tool execution, timeouts, and clean process teardown (82/82 repository tests passing).
 
 10. **Phase 03 SkillSpector Manifest Validation & 0ms Call Journaling Complete (Plan 03-02):**
     - Enhanced `SkillSecurityScanner` in `src/harness_core/skillspector.py` with `scan_mcp_manifest`, SHA-256 manifest pinning, and injection/semantic quarantine rules.
     - Integrated `register_mcp_server` into `ToolGateway` in `src/harness_core/gateway.py` with R0–R4 default-deny policy, secret redaction, and 0ms call-level journal memoization.
-    - Authored end-to-end integration test suite in `tests/test_mcp_gateway_journal.py` verifying prompt-injection defense, 0ms replay (< 15 ms, 0 subprocess calls), approval interrupts, and R0–R4 policy enforcement (92/92 repository tests passing).
+    - Authored end-to-end integration test suite in `tests/tools/test_mcp_gateway_journal.py` verifying prompt-injection defense, 0ms replay (< 15 ms, 0 subprocess calls), approval interrupts, and R0–R4 policy enforcement (92/92 repository tests passing).
 
 11. **Phase 04 Local MLX Model Provider & Log Compression Engine Complete (Plan 04-01):**
     - Implemented `ModelProvider` base protocol, `ModelUsage`, `ModelResponse`, and `ProviderCapabilities` in `src/harness_core/providers/base.py`.
     - Implemented `LocalMLXModelProvider` in `src/harness_core/providers/mlx_provider.py` with Darwin ARM64 discovery, unified memory detection, lazy `mlx_lm` loading, and pure-Python zero-dependency fallback generation.
     - Implemented `Tier1LogCompressor` in `src/harness_core/providers/mlx_provider.py` with secret redaction, multi-pattern trace and assertion extraction, local AST source context inspection, and >70% token reduction (91.03% verified).
-    - Authored unit and contract test suite in `tests/test_model_providers.py` (107/107 total repository tests passing).
+    - Authored unit and contract test suite in `tests/providers/test_model_providers.py` (107/107 total repository tests passing).
 
 12. **Phase 04 Cloud API Connectors, Per-Task Budget Ceilings, Privacy Gating & Router Integration Complete (Plan 04-02):**
     - Implemented `CloudModelProvider` in `src/harness_core/providers/cloud_provider.py` supporting Anthropic Claude, OpenAI, and Google Gemini.
@@ -83,14 +83,14 @@
     - Enforced strict privacy gating blocking `sensitive` and `secret` classifications from cloud egress, raising `PolicyBlockedError`.
     - Integrated outbound secret scrubbing with `redact_secrets` before serialization.
     - Enhanced `TwoTierModelRouter` and `RouteDecision` in `src/harness_core/router.py` to record latency, cost, tokens, and compression ratio.
-    - Authored live 500-line pytest compression and privacy benchmark in `tests/test_two_tier_compression_benchmark.py` and cloud tests in `tests/test_model_providers.py` (121/121 total repository tests passing).
+    - Authored live 500-line pytest compression and privacy benchmark in `tests/integration/test_two_tier_compression_benchmark.py` and cloud tests in `tests/providers/test_model_providers.py` (121/121 total repository tests passing).
 
 13. **Phase 05 Multi-Turn Autonomous Repair Loop & Retry Escalation Complete (Plan 05-01):**
     - Implemented `generate_repair_patch` and `_parse_patch_operations` in `src/harness_core/orchestrator.py` integrating Tier-1 M4 log compression, Active Graphify AST blast-radius warnings, and model router dispatch.
     - Built iterative multi-turn repair loop in `HarnessOrchestrator._execute_standard_dag` cycling `VERIFYING -> RUNNING -> VERIFYING` with isolated CoW patch composition and verification re-execution.
     - Implemented retry exhaustion and budget ceiling handling: freezes dirty workspace, creates immutable forensic CoW snapshot and checkpoint, protects base workspace, and safely escalates to `NEEDS_ATTENTION` with `REPAIR_RETRIES_EXHAUSTED` or `BUDGET_EXHAUSTED`.
     - Hardened `LedgerStore.transition_task` and `transition_task_async` to preserve `terminal_reason` on interrupts.
-    - Authored comprehensive test suite in `tests/test_autonomous_repair.py` covering happy path repairs, retry exhaustion, compound repairs, and budget escalation (127/127 total repository tests passing).
+    - Authored comprehensive test suite in `tests/core/test_autonomous_repair.py` covering happy path repairs, retry exhaustion, compound repairs, and budget escalation (127/127 total repository tests passing).
 
 14. **Phase 05 Dynamic DAG Replanning & Selective Subgraph Invalidation Complete (Plan 05-02):**
     - Implemented `replan_dag` in `src/harness_core/orchestrator.py` with directed reachability analysis, unexpected side-effects detection (`actual - declared`), and dynamic DAG dependency resolver.
@@ -98,7 +98,7 @@
     - Integrated dynamic blast-radius test pinning via Active Graphify into `blast_radius_checks`.
     - Maintained monotonic plan revision increments (`revision`, `supersedes_revision`) and cryptographically hash-chained `PLAN_REVISED` task events.
     - Enhanced `LedgerStore` in `src/harness_core/db.py` with `PlanNode` serialization, `get_plan_revision`, and `list_plans`.
-    - Authored comprehensive test suite in `tests/test_dag_replanning.py` (132/132 total repository tests passing with zero failures).
+    - Authored comprehensive test suite in `tests/core/test_dag_replanning.py` (132/132 total repository tests passing with zero failures).
 
 15. **Phase 06 Distributed Worker Daemon & Heartbeat Loop Complete (Plan 06-01):**
     - Implemented atomic `renew_lease`, `release_lease`, and `heartbeat_worker` in `src/harness_core/db.py` with CAS fencing validation and monotonic lease extensions.
@@ -106,7 +106,7 @@
     - Implemented `WorkerDaemon` architecture in `src/harness_core/worker_daemon.py` with machine profiling (M4 Air, GPU, Server), CoW backend discovery, periodic heartbeat loop, task polling with `--once` support, and signal handling (`SIGINT`/`SIGTERM`).
     - Implemented dual client transports: `DirectLedgerWorkerClient` and `RestWorkerClient`.
     - Added `harness worker` CLI command in `src/harness_core/cli.py`.
-    - Authored comprehensive test suite in `tests/test_worker_daemon.py` (140/140 total repository tests passing with zero failures).
+    - Authored comprehensive test suite in `tests/runtime/test_worker_daemon.py` (140/140 total repository tests passing with zero failures).
 
 16. **Phase 06 Cross-Machine CoW Delta Sync, Lease Handover & Fencing Defense Complete (Plan 06-02):**
     - Implemented `import_delta_archive` and `export_delta_archive` across all snapshot providers in `src/harness_core/cow.py` with tar-slip traversal protection and Merkle tree SHA verification.
@@ -116,14 +116,14 @@
     - Integrated remote workspace reconstruction from CAS delta archives in `src/harness_core/orchestrator.py` with tree SHA validation.
     - Enforced monotonic fencing token defense rejecting stale workers on `begin_tool_call`, `seal_tool_call`, `transition_task`, and `renew_lease` (`ConcurrencyFenceError` / HTTP 409 Conflict).
     - Replayed previously executed tool calls in 0ms (< 15ms) via `ToolGateway` memoization from call journal.
-    - Authored comprehensive test suite in `tests/test_cross_machine_cow_sync.py` (152/152 total repository tests passing with zero regressions).
+    - Authored comprehensive test suite in `tests/integration/test_cross_machine_cow_sync.py` (152/152 total repository tests passing with zero regressions).
 
 17. **Phase 07 Remote Approval Webhooks & Interactive Decision Endpoints Complete (Plan 07-01):**
     - Implemented `WebhookConfig` and `WebhookNotifier` in `src/harness_core/webhooks.py` supporting Telegram Bot API and Discord Webhooks with dry-run mocking and resilient HTTP dispatch.
     - Added Telegram and Discord approval formatters featuring secret scrubbing, risk color codes (R3 orange, R4 red), parameter length truncation, inline buttons, and direct action URLs.
     - Enhanced `/v1/approvals/{approval_id}:decide` in `src/harness_core/server.py` supporting `GET` and `POST` methods with query params, normalization, automatic task resumption (`resume_task`), and styled HTML / JSON content negotiation.
     - Integrated outbound approval notifications into `ToolGateway` upon `PolicyDecisionType.REQUIRE_APPROVAL` and decision broadcasts upon completion.
-    - Authored unit and integration test suite in `tests/test_webhooks.py` (167/167 repository tests passing with zero regressions).
+    - Authored unit and integration test suite in `tests/capabilities/test_webhooks.py` (167/167 repository tests passing with zero regressions).
 
 18. **Phase 07 Production ASGI Server, Health Checks & Operator Runbook Complete (Plan 07-02):**
     - Added process uptime tracking (`start_time`) and `is_draining` state flag to `HarnessAPIApp`.
@@ -131,8 +131,8 @@
     - Added immediate load-shedding behavior: returns HTTP 503 Service Unavailable when draining or degraded while `/livez` remains 200 OK.
     - Implemented production `HarnessASGIAdapter` in `src/harness_core/asgi.py` implementing the complete ASGI 3.0 specification for deployment via `uvicorn` and FastAPI runtimes, supporting HTTP requests and lifespan startup/shutdown events.
     - Built `GracefulServerRunner` in `src/harness_core/server.py` intercepting `SIGINT`/`SIGTERM` to initiate graceful draining before terminating server threads without socket deadlocks.
-    - Authored comprehensive 280+ line `docs/RUNBOOK.md` detailing architecture topology, DR backup/restore, SkillSpector quarantine forensics, task cancellation, `ConcurrencyFenceError` recovery, Alembic rollbacks, and systemd deployment.
-    - Authored unit and integration test suite in `tests/test_production_server.py` (179/179 repository tests passing with zero regressions).
+    - Authored comprehensive 280+ line `docs/guides/RUNBOOK.md` detailing architecture topology, DR backup/restore, SkillSpector quarantine forensics, task cancellation, `ConcurrencyFenceError` recovery, Alembic rollbacks, and systemd deployment.
+    - Authored unit and integration test suite in `tests/client/test_production_server.py` (179/179 repository tests passing with zero regressions).
 
 19. **Phase 08 Interactive TUI Engine & Slash Commands Complete (Plan 08-01):**
     - Implemented unified diff visualizer with colorized chunk/file headers, additions, and deletions in `src/harness_core/tui.py`.
@@ -142,7 +142,7 @@
     - Implemented `HexConsole` pair-programming console managing session state, prompt loop (`hex> `), command history, active task tracking, and token/cost telemetry.
     - Built 10 interactive slash command handlers (`/help`, `/status`, `/diff`, `/rollback`, `/fork`, `/skills`, `/model`, `/budget`, `/clear`, `/quit`).
     - Wired `hex chat` subcommand into `src/harness_core/cli.py`.
-    - Authored comprehensive test suite in `tests/test_tui.py` (210/210 repository tests passing with zero regressions).
+    - Authored comprehensive test suite in `tests/client/test_tui.py` (210/210 repository tests passing with zero regressions).
 
 20. **Phase 08 One-Key Keyboard Approvals, Sandbox Shell & hex init Polish Complete (Plan 08-02):**
     - Implemented `handle_approval_prompt` in `HexConsole` intercepting `ApprovalRequiredInterrupt` for privileged R3/R4 operations.
@@ -151,7 +151,7 @@
     - Implemented `init_project` scaffolding project-scoped `.hex/config.yaml` and `.hex/.gitignore` with `--force` preservation.
     - Enhanced `hex init` in `src/harness_core/cli.py` with `--workspace`, `--force`, and `--data-dir` support.
     - Added `create_approval(risk_class=...)` and `get_approval` to `LedgerStore` in `src/harness_core/db.py`.
-    - Authored comprehensive test suite in `tests/test_tui_approvals_and_init.py` (225/225 total repository tests green with zero regressions).
+    - Authored comprehensive test suite in `tests/client/test_tui_approvals_and_init.py` (225/225 total repository tests green with zero regressions).
 
 21. **Phase 09 Telegram Bidirectional Bot Gateway Complete (Plan 09-01):**
     - Built `src/harness_core/gateways/__init__.py` and `TelegramConfig` supporting environment variable configuration.
@@ -159,20 +159,20 @@
     - Enforced strict operator whitelist access control (`allowed_user_ids`, `allowed_chat_ids`) with security audit logging and update drop.
     - Implemented conversational task delegation and slash command dispatch (`/start`, `/help`, `/task <goal>`, `/status [id]`, `/diff [id]`, `/cancel [id]`) in `TelegramBotGateway`.
     - Implemented interactive inline keyboard callback engine (`approve:<id>`, `reject:<id>`, `diff:<id>`, `cancel:<id>`) with in-place message edits, callback query answering, ledger recording, and automatic task resumption / CoW workspace rollback.
-    - Authored unit and integration test suite in `tests/test_telegram_gateway.py` (242/242 repository tests passing with zero regressions).
+    - Authored unit and integration test suite in `tests/capabilities/test_telegram_gateway.py` (242/242 repository tests passing with zero regressions).
 
 22. **Phase 09 Discord Bidirectional Bot Gateway & Supervisor Complete (Plan 09-02):**
     - Implemented `DiscordConfig` and `DiscordBotGateway` in `src/harness_core/gateways/discord_bot.py` supporting `PING/PONG`, slash commands (`/task`, `/status`, `/diff`, `/cancel`, `/help`), and interactive button callbacks (`hex:approve`, `hex:reject`, `hex:diff`, `hex:cancel`) with in-place Type 7 message updates.
     - Implemented `GatewayManager` in `src/harness_core/gateways/manager.py` coordinating Telegram and Discord lifecycles with graceful signal handling (`SIGINT`/`SIGTERM`).
     - Wired `hex gateway start` and `hex gateway status` CLI subcommands in `src/harness_core/cli.py`.
-    - Authored unit and integration test suite in `tests/test_discord_and_gateway_manager.py` (263/263 repository tests passing with zero regressions).
+    - Authored unit and integration test suite in `tests/capabilities/test_discord_and_gateway_manager.py` (263/263 repository tests passing with zero regressions).
 
 23. **Phase 10 Git & GitHub Autopilot Integration Complete (Plans 10-01 & 10-02):**
     - Implemented `GitAutopilotConfig` and `GitAutopilot` in `src/harness_core/git_autopilot.py` with automated feature branching (`hex/task-<id>-<slug>`), atomic conventional commit formatting (`type(scope): description`), rich Markdown Pull Request body generation featuring the Active Graphify AST impact matrix and Proof-Carrying Artifact verification tables, and pluggable GitHub transports (`SubprocessGitHubTransport` and `MockGitHubTransport`).
     - Wired `--pr`, `--branch`, `--base-branch`, and `--dry-run` into `hex run` and `hex exec` in `src/harness_core/cli.py`.
     - Implemented `GitHubActionConfig`, `TriggerMatch`, and `GitHubActionRunner` in `src/harness_core/github_action.py` supporting `issue_comment`, `pull_request`, `issues`, and `workflow_dispatch` payloads, bot mention detection (`@hex-bot fix ...`, `/hex fix ...`), and automatic proof-carrying response comments.
     - Added `hex gh-action` CLI subcommand supporting file/stdin event input and dry-run execution.
-    - Authored unit and integration test suites in `tests/test_git_autopilot.py` (17 tests) and `tests/test_github_action_mode.py` (21 tests) (305/305 total repository tests passing with zero regressions).
+    - Authored unit and integration test suites in `tests/capabilities/test_git_autopilot.py` (17 tests) and `tests/capabilities/test_github_action_mode.py` (21 tests) (305/305 total repository tests passing with zero regressions).
 
 24. **Phase 11 Native Cron Scheduler & Daemon Installer Complete (Plan 11-01):**
     - Implemented zero-dependency 5-field `CronParser` in `src/harness_core/scheduler.py` supporting wildcards, steps, ranges, lists, step ranges, and jump evaluation.
@@ -180,7 +180,7 @@
     - Added `send_alert` method in `src/harness_core/webhooks.py` for Telegram HTML and Discord embed failure alerting.
     - Implemented `DaemonConfig` and `DaemonInstaller` in `src/harness_core/daemon.py` generating macOS LaunchAgent plist XML and Linux systemd service units with environment forwarding and dry-run safety.
     - Wired `hex schedule` (add, list, remove, run-due) and `hex daemon` (install, status) subcommands into `src/harness_core/cli.py`.
-    - Authored 25 unit and integration tests in `tests/test_scheduler_and_daemon.py` (330/330 total repository tests passing with zero regressions).
+    - Authored 25 unit and integration tests in `tests/runtime/test_scheduler_and_daemon.py` (330/330 total repository tests passing with zero regressions).
 
 25. **Phase 11 Autonomous Learning Loop & Skill Synthesizer Complete (Plan 11-02):**
     - Implemented `SynthesizedSkill` and `SkillSynthesizer` in `src/harness_core/skill_synthesizer.py` extracting task execution context, tool call journals, git diffs, AST impact, and test verification standards.
@@ -188,7 +188,7 @@
     - Integrated **Mandatory NVIDIA SkillSpector Gate** (`SkillSecurityScanner`) validating static rules, prompt injection (`SS-INJ-`), shell exfiltration (`SS-EXF-`), and semantic alignment before registry writes.
     - Routed clean skills (`gate_decision == 'ALLOW'`, score < 25) to `skills/custom/<name>/SKILL.md` with active ledger registration; routed adversarial/suspicious skills (`gate_decision in ('QUARANTINE', 'REQUIRE_APPROVAL')`, score >= 25) to `.hex/quarantine/<name>/SKILL.md` with structured `audit.json`.
     - Wired `hex skill` (`synthesize`, `list`, `scan`) subcommands into `src/harness_core/cli.py` with SkillSpector status badges (`[ACTIVE]`, `[QUARANTINED]`, `[PENDING]`).
-    - Authored 16 unit and integration tests in `tests/test_skill_synthesis.py` (346/346 total repository tests passing with zero regressions).
+    - Authored 16 unit and integration tests in `tests/skills/test_skill_synthesis.py` (346/346 total repository tests passing with zero regressions).
 
 26. **Phase 12 System Diagnostics, Multi-Framework Recipes & Graphify Persistent Cache Complete (Plan 12-01):**
     - Implemented `HexDoctor`, `DoctorReport`, and `DoctorCheckResult` in `src/harness_core/doctor.py` diagnosing Python runtime, Apple Silicon M4 / GPU, CoW snapshot providers, sandboxes, credentials, git, storage, and workbench directories.
@@ -197,7 +197,7 @@
     - Wired recipe auto-detection into `ToolGateway._tool_run_tests` and `HarnessOrchestrator`.
     - Wired `hex doctor` and `hex recipe` CLI subcommands in `src/harness_core/cli.py`.
     - Implemented `.hex/graph.json` persistent disk caching (< 30ms warm reloads) and polyglot symbol extraction in `src/harness_core/graphify.py`.
-    - Authored 11 unit and integration tests in `tests/test_doctor_and_recipes.py` (370/370 repository tests passing with zero regressions).
+    - Authored 11 unit and integration tests in `tests/client/test_doctor_and_recipes.py` (370/370 repository tests passing with zero regressions).
 
 27. **Phase 12 SQLite FTS5 Full-Text Task Search & State Backup/Dump Complete (Plan 12-02):**
     - Implemented `TaskSearchIndex` in `src/harness_core/search.py` with `task_search_fts` SQLite FTS5 virtual table, unicode61 tokenizer diacritic removal, BM25 ranking, and highlighted match snippet extraction.
@@ -205,7 +205,7 @@
     - Integrated automatic task and tool call transcript indexing into `LedgerStore` (`src/harness_core/db.py`) with full historical `reindex_all`.
     - Implemented state backup and restore in `src/harness_core/backup.py` (`create_backup` timestamped archives with WAL checkpointing, `restore_backup` with strict Zip-Slip path traversal defense, and `generate_dump` plain-text system diagnostic report with secret scrubbing).
     - Wired `hex search`, `hex backup`, `hex restore`, and `hex dump` subcommands into `src/harness_core/cli.py`.
-    - Authored 16 unit and integration tests in `tests/test_search_and_backup.py` (386/386 full repository tests passing with zero regressions).
+    - Authored 16 unit and integration tests in `tests/storage/test_search_and_backup.py` (386/386 full repository tests passing with zero regressions).
 
 28. **Phase 13 Interactive Auto-Setup, Web Search Tool & Real-Time Environment Hydration Complete (Plans 13-01 & 13-02):**
     - Implemented `TerminalUISelector` in `src/harness_core/ui_selector.py` with POSIX termios/tty arrow-key navigation (`↑`/`↓` and `k`/`j`), `[•]` radio display, multi-select `[✓]`, and masked secret input (`••••••••`).
@@ -214,7 +214,7 @@
     - Upgraded `run_onboard_wizard` in `src/harness_core/onboard.py` into a 4-step arrow-key wizard (Model Provider, Web Search Engine, Remote Messaging Gateways, and Hardware Profile).
     - Wired first-run auto-setup interceptor into `cli.py` to automatically detect unconfigured first-run states on bare `hex` or `hex chat` and guide setup cleanly.
     - Completely purged all hardcoded mock artifacts (`v1.3.0`, `M4 MLX`, `wrk_m4_air_local`, `mock-key`).
-    - Authored 21 unit and integration tests across `tests/test_ui_selector_and_web_search.py` and `tests/test_auto_setup_and_polish.py` (415/415 total repository tests passing with zero regressions).
+    - Authored 21 unit and integration tests across `tests/capabilities/test_ui_selector_and_web_search.py` and `tests/client/test_auto_setup_and_polish.py` (415/415 total repository tests passing with zero regressions).
 
 29. **Phase 14 Antigravity Interactive OAuth, Model Selection & TUI Crash Hardening Complete (Plans 14-01 & 14-02):**
     - Implemented `_probe_antigravity_token` in `src/harness_core/onboard.py` to validate OAuth tokens before declaring active session (included subscription quota).
@@ -223,7 +223,7 @@
     - Streamlined setup menus: simplified search option label to `"Disabled"` and removed redundant execution sandbox interactive prompt.
     - Hardened TUI against provider errors: `handle_user_prompt` in `src/harness_core/tui.py` catches `ProviderUnavailableError` and HTTP 401 exceptions, rendering a styled error card with remediation tips without crashing the REPL loop.
     - Added automatic token refresh in `AntigravityModelProvider.generate()` on HTTP 401 when `refresh_token` exists, silently recovering expired sessions.
-    - Authored 7 unit and integration tests in `tests/test_antigravity_oauth_and_tui_resilience.py` (422/422 total repository tests passing with zero regressions).
+    - Authored 7 unit and integration tests in `tests/integration/test_antigravity_oauth_and_tui_resilience.py` (422/422 total repository tests passing with zero regressions).
 
 30. **Phase 15 Live Model Discovery, Quota Dashboard & Project Workspaces Complete (Plans 15-01 & 15-02):**
     - Implemented live model discovery via official provider APIs (`fetch_available_models`) with in-memory caching and fallback to curated lists for Antigravity, Anthropic, OpenAI, and Gemini.
@@ -234,7 +234,7 @@
     - Enforced folder-scoped context isolation under `<repo>/.hex/` with `config.yaml`, `graph.json`, `reflections/LESSONS.md`, and `data/`.
     - Added `hex project` CLI (`list`, `add`, `use`, `switch`) and TUI `/project` command.
     - Globally migrated command from `hex onboard` to `hex setup` (preserving `hex onboard` as backwards-compatible alias).
-    - Authored comprehensive test suite in `tests/test_project_registry_and_workspace.py` (20 tests) and `tests/test_live_model_discovery.py` (13 tests) (455/455 total repository tests passing with zero regressions).
+    - Authored comprehensive test suite in `tests/storage/test_project_registry_and_workspace.py` (20 tests) and `tests/client/test_live_model_discovery.py` (13 tests) (455/455 total repository tests passing with zero regressions).
 
 31. **Phase 16 Polyglot Language Server Protocol (LSP) Gateway Complete (Plans 16-01 & 16-02):**
     - Implemented zero-dependency `StdioLSPTransport` with HTTP-style `Content-Length` framing, request/response demuxing, and background IO threads (`src/harness_core/lsp/client.py`).
@@ -243,7 +243,7 @@
     - Registered 4 read-only R1 tools in `ToolGateway`: `lsp_diagnostics`, `lsp_definition`, `lsp_references`, and `lsp_hover`.
     - Integrated compiler pre-flight gate into `HarnessOrchestrator` repair loop: short-circuits test runs on compiler syntax/type errors and records hash-chained `LSP_COMPILER_PREFLIGHT_FAILED` task events.
     - Added CLI command `hex lsp` (`status`, `diagnostics`, `definition`, `hover`) and TUI `/lsp` slash command.
-    - Authored 25 unit and integration tests across `tests/test_lsp_client.py` and `tests/test_lsp_gateway_and_repair.py` (480/480 repository tests passing with zero regressions).
+    - Authored 25 unit and integration tests across `tests/lsp/test_lsp_client.py` and `tests/lsp/test_lsp_gateway_and_repair.py` (480/480 repository tests passing with zero regressions).
 
 32. **Phase 17 Real-Time Hands-Free Voice & Speech Pair-Programming Complete (Plans 17-01 & 17-02):**
     - Implemented `VoiceConfig` and asynchronous `VoiceEngine` worker thread with zero external C/audio dependencies (`src/harness_core/voice.py`).
@@ -252,7 +252,7 @@
     - Added 9th diagnostic category ("Audio Hardware & Speech") to `HexDoctor` in `src/harness_core/doctor.py`.
     - Added `/voice` TUI slash command suite (`on`, `off`, `mute`, `status`, `rate`, `voice`) and dynamic status bar badges (`🎙️ ON`, `🔇 MUTED`, `🎙️ OFF`).
     - Added CLI standalone command `hex voice` and `--voice`, `--voice-name`, `--speech-rate` options across `hex` and `hex chat`.
-    - Authored unit and integration tests in `tests/test_voice_engine.py` (491/491 total repository tests passing with zero regressions).
+    - Authored unit and integration tests in `tests/capabilities/test_voice_engine.py` (491/491 total repository tests passing with zero regressions).
 
 33. **Phase 18 Google Research Harness² Deep Wiring Complete (Plans 18-01 & 18-02):**
     - Integrated `harness2.core.library.Library` directly into `HarnessOrchestrator` (`src/harness_core/orchestrator.py`).
@@ -261,13 +261,13 @@
     - Implemented `OrchestratorBenchmarkAdapter` (`src/harness_core/harness2_adapter.py`) strictly conforming to `harness2.core.spec.BenchmarkAdapter`.
     - Supported isolated rollout workspaces, `[ACTION]/[OBSERVATION]/[ERROR]` trajectory logs, deliverable checks, and scoring.
     - Connected Propose-Probe-Compose multi-rollout sweeps (`run_parallel`, `run_sequential`) and exposed `hex harness2-eval` CLI command.
-    - Authored 17 unit and integration tests across `tests/test_harness2_library_wiring.py` and `tests/test_harness2_benchmark_adapter.py` (508/508 repository tests passing with zero regressions).
+    - Authored 17 unit and integration tests across `tests/integration/test_harness2_library_wiring.py` and `tests/integration/test_harness2_benchmark_adapter.py` (508/508 repository tests passing with zero regressions).
 
 34. **Phase 19 NVIDIA SkillSpector Behavioral AST & Live OSV Scanner Complete (Plans 19-01 & 19-02):**
     - Integrated `skillspector.python_ast.get_python_ast` and `skillspector.nodes.analyzers.behavioral_ast._analyze_python` into `SkillSpectorScanner.scan_bundle()` (`src/harness_core/skillspector.py`).
     - Replaced regex heuristics with AST taint tracking for dangerous builtins (`eval`, `exec`), subprocess invocation (`os.system`, `subprocess.Popen`), insecure deserialization (`pickle.loads`), dynamic imports, and reflective sinks (`getattr(os, "system")`).
     - Wired `skillspector.nodes.analyzers.osv_client.query_batch()` into manifest parsing (`requirements.txt`, `manifest.yaml`, `SKILL.md`) for real-time OSV.dev batch CVE querying with offline cache fallback to `KNOWN_OSV_VULNS`.
-    - Authored 10 unit and integration tests across `tests/test_skillspector_ast_wiring.py` and `tests/test_skillspector_osv_wiring.py` (529/529 repository tests passing with zero regressions).
+    - Authored 10 unit and integration tests across `tests/skills/test_skillspector_ast_wiring.py` and `tests/skills/test_skillspector_osv_wiring.py` (529/529 repository tests passing with zero regressions).
 
 35. **Phase 20 Graphify Upstream CLI & Tree-Sitter Adapter Complete (Plans 20-01 & 20-02):**
     - Implemented `GraphifyUpstreamRunner` in `src/harness_core/graphify.py`: binary discovery (`which graphify`), `sys.executable -m graphify` with `vendor/graphify` on `PYTHONPATH`, timeout protection, and in-process fallback using `graphify.watch._rebuild_code`.
@@ -275,14 +275,14 @@
     - Added full `hex graphify` CLI suite (`status`, `update`, `ingest`, `god-nodes`, `affected`, `tree`) in `src/harness_core/cli.py`.
     - Unified polyglot blast-radius tracking in `ActiveGraphifyAdapter.compute_blast_radius` across Python, TypeScript/JavaScript, Go, Rust, Java, and C/C++, with multi-language test detection (`_is_test_file`).
     - Wired `ActiveBlastRadiusInterceptor` and `ToolGateway.invoke` for `write_file` to intercept polyglot file writes and journal pinned tests into the active ledger plan.
-    - Authored 10 unit and integration tests across `tests/test_graphify_upstream_wiring.py` and `tests/test_graphify_polyglot_blast_radius.py` (542/542 repository tests passing with zero regressions).
+    - Authored 10 unit and integration tests across `tests/tools/test_graphify_upstream_wiring.py` and `tests/tools/test_graphify_polyglot_blast_radius.py` (542/542 repository tests passing with zero regressions).
 
 36. **Phase 24: Continuous Multi-Turn ReAct Tool Loop Complete (Plans 24-01 & 24-02):**
     - Implemented `ReActConfig`, `ToolCallRequest`, `ToolCallResult`, `ReActTurn`, `ReActSessionResult`, and `ReActLoop` in `src/harness_core/react_loop.py` with multi-format tool call parser (XML tags, markdown code blocks, JSON dictionaries, embedded JSON, and raw strings) and observation history chaining.
     - Added `run_agent_loop` to `HarnessOrchestrator` in `src/harness_core/orchestrator.py` backed by router dispatch and deterministic fallback with valid `LedgerStore` CAS state transitions (`SUBMITTED -> VALIDATING -> RUNNING -> VERIFYING -> SUCCEEDED / FAILED`).
     - Added `/react` slash command, live tool invocation/observation terminal progress cards, and `react_mode` to `HexConsole` in `src/harness_core/tui.py`.
     - Added `--react` flag to root `hex`, `hex run`, and `hex chat` in `src/harness_core/cli.py`.
-    - Authored 31 unit and integration tests in `tests/test_react_loop.py` (646/646 full repository tests passing with zero regressions).
+    - Authored 31 unit and integration tests in `tests/core/test_react_loop.py` (646/646 full repository tests passing with zero regressions).
 
 37. **Phase 25: Native Rust Terminal Cockpit & Protocol Crate Complete (Plans 25-01 & 25-02):**
     - Established Cargo workspace root with `crates/hex-protocol` and `crates/hex-tui`.
@@ -300,7 +300,7 @@
       - Binary resolver checking `HEX_TUI_BIN`, build targets, PATH, and on-demand `cargo build -p hex-tui`.
     - Authored comprehensive test suites:
       - 26 Rust tests across `hex-protocol` and `hex-tui` (`cargo test --workspace`).
-      - 8 Python launcher integration tests in `tests/test_rust_tui_launcher.py`.
+      - 8 Python launcher integration tests in `tests/client/test_rust_tui_launcher.py`.
       - 654/654 Python repository tests passing cleanly with zero regressions.
 
 38. **Phase 26: 4-Phase Context Compactor & Prompt Cache Locking Complete (Plans 26-01 & 26-02):**
@@ -315,8 +315,8 @@
       - `HarnessOrchestrator`: Wired into `run_agent_loop`.
       - `HexConsole` TUI: `/compress` slash command and compaction status indicators.
     - Authored comprehensive test suites:
-      - 8 unit tests in `tests/test_context_compressor_tail_pruning.py`.
-      - 6 integration tests in `tests/test_context_compressor_integration.py`.
+      - 8 unit tests in `tests/cognition/test_context_compressor_tail_pruning.py`.
+      - 6 integration tests in `tests/cognition/test_context_compressor_integration.py`.
       - Verified 685 Python tests and 34 Rust tests passing cleanly with zero regressions.
 
 39. **Phase 33 Plan 33-01: Execution Gates & Session Isolation Complete (Fixes F-01, F-04, F-08):**
@@ -332,7 +332,7 @@
       - Fixed `SoulManager._enforce_budget()` to reserve space for `TRUNCATION_MARKER`, ensuring total characters never exceed `MAX_SOUL_CHARS` (2,500 chars).
       - Introduced `SoulProvenance` enum (`workspace_user`, `global_user`, `repository`, `remote_profile`, `distribution`).
       - Updated `PromptBuilder` Slot #1 to recognize workspace `.hex/SOUL.md` as user-authored, warning on heuristic injection matches instead of hard-blocking.
-    - Authored 10 unit and integration tests across `tests/test_skill_verification_wiring.py` and `tests/test_session_isolated_snapshots.py` (10/10 passing).
+    - Authored 10 unit and integration tests across `tests/skills/test_skill_verification_wiring.py` and `tests/cognition/test_session_isolated_snapshots.py` (10/10 passing).
 
 40. **Phase 33 Plan 33-03: Durable Lifecycle & Idle Reflection Workers Complete (Fixes F-02, F-05, F-06):**
     - **Archive-Before-Delete Durability & FTS Idempotency (F-02):**
@@ -346,7 +346,7 @@
     - **Idle Reflection Worker Draining Queue (F-06):**
       - Implemented `process_pending_reflections()` and `HarnessOrchestrator.check_and_run_idle_workers()` draining queued candidates from `.hex/reflections/pending_reflections.json` during idle periods under file lock.
       - Synthesized lessons into `LESSONS.md`, updated guardrails, recorded lifecycle reflections, and enforced a 3-strike retry ceiling.
-    - Authored 8 unit and integration tests in `tests/test_durable_lifecycle_and_reflection.py` (111/111 full cognition test suite passing).
+    - Authored 8 unit and integration tests in `tests/cognition/test_durable_lifecycle_and_reflection.py` (111/111 full cognition test suite passing).
 
 ---
 
@@ -461,13 +461,13 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
     - Implemented model-specific cooldown queues (`(provider, model) -> cooldown_until`) protecting sibling models on the same credentials from 503 / transient overload.
     - Implemented 30-second transient endpoint blackholing (`_endpoint_blackholed`, `_note_endpoint_blackholed`, `_is_connect_timeout`) to eliminate TCP connection timeout storms and prevent orchestrator thread lockup on dead local/custom daemons.
     - Maintained top-level backward-compatibility stub `src/harness_core/credential_pool.py` and exported symbols in `src/harness_core/models/__init__.py`.
-    - Authored 20 unit tests in `tests/test_credential_pool.py` passing 100% in 0.04s.
+    - Authored 20 unit tests in `tests/models/test_credential_pool.py` passing 100% in 0.04s.
 
 45. **Phase 36 Plan 36-03: Local Socket Introspection & OS Keychain Vault Complete:**
     - Implemented active local socket probes in `src/harness_core/models/model_metadata.py` querying live Ollama (`/api/show`, `/api/tags`, `/api/ps`), LM Studio (`/api/v0/models`), llama.cpp (`/props`), and vLLM (`/v1/models`) endpoints.
     - Integrated socket probes with 30s transient endpoint blackholing (`_endpoint_blackholed`) to prevent orchestrator thread lockup on offline/dead servers.
     - Implemented hardware/OS Keychain secure credential vault in `src/harness_core/storage/vault_keychain.py` backed by `keyring` (macOS Keychain, Linux Secret Service / KWallet, Windows DPAPI), with automatic migration from plaintext `credentials.env` and `config.yaml`.
-    - Authored 14 unit tests in `tests/test_local_socket_introspection.py` and `tests/test_vault_keychain.py`.
+    - Authored 14 unit tests in `tests/models/test_local_socket_introspection.py` and `tests/storage/test_vault_keychain.py`.
 
 46. **Phase 36 Subpackage Import Migration Sweep & Root Stub Cleanup Complete:**
     - Migrated 111+ import locations across `tests/`, `src/`, and CLI tools to import directly from domain subpackages (`harness_core.storage.db`, `harness_core.core.orchestrator`, `harness_core.client.cli`, etc.).
@@ -485,12 +485,12 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
     - Implemented `SessionTitleSynthesizer` in `src/harness_core/cognition/title_synthesizer.py` with 2-stage title lifecycle (Stage 1 instant derived title `<= 48` chars; Stage 2 non-blocking background LLM title synthesis).
     - Enforced strict title provenance hierarchy (`USER` > `LLM` > `DERIVED`) and anti-chatter / answer-rejection heuristics.
     - Verified live retrieval for the Start screen resume list (`SELECT task_id, goal, created_at FROM tasks`).
-    - Authored 16 unit and integration tests across `tests/test_timeline_rewind.py` and `tests/test_title_synthesis.py` (100% passing).
+    - Authored 16 unit and integration tests across `tests/storage/test_timeline_rewind.py` and `tests/cognition/test_title_synthesis.py` (100% passing).
 
 49. **Phase 37 Plan 37-02: Mixture-of-Agents & Repetition Sentry Complete:**
     - Implemented `MixtureOfAgents` (`moa.py`) with parallel proposer model fan-out, fallback synthesis, and structured aggregation.
     - Implemented `RepetitionGuard` / `repetition_sentry.py` intercepting token repetition, tool call thrashing, and action loops with out-of-band steering prompt injection and thinking tag (`<think>...</think>`) scrubbing.
-    - Authored comprehensive test suites in `tests/test_mixture_of_agents.py` and `tests/test_repetition_sentry.py` (100% passing).
+    - Authored comprehensive test suites in `tests/core/test_mixture_of_agents.py` and `tests/cognition/test_repetition_sentry.py` (100% passing).
 
 50. **Phase 37 Plan 37-03: Temporal Approval Leasing & Asynchronous Mobile Reaction Bridge Complete:**
     - Implemented `ApprovalLease` and `ApprovalLeaseManager` in `src/harness_core/core/approval_lease.py` with command prefix and path matching, TTL expiration, explicit revocation, and `approval_leases` table in `LedgerStore` (`src/harness_core/storage/db.py`).
@@ -498,7 +498,7 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
     - Implemented `ApprovalRequest`, `ApprovalDecision`, and `MobileApprovalBridge` in `src/harness_core/capabilities/gateways/reaction_listener.py`.
     - Organized chat gateways into `src/harness_core/capabilities/gateways/`, wired button callback queries and reaction emojis (`👍`/`👎`) into `TelegramBotGateway` and `DiscordBotGateway`.
     - Connected remote approval flow to `ToolGateway` with remote operator approval execution, denial halts (`PolicyBlockedError`), and timeout fallback (`ApprovalRequiredInterrupt`).
-    - Authored 20 unit and integration tests across `tests/test_approval_lease.py` and `tests/test_mobile_reaction_listener.py` (100% passing).
+    - Authored 20 unit and integration tests across `tests/core/test_approval_lease.py` and `tests/capabilities/test_mobile_reaction_listener.py` (100% passing).
 
 51. **Phase 37 Independent Verification Passed:**
     - Independent `gsd-verifier` subagent verified all 12 must-haves with 0 failures and 0 gaps.
@@ -535,10 +535,10 @@ All 5 Product Pillars, Advanced Autonomy, and Deep Upstream Integrations are del
 
 56. **Milestone M15 Documentation Suite Overhaul:**
     - Overhauled `README.md`: bumped version to 0.22.0, updated badge to 1,000+ tests passing, added feature spotlights for Native macOS GPUI Desktop Cockpit (`hex-desktop`, 120 FPS Metal, ~35MB RAM), Conversational Timeline Rewind (`/rewind`), Mixture-of-Agents (`/moa`), Temporal Approval Leases (`/lease`), and Multi-Key `CredentialPool`.
-    - Overhauled `docs/ARCHITECTURE.md`: documented the 5 architectural planes, native GPUI desktop cockpit layout and components, 7 clean domain subpackages in `src/harness_core/`, resilience engine, conversational engine, and storage lifecycle.
-    - Overhauled `docs/COMPARISON.md`: updated HEX vs. Hermes comparison matrix highlighting HEX's dual cockpits (GPUI ~35MB vs Electron ~400MB), CoW isolation (<10ms), timeline rewind, MoA, and credential resilience.
-    - Overhauled `docs/RUNBOOK.md`: added operations for `hex desktop`, `hex tui`, `/rewind`, `/lease`, `/moa`, credential pool administration, OS Keychain storage, and updated all python code snippets to clean subpackage paths (`harness_core.core.orchestrator`, `harness_core.client.asgi`).
-    - Updated `docs/ACP_INTEGRATION.md` and `docs/SUPPORTED_MODELS.md` with desktop bridge and credential pool details.
+    - Overhauled `docs/architecture/ARCHITECTURE.md`: documented the 5 architectural planes, native GPUI desktop cockpit layout and components, 7 clean domain subpackages in `src/harness_core/`, resilience engine, conversational engine, and storage lifecycle.
+    - Overhauled `docs/research/COMPARISON.md`: updated HEX vs. Hermes comparison matrix highlighting HEX's dual cockpits (GPUI ~35MB vs Electron ~400MB), CoW isolation (<10ms), timeline rewind, MoA, and credential resilience.
+    - Overhauled `docs/guides/RUNBOOK.md`: added operations for `hex desktop`, `hex tui`, `/rewind`, `/lease`, `/moa`, credential pool administration, OS Keychain storage, and updated all python code snippets to clean subpackage paths (`harness_core.core.orchestrator`, `harness_core.client.asgi`).
+    - Updated `docs/reference/ACP_INTEGRATION.md` and `docs/reference/SUPPORTED_MODELS.md` with desktop bridge and credential pool details.
     - Updated `pyproject.toml` version to `0.22.0`.
 
 ---

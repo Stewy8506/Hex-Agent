@@ -10,8 +10,8 @@
 - `src/harness_core/gateway.py`
 - `src/harness_core/react_loop.py`
 - `src/harness_core/tui.py`
-- `tests/test_code_kernel.py`
-- `tests/test_gateway_code_kernel.py`
+- `tests/runtime/test_code_kernel.py`
+- `tests/tools/test_gateway_code_kernel.py`
 
 ---
 
@@ -58,9 +58,9 @@
 
 ## 3. Empirical Test Suite Evidence
 
-### 3.1 Kernel Engine Unit Tests (`tests/test_code_kernel.py`)
+### 3.1 Kernel Engine Unit Tests (`tests/runtime/test_code_kernel.py`)
 ```bash
-.venv/bin/python -m unittest tests/test_code_kernel.py
+.venv/bin/python -m unittest tests/runtime/test_code_kernel.py
 ```
 **Output:**
 ```
@@ -84,9 +84,9 @@ Tests verified:
 - `TestKernelRegistry.test_registry_idle_sweep`
 - `TestKernelRegistry.test_stale_modules_warning_helper`
 
-### 3.2 Gateway, ReActLoop & TUI Integration Tests (`tests/test_gateway_code_kernel.py`)
+### 3.2 Gateway, ReActLoop & TUI Integration Tests (`tests/tools/test_gateway_code_kernel.py`)
 ```bash
-.venv/bin/python -m unittest tests/test_gateway_code_kernel.py
+.venv/bin/python -m unittest tests/tools/test_gateway_code_kernel.py
 ```
 **Output:**
 ```
@@ -112,9 +112,9 @@ Tests verified:
 - `TestHexConsoleKernelSlashCommand.test_kernel_vars_and_reset`
 - `TestHexConsoleKernelSlashCommand.test_kernel_invalid_command_shows_usage`
 
-### 3.3 Gateway Regression Verification (`tests/test_gateway_tools.py`, `tests/test_acp_server.py`)
+### 3.3 Gateway Regression Verification (`tests/tools/test_gateway_tools.py`, `tests/client/test_acp_server.py`)
 ```bash
-.venv/bin/python -m unittest tests/test_gateway_tools.py tests/test_acp_server.py
+.venv/bin/python -m unittest tests/tools/test_gateway_tools.py tests/client/test_acp_server.py
 ```
 **Output:**
 ```

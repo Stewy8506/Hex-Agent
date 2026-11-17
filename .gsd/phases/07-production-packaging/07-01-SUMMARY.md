@@ -27,7 +27,7 @@
    - Built responsive content negotiation: returns clean, modern styled HTML confirmation cards for browser requests (`GET` or `Accept: text/html`) with color-coded status badges and Dashboard return links, and JSON payloads for API clients.
    - Wired `WebhookNotifier` into `ToolGateway` to trigger outbound approval requests automatically when an R3 action requires operator approval, and into `HarnessOrchestrator.__init__` with transparent default instantiation.
 
-3. **Empirical Verification Suite (`tests/test_webhooks.py`):**
+3. **Empirical Verification Suite (`tests/capabilities/test_webhooks.py`):**
    - Authored 15 unit and integration tests across 5 test fixtures covering config parsing, Telegram/Discord formatting, secret scrubbing, HTTP delivery mocking, network timeouts, error response recovery, interactive decision endpoints, HTML/JSON content negotiation, and end-to-end R3 tool approval-and-resume workflows.
    - Verified entire repository test suite: 167/167 tests passing cleanly with zero regressions.
 
@@ -49,7 +49,7 @@
 
 ### Task 3: Comprehensive Test Suite Verification
 ```bash
-.venv/bin/python -m unittest tests/test_webhooks.py
+.venv/bin/python -m unittest tests/capabilities/test_webhooks.py
 # Output: Ran 15 tests in 0.172s -> OK
 
 .venv/bin/python -m unittest discover -s tests -p "test_*.py"

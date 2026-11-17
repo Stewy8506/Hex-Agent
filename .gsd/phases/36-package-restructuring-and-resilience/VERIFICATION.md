@@ -22,11 +22,11 @@ An independent empirical verification was conducted on branch `experimental-feat
   - Multi-key rotation pool (`round_robin`, `least_used`, `fill_first`), 429 exhaustion backoff, and dead key terminal exclusion.
   - Model-specific cooldown queues (`(provider, model) -> cooldown_until`) isolating transient 503s while keeping sibling models healthy.
   - 30-second transient endpoint blackholing (`_endpoint_blackholed`, `check_endpoint_or_raise`) short-circuiting dead connect attempts.
-  - Unit test pass: 20/20 in `tests/test_credential_pool.py`.
+  - Unit test pass: 20/20 in `tests/models/test_credential_pool.py`.
 - **Local Socket Introspection & OS Keychain Vault:**
   - Live socket probes for Ollama (`/api/show` Modelfile `num_ctx` vs GGUF max fallback), LM Studio (`/api/v0/models` and `/api/v1/models`), llama.cpp (`/props`), and vLLM (`/v1/models`).
   - Native OS Keychain integration with backend integrity auditing (rejecting insecure `keyrings.alt` and dummy stubs), store/get/delete readback validation, and automatic plaintext config scrubbing with `0o600` permissions.
-  - Unit test pass: 18/18 in `tests/test_local_socket_introspection.py` and `tests/test_vault_keychain.py`.
+  - Unit test pass: 18/18 in `tests/models/test_local_socket_introspection.py` and `tests/storage/test_vault_keychain.py`.
 - **Hermes Parity Cross-Validation:**
   - Validated 100% parity against `benchmarks/hermes-agent/agent/model_metadata.py`, `credential_pool.py`, and `credential_pool_model_cooldowns.py`.
 - **Full Test Suites Regression:**
@@ -77,7 +77,7 @@ Facade symbols imported successfully
 ### 3.2 Unit Test Execution
 **Command:**
 ```bash
-.venv/bin/pytest tests/test_credential_pool.py -v
+.venv/bin/pytest tests/models/test_credential_pool.py -v
 ```
 **Output:**
 ```
@@ -89,26 +89,26 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 20 items                                                             
 
-tests/test_credential_pool.py::test_add_key_basic_and_duplicate_deduplication PASSED [  5%]
-tests/test_credential_pool.py::test_load_from_env PASSED                 [ 10%]
-tests/test_credential_pool.py::test_load_from_env_filtered_providers PASSED [ 15%]
-tests/test_credential_pool.py::test_load_from_config PASSED              [ 20%]
+tests/models/test_credential_pool.py::test_add_key_basic_and_duplicate_deduplication PASSED [  5%]
+tests/models/test_credential_pool.py::test_load_from_env PASSED                 [ 10%]
+tests/models/test_credential_pool.py::test_load_from_env_filtered_providers PASSED [ 15%]
+tests/models/test_credential_pool.py::test_load_from_config PASSED              [ 20%]
 tests/test_strategy_round_robin PASSED          [ 25%]
-tests/test_credential_pool.py::test_strategy_least_used PASSED           [ 30%]
-tests/test_credential_pool.py::test_strategy_fill_first PASSED           [ 35%]
-tests/test_credential_pool.py::test_invalid_strategy_rejected PASSED     [ 40%]
-tests/test_credential_pool.py::test_failover_rotation_on_exhausted PASSED [ 45%]
-tests/test_credential_pool.py::test_exhausted_recovery_after_cooldown PASSED [ 50%]
-tests/test_credential_pool.py::test_mark_dead_permanent_exclusion PASSED [ 55%]
-tests/test_credential_pool.py::test_pool_reset PASSED                    [ 60%]
-tests/test_credential_pool.py::test_model_cooldown_isolates_model_preserves_siblings PASSED [ 65%]
-tests/test_credential_pool.py::test_model_cooldown_expiry_and_clear PASSED [ 70%]
-tests/test_credential_pool.py::test_endpoint_host_key_normalization PASSED [ 75%]
-tests/test_credential_pool.py::test_endpoint_blackhole_recording_and_ttl_expiry PASSED [ 80%]
-tests/test_credential_pool.py::test_is_connect_timeout_detection PASSED  [ 85%]
-tests/test_credential_pool.py::test_note_if_connect_timeout_helper PASSED [ 90%]
-tests/test_credential_pool.py::test_backward_compatibility_top_level_stub PASSED [ 95%]
-tests/test_credential_pool.py::test_models_subpackage_reexports PASSED   [100%]
+tests/models/test_credential_pool.py::test_strategy_least_used PASSED           [ 30%]
+tests/models/test_credential_pool.py::test_strategy_fill_first PASSED           [ 35%]
+tests/models/test_credential_pool.py::test_invalid_strategy_rejected PASSED     [ 40%]
+tests/models/test_credential_pool.py::test_failover_rotation_on_exhausted PASSED [ 45%]
+tests/models/test_credential_pool.py::test_exhausted_recovery_after_cooldown PASSED [ 50%]
+tests/models/test_credential_pool.py::test_mark_dead_permanent_exclusion PASSED [ 55%]
+tests/models/test_credential_pool.py::test_pool_reset PASSED                    [ 60%]
+tests/models/test_credential_pool.py::test_model_cooldown_isolates_model_preserves_siblings PASSED [ 65%]
+tests/models/test_credential_pool.py::test_model_cooldown_expiry_and_clear PASSED [ 70%]
+tests/models/test_credential_pool.py::test_endpoint_host_key_normalization PASSED [ 75%]
+tests/models/test_credential_pool.py::test_endpoint_blackhole_recording_and_ttl_expiry PASSED [ 80%]
+tests/models/test_credential_pool.py::test_is_connect_timeout_detection PASSED  [ 85%]
+tests/models/test_credential_pool.py::test_note_if_connect_timeout_helper PASSED [ 90%]
+tests/models/test_credential_pool.py::test_backward_compatibility_top_level_stub PASSED [ 95%]
+tests/models/test_credential_pool.py::test_models_subpackage_reexports PASSED   [100%]
 
 ============================== 20 passed in 0.03s ==============================
 ```
@@ -187,7 +187,7 @@ All CredentialPool assertions passed!
 ### 4.2 Unit Test Execution
 **Command:**
 ```bash
-.venv/bin/pytest tests/test_local_socket_introspection.py tests/test_vault_keychain.py -v
+.venv/bin/pytest tests/models/test_local_socket_introspection.py tests/storage/test_vault_keychain.py -v
 ```
 **Output:**
 ```
@@ -199,24 +199,24 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 18 items                                                             
 
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_connect_timeout_triggers_blackhole PASSED [  5%]
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_get_model_context_length_with_base_url PASSED [ 11%]
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_llamacpp_props PASSED [ 16%]
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_lmstudio_v0_models PASSED [ 22%]
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_lmstudio_v1_loaded_instances PASSED [ 27%]
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_ollama_gguf_context_fallback PASSED [ 33%]
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_ollama_num_ctx PASSED [ 38%]
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_ollama_tags_and_ps_discovery PASSED [ 44%]
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_result_caching PASSED [ 50%]
-tests/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_vllm_models PASSED [ 55%]
-tests/test_vault_keychain.py::TestVaultKeychain::test_derive_account_name PASSED [ 61%]
-tests/test_vault_keychain.py::TestVaultKeychain::test_is_os_keychain_validation PASSED [ 66%]
-tests/test_vault_keychain.py::TestVaultKeychain::test_keychain_unavailable_behaviors PASSED [ 72%]
-tests/test_vault_keychain.py::TestVaultKeychain::test_migrate_plaintext_credentials_env PASSED [ 77%]
-tests/test_vault_keychain.py::TestVaultKeychain::test_migrate_plaintext_credentials_when_keychain_unavailable PASSED [ 83%]
-tests/test_vault_keychain.py::TestVaultKeychain::test_migrate_plaintext_credentials_yaml PASSED [ 88%]
-tests/test_vault_keychain.py::TestVaultKeychain::test_readback_mismatch_raises_exception PASSED [ 94%]
-tests/test_vault_keychain.py::TestVaultKeychain::test_store_get_and_delete_secret PASSED [100%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_connect_timeout_triggers_blackhole PASSED [  5%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_get_model_context_length_with_base_url PASSED [ 11%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_llamacpp_props PASSED [ 16%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_lmstudio_v0_models PASSED [ 22%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_lmstudio_v1_loaded_instances PASSED [ 27%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_ollama_gguf_context_fallback PASSED [ 33%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_ollama_num_ctx PASSED [ 38%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_ollama_tags_and_ps_discovery PASSED [ 44%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_result_caching PASSED [ 50%]
+tests/models/test_local_socket_introspection.py::TestLocalSocketIntrospection::test_probe_vllm_models PASSED [ 55%]
+tests/storage/test_vault_keychain.py::TestVaultKeychain::test_derive_account_name PASSED [ 61%]
+tests/storage/test_vault_keychain.py::TestVaultKeychain::test_is_os_keychain_validation PASSED [ 66%]
+tests/storage/test_vault_keychain.py::TestVaultKeychain::test_keychain_unavailable_behaviors PASSED [ 72%]
+tests/storage/test_vault_keychain.py::TestVaultKeychain::test_migrate_plaintext_credentials_env PASSED [ 77%]
+tests/storage/test_vault_keychain.py::TestVaultKeychain::test_migrate_plaintext_credentials_when_keychain_unavailable PASSED [ 83%]
+tests/storage/test_vault_keychain.py::TestVaultKeychain::test_migrate_plaintext_credentials_yaml PASSED [ 88%]
+tests/storage/test_vault_keychain.py::TestVaultKeychain::test_readback_mismatch_raises_exception PASSED [ 94%]
+tests/storage/test_vault_keychain.py::TestVaultKeychain::test_store_get_and_delete_secret PASSED [100%]
 
 ============================== 18 passed in 0.05s ==============================
 ```

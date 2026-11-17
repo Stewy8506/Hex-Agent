@@ -26,7 +26,7 @@ Phase 26 implements a production-grade 4-phase context compactor in `src/harness
 | 2 | Strict preservation of `<tool_call>` and corresponding `<tool_result>` pairs (never splitting an atomic pair) | **PASS** | `align_boundary_forward` & `align_boundary_backward` verified on parallel JSON calls and XML observation blocks; `validate_atomic_boundaries` catches severed pairs and validates compacted sequences |
 | 3 | Stale tool output truncation (replacing verbose stdout with summarized head+tail and line count) | **PASS** | 10 rounds of tool executions with 100 lines each: 5 stale rounds demoted with `head + marker + tail` and omitted line count; 1 error output preserved intact; 4 recent tail rounds untouched |
 | 4 | Prompt cache prefix alignment to ensure static system instructions and tool definitions remain unchanged across turns for >90% KV cache hit rates | **PASS** | `compute_cache_signature` verified across 15 consecutive conversational turns with identical SHA-256 hex digest; Anthropic ephemeral cache control breakpoints correctly applied within 4-breakpoint limit |
-| 5 | All test suites pass without regression: `tests/test_context_compressor_tail_pruning.py`, `tests/test_context_compressor_integration.py`, `tests/test_react_loop.py`, and `cargo test --workspace` | **PASS** | All targeted suites passed cleanly; full repository test suite (685 Python tests and 34 Rust tests) passed with 0 failures and 0 errors |
+| 5 | All test suites pass without regression: `tests/cognition/test_context_compressor_tail_pruning.py`, `tests/cognition/test_context_compressor_integration.py`, `tests/core/test_react_loop.py`, and `cargo test --workspace` | **PASS** | All targeted suites passed cleanly; full repository test suite (685 Python tests and 34 Rust tests) passed with 0 failures and 0 errors |
 
 ---
 
@@ -177,7 +177,7 @@ Must-have 4 PASS: Prompt cache prefix byte stability verified across 15 turns; 3
 
 #### 1. Tail Pruning Unit Tests
 ```bash
-.venv/bin/python -m unittest tests/test_context_compressor_tail_pruning.py
+.venv/bin/python -m unittest tests/cognition/test_context_compressor_tail_pruning.py
 ```
 **Output:**
 ```
@@ -190,7 +190,7 @@ OK
 
 #### 2. Context Compactor Integration Tests
 ```bash
-.venv/bin/python -m unittest tests/test_context_compressor_integration.py
+.venv/bin/python -m unittest tests/cognition/test_context_compressor_integration.py
 ```
 **Output:**
 ```
@@ -203,7 +203,7 @@ OK
 
 #### 3. ReAct Multi-Turn Autonomous Tool Loop Tests
 ```bash
-.venv/bin/python -m unittest tests/test_react_loop.py
+.venv/bin/python -m unittest tests/core/test_react_loop.py
 ```
 **Output:**
 ```

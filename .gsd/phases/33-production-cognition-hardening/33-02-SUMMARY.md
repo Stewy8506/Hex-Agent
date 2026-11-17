@@ -48,7 +48,7 @@
 ## 2. Empirical Verification
 
 ### Verification Suite Results
-- `tests/test_ast_precision_and_fencing.py`: 12/12 passing in 0.93s
+- `tests/cognition/test_ast_precision_and_fencing.py`: 12/12 passing in 0.93s
   - `TestASTSymbolPrecision`:
     - `test_fingerprint_unrelated_function_edit_does_not_stale` PASSED
     - `test_fingerprint_target_symbol_edit_causes_staleness` PASSED
@@ -65,10 +65,10 @@
     - `test_fencing_priority_ranking_direct_symbol_first` PASSED
     - `test_fencing_gateway_read_file_injection` PASSED
 - Full Memory & Prompt Suite Regression: 42/42 passing in 3.62s
-  - `tests/test_ast_scoped_memory.py`: 8/8 passed
-  - `tests/test_curated_memory.py`: 19/19 passed
-  - `tests/test_amem_and_lifecycle.py`: 10/10 passed
-  - `tests/test_prompt_builder.py`: 5/5 passed
+  - `tests/cognition/test_ast_scoped_memory.py`: 8/8 passed
+  - `tests/cognition/test_curated_memory.py`: 19/19 passed
+  - `tests/cognition/test_amem_and_lifecycle.py`: 10/10 passed
+  - `tests/cognition/test_prompt_builder.py`: 5/5 passed
 
 ---
 

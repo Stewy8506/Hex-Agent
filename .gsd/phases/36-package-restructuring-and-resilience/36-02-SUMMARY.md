@@ -32,7 +32,7 @@ Implemented `CredentialPool` in `src/harness_core/models/` providing multi-key p
    - Maintained top-level forwarding stub `src/harness_core/credential_pool.py` registering `sys.modules[__name__] = _impl` for backward compatibility.
    - Re-exported `CredentialPool`, entries, strategy constants, and blackhole helpers in `src/harness_core/models/__init__.py`.
 
-4. **Comprehensive Test Suite (`tests/test_credential_pool.py`):**
+4. **Comprehensive Test Suite (`tests/models/test_credential_pool.py`):**
    - 20 unit tests covering multi-key ingestion, selection strategies, failover rotation, cooldown expiry, terminal deaths, model cooldown queues, endpoint blackholing, and stub forwarding.
    - 100% pass rate in 0.04s.
 
@@ -58,7 +58,7 @@ Implemented `CredentialPool` in `src/harness_core/models/` providing multi-key p
 
 - **Task 3 Pytest Verification Suite:**
   ```bash
-  .venv/bin/pytest tests/test_credential_pool.py -v
+  .venv/bin/pytest tests/models/test_credential_pool.py -v
   # Output: 20 passed in 0.04s
   ```
 

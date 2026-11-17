@@ -11,4 +11,4 @@
 2. **Offline Resilience & Cache Fallback**:
    - Built seamless fallback to local `KNOWN_OSV_VULNS` database when network requests time out or environment is air-gapped.
 3. **Verification**:
-   - Authored `tests/test_skillspector_osv_wiring.py` (4/4 tests passing).
+   - Authored `tests/skills/test_skillspector_osv_wiring.py` (4/4 tests passing).

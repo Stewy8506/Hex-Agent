@@ -11,7 +11,7 @@
 
 Phase 18 deep-wires Google Research's Harness² engine into the HEX autonomous workbench. The implementation integrates `harness2.core.library.Library` directly into `HarnessOrchestrator` for cross-task experience persistence, creates an `OrchestratorBenchmarkAdapter` satisfying `harness2.core.spec.BenchmarkAdapter`, and wires `run_parallel` and `run_sequential` sweeps from `harness2.core.recursion` accessible via the `hex harness2-eval` CLI subcommand.
 
-All 17 dedicated unit and integration tests across `tests/test_harness2_library_wiring.py` and `tests/test_harness2_benchmark_adapter.py` pass cleanly. Furthermore, the complete repository test suite (508 tests) passed 100% green with zero regressions.
+All 17 dedicated unit and integration tests across `tests/integration/test_harness2_library_wiring.py` and `tests/integration/test_harness2_benchmark_adapter.py` pass cleanly. Furthermore, the complete repository test suite (508 tests) passed 100% green with zero regressions.
 
 ---
 
@@ -183,7 +183,7 @@ All 17 dedicated unit and integration tests across `tests/test_harness2_library_
 
 ### Dedicated Phase 18 Suites
 ```bash
-.venv/bin/python -m unittest tests/test_harness2_library_wiring.py tests/test_harness2_benchmark_adapter.py -v
+.venv/bin/python -m unittest tests/integration/test_harness2_library_wiring.py tests/integration/test_harness2_benchmark_adapter.py -v
 ```
 **Output:**
 ```
@@ -192,13 +192,13 @@ OK
 ```
 
 Breakdown:
-1. `tests.test_harness2_library_wiring`:
+1. `tests.integration.test_harness2_library_wiring`:
    - `test_library_initialization_defaults_and_custom_root`: ok
    - `test_record_task_experience_validation_and_persistence`: ok
    - `test_pre_task_experience_retrieval`: ok
    - `test_multi_domain_isolation`: ok
    - `test_end_to_end_task_completion_records_experience_and_informs_repair`: ok
-2. `tests.test_harness2_benchmark_adapter`:
+2. `tests.integration.test_harness2_benchmark_adapter`:
    - `test_protocol_conformance`: ok
    - `test_task_registry_and_specification_methods`: ok
    - `test_tree_validation`: ok

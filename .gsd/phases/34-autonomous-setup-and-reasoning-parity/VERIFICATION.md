@@ -11,7 +11,7 @@
 
 ## 1. Executive Summary
 
-Phase 34 successfully eliminates every architectural disparity between **Hermes Agent** (`benchmarks/hermes-agent/`) and **HEX Agent** (`src/harness_core/`) as documented in [docs/HERMES_VS_HEX_SETUP_AUDIT.md](file:///Users/anv./Development/Harness/docs/HERMES_VS_HEX_SETUP_AUDIT.md).
+Phase 34 successfully eliminates every architectural disparity between **Hermes Agent** (`benchmarks/hermes-agent/`) and **HEX Agent** (`src/harness_core/`) as documented in [docs/audits/HERMES_VS_HEX_SETUP_AUDIT.md](file:///Users/anv./Development/Harness/docs/audits/HERMES_VS_HEX_SETUP_AUDIT.md).
 
 HEX now possesses:
 1. **A First-Class Reasoning Effort Engine (`src/harness_core/reasoning_effort.py`):** Canonical 7-step ladder (`none`..`max`), nearest-level wire clamping protecting against HTTP 400 errors, wire translation into Anthropic Claude 3.7 token budgets (2,048 to 32,768) and Gemini `thinkingConfig`, dynamic runtime `/reasoning` slash command in Cockpit TUI, and setup effort picking.
@@ -25,7 +25,7 @@ HEX now possesses:
 All 3 dedicated unit and integration test suites pass with 100% success:
 
 ### Test Suite 1: Reasoning Effort Engine & Wire Clamping
-**Command:** `.venv/bin/python -m unittest tests/test_reasoning_effort.py`  
+**Command:** `.venv/bin/python -m unittest tests/core/test_reasoning_effort.py`\
 **Result:** 40 / 40 Passed in 0.009s  
 ```text
 Ran 40 tests in 0.009s
@@ -33,7 +33,7 @@ OK
 ```
 
 ### Test Suite 2: Autonomous Agent Self-Setup & Host Discovery
-**Command:** `.venv/bin/python -m unittest tests/test_auto_setup.py`  
+**Command:** `.venv/bin/python -m unittest tests/client/test_auto_setup.py`\
 **Result:** 5 / 5 Passed in 0.689s  
 ```text
 Ran 5 tests in 0.689s
@@ -41,7 +41,7 @@ OK
 ```
 
 ### Test Suite 3: Setup Ergonomics, Curated Provider Tiers & First-Task Verification
-**Command:** `.venv/bin/python -m unittest tests/test_onboarding_ergonomics.py`  
+**Command:** `.venv/bin/python -m unittest tests/client/test_onboarding_ergonomics.py`\
 **Result:** 5 / 5 Passed in 1.980s  
 ```text
 Ran 5 tests in 1.980s
@@ -201,7 +201,7 @@ telemetry: false
 - **Primary Phase 34 Test Suites:** 50/50 passing.
 - **Stub Detection:** Zero `TODO`, `FIXME`, `STUB`, or empty mock returns in `reasoning_effort.py`, `auto_setup.py`, or `onboard.py`.
 - **Wiring Check:** `TwoTierModelRouter` imports and applies reasoning effort across OpenAI, Anthropic, Gemini, and DeepSeek. `HexConsole` in `tui.py` connects `/reasoning` to router state. `cli.py` exposes `--auto`, `--quick`, `--blank-slate`, `--reset`, and `--reasoning-effort`.
-- **Legacy Test Mocks Notice:** In legacy test suites `tests/test_live_model_discovery.py` and `tests/test_antigravity_oauth_and_tui_resilience.py`, mock `select_option.side_effect` lists expect the older flat provider menu (1 selection prompt) rather than the new tiered menu (2 selection prompts: Category -> Provider). This is a purely cosmetic unit test mock mismatch in legacy test fixtures; the underlying runtime code behaves as intended.
+- **Legacy Test Mocks Notice:** In legacy test suites `tests/client/test_live_model_discovery.py` and `tests/integration/test_antigravity_oauth_and_tui_resilience.py`, mock `select_option.side_effect` lists expect the older flat provider menu (1 selection prompt) rather than the new tiered menu (2 selection prompts: Category -> Provider). This is a purely cosmetic unit test mock mismatch in legacy test fixtures; the underlying runtime code behaves as intended.
 
 ---
 

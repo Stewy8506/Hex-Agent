@@ -20,7 +20,7 @@ Key deliverables:
    - Hardened `begin_tool_call` and `seal_tool_call` with `fencing_token` staleness validation against active leases, raising `ConcurrencyFenceError` on superseded tokens.
    - Enforced foreign key integrity with idempotent worker registration on lease acquisition.
 
-2. **Multi-Worker Concurrency Stress Test Suite (`tests/test_postgres_concurrency.py`):**
+2. **Multi-Worker Concurrency Stress Test Suite (`tests/storage/test_postgres_concurrency.py`):**
    - Multi-Worker Queue Race: 10 concurrent worker threads draining 30 queued tasks simultaneously synchronized via `threading.Barrier(10)`. Exactly 30 claims succeed, exactly 30 unique tasks assigned (0 duplicates), and tasks claimed in strictly descending priority order (`[30, 29, ..., 1]`).
    - Async Coroutine Multi-Worker Pool: 10 concurrent asyncio workers draining 30 queued tasks via `asyncio.gather` and `claim_next_task_async` with 0 race conditions.
    - Monotonic Fencing Token Enforcement: Verified that sequential lease acquisitions increment fencing tokens (1 -> 2 -> 3), and stale worker commits (`transition_task`) and tool calls (`begin_tool_call`, `seal_tool_call`) with superseded tokens are rejected with `ConcurrencyFenceError`.
@@ -34,7 +34,7 @@ Key deliverables:
 | Task | Name | Files | Commit | Status |
 |------|------|-------|--------|--------|
 | Task 1 | Implement atomic task claiming with `SELECT ... FOR UPDATE SKIP LOCKED` | `src/harness_core/db.py` | `1dd92ba` | Completed |
-| Task 2 | Author concurrent multi-worker lease claiming test suite | `tests/test_postgres_concurrency.py`, `src/harness_core/db.py` | `da6439f` | Completed |
+| Task 2 | Author concurrent multi-worker lease claiming test suite | `tests/storage/test_postgres_concurrency.py`, `src/harness_core/db.py` | `da6439f` | Completed |
 
 ---
 
@@ -51,18 +51,18 @@ claim_next_task verified on LedgerStore
 
 ### 3.2 Task 2 Concurrency Test Suite
 ```bash
-.venv/bin/python -m unittest tests/test_postgres_concurrency.py tests/test_harness_stages.py -v
+.venv/bin/python -m unittest tests/storage/test_postgres_concurrency.py tests/integration/test_harness_stages.py -v
 ```
 **Output:**
 ```
-test_concurrent_worker_claims_async_no_duplicates (tests.test_postgres_concurrency.TestConcurrentWorkerClaims.test_concurrent_worker_claims_async_no_duplicates) ... ok
-test_concurrent_worker_claims_no_duplicates (tests.test_postgres_concurrency.TestConcurrentWorkerClaims.test_concurrent_worker_claims_no_duplicates) ... ok
-test_empty_queue_returns_none (tests.test_postgres_concurrency.TestConcurrentWorkerClaims.test_empty_queue_returns_none) ... ok
-test_monotonic_fencing_token_enforcement (tests.test_postgres_concurrency.TestMonotonicFencingTokenEnforcement.test_monotonic_fencing_token_enforcement) ... ok
-test_monotonic_fencing_token_enforcement_async (tests.test_postgres_concurrency.TestMonotonicFencingTokenEnforcement.test_monotonic_fencing_token_enforcement_async) ... ok
-test_skip_locked_query_structure (tests.test_postgres_concurrency.TestSkipLockedQueryStructure.test_skip_locked_query_structure) ... ok
-test_skip_locked_simulated_non_blocking_skip (tests.test_postgres_concurrency.TestSkipLockedQueryStructure.test_skip_locked_simulated_non_blocking_skip) ... ok
-test_claimed_task_event_hash_chain_integrity (tests.test_postgres_concurrency.TestTaskQueueClaimEventIntegrity.test_claimed_task_event_hash_chain_integrity) ... ok
+test_concurrent_worker_claims_async_no_duplicates (tests.storage.test_postgres_concurrency.TestConcurrentWorkerClaims.test_concurrent_worker_claims_async_no_duplicates) ... ok
+test_concurrent_worker_claims_no_duplicates (tests.storage.test_postgres_concurrency.TestConcurrentWorkerClaims.test_concurrent_worker_claims_no_duplicates) ... ok
+test_empty_queue_returns_none (tests.storage.test_postgres_concurrency.TestConcurrentWorkerClaims.test_empty_queue_returns_none) ... ok
+test_monotonic_fencing_token_enforcement (tests.storage.test_postgres_concurrency.TestMonotonicFencingTokenEnforcement.test_monotonic_fencing_token_enforcement) ... ok
+test_monotonic_fencing_token_enforcement_async (tests.storage.test_postgres_concurrency.TestMonotonicFencingTokenEnforcement.test_monotonic_fencing_token_enforcement_async) ... ok
+test_skip_locked_query_structure (tests.storage.test_postgres_concurrency.TestSkipLockedQueryStructure.test_skip_locked_query_structure) ... ok
+test_skip_locked_simulated_non_blocking_skip (tests.storage.test_postgres_concurrency.TestSkipLockedQueryStructure.test_skip_locked_simulated_non_blocking_skip) ... ok
+test_claimed_task_event_hash_chain_integrity (tests.storage.test_postgres_concurrency.TestTaskQueueClaimEventIntegrity.test_claimed_task_event_hash_chain_integrity) ... ok
 test_stage1_cow_rollback_on_mid_step_crash_and_fencing (test_harness_stages.TestAutonomousHarnessStages.test_stage1_cow_rollback_on_mid_step_crash_and_fencing) ... ok
 test_stage1_fast_path_and_proof_bundle (test_harness_stages.TestAutonomousHarnessStages.test_stage1_fast_path_and_proof_bundle) ... ok
 test_stage1_r3_approval_gate_and_resume (test_harness_stages.TestAutonomousHarnessStages.test_stage1_r3_approval_gate_and_resume) ... ok

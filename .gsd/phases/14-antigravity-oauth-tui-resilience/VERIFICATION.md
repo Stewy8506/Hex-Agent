@@ -43,18 +43,18 @@ All 7 must-haves have been empirically verified with 100% success across the ded
 
 **Command:**
 ```bash
-.venv/bin/python -m unittest tests/test_antigravity_oauth_and_tui_resilience.py -v
+.venv/bin/python -m unittest tests/integration/test_antigravity_oauth_and_tui_resilience.py -v
 ```
 
 **Output:**
 ```
-test_antigravity_provider_refreshes_token_on_401 (tests.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_antigravity_provider_refreshes_token_on_401) ... ok
-test_onboard_wizard_antigravity_model_selection (tests.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_onboard_wizard_antigravity_model_selection) ... ok
-test_onboard_wizard_triggers_browser_oauth_when_unauthenticated (tests.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_onboard_wizard_triggers_browser_oauth_when_unauthenticated) ... ok
-test_probe_antigravity_token_empty (tests.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_probe_antigravity_token_empty) ... ok
-test_probe_antigravity_token_failure (tests.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_probe_antigravity_token_failure) ... ok
-test_probe_antigravity_token_success (tests.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_probe_antigravity_token_success) ... ok
-test_tui_handle_user_prompt_catches_auth_error_gracefully (tests.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_tui_handle_user_prompt_catches_auth_error_gracefully) ... ok
+test_antigravity_provider_refreshes_token_on_401 (tests.integration.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_antigravity_provider_refreshes_token_on_401) ... ok
+test_onboard_wizard_antigravity_model_selection (tests.integration.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_onboard_wizard_antigravity_model_selection) ... ok
+test_onboard_wizard_triggers_browser_oauth_when_unauthenticated (tests.integration.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_onboard_wizard_triggers_browser_oauth_when_unauthenticated) ... ok
+test_probe_antigravity_token_empty (tests.integration.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_probe_antigravity_token_empty) ... ok
+test_probe_antigravity_token_failure (tests.integration.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_probe_antigravity_token_failure) ... ok
+test_probe_antigravity_token_success (tests.integration.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_probe_antigravity_token_success) ... ok
+test_tui_handle_user_prompt_catches_auth_error_gracefully (tests.integration.test_antigravity_oauth_and_tui_resilience.TestAntigravityOAuthAndTuiResilience.test_tui_handle_user_prompt_catches_auth_error_gracefully) ... ok
 
 ----------------------------------------------------------------------
 Ran 7 tests in 0.207s

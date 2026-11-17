@@ -31,7 +31,7 @@
        - Detects `<finish>` completion tags and natural final answers (no tool calls).
        - Enforces `max_turns` exhaustion and handles model caller exceptions gracefully.
 
-2. **Created `tests/test_react_loop.py`**:
+2. **Created `tests/core/test_react_loop.py`**:
    - `TestReActDataStructures`: Validates default parameters and data structure initializations.
    - `TestToolCallParsing`: Comprehensive test suite testing parsing from dictionaries, single tool objects, XML tags, markdown code blocks, raw JSON strings, embedded JSON, and pure thoughts.
    - `TestMultiTurnReActLoop`:
@@ -50,7 +50,7 @@
 
 - Target test execution:
   ```bash
-  .venv/bin/python -m unittest tests/test_react_loop.py
+  .venv/bin/python -m unittest tests/core/test_react_loop.py
   ```
   **Result:** 21/21 tests passed (0.80s, OK).
 

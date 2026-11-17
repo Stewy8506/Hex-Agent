@@ -34,7 +34,7 @@
    - Passed `react_mode=bool(getattr(args, "react", False))` to `HexConsole` instantiation.
    - Handled `--react` in `cmd in ("run", "exec")` to execute `orch.run_agent_loop(goal=args.goal, workspace_root=ws_root)` and emit structured JSON results.
 
-4. **Expanded Unit & Integration Tests in `tests/test_react_loop.py`**:
+4. **Expanded Unit & Integration Tests in `tests/core/test_react_loop.py`**:
    - `TestOrchestratorAgentLoop`:
      - `test_run_agent_loop_deterministic_conversational`: Validates conversational finish and `SUCCEEDED` ledger task state.
      - `test_run_agent_loop_deterministic_tool_execution`: Validates automatic tool selection (`read_file`), observation feedback, and completion.
@@ -55,7 +55,7 @@
 
 1. **Targeted ReAct Test Suite:**
    ```bash
-   .venv/bin/python -m unittest tests/test_react_loop.py
+   .venv/bin/python -m unittest tests/core/test_react_loop.py
    ```
    **Result:** Ran 31 tests in 8.675s. OK (31/31 passed).
 

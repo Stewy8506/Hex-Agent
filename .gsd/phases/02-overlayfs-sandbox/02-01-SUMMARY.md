@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Plan 02-01 expands the durable Copy-on-Write (CoW) workspace abstraction in `src/harness_core/cow.py` beyond macOS APFS clones to native Linux filesystems. Two production-grade providers—`OverlayFSSnapshotProvider` and `BtrfsSnapshotProvider`—were implemented adhering strictly to the `WorkspaceSnapshotProvider` protocol. A platform auto-detection factory (`get_default_snapshot_provider`) was added to automatically select the optimal snapshot provider for the runtime environment (Darwin APFS -> Linux Btrfs -> Linux OverlayFS -> portable CoW copy). `HarnessOrchestrator` was updated to accept dependency-injected snapshot providers while defaulting to host auto-detection. A comprehensive contract test suite of 19 tests was authored in `tests/test_cow_providers.py`, raising the total repository test suite to 58 tests, all passing with zero regressions.
+Plan 02-01 expands the durable Copy-on-Write (CoW) workspace abstraction in `src/harness_core/cow.py` beyond macOS APFS clones to native Linux filesystems. Two production-grade providers—`OverlayFSSnapshotProvider` and `BtrfsSnapshotProvider`—were implemented adhering strictly to the `WorkspaceSnapshotProvider` protocol. A platform auto-detection factory (`get_default_snapshot_provider`) was added to automatically select the optimal snapshot provider for the runtime environment (Darwin APFS -> Linux Btrfs -> Linux OverlayFS -> portable CoW copy). `HarnessOrchestrator` was updated to accept dependency-injected snapshot providers while defaulting to host auto-detection. A comprehensive contract test suite of 19 tests was authored in `tests/storage/test_cow_providers.py`, raising the total repository test suite to 58 tests, all passing with zero regressions.
 
 ---
 
@@ -31,7 +31,7 @@ Plan 02-01 expands the durable Copy-on-Write (CoW) workspace abstraction in `src
 - **Commit**: `9db19ba` (`feat(phase-02): implement OverlayFS and Btrfs snapshot providers with platform factory`).
 
 ### Task 2: Comprehensive Contract Test Suite
-- Authored `tests/test_cow_providers.py` with 19 dedicated tests covering:
+- Authored `tests/storage/test_cow_providers.py` with 19 dedicated tests covering:
   - `TestWorkspaceSnapshotProviderContract`: Exercises snapshot creation, tree hashing, clone branching, dirty file isolation, instant rollback, `.git` preservation, delta `.tar.gz` export, and discard across APFS, portable copy, OverlayFS, and Btrfs.
   - `TestSnapshotProviderAutoDetection`: Mocks platform and environment capabilities to verify correct provider selection across Darwin (APFS vs no APFS), Linux (Btrfs, OverlayFS, FUSE, fallback), and other platforms (Windows).
   - `TestOverlayFSLayerManagement`: Verifies directory structure creation (`lower`, `upper`, `work`, `merged`), mount option formatting, mount command variations (`mount`, `fuse-overlayfs`, `unshare`), and rollback/discard unmount handling.
@@ -54,7 +54,7 @@ Provider detected: apfs_clone
 
 ### Verification 2: Snapshot Providers Contract Test Suite
 ```bash
-.venv/bin/python -m unittest tests/test_cow_providers.py
+.venv/bin/python -m unittest tests/storage/test_cow_providers.py
 ```
 **Output:**
 ```
@@ -89,5 +89,5 @@ OK (58 passed, 0 failed, 0 errors)
 Proceed to Plan 02-02 (`.gsd/phases/02-overlayfs-sandbox/02-02-PLAN.md`):
 - Container Sandbox Execution Engine (`BubblewrapSandbox`, `DockerPodmanSandbox`, `RestrictedSubprocessSandbox`).
 - ToolGateway integration enforcing default-deny container sandbox isolation for bash execution.
-- Zero-escape and network/filesystem constraint test suite in `tests/test_sandbox_isolation.py`.
+- Zero-escape and network/filesystem constraint test suite in `tests/storage/test_sandbox_isolation.py`.
 

@@ -202,7 +202,7 @@ The desktop is built with Zed's **GPUI** framework (`crates/hex-desktop`):
   - **Tool Approval**: Allow once (`y`/`1`), allow for this session (`a`/`2`), or deny (`n`/`3`); decisions are sent to the runtime via `session/approvalDecision`. The 15-minute lease toggle (`l`) is sent along but not yet honored by the server.
   - **Model Picker**: Filterable catalog; the chosen model is used for sessions started afterwards.
 - **Message Actions**: Copy a reply to the clipboard or regenerate it from the preceding prompt.
-- **ACP Integration (stdio)**: Speaks the canonical `session/update` wire contract shared with the Python server and `hex-tui` (see [ACP Integration](docs/ACP_INTEGRATION.md)).
+- **ACP Integration (stdio)**: Speaks the canonical `session/update` wire contract shared with the Python server and `hex-tui` (see [ACP Integration](docs/reference/ACP_INTEGRATION.md)).
 - **Not yet live**: The token gauge shows a placeholder budget, `<think>` reasoning folds and inline diff views are implemented but not yet fed by ACP events, and Settings (`⌘,`) is not available.
 
 ---
@@ -288,18 +288,28 @@ Production agent reliability requires resilient upstream connectivity:
 
 ## 🏗️ Clean Subpackage Architecture
 
-HEX's Python core (`src/harness_core/`) is organized into 7 clean domain subpackages, eliminating monolithic sprawl and namespace collisions:
+HEX's Python package (`src/harness_core/`) keeps its domain packages and public entry modules, with focused helpers in client, platform, and tool internals. Representative layout:
 
 ```text
 src/harness_core/
 ├── core/           # Orchestrator, ReAct loop, router, subagents, MoA, approval leases
-├── storage/        # Dual-driver DB, CoW sandboxes, timeline rewind, GC, OS Keychain
+├── storage/        # DB, CoW sandboxes, rewind, GC, Keychain, project_init.py
 ├── cognition/      # Memory, reflections, SkillSpector, title synthesizer, repetition sentry
 ├── runtime/        # Process registry, code execution kernels, daemon, task scheduler
-├── client/         # ACP server, TUI launcher, UI selector, web dashboard, CLI, onboard
+├── client/         # Public CLI, ACP, TUI, and onboarding entry modules
+│   ├── commands/   # projects.py, antigravity.py
+│   ├── terminal/   # ansi.py, review.py
+│   └── onboarding/ # verification.py
+├── platform/       # hardware.py, diagnostics.py
+├── tools/          # filesystem.py implementation behind the gateway
+├── skills/         # Python skill compiler, execution, and retrieval engine
+├── resources/      # skills/builtin/ and skills/optional/ data, not the skill engine
+├── config_loader.py # Shared configuration loading and model-selection writer
 ├── capabilities/   # Browser, vision, voice, search, git autopilot, GitHub actions, gateways
 └── models/         # Model metadata, credential pool, provider routing
 ```
+
+The namespace remains `harness_core`; public launch/import paths, Rust crates and manifests, root installers, and shared test fixtures stay in place. Python tests live under `tests/<subsystem>/`. This organization does not imply a wholesale split of large core or storage modules.
 
 ---
 
@@ -313,7 +323,7 @@ HEX is completely provider- and model-agnostic. Switch models instantly on the f
 - **Aggregators & Gateways**: Vercel AI Gateway, Hugging Face Serverless.
 - **100% Private Offline Local AI**: Ollama (`localhost:11434`), LM Studio (`localhost:1234`), native Apple Silicon Metal acceleration via MLX, and custom OpenAI-compatible endpoints (vLLM, SGLang, LocalAI).
 
-> 📖 **Full Catalog & Configs:** See [`docs/SUPPORTED_MODELS.md`](docs/SUPPORTED_MODELS.md) for the complete directory of 26 providers, model IDs, and environment variables.
+> 📖 **Full Catalog & Configs:** See [`docs/reference/SUPPORTED_MODELS.md`](docs/reference/SUPPORTED_MODELS.md) for the complete directory of 26 providers, model IDs, and environment variables.
 
 ---
 
@@ -405,14 +415,14 @@ The table below is a human-friendly summary of that catalog.
 
 For comprehensive guides, architecture deep-dives, and production integrations:
 
-- 📖 **[Operator Runbook](docs/RUNBOOK.md)** — Production operations, CLI command reference, desktop build instructions, database backups, disaster recovery, and storage GC maintenance.
-- 🏗️ **[System Architecture](docs/ARCHITECTURE.md)** — GPUI Metal desktop architecture, Copy-on-Write sandboxing, 7 domain subpackages, cryptographic SHA-256 chain, and AST code intelligence.
-- ⚖️ **[Harness Comparison](docs/COMPARISON.md)** — In-depth architectural comparison against Hermes Agent, OpenClaw, Claude Code, and Aider.
-- 🤖 **[Supported Models & 26 Providers](docs/SUPPORTED_MODELS.md)** — Complete catalog of 26 providers, curated model IDs, and environment variables.
-- 🤖 **[Sub-Agent Delegation](docs/SUBAGENTS.md)** — Hierarchical child workers, role-based tool gating, and sandbox scratchpads.
-- 🌐 **[Browser & Vision](docs/BROWSER_AND_VISION.md)** — Headless browser automation, `ariaSnapshot` semantic DOM trees, and visual regression testing.
-- 🔌 **[IDE Integration (ACP)](docs/ACP_INTEGRATION.md)** — Configure HEX inside Zed, Neovim (`avante.nvim`), and VS Code via the Agent Client Protocol.
-- 🤝 **[Contributing Guide](docs/CONTRIBUTING.md)** — Development setup, running benchmark evaluations (`hex eval`), and pre-commit checks.
+- 📖 **[Operator Runbook](docs/guides/RUNBOOK.md)** — Production operations, CLI command reference, desktop build instructions, database backups, disaster recovery, and storage GC maintenance.
+- 🏗️ **[System Architecture](docs/architecture/ARCHITECTURE.md)** — GPUI Metal desktop architecture, Copy-on-Write sandboxing, Python package layout, cryptographic SHA-256 chain, and AST code intelligence.
+- ⚖️ **[Harness Comparison](docs/research/COMPARISON.md)** — In-depth architectural comparison against Hermes Agent, OpenClaw, Claude Code, and Aider.
+- 🤖 **[Supported Models & 26 Providers](docs/reference/SUPPORTED_MODELS.md)** — Complete catalog of 26 providers, curated model IDs, and environment variables.
+- 🤖 **[Sub-Agent Delegation](docs/guides/SUBAGENTS.md)** — Hierarchical child workers, role-based tool gating, and sandbox scratchpads.
+- 🌐 **[Browser & Vision](docs/guides/BROWSER_AND_VISION.md)** — Headless browser automation, `ariaSnapshot` semantic DOM trees, and visual regression testing.
+- 🔌 **[IDE Integration (ACP)](docs/reference/ACP_INTEGRATION.md)** — Configure HEX inside Zed, Neovim (`avante.nvim`), and VS Code via the Agent Client Protocol.
+- 🤝 **[Contributing Guide](docs/development/CONTRIBUTING.md)** — Development setup, running benchmark evaluations (`hex eval`), and pre-commit checks.
 
 ---
 

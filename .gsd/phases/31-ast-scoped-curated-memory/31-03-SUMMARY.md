@@ -2,7 +2,7 @@
 
 **Execution Date:** 2026-11-14  
 **Status:** Complete  
-**Verification:** All 10 tests in `tests/test_amem_and_lifecycle.py` passing, all 27 tests in `tests/test_ast_scoped_memory.py` and `tests/test_curated_memory.py` green (37 total tests passed in 3.17s).
+**Verification:** All 10 tests in `tests/cognition/test_amem_and_lifecycle.py` passing, all 27 tests in `tests/cognition/test_ast_scoped_memory.py` and `tests/cognition/test_curated_memory.py` green (37 total tests passed in 3.17s).
 
 ---
 
@@ -46,29 +46,29 @@
   - `/memory history [target]`: lists timestamped snapshots.
   - `/memory rollback <timestamp>`: executes safe rollback to chosen snapshot.
   - `/memory <query>`: searches across active memories, orchestrator memories, and SQLite FTS5 cold archive.
-- Authored test suite covering CRUD, contradiction resolution, wiki-links, hit counters, promotion, FTS5 demotion, history snapshots, and CLI/TUI commands in `tests/test_amem_and_lifecycle.py`.
+- Authored test suite covering CRUD, contradiction resolution, wiki-links, hit counters, promotion, FTS5 demotion, history snapshots, and CLI/TUI commands in `tests/cognition/test_amem_and_lifecycle.py`.
 - Committed as `feat(phase-31): implement history snapshots and rollback cli and tui ergonomics` (`d51f6db`).
 
 ---
 
 ## Empirical Verification
 
-1. `tests/test_amem_and_lifecycle.py`:
+1. `tests/cognition/test_amem_and_lifecycle.py`:
    ```
-   tests/test_amem_and_lifecycle.py::TestAMEMController::test_amem_crud PASSED
-   tests/test_amem_and_lifecycle.py::TestAMEMController::test_contradiction PASSED
-   tests/test_amem_and_lifecycle.py::TestAMEMController::test_wiki_links PASSED
-   tests/test_amem_and_lifecycle.py::TestMemoryLifecycleManager::test_demotion_fts5 PASSED
-   tests/test_amem_and_lifecycle.py::TestMemoryLifecycleManager::test_lifecycle_hit_counter PASSED
-   tests/test_amem_and_lifecycle.py::TestMemoryLifecycleManager::test_promotion PASSED
-   tests/test_amem_and_lifecycle.py::TestHistoryAndRollback::test_history_snapshots_and_rollback PASSED
-   tests/test_amem_and_lifecycle.py::TestCliAndTuiMemory::test_cli_memory_history_and_rollback PASSED
-   tests/test_amem_and_lifecycle.py::TestCliAndTuiMemory::test_cli_memory_list_and_search PASSED
-   tests/test_amem_and_lifecycle.py::TestCliAndTuiMemory::test_tui_memory_slash_commands PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestAMEMController::test_amem_crud PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestAMEMController::test_contradiction PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestAMEMController::test_wiki_links PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestMemoryLifecycleManager::test_demotion_fts5 PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestMemoryLifecycleManager::test_lifecycle_hit_counter PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestMemoryLifecycleManager::test_promotion PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestHistoryAndRollback::test_history_snapshots_and_rollback PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestCliAndTuiMemory::test_cli_memory_history_and_rollback PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestCliAndTuiMemory::test_cli_memory_list_and_search PASSED
+   tests/cognition/test_amem_and_lifecycle.py::TestCliAndTuiMemory::test_tui_memory_slash_commands PASSED
    ============================== 10 passed in 2.41s ==============================
    ```
 
-2. Existing AST-Scoped and Curated Memory Suites (`tests/test_ast_scoped_memory.py`, `tests/test_curated_memory.py`):
+2. Existing AST-Scoped and Curated Memory Suites (`tests/cognition/test_ast_scoped_memory.py`, `tests/cognition/test_curated_memory.py`):
    ```
    ============================== 27 passed in 1.39s ==============================
    ```

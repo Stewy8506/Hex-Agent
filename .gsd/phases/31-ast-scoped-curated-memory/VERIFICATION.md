@@ -31,11 +31,11 @@ Zero Regressions Across ReAct Loop, Gateway, and Subagent Suites
 
 | Must-Have Requirement | Spec Ref | Status | Empirical Proof / Command |
 |---|---|---|---|
-| **1. Dual Human-Readable Markdown Stores (`USER.md` & `MEMORY.md`) with Turn-0 Frozen Snapshotting & `StreamingContextScrubber`** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/test_curated_memory.py -v` (19/19 passed); verified 1,375 char limit for `USER.md` in `HEX_HOME`, 2,200 char limit for `MEMORY.md` in `.hex/memories/`, `ENTRY_DELIMITER = "\n§\n"`, atomic locking, drift detection `.bak`, and complete streaming tag suppression across split chunks. |
-| **2. Negative Constraint Memory (`GUARDRAILS.md` with `[AVOID]` Invariants)** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/test_curated_memory.py -k guardrails -v` (6/6 passed); verified 2,000 char FIFO eviction, transient error filtering (429, 503, timeouts), ReAct loop auto-capture of $\ge 2$ consecutive identical tool failures into `- [AVOID]`, and operator rejected diff/rollback capture. |
-| **3. JIT AST-Scoped Memory Injection into Tool Observations with 100% Frozen KV Cache** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/test_ast_scoped_memory.py -v` (8/8 passed); verified node-bound memory store (`ast_memories.json`), 1-hop caller/callee Graphify traversal, SHA-256 code staleness invalidation, dynamic injection into `_tool_read_file` content, clean un-annotated file pass-through, and 5-turn byte-exact KV-cache SHA-256 prompt invariance. |
-| **4. Zettelkasten A-MEM Controller with Contradiction Resolution & `[[wiki-links]]`** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/test_amem_and_lifecycle.py -k amem -v` (3/3 passed); verified `extract_wiki_tags`, inverted tag index, neighborhood retrieval `get_linked_neighborhood`, transition detection ("instead of", "rather than", "migrated from"), polarity shift detection, and automatic in-place `UPDATE`/`DELETE` over conflicting bullets. |
-| **5. Memory Lifecycle Engine (Hit Counters, Promotion, 30d SQLite FTS5 Archival Demotion, Lightweight `.history/` Snapshots)** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/test_amem_and_lifecycle.py -k "lifecycle or history or cli" -v` (7/7 passed); verified `hit_counter` tracking, promotion of reflections ($\ge 3$ hits) to `MEMORY.md`, sweep demotion of >30d unreferenced notes to SQLite FTS5 cold archive (`archive.db`), BM25 ranked search, bounded `.history/` snapshots, and CLI/TUI rollback ergonomics. |
+| **1. Dual Human-Readable Markdown Stores (`USER.md` & `MEMORY.md`) with Turn-0 Frozen Snapshotting & `StreamingContextScrubber`** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/cognition/test_curated_memory.py -v` (19/19 passed); verified 1,375 char limit for `USER.md` in `HEX_HOME`, 2,200 char limit for `MEMORY.md` in `.hex/memories/`, `ENTRY_DELIMITER = "\n§\n"`, atomic locking, drift detection `.bak`, and complete streaming tag suppression across split chunks. |
+| **2. Negative Constraint Memory (`GUARDRAILS.md` with `[AVOID]` Invariants)** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/cognition/test_curated_memory.py -k guardrails -v` (6/6 passed); verified 2,000 char FIFO eviction, transient error filtering (429, 503, timeouts), ReAct loop auto-capture of $\ge 2$ consecutive identical tool failures into `- [AVOID]`, and operator rejected diff/rollback capture. |
+| **3. JIT AST-Scoped Memory Injection into Tool Observations with 100% Frozen KV Cache** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/cognition/test_ast_scoped_memory.py -v` (8/8 passed); verified node-bound memory store (`ast_memories.json`), 1-hop caller/callee Graphify traversal, SHA-256 code staleness invalidation, dynamic injection into `_tool_read_file` content, clean un-annotated file pass-through, and 5-turn byte-exact KV-cache SHA-256 prompt invariance. |
+| **4. Zettelkasten A-MEM Controller with Contradiction Resolution & `[[wiki-links]]`** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/cognition/test_amem_and_lifecycle.py -k amem -v` (3/3 passed); verified `extract_wiki_tags`, inverted tag index, neighborhood retrieval `get_linked_neighborhood`, transition detection ("instead of", "rather than", "migrated from"), polarity shift detection, and automatic in-place `UPDATE`/`DELETE` over conflicting bullets. |
+| **5. Memory Lifecycle Engine (Hit Counters, Promotion, 30d SQLite FTS5 Archival Demotion, Lightweight `.history/` Snapshots)** | SPEC §7.2, ROADMAP Phase 31 | **PASS** | `pytest tests/cognition/test_amem_and_lifecycle.py -k "lifecycle or history or cli" -v` (7/7 passed); verified `hit_counter` tracking, promotion of reflections ($\ge 3$ hits) to `MEMORY.md`, sweep demotion of >30d unreferenced notes to SQLite FTS5 cold archive (`archive.db`), BM25 ranked search, bounded `.history/` snapshots, and CLI/TUI rollback ergonomics. |
 
 ---
 
@@ -106,7 +106,7 @@ ALL 8 INDEPENDENT EMPIRICAL TESTS PASSED WITH ZERO FAILURES!
 A core invariant of Phase 31 is that system prompt Slot #4 must remain **100% frozen** across turns, ensuring provider prefix cache hit rates exceed 90%.
 
 **Empirical Verification Proof:**
-From `tests/test_ast_scoped_memory.py::test_prompt_cache_prefix_stability_across_turns`:
+From `tests/cognition/test_ast_scoped_memory.py::test_prompt_cache_prefix_stability_across_turns`:
 ```python
 # Initial Turn 0 Prompt Build
 initial_prompt = loop.prompt_builder.build_system_prompt(workspace_root=self.ws, mode="agent")
@@ -192,7 +192,7 @@ Executed the full Phase 31 memory suite alongside core regression suites:
 
 **Command:**
 ```bash
-env PATH="$PWD/.venv/bin:$PATH" .venv/bin/pytest tests/test_curated_memory.py tests/test_ast_scoped_memory.py tests/test_amem_and_lifecycle.py tests/test_prompt_builder.py tests/test_react_loop.py tests/test_gateway_tools.py tests/test_sandbox_isolation.py tests/test_autonomous_repair.py -v
+env PATH="$PWD/.venv/bin:$PATH" .venv/bin/pytest tests/cognition/test_curated_memory.py tests/cognition/test_ast_scoped_memory.py tests/cognition/test_amem_and_lifecycle.py tests/cognition/test_prompt_builder.py tests/core/test_react_loop.py tests/tools/test_gateway_tools.py tests/storage/test_sandbox_isolation.py tests/core/test_autonomous_repair.py -v
 ```
 
 **Result:**
@@ -200,14 +200,14 @@ env PATH="$PWD/.venv/bin:$PATH" .venv/bin/pytest tests/test_curated_memory.py te
 ============================= 113 passed in 13.58s =============================
 ```
 
-- `tests/test_curated_memory.py`: 19/19 passed
-- `tests/test_ast_scoped_memory.py`: 8/8 passed
-- `tests/test_amem_and_lifecycle.py`: 10/10 passed
-- `tests/test_prompt_builder.py`: 5/5 passed
-- `tests/test_react_loop.py`: 33/33 passed
-- `tests/test_gateway_tools.py`: 14/14 passed
-- `tests/test_sandbox_isolation.py`: 18/18 passed
-- `tests/test_autonomous_repair.py`: 6/6 passed
+- `tests/cognition/test_curated_memory.py`: 19/19 passed
+- `tests/cognition/test_ast_scoped_memory.py`: 8/8 passed
+- `tests/cognition/test_amem_and_lifecycle.py`: 10/10 passed
+- `tests/cognition/test_prompt_builder.py`: 5/5 passed
+- `tests/core/test_react_loop.py`: 33/33 passed
+- `tests/tools/test_gateway_tools.py`: 14/14 passed
+- `tests/storage/test_sandbox_isolation.py`: 18/18 passed
+- `tests/core/test_autonomous_repair.py`: 6/6 passed
 
 ---
 

@@ -49,7 +49,7 @@
   - Wired `LocalMLXModelProvider.compress_log()` delegating to `Tier1LogCompressor`.
 
 ### Task 3: Unit and Contract Test Suite
-- Authored `tests/test_model_providers.py` with 15 comprehensive unit tests:
+- Authored `tests/providers/test_model_providers.py` with 15 comprehensive unit tests:
   - `TestModelProviderBase`: `ModelUsage` arithmetic and serialization, `ModelResponse` serialization, `ProviderCapabilities`, exception hierarchies.
   - `TestLocalMLXModelProvider`: Apple Silicon detection across Darwin arm64/aarch64 vs Linux x86_64 vs Windows, `mlx_lm` availability checks, fallback generation, and mocked `mlx_lm` inference.
   - `TestTier1LogCompressor`: >70% token reduction on synthetic 150-test pytest logs, multi-failure log extraction across different files, secret redaction (`sk-ant-`, `ghp_`), short/empty log resilience, and provider delegation.
@@ -72,7 +72,7 @@
 
 3. **Task 3 Verification (New Model Provider Test Suite):**
    ```bash
-   .venv/bin/python -m unittest tests/test_model_providers.py
+   .venv/bin/python -m unittest tests/providers/test_model_providers.py
    # Output: Ran 15 tests in 0.003s — OK
    ```
 

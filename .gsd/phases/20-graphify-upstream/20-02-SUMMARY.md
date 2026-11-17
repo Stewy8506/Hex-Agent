@@ -33,7 +33,7 @@
    - When `br.impacted_tests` or `br.hop1_dependents` are detected, automatically calls `self.ledger.append_blast_radius_checks(task_id, br.impacted_tests, br.warning_message)`.
 
 4. **Empirical Verification**:
-   - Authored comprehensive test suite in `tests/test_graphify_polyglot_blast_radius.py` with 5 test cases covering:
+   - Authored comprehensive test suite in `tests/tools/test_graphify_polyglot_blast_radius.py` with 5 test cases covering:
      1. `test_is_test_file_polyglot_extensions`: validates test file recognition across Python, TS/JS, Go, Rust, Java, C++, and directories (`tests/`, `__tests__/`, `spec/`), rejecting production files.
      2. `test_compute_blast_radius_upstream_polyglot`: builds a multi-language graph (Go backend calling database, tested by `db_test.go`; TypeScript frontend calling API service, tested by `Profile.test.tsx`), invoking `compute_blast_radius` and verifying 1-hop/2-hop dependents and pinned tests.
      3. `test_compute_blast_radius_native_java_and_cpp`: validates native polyglot symbol extraction and test pinning for Java (`OrderServiceTest.java`) and C++ (`test_crypto.cpp`).

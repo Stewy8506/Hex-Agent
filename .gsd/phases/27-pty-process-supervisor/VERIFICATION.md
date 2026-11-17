@@ -143,10 +143,10 @@ In `src/harness_core/cli.py`:
 
 ## 5. Empirical Verification Evidence
 
-### 5.1. Unit Tests (`tests/test_process_registry.py`)
+### 5.1. Unit Tests (`tests/runtime/test_process_registry.py`)
 Command:
 ```bash
-.venv/bin/python -m unittest tests/test_process_registry.py
+.venv/bin/python -m unittest tests/runtime/test_process_registry.py
 ```
 Output:
 ```
@@ -172,10 +172,10 @@ Tests verified:
 12. `test_spawn_failing_command`: Non-zero exit code capture and status `failed`.
 13. `test_streaming_background_process`: Incremental multi-chunk stream consumption.
 
-### 5.2. Gateway & End-to-End Integration Tests (`tests/test_gateway_process_tools.py`)
+### 5.2. Gateway & End-to-End Integration Tests (`tests/tools/test_gateway_process_tools.py`)
 Command:
 ```bash
-.venv/bin/python -m unittest tests/test_gateway_process_tools.py
+.venv/bin/python -m unittest tests/tools/test_gateway_process_tools.py
 ```
 Output:
 ```
@@ -202,7 +202,7 @@ Tests verified:
 ### 5.3. Combined Verification Run
 Command:
 ```bash
-.venv/bin/python -m unittest tests/test_process_registry.py tests/test_gateway_process_tools.py tests/test_gateway_tools.py
+.venv/bin/python -m unittest tests/runtime/test_process_registry.py tests/tools/test_gateway_process_tools.py tests/tools/test_gateway_tools.py
 ```
 Output:
 ```

@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Plan 03-02 completes the security gating, dynamic tool registration, and 0ms call journaling memoization for external Model Context Protocol (MCP) servers. `SkillSecurityScanner` in `src/harness_core/skillspector.py` was extended to validate external MCP manifests and tool schemas against prompt injections, hidden instructions, and semantic misalignment, pinning the manifest's canonical SHA-256 digest. `ToolGateway` in `src/harness_core/gateway.py` integrates `register_mcp_server`, enforcing default-deny policy (R0–R4), secret redaction, and call-level journal memoization. A comprehensive end-to-end test suite in `tests/test_mcp_gateway_journal.py` empirically proves prompt injection quarantine, manifest tampering detection, 0ms memoized replay on simulated crashes, and R0–R4 policy enforcement with 0 subprocess calls on replay.
+Plan 03-02 completes the security gating, dynamic tool registration, and 0ms call journaling memoization for external Model Context Protocol (MCP) servers. `SkillSecurityScanner` in `src/harness_core/skillspector.py` was extended to validate external MCP manifests and tool schemas against prompt injections, hidden instructions, and semantic misalignment, pinning the manifest's canonical SHA-256 digest. `ToolGateway` in `src/harness_core/gateway.py` integrates `register_mcp_server`, enforcing default-deny policy (R0–R4), secret redaction, and call-level journal memoization. A comprehensive end-to-end test suite in `tests/tools/test_mcp_gateway_journal.py` empirically proves prompt injection quarantine, manifest tampering detection, 0ms memoized replay on simulated crashes, and R0–R4 policy enforcement with 0 subprocess calls on replay.
 
 ---
 
@@ -42,7 +42,7 @@ Plan 03-02 completes the security gating, dynamic tool registration, and 0ms cal
 - **Commit**: `4307ab6` (`feat(phase-03): integrate dynamic MCP tool registration and 0ms call journaling into ToolGateway`).
 
 ### Task 3: End-to-End Security Gate, 0ms Replay, and Policy Test Suite
-- Authored `tests/test_mcp_gateway_journal.py` covering 10 test scenarios across 3 test classes:
+- Authored `tests/tools/test_mcp_gateway_journal.py` covering 10 test scenarios across 3 test classes:
   - **`TestMCPGatewaySecurityGate`**:
     - `test_benign_server_registration_and_audit_scan`: Verifies successful tool registration, R1–R4 risk mapping, and audit entry in `skill_scans`.
     - `test_manifest_sha256_pinning_and_tamper_detection`: Verifies tamper detection rejecting forged or modified digests.
@@ -82,20 +82,20 @@ register_mcp_server available: True
 
 ### Verification 3: Task 3 `<verify>` Command
 ```bash
-.venv/bin/python -m unittest tests/test_mcp_gateway_journal.py -v
+.venv/bin/python -m unittest tests/tools/test_mcp_gateway_journal.py -v
 ```
 **Output:**
 ```
-test_0ms_deterministic_replay_on_worker_crash_or_retry (tests.test_mcp_gateway_journal.TestMCPGateway0msJournalReplay.test_0ms_deterministic_replay_on_worker_crash_or_retry) ... ok
-test_allowed_tools_whitelist_blocks_unauthorized_mcp_tools (tests.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_allowed_tools_whitelist_blocks_unauthorized_mcp_tools) ... ok
-test_fast_path_prohibits_r2_write_artifact (tests.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_fast_path_prohibits_r2_write_artifact) ... ok
-test_normal_task_r3_approval_flow (tests.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_normal_task_r3_approval_flow) ... ok
-test_r4_admin_override_unconditionally_denied (tests.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_r4_admin_override_unconditionally_denied) ... ok
-test_secret_redaction_before_journaling (tests.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_secret_redaction_before_journaling) ... ok
-test_adversarial_server_prompt_injection_quarantined (tests.test_mcp_gateway_journal.TestMCPGatewaySecurityGate.test_adversarial_server_prompt_injection_quarantined) ... ok
-test_benign_server_registration_and_audit_scan (tests.test_mcp_gateway_journal.TestMCPGatewaySecurityGate.test_benign_server_registration_and_audit_scan) ... ok
-test_destructive_tool_on_readonly_server_quarantined (tests.test_mcp_gateway_journal.TestMCPGatewaySecurityGate.test_destructive_tool_on_readonly_server_quarantined) ... ok
-test_manifest_sha256_pinning_and_tamper_detection (tests.test_mcp_gateway_journal.TestMCPGatewaySecurityGate.test_manifest_sha256_pinning_and_tamper_detection) ... ok
+test_0ms_deterministic_replay_on_worker_crash_or_retry (tests.tools.test_mcp_gateway_journal.TestMCPGateway0msJournalReplay.test_0ms_deterministic_replay_on_worker_crash_or_retry) ... ok
+test_allowed_tools_whitelist_blocks_unauthorized_mcp_tools (tests.tools.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_allowed_tools_whitelist_blocks_unauthorized_mcp_tools) ... ok
+test_fast_path_prohibits_r2_write_artifact (tests.tools.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_fast_path_prohibits_r2_write_artifact) ... ok
+test_normal_task_r3_approval_flow (tests.tools.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_normal_task_r3_approval_flow) ... ok
+test_r4_admin_override_unconditionally_denied (tests.tools.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_r4_admin_override_unconditionally_denied) ... ok
+test_secret_redaction_before_journaling (tests.tools.test_mcp_gateway_journal.TestMCPGatewayPolicyEnforcement.test_secret_redaction_before_journaling) ... ok
+test_adversarial_server_prompt_injection_quarantined (tests.tools.test_mcp_gateway_journal.TestMCPGatewaySecurityGate.test_adversarial_server_prompt_injection_quarantined) ... ok
+test_benign_server_registration_and_audit_scan (tests.tools.test_mcp_gateway_journal.TestMCPGatewaySecurityGate.test_benign_server_registration_and_audit_scan) ... ok
+test_destructive_tool_on_readonly_server_quarantined (tests.tools.test_mcp_gateway_journal.TestMCPGatewaySecurityGate.test_destructive_tool_on_readonly_server_quarantined) ... ok
+test_manifest_sha256_pinning_and_tamper_detection (tests.tools.test_mcp_gateway_journal.TestMCPGatewaySecurityGate.test_manifest_sha256_pinning_and_tamper_detection) ... ok
 
 ----------------------------------------------------------------------
 Ran 10 tests in 0.331s
@@ -133,7 +133,7 @@ OK
 |------|--------|-------------|
 | `src/harness_core/skillspector.py` | Modified | Added `compute_mcp_manifest_sha256`, `scan_mcp_manifest`, `verify_mcp_manifest_integrity`, and prompt injection rules |
 | `src/harness_core/gateway.py` | Modified | Added `register_mcp_server`, MCP server state pinning, and `_duration_ms`/`_result_sha256` in sealed calls |
-| `tests/test_mcp_gateway_journal.py` | Created | Comprehensive 10-test verification suite for MCP security gate, 0ms replay, and policy enforcement |
+| `tests/tools/test_mcp_gateway_journal.py` | Created | Comprehensive 10-test verification suite for MCP security gate, 0ms replay, and policy enforcement |
 
 ---
 

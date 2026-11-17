@@ -11,4 +11,4 @@
 2. **Deterministic Risk Scoring**:
    - Mapped AST severities into deterministic score penalties (`critical` -> 95, `high` -> 80, `medium` -> 55, `low` -> 25), triggering `REJECT_QUARANTINE` on hazardous skills.
 3. **Verification**:
-   - Authored `tests/test_skillspector_ast_wiring.py` (6/6 tests passing).
+   - Authored `tests/skills/test_skillspector_ast_wiring.py` (6/6 tests passing).

@@ -74,7 +74,7 @@ Total: 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 HEX TUI headless verification passed: 1 virtual frame rendered successfully.
 ```
 
-### Python Launcher Integration Tests (`python3 -m unittest tests/test_rust_tui_launcher.py`):
+### Python Launcher Integration Tests (`python3 -m unittest tests/client/test_rust_tui_launcher.py`):
 ```text
 Ran 8 tests in 0.148s
 OK

@@ -10,7 +10,7 @@
 
 | # | Spec Requirement | Implementation Detail | Verification Command / Evidence | Status |
 |---|---|---|---|---|
-| 1 | Python AST parsing | `skillspector.python_ast.get_python_ast` | `tests/test_skillspector_ast_wiring.py` | PASS |
+| 1 | Python AST parsing | `skillspector.python_ast.get_python_ast` | `tests/skills/test_skillspector_ast_wiring.py` | PASS |
 | 2 | Dangerous builtin detection | `_analyze_python` detects `eval`, `exec` | `test_ast_detects_eval_and_exec` | PASS |
 | 3 | Subprocess command execution | Detects `os.system`, `subprocess.Popen` | `test_ast_detects_os_system_and_subprocess` | PASS |
 | 4 | Insecure deserialization | Detects `pickle.loads` | `test_ast_detects_insecure_deserialization` | PASS |
@@ -26,7 +26,7 @@
 ## 2. Empirical Verification Execution
 
 ```bash
-$ .venv/bin/python -m unittest tests/test_skillspector_ast_wiring.py tests/test_skillspector_osv_wiring.py
+$ .venv/bin/python -m unittest tests/skills/test_skillspector_ast_wiring.py tests/skills/test_skillspector_osv_wiring.py
 ..........
 ----------------------------------------------------------------------
 Ran 10 tests in 6.782s

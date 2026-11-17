@@ -45,7 +45,7 @@
 |--------|------------------|----------------|--------|
 | Task 1 | Implement live model discovery endpoints and fallback catalog across providers | `src/harness_core/providers/antigravity_provider.py`<br>`src/harness_core/providers/cloud_provider.py` | `52e3d1c feat(providers): implement live model discovery endpoints and fallback catalog` |
 | Task 2 | Invert onboarding wizard and integrate interactive /model selector in TUI | `src/harness_core/onboard.py`<br>`src/harness_core/tui.py` | `4bc2e23 feat(onboard): invert onboarding flow and add live tui model discovery` |
-| Task 3 | Author unit and integration tests for live model discovery and fallback | `tests/test_live_model_discovery.py`<br>`src/harness_core/tui.py` | `0834031 test(discovery): author unit and integration tests for live model discovery and fallback` |
+| Task 3 | Author unit and integration tests for live model discovery and fallback | `tests/client/test_live_model_discovery.py`<br>`src/harness_core/tui.py` | `0834031 test(discovery): author unit and integration tests for live model discovery and fallback` |
 
 ---
 
@@ -63,9 +63,9 @@
    # Output: SUCCESS: model = gemini-2.5-pro
    ```
 
-3. **Dedicated Test Suite (`tests/test_live_model_discovery.py`):**
+3. **Dedicated Test Suite (`tests/client/test_live_model_discovery.py`):**
    ```bash
-   PYTHONPATH=src .venv/bin/python -m unittest tests/test_live_model_discovery.py
+   PYTHONPATH=src .venv/bin/python -m unittest tests/client/test_live_model_discovery.py
    # Output: Ran 12 tests in 0.088s, OK
    ```
 

@@ -35,7 +35,7 @@ The implementation was independently reviewed and empirically validated against 
 
 | Must-Have | Status | Empirical Evidence |
 |:---|:---:|:---|
-| **1. Multi-tier soul resolution hierarchy** (`workspace` > `global` > `default`) | **PASS** | `src/harness_core/soul.py` lines 131–159; `tests/test_soul_manager.py:test_soul_manager_resolution_hierarchy` passes. Verified workspace `.hex/SOUL.md` overrides `~/.hex/SOUL.md`. |
+| **1. Multi-tier soul resolution hierarchy** (`workspace` > `global` > `default`) | **PASS** | `src/harness_core/soul.py` lines 131–159; `tests/cognition/test_soul_manager.py:test_soul_manager_resolution_hierarchy` passes. Verified workspace `.hex/SOUL.md` overrides `~/.hex/SOUL.md`. |
 | **2. Atomic template seeding & legacy template upgrades** | **PASS** | `src/harness_core/soul.py` lines 90–130; `test_soul_manager_initialization_seeds_defaults`, `test_soul_manager_upgrades_legacy_template`, and `test_soul_manager_preserves_custom_user_soul` pass. All 4 legacy template fingerprints upgrade; user customizations preserved. |
 | **3. Compact token budget discipline (~300–500 tokens / 2,500 chars)** | **PASS** | `src/harness_core/soul.py` lines 62, 160–171 (`_enforce_budget`); `test_soul_manager_enforces_budget` passes. Strings exceeding 2,500 chars truncated with notice. |
 | **4. Dynamic identity renaming (`rename_identity` / `/rename`)** | **PASS** | `src/harness_core/soul.py` lines 181–238, `src/harness_core/tui.py` lines 1759–1772; `test_soul_manager_rename_identity` passes. TUI `/rename Athena` tested and verified. |
@@ -47,7 +47,7 @@ The implementation was independently reviewed and empirically validated against 
 ## 3. Detailed Empirical Evidence
 
 ### 3.1 SoulManager & PromptBuilder Test Suite
-Command: `.venv/bin/pytest tests/test_soul_manager.py tests/test_prompt_builder.py -v`
+Command: `.venv/bin/pytest tests/cognition/test_soul_manager.py tests/cognition/test_prompt_builder.py -v`
 ```text
 ============================= test session starts ==============================
 platform darwin -- Python 3.14.3, pytest-9.2.0, pluggy-1.7.0 -- /Users/anv./Development/Harness/.venv/bin/python3.14
@@ -57,23 +57,23 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 11 items
 
-tests/test_soul_manager.py::test_soul_manager_initialization_seeds_defaults PASSED [  9%]
-tests/test_soul_manager.py::test_soul_manager_resolution_hierarchy PASSED [ 18%]
-tests/test_soul_manager.py::test_soul_manager_upgrades_legacy_template PASSED [ 27%]
-tests/test_soul_manager.py::test_soul_manager_preserves_custom_user_soul PASSED [ 36%]
-tests/test_soul_manager.py::test_soul_manager_enforces_budget PASSED     [ 45%]
-tests/test_soul_manager.py::test_soul_manager_rename_identity PASSED     [ 54%]
-tests/test_prompt_builder.py::test_scan_for_threats PASSED               [ 63%]
-tests/test_prompt_builder.py::test_scan_context_content_user_authored_vs_remote PASSED [ 72%]
-tests/test_prompt_builder.py::test_prompt_builder_5_slot_assembly PASSED [ 81%]
-tests/test_prompt_builder.py::test_prompt_builder_mode_modulators PASSED [ 90%]
-tests/test_prompt_builder.py::test_orchestrator_integration_with_prompt_builder_and_soul PASSED [100%]
+tests/cognition/test_soul_manager.py::test_soul_manager_initialization_seeds_defaults PASSED [  9%]
+tests/cognition/test_soul_manager.py::test_soul_manager_resolution_hierarchy PASSED [ 18%]
+tests/cognition/test_soul_manager.py::test_soul_manager_upgrades_legacy_template PASSED [ 27%]
+tests/cognition/test_soul_manager.py::test_soul_manager_preserves_custom_user_soul PASSED [ 36%]
+tests/cognition/test_soul_manager.py::test_soul_manager_enforces_budget PASSED     [ 45%]
+tests/cognition/test_soul_manager.py::test_soul_manager_rename_identity PASSED     [ 54%]
+tests/cognition/test_prompt_builder.py::test_scan_for_threats PASSED               [ 63%]
+tests/cognition/test_prompt_builder.py::test_scan_context_content_user_authored_vs_remote PASSED [ 72%]
+tests/cognition/test_prompt_builder.py::test_prompt_builder_5_slot_assembly PASSED [ 81%]
+tests/cognition/test_prompt_builder.py::test_prompt_builder_mode_modulators PASSED [ 90%]
+tests/cognition/test_prompt_builder.py::test_orchestrator_integration_with_prompt_builder_and_soul PASSED [100%]
 
 ============================== 11 passed in 1.27s ==============================
 ```
 
 ### 3.2 ReAct Loop Core Test Suite
-Command: `.venv/bin/pytest tests/test_react_loop.py -v`
+Command: `.venv/bin/pytest tests/core/test_react_loop.py -v`
 ```text
 ============================= test session starts ==============================
 platform darwin -- Python 3.14.3, pytest-9.2.0, pluggy-1.7.0 -- /Users/anv./Development/Harness/.venv/bin/python3.14
@@ -83,39 +83,39 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 33 items
 
-tests/test_react_loop.py::TestReActDataStructures::test_default_config PASSED [  3%]
-tests/test_react_loop.py::TestReActDataStructures::test_turn_and_session_result_defaults PASSED [  6%]
-tests/test_react_loop.py::TestToolCallParsing::test_parse_embedded_json_in_text PASSED [  9%]
-tests/test_react_loop.py::TestToolCallParsing::test_parse_json_dict_response PASSED [ 12%]
-tests/test_react_loop.py::TestToolCallParsing::test_parse_markdown_code_fence_single_tool PASSED [ 15%]
-tests/test_react_loop.py::TestToolCallParsing::test_parse_markdown_json_code_fence PASSED [ 18%]
-tests/test_react_loop.py::TestToolCallParsing::test_parse_no_tool_calls PASSED [ 21%]
-tests/test_react_loop.py::TestToolCallParsing::test_parse_raw_json_string PASSED [ 24%]
-tests/test_react_loop.py::TestToolCallParsing::test_parse_single_tool_dict_response PASSED [ 27%]
-tests/test_react_loop.py::TestToolCallParsing::test_parse_xml_tool_call_block PASSED [ 30%]
-tests/test_react_loop.py::TestToolCallParsing::test_parse_xml_tool_call_with_tag_name PASSED [ 33%]
-tests/test_react_loop.py::TestMultiTurnReActLoop::test_max_turns_limit_reached PASSED [ 36%]
-tests/test_react_loop.py::TestMultiTurnReActLoop::test_model_caller_exception PASSED [ 39%]
-tests/test_react_loop.py::TestMultiTurnReActLoop::test_multi_turn_cycle_with_finish PASSED [ 42%]
-tests/test_react_loop.py::TestMultiTurnReActLoop::test_natural_final_answer_termination PASSED [ 45%]
-tests/test_react_loop.py::TestMultiTurnReActLoop::test_preflight_session_hygiene PASSED [ 48%]
-tests/test_react_loop.py::TestMultiTurnReActLoop::test_react_loop_streaming_events PASSED [ 51%]
-tests/test_react_loop.py::TestMultiTurnReActLoop::test_tool_execution_error_recovery PASSED [ 54%]
-tests/test_react_loop.py::TestMultiTurnReActLoop::test_unknown_tool_error PASSED [ 57%]
-tests/test_react_loop.py::TestLedgerIntegration::test_ledger_step_recording PASSED [ 60%]
-tests/test_react_loop.py::TestLedgerIntegration::test_real_ledger_store_execution PASSED [ 63%]
-tests/test_react_loop.py::TestAsyncAndRealGateway::test_async_react_loop PASSED [ 66%]
-tests/test_react_loop.py::TestAsyncAndRealGateway::test_real_tool_gateway_file_read_and_write PASSED [ 69%]
-tests/test_react_loop.py::TestOrchestratorAgentLoop::test_run_agent_loop_custom_workspace PASSED [ 72%]
-tests/test_react_loop.py::TestOrchestratorAgentLoop::test_run_agent_loop_deterministic_conversational PASSED [ 75%]
-tests/test_react_loop.py::TestOrchestratorAgentLoop::test_run_agent_loop_deterministic_tool_execution PASSED [ 78%]
-tests/test_react_loop.py::TestOrchestratorAgentLoop::test_run_agent_loop_with_active_router PASSED [ 81%]
-tests/test_react_loop.py::TestTUIReActIntegration::test_handle_user_prompt_react_mode_invokes_agent_loop PASSED [ 84%]
-tests/test_react_loop.py::TestTUIReActIntegration::test_react_mode_default_and_toggle PASSED [ 87%]
-tests/test_react_loop.py::TestTUIReActIntegration::test_react_mode_initialized_from_flag PASSED [ 90%]
-tests/test_react_loop.py::TestCLIReActFlags::test_cli_chat_react_flag PASSED [ 93%]
-tests/test_react_loop.py::TestCLIReActFlags::test_cli_run_react_execution PASSED [ 96%]
-tests/test_react_loop.py::TestCLIReActFlags::test_cli_top_level_react_flag PASSED [100%]
+tests/core/test_react_loop.py::TestReActDataStructures::test_default_config PASSED [  3%]
+tests/core/test_react_loop.py::TestReActDataStructures::test_turn_and_session_result_defaults PASSED [  6%]
+tests/core/test_react_loop.py::TestToolCallParsing::test_parse_embedded_json_in_text PASSED [  9%]
+tests/core/test_react_loop.py::TestToolCallParsing::test_parse_json_dict_response PASSED [ 12%]
+tests/core/test_react_loop.py::TestToolCallParsing::test_parse_markdown_code_fence_single_tool PASSED [ 15%]
+tests/core/test_react_loop.py::TestToolCallParsing::test_parse_markdown_json_code_fence PASSED [ 18%]
+tests/core/test_react_loop.py::TestToolCallParsing::test_parse_no_tool_calls PASSED [ 21%]
+tests/core/test_react_loop.py::TestToolCallParsing::test_parse_raw_json_string PASSED [ 24%]
+tests/core/test_react_loop.py::TestToolCallParsing::test_parse_single_tool_dict_response PASSED [ 27%]
+tests/core/test_react_loop.py::TestToolCallParsing::test_parse_xml_tool_call_block PASSED [ 30%]
+tests/core/test_react_loop.py::TestToolCallParsing::test_parse_xml_tool_call_with_tag_name PASSED [ 33%]
+tests/core/test_react_loop.py::TestMultiTurnReActLoop::test_max_turns_limit_reached PASSED [ 36%]
+tests/core/test_react_loop.py::TestMultiTurnReActLoop::test_model_caller_exception PASSED [ 39%]
+tests/core/test_react_loop.py::TestMultiTurnReActLoop::test_multi_turn_cycle_with_finish PASSED [ 42%]
+tests/core/test_react_loop.py::TestMultiTurnReActLoop::test_natural_final_answer_termination PASSED [ 45%]
+tests/core/test_react_loop.py::TestMultiTurnReActLoop::test_preflight_session_hygiene PASSED [ 48%]
+tests/core/test_react_loop.py::TestMultiTurnReActLoop::test_react_loop_streaming_events PASSED [ 51%]
+tests/core/test_react_loop.py::TestMultiTurnReActLoop::test_tool_execution_error_recovery PASSED [ 54%]
+tests/core/test_react_loop.py::TestMultiTurnReActLoop::test_unknown_tool_error PASSED [ 57%]
+tests/core/test_react_loop.py::TestLedgerIntegration::test_ledger_step_recording PASSED [ 60%]
+tests/core/test_react_loop.py::TestLedgerIntegration::test_real_ledger_store_execution PASSED [ 63%]
+tests/core/test_react_loop.py::TestAsyncAndRealGateway::test_async_react_loop PASSED [ 66%]
+tests/core/test_react_loop.py::TestAsyncAndRealGateway::test_real_tool_gateway_file_read_and_write PASSED [ 69%]
+tests/core/test_react_loop.py::TestOrchestratorAgentLoop::test_run_agent_loop_custom_workspace PASSED [ 72%]
+tests/core/test_react_loop.py::TestOrchestratorAgentLoop::test_run_agent_loop_deterministic_conversational PASSED [ 75%]
+tests/core/test_react_loop.py::TestOrchestratorAgentLoop::test_run_agent_loop_deterministic_tool_execution PASSED [ 78%]
+tests/core/test_react_loop.py::TestOrchestratorAgentLoop::test_run_agent_loop_with_active_router PASSED [ 81%]
+tests/core/test_react_loop.py::TestTUIReActIntegration::test_handle_user_prompt_react_mode_invokes_agent_loop PASSED [ 84%]
+tests/core/test_react_loop.py::TestTUIReActIntegration::test_react_mode_default_and_toggle PASSED [ 87%]
+tests/core/test_react_loop.py::TestTUIReActIntegration::test_react_mode_initialized_from_flag PASSED [ 90%]
+tests/core/test_react_loop.py::TestCLIReActFlags::test_cli_chat_react_flag PASSED [ 93%]
+tests/core/test_react_loop.py::TestCLIReActFlags::test_cli_run_react_execution PASSED [ 96%]
+tests/core/test_react_loop.py::TestCLIReActFlags::test_cli_top_level_react_flag PASSED [100%]
 
 ============================== 33 passed in 2.10s ==============================
 ```

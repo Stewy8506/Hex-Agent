@@ -3,7 +3,7 @@
 **Plan File:** `.gsd/phases/10-git-github-autopilot/10-02-PLAN.md`  
 **Execution Date:** 2026-11-01  
 **Status:** Completed  
-**Tests:** 305/305 Green (21 new test cases in `tests/test_github_action_mode.py`, 0 regressions)
+**Tests:** 305/305 Green (21 new test cases in `tests/capabilities/test_github_action_mode.py`, 0 regressions)
 
 ---
 
@@ -46,7 +46,7 @@ HEX can now be deployed natively inside GitHub Actions workflows to listen to is
 - Supports reading from `--event-path` file, environment variables, or standard input (`sys.stdin`).
 - Returns exit code `0` on completed/skipped, and `1` on failure.
 
-### 5. Comprehensive Unit & Integration Test Suite (`tests/test_github_action_mode.py`)
+### 5. Comprehensive Unit & Integration Test Suite (`tests/capabilities/test_github_action_mode.py`)
 - 21 test cases verifying configuration resolution, trigger parsing edge cases across all 4 event types, task execution success with mock transports, task failure formatting, non-bot skips, secret scrubbing, and CLI invocation.
 
 ---
@@ -67,7 +67,7 @@ HEX can now be deployed natively inside GitHub Actions workflows to listen to is
 
 3. **Task 3 Plan Test Suite:**
    ```bash
-   .venv/bin/python -m unittest tests/test_github_action_mode.py
+   .venv/bin/python -m unittest tests/capabilities/test_github_action_mode.py
    # Result: Ran 21 tests in 0.050s. OK.
    ```
 

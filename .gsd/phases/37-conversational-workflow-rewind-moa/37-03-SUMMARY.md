@@ -49,37 +49,37 @@ Phase 37 Plan 03 implements two high-leverage operator velocity systems:
 
 ### Pytest Verification Suite
 ```
-.venv/bin/pytest tests/test_approval_lease.py tests/test_mobile_reaction_listener.py -v
+.venv/bin/pytest tests/core/test_approval_lease.py tests/capabilities/test_mobile_reaction_listener.py -v
 ============================= test session starts ==============================
 collected 20 items
 
-tests/test_approval_lease.py::test_approval_lease_dataclass_defaults_and_validation PASSED [  5%]
-tests/test_approval_lease.py::test_approval_lease_manager_grant_and_list PASSED [ 10%]
-tests/test_approval_lease.py::test_command_prefix_matching PASSED        [ 15%]
-tests/test_approval_lease.py::test_multi_word_prefix_matching PASSED     [ 20%]
-tests/test_approval_lease.py::test_path_based_lease_matching PASSED      [ 25%]
-tests/test_approval_lease.py::test_lease_expiration_behavior PASSED      [ 30%]
-tests/test_approval_lease.py::test_explicit_lease_revocation PASSED      [ 35%]
-tests/test_approval_lease.py::test_ledger_store_approval_lease_persistence PASSED [ 40%]
-tests/test_approval_lease.py::test_react_loop_auto_approval_with_active_lease PASSED [ 45%]
-tests/test_approval_lease.py::test_tool_gateway_policy_evaluation_with_lease PASSED [ 50%]
-tests/test_approval_lease.py::test_hex_console_slash_lease PASSED        [ 55%]
-tests/test_mobile_reaction_listener.py::test_approval_request_and_decision_models PASSED [ 60%]
-tests/test_mobile_reaction_listener.py::test_mobile_approval_bridge_resolve_and_unblock PASSED [ 65%]
-tests/test_mobile_reaction_listener.py::test_mobile_approval_bridge_denial PASSED [ 70%]
-tests/test_mobile_reaction_listener.py::test_mobile_approval_bridge_timeout_fallback PASSED [ 75%]
-tests/test_mobile_reaction_listener.py::test_telegram_callback_and_reaction_integration PASSED [ 80%]
-tests/test_mobile_reaction_listener.py::test_discord_interaction_and_reaction_integration PASSED [ 85%]
-tests/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_approval_execution PASSED [ 90%]
-tests/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_denial_halts_execution PASSED [ 95%]
-tests/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_timeout_fallback_to_interrupt PASSED [100%]
+tests/core/test_approval_lease.py::test_approval_lease_dataclass_defaults_and_validation PASSED [  5%]
+tests/core/test_approval_lease.py::test_approval_lease_manager_grant_and_list PASSED [ 10%]
+tests/core/test_approval_lease.py::test_command_prefix_matching PASSED        [ 15%]
+tests/core/test_approval_lease.py::test_multi_word_prefix_matching PASSED     [ 20%]
+tests/core/test_approval_lease.py::test_path_based_lease_matching PASSED      [ 25%]
+tests/core/test_approval_lease.py::test_lease_expiration_behavior PASSED      [ 30%]
+tests/core/test_approval_lease.py::test_explicit_lease_revocation PASSED      [ 35%]
+tests/core/test_approval_lease.py::test_ledger_store_approval_lease_persistence PASSED [ 40%]
+tests/core/test_approval_lease.py::test_react_loop_auto_approval_with_active_lease PASSED [ 45%]
+tests/core/test_approval_lease.py::test_tool_gateway_policy_evaluation_with_lease PASSED [ 50%]
+tests/core/test_approval_lease.py::test_hex_console_slash_lease PASSED        [ 55%]
+tests/capabilities/test_mobile_reaction_listener.py::test_approval_request_and_decision_models PASSED [ 60%]
+tests/capabilities/test_mobile_reaction_listener.py::test_mobile_approval_bridge_resolve_and_unblock PASSED [ 65%]
+tests/capabilities/test_mobile_reaction_listener.py::test_mobile_approval_bridge_denial PASSED [ 70%]
+tests/capabilities/test_mobile_reaction_listener.py::test_mobile_approval_bridge_timeout_fallback PASSED [ 75%]
+tests/capabilities/test_mobile_reaction_listener.py::test_telegram_callback_and_reaction_integration PASSED [ 80%]
+tests/capabilities/test_mobile_reaction_listener.py::test_discord_interaction_and_reaction_integration PASSED [ 85%]
+tests/capabilities/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_approval_execution PASSED [ 90%]
+tests/capabilities/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_denial_halts_execution PASSED [ 95%]
+tests/capabilities/test_mobile_reaction_listener.py::test_tool_gateway_mobile_bridge_timeout_fallback_to_interrupt PASSED [100%]
 
 ============================== 20 passed in 2.70s ==============================
 ```
 
 ### Gateway Regression Verification Suite
 ```
-.venv/bin/pytest tests/test_telegram_gateway.py tests/test_discord_and_gateway_manager.py
+.venv/bin/pytest tests/capabilities/test_telegram_gateway.py tests/capabilities/test_discord_and_gateway_manager.py
 ============================== 38 passed in 17.52s =============================
 ```
 
@@ -117,5 +117,5 @@ All 68 workspace tests passed cleanly.
 - `src/harness_core/capabilities/gateways/__init__.py`, `telegram_bot.py`, `discord_bot.py`, `manager.py`: Gateway domain subpackage.
 - `src/harness_core/capabilities/__init__.py`: Capabilities package re-exports.
 - `src/harness_core/gateways/*`: Backward-compatibility stubs.
-- `tests/test_approval_lease.py`: Unit and integration test suite (11 tests).
-- `tests/test_mobile_reaction_listener.py`: Integration test suite (9 tests).
+- `tests/core/test_approval_lease.py`: Unit and integration test suite (11 tests).
+- `tests/capabilities/test_mobile_reaction_listener.py`: Integration test suite (9 tests).

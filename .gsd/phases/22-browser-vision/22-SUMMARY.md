@@ -23,22 +23,22 @@
   - Base64 encoding and structured visual analysis generation with model router dispatch.
 - Updated `src/harness_core/gateway.py`:
   - Registered `image_inspect` tool in `TOOL_DEFINITIONS` across R1 risk class (total tool count now exactly 26).
-- Created `tests/test_browser_and_vision.py`:
+- Created `tests/capabilities/test_browser_and_vision.py`:
   - 6/6 unit and integration tests verifying browser navigation, element clicking and typing, screenshot generation, evaluation, image inspection, and error handling.
-- Updated `tests/test_gateway_tools.py` verifying 26 registered tools.
+- Updated `tests/tools/test_gateway_tools.py` verifying 26 registered tools.
 
 ---
 
 ## 2. Empirical Verification Evidence
 
 ```bash
-$ .venv/bin/python -m unittest tests/test_browser_and_vision.py
+$ .venv/bin/python -m unittest tests/capabilities/test_browser_and_vision.py
 ......
 ----------------------------------------------------------------------
 Ran 6 tests in 1.436s
 OK
 
-$ .venv/bin/python -m unittest tests/test_gateway_tools.py tests/test_browser_and_vision.py
+$ .venv/bin/python -m unittest tests/tools/test_gateway_tools.py tests/capabilities/test_browser_and_vision.py
 ....................
 ----------------------------------------------------------------------
 Ran 20 tests in 4.054s

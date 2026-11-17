@@ -223,7 +223,7 @@ class ProjectRegistry:
 
         if stack is None:
             try:
-                from harness_core.client.onboard import detect_project_stack
+                from harness_core.storage.project_init import detect_project_stack
                 st_info = detect_project_stack(proj_dir)
                 stack = st_info.get("stack", "generic")
             except Exception:
@@ -236,7 +236,7 @@ class ProjectRegistry:
         config_path = hex_dir / "config.yaml"
         if not config_path.is_file():
             try:
-                from harness_core.client.onboard import init_project
+                from harness_core.storage.project_init import init_project
 
                 init_project(proj_dir, name=proj_name, force=False)
             except Exception:

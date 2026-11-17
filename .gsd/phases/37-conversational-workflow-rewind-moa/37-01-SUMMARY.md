@@ -18,7 +18,7 @@ Phase 37 Plan 01 delivers two core capabilities for conversational workflow supr
   - `src/harness_core/storage/__init__.py`: Exported `timeline_rewind` submodule and classes.
   - `src/harness_core/core/react_loop.py`: Added `rewind_to(turn_spec)`.
   - `src/harness_core/client/tui.py`: Added `/rewind` and `/undo` slash commands, `_cmd_rewind`, and updated `/help`.
-  - `tests/test_timeline_rewind.py`: Authored 8 unit and integration tests covering relative offsets, absolute turns, boundary clamping, branch ledger integrity, tool call reversal, `ReActLoop`, and `HexConsole`.
+  - `tests/storage/test_timeline_rewind.py`: Authored 8 unit and integration tests covering relative offsets, absolute turns, boundary clamping, branch ledger integrity, tool call reversal, `ReActLoop`, and `HexConsole`.
 - **Commit:** `ac53068 feat(phase-37): implement conversational timeline rewind engine with ledger branching`
 
 ### Task 2: Asynchronous Background LLM Session Title Synthesis
@@ -28,7 +28,7 @@ Phase 37 Plan 01 delivers two core capabilities for conversational workflow supr
   - `src/harness_core/storage/db.py`: Implemented `update_task_goal` enforcing provenance hierarchy and hash-chained `TASK_TITLE_UPDATED` events.
   - `src/harness_core/core/react_loop.py`: Integrated instant title derivation before Turn 1 and scheduled background title synthesis upon Turn 1 completion.
   - `src/harness_core/client/tui.py`: Wired instant title seeding and background synthesis into `HexConsole`.
-  - `tests/test_title_synthesis.py`: Authored 8 unit and integration tests covering instant derivation, validation guards, provenance hierarchy enforcement, non-blocking execution, and Start screen resume query retrieval.
+  - `tests/cognition/test_title_synthesis.py`: Authored 8 unit and integration tests covering instant derivation, validation guards, provenance hierarchy enforcement, non-blocking execution, and Start screen resume query retrieval.
 - **Commit:** `7168da2 feat(phase-37): implement asynchronous background llm session title synthesis`
 
 ---
@@ -37,7 +37,7 @@ Phase 37 Plan 01 delivers two core capabilities for conversational workflow supr
 
 ### Pytest Verification Suite
 ```bash
-.venv/bin/pytest tests/test_timeline_rewind.py tests/test_title_synthesis.py -v
+.venv/bin/pytest tests/storage/test_timeline_rewind.py tests/cognition/test_title_synthesis.py -v
 ```
 **Output:**
 ```
@@ -48,22 +48,22 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 16 items
 
-tests/test_timeline_rewind.py::test_group_messages_by_turn PASSED        [  6%]
-tests/test_timeline_rewind.py::test_relative_rewind_single_turn PASSED   [ 12%]
-tests/test_timeline_rewind.py::test_relative_rewind_multiple_turns PASSED [ 18%]
-tests/test_timeline_rewind.py::test_absolute_rewind PASSED               [ 25%]
-tests/test_timeline_rewind.py::test_boundary_clamping PASSED             [ 31%]
-tests/test_timeline_rewind.py::test_branch_ledger_integrity_and_tool_reversal PASSED [ 37%]
-tests/test_timeline_rewind.py::test_react_loop_rewind_to PASSED          [ 43%]
-tests/test_timeline_rewind.py::test_hex_console_rewind_slash_command PASSED [ 50%]
-tests/test_title_synthesis.py::test_derive_instant_title_clean_cases PASSED [ 56%]
-tests/test_title_synthesis.py::test_derive_instant_title_word_boundary_truncation PASSED [ 62%]
-tests/test_title_synthesis.py::test_validate_synthesized_title_guards PASSED [ 68%]
-tests/test_title_synthesis.py::test_provenance_hierarchy_in_ledger PASSED [ 75%]
-tests/test_title_synthesis.py::test_session_title_synthesizer_async PASSED [ 81%]
-tests/test_title_synthesis.py::test_non_blocking_behavior PASSED         [ 87%]
-tests/test_title_synthesis.py::test_react_loop_title_synthesis_integration PASSED [ 93%]
-tests/test_title_synthesis.py::test_start_screen_resume_query_retrieval PASSED [100%]
+tests/storage/test_timeline_rewind.py::test_group_messages_by_turn PASSED        [  6%]
+tests/storage/test_timeline_rewind.py::test_relative_rewind_single_turn PASSED   [ 12%]
+tests/storage/test_timeline_rewind.py::test_relative_rewind_multiple_turns PASSED [ 18%]
+tests/storage/test_timeline_rewind.py::test_absolute_rewind PASSED               [ 25%]
+tests/storage/test_timeline_rewind.py::test_boundary_clamping PASSED             [ 31%]
+tests/storage/test_timeline_rewind.py::test_branch_ledger_integrity_and_tool_reversal PASSED [ 37%]
+tests/storage/test_timeline_rewind.py::test_react_loop_rewind_to PASSED          [ 43%]
+tests/storage/test_timeline_rewind.py::test_hex_console_rewind_slash_command PASSED [ 50%]
+tests/cognition/test_title_synthesis.py::test_derive_instant_title_clean_cases PASSED [ 56%]
+tests/cognition/test_title_synthesis.py::test_derive_instant_title_word_boundary_truncation PASSED [ 62%]
+tests/cognition/test_title_synthesis.py::test_validate_synthesized_title_guards PASSED [ 68%]
+tests/cognition/test_title_synthesis.py::test_provenance_hierarchy_in_ledger PASSED [ 75%]
+tests/cognition/test_title_synthesis.py::test_session_title_synthesizer_async PASSED [ 81%]
+tests/cognition/test_title_synthesis.py::test_non_blocking_behavior PASSED         [ 87%]
+tests/cognition/test_title_synthesis.py::test_react_loop_title_synthesis_integration PASSED [ 93%]
+tests/cognition/test_title_synthesis.py::test_start_screen_resume_query_retrieval PASSED [100%]
 
 ============================== 16 passed in 1.00s ==============================
 ```

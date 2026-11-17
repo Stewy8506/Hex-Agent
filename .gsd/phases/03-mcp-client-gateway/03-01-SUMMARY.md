@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Plan 03-01 establishes zero-dependency Model Context Protocol (MCP) JSON-RPC 2.0 client connectivity in `src/harness_core/mcp_client.py`. It implements `MCPClientAdapter`, `StdioMCPTransport`, `HttpSSEMCPTransport`, and dynamic `R0–R4` risk mapping with heuristic rules and per-server overrides. The client manages protocol handshake negotiation (`initialize` and `notifications/initialized`), dynamic tool listing (`tools/list`), input schema extraction, and tool invocation (`tools/call`) with execution timeouts and structured error handling. A mock MCP server and unit test suite were authored in `tests/test_mcp_client.py`, raising the total repository test suite to 82 tests, all passing with zero regressions.
+Plan 03-01 establishes zero-dependency Model Context Protocol (MCP) JSON-RPC 2.0 client connectivity in `src/harness_core/mcp_client.py`. It implements `MCPClientAdapter`, `StdioMCPTransport`, `HttpSSEMCPTransport`, and dynamic `R0–R4` risk mapping with heuristic rules and per-server overrides. The client manages protocol handshake negotiation (`initialize` and `notifications/initialized`), dynamic tool listing (`tools/list`), input schema extraction, and tool invocation (`tools/call`) with execution timeouts and structured error handling. A mock MCP server and unit test suite were authored in `tests/tools/test_mcp_client.py`, raising the total repository test suite to 82 tests, all passing with zero regressions.
 
 ---
 
@@ -48,7 +48,7 @@ Plan 03-01 establishes zero-dependency Model Context Protocol (MCP) JSON-RPC 2.0
   - Implemented portable Python script executing as a child subprocess via `sys.executable`.
   - Handles `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, and unknown methods (`-32601`).
   - Implements mock tools: `read_weather` (R1), `save_note` (R2), `exec_bash` (R3), `admin_wipe_system` (R4), `slow_delay` (timeout testing), and `failing_tool` (`isError: True`).
-- **Test Suite (`tests/test_mcp_client.py`)**:
+- **Test Suite (`tests/tools/test_mcp_client.py`)**:
   - `test_dynamic_risk_classification`: Tests R1-R4 heuristics and default-deny fallback.
   - `test_risk_classification_overrides`: Tests caller overrides taking precedence over heuristics.
   - `test_stdio_handshake_and_tool_discovery`: Verifies handshake negotiation, capabilities extraction, tool definitions, schemas, and manifest structure.
@@ -72,16 +72,16 @@ Risk mapping test: RiskClass.R1
 
 ### Verification 2: MCP Protocol Compliance Test Suite
 ```bash
-python3 -m unittest tests/test_mcp_client.py -v
+python3 -m unittest tests/tools/test_mcp_client.py -v
 ```
 **Output:**
 ```
-test_dynamic_risk_classification (tests.test_mcp_client.TestMCPClient.test_dynamic_risk_classification) ... ok
-test_http_sse_transport_end_to_end (tests.test_mcp_client.TestMCPClient.test_http_sse_transport_end_to_end) ... ok
-test_risk_classification_overrides (tests.test_mcp_client.TestMCPClient.test_risk_classification_overrides) ... ok
-test_stdio_handshake_and_tool_discovery (tests.test_mcp_client.TestMCPClient.test_stdio_handshake_and_tool_discovery) ... ok
-test_stdio_timeout_and_graceful_teardown (tests.test_mcp_client.TestMCPClient.test_stdio_timeout_and_graceful_teardown) ... ok
-test_stdio_tool_execution (tests.test_mcp_client.TestMCPClient.test_stdio_tool_execution) ... ok
+test_dynamic_risk_classification (tests.tools.test_mcp_client.TestMCPClient.test_dynamic_risk_classification) ... ok
+test_http_sse_transport_end_to_end (tests.tools.test_mcp_client.TestMCPClient.test_http_sse_transport_end_to_end) ... ok
+test_risk_classification_overrides (tests.tools.test_mcp_client.TestMCPClient.test_risk_classification_overrides) ... ok
+test_stdio_handshake_and_tool_discovery (tests.tools.test_mcp_client.TestMCPClient.test_stdio_handshake_and_tool_discovery) ... ok
+test_stdio_timeout_and_graceful_teardown (tests.tools.test_mcp_client.TestMCPClient.test_stdio_timeout_and_graceful_teardown) ... ok
+test_stdio_tool_execution (tests.tools.test_mcp_client.TestMCPClient.test_stdio_tool_execution) ... ok
 
 ----------------------------------------------------------------------
 Ran 6 tests in 0.289s
@@ -118,7 +118,7 @@ OK
 | File | Change | Description |
 |------|--------|-------------|
 | `src/harness_core/mcp_client.py` | Created | `MCPClientAdapter`, `StdioMCPTransport`, `HttpSSEMCPTransport`, `classify_mcp_tool_risk` |
-| `tests/test_mcp_client.py` | Created | Mock MCP server and unit test suite verifying handshake, discovery, invocation, timeouts, and teardown |
+| `tests/tools/test_mcp_client.py` | Created | Mock MCP server and unit test suite verifying handshake, discovery, invocation, timeouts, and teardown |
 
 ---
 
@@ -128,4 +128,4 @@ OK
   - Pre-validate MCP tool manifests using `SkillSecurityScanner` and SHA-256 pinning before gateway registration.
   - Implement `ToolGateway.register_mcp_server` and dynamic dispatch.
   - Implement 0ms call-level journal memoization replay on worker crashes.
-  - Author end-to-end integration test suite in `tests/test_mcp_gateway_journal.py`.
+  - Author end-to-end integration test suite in `tests/tools/test_mcp_gateway_journal.py`.

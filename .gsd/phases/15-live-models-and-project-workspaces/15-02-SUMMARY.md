@@ -4,7 +4,7 @@
 **Plan:** 15-02  
 **Status:** Completed  
 **Commits:** `c117ac2`, `ed1bfd4`, `25e9231`  
-**Tests:** 20/20 in `tests/test_project_registry_and_workspace.py` (455/455 full suite passing green, 0 regressions)
+**Tests:** 20/20 in `tests/storage/test_project_registry_and_workspace.py` (455/455 full suite passing green, 0 regressions)
 
 ---
 
@@ -47,7 +47,7 @@ Key Deliverables:
 |------|------|-------|---------|
 | 1 | Implement ProjectRegistry and folder-scoped context layout | `src/harness_core/project_registry.py`, `src/harness_core/onboard.py` | `c117ac2` |
 | 2 | Implement daily project switcher picker, hex project CLI, TUI /project, and hex setup rename | `src/harness_core/cli.py`, `src/harness_core/tui.py`, `src/harness_core/providers/cloud_provider.py`, `README.md` | `ed1bfd4` |
-| 3 | Author unit and integration tests for ProjectRegistry and workspace isolation | `tests/test_project_registry_and_workspace.py`, `tests/test_hex_cli.py` | `25e9231` |
+| 3 | Author unit and integration tests for ProjectRegistry and workspace isolation | `tests/storage/test_project_registry_and_workspace.py`, `tests/client/test_hex_cli.py` | `25e9231` |
 
 ---
 
@@ -63,9 +63,9 @@ Key Deliverables:
    python3 -c "import subprocess; out = subprocess.check_output(['hex', 'project', 'list', '--json'], text=True); print(out)"
    # Emits valid JSON array of project records
    ```
-3. **Comprehensive Unit & Integration Test Suite (`tests/test_project_registry_and_workspace.py`):**
+3. **Comprehensive Unit & Integration Test Suite (`tests/storage/test_project_registry_and_workspace.py`):**
    ```bash
-   .venv/bin/python -m unittest tests/test_project_registry_and_workspace.py
+   .venv/bin/python -m unittest tests/storage/test_project_registry_and_workspace.py
    # Ran 20 tests in 0.464s - OK
    ```
 4. **Full Repository Regression Suite:**
@@ -75,7 +75,7 @@ Key Deliverables:
    ```
 5. **Backwards-Compatible `hex setup` and `hex onboard` Verification:**
    - `hex setup --help` and `hex onboard --help` both display identical canonical help.
-   - `test_cli_setup_subcommand` and `test_cli_onboard_alias_subcommand` pass in `tests/test_hex_cli.py`.
+   - `test_cli_setup_subcommand` and `test_cli_onboard_alias_subcommand` pass in `tests/client/test_hex_cli.py`.
    - `ProviderUnavailableError` reports `Run 'hex setup'`.
 
 ---

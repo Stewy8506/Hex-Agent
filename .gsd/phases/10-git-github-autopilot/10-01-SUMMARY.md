@@ -3,7 +3,7 @@
 **Plan File:** `.gsd/phases/10-git-github-autopilot/10-01-PLAN.md`  
 **Execution Date:** 2026-11-01  
 **Status:** Completed  
-**Tests:** 284/284 Green (17 new test cases in `tests/test_git_autopilot.py`, 0 regressions)
+**Tests:** 284/284 Green (17 new test cases in `tests/capabilities/test_git_autopilot.py`, 0 regressions)
 
 ---
 
@@ -38,7 +38,7 @@ Plan 10-01 delivers the foundational Git automation and Pull Request engine of *
 - On task success: creates/checks out task branch, creates conventional commit, generates rich PR summary, and creates Pull Request.
 - On task failure: aborts git modifications and returns exit code 1.
 
-### 4. Comprehensive Test Suite (`tests/test_git_autopilot.py`)
+### 4. Comprehensive Test Suite (`tests/capabilities/test_git_autopilot.py`)
 - 17 unit and integration tests covering configuration, slugification edge cases, conventional commits, markdown PR formatting, real local git repositories (`git init`, branches, commits, log inspection), mock and subprocess transports, and `hex run` / `hex exec` CLI dry-run and failure workflows.
 
 ---
@@ -57,7 +57,7 @@ Plan 10-01 delivers the foundational Git automation and Pull Request engine of *
    ```
 3. **Plan Test Suite:**
    ```bash
-   .venv/bin/python -m unittest tests/test_git_autopilot.py
+   .venv/bin/python -m unittest tests/capabilities/test_git_autopilot.py
    # Result: Ran 17 tests in 8.667s. OK.
    ```
 4. **Full Repository Regression Suite:**

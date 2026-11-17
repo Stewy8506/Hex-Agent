@@ -20,7 +20,7 @@
 ### Plan 23-02: CLI Subcommand, Tool Approval Bridge & Empirical Verification
 - Updated `src/harness_core/cli.py`:
   - Added `hex acp` subcommand with `--check` (environment and protocol readiness audit) and `--setup` (generates ready-to-paste configurations for Zed and Neovim).
-- Created `tests/test_acp_server.py`:
+- Created `tests/client/test_acp_server.py`:
   - 7/7 unit and integration tests covering handshake, session lifecycle, tool execution, orchestrator prompt execution, session cancellation, and CLI flags.
 
 ---
@@ -37,7 +37,7 @@ $ .venv/bin/python -m harness_core.cli acp --check
   ✓ Workspace Root:    /Users/anv./Development/Harness
   ✓ Compatible with:   Zed, Neovim (avante.nvim/codecompanion), VSCode
 
-$ .venv/bin/python -m unittest tests/test_acp_server.py
+$ .venv/bin/python -m unittest tests/client/test_acp_server.py
 .......
 ----------------------------------------------------------------------
 Ran 7 tests in 4.361s

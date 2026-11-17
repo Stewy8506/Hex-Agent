@@ -18,7 +18,7 @@ Plan 06-01 implemented the standalone distributed `WorkerDaemon` architecture, s
 |---|---|---|---|
 | **Task 1** | Implement Lease Renewal, Worker Heartbeat & REST API Worker Endpoints | `src/harness_core/db.py`, `src/harness_core/server.py` | `8164909` (`feat(phase-06): implement lease renewal, worker heartbeat and REST worker endpoints`) |
 | **Task 2** | Implement WorkerDaemon Architecture and `harness worker` CLI Command | `src/harness_core/cow.py`, `src/harness_core/worker_daemon.py`, `src/harness_core/cli.py` | `1e362e2` (`feat(phase-06): implement WorkerDaemon architecture and harness worker CLI command`) |
-| **Task 3** | Author Unit & Integration Test Suite for WorkerDaemon | `src/harness_core/db.py`, `src/harness_core/orchestrator.py`, `src/harness_core/server.py`, `src/harness_core/worker_daemon.py`, `tests/test_worker_daemon.py` | `b497785` (`feat(phase-06): author worker daemon and REST client test suite`) |
+| **Task 3** | Author Unit & Integration Test Suite for WorkerDaemon | `src/harness_core/db.py`, `src/harness_core/orchestrator.py`, `src/harness_core/server.py`, `src/harness_core/worker_daemon.py`, `tests/runtime/test_worker_daemon.py` | `b497785` (`feat(phase-06): author worker daemon and REST client test suite`) |
 
 ---
 
@@ -72,9 +72,9 @@ Plan 06-01 implemented the standalone distributed `WorkerDaemon` architecture, s
    ```
    **Output:** `DAEMON_INITIALIZED test-worker m4_air apfs_clone`
 
-3. **Task 3 Unit & Integration Test Suite (`tests/test_worker_daemon.py`):**
+3. **Task 3 Unit & Integration Test Suite (`tests/runtime/test_worker_daemon.py`):**
    ```bash
-   .venv/bin/python -m unittest tests/test_worker_daemon.py -v
+   .venv/bin/python -m unittest tests/runtime/test_worker_daemon.py -v
    ```
    **Output:**
    ```
@@ -108,7 +108,7 @@ Plan 06-01 implemented the standalone distributed `WorkerDaemon` architecture, s
 - **Rule 1 (Bug Fix): Dict Task Submission Handling:** `submit_task` in `src/harness_core/db.py` was adapted to accept dictionary inputs directly (in addition to `TaskSubmitRequest` dataclasses) and default dictionary submissions to `QUEUED` so tasks submitted directly in unit test scripts are immediately claimable.
 - **Rule 1 (Bug Fix): Monotonic Lease Renewal:** `renew_lease` was updated to guarantee monotonic extension even when renewed with a TTL shorter than the remaining lease duration (`max(now + ttl_seconds, cur_expires + 1)`).
 - **Rule 1 (Bug Fix): Orchestrator Claimed Attempt Reuse:** `execute_task` in `src/harness_core/orchestrator.py` was updated to accept `lease_info` so tasks claimed by `WorkerDaemon` reuse the atomic claim attempt rather than generating a redundant second attempt.
-- **Rule 1 (Bug Fix): Hermetic REST Client Testing:** Provided a mock `urlopen` dispatcher in `tests/test_worker_daemon.py` routing directly to `HarnessAPIApp.handle_request`, allowing exhaustive testing of REST serialization, authentication, and HTTP error code translation hermetically within the sandbox.
+- **Rule 1 (Bug Fix): Hermetic REST Client Testing:** Provided a mock `urlopen` dispatcher in `tests/runtime/test_worker_daemon.py` routing directly to `HarnessAPIApp.handle_request`, allowing exhaustive testing of REST serialization, authentication, and HTTP error code translation hermetically within the sandbox.
 
 ---
 

@@ -4,7 +4,7 @@
 **Plan:** 08-01 (Wave 1)  
 **Status:** Complete  
 **Commits:** `eaf3bf5`, `d252ebc`, `2db7f06`  
-**Tests:** 210/210 passed (24 new tests in `tests/test_tui.py`, 0 regressions)
+**Tests:** 210/210 passed (24 new tests in `tests/client/test_tui.py`, 0 regressions)
 
 ---
 
@@ -38,7 +38,7 @@
    - Added `list_skills` and `list_skills_async` to `LedgerStore` querying registered skills and latest scan reports.
    - Implemented `compute_workspace_diff` across `WorkspaceSnapshotProvider` implementations (`APFSAndPortableCoWProvider`, `OverlayFSSnapshotProvider`, `BtrfsSnapshotProvider`).
 
-4. **Unit & Integration Test Suite (`tests/test_tui.py`):**
+4. **Unit & Integration Test Suite (`tests/client/test_tui.py`):**
    - 24 comprehensive tests covering unified diff, side-by-side diff, workspace diff calculation, Graphify AST tree rendering across R0-R4 risk classes, streaming token accumulation, session banner formatting, all 10 slash commands, prompt loop execution, task submission, and CLI `hex chat` argument parsing.
 
 ---
@@ -130,7 +130,7 @@ CLI_CHAT_REPL_OK
 
 ### Task 3 Verify Command:
 ```bash
-.venv/bin/python -m unittest tests/test_tui.py
+.venv/bin/python -m unittest tests/client/test_tui.py
 ```
 **Output:**
 ```

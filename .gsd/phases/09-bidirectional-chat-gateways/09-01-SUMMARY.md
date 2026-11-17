@@ -42,7 +42,7 @@
    - Implemented `handle_callback_query` answering Telegram callbacks promptly (`answerCallbackQuery`), updating approval decisions in `LedgerStore`, triggering `resume_task` or `cancel_task` in `HarnessOrchestrator`, editing messages in-place with color badges, and broadcasting completion cards on success.
 
 5. **Empirical Verification & Zero Regressions:**
-   - Comprehensive unit and integration test suite in `tests/test_telegram_gateway.py` covering all 17 cases across configuration, whitelisting, command dispatch, callbacks, and end-to-end task lifecycles.
+   - Comprehensive unit and integration test suite in `tests/capabilities/test_telegram_gateway.py` covering all 17 cases across configuration, whitelisting, command dispatch, callbacks, and end-to-end task lifecycles.
    - Full repository test suite verified: **242/242 tests passing cleanly**.
 
 ---
@@ -70,7 +70,7 @@ TG_CONVERSATIONAL_OK
 
 ### Task 3: Unit & Integration Test Suite
 ```bash
-.venv/bin/python -m unittest tests/test_telegram_gateway.py
+.venv/bin/python -m unittest tests/capabilities/test_telegram_gateway.py
 ```
 **Output:**
 ```

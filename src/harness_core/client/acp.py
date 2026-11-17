@@ -269,9 +269,9 @@ class ACPServer:
         tools_count = len(self.orchestrator.gateway.tools) if hasattr(self.orchestrator, "gateway") else 26
         
         disk_skills_count = 0
-        builtin_skills_dir = Path(__file__).resolve().parent / "skills"
-        if not builtin_skills_dir.is_dir():
-            builtin_skills_dir = Path(__file__).resolve().parent.parent / "skills"
+        from harness_core.resources import bundled_skills_dir
+
+        builtin_skills_dir = bundled_skills_dir()
         if builtin_skills_dir.is_dir():
             disk_skills_count = len(list(builtin_skills_dir.rglob("SKILL.md")))
         skills_count = disk_skills_count or 83

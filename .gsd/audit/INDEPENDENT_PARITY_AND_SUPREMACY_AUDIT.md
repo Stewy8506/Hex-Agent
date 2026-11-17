@@ -256,48 +256,48 @@ Executed across 6 focused integration test runs:
 
 1. **ReAct Loop & Context Compressor Suite (59 Tests):**
    ```bash
-   .venv/bin/pytest tests/test_react_loop.py tests/test_react_loop_resilience.py \
-                    tests/test_context_compressor_integration.py \
-                    tests/test_context_compressor_tail_pruning.py -q
+   .venv/bin/pytest tests/core/test_react_loop.py tests/core/test_react_loop_resilience.py \
+                    tests/cognition/test_context_compressor_integration.py \
+                    tests/cognition/test_context_compressor_tail_pruning.py -q
    ```
    **Output:** `59 passed in 10.33s`
 
 2. **Memory, Cognition & AST Suite (72 Tests):**
    ```bash
-   .venv/bin/pytest tests/test_soul_manager.py tests/test_prompt_builder.py \
-                    tests/test_curated_memory.py tests/test_ast_scoped_memory.py \
-                    tests/test_amem_and_lifecycle.py tests/test_session_isolated_snapshots.py \
-                    tests/test_ast_precision_and_fencing.py tests/test_durable_lifecycle_and_reflection.py -q
+   .venv/bin/pytest tests/cognition/test_soul_manager.py tests/cognition/test_prompt_builder.py \
+                    tests/cognition/test_curated_memory.py tests/cognition/test_ast_scoped_memory.py \
+                    tests/cognition/test_amem_and_lifecycle.py tests/cognition/test_session_isolated_snapshots.py \
+                    tests/cognition/test_ast_precision_and_fencing.py tests/cognition/test_durable_lifecycle_and_reflection.py -q
    ```
    **Output:** `72 passed in 4.36s`
 
 3. **Skills, Synthesis & SkillSpector Suite (71 Tests):**
    ```bash
-   .venv/bin/pytest tests/test_skill_synthesis.py tests/test_autonomous_learning.py \
-                    tests/test_skill_verification_wiring.py tests/test_skillspector_ast_wiring.py \
-                    tests/test_skillspector_osv_wiring.py -q
+   .venv/bin/pytest tests/skills/test_skill_synthesis.py tests/cognition/test_autonomous_learning.py \
+                    tests/skills/test_skill_verification_wiring.py tests/skills/test_skillspector_ast_wiring.py \
+                    tests/skills/test_skillspector_osv_wiring.py -q
    ```
    **Output:** `71 passed in 12.61s`
 
 4. **Runtime, PTY & REPL Kernel Suite (64 Tests):**
    ```bash
-   .venv/bin/pytest tests/test_process_registry.py tests/test_code_kernel.py \
-                    tests/test_gateway_tools.py tests/test_gateway_code_kernel.py \
-                    tests/test_gateway_process_tools.py -q
+   .venv/bin/pytest tests/runtime/test_process_registry.py tests/runtime/test_code_kernel.py \
+                    tests/tools/test_gateway_tools.py tests/tools/test_gateway_code_kernel.py \
+                    tests/tools/test_gateway_process_tools.py -q
    ```
    **Output:** `64 passed in 15.27s`
 
 5. **Protocols, ACP, Platforms & Subagent Suite (80 Tests):**
    ```bash
-   .venv/bin/pytest tests/test_acp_server.py tests/test_telegram_gateway.py \
-                    tests/test_discord_and_gateway_manager.py tests/test_browser_and_vision.py \
-                    tests/test_subagent_delegation.py tests/test_git_autopilot.py -q
+   .venv/bin/pytest tests/client/test_acp_server.py tests/capabilities/test_telegram_gateway.py \
+                    tests/capabilities/test_discord_and_gateway_manager.py tests/capabilities/test_browser_and_vision.py \
+                    tests/core/test_subagent_delegation.py tests/capabilities/test_git_autopilot.py -q
    ```
    **Output:** `80 passed in 49.20s`
 
 6. **Production Cognition Audit Hardening Suite (23 Tests):**
    ```bash
-   .venv/bin/pytest tests/test_phase33_independent_audit.py -q
+   .venv/bin/pytest tests/integration/test_phase33_independent_audit.py -q
    ```
    **Output:** `23 passed in 1.41s`
 

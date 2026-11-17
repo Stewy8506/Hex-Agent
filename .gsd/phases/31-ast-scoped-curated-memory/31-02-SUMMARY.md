@@ -2,7 +2,7 @@
 
 **Execution Date:** 2026-11-14  
 **Status:** Complete  
-**Verification:** All 8 tests in `tests/test_ast_scoped_memory.py` passing, all 52 existing tests in `tests/test_curated_memory.py` and `tests/test_react_loop.py` green (60 total tests passed).
+**Verification:** All 8 tests in `tests/cognition/test_ast_scoped_memory.py` passing, all 52 existing tests in `tests/cognition/test_curated_memory.py` and `tests/core/test_react_loop.py` green (60 total tests passed).
 
 ---
 
@@ -25,7 +25,7 @@
 ### Task 2: JIT Observation Injection & KV-Cache Immutability Verification
 - Enhanced `ToolGateway._tool_read_file` in `src/harness_core/gateway.py` to resolve AST symbols and query JIT memories/guardrails for the target file, dynamically appending the formatted AST memory block to `res["content"]` and populating `res["ast_memories"]`. Clean un-annotated files return unmodified content without overhead.
 - Enhanced `ReActLoop._execute_tool_call` in `src/harness_core/react_loop.py` with strict KV-cache prefix freeze guards: captures pre-execution `system_prompt` and initial `messages[0]` system instruction, asserting 100% byte-identity in `finally:` blocks.
-- Added comprehensive unit and integration tests in `tests/test_ast_scoped_memory.py` covering:
+- Added comprehensive unit and integration tests in `tests/cognition/test_ast_scoped_memory.py` covering:
   - AST memory CRUD, persistence, and querying by symbol and path.
   - 1-hop caller and callee invariant resolution.
   - Staleness detection and automatic omission on code mutation.
@@ -38,11 +38,11 @@
 
 ## Empirical Verification
 
-1. `tests/test_ast_scoped_memory.py`:
+1. `tests/cognition/test_ast_scoped_memory.py`:
    ```
    ============================== 8 passed in 1.74s ===============================
    ```
-2. `tests/test_curated_memory.py` + `tests/test_react_loop.py`:
+2. `tests/cognition/test_curated_memory.py` + `tests/core/test_react_loop.py`:
    ```
    ============================== 52 passed in 2.32s ==============================
    ```

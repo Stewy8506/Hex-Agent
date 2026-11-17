@@ -30,13 +30,13 @@ Empirical verification confirms **12 of 12 must-haves verified**, with **455 of 
 | 3 | Live model discovery for Anthropic, OpenAI, Gemini, and Ollama | ✓ VERIFIED | `fetch_available_models` in `cloud_provider.py` queries `GET /v1/models` (Anthropic), `GET /v1/models` with `gpt-4o/o1/o3-mini` filter (OpenAI), `GET /v1beta/models` with `generateContent` filter (Gemini), and `GET /api/tags` (Ollama). Mock evaluation confirms exact parsing. |
 | 4 | Resilient 3.0s timeout & offline fallback badging (`[offline fallback]`) | ✓ VERIFIED | Running `fetch_available_models('openai', 'invalid-key')` and `fetch_available_models('fake_token')` returns tuples tagged with `[offline fallback]`. Standard library `urllib.request` with `timeout=3.0` catches all network and auth errors. |
 | 5 | Interactive `/model` command in TUI querying live provider models | ✓ VERIFIED | `_cmd_model` in `src/harness_core/tui.py` detects interactive TTY, queries active provider via `fetch_available_models`, prompts via `select_option`, updates router model, and prints `✓ Active model switched to: {model_id}`. |
-| 6 | Unit tests for live model discovery pass | ✓ VERIFIED | `tests/test_live_model_discovery.py` passed: 12 tests in 0.116s, OK. |
+| 6 | Unit tests for live model discovery pass | ✓ VERIFIED | `tests/client/test_live_model_discovery.py` passed: 12 tests in 0.116s, OK. |
 | 7 | Global project registry in `~/.hex/projects.json` | ✓ VERIFIED | `ProjectRegistry` in `src/harness_core/project_registry.py` provides atomic file replacement (`tempfile` + `os.replace`), tracking `name`, `path`, `stack`, `last_active`, and `task_count`. Tested in `test_project_registry_crud_and_persistence`. |
 | 8 | Automatic enclosing project detection | ✓ VERIFIED | `detect_enclosing_project` in `project_registry.py` climbs parent directories discovering `.hex` or `.git` boundaries (excluding bare `$HOME`). Tested in `test_detect_enclosing_project_nested_subdirectories`. |
 | 9 | Daily project switcher ("What project do you want to work on today?") | ✓ VERIFIED | `cli.py` triggers `select_option` prompt when launched outside any workspace in interactive mode (`chat`/`tui`), offering registered projects, `[+]` register existing folder, or `[★]` initialize current directory. Tested in `test_cli_daily_switcher_interactive`. |
 | 10 | Folder-scoped context isolation | ✓ VERIFIED | Project registration automatically creates `<project>/.hex/` with `config.yaml`, `reflections/LESSONS.md`, and `data/` directory. Tested in `test_folder_scoped_context_isolation`. |
 | 11 | `hex project [list|add|use|switch]` CLI subcommands & TUI `/project` | ✓ VERIFIED | `hex project list --json`, `hex project add <path>`, and `hex project switch <target>` executed successfully. TUI `_cmd_project` displays active workspace card, lists registered workspaces, and dynamically rebinds AST graphify on switch. |
-| 12 | Canonical `hex setup` command rename with `hex onboard` alias | ✓ VERIFIED | `hex setup --help` and `hex onboard --help` both display identical canonical help. Error messages reference `hex setup`. Verified by `test_cli_setup_subcommand` and `test_cli_onboard_alias_subcommand` in `tests/test_hex_cli.py`. |
+| 12 | Canonical `hex setup` command rename with `hex onboard` alias | ✓ VERIFIED | `hex setup --help` and `hex onboard --help` both display identical canonical help. Error messages reference `hex setup`. Verified by `test_cli_setup_subcommand` and `test_cli_onboard_alias_subcommand` in `tests/client/test_hex_cli.py`. |
 
 ---
 
@@ -50,8 +50,8 @@ Empirical verification confirms **12 of 12 must-haves verified**, with **455 of 
 | `src/harness_core/onboard.py` | ✓ | ✓ | ✓ | Inverted authenticate-first wizard flow, project registration in `init_project`, reflections and data directory scaffolding |
 | `src/harness_core/cli.py` | ✓ | ✓ | ✓ | `hex setup` canonical rename with `onboard` alias, `hex project` CLI subcommands, and interactive daily project switcher |
 | `src/harness_core/tui.py` | ✓ | ✓ | ✓ | Interactive `/model` live selector and `/project` status/list/switch commands |
-| `tests/test_live_model_discovery.py` | ✓ | ✓ | ✓ | 12 dedicated unit and integration tests covering all providers and fallback paths |
-| `tests/test_project_registry_and_workspace.py` | ✓ | ✓ | ✓ | 20 dedicated unit and integration tests covering registry persistence, switcher, and workspace isolation |
+| `tests/client/test_live_model_discovery.py` | ✓ | ✓ | ✓ | 12 dedicated unit and integration tests covering all providers and fallback paths |
+| `tests/storage/test_project_registry_and_workspace.py` | ✓ | ✓ | ✓ | 20 dedicated unit and integration tests covering registry persistence, switcher, and workspace isolation |
 
 ---
 
@@ -80,7 +80,7 @@ Empirical verification confirms **12 of 12 must-haves verified**, with **455 of 
 
 ### 1. Dedicated Live Model Discovery Suite
 ```bash
-.venv/bin/python -m unittest tests/test_live_model_discovery.py
+.venv/bin/python -m unittest tests/client/test_live_model_discovery.py
 ```
 ```
 Ran 12 tests in 0.116s
@@ -89,7 +89,7 @@ OK
 
 ### 2. Dedicated Project Registry & Workspace Suite
 ```bash
-.venv/bin/python -m unittest tests/test_project_registry_and_workspace.py
+.venv/bin/python -m unittest tests/storage/test_project_registry_and_workspace.py
 ```
 ```
 Ran 20 tests in 0.474s
@@ -98,7 +98,7 @@ OK
 
 ### 3. CLI Regression Suite
 ```bash
-.venv/bin/python -m unittest tests/test_hex_cli.py
+.venv/bin/python -m unittest tests/client/test_hex_cli.py
 ```
 ```
 Ran 8 tests in 2.550s

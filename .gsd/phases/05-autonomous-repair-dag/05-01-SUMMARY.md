@@ -41,7 +41,7 @@
   - Updated `transition_task` and `transition_task_async` to preserve `terminal_reason` when explicitly provided on state transitions (including non-terminal interrupts like `NEEDS_ATTENTION`).
 
 ### Task 3: Autonomous Repair Benchmark and Retry Escalation Test Suite
-- Authored comprehensive test suite in `tests/test_autonomous_repair.py` covering:
+- Authored comprehensive test suite in `tests/core/test_autonomous_repair.py` covering:
   - **Happy Path Autonomous Repair:** Broken calculator defect (`a - b` instead of `a + b`) triggers test failure, dense log compression, state cycling `VERIFYING -> RUNNING -> VERIFYING`, patch application, passing re-verification, signed Proof-Carrying Artifact bundle saved to CAS with diff, and clean sync to base workspace.
   - **Retry Exhaustion Escalation:** Non-working patches trigger exactly 2 repair attempts, safe transition to `NEEDS_ATTENTION`, valid forensic CoW snapshot preserved on disk, and base workspace left untouched.
   - **Compound Multi-Failure Repair:** Handles defects across multiple modules (`math_ops.py` and `string_ops.py`), repairing turn-by-turn with Active Graphify blast-radius test pinning.
@@ -68,7 +68,7 @@
 
 3. **Task 3 Verification:**
    ```bash
-   .venv/bin/python -m unittest tests/test_autonomous_repair.py -v
+   .venv/bin/python -m unittest tests/core/test_autonomous_repair.py -v
    # Output: Ran 6 tests in 0.620s -> OK (100% passing, 0 failures, 0 errors)
    ```
 

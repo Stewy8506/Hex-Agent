@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from harness_core.cognition.soul import SoulManager, SoulProvenance, get_hex_home
+from harness_core.resources import bundled_skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -164,9 +165,7 @@ def build_skills_index(
 ) -> str:
     """Build a compact <available_skills> index scanning repo, built-in, and global skills."""
     home = Path(global_home).resolve() if global_home else get_hex_home().resolve()
-    builtin_skills = Path(__file__).resolve().parent / "skills"
-    if not builtin_skills.is_dir():
-        builtin_skills = Path(__file__).resolve().parent.parent / "skills"
+    builtin_skills = bundled_skills_dir()
     search_roots = [
         workspace_root / ".hex" / "skills",
         workspace_root / "skills",

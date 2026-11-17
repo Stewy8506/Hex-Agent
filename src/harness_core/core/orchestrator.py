@@ -172,7 +172,7 @@ class HarnessOrchestrator:
         )
 
         # Register default local worker with dynamic hardware specs
-        from harness_core.client.onboard import HardwareProfile
+        from harness_core.platform.hardware import HardwareProfile
 
         profile = HardwareProfile.detect()
         slug_model = re.sub(r"[^a-zA-Z0-9]+", "_", profile.machine_model.lower()).strip("_")
@@ -264,7 +264,7 @@ class HarnessOrchestrator:
             saved_path = cand
 
             try:
-                from harness_core.client.onboard import update_config_yaml_model
+                from harness_core.config_loader import update_config_yaml_model
 
                 saved = update_config_yaml_model(
                     saved_path,

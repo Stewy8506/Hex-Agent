@@ -24,4 +24,4 @@
    - `cloud_provider.py`: Purged dummy `"mock-key"` fallbacks, raising structured `ProviderUnavailableError` when credentials are missing.
 
 4. **Testing:**
-   - 7/7 unit and integration tests passing in `tests/test_auto_setup_and_polish.py`.
+   - 7/7 unit and integration tests passing in `tests/client/test_auto_setup_and_polish.py`.

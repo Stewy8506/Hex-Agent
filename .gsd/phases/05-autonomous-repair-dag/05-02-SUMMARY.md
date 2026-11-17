@@ -26,7 +26,7 @@
   - Implemented `get_plan_revision`, `get_plan_revision_async`, `list_plans`, and `list_plans_async` for complete dual-driver (SQLite & PostgreSQL) plan versioning.
 
 ### Task 2: Author Dynamic DAG Replanning and Selective Invalidation Test Suite
-- Authored comprehensive test suite in `tests/test_dag_replanning.py` covering:
+- Authored comprehensive test suite in `tests/core/test_dag_replanning.py` covering:
   - **Selective Invalidation with Independent Step Preservation:** Proves that mutating a branch step (2A) marks its downstream dependent (Step 3) as `INVALIDATED` while preserving independent completed steps (Step 1 and Step 2B) as `COMPLETED`. Verifies `revision == 2` and `supersedes_revision == 1`.
   - **Hash-Chained Task Event for Plan Revisions:** Validates sequential cryptographic hash chaining across all task events leading to and including `PLAN_REVISED`.
   - **Dynamic Test Pinning via Active Graphify:** Proves that when a step modifies `core_lib.py`, Active Graphify discovers its downstream caller `test_core_callers.py` and pins it to `blast_radius_checks`, which is then enforced during proof verification.
@@ -35,8 +35,8 @@
 
 ### Task 3: Full Verification & Regression Test Suite Across All Modules
 - Executed unit and integration tests:
-  - `python3 -m unittest tests/test_autonomous_repair.py` (6 tests passing).
-  - `python3 -m unittest tests/test_dag_replanning.py` (5 tests passing).
+  - `python3 -m unittest tests/core/test_autonomous_repair.py` (6 tests passing).
+  - `python3 -m unittest tests/core/test_dag_replanning.py` (5 tests passing).
 - Executed repository-wide test discovery suite across all modules:
   - `python3 -m unittest discover -s tests -p "test_*.py" -v`
   - Total: 132 tests passing with zero failures and zero errors (100% green).
@@ -53,7 +53,7 @@
 
 2. **Task 2 Verification:**
    ```bash
-   .venv/bin/python -m unittest tests/test_dag_replanning.py
+   .venv/bin/python -m unittest tests/core/test_dag_replanning.py
    # Output: Ran 5 tests in 0.215s -> OK (100% passing)
    ```
 

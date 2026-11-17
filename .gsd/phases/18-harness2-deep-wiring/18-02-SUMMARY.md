@@ -27,7 +27,7 @@ Plan 18-02 delivered deep wiring between HEX's autonomous `HarnessOrchestrator` 
 - **Commit**: `7c652a3`
 
 ### Task 3: Author Comprehensive Unit and Integration Test Suite for Benchmark Adapter and Sweep Runner
-- **Implementation**: Authored `tests/test_harness2_benchmark_adapter.py` covering:
+- **Implementation**: Authored `tests/integration/test_harness2_benchmark_adapter.py` covering:
   - Protocol conformance: `issubclass` and `isinstance` checks against `BenchmarkAdapter`, and presence of all 12+ required methods and attributes.
   - Rollout execution: isolated workspace directories, trajectory markdown generation in `[ACTION]/[OBSERVATION]` grammar, deliverable validation, observation truncation, and scoring.
   - Multi-rollout sweeps: live parallel (`mode="parallel"`) and sequential (`mode="sequential"`) sweeps verifying `ModeResult.ok`, finals, stages, and serialization.
@@ -36,8 +36,8 @@ Plan 18-02 delivered deep wiring between HEX's autonomous `HarnessOrchestrator` 
 - **Commit**: `b331811`
 
 ## 3. Verification & Metrics
-- All 12 unit and integration tests in `tests/test_harness2_benchmark_adapter.py` passed green (100%).
-- Full suite of 27 related tests in `tests/test_harness2_benchmark_adapter.py`, `tests/test_harness_stages.py`, and `tests/test_harness2_library_wiring.py` passed cleanly in 13.98s with 0 errors.
+- All 12 unit and integration tests in `tests/integration/test_harness2_benchmark_adapter.py` passed green (100%).
+- Full suite of 27 related tests in `tests/integration/test_harness2_benchmark_adapter.py`, `tests/integration/test_harness_stages.py`, and `tests/integration/test_harness2_library_wiring.py` passed cleanly in 13.98s with 0 errors.
 - CLI verification:
   - `python -m harness_core.cli harness2-eval --help` (exit code 0).
   - `python -m harness_core.cli harness2-eval --task-id ledger-1 --k 1 --mode parallel` (exit code 0, Status: SUCCESS, Winning Finals: agg1).

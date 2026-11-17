@@ -43,12 +43,12 @@ has run_extract: True
 
 **Unit Test Evidence:**
 ```bash
-.venv/bin/python -m unittest tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_discovery_and_command tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_inprocess_fallback -v
+.venv/bin/python -m unittest tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_discovery_and_command tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_inprocess_fallback -v
 ```
 Output:
 ```
-test_runner_discovery_and_command (tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_discovery_and_command) ... ok
-test_runner_inprocess_fallback (tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_inprocess_fallback) ... ok
+test_runner_discovery_and_command (tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_discovery_and_command) ... ok
+test_runner_inprocess_fallback (tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_inprocess_fallback) ... ok
 ```
 **Verdict:** PASS
 
@@ -87,12 +87,12 @@ Ingest verified successfully: {'ingested': True, 'path': '/private/var/folders/6
 
 **Unit Test Evidence:**
 ```bash
-.venv/bin/python -m unittest tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_valid_json tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_missing_fallback -v
+.venv/bin/python -m unittest tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_valid_json tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_missing_fallback -v
 ```
 Output:
 ```
-test_ingest_upstream_graph_missing_fallback (tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_missing_fallback) ... ok
-test_ingest_upstream_graph_valid_json (tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_valid_json) ... ok
+test_ingest_upstream_graph_missing_fallback (tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_missing_fallback) ... ok
+test_ingest_upstream_graph_valid_json (tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_valid_json) ... ok
 ```
 **Verdict:** PASS
 
@@ -206,20 +206,20 @@ Output:
 
 **Verification Command:**
 ```bash
-.venv/bin/python -m unittest tests/test_graphify_polyglot_blast_radius.py -v
+.venv/bin/python -m unittest tests/tools/test_graphify_polyglot_blast_radius.py -v
 ```
 
 **Output:**
 ```
-test_active_blast_radius_interceptor_contract (tests.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_active_blast_radius_interceptor_contract)
+test_active_blast_radius_interceptor_contract (tests.tools.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_active_blast_radius_interceptor_contract)
 Validates ActiveBlastRadiusInterceptor helper contract and non-code file exclusion. ... ok
-test_compute_blast_radius_native_java_and_cpp (tests.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_compute_blast_radius_native_java_and_cpp)
+test_compute_blast_radius_native_java_and_cpp (tests.tools.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_compute_blast_radius_native_java_and_cpp)
 Validates native polyglot AST indexing and blast-radius tracking for Java and C++ files. ... ok
-test_compute_blast_radius_upstream_polyglot (tests.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_compute_blast_radius_upstream_polyglot)
+test_compute_blast_radius_upstream_polyglot (tests.tools.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_compute_blast_radius_upstream_polyglot)
 Builds a multi-language graph and verifies 1-hop/2-hop dependents and impacted tests. ... ok
-test_gateway_interceptor_polyglot_write_file (tests.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_gateway_interceptor_polyglot_write_file)
+test_gateway_interceptor_polyglot_write_file (tests.tools.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_gateway_interceptor_polyglot_write_file)
 Verifies ToolGateway with polyglot file (Go/TS/Rust) triggers ast_blast_radius and updates ledger. ... ok
-test_is_test_file_polyglot_extensions (tests.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_is_test_file_polyglot_extensions)
+test_is_test_file_polyglot_extensions (tests.tools.test_graphify_polyglot_blast_radius.TestGraphifyPolyglotBlastRadius.test_is_test_file_polyglot_extensions)
 Validates _is_test_file across Python, TS/JS, Go, Rust, Java, C++, rejecting production files. ... ok
 
 ----------------------------------------------------------------------
@@ -235,21 +235,21 @@ OK
 ### Must-Have 5: Zero Failures Across Test Suites
 
 **Requirement:**
-- `tests/test_graphify_upstream_wiring.py` (5/5 tests passing)
-- `tests/test_graphify_polyglot_blast_radius.py` (5/5 tests passing)
+- `tests/tools/test_graphify_upstream_wiring.py` (5/5 tests passing)
+- `tests/tools/test_graphify_polyglot_blast_radius.py` (5/5 tests passing)
 - Full test suite passes cleanly with zero regressions.
 
 **1. Wiring Suite:**
 ```bash
-.venv/bin/python -m unittest tests/test_graphify_upstream_wiring.py -v
+.venv/bin/python -m unittest tests/tools/test_graphify_upstream_wiring.py -v
 ```
 Output:
 ```
-test_cli_graphify_commands (tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_cli_graphify_commands) ... ok
-test_ingest_upstream_graph_missing_fallback (tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_missing_fallback) ... ok
-test_ingest_upstream_graph_valid_json (tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_valid_json) ... ok
-test_runner_discovery_and_command (tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_discovery_and_command) ... ok
-test_runner_inprocess_fallback (tests.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_inprocess_fallback) ... ok
+test_cli_graphify_commands (tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_cli_graphify_commands) ... ok
+test_ingest_upstream_graph_missing_fallback (tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_missing_fallback) ... ok
+test_ingest_upstream_graph_valid_json (tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_ingest_upstream_graph_valid_json) ... ok
+test_runner_discovery_and_command (tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_discovery_and_command) ... ok
+test_runner_inprocess_fallback (tests.tools.test_graphify_upstream_wiring.TestGraphifyUpstreamWiring.test_runner_inprocess_fallback) ... ok
 
 ----------------------------------------------------------------------
 Ran 5 tests in 3.055s
@@ -259,7 +259,7 @@ OK
 
 **2. Polyglot Suite:**
 ```bash
-.venv/bin/python -m unittest tests/test_graphify_polyglot_blast_radius.py -v
+.venv/bin/python -m unittest tests/tools/test_graphify_polyglot_blast_radius.py -v
 ```
 Output:
 ```

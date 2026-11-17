@@ -34,7 +34,7 @@ Exposed the PTY Process Supervisor to autonomous agents and developers by regist
   - `--filter <status>`: Filter by `running`, `completed`, `failed`, or `killed`.
 - Dispatched `args.cmd == "ps"` in `_main_impl()` to query `get_process_registry()`.
 
-### E. Comprehensive End-to-End Test Suite (`tests/test_gateway_process_tools.py`)
+### E. Comprehensive End-to-End Test Suite (`tests/tools/test_gateway_process_tools.py`)
 - 11 comprehensive tests validating:
   - Registration and risk class tiering (`R0` vs `R2`).
   - `start_process` background execution and incremental `read_terminal` slicing.
@@ -49,10 +49,10 @@ Exposed the PTY Process Supervisor to autonomous agents and developers by regist
 
 ## 3. Verification & Proof
 - **Unit & Integration Tests:**
-  - `tests/test_gateway_process_tools.py`: 11/11 tests passing cleanly.
-  - `tests/test_process_registry.py`: 13/13 tests passing cleanly.
-  - `tests/test_gateway_tools.py`: 14/14 tests passing cleanly (total tool count: 30).
-  - `tests/test_acp_server.py`: 9/9 tests passing cleanly.
+  - `tests/tools/test_gateway_process_tools.py`: 11/11 tests passing cleanly.
+  - `tests/runtime/test_process_registry.py`: 13/13 tests passing cleanly.
+  - `tests/tools/test_gateway_tools.py`: 14/14 tests passing cleanly (total tool count: 30).
+  - `tests/client/test_acp_server.py`: 9/9 tests passing cleanly.
 - **Cargo Rust Tests:**
   - `cargo test --workspace`: 34/34 tests passing cleanly (17 in `hex-protocol`, 17 in `hex-tui`).
 - **Full Discovery Suite:**

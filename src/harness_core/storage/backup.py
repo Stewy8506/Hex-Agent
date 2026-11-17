@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from harness_core.client.doctor import HexDoctor
+from harness_core.platform.diagnostics import SystemDiagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -325,7 +325,7 @@ def generate_dump(
         or ws / ".hex" / "data"
     ).resolve()
 
-    doctor = HexDoctor(workspace_root=ws, data_dir=data)
+    doctor = SystemDiagnostics(workspace_root=ws, data_dir=data)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     lines: list[str] = []

@@ -27,7 +27,7 @@ Plan 26-02 completed the remaining two phases of the 4-Phase Context Compactor a
    - Exposed `get_context_compactor()` and `compact_context()` on `TwoTierModelRouter`.
    - Wired `ContextCompactor` into `HarnessOrchestrator.run_agent_loop()`.
    - Added `/compress` command and compaction status indicators (`[COMPACTED: -42% tokens]`) to `HexConsole` TUI.
-   - Authored 6 end-to-end integration tests in `tests/test_context_compressor_integration.py`.
+   - Authored 6 end-to-end integration tests in `tests/cognition/test_context_compressor_integration.py`.
 
 ---
 
@@ -63,7 +63,7 @@ Phase 4 Prompt-Cache Prefixing verified
 
 ### Task 3: Integration Test Suite
 ```bash
-.venv/bin/python -m unittest tests/test_context_compressor_integration.py
+.venv/bin/python -m unittest tests/cognition/test_context_compressor_integration.py
 ```
 **Output:**
 ```
@@ -73,7 +73,7 @@ OK
 
 ### Context Compactor Suite (All 14 Tests)
 ```bash
-.venv/bin/python -m unittest tests/test_context_compressor_tail_pruning.py tests/test_context_compressor_integration.py
+.venv/bin/python -m unittest tests/cognition/test_context_compressor_tail_pruning.py tests/cognition/test_context_compressor_integration.py
 ```
 **Output:**
 ```
@@ -85,7 +85,7 @@ OK
 
 ## 4. Deviations & Bug Fixes
 
-- **Cross-provider model ID validation in `TwoTierModelRouter`:** When `~/.hex/config.yaml` contained a model from a different vendor (e.g. `z-ai/glm-5.3-flash`), selecting `anthropic` or `openai` or `gemini` could inherit the non-matching model ID if it did not match the exclusion prefixes. Hardened `TwoTierModelRouter.__init__` to verify that when `anthropic` is selected, model IDs must start with `claude` (or be cleared for default selection `claude-3-5-sonnet`), and similarly for `openai` (`gpt`, `o1`, `o3`) and `gemini` (`gemini`). Verified that `tests/test_ux_audit_repairs.py` (17 tests) passed cleanly.
+- **Cross-provider model ID validation in `TwoTierModelRouter`:** When `~/.hex/config.yaml` contained a model from a different vendor (e.g. `z-ai/glm-5.3-flash`), selecting `anthropic` or `openai` or `gemini` could inherit the non-matching model ID if it did not match the exclusion prefixes. Hardened `TwoTierModelRouter.__init__` to verify that when `anthropic` is selected, model IDs must start with `claude` (or be cleared for default selection `claude-3-5-sonnet`), and similarly for `openai` (`gpt`, `o1`, `o3`) and `gemini` (`gemini`). Verified that `tests/integration/test_ux_audit_repairs.py` (17 tests) passed cleanly.
 
 ---
 
@@ -96,5 +96,5 @@ OK
 - `src/harness_core/router.py`
 - `src/harness_core/orchestrator.py`
 - `src/harness_core/tui.py`
-- `tests/test_context_compressor_integration.py`
+- `tests/cognition/test_context_compressor_integration.py`
 - `.gsd/phases/26-context-compactor/26-02-SUMMARY.md`

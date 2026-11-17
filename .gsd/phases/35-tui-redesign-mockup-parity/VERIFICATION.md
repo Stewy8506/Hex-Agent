@@ -38,7 +38,7 @@ An independent empirical verification was conducted on branch `tui_redesign` in 
    - **Right Rail Rendering (`ui/right_rail.rs`):** Renders the exact context progress bar `▕██████░░░░░░░░░░▏` and stats line `{pct}%  ·  {used} / {max}` using `format_tokens` (`256k`, `1.0M`, `200k`).
 
 4. **Automated Verification & Binary Hash Alignment:**
-   - Pytest suite: 38/38 tests pass (`tests/test_model_metadata.py`, `tests/test_model_providers.py`, `tests/test_rust_tui_launcher.py`).
+   - Pytest suite: 38/38 tests pass (`tests/models/test_model_metadata.py`, `tests/providers/test_model_providers.py`, `tests/client/test_rust_tui_launcher.py`).
    - Cargo workspace test suite: 73/73 tests pass (`hex_protocol` and `hex_tui`).
    - Headless check: `~/.local/bin/hex-tui --check` passes all 3 virtual frames.
    - Release binary alignment: `target/release/hex-tui`, `~/.cargo/bin/hex-tui`, and `~/.local/bin/hex-tui` share the exact SHA-256 hash `e4f6618808d6147490523da5059baac74d4c60baa54fe9f35387fd4f9e77b9a9`.
@@ -50,10 +50,10 @@ An independent empirical verification was conducted on branch `tui_redesign` in 
 
 | # | Must-Have Item | Specification | Empirical Evidence | Verdict |
 |---|----------------|---------------|-------------------|---------|
-| 1 | **Canonical Family Context Mapping** | `DEFAULT_CONTEXT_LENGTHS` matches canonical families: Gemma 4 (256k), Gemini (1M/2M), Claude (200k/1M), GPT-4o (128k), DeepSeek (1M), Qwen (131k/1M), LLaMA (131k), fallback (128k) | `src/harness_core/model_metadata.py:24-122`. Verified in `tests/test_model_metadata.py::test_longest_prefix_matching`. | **PASS** |
-| 2 | **models.dev Registry & Cache** | `lookup_models_dev_context` supports `~/.hex/models_dev_cache.json` disk cache and ETag conditional revalidation | `src/harness_core/model_metadata.py:130-276`. Verified in `tests/test_model_metadata.py::test_models_dev_lookup` and Python live cache test. | **PASS** |
-| 3 | **Token String Formatting (Python)** | `format_context_tokens` formats clean strings: `256k`, `200k`, `128k`, `1M`, `1.0M`, `2.1M` | `src/harness_core/model_metadata.py:334-340`. Verified in `tests/test_model_metadata.py::test_format_context_tokens`. | **PASS** |
-| 4 | **Launcher Dynamic Resolution** | `build_tui_cmd_args` resolves active model and passes `--model` and `--max-tokens` to `hex-tui` | `src/harness_core/tui_launcher.py:117-151`. Verified in `tests/test_model_metadata.py::test_tui_launcher_args_with_max_tokens` and launcher tests. | **PASS** |
+| 1 | **Canonical Family Context Mapping** | `DEFAULT_CONTEXT_LENGTHS` matches canonical families: Gemma 4 (256k), Gemini (1M/2M), Claude (200k/1M), GPT-4o (128k), DeepSeek (1M), Qwen (131k/1M), LLaMA (131k), fallback (128k) | `src/harness_core/model_metadata.py:24-122`. Verified in `tests/models/test_model_metadata.py::test_longest_prefix_matching`. | **PASS** |
+| 2 | **models.dev Registry & Cache** | `lookup_models_dev_context` supports `~/.hex/models_dev_cache.json` disk cache and ETag conditional revalidation | `src/harness_core/model_metadata.py:130-276`. Verified in `tests/models/test_model_metadata.py::test_models_dev_lookup` and Python live cache test. | **PASS** |
+| 3 | **Token String Formatting (Python)** | `format_context_tokens` formats clean strings: `256k`, `200k`, `128k`, `1M`, `1.0M`, `2.1M` | `src/harness_core/model_metadata.py:334-340`. Verified in `tests/models/test_model_metadata.py::test_format_context_tokens`. | **PASS** |
+| 4 | **Launcher Dynamic Resolution** | `build_tui_cmd_args` resolves active model and passes `--model` and `--max-tokens` to `hex-tui` | `src/harness_core/tui_launcher.py:117-151`. Verified in `tests/models/test_model_metadata.py::test_tui_launcher_args_with_max_tokens` and launcher tests. | **PASS** |
 | 5 | **CLI Parameter & Alias Support** | `hex-tui` CLI parser accepts `--max-tokens` and `--context-window` alias | `crates/hex-tui/src/main.rs:62-63,120-122,212-214`. Verified via `target/release/hex-tui --help` and `--check`. | **PASS** |
 | 6 | **Fallback Resolution & Live Updates** | `app.rs` provides `resolve_fallback_model_context` and dynamic `set_max_tokens` method | `crates/hex-tui/src/app.rs:1004-1031,1256-1260`. Verified in `crates/hex-tui/tests/test_context_window.rs`. | **PASS** |
 | 7 | **Right Rail Display Formatting** | `format_tokens` renders `256k`, `1.0M`, `200k` in right rail context section | `crates/hex-tui/src/ui/right_rail.rs:18-29,81-85`. Verified in `crates/hex-tui/tests/test_context_window.rs::test_format_tokens`. | **PASS** |
@@ -65,7 +65,7 @@ An independent empirical verification was conducted on branch `tui_redesign` in 
 
 ### 3.1 Python Test Suite Execution
 ```text
-$ .venv/bin/pytest tests/test_model_metadata.py tests/test_model_providers.py tests/test_rust_tui_launcher.py -v
+$ .venv/bin/pytest tests/models/test_model_metadata.py tests/providers/test_model_providers.py tests/client/test_rust_tui_launcher.py -v
 ============================= test session starts ==============================
 platform darwin -- Python 3.14.3, pytest-9.2.0, pluggy-1.7.0 -- /Users/anv./Development/Harness/.venv/bin/python3.14
 cachedir: .pytest_cache
@@ -74,44 +74,44 @@ configfile: pyproject.toml
 plugins: anyio-4.16.0
 collecting ... collected 38 items                                                             
 
-tests/test_model_metadata.py::TestModelMetadata::test_explicit_config_override PASSED [  2%]
-tests/test_model_metadata.py::TestModelMetadata::test_format_context_tokens PASSED [  5%]
-tests/test_model_metadata.py::TestModelMetadata::test_longest_prefix_matching PASSED [  7%]
-tests/test_model_metadata.py::TestModelMetadata::test_models_dev_lookup PASSED [ 10%]
-tests/test_model_metadata.py::TestModelMetadata::test_tui_launcher_args_with_max_tokens PASSED [ 13%]
-tests/test_model_providers.py::TestModelProviderBase::test_custom_exceptions_inheritance PASSED [ 15%]
-tests/test_model_providers.py::TestModelProviderBase::test_model_response_serialization PASSED [ 18%]
-tests/test_model_providers.py::TestModelUsageArithmeticAndSerialization PASSED [ 21%]
-tests/test_model_providers.py::TestModelProviderBase::test_provider_capabilities PASSED [ 23%]
+tests/models/test_model_metadata.py::TestModelMetadata::test_explicit_config_override PASSED [  2%]
+tests/models/test_model_metadata.py::TestModelMetadata::test_format_context_tokens PASSED [  5%]
+tests/models/test_model_metadata.py::TestModelMetadata::test_longest_prefix_matching PASSED [  7%]
+tests/models/test_model_metadata.py::TestModelMetadata::test_models_dev_lookup PASSED [ 10%]
+tests/models/test_model_metadata.py::TestModelMetadata::test_tui_launcher_args_with_max_tokens PASSED [ 13%]
+tests/providers/test_model_providers.py::TestModelProviderBase::test_custom_exceptions_inheritance PASSED [ 15%]
+tests/providers/test_model_providers.py::TestModelProviderBase::test_model_response_serialization PASSED [ 18%]
+tests/providers/test_model_providers.py::TestModelUsageArithmeticAndSerialization PASSED [ 21%]
+tests/providers/test_model_providers.py::TestModelProviderBase::test_provider_capabilities PASSED [ 23%]
 tests/test_local_provider.py::TestLocalMLXModelProvider::test_apple_silicon_detection PASSED [ 26%]
 tests/test_local_provider.py::TestLocalMLXModelProvider::test_capabilities PASSED [ 28%]
 tests/test_local_provider.py::TestLocalMLXModelProvider::test_generate_fallback_when_mlx_absent PASSED [ 31%]
 tests/test_local_provider.py::TestLocalMLXModelProvider::test_generate_with_mocked_mlx PASSED [ 34%]
 tests/test_local_provider.py::TestLocalMLXModelProvider::test_is_available_requires_loaded_model PASSED [ 36%]
 tests/test_local_provider.py::TestLocalMLXModelProvider::test_mlx_availability_missing_dependency PASSED [ 39%]
-tests/test_model_providers.py::TestTier1LogCompressor::test_multi_failure_log PASSED [ 42%]
-tests/test_model_providers.py::TestTier1LogCompressor::test_provider_compress_log_delegation PASSED [ 44%]
-tests/test_model_providers.py::TestTier1LogCompressor::test_secret_redaction PASSED [ 47%]
-tests/test_model_providers.py::TestTier1LogCompressor::test_short_and_empty_logs PASSED [ 50%]
-tests/test_model_providers.py::TestTier1LogCompressor::test_synthetic_verbose_pytest_trace_token_savings PASSED [ 52%]
-tests/test_model_providers.py::TestTaskBudgetTracker::test_budget_tracker_cost_ceiling PASSED [ 55%]
-tests/test_model_providers.py::TestTaskBudgetTracker::test_budget_tracker_output_token_limit PASSED [ 57%]
-tests/test_model_providers.py::TestTaskBudgetTracker::test_budget_tracker_request_limit PASSED [ 60%]
-tests/test_model_providers.py::TestTaskBudgetTracker::test_pricing_calculation PASSED [ 63%]
-tests/test_model_providers.py::TestCloudModelProvider::test_anthropic_payload_dispatch PASSED [ 65%]
-tests/test_model_providers.py::TestCloudModelProvider::test_budget_ceiling_enforcement_in_generate PASSED [ 68%]
-tests/test_model_providers.py::TestCloudModelProvider::test_gemini_payload_dispatch PASSED [ 71%]
-tests/test_model_providers.py::TestCloudModelProvider::test_openai_payload_dispatch PASSED [ 73%]
-tests/test_model_providers.py::TestCloudModelProvider::test_outbound_secret_redaction PASSED [ 76%]
-tests/test_model_providers.py::TestCloudModelProvider::test_privacy_gating_blocks_sensitive_and_secret PASSED [ 78%]
-tests/test_rust_tui_launcher.py::TestRustTuiLauncher::test_build_tui_cmd_args PASSED [ 81%]
-tests/test_rust_tui_launcher.py::TestRustTuiLauncher::test_cli_chat_ratatui_flag_check PASSED [ 84%]
-tests/test_rust_tui_launcher.py::TestRustTuiLauncher::test_cli_parser_has_tui_and_ratatui PASSED [ 86%]
-tests/test_rust_tui_launcher.py::TestRustTuiLauncher::test_cli_tui_subcommand_check PASSED [ 89%]
-tests/test_rust_tui_launcher.py::TestRustTuiLauncher::test_direct_headless_check_launch PASSED [ 92%]
-tests/test_rust_tui_launcher.py::TestRustTuiLauncher::test_env_var_override PASSED [ 94%]
-tests/test_rust_tui_launcher.py::TestRustTuiLauncher::test_find_hex_tui_binary PASSED [ 97%]
-tests/test_rust_tui_launcher.py::TestRustTuiLauncher::test_find_repo_root PASSED [100%]
+tests/providers/test_model_providers.py::TestTier1LogCompressor::test_multi_failure_log PASSED [ 42%]
+tests/providers/test_model_providers.py::TestTier1LogCompressor::test_provider_compress_log_delegation PASSED [ 44%]
+tests/providers/test_model_providers.py::TestTier1LogCompressor::test_secret_redaction PASSED [ 47%]
+tests/providers/test_model_providers.py::TestTier1LogCompressor::test_short_and_empty_logs PASSED [ 50%]
+tests/providers/test_model_providers.py::TestTier1LogCompressor::test_synthetic_verbose_pytest_trace_token_savings PASSED [ 52%]
+tests/providers/test_model_providers.py::TestTaskBudgetTracker::test_budget_tracker_cost_ceiling PASSED [ 55%]
+tests/providers/test_model_providers.py::TestTaskBudgetTracker::test_budget_tracker_output_token_limit PASSED [ 57%]
+tests/providers/test_model_providers.py::TestTaskBudgetTracker::test_budget_tracker_request_limit PASSED [ 60%]
+tests/providers/test_model_providers.py::TestTaskBudgetTracker::test_pricing_calculation PASSED [ 63%]
+tests/providers/test_model_providers.py::TestCloudModelProvider::test_anthropic_payload_dispatch PASSED [ 65%]
+tests/providers/test_model_providers.py::TestCloudModelProvider::test_budget_ceiling_enforcement_in_generate PASSED [ 68%]
+tests/providers/test_model_providers.py::TestCloudModelProvider::test_gemini_payload_dispatch PASSED [ 71%]
+tests/providers/test_model_providers.py::TestCloudModelProvider::test_openai_payload_dispatch PASSED [ 73%]
+tests/providers/test_model_providers.py::TestCloudModelProvider::test_outbound_secret_redaction PASSED [ 76%]
+tests/providers/test_model_providers.py::TestCloudModelProvider::test_privacy_gating_blocks_sensitive_and_secret PASSED [ 78%]
+tests/client/test_rust_tui_launcher.py::TestRustTuiLauncher::test_build_tui_cmd_args PASSED [ 81%]
+tests/client/test_rust_tui_launcher.py::TestRustTuiLauncher::test_cli_chat_ratatui_flag_check PASSED [ 84%]
+tests/client/test_rust_tui_launcher.py::TestRustTuiLauncher::test_cli_parser_has_tui_and_ratatui PASSED [ 86%]
+tests/client/test_rust_tui_launcher.py::TestRustTuiLauncher::test_cli_tui_subcommand_check PASSED [ 89%]
+tests/client/test_rust_tui_launcher.py::TestRustTuiLauncher::test_direct_headless_check_launch PASSED [ 92%]
+tests/client/test_rust_tui_launcher.py::TestRustTuiLauncher::test_env_var_override PASSED [ 94%]
+tests/client/test_rust_tui_launcher.py::TestRustTuiLauncher::test_find_hex_tui_binary PASSED [ 97%]
+tests/client/test_rust_tui_launcher.py::TestRustTuiLauncher::test_find_repo_root PASSED [100%]
 
 ============================== 38 passed in 0.67s ==============================
 ```

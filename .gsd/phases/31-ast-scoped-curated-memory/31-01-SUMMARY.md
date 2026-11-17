@@ -46,6 +46,6 @@
 
 ## 3. Verification Evidence
 
-- `tests/test_curated_memory.py`: 19/19 passing tests covering CRUD, char limits, tolerant replacement, patch ambiguity, drift backup, streaming chunk straddling, bullet deduplication, repeat failure auto-capture, transient error filtering, rejected diffs/rollbacks, gateway execution, and byte-exact KV-cache prompt hash invariance.
-- `tests/test_react_loop.py`: 33/33 passing tests with zero regressions.
-- Combined test run (`.venv/bin/pytest tests/test_curated_memory.py tests/test_react_loop.py -v`): 52/52 passing tests in 2.82s.
+- `tests/cognition/test_curated_memory.py`: 19/19 passing tests covering CRUD, char limits, tolerant replacement, patch ambiguity, drift backup, streaming chunk straddling, bullet deduplication, repeat failure auto-capture, transient error filtering, rejected diffs/rollbacks, gateway execution, and byte-exact KV-cache prompt hash invariance.
+- `tests/core/test_react_loop.py`: 33/33 passing tests with zero regressions.
+- Combined test run (`.venv/bin/pytest tests/cognition/test_curated_memory.py tests/core/test_react_loop.py -v`): 52/52 passing tests in 2.82s.

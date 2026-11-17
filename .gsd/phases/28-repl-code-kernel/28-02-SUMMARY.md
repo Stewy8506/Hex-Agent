@@ -5,7 +5,7 @@ Plan 28-02 integrated the stateful, persistent Python REPL engine into HEX's cen
 1. **ToolGateway**: Registered `code_kernel` as an authoritative built-in tool under `RiskClass.R2`, providing programmatic tool execution (`execute_tool`), strict secret redaction on all streams (stdout, stderr, traceback), automatic stale module warning generation when on-disk Python source files change after import, and full policy enforcement (denied on fast-path tasks).
 2. **ReActLoop**: Wired session ownership (`session_id`) into multi-turn ReAct loops so consecutive reasoning turns retain variable and function definitions across turns, with clean presentation of observations and warnings back to the model.
 3. **HexConsole TUI**: Implemented developer-facing `/kernel` (and `/repl`) slash commands (`status`, `reset`, `vars`, `exec <code>`), complete with Rich table renderings, ANSI fallbacks, autocompletion, and help documentation.
-4. **Integration Testing**: Created a complete 14-test integration suite in `tests/test_gateway_code_kernel.py` covering state retention, reset, redaction, stale module detection, policy gating, multi-turn ReAct loops, and TUI slash commands. Updated `test_gateway_tools.py` and `test_acp_server.py` to reflect 31 registered gateway tools with zero regressions.
+4. **Integration Testing**: Created a complete 14-test integration suite in `tests/tools/test_gateway_code_kernel.py` covering state retention, reset, redaction, stale module detection, policy gating, multi-turn ReAct loops, and TUI slash commands. Updated `test_gateway_tools.py` and `test_acp_server.py` to reflect 31 registered gateway tools with zero regressions.
 
 ---
 
@@ -45,7 +45,7 @@ Plan 28-02 integrated the stateful, persistent Python REPL engine into HEX's cen
   - `vars` / `inspect`: Safely inspects user-defined variables (`k, type, repr`) and displays them in a formatted table.
   - `exec <code>`: Executes code snippet in the active kernel with status and cell count headers.
 
-### 4. Integration Test Suite (`tests/test_gateway_code_kernel.py`)
+### 4. Integration Test Suite (`tests/tools/test_gateway_code_kernel.py`)
 - 14 comprehensive unit and integration tests:
   - `test_tool_registration_and_risk_class`
   - `test_state_persistence_across_calls`
@@ -74,13 +74,13 @@ Plan 28-02 integrated the stateful, persistent Python REPL engine into HEX's cen
 
 2. **Integration Test Suite**:
    ```bash
-   .venv/bin/python -m unittest tests/test_gateway_code_kernel.py
+   .venv/bin/python -m unittest tests/tools/test_gateway_code_kernel.py
    # Result: Ran 14 tests in 4.309s — OK
    ```
 
 3. **Updated System Suite Verification**:
    ```bash
-   .venv/bin/python -m unittest tests/test_gateway_tools.py tests/test_acp_server.py
+   .venv/bin/python -m unittest tests/tools/test_gateway_tools.py tests/client/test_acp_server.py
    # Result: Ran 23 tests in 37.554s — OK
    ```
 

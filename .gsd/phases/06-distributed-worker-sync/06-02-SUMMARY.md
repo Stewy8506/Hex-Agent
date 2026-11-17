@@ -17,8 +17,8 @@ Plan 06-02 delivered cross-machine Copy-on-Write (CoW) delta archive mobility, a
 | Task # | Task Description | Files Touched | Git Commit |
 |---|---|---|---|
 | **Task 1** | Implement Cross-Machine CoW Delta Archive Export/Import & CAS Artifact Transfer | `src/harness_core/cow.py`, `src/harness_core/server.py`, `src/harness_core/orchestrator.py`, `src/harness_core/worker_daemon.py`, `src/harness_core/db.py`, `src/harness_core/gateway.py` | `3307303` (`feat(phase-06): implement CoW delta archive import, CAS artifact transfer and workspace reconstruction`) |
-| **Task 2** | Implement Lease Expiry Handover, 0ms Journal Replay & Monotonic Fencing Defense | `src/harness_core/db.py`, `src/harness_core/models.py`, `tests/test_postgres_concurrency.py` | `4fe5938` (`feat(phase-06): implement lease expiry handover and monotonic fencing token defense`) |
-| **Task 3** | Author Comprehensive Test Suite for Cross-Machine CoW Sync & Fencing Defense | `src/harness_core/cow.py`, `src/harness_core/db.py`, `tests/test_cross_machine_cow_sync.py` | `7500c9c` (`feat(phase-06): author cross-machine CoW delta sync and fencing defense test suite`) |
+| **Task 2** | Implement Lease Expiry Handover, 0ms Journal Replay & Monotonic Fencing Defense | `src/harness_core/db.py`, `src/harness_core/models.py`, `tests/storage/test_postgres_concurrency.py` | `4fe5938` (`feat(phase-06): implement lease expiry handover and monotonic fencing token defense`) |
+| **Task 3** | Author Comprehensive Test Suite for Cross-Machine CoW Sync & Fencing Defense | `src/harness_core/cow.py`, `src/harness_core/db.py`, `tests/integration/test_cross_machine_cow_sync.py` | `7500c9c` (`feat(phase-06): author cross-machine CoW delta sync and fencing defense test suite`) |
 
 ---
 
@@ -86,9 +86,9 @@ Plan 06-02 delivered cross-machine Copy-on-Write (CoW) delta archive mobility, a
    `FENCING_TOKENS 1 2`
    `SUCCESS: stale token rejected`
 
-3. **Task 3 Verification (`tests/test_cross_machine_cow_sync.py`):**
+3. **Task 3 Verification (`tests/integration/test_cross_machine_cow_sync.py`):**
    ```bash
-   .venv/bin/python -m unittest tests/test_cross_machine_cow_sync.py -v
+   .venv/bin/python -m unittest tests/integration/test_cross_machine_cow_sync.py -v
    ```
    *Output:*
    ```text

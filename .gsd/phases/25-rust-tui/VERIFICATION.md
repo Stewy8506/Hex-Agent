@@ -272,7 +272,7 @@ test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 **Command:**
 ```bash
-.venv/bin/python -m unittest tests/test_rust_tui_launcher.py tests/test_acp_server.py
+.venv/bin/python -m unittest tests/client/test_rust_tui_launcher.py tests/client/test_acp_server.py
 ```
 **Output:**
 ```
@@ -423,7 +423,7 @@ HEX TUI headless verification passed: 1 virtual frame rendered successfully.
 
 2. **Python ACP & Launcher Tests:**
    ```bash
-   PYTHONPATH=src .venv/bin/python -m unittest tests/test_acp_server.py tests/test_rust_tui_launcher.py
+   PYTHONPATH=src .venv/bin/python -m unittest tests/client/test_acp_server.py tests/client/test_rust_tui_launcher.py
    ```
    Output:
    ```

@@ -1100,7 +1100,7 @@ fn handle_start_mouse_click(app: &mut App, col: u16, row: u16, rect: ratatui::la
 #[cfg(test)]
 mod wire_contract_tests {
     //! F04: prove the TUI consumes the same real-server fixtures as the desktop
-    //! bridge (tests/fixtures/acp_wire, captured by tests/test_acp_wire_contract.py).
+    //! bridge (tests/fixtures/acp_wire, captured by tests/client/test_acp_wire_contract.py).
     use super::*;
     use hex_protocol::models::Role;
     use hex_tui::app::DialogueItem;

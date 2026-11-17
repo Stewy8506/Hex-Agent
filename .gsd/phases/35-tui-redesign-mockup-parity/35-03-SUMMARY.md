@@ -61,6 +61,6 @@ emits `error` tool events, `session/subagents` returns the session's own
 subagent records, and the diagnostic card is transcript content that scrolls
 with its tool row. G07 (`f8afd11`) added the entrance rise, the one-row top
 mask, tool-row hover and `HEX_REDUCED_MOTION`. Two deviations remain open and
-are recorded in `audits/TUI_UI_IMPROVEMENT_PLAN_2026-11-16.md` §6: denied
+are recorded in `docs/audits/TUI_UI_IMPROVEMENT_PLAN_2026-11-16.md` §6: denied
 approvals end the turn instead of continuing it, and agent-mode DAG turns still
 emit no tool events.

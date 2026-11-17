@@ -178,7 +178,7 @@
   - 4-step interactive setup wizard in `run_onboard_wizard`: Model Provider, Web Search Engine, Remote Messaging Gateways, and Hardware Profile.
   - First-run startup interceptor in `cli.py` detecting zero-key unconfigured state and guiding setup.
   - Purged hardcoded dummy artifacts (`v1.3.0`, `M4 MLX`, `wrk_m4_air_local`, `mock-key`).
-- **Verification:** Unit and integration test suites passing in `tests/test_ui_selector_and_web_search.py` and `tests/test_auto_setup_and_polish.py`, with 100% green full-repository verification.
+- **Verification:** Unit and integration test suites passing in `tests/capabilities/test_ui_selector_and_web_search.py` and `tests/client/test_auto_setup_and_polish.py`, with 100% green full-repository verification.
 
 ### Phase 14: Antigravity Interactive OAuth, Model Selection & TUI Crash Hardening
 - **Goal:** Resolve live operator issues during first-run onboarding: validate Antigravity tokens before accepting, provide browser PKCE OAuth sign-in fallback, replace fictitious model strings with real production models, simplify search prompts, and prevent TUI crashes on provider authentication errors.
@@ -189,7 +189,7 @@
   - Simplified search label (`Disabled`) and silent hardware profiling without redundant sandbox questions.
   - TUI crash resilience: catch `ProviderUnavailableError` and HTTP 401 cleanly with remediation commands (`hex auth antigravity --auth-url`, `/model`, `hex onboard`).
   - Automatic token refresh in `AntigravityModelProvider` upon HTTP 401 when `refresh_token` is present.
-- **Verification:** Unit and integration tests in `tests/test_antigravity_oauth_and_tui_resilience.py` (7/7 tests passing) and 422/422 repository tests 100% green.
+- **Verification:** Unit and integration tests in `tests/integration/test_antigravity_oauth_and_tui_resilience.py` (7/7 tests passing) and 422/422 repository tests 100% green.
 
 ### Phase 15: Live API Model Discovery & Project-Scoped Workspaces
 - **Goal:** Invert provider onboarding to authenticate first, query live provider API endpoints for dynamic model discovery with offline fallbacks, and introduce a global project registry with folder-scoped context isolation and daily project switcher.
@@ -203,7 +203,7 @@
   - Automatic project binding when launched inside a git repo or `.hex/` project folder.
   - Complete folder-scoped context isolation: `<project_dir>/.hex/` with `config.yaml`, `graph.json`, `reflections/LESSONS.md`, and `data/`.
   - CLI command `hex project [list|add|use|switch]`.
-- **Verification:** Comprehensive unit and integration test suites in `tests/test_live_model_discovery.py` and `tests/test_project_registry_and_workspace.py`.
+- **Verification:** Comprehensive unit and integration test suites in `tests/client/test_live_model_discovery.py` and `tests/storage/test_project_registry_and_workspace.py`.
 
 ---
 
@@ -300,7 +300,7 @@
   - `SubagentManager` with role-based tool gating, spawn depth limits, and CoW workspace branching.
   - `delegate`, `subagent_status`, and `subagent_wait` tools registered in `ToolGateway`.
   - TUI `/subagents` slash command in `hex chat`.
-- **Verification:** Unit and integration tests in `tests/test_subagent_delegation.py` demonstrating role isolation, synchronous and asynchronous execution, budget inheritance, and depth guards.
+- **Verification:** Unit and integration tests in `tests/core/test_subagent_delegation.py` demonstrating role isolation, synchronous and asynchronous execution, budget inheritance, and depth guards.
 
 ---
 

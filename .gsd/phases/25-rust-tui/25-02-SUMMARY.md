@@ -36,9 +36,9 @@
 
 5. **Empirical Verification:**
    - Authored unit and rendering tests in `crates/hex-tui/tests/ui_rendering_test.rs` and `src/app.rs`.
-   - Authored Python launcher test suite in `tests/test_rust_tui_launcher.py`.
+   - Authored Python launcher test suite in `tests/client/test_rust_tui_launcher.py`.
    - `cargo test --workspace`: **26/26 tests passing** (11 unit + 1 live + 3 protocol in `hex-protocol`; 5 lib + 6 rendering in `hex-tui`).
-   - `.venv/bin/python -m unittest tests/test_rust_tui_launcher.py`: **8/8 tests passing**.
+   - `.venv/bin/python -m unittest tests/client/test_rust_tui_launcher.py`: **8/8 tests passing**.
    - Full repository test suite: **654/654 tests passing** with zero failures.
 
 ---
@@ -62,7 +62,7 @@ test result: ok. 5 passed (hex_tui unit)
 test result: ok. 6 passed (ui_rendering_test)
 Total: 26 passed; 0 failed; 0 ignored.
 
-$ .venv/bin/python -m unittest tests/test_rust_tui_launcher.py
+$ .venv/bin/python -m unittest tests/client/test_rust_tui_launcher.py
 Ran 8 tests in 0.471s
 OK
 

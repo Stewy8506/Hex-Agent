@@ -17,7 +17,7 @@ The engine is fully integrated into:
 2. `HarnessOrchestrator.run_agent_loop` in `src/harness_core/orchestrator.py`.
 3. `/react [on|off]` slash command and live progressive tool cards in `src/harness_core/tui.py`.
 4. `--react` CLI flags in `src/harness_core/cli.py` across root, `hex run`, and `hex chat`.
-5. Comprehensive test suite in `tests/test_react_loop.py` (31 tests passing in ~8.5s).
+5. Comprehensive test suite in `tests/core/test_react_loop.py` (31 tests passing in ~8.5s).
 
 ---
 
@@ -100,11 +100,11 @@ Task status: SUCCEEDED | Tool calls sealed: 1 read_file SEALED
 
 **Empirical Verification:**
 ```bash
-.venv/bin/python -m unittest tests.test_react_loop.TestTUIReActIntegration -v
+.venv/bin/python -m unittest tests.core.test_react_loop.TestTUIReActIntegration -v
 ```
 **Output:**
 ```
-test_handle_user_prompt_react_mode_invokes_agent_loop (tests.test_react_loop.TestTUIReActIntegration.test_handle_user_prompt_react_mode_invokes_agent_loop) ... 
+test_handle_user_prompt_react_mode_invokes_agent_loop (tests.core.test_react_loop.TestTUIReActIntegration.test_handle_user_prompt_react_mode_invokes_agent_loop) ...
 ◈ ReAct Autonomous Tool Loop
 Goal: Inspect the codebase and report
 
@@ -121,7 +121,7 @@ HEX ReAct Result (<MagicMock name='mock.router.cloud_model_id' id='4422406160'>)
 Autonomous task executed with excellence
 
 ok
-test_react_mode_default_and_toggle (tests.test_react_loop.TestTUIReActIntegration.test_react_mode_default_and_toggle) ... 
+test_react_mode_default_and_toggle (tests.core.test_react_loop.TestTUIReActIntegration.test_react_mode_default_and_toggle) ...
 ✔ ReAct multi-turn autonomous tool loop enabled.
 
 ○ ReAct multi-turn autonomous tool loop disabled.
@@ -131,7 +131,7 @@ ReAct multi-turn tool loop is now ON.
 ReAct multi-turn tool loop is now OFF.
 
 ok
-test_react_mode_initialized_from_flag (tests.test_react_loop.TestTUIReActIntegration.test_react_mode_initialized_from_flag) ... ok
+test_react_mode_initialized_from_flag (tests.core.test_react_loop.TestTUIReActIntegration.test_react_mode_initialized_from_flag) ... ok
 
 ----------------------------------------------------------------------
 Ran 3 tests in 0.052s
@@ -164,12 +164,12 @@ OK
 
 **Empirical Verification 2: CLI Subprocess Execution**
 ```bash
-.venv/bin/python -m unittest tests.test_react_loop.TestCLIReActFlags -v
+.venv/bin/python -m unittest tests.core.test_react_loop.TestCLIReActFlags -v
 ```
 **Output:**
 ```
-test_cli_chat_react_flag (tests.test_react_loop.TestCLIReActFlags.test_cli_chat_react_flag) ... ok
-test_cli_run_react_execution (tests.test_react_loop.TestCLIReActFlags.test_cli_run_react_execution) ... {
+test_cli_chat_react_flag (tests.core.test_react_loop.TestCLIReActFlags.test_cli_chat_react_flag) ... ok
+test_cli_run_react_execution (tests.core.test_react_loop.TestCLIReActFlags.test_cli_run_react_execution) ... {
   "success": true,
   "final_answer": "CLI ReAct run complete",
   "turns_count": 1,
@@ -177,7 +177,7 @@ test_cli_run_react_execution (tests.test_react_loop.TestCLIReActFlags.test_cli_r
   "turns": []
 }
 ok
-test_cli_top_level_react_flag (tests.test_react_loop.TestCLIReActFlags.test_cli_top_level_react_flag) ... ok
+test_cli_top_level_react_flag (tests.core.test_react_loop.TestCLIReActFlags.test_cli_top_level_react_flag) ... ok
 
 ----------------------------------------------------------------------
 Ran 3 tests in 0.048s
@@ -189,48 +189,48 @@ OK
 
 ---
 
-### Must-Have 5: Full 31-Test Suite Pass in `tests/test_react_loop.py`
+### Must-Have 5: Full 31-Test Suite Pass in `tests/core/test_react_loop.py`
 
 **Requirement:**
-- Run `.venv/bin/python -m unittest tests/test_react_loop.py` and confirm all 31 tests pass cleanly.
+- Run `.venv/bin/python -m unittest tests/core/test_react_loop.py` and confirm all 31 tests pass cleanly.
 
 **Empirical Verification:**
 ```bash
-.venv/bin/python -m unittest tests/test_react_loop.py -v
+.venv/bin/python -m unittest tests/core/test_react_loop.py -v
 ```
 **Output:**
 ```
-test_async_react_loop (tests.test_react_loop.TestAsyncAndRealGateway.test_async_react_loop) ... ok
-test_real_tool_gateway_file_read_and_write (tests.test_react_loop.TestAsyncAndRealGateway.test_real_tool_gateway_file_read_and_write) ... ok
-test_cli_chat_react_flag (tests.test_react_loop.TestCLIReActFlags.test_cli_chat_react_flag) ... ok
-test_cli_run_react_execution (tests.test_react_loop.TestCLIReActFlags.test_cli_run_react_execution) ... ok
-test_cli_top_level_react_flag (tests.test_react_loop.TestCLIReActFlags.test_cli_top_level_react_flag) ... ok
-test_ledger_step_recording (tests.test_react_loop.TestLedgerIntegration.test_ledger_step_recording) ... ok
-test_real_ledger_store_execution (tests.test_react_loop.TestLedgerIntegration.test_real_ledger_store_execution) ... ok
-test_max_turns_limit_reached (tests.test_react_loop.TestMultiTurnReActLoop.test_max_turns_limit_reached) ... ok
-test_model_caller_exception (tests.test_react_loop.TestMultiTurnReActLoop.test_model_caller_exception) ... ok
-test_multi_turn_cycle_with_finish (tests.test_react_loop.TestMultiTurnReActLoop.test_multi_turn_cycle_with_finish) ... ok
-test_natural_final_answer_termination (tests.test_react_loop.TestMultiTurnReActLoop.test_natural_final_answer_termination) ... ok
-test_tool_execution_error_recovery (tests.test_react_loop.TestMultiTurnReActLoop.test_tool_execution_error_recovery) ... ok
-test_unknown_tool_error (tests.test_react_loop.TestMultiTurnReActLoop.test_unknown_tool_error) ... ok
-test_run_agent_loop_custom_workspace (tests.test_react_loop.TestOrchestratorAgentLoop.test_run_agent_loop_custom_workspace) ... ok
-test_run_agent_loop_deterministic_conversational (tests.test_react_loop.TestOrchestratorAgentLoop.test_run_agent_loop_deterministic_conversational) ... ok
-test_run_agent_loop_deterministic_tool_execution (tests.test_react_loop.TestOrchestratorAgentLoop.test_run_agent_loop_deterministic_tool_execution) ... ok
-test_run_agent_loop_with_active_router (tests.test_react_loop.TestOrchestratorAgentLoop.test_run_agent_loop_with_active_router) ... ok
-test_default_config (tests.test_react_loop.TestReActDataStructures.test_default_config) ... ok
-test_turn_and_session_result_defaults (tests.test_react_loop.TestReActDataStructures.test_turn_and_session_result_defaults) ... ok
-test_handle_user_prompt_react_mode_invokes_agent_loop (tests.test_react_loop.TestTUIReActIntegration.test_handle_user_prompt_react_mode_invokes_agent_loop) ... ok
-test_react_mode_default_and_toggle (tests.test_react_loop.TestTUIReActIntegration.test_react_mode_default_and_toggle) ... ok
-test_react_mode_initialized_from_flag (tests.test_react_loop.TestTUIReActIntegration.test_react_mode_initialized_from_flag) ... ok
-test_parse_embedded_json_in_text (tests.test_react_loop.TestToolCallParsing.test_parse_embedded_json_in_text) ... ok
-test_parse_json_dict_response (tests.test_react_loop.TestToolCallParsing.test_parse_json_dict_response) ... ok
-test_parse_markdown_code_fence_single_tool (tests.test_react_loop.TestToolCallParsing.test_parse_markdown_code_fence_single_tool) ... ok
-test_parse_markdown_json_code_fence (tests.test_react_loop.TestToolCallParsing.test_parse_markdown_json_code_fence) ... ok
-test_parse_no_tool_calls (tests.test_react_loop.TestToolCallParsing.test_parse_no_tool_calls) ... ok
-test_parse_raw_json_string (tests.test_react_loop.TestToolCallParsing.test_parse_raw_json_string) ... ok
-test_parse_single_tool_dict_response (tests.test_react_loop.TestToolCallParsing.test_parse_single_tool_dict_response) ... ok
-test_parse_xml_tool_call_block (tests.test_react_loop.TestToolCallParsing.test_parse_xml_tool_call_block) ... ok
-test_parse_xml_tool_call_with_tag_name (tests.test_react_loop.TestToolCallParsing.test_parse_xml_tool_call_with_tag_name) ... ok
+test_async_react_loop (tests.core.test_react_loop.TestAsyncAndRealGateway.test_async_react_loop) ... ok
+test_real_tool_gateway_file_read_and_write (tests.core.test_react_loop.TestAsyncAndRealGateway.test_real_tool_gateway_file_read_and_write) ... ok
+test_cli_chat_react_flag (tests.core.test_react_loop.TestCLIReActFlags.test_cli_chat_react_flag) ... ok
+test_cli_run_react_execution (tests.core.test_react_loop.TestCLIReActFlags.test_cli_run_react_execution) ... ok
+test_cli_top_level_react_flag (tests.core.test_react_loop.TestCLIReActFlags.test_cli_top_level_react_flag) ... ok
+test_ledger_step_recording (tests.core.test_react_loop.TestLedgerIntegration.test_ledger_step_recording) ... ok
+test_real_ledger_store_execution (tests.core.test_react_loop.TestLedgerIntegration.test_real_ledger_store_execution) ... ok
+test_max_turns_limit_reached (tests.core.test_react_loop.TestMultiTurnReActLoop.test_max_turns_limit_reached) ... ok
+test_model_caller_exception (tests.core.test_react_loop.TestMultiTurnReActLoop.test_model_caller_exception) ... ok
+test_multi_turn_cycle_with_finish (tests.core.test_react_loop.TestMultiTurnReActLoop.test_multi_turn_cycle_with_finish) ... ok
+test_natural_final_answer_termination (tests.core.test_react_loop.TestMultiTurnReActLoop.test_natural_final_answer_termination) ... ok
+test_tool_execution_error_recovery (tests.core.test_react_loop.TestMultiTurnReActLoop.test_tool_execution_error_recovery) ... ok
+test_unknown_tool_error (tests.core.test_react_loop.TestMultiTurnReActLoop.test_unknown_tool_error) ... ok
+test_run_agent_loop_custom_workspace (tests.core.test_react_loop.TestOrchestratorAgentLoop.test_run_agent_loop_custom_workspace) ... ok
+test_run_agent_loop_deterministic_conversational (tests.core.test_react_loop.TestOrchestratorAgentLoop.test_run_agent_loop_deterministic_conversational) ... ok
+test_run_agent_loop_deterministic_tool_execution (tests.core.test_react_loop.TestOrchestratorAgentLoop.test_run_agent_loop_deterministic_tool_execution) ... ok
+test_run_agent_loop_with_active_router (tests.core.test_react_loop.TestOrchestratorAgentLoop.test_run_agent_loop_with_active_router) ... ok
+test_default_config (tests.core.test_react_loop.TestReActDataStructures.test_default_config) ... ok
+test_turn_and_session_result_defaults (tests.core.test_react_loop.TestReActDataStructures.test_turn_and_session_result_defaults) ... ok
+test_handle_user_prompt_react_mode_invokes_agent_loop (tests.core.test_react_loop.TestTUIReActIntegration.test_handle_user_prompt_react_mode_invokes_agent_loop) ...ok
+test_react_mode_default_and_toggle (tests.core.test_react_loop.TestTUIReActIntegration.test_react_mode_default_and_toggle) ...ok
+test_react_mode_initialized_from_flag (tests.core.test_react_loop.TestTUIReActIntegration.test_react_mode_initialized_from_flag) ... ok
+test_parse_embedded_json_in_text (tests.core.test_react_loop.TestToolCallParsing.test_parse_embedded_json_in_text) ... ok
+test_parse_json_dict_response (tests.core.test_react_loop.TestToolCallParsing.test_parse_json_dict_response) ... ok
+test_parse_markdown_code_fence_single_tool (tests.core.test_react_loop.TestToolCallParsing.test_parse_markdown_code_fence_single_tool) ... ok
+test_parse_markdown_json_code_fence (tests.core.test_react_loop.TestToolCallParsing.test_parse_markdown_json_code_fence) ... ok
+test_parse_no_tool_calls (tests.core.test_react_loop.TestToolCallParsing.test_parse_no_tool_calls) ... ok
+test_parse_raw_json_string (tests.core.test_react_loop.TestToolCallParsing.test_parse_raw_json_string) ... ok
+test_parse_single_tool_dict_response (tests.core.test_react_loop.TestToolCallParsing.test_parse_single_tool_dict_response) ... ok
+test_parse_xml_tool_call_block (tests.core.test_react_loop.TestToolCallParsing.test_parse_xml_tool_call_block) ... ok
+test_parse_xml_tool_call_with_tag_name (tests.core.test_react_loop.TestToolCallParsing.test_parse_xml_tool_call_with_tag_name) ... ok
 
 ----------------------------------------------------------------------
 Ran 31 tests in 8.547s
@@ -250,7 +250,7 @@ OK
 | `src/harness_core/orchestrator.py` | ✓ | ✓ (2,235 lines) | ✓ | Implements `run_agent_loop` (lines 411-615), wiring router, gateway, and ledger state transitions. |
 | `src/harness_core/tui.py` | ✓ | ✓ (3,056 lines) | ✓ | Registers `/react`, implements `_cmd_react`, and hooks `_handle_react_loop_prompt`. |
 | `src/harness_core/cli.py` | ✓ | ✓ (1,808 lines) | ✓ | Registers `--react` flag on root, `hex run`, and `hex chat` subparsers. |
-| `tests/test_react_loop.py` | ✓ | ✓ (626 lines) | ✓ | 31 unit and integration test cases covering core, orchestrator, TUI, CLI, and ledger recording. |
+| `tests/core/test_react_loop.py` | ✓ | ✓ (626 lines) | ✓ | 31 unit and integration test cases covering core, orchestrator, TUI, CLI, and ledger recording. |
 
 ---
 

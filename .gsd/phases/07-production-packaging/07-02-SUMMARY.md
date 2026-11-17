@@ -22,7 +22,7 @@
    - Implemented `GracefulServerRunner` catching `SIGINT` and `SIGTERM`, setting `is_draining = True`, allowing a configurable drain window for active leases, shutting down the server thread without deadlock, and closing socket connections cleanly.
    - Added `--drain-timeout` and `--asgi` flags to `harness up` CLI command.
 
-2. **Comprehensive Operator Runbook (`docs/RUNBOOK.md`):**
+2. **Comprehensive Operator Runbook (`docs/guides/RUNBOOK.md`):**
    - Created exhaustive 280+ line production runbook covering 6 critical operational areas:
      1. *System Architecture & Topology*: Control Plane REST/SSE/Dashboard, Dual-Driver PostgreSQL/SQLite storage, CoW providers, Two-Tier model routing, distributed worker fencing, and security gates.
      2. *Disaster Recovery & Backup/Restore*: Compressed `pg_dump -Fc` cron procedures, point-in-time restore, cryptographic event chain verification (`verify_event_chain`), SQLite online `.backup`, and CoW snapshot garbage collection.
@@ -31,7 +31,7 @@
      5. *Harness Version Rollback & Database Downgrade*: Git release rollback procedures, reversible forward/backward Alembic migrations (`alembic downgrade -1`), and SQLite compatibility verification.
      6. *Production ASGI / Systemd Deployment & Monitoring*: Multi-worker `uvicorn` deployment, production `/etc/systemd/system/harness.service` unit configuration with `TimeoutStopSec=30`, and external probe monitoring table for `/livez` and `/healthz`.
 
-3. **Empirical Verification Suite (`tests/test_production_server.py`):**
+3. **Empirical Verification Suite (`tests/client/test_production_server.py`):**
    - Authored 12 unit and integration tests across 3 test fixtures (`TestProductionHealthChecks`, `TestASGIAdapter`, `TestGracefulServerRunner`).
    - Validated `/livez` response structure, uptime, and version.
    - Validated `/healthz` healthy status, degraded database status (mocked 503), degraded CoW storage status (mocked 503), and draining status (503 while `/livez` returns 200).
@@ -52,13 +52,13 @@
 
 ### Task 2: Operator Runbook Verification
 ```bash
-.venv/bin/python -c "from pathlib import Path; doc = Path('docs/RUNBOOK.md').read_text(); assert '# Operator Runbook' in doc; assert 'Disaster Recovery' in doc; assert 'SkillSpector' in doc; assert 'ConcurrencyFenceError' in doc; assert 'healthz' in doc; assert 'Alembic' in doc; print('RUNBOOK_VERIFIED', len(doc), 'bytes')"
+.venv/bin/python -c "from pathlib import Path; doc = Path('docs/guides/RUNBOOK.md').read_text(); assert '# Operator Runbook' in doc; assert 'Disaster Recovery' in doc; assert 'SkillSpector' in doc; assert 'ConcurrencyFenceError' in doc; assert 'healthz' in doc; assert 'Alembic' in doc; print('RUNBOOK_VERIFIED', len(doc), 'bytes')"
 # Output: RUNBOOK_VERIFIED 11875 bytes
 ```
 
 ### Task 3: Comprehensive Test Suite Verification
 ```bash
-.venv/bin/python -m unittest tests/test_production_server.py
+.venv/bin/python -m unittest tests/client/test_production_server.py
 # Output: Ran 12 tests in 0.770s -> OK
 
 .venv/bin/python -m unittest discover -s tests

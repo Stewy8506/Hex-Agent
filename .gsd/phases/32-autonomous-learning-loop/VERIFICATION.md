@@ -223,13 +223,13 @@ ALL HYBRID RETRIEVAL TESTS COMPLETED SUCCESSFULLY!
 
 ### 1. Phase 32 Unit & Integration Suites
 ```bash
-./.venv/bin/pytest tests/test_skill_synthesis.py tests/test_autonomous_learning.py -v
+./.venv/bin/pytest tests/skills/test_skill_synthesis.py tests/cognition/test_autonomous_learning.py -v
 ```
 **Result:** `55 passed in 6.64s` (100% test pass rate).
 
 ### 2. Full Milestone M11 Combined Regression Suite
 ```bash
-./.venv/bin/pytest tests/test_soul_manager.py tests/test_ast_scoped_memory.py tests/test_curated_memory.py tests/test_amem_and_lifecycle.py tests/test_skillspector_ast_wiring.py tests/test_skillspector_osv_wiring.py tests/test_skill_synthesis.py tests/test_autonomous_learning.py -v
+./.venv/bin/pytest tests/cognition/test_soul_manager.py tests/cognition/test_ast_scoped_memory.py tests/cognition/test_curated_memory.py tests/cognition/test_amem_and_lifecycle.py tests/skills/test_skillspector_ast_wiring.py tests/skills/test_skillspector_osv_wiring.py tests/skills/test_skill_synthesis.py tests/cognition/test_autonomous_learning.py -v
 ```
 **Result:** `108 passed in 15.20s` (100% test pass rate).
 
