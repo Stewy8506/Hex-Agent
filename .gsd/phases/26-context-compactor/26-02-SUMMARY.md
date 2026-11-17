@@ -91,10 +91,10 @@ OK
 
 ## 5. Artifacts Produced / Modified
 
-- `src/harness_core/context_compressor.py`
-- `src/harness_core/react_loop.py`
-- `src/harness_core/router.py`
-- `src/harness_core/orchestrator.py`
-- `src/harness_core/tui.py`
+- `harness_core/context_compressor.py`
+- `harness_core/react_loop.py`
+- `harness_core/router.py`
+- `harness_core/orchestrator.py`
+- `harness_core/tui.py`
 - `tests/cognition/test_context_compressor_integration.py`
 - `.gsd/phases/26-context-compactor/26-02-SUMMARY.md`

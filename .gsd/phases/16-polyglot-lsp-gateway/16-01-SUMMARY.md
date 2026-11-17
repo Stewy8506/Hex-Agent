@@ -13,13 +13,13 @@
 Plan 16-01 delivered the core engine for HEX's zero-dependency Polyglot Language Server Protocol (LSP) Gateway, establishing compiler awareness across major programming languages.
 
 Key Deliverables:
-1. **JSON-RPC 2.0 Base Protocol & Stdio Transport (`src/harness_core/lsp/client.py`):**
+1. **JSON-RPC 2.0 Base Protocol & Stdio Transport (`lsp/client.py`):**
    - Implemented `StdioLSPTransport` using standard HTTP-style `Content-Length: <n>\r\n\r\n` framing without external dependencies.
    - Built background reader thread parsing headers and body streams, demultiplexing request IDs against pending wait events.
    - Handled server-to-client requests (e.g. `workspace/configuration`) with default safe responses to avoid deadlocks.
    - Added asynchronous stderr logger thread with rolling 100-line diagnostic buffer and clean process teardown with timeout and SIGKILL fallback.
    - Defined `LSPMessage`, `LSPResponseError`, `LSPTimeoutError`, and `LSPDiagnostic`.
-2. **Multi-Language Server Registry & Auto-Detection (`src/harness_core/lsp/registry.py`):**
+2. **Multi-Language Server Registry & Auto-Detection (`lsp/registry.py`):**
    - Defined `LanguageServerSpec` and `LanguageServerRegistry` supporting 6 major language families:
      * **Python:** `pyright`, `ruff`, `pylsp`
      * **TypeScript / JavaScript:** `typescript-language-server`, `vtsls`
@@ -29,12 +29,12 @@ Key Deliverables:
      * **Java:** `jdtls`
    - Added executable auto-detection via `shutil.which` and environment variable overrides (`HEX_LSP_PYTHON_BIN`, `HEX_LSP_TS_BIN`, `HEX_LSP_<SERVER>_BIN`).
    - Implemented workspace server detection matching project root markers and cross-referencing with `detect_recipe`.
-3. **LSP Client Lifecycle & Document Synchronization (`src/harness_core/lsp/client.py`):**
+3. **LSP Client Lifecycle & Document Synchronization (`lsp/client.py`):**
    - Implemented `LSPClient` managing the standard `initialize` handshake and `initialized` notification with client capabilities.
    - Implemented document sync: `did_open`, `did_change`, and `did_close`.
    - Built symbol query methods: `get_hover`, `get_definition`, `get_references`.
    - Subscribed to `textDocument/publishDiagnostics`, parsing diagnostics into structured `LSPDiagnostic` models with severity normalization (ERROR, WARNING, INFO, HINT).
-4. **LSP Manager Workspace Coordinator (`src/harness_core/lsp/manager.py`):**
+4. **LSP Manager Workspace Coordinator (`lsp/manager.py`):**
    - Implemented `LSPManager` managing per-language active `LSPClient` instances with lazy instantiation on first file access.
    - Provided aggregate diagnostics retrieval (`get_diagnostics`) across active clients or filtered by file/severity.
    - Implemented graceful batch shutdown (`close_all`) and context manager lifecycle (`__enter__` / `__exit__`).
@@ -47,22 +47,24 @@ Key Deliverables:
 
 | Task | Name | Files | Commits |
 |------|------|-------|---------|
-| 1 | Implement JSON-RPC 2.0 Base Protocol & Stdio Transport with Content-Length Framing | `src/harness_core/lsp/__init__.py`, `src/harness_core/lsp/client.py` | `938bad5` |
-| 2 | Implement Language Server Registry & Multi-Language Auto-Detection | `src/harness_core/lsp/registry.py`, `src/harness_core/lsp/__init__.py` | `299b163` |
-| 3 | Implement LSP Client Lifecycle, Document Synchronization, Diagnostic Store & Unit Tests | `src/harness_core/lsp/client.py`, `src/harness_core/lsp/manager.py`, `src/harness_core/lsp/__init__.py`, `tests/lsp/test_lsp_client.py` | `4299249` |
+| 1 | Implement JSON-RPC 2.0 Base Protocol & Stdio Transport with Content-Length Framing | `lsp/__init__.py`, `lsp/client.py` | `938bad5` |
+| 2 | Implement Language Server Registry & Multi-Language Auto-Detection | `lsp/registry.py`, `lsp/__init__.py` | `299b163` |
+| 3 | Implement LSP Client Lifecycle, Document Synchronization, Diagnostic Store & Unit Tests | `lsp/client.py`, `lsp/manager.py`, `lsp/__init__.py`, `tests/lsp/test_lsp_client.py` | `4299249` |
 
 ---
 
 ## 3. Verification & Empirical Proof
 
+To rerun these commands after relocation, first run `.venv/bin/python -m pip install -e ".[full]"` from the checkout root to refresh editable package mappings. Recorded outputs and test counts below remain historical.
+
 1. **Task 1 Verification:**
    ```bash
-   PYTHONPATH=src python3 -c "from harness_core.lsp.client import StdioLSPTransport, LSPMessage, LSPResponseError; print('LSP transport module imported successfully')"
+   .venv/bin/python -c "from harness_core.lsp.client import StdioLSPTransport, LSPMessage, LSPResponseError; print('LSP transport module imported successfully')"
    # LSP transport module imported successfully (Exit code 0)
    ```
 2. **Task 2 Verification:**
    ```bash
-   PYTHONPATH=src python3 -c "from harness_core.lsp.registry import LanguageServerRegistry; reg = LanguageServerRegistry(); print('Registered language servers:', len(reg.get_all_specs()))"
+   .venv/bin/python -c "from harness_core.lsp.registry import LanguageServerRegistry; reg = LanguageServerRegistry(); print('Registered language servers:', len(reg.get_all_specs()))"
    # Registered language servers: 9 (Exit code 0)
    ```
 3. **Task 3 Unit Test Suite (`tests/lsp/test_lsp_client.py`):**

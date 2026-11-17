@@ -5,7 +5,7 @@
 **Auditor:** Independent GSD Verifier  
 **Date:** 2026-11-16  
 **Status:** **PASS**  
-**Audit Scope:** Domain subpackage restructuring in `src/harness_core/`, root stub purge & import migration sweep across repository, `CredentialPool` multi-key rotation and model cooldown queues, 30s transient endpoint blackholing, local socket and model introspection probes, OS Keychain secure vault and plaintext migration, and architectural parity against `benchmarks/hermes-agent`.
+**Audit Scope:** Domain subpackage restructuring in `harness_core/`, root stub purge & import migration sweep across repository, `CredentialPool` multi-key rotation and model cooldown queues, 30s transient endpoint blackholing, local socket and model introspection probes, OS Keychain secure vault and plaintext migration, and architectural parity against `benchmarks/hermes-agent`.
 
 ---
 
@@ -15,7 +15,7 @@ An independent empirical verification was conducted on branch `experimental-feat
 
 ### Summary of Empirical Results
 - **Domain Subpackage Restructuring & Import Sweep:**
-  - `src/harness_core/` successfully structured into 7 domain subpackages: `core/`, `storage/`, `cognition/`, `runtime/`, `client/`, `capabilities/`, `models/`.
+  - `harness_core/` successfully structured into 7 domain subpackages: `core/`, `storage/`, `cognition/`, `runtime/`, `client/`, `capabilities/`, `models/`.
   - All 47 root forwarding stubs removed; 122 repository files swept and migrated to direct subpackage imports.
   - Root `__init__.py` exposes dynamic facade exports for all 7 namespaces and top-level symbols.
 - **CredentialPool & Resilience:**
@@ -38,7 +38,7 @@ An independent empirical verification was conducted on branch `experimental-feat
 ## 2. Objective 1: Domain Subpackage Structure & Import Sweep
 
 ### 2.1 Domain Subpackage Layout
-`src/harness_core/` contains 7 domain subpackages with clear single-responsibility boundaries:
+`harness_core/` contains 7 domain subpackages with clear single-responsibility boundaries:
 1. `core/`: Multi-turn ReAct loops, two-tier model routing, orchestrator, subagent delegation, domain models, reasoning effort controls (`orchestrator.py`, `react_loop.py`, `router.py`, `models.py`, `subagent.py`, `reasoning_effort.py`).
 2. `storage/`: Ledger store, CoW snapshots, sandboxing, disaster recovery backups, retention GC, project registry, OS Keychain vault (`db.py`, `cow.py`, `sandbox.py`, `backup.py`, `gc.py`, `project_registry.py`, `vault_keychain.py`).
 3. `cognition/`: Soul persona engine, AST-scoped memory, reflection synthesis, NVIDIA SkillSpector scanner, autonomous skill synthesizer, unified prompt builder, 4-phase context compactor (`soul.py`, `memory.py`, `reflection.py`, `skillspector.py`, `skill_synthesizer.py`, `prompt_builder.py`, `context_compressor.py`).
@@ -358,7 +358,7 @@ Direct inspection was conducted against the upstream reference in `benchmarks/he
 
 2. **Credential Rotation & Model Cooldowns (`benchmarks/hermes-agent/agent/credential_pool.py`, `credential_pool_model_cooldowns.py`):**
    - Hermes decouples generic credential-wide failures (auth, billing) from model-specific rate limits and transient 503s (`model_cooldown_until(entry, model)`).
-   - Our `CredentialPool` in `src/harness_core/models/credential_pool.py` accurately implements `mark_model_cooldown(provider, model, duration_seconds, reason)` and `is_model_in_cooldown(provider, model)` to isolate single-model outages without taking down sibling models.
+   - Our `CredentialPool` in `models/credential_pool.py` accurately implements `mark_model_cooldown(provider, model, duration_seconds, reason)` and `is_model_in_cooldown(provider, model)` to isolate single-model outages without taking down sibling models.
 
 3. **Keychain Security Storage:**
    - Hermes config defaults support `key_storage: keychain` (macOS Keychain, Linux Secret Service via `keyring`).

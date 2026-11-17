@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Plan 10-02 completes the second half of **Pillar 4 (Git & GitHub Autopilot Integration)** by delivering the GitHub Action execution mode and webhook bot responder (`src/harness_core/github_action.py`) alongside the `hex gh-action` CLI subcommand (`src/harness_core/cli.py`).
+Plan 10-02 completes the second half of **Pillar 4 (Git & GitHub Autopilot Integration)** by delivering the GitHub Action execution mode and webhook bot responder (`harness_core/github_action.py`) alongside the `hex gh-action` CLI subcommand (`harness_core/cli.py`).
 
 HEX can now be deployed natively inside GitHub Actions workflows to listen to issue comments, pull requests, issue creation/labeling, and workflow dispatches. When triggered by bot mentions (e.g., `@hex-bot fix ...`, `/hex fix ...`, `@hex ...`) or labeled events (`hex:fix`, `hex:review`), HEX immediately acknowledges the request with an interactive comment, executes the task deterministically inside an isolated Copy-on-Write (CoW) sandbox via `HarnessOrchestrator`, commits changes via `GitAutopilot`, and posts a comprehensive completion response containing the Active Graphify AST blast-radius matrix and the signed Proof-Carrying Artifact verification bundle. Non-bot events are safely skipped without error.
 
@@ -17,11 +17,11 @@ HEX can now be deployed natively inside GitHub Actions workflows to listen to is
 
 ## 2. Key Components Delivered
 
-### 1. `GitHubActionConfig` & `TriggerMatch` (`src/harness_core/github_action.py`)
+### 1. `GitHubActionConfig` & `TriggerMatch` (`harness_core/github_action.py`)
 - **Configuration Dataclass:** `GitHubActionConfig` parsing standard GitHub Actions runner environment variables (`GITHUB_EVENT_NAME`, `GITHUB_EVENT_PATH`, `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_REF`, `GITHUB_SHA`, `HEX_BOT_NAMES`, and `HEX_DRY_RUN`).
 - **Structured Trigger Result:** `TriggerMatch` encapsulating `matched`, `trigger_type` (`mention`, `slash_command`, `label`, `dispatch`), `command` (`fix`, `run`, `explain`, `review`, `custom`), `instruction`, `author`, `issue_number`, `pr_number`, `branch`, and `head_sha`.
 
-### 2. Multi-Event Payload Parser & Bot Trigger Matcher (`src/harness_core/github_action.py`)
+### 2. Multi-Event Payload Parser & Bot Trigger Matcher (`harness_core/github_action.py`)
 - **Safe Payload Parsing:** `parse_event_payload` handling raw JSON strings, bytes, or parsed dictionaries.
 - **Trigger Extraction:**
   - `issue_comment`: Matches bot commands (`@hex-bot <cmd> <instruction>`, `/hex <cmd> <instruction>`), distinguishes issues vs. PRs (`pull_request` key).
@@ -30,7 +30,7 @@ HEX can now be deployed natively inside GitHub Actions workflows to listen to is
   - `workflow_dispatch`: Parses manual runner inputs (`inputs.goal`, `inputs.task`).
   - Unmatched or non-bot events safely return `None` (graceful skip).
 
-### 3. Task Execution Lifecycle & Rich Proof Comment Postings (`src/harness_core/github_action.py`)
+### 3. Task Execution Lifecycle & Rich Proof Comment Postings (`harness_core/github_action.py`)
 - **`format_ack_comment`:** Posts markdown acknowledgment citing author, command, and instruction before execution starts.
 - **`format_completion_comment`:** Generates formatted response comment containing:
   - Header & instruction objective.
@@ -41,7 +41,7 @@ HEX can now be deployed natively inside GitHub Actions workflows to listen to is
 - **Outbound Secret Redaction:** All comments pass through `redact_secrets` before being dispatched.
 - **`execute_action`:** Orchestrates the full lifecycle against `HarnessOrchestrator`, commits changes via `GitAutopilot`, and posts comments via `GitHubTransport`.
 
-### 4. CLI Integration: `hex gh-action` (`src/harness_core/cli.py`)
+### 4. CLI Integration: `hex gh-action` (`harness_core/cli.py`)
 - Added `gh-action` subcommand supporting `--event-path`, `--event-name`, `--dry-run`, `--workspace`, and `--data-dir`.
 - Supports reading from `--event-path` file, environment variables, or standard input (`sys.stdin`).
 - Returns exit code `0` on completed/skipped, and `1` on failure.

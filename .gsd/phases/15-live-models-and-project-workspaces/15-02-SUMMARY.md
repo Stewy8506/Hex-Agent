@@ -13,7 +13,7 @@
 Plan 15-02 delivered persistent project workspace management, automatic workspace binding, interactive daily project switching, folder-scoped context isolation, and global CLI migration from `hex onboard` to `hex setup` (preserving `hex onboard` as an alias).
 
 Key Deliverables:
-1. **Persistent Global Project Registry (`ProjectRegistry` in `src/harness_core/project_registry.py`):**
+1. **Persistent Global Project Registry (`ProjectRegistry` in `harness_core/project_registry.py`):**
    - Atomic JSON persistence in `~/.hex/projects.json` tracking project name, canonical path, stack, `last_active` ISO timestamp, and `task_count`.
    - Reverse-chronological listing by `last_active`, case-insensitive lookup, and path resolution.
    - Enclosing project auto-detection (`detect_enclosing_project`) climbing parent directories for `.git` or `.hex` markers.
@@ -23,7 +23,7 @@ Key Deliverables:
      * `.hex/reflections/LESSONS.md` with structured header: `# Project Reflections & Work Memory: {name}\n\n## Lessons Learned\n`
      * `.hex/data/` for localized database and CoW workspace layers
      * AST cache `.hex/graph.json`
-3. **Daily Project Switcher & Workspace Binding (`src/harness_core/cli.py`):**
+3. **Daily Project Switcher & Workspace Binding (`harness_core/cli.py`):**
    - Silent, immediate workspace binding when launching inside any Git or `.hex` directory.
    - Interactive prompt `"What project do you want to work on today?"` via `select_option` when launched outside any project repository.
    - Options to select registered projects, register an existing folder (`[+]`), or initialize the current directory (`[★]`).
@@ -31,7 +31,7 @@ Key Deliverables:
    - `hex project list [--json]`: formatted table or raw JSON array.
    - `hex project add <path> [--name <name>]`: register directory as a workspace.
    - `hex project use <name|path>` / `hex project switch <name|path>`: switch active project and update `last_active`.
-5. **Interactive TUI `/project` Command (`src/harness_core/tui.py`):**
+5. **Interactive TUI `/project` Command (`harness_core/tui.py`):**
    - `/project`: renders active workspace card (name, path, stack, lessons count, data dir).
    - `/project list`: lists registered workspaces with active indicator `*`.
    - `/project switch <name|path>`: dynamically switches `workspace_root`, rebinds AST graphify, and updates reflections.
@@ -45,8 +45,8 @@ Key Deliverables:
 
 | Task | Name | Files | Commits |
 |------|------|-------|---------|
-| 1 | Implement ProjectRegistry and folder-scoped context layout | `src/harness_core/project_registry.py`, `src/harness_core/onboard.py` | `c117ac2` |
-| 2 | Implement daily project switcher picker, hex project CLI, TUI /project, and hex setup rename | `src/harness_core/cli.py`, `src/harness_core/tui.py`, `src/harness_core/providers/cloud_provider.py`, `README.md` | `ed1bfd4` |
+| 1 | Implement ProjectRegistry and folder-scoped context layout | `harness_core/project_registry.py`, `harness_core/onboard.py` | `c117ac2` |
+| 2 | Implement daily project switcher picker, hex project CLI, TUI /project, and hex setup rename | `harness_core/cli.py`, `harness_core/tui.py`, `providers/cloud_provider.py`, `README.md` | `ed1bfd4` |
 | 3 | Author unit and integration tests for ProjectRegistry and workspace isolation | `tests/storage/test_project_registry_and_workspace.py`, `tests/client/test_hex_cli.py` | `25e9231` |
 
 ---

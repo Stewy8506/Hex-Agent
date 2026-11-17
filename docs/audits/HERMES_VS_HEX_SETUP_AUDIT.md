@@ -9,10 +9,10 @@
 
 ## Executive Summary
 
-A critical audit of the setup and onboarding subsystems in **Hermes Agent** (`benchmarks/hermes-agent/`) and **HEX** (`src/harness_core/`) reveals a stark architectural contrast in developer experience:
+A critical audit of the setup and onboarding subsystems in **Hermes Agent** (`benchmarks/hermes-agent/`) and **HEX** (`harness_core/`) reveals a stark architectural contrast in developer experience:
 
 - **Hermes Agent treats onboarding as an active, agent-driven conversational product journey.** The agent itself participates in its own setup. It features a dedicated onboarding toolset (`setup_beat`), environment awareness (`Facts`), a wire-clamping reasoning effort engine (`agent.reasoning_effort`), seamless auto-setup capabilities (*"Just finish setting yourself up"*), and culminates in a tangible First Task (`build` beat) that renders live results in a desktop/terminal preview pane.
-- **HEX treats onboarding as a rigid procedural terminal script.** [onboard.py](file:///Users/anv./Development/Harness/src/harness_core/onboard.py) is a linear sequence of blocking curses/readline selection menus (`select_option`). The HEX agent does not exist until the wizard completely exits. There is **zero support for model reasoning effort**, no ability for the agent to autonomously configure itself, no missing-items pass (`--quick`), no minimal installation preset (`--blank-slate`), and setup concludes with a static ASCII banner leaving the operator at an unguided, empty prompt.
+- **HEX treats onboarding as a rigid procedural terminal script.** [onboard.py](file:///Users/anv./Development/Harness/harness_core/onboard.py) is a linear sequence of blocking curses/readline selection menus (`select_option`). The HEX agent does not exist until the wizard completely exits. There is **zero support for model reasoning effort**, no ability for the agent to autonomously configure itself, no missing-items pass (`--quick`), no minimal installation preset (`--blank-slate`), and setup concludes with a static ASCII banner leaving the operator at an unguided, empty prompt.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -84,9 +84,9 @@ In Hermes, reasoning effort is a first-class citizen across configuration, CLI, 
    - Cron override: `hermes cron create --reasoning-effort high ...`.
 
 ### 1.2 The HEX Gap
-- **No `reasoning_effort` in configuration:** [config_loader.py](file:///Users/anv./Development/Harness/src/harness_core/config_loader.py) and `config.yaml` have no `reasoning_effort` field under `model:`.
-- **No setup prompt:** [onboard.py](file:///Users/anv./Development/Harness/src/harness_core/onboard.py) lines 373–670 prompt for provider, API key, base URL, and model ID, but **completely omit reasoning effort**.
-- **No wire dispatch in router:** [router.py](file:///Users/anv./Development/Harness/src/harness_core/router.py) formats calls for Anthropic, OpenAI, and Gemini without passing thinking budgets or reasoning effort payloads. When using Claude 3.7 or OpenAI o-series, HEX runs on arbitrary provider defaults without user influence.
+- **No `reasoning_effort` in configuration:** [config_loader.py](file:///Users/anv./Development/Harness/harness_core/config_loader.py) and `config.yaml` have no `reasoning_effort` field under `model:`.
+- **No setup prompt:** [onboard.py](file:///Users/anv./Development/Harness/harness_core/onboard.py) lines 373–670 prompt for provider, API key, base URL, and model ID, but **completely omit reasoning effort**.
+- **No wire dispatch in router:** [router.py](file:///Users/anv./Development/Harness/harness_core/router.py) formats calls for Anthropic, OpenAI, and Gemini without passing thinking budgets or reasoning effort payloads. When using Claude 3.7 or OpenAI o-series, HEX runs on arbitrary provider defaults without user influence.
 - **No runtime controls:** The HEX Cockpit TUI has no `/reasoning` slash command.
 
 ---
@@ -117,9 +117,9 @@ In Hermes, first-run onboarding is not a shell script; it is **an interactive co
    The agent can execute terminal probes, pick optimal local or cloud models, configure plugins, and conclude setup without the human touching another button.
 
 ### 2.2 The HEX Gap
-- **Procedural Disconnection:** HEX's onboarding ([onboard.py](file:///Users/anv./Development/Harness/src/harness_core/onboard.py)) is implemented as Python terminal menus using `curses` / readline (`select_option()`). The agent process **is not running**.
+- **Procedural Disconnection:** HEX's onboarding ([onboard.py](file:///Users/anv./Development/Harness/harness_core/onboard.py)) is implemented as Python terminal menus using `curses` / readline (`select_option()`). The agent process **is not running**.
 - **Zero Natural Language Input:** The operator cannot speak to HEX during onboarding. There is no chat interface, no intent parsing, and no way to say "use standard defaults and finish".
-- **Rigid Gatekeeper:** If an unconfigured user runs `hex`, [cli.py](file:///Users/anv./Development/Harness/src/harness_core/cli.py#L752-L761) intercepts execution and halts at `select_option("Select Primary Model Provider & Brain:")`. If stdin is not a TTY or the user wants automated bootstrapping, HEX fails or hangs unless `--defaults-only` is passed via CLI flag.
+- **Rigid Gatekeeper:** If an unconfigured user runs `hex`, [cli.py](file:///Users/anv./Development/Harness/harness_core/cli.py#L752-L761) intercepts execution and halts at `select_option("Select Primary Model Provider & Brain:")`. If stdin is not a TTY or the user wants automated bootstrapping, HEX fails or hangs unless `--defaults-only` is passed via CLI flag.
 
 ---
 
@@ -146,7 +146,7 @@ Hermes does not consider setup complete when a config file is written. The final
 - The operator experiences a live demonstration of tool calling, file creation, and visual UI rendering within 2 minutes of installing.
 
 ### 4.2 HEX: Static Console Output
-In HEX, [onboard.py](file:///Users/anv./Development/Harness/src/harness_core/onboard.py#L860-L895) concludes with:
+In HEX, [onboard.py](file:///Users/anv./Development/Harness/harness_core/onboard.py#L860-L895) concludes with:
 ```text
 ✓ HEX has been successfully initialized!
   • Configuration: ~/.hex/config.yaml
@@ -188,16 +188,16 @@ To achieve parity with and surpass Hermes's setup experience, HEX should execute
 
 ### Phase 1: Model Reasoning Effort Engine (Immediate Priority)
 1. **Schema & Config**:
-   - Add `reasoning_effort` (`low`, `medium`, `high`, `xhigh`, `max`, `none`) to `model:` section in [config.yaml](file:///Users/anv./Development/Harness/src/harness_core/config_loader.py).
+   - Add `reasoning_effort` (`low`, `medium`, `high`, `xhigh`, `max`, `none`) to `model:` section in [config.yaml](file:///Users/anv./Development/Harness/harness_core/config_loader.py).
    - Support `HEX_REASONING_EFFORT` in `credentials.env`.
 2. **Wire Clamping in Router (`router.py`)**:
    - For **OpenAI**: Pass `"reasoning_effort": effort` for `o1`, `o3-mini`, `gpt-5.6`.
    - For **Anthropic**: Convert effort into `thinking: {"type": "enabled", "budget_tokens": ...}` (e.g., low=2048, medium=8192, high=16384, max=32768) for Claude 3.7.
    - For **Gemini / Antigravity**: Pass `thinkingConfig` parameters.
 3. **Onboarding Integration**:
-   - In [onboard.py](file:///Users/anv./Development/Harness/src/harness_core/onboard.py), immediately after model selection, check if the model supports reasoning. If yes, display the reasoning effort selector.
+   - In [onboard.py](file:///Users/anv./Development/Harness/harness_core/onboard.py), immediately after model selection, check if the model supports reasoning. If yes, display the reasoning effort selector.
 4. **Runtime Cockpit Control**:
-   - Add `/reasoning [level]` slash command to [tui.py](file:///Users/anv./Development/Harness/src/harness_core/tui.py).
+   - Add `/reasoning [level]` slash command to [tui.py](file:///Users/anv./Development/Harness/harness_core/tui.py).
 
 ### Phase 2: Autonomous Agent Self-Setup (`hex onboard --auto` & In-Chat Setup)
 1. **Host Capabilities Inspection**:

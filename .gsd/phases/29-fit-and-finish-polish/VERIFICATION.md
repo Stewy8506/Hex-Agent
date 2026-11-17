@@ -11,7 +11,7 @@
 
 Phase 29 delivered extensive fit & finish polish across two critical architectural pillars:
 1. **Plan 29-01 (Rust Terminal Cockpit & Scrolling Ergonomics):** Complete and empirically validated. Ratatui vertical layout in `crates/hex-tui/src/ui/mod.rs` was upgraded to a responsive 4-tier constraint hierarchy (header, dialogue/diff, status bar, input). The dialogue view in `crates/hex-tui/src/ui/dialogue.rs` was upgraded to compute total visual wrapped lines across character widths, eliminating line clipping when pinning to the bottom. Tab focus cycling (`Input -> Dialogue -> Diff`), PageUp/PageDown 5-row jumps, and natural mouse-wheel / input-focus scrolling were implemented. All 39 Rust workspace tests pass, headless virtual verification passes, and all 8 Python launcher integration tests pass.
-2. **Plan 29-02 (ReAct Loop Native Tool Schema & Retry Resilience):** Mostly complete, but introduced a regression in downstream multi-turn ReAct consumers. The ReAct loop in `src/harness_core/react_loop.py` successfully emits native `role: "tool"` with `tool_call_id`, `name`, and `content`, while `_call_model` retries transient 429/502/503/504/529 and timeout errors with exponential backoff and jitter. In `src/harness_core/providers/cloud_provider.py`, Anthropic thinking block signatures are preserved and unsigned blocks are safely stripped.
+2. **Plan 29-02 (ReAct Loop Native Tool Schema & Retry Resilience):** Mostly complete, but introduced a regression in downstream multi-turn ReAct consumers. The ReAct loop in `harness_core/react_loop.py` successfully emits native `role: "tool"` with `tool_call_id`, `name`, and `content`, while `_call_model` retries transient 429/502/503/504/529 and timeout errors with exponential backoff and jitter. In `providers/cloud_provider.py`, Anthropic thinking block signatures are preserved and unsigned blocks are safely stripped.
 3. **Detected Regression (Gap):** When `self.messages.append` in `ReActLoop.run` was updated to emit native `role: "tool"`, it replaced `"tool_name"` with `"name"` and `"call_id"` with `"tool_call_id"`. Downstream tests and consumers expecting `msg.get("tool_name")` (specifically `tests/tools/test_gateway_process_tools.py:test_react_loop_end_to_end_multi_turn_session`) fail because `tool_names` evaluates to `[None]`, causing the loop to repeatedly invoke `start_process` until max turns are exhausted.
 4. **Resolution:** Gap closure plan `29-03-PLAN.md` has been authored to retain `tool_name` and `call_id` as backward-compatible dictionary aliases alongside native `name` and `tool_call_id`.
 
@@ -27,8 +27,8 @@ Phase 29 delivered extensive fit & finish polish across two critical architectur
 | **4. PageUp and PageDown scroll dialogue or diff viewport by 5 rows** | **PASS** | `crates/hex-tui/src/app.rs` lines 724-734 (`handle_page_up`/`handle_page_down`); `test_page_up_page_down_steps` passes. |
 | **5. Dialogue max_scroll calculation accounts for visually wrapped lines** | **PASS** | `crates/hex-tui/src/ui/dialogue.rs` lines 356-378 iterates lines computing visual wrapped rows against `area.width`; `test_visual_wrapped_lines_scroll_calculation` passes. |
 | **6. ReAct loop tool results emit native role 'tool' with tool_call_id and name for cloud provider compliance** | **FAIL** | Emits `role: "tool"`, `tool_call_id`, `name`, but omits backward-compatible `tool_name` and `call_id` keys, breaking `tests/tools/test_gateway_process_tools.py`. |
-| **7. ReAct loop model calls automatically retry up to 3 times on transient 429, 503, or timeout errors with exponential backoff and jitter** | **PASS** | `src/harness_core/react_loop.py` lines 464-575 (`_is_transient_error` + `_call_model`); `test_transient_retry_429_success` passes. |
-| **8. Anthropic request builder preserves valid thinking block signatures and safely strips unsigned or corrupted thinking blocks** | **PASS** | `src/harness_core/providers/cloud_provider.py` lines 810-865 and lines 1022-1040; `test_anthropic_thinking_signature_preserved` passes. |
+| **7. ReAct loop model calls automatically retry up to 3 times on transient 429, 503, or timeout errors with exponential backoff and jitter** | **PASS** | `harness_core/react_loop.py` lines 464-575 (`_is_transient_error` + `_call_model`); `test_transient_retry_429_success` passes. |
+| **8. Anthropic request builder preserves valid thinking block signatures and safely strips unsigned or corrupted thinking blocks** | **PASS** | `providers/cloud_provider.py` lines 810-865 and lines 1022-1040; `test_anthropic_thinking_signature_preserved` passes. |
 | **9. ReAct resilience test suite passes verifying retry recovery, retry exhaustion, and thinking block preservation** | **PASS** | `tests/core/test_react_loop_resilience.py` (9/9 passing) and `tests/core/test_react_loop.py` (31/31 passing). |
 
 ---
@@ -95,7 +95,7 @@ FAILED (failures=1)
 ```
 
 **Root Cause:**
-In `src/harness_core/react_loop.py` lines 972-980:
+In `harness_core/react_loop.py` lines 972-980:
 ```python
 self.messages.append(
     {
@@ -116,7 +116,7 @@ Omitting `tool_name` causes `tool_names = [m.get("tool_name") for m in messages 
 | Capability | Hermes Implementation | HEX Implementation | Parity Status |
 |:---|:---|:---|:---|
 | **Tool Message Schema** | Emits `role: "tool"` with `tool_call_id`, `name`, and `content` (`benchmarks/hermes-agent/run_agent.py` line 1125). | Emits `role: "tool"` with `tool_call_id`, `name`, `content`, and backward-compatible `observation` XML tag. | **Meets Parity** (Requires adding legacy aliases `tool_name` and `call_id` to prevent breaking existing callers). |
-| **Retry Backoff Mechanics** | Jittered exponential backoff: `delay = min(base * 2^(attempt-1), max_delay) + uniform_jitter` (`benchmarks/hermes-agent/agent/retry_utils.py` line 121). | Jittered exponential backoff: `delay = initial_delay * (backoff_factor ** attempt) + random.uniform(0, jitter)` (`src/harness_core/react_loop.py` line 572). Configurable via `ReActConfig`. | **Meets Parity** |
+| **Retry Backoff Mechanics** | Jittered exponential backoff: `delay = min(base * 2^(attempt-1), max_delay) + uniform_jitter` (`benchmarks/hermes-agent/agent/retry_utils.py` line 121). | Jittered exponential backoff: `delay = initial_delay * (backoff_factor ** attempt) + random.uniform(0, jitter)` (`harness_core/react_loop.py` line 572). Configurable via `ReActConfig`. | **Meets Parity** |
 | **Frontier Thinking Protection** | Strips thinking signatures on third-party proxies (`anthropic_adapter.py` line 662). | Retains valid thinking signatures; suppresses unsigned thinking blocks to prevent Anthropic HTTP 400 (`cloud_provider.py` lines 810-865). | **Exceeds Parity** |
 
 ---
@@ -126,6 +126,6 @@ Omitting `tool_name` causes `tool_names = [m.get("tool_name") for m in messages 
 The failure has been isolated and packaged into:
 - **Plan File:** `.gsd/phases/29-fit-and-finish-polish/29-03-PLAN.md` (`gap_closure: true`)
 - **Required Action:**
-  1. Add `"tool_name": tool_res.name` and `"call_id": tool_res.call_id` to `self.messages.append` in `src/harness_core/react_loop.py`.
+  1. Add `"tool_name": tool_res.name` and `"call_id": tool_res.call_id` to `self.messages.append` in `harness_core/react_loop.py`.
   2. Update `tests/tools/test_gateway_process_tools.py` line 269 to inspect `m.get("tool_name") or m.get("name")`.
   3. Re-run `.venv/bin/python -m unittest tests/tools/test_gateway_process_tools.py tests/core/test_react_loop.py tests/core/test_react_loop_resilience.py`.

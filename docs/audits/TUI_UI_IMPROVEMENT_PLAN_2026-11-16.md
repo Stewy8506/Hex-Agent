@@ -74,7 +74,7 @@ blue, `#8fbf93` green, `#c98b8b` red, `#1f1f1f` rules, `#333` modal border).
   single `Line`; `Paragraph::wrap` at :242-244 is the only structure. No markdown
   parser anywhere in the crate (grep pulldown/comrak/cmark → 0).
 - **Irony:** the *legacy Python console* already has GFM→ANSI
-  (`src/harness_core/client/tui.py:547 format_terminal_markdown`, streaming
+  (`hex_cli/tui.py:547 format_terminal_markdown`, streaming
   fence-aware renderer at :656). The Rust cockpit regressed relative to it.
 - **Fix:** new `crates/hex-tui/src/ui/markdown.rs` turning message text into
   `Vec<Line>` in the mockup's visual grammar (mono, restrained color):
@@ -213,10 +213,12 @@ mockup → **commit** (per your standing rule).
 
 ## 4. Verification recipe
 
+First run `.venv/bin/python -m pip install -e ".[full]"` from the checkout root, including after relocation, to refresh editable package mappings before running from a temporary workspace.
+
 - Rust: `cargo test -p hex-tui -p hex-protocol` plus new buffer-render tests per
   gap (assert exact rows/spans, not just "renders").
 - Python (P3): hermetic run —
-  `TMPHOME=$(mktemp -d); TMPWS=$(mktemp -d); cd "$TMPWS"; HOME="$TMPHOME" HEX_TESTING=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m pytest <repo>/tests -p no:cacheprovider -q`
+  `TMPHOME=$(mktemp -d); TMPWS=$(mktemp -d); cd "$TMPWS"; HOME="$TMPHOME" HEX_TESTING=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 <repo>/.venv/bin/python -m pytest <repo>/tests -p no:cacheprovider -q`
   (must leave `.hex/data/ledger.db` task count unchanged).
 - Visual: pty capture at 40×120 with CUP reconstruction (the recipe used for the
   start-screen verification), diffed against the mockup's region layout.

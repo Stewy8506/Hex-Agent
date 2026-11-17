@@ -13,7 +13,7 @@ Phase 37 Plan 03 implements two high-leverage operator velocity systems:
 | Task | Name | Outcome | Commits |
 |---|---|---|---|
 | **Task 1** | Implement Temporal Approval Leasing Engine | Implemented `ApprovalLease` dataclass and `ApprovalLeaseManager` with command/path normalization, prefix matching, TTL expiration, and ledger persistence. Wired into `ToolGateway`, `ReActLoop`, and `HexConsole` (`/lease` slash command). | `14af192` |
-| **Task 2** | Implement Asynchronous Mobile Reaction Listener Bridge | Created `ApprovalRequest`, `ApprovalDecision`, and `MobileApprovalBridge`. Reorganized bot gateways into `src/harness_core/capabilities/gateways/`, integrated button callbacks and reaction emojis (`👍`/`👎`), wired into `ToolGateway` with remote operator resolution and timeout fallback. | `ed3f4f0` |
+| **Task 2** | Implement Asynchronous Mobile Reaction Listener Bridge | Created `ApprovalRequest`, `ApprovalDecision`, and `MobileApprovalBridge`. Reorganized bot gateways into `capabilities/gateways/`, integrated button callbacks and reaction emojis (`👍`/`👎`), wired into `ToolGateway` with remote operator resolution and timeout fallback. | `ed3f4f0` |
 
 ---
 
@@ -106,16 +106,16 @@ All 68 workspace tests passed cleanly.
 
 ## 5. Artifacts Produced & Modified
 
-- `src/harness_core/core/approval_lease.py`: Core leasing engine (`ApprovalLease`, `ApprovalLeaseManager`).
-- `src/harness_core/core/__init__.py`: Exported symbols and lazy module mapping.
-- `src/harness_core/storage/db.py`: `approval_leases` table schema, persistence, and audit logging.
-- `migrations/0001_initial_schema.sql` & `src/harness_core/migrations/0001_initial_schema.sql`: Initial schema migrations.
-- `src/harness_core/core/react_loop.py`: Auto-approval lease checks and `_execute_tool` alias.
-- `src/harness_core/gateway.py`: Policy evaluation with `LEASE_APPROVED`, remote bridge integration.
-- `src/harness_core/client/tui.py`: `/lease` interactive slash command suite.
-- `src/harness_core/capabilities/gateways/reaction_listener.py`: Remote approval listener bridge.
-- `src/harness_core/capabilities/gateways/__init__.py`, `telegram_bot.py`, `discord_bot.py`, `manager.py`: Gateway domain subpackage.
-- `src/harness_core/capabilities/__init__.py`: Capabilities package re-exports.
-- `src/harness_core/gateways/*`: Backward-compatibility stubs.
+- `agent/approval_lease.py`: Core leasing engine (`ApprovalLease`, `ApprovalLeaseManager`).
+- `agent/__init__.py`: Exported symbols and lazy module mapping.
+- `storage/db.py`: `approval_leases` table schema, persistence, and audit logging.
+- `migrations/0001_initial_schema.sql` & `harness_core/migrations/0001_initial_schema.sql`: Initial schema migrations.
+- `agent/react_loop.py`: Auto-approval lease checks and `_execute_tool` alias.
+- `harness_core/gateway.py`: Policy evaluation with `LEASE_APPROVED`, remote bridge integration.
+- `hex_cli/tui.py`: `/lease` interactive slash command suite.
+- `capabilities/gateways/reaction_listener.py`: Remote approval listener bridge.
+- `capabilities/gateways/__init__.py`, `telegram_bot.py`, `discord_bot.py`, `manager.py`: Gateway domain subpackage.
+- `capabilities/__init__.py`: Capabilities package re-exports.
+- `gateways/*`: Backward-compatibility stubs.
 - `tests/core/test_approval_lease.py`: Unit and integration test suite (11 tests).
 - `tests/capabilities/test_mobile_reaction_listener.py`: Integration test suite (9 tests).

@@ -28,11 +28,11 @@
 3. **Headless Verification Flag (`--check`):**
    - Supports `hex-tui --check` that runs headlessly using `ratatui::backend::TestBackend::new(120, 36)`, renders full layout frames and approval modals, verifies buffer content, prints confirmation, and exits 0 without opening interactive raw terminal.
 
-4. **Python CLI Integration & Launcher (`src/harness_core/cli.py` & `src/harness_core/tui_launcher.py`):**
+4. **Python CLI Integration & Launcher (`harness_core/cli.py` & `harness_core/tui_launcher.py`):**
    - Added dedicated `hex tui` subcommand.
    - Added `--ratatui` flag to `hex chat`.
    - Extracted `build_parser()` in `cli.py` for programmatic inspection.
-   - Implemented binary resolver in `src/harness_core/tui_launcher.py`: checks `HEX_TUI_BIN` env var, target release/debug build paths, standard PATH via `which`, or compiles on demand with `cargo build -p hex-tui`.
+   - Implemented binary resolver in `harness_core/tui_launcher.py`: checks `HEX_TUI_BIN` env var, target release/debug build paths, standard PATH via `which`, or compiles on demand with `cargo build -p hex-tui`.
 
 5. **Empirical Verification:**
    - Authored unit and rendering tests in `crates/hex-tui/tests/ui_rendering_test.rs` and `src/app.rs`.

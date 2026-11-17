@@ -33,7 +33,7 @@ Every must-have was validated via live CLI commands, unit test runners, and sour
 ### Domain 1: Agent Core & Compaction
 
 #### 1. Anthropic Thinking Block Signature Preservation & Suppression
-- **Source Citation:** [`src/harness_core/providers/cloud_provider.py:810-865`](file:///Users/anv./Development/Harness/src/harness_core/providers/cloud_provider.py#L810-L865) and [`lines 1022-1040`](file:///Users/anv./Development/Harness/src/harness_core/providers/cloud_provider.py#L1022-L1040).
+- **Source Citation:** [`providers/cloud_provider.py:810-865`](file:///Users/anv./Development/Harness/providers/cloud_provider.py#L810-L865) and [`lines 1022-1040`](file:///Users/anv./Development/Harness/providers/cloud_provider.py#L1022-L1040).
 - **Mechanism:**
   - Assistant messages formatted for Anthropic inspect `msg.get("content")` list and individual thinking blocks.
   - When a valid `signature` string is present, the thinking block `{ "type": "thinking", "thinking": "...", "signature": sig }` is retained intact.
@@ -45,7 +45,7 @@ Every must-have was validated via live CLI commands, unit test runners, and sour
   - `tests/core/test_react_loop_resilience.py:test_anthropic_parse_response_retains_thinking_signature` -> PASS
 
 #### 2. Transient Error Retry Backoff & Jitter Decorrelation
-- **Source Citation:** [`src/harness_core/react_loop.py:473-585`](file:///Users/anv./Development/Harness/src/harness_core/react_loop.py#L473-L585).
+- **Source Citation:** [`harness_core/react_loop.py:473-585`](file:///Users/anv./Development/Harness/harness_core/react_loop.py#L473-L585).
 - **Mechanism:**
   - `_is_transient_error(exc)` accurately distinguishes between transient and non-transient failures.
   - Non-transient exceptions (`ValueError`, `TypeError`, `KeyError`, `PolicyBlockedError`, `BudgetExceededError`, HTTP 400, 401, 403, 404) immediately fail without wasteful retries.
@@ -59,7 +59,7 @@ Every must-have was validated via live CLI commands, unit test runners, and sour
   - `tests/core/test_react_loop_resilience.py:test_non_transient_no_retry` -> PASS
 
 #### 3. Shadow Summary Deduplication & Pre-Flight Session Hygiene
-- **Source Citation:** [`src/harness_core/context_compressor.py:799-883`](file:///Users/anv./Development/Harness/src/harness_core/context_compressor.py#L799-L883) and [`src/harness_core/react_loop.py:833-850, 921-926`](file:///Users/anv./Development/Harness/src/harness_core/react_loop.py#L833-L850).
+- **Source Citation:** [`harness_core/context_compressor.py:799-883`](file:///Users/anv./Development/Harness/harness_core/context_compressor.py#L799-L883) and [`harness_core/react_loop.py:833-850, 921-926`](file:///Users/anv./Development/Harness/harness_core/react_loop.py#L833-L850).
 - **Mechanism:**
   - `_prune_shadowed_summaries` scans message history across multiple compaction rounds, identifying older summary messages overshadowed by subsequent compaction passes. Older shadow summaries are purged or merged into the latest consolidated state checkpoint.
   - `_apply_preflight_session_hygiene` executes prior to Turn 1 in `ReActLoop.run`: if incoming initial messages exceed 85% of `budget_tokens`, severed tool call/result pairs are repaired via `sanitize_tool_pairs` and pre-compaction deduplication is applied before model invocation.
@@ -67,7 +67,7 @@ Every must-have was validated via live CLI commands, unit test runners, and sour
   - `tests/cognition/test_context_compressor_tail_pruning.py` (11/11 tests pass) -> PASS
 
 #### 4. ReAct Streaming Events (`on_event` callback)
-- **Source Citation:** [`src/harness_core/react_loop.py:824-831, 934, 969, 982, 1037, 1054, 1104`](file:///Users/anv./Development/Harness/src/harness_core/react_loop.py#L824-L831).
+- **Source Citation:** [`harness_core/react_loop.py:824-831, 934, 969, 982, 1037, 1054, 1104`](file:///Users/anv./Development/Harness/harness_core/react_loop.py#L824-L831).
 - **Mechanism:**
   - `_emit_event(event_type, data)` dispatches structured events (`turn_start`, `thought`, `tool_start`, `tool_end`, `turn_complete`) containing timestamps, tool IDs, and turn latency deltas to registered callbacks.
 - **Empirical Proof:**
@@ -172,7 +172,7 @@ OK
 ### Domain 3: Runtime & Tools
 
 #### 1. Native Tool Message Schema with Backward-Compatible Aliases
-- **Source Citation:** [`src/harness_core/react_loop.py:1084-1094`](file:///Users/anv./Development/Harness/src/harness_core/react_loop.py#L1084-L1094).
+- **Source Citation:** [`harness_core/react_loop.py:1084-1094`](file:///Users/anv./Development/Harness/harness_core/react_loop.py#L1084-L1094).
 - **Mechanism:**
   - Emits native OpenAI/Anthropic specification keys:
     - `"role": "tool"`
@@ -202,7 +202,7 @@ OK
 ### Domain 4: Protocols & Platforms
 
 #### 1. Dual-Stack Agent Client Protocol (ACP)
-- **Source Citation:** [`crates/hex-protocol/src/lib.rs`](file:///Users/anv./Development/Harness/crates/hex-protocol/src/lib.rs) and [`src/harness_core/acp.py`](file:///Users/anv./Development/Harness/src/harness_core/acp.py).
+- **Source Citation:** [`crates/hex-protocol/src/lib.rs`](file:///Users/anv./Development/Harness/crates/hex-protocol/src/lib.rs) and [`harness_core/acp.py`](file:///Users/anv./Development/Harness/harness_core/acp.py).
 - **Mechanism:**
   - Strongly typed Rust client with asynchronous Tokio child process transport, notification channels, request correlation, and side-by-side diff parser.
   - Python stdio server supporting both newline-delimited JSON and standard `Content-Length: <n>\r\n\r\n` framing.
@@ -211,7 +211,7 @@ OK
   - All 17 ACP protocol tests pass (`cargo test -p hex-protocol`).
 
 #### 2. Subagent CoW Isolation & Multi-Gateway Supervisor
-- **Source Citation:** [`src/harness_core/subagent.py`](file:///Users/anv./Development/Harness/src/harness_core/subagent.py) and [`src/harness_core/gateway.py`](file:///Users/anv./Development/Harness/src/harness_core/gateway.py).
+- **Source Citation:** [`harness_core/subagent.py`](file:///Users/anv./Development/Harness/harness_core/subagent.py) and [`harness_core/gateway.py`](file:///Users/anv./Development/Harness/harness_core/gateway.py).
 - **Mechanism:**
   - Subagents run inside instant APFS/CoW snapshot directories (`.hex/subagents/<id>`), strictly gated by role (`RESEARCHER`, `CODER`, `TESTER`, `REVIEWER`, `PLANNER`).
   - Telegram and Discord gateways with whitelist authentication, interactive inline approval buttons, and diff cards.
@@ -230,7 +230,7 @@ OK
   - `tests/packaging/test_packaging_and_installer.py:test_hex_bat_launcher_exists_and_valid` -> PASS
 
 #### 2. Unified Benchmark Evaluation Suite Runner (`hex eval`)
-- **Source Citation:** [`src/harness_core/eval_runner.py`](file:///Users/anv./Development/Harness/src/harness_core/eval_runner.py) and [`src/harness_core/cli.py:191-209, 1079-1087`](file:///Users/anv./Development/Harness/src/harness_core/cli.py#L191-L209).
+- **Source Citation:** [`harness_core/eval_runner.py`](file:///Users/anv./Development/Harness/harness_core/eval_runner.py) and [`harness_core/cli.py:191-209, 1079-1087`](file:///Users/anv./Development/Harness/harness_core/cli.py#L191-L209).
 - **Mechanism:**
   - CLI command `hex eval` runs suites: `core`, `resilience`, `compaction`, `tui`, and `all`.
   - Supports `--json` flag and formats a real-time summary table (Module, Total, Passed, Failed, Errors, Latency, Status).
@@ -238,7 +238,7 @@ OK
   - Tested both `hex eval --suite core` and `hex eval --suite all` (see command outputs below).
 
 #### 3. Cryptographic Event Chain & Schema Integrity Auditor
-- **Source Citation:** [`scripts/verify_event_chain.py`](file:///Users/anv./Development/Harness/scripts/verify_event_chain.py) and [`src/harness_core/db.py:1132-1185`](file:///Users/anv./Development/Harness/src/harness_core/db.py#L1132-L1185).
+- **Source Citation:** [`scripts/verify_event_chain.py`](file:///Users/anv./Development/Harness/scripts/verify_event_chain.py) and [`harness_core/db.py:1132-1185`](file:///Users/anv./Development/Harness/harness_core/db.py#L1132-L1185).
 - **Mechanism:**
   - `LedgerStore.verify_chain_integrity()` iterates event ledger checking:
     1. Sequence continuity ($1, 2, \dots$ without gaps).

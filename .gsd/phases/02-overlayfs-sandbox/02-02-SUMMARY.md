@@ -11,15 +11,15 @@
 ## 1. Executive Summary
 
 Plan 02-02 delivers the container and process isolation execution engine for untrusted agent code evaluation and tool invocations. It fulfills the security guarantees of PRD Sections 1 (Execution & Isolation Layer) and 3 (Durability & Security proofs) by implementing:
-1. **Container & Process Sandboxes (`src/harness_core/sandbox.py`):**
+1. **Container & Process Sandboxes (`harness_core/sandbox.py`):**
    - `BubblewrapSandbox`: Linux unprivileged user namespace container (`bwrap`) with `--unshare-net`, `--unshare-pid`, `--unshare-ipc`, read-only system roots, tmpfs scratch, and workspace bind mounting.
    - `DockerPodmanSandbox`: OCI container containment with `--network none`, `--read-only` root, tmpfs mounts, and workspace directory mapping.
    - `RestrictedSubprocessSandbox`: Safe POSIX/macOS fallback that strictly validates canonical directory containment, purges sensitive environment credentials matching `(?i)(API_KEY|SECRET|TOKEN|PASS|PASSWORD|AUTH|CREDENTIAL|PRIVATE|AWS_|GITHUB_|GH_|HARNESS_)`, manages process groups (`os.setsid`/`os.killpg`), and enforces POSIX resource limits (`RLIMIT_CPU`, `RLIMIT_NPROC`).
    - `get_default_sandbox`: Auto-detection factory selecting bubblewrap on Linux, docker/podman if running, or falling back to restricted subprocess.
-2. **Tool Gateway Sandbox Containment (`src/harness_core/gateway.py`):**
+2. **Tool Gateway Sandbox Containment (`harness_core/gateway.py`):**
    - Enhanced `_resolve_confined_path` with strict `Path.relative_to` containment check, preventing symlink escapes or string prefix collisions.
    - Delegated `_tool_run_tests` to `self.sandbox.execute(...)`, returning structured `SandboxResult` metadata (`timed_out`, `violation_detected`, `sandbox_backend`), raising `PolicyBlockedError` on security violations, and running secret redaction over combined outputs.
-3. **Orchestrator Sandbox Integration (`src/harness_core/orchestrator.py`):**
+3. **Orchestrator Sandbox Integration (`harness_core/orchestrator.py`):**
    - Injected `ExecutionSandbox` into `HarnessOrchestrator`, passing it to `ToolGateway` and registering active sandbox capabilities (`sandbox_backend`) on local worker registration.
 4. **Zero-Escape Verification Test Suite (`tests/storage/test_sandbox_isolation.py`):**
    - 18 empirical tests verifying workspace containment, path traversal blocking, parent/passed environment purging, timeout process termination, resource exhaustion handling, bwrap/docker command assembly, tool gateway secret redaction, and auto-detection fallbacks.
@@ -30,7 +30,7 @@ Plan 02-02 delivers the container and process isolation execution engine for unt
 
 | Task | Description | Status | Commit |
 |------|-------------|--------|--------|
-| Task 1 | Implement Container Sandbox Isolation Engine in `src/harness_core/sandbox.py` | Complete | `c063f5c` |
+| Task 1 | Implement Container Sandbox Isolation Engine in `harness_core/sandbox.py` | Complete | `c063f5c` |
 | Task 2 | Integrate `ExecutionSandbox` into `ToolGateway` and `Orchestrator` | Complete | `bf077fc` |
 | Task 3 | Author zero-escape and sandbox isolation verification test suite in `tests/storage/test_sandbox_isolation.py` | Complete | `5cbeaed` |
 

@@ -179,7 +179,14 @@ impl AcpClient {
         Ok(client)
     }
 
-    /// Helper to locate repository root containing Python virtual environment and src/
+    fn find_repo_root(start_path: &Path) -> Option<PathBuf> {
+        start_path.ancestors().find(|curr| {
+            curr.join("pyproject.toml").exists()
+                && (curr.join("harness_core/__init__.py").is_file() || curr.join(".venv").exists())
+        }).map(Path::to_path_buf)
+    }
+
+    /// Helper to locate repository root containing the harness_core namespace or virtual environment.
     fn resolve_repo_root(workspace_root: Option<&Path>) -> PathBuf {
         if let Ok(env_root) = std::env::var("HEX_REPO_ROOT") {
             let p = PathBuf::from(env_root);
@@ -192,27 +199,15 @@ impl AcpClient {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        // 1. Walk up from start_path to find repository root with src/harness_core
-        let mut curr = start_path.clone();
-        loop {
-            if curr.join("src/harness_core").exists() || (curr.join("pyproject.toml").exists() && curr.join(".venv").exists()) {
-                return curr;
-            }
-            if let Some(parent) = curr.parent() {
-                curr = parent.to_path_buf();
-            } else {
-                break;
-            }
+        // 1. Walk up from start_path to find repository root with the harness_core namespace or virtual environment
+        if let Some(root) = Self::find_repo_root(&start_path) {
+            return root;
         }
 
         // 2. Walk up from current_exe (e.g. repo/target/debug/hex-tui)
         if let Ok(exe_path) = std::env::current_exe() {
-            let mut curr = exe_path;
-            while let Some(parent) = curr.parent() {
-                curr = parent.to_path_buf();
-                if curr.join("src/harness_core").exists() || (curr.join("pyproject.toml").exists() && curr.join(".venv").exists()) {
-                    return curr;
-                }
+            if let Some(root) = exe_path.parent().and_then(Self::find_repo_root) {
+                return root;
             }
         }
 
@@ -233,38 +228,19 @@ impl AcpClient {
     }
 
     /// Whether `python` can import the server and its config parser.
-    async fn interpreter_can_run_server(
-        python: &str,
-        repo_root: &Path,
-        pythonpath: Option<&str>,
-    ) -> bool {
+    async fn interpreter_can_run_server(python: &str, repo_root: &Path) -> bool {
         let mut cmd = Command::new(python);
-        cmd.args(["-c", "import harness_core, yaml"])
+        cmd.args(["-c", "import harness_core.client.cli, yaml"])
             .current_dir(repo_root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        if let Some(path) = pythonpath {
-            cmd.env("PYTHONPATH", path);
-        }
         matches!(cmd.status().await, Ok(status) if status.success())
     }
 
     /// Spawn the Python backend ACP server (`python3 -m harness_core.client.cli acp`).
     pub async fn spawn_acp_server(workspace_root: Option<&Path>) -> Result<Self, AcpError> {
         let repo_root = Self::resolve_repo_root(workspace_root);
-
-        let src_dir = repo_root.join("src");
-        let pythonpath = if src_dir.exists() {
-            let current = std::env::var("PYTHONPATH").unwrap_or_default();
-            Some(if current.is_empty() {
-                src_dir.to_string_lossy().to_string()
-            } else {
-                format!("{}:{}", src_dir.to_string_lossy(), current)
-            })
-        } else {
-            None
-        };
 
         // An interpreter that cannot import the server's dependencies would start
         // a degraded runtime that silently ignores the configured model, so probe
@@ -284,7 +260,7 @@ impl AcpClient {
 
         let mut py_bin = None;
         for candidate in candidates {
-            if Self::interpreter_can_run_server(&candidate, &repo_root, pythonpath.as_deref()).await {
+            if Self::interpreter_can_run_server(&candidate, &repo_root).await {
                 py_bin = Some(candidate);
                 break;
             }
@@ -303,10 +279,6 @@ impl AcpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
-        if let Some(path) = &pythonpath {
-            cmd.env("PYTHONPATH", path);
-        }
 
         let mut child = cmd.spawn()?;
 
@@ -564,6 +536,52 @@ impl AcpClient {
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn test_find_repo_root_from_relocated_desktop() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join("harness_core")).unwrap();
+        std::fs::write(repo.path().join("harness_core/__init__.py"), "").unwrap();
+        std::fs::write(repo.path().join("pyproject.toml"), "").unwrap();
+        let desktop = repo.path().join("App/hex-desktop/src");
+        std::fs::create_dir_all(&desktop).unwrap();
+
+        assert_eq!(AcpClient::find_repo_root(&desktop), Some(repo.path().to_path_buf()));
+    }
+
+    #[test]
+    fn test_find_repo_root_skips_incomplete_and_obsolete_namespace_markers() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join("harness_core")).unwrap();
+        std::fs::write(repo.path().join("harness_core/__init__.py"), "").unwrap();
+        std::fs::write(repo.path().join("pyproject.toml"), "").unwrap();
+        let nested = repo.path().join("nested");
+        std::fs::create_dir_all(nested.join("harness_core")).unwrap();
+        std::fs::write(nested.join("pyproject.toml"), "").unwrap();
+        std::fs::create_dir_all(nested.join("src/harness_core")).unwrap();
+
+        assert_eq!(AcpClient::find_repo_root(&nested), Some(repo.path().to_path_buf()));
+    }
+
+    #[test]
+    fn test_find_repo_root_requires_pyproject_for_namespace_anchor() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join("harness_core")).unwrap();
+        std::fs::write(repo.path().join("harness_core/__init__.py"), "").unwrap();
+
+        assert_eq!(AcpClient::find_repo_root(repo.path()), None);
+    }
+
+    #[test]
+    fn test_find_repo_root_preserves_virtualenv_alternative() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("pyproject.toml"), "").unwrap();
+        std::fs::create_dir(repo.path().join(".venv")).unwrap();
+        let nested = repo.path().join("workspace");
+        std::fs::create_dir(&nested).unwrap();
+
+        assert_eq!(AcpClient::find_repo_root(&nested), Some(repo.path().to_path_buf()));
+    }
 
     #[tokio::test]
     async fn test_client_request_response_flow() {

@@ -26,7 +26,7 @@ def _ensure_tests_in_sys_path() -> None:
         if str(cwd / "tests") not in sys.path:
             sys.path.insert(0, str(cwd / "tests"))
 
-    source_root = Path(__file__).resolve().parents[2]
+    source_root = Path(__file__).resolve().parents[1]
     if (source_root / "tests").is_dir():
         if str(source_root) not in sys.path:
             sys.path.insert(0, str(source_root))

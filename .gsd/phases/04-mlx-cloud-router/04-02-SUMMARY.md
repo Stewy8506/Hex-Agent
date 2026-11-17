@@ -10,7 +10,7 @@
 ## 1. Summary of Completed Work
 
 ### Task 1: CloudModelProvider with Multi-Backend Dispatch, Budget Ceilings & Privacy Gating
-- Implemented `CloudModelProvider` in `src/harness_core/providers/cloud_provider.py` conforming to the unified `ModelProvider` contract.
+- Implemented `CloudModelProvider` in `providers/cloud_provider.py` conforming to the unified `ModelProvider` contract.
 - Added support for three frontier backends:
   - **Anthropic Claude** (`messages` API with `x-api-key`, `anthropic-version`, and system prompts).
   - **OpenAI** (`chat/completions` API with bearer auth and role messages).
@@ -19,10 +19,10 @@
 - Implemented `TaskBudgetTracker` with hard ceilings for maximum task USD cost, maximum output tokens, and maximum request count, raising `BudgetExceededError`.
 - Implemented strict privacy gating blocking `sensitive` and `secret` data classifications immediately before any outbound dispatch, raising `PolicyBlockedError`.
 - Integrated outbound secret scrubbing via `redact_secrets` before serialization to guarantee zero credential egress.
-- Created `src/harness_core/cloud_provider.py` re-export shim and updated `src/harness_core/providers/__init__.py`.
+- Created `harness_core/cloud_provider.py` re-export shim and updated `providers/__init__.py`.
 
 ### Task 2: TwoTierModelRouter Integration & Execution Telemetry
-- Enhanced `RouteDecision` in `src/harness_core/router.py` to record latency (`latency_ms`), monetary cost (`cost_usd`), token metrics (`input_tokens`, `output_tokens`), `compression_ratio`, and raw `provider_metadata` while retaining full backward compatibility.
+- Enhanced `RouteDecision` in `harness_core/router.py` to record latency (`latency_ms`), monetary cost (`cost_usd`), token metrics (`input_tokens`, `output_tokens`), `compression_ratio`, and raw `provider_metadata` while retaining full backward compatibility.
 - Updated `TwoTierModelRouter` constructor to accept and manage pluggable `local_provider` (default: `LocalMLXModelProvider`) and `cloud_provider` (default: `CloudModelProvider`).
 - Integrated `compress_verbose_log` with `Tier1LogCompressor`, preserving source file locations (`File "...", line ...` and `LOCATION: ...`), line numbers, traceback frames, and assertion errors.
 - Implemented `execute_routed_request` orchestrating route evaluation, tier dispatch, local $0 execution vs. governed cloud escalation, strict privacy boundary defense, and comprehensive telemetry recording.

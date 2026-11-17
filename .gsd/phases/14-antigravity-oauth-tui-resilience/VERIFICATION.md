@@ -25,12 +25,12 @@ All 7 must-haves have been empirically verified with 100% success across the ded
 
 | Must-Have | Description | Status | Evidence |
 |-----------|-------------|--------|----------|
-| **MH-1** | `_probe_antigravity_token(token)` probes token validity before assuming active | **PASS** | `src/harness_core/onboard.py` L117-135; 3 unit tests in `TestAntigravityOAuthAndTuiResilience` |
-| **MH-2** | Interactive browser PKCE OAuth sign-in fallback (`webbrowser.open`) | **PASS** | `src/harness_core/onboard.py` L230-263; `test_onboard_wizard_triggers_browser_oauth_when_unauthenticated` passes |
+| **MH-1** | `_probe_antigravity_token(token)` probes token validity before assuming active | **PASS** | `harness_core/onboard.py` L117-135; 3 unit tests in `TestAntigravityOAuthAndTuiResilience` |
+| **MH-2** | Interactive browser PKCE OAuth sign-in fallback (`webbrowser.open`) | **PASS** | `harness_core/onboard.py` L230-263; `test_onboard_wizard_triggers_browser_oauth_when_unauthenticated` passes |
 | **MH-3** | Real production model selection (`gemini-2.5-pro` default) across all modules | **PASS** | Checked `onboard.py`, `doctor.py`, `router.py`, `tui.py`, `cloud_provider.py`, `antigravity_provider.py`; 0 dead models in runtime |
-| **MH-4** | Search option label simplified to "Disabled", redundant sandbox prompt removed | **PASS** | `src/harness_core/onboard.py` L318; sandbox silently configured from detected profile |
-| **MH-5** | TUI `handle_user_prompt` catches 401/ProviderUnavailableError without crashing | **PASS** | `src/harness_core/tui.py` L1776-1801; `test_tui_handle_user_prompt_catches_auth_error_gracefully` passes |
-| **MH-6** | `AntigravityModelProvider.generate()` auto-refreshes token on HTTP 401 | **PASS** | `src/harness_core/providers/antigravity_provider.py` L885-903; `test_antigravity_provider_refreshes_token_on_401` passes |
+| **MH-4** | Search option label simplified to "Disabled", redundant sandbox prompt removed | **PASS** | `harness_core/onboard.py` L318; sandbox silently configured from detected profile |
+| **MH-5** | TUI `handle_user_prompt` catches 401/ProviderUnavailableError without crashing | **PASS** | `harness_core/tui.py` L1776-1801; `test_tui_handle_user_prompt_catches_auth_error_gracefully` passes |
+| **MH-6** | `AntigravityModelProvider.generate()` auto-refreshes token on HTTP 401 | **PASS** | `providers/antigravity_provider.py` L885-903; `test_antigravity_provider_refreshes_token_on_401` passes |
 | **MH-7** | Dedicated suite (7/7) & full repository suite (422/422) pass 100% green | **PASS** | Dedicated suite: 7/7 OK (0.207s); Full test suite: 422/422 OK (43.199s), 0 regressions |
 
 **Must-Haves Score:** 7 / 7 PASSED (100%)
@@ -80,33 +80,33 @@ Zero failures, zero errors, zero regressions across all 422 unit and integration
 
 ### 3.3 Code Inspection Findings
 
-1. **Antigravity Token Probing (`src/harness_core/onboard.py`):**
+1. **Antigravity Token Probing (`harness_core/onboard.py`):**
    - Implements `_probe_antigravity_token(token: str) -> bool`.
    - Sends a lightweight POST probe to Google Cloud companion API (`https://cloudaicompanion.googleapis.com/v1internal:loadCodeAssist`).
    - Returns True only on HTTP 200/201 response with valid Bearer credentials, preventing dead tokens from being accepted silently.
 
-2. **Browser PKCE OAuth Sign-In (`src/harness_core/onboard.py`):**
+2. **Browser PKCE OAuth Sign-In (`harness_core/onboard.py`):**
    - If token is absent or invalid, presents interactive choice: Browser Sign-In (default), manual entry, or skip.
    - Generates PKCE challenge and verifier via `AntigravityOAuthManager`.
    - Invokes `webbrowser.open(auth_url)` and prompts user to paste redirect URL or authorization code.
    - Successfully exchanges code for access & refresh tokens.
 
-3. **Production Model Selection (`src/harness_core/`):**
+3. **Production Model Selection (`harness_core/`):**
    - Replaced all runtime defaults from `gemini-3.5-pro` to `gemini-2.5-pro`.
    - Onboarding provides arrow-key selection for Antigravity (`gemini-2.5-pro`, `gemini-2.5-flash`, `claude-3-5-sonnet`), Anthropic (`claude-3-5-sonnet`, `claude-3-opus`, `claude-3-5-haiku`), OpenAI (`gpt-4o`, `o1-preview`, `o3-mini`), and Gemini (`gemini-2.5-pro`, `gemini-2.5-flash`).
    - `doctor.py`, `router.py`, `tui.py`, `cloud_provider.py`, and `antigravity_provider.py` all reference real production models.
 
-4. **Simplified Search & Hardware Profiling (`src/harness_core/onboard.py`):**
+4. **Simplified Search & Hardware Profiling (`harness_core/onboard.py`):**
    - Search option `none` now labeled `"Disabled"`.
    - Redundant execution sandbox prompt eliminated; detected sandbox backend (`restricted_subprocess`, `container`, etc.) and CoW backend (`apfs_clone`, `overlayfs`, etc.) from `HardwareProfile.detect()` are written directly to `config.yaml`.
 
-5. **TUI Error Resilience (`src/harness_core/tui.py`):**
+5. **TUI Error Resilience (`harness_core/tui.py`):**
    - `handle_user_prompt` catches `ProviderUnavailableError` and HTTP 401 exceptions.
    - Formats a prominent styled error card using terminal skin colors.
    - Prints actionable remediation steps (`hex auth antigravity --auth-url`, `/model`, `hex onboard`).
    - Returns cleanly to the interactive prompt without terminating the REPL loop.
 
-6. **Automatic Token Refresh (`src/harness_core/providers/antigravity_provider.py`):**
+6. **Automatic Token Refresh (`providers/antigravity_provider.py`):**
    - In `AntigravityModelProvider.generate()`, when `status_code == 401 and cred.refresh_token` occurs, it automatically invokes `oauth_manager.refresh_access_token(cred)`, updates stored credentials, rebuilds request headers with the refreshed token, and re-executes the API call transparently.
 
 ---

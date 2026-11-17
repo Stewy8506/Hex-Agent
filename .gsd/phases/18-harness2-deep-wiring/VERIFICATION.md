@@ -54,7 +54,7 @@ All 17 dedicated unit and integration tests across `tests/integration/test_harne
 - **Requirement:** Pre-task domain experience retrieval reads `INDEX.md` and `EXPERIENCE.md` to format structured lessons injected into orchestrator reasoning and repair prompts.
 - **Evidence:** Verified retrieval formatting and injection into `generate_repair_patch`:
   - `retrieve_domain_experience('security')` formats cues, lessons, and evidence into markdown.
-  - In `src/harness_core/orchestrator.py` (`generate_repair_patch` line 69-95), `domain_lessons_ctx` is retrieved from `retrieve_domain_experience(domain)` and prepended to `cacheable_context_prefix` preceding AST blast radius and code context.
+  - In `harness_core/orchestrator.py` (`generate_repair_patch` line 69-95), `domain_lessons_ctx` is retrieved from `retrieve_domain_experience(domain)` and prepended to `cacheable_context_prefix` preceding AST blast radius and code context.
 - **Verdict:** PASS
 
 ### Truth 4: Domain Isolation

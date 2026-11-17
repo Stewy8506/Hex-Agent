@@ -228,11 +228,6 @@ def launch_hex_tui(args: Any, repo_root: Optional[Path] = None) -> int:
     env = os.environ.copy()
     env["HEX_PYTHON_BIN"] = sys.executable
     env["HEX_REPO_ROOT"] = str(root)
-    src_dir = str(root / "src")
-    if "PYTHONPATH" in env and env["PYTHONPATH"]:
-        env["PYTHONPATH"] = f"{src_dir}:{env['PYTHONPATH']}"
-    else:
-        env["PYTHONPATH"] = src_dir
     if hasattr(sys, "base_prefix") and sys.prefix != sys.base_prefix:
         env["VIRTUAL_ENV"] = sys.prefix
 

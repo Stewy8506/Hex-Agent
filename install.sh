@@ -120,7 +120,7 @@ info "Checking packaging tools in environment..."
 # 4. Install hex-ai package
 # Check if running from inside local git repository root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd || pwd)"
-if [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/src/harness_core" ]; then
+if [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/harness_core" ]; then
     info "Installing HEX from local repository checkout: $SCRIPT_DIR..."
     LATEST_WHL="$(ls -t "$SCRIPT_DIR/dist/"hex_ai-*.whl 2>/dev/null | head -n 1 || true)"
     if [ -n "$LATEST_WHL" ] && [ -f "$LATEST_WHL" ]; then

@@ -34,9 +34,9 @@ HEX is structured into five primary architectural planes:
 
 ---
 
-## 2. Native macOS GPUI Desktop Cockpit (`crates/hex-desktop`) — Experimental
+## 2. Native macOS GPUI Desktop Cockpit (`App/hex-desktop`) — Experimental
 
-HEX features a state-of-the-art native desktop application built using Zed's GPU-accelerated **GPUI** framework (`crates/hex-desktop`):
+HEX features a state-of-the-art native desktop application built using Zed's GPU-accelerated **GPUI** framework (`App/hex-desktop`):
 
 ```text
 ┌───────────────────────────┬────────────────────────────────────────────────────────┐
@@ -91,13 +91,29 @@ Implements a Dark Zinc visual hierarchy:
 
 ---
 
-## 3. Python Source Layout (`src/harness_core/`)
+<a id="3-python-source-layout-srcharness_core"></a>
 
-The following is a representative view of the current source layout, not a complete inventory. Domain packages retain their responsibilities; focused client, platform, and filesystem helpers have dedicated internal modules.
+## 3. Python Source Layout (Open Repository Root)
+
+The following is a representative view of the current open-root source layout, not a complete inventory. Physical directories are separate from the canonical `harness_core.*` Python namespace. Domain packages retain their responsibilities; focused client, platform, and filesystem helpers have dedicated internal modules.
 
 ```text
-src/harness_core/
-├── core/
+Harness/
+├── harness_core/              # Substantive package anchor and shared modules
+│   ├── __init__.py
+│   ├── config_loader.py       # Shared configuration loading and model-selection writer
+│   ├── gateway.py             # Shared tool gateway
+│   ├── cloud_provider.py
+│   ├── local_provider.py
+│   ├── mlx_provider.py
+│   ├── eval_runner.py
+│   ├── graphify.py
+│   ├── graphify_adapter.py
+│   ├── harness2_adapter.py
+│   ├── mcp_client.py
+│   ├── vendor_paths.py
+│   └── migrations/            # Packaged SQL migrations
+├── agent/
 │   ├── orchestrator.py        # Central coordination engine
 │   ├── react_loop.py          # Multi-turn autonomous tool execution loop
 │   ├── router.py              # Model selection and token routing
@@ -132,7 +148,7 @@ src/harness_core/
 │   ├── daemon.py              # Background service daemon (launchd/systemd)
 │   ├── worker_daemon.py       # Distributed task worker process
 │   └── scheduler.py           # Scheduled cron and delayed automations
-├── client/
+├── hex_cli/
 │   ├── acp.py                 # Agent Client Protocol JSON-RPC 2.0 server
 │   ├── tui.py                 # Terminal user interface controller
 │   ├── tui_launcher.py        # TUI launcher and terminal mode detection
@@ -151,17 +167,16 @@ src/harness_core/
 │   │   └── review.py          # Diff and review rendering
 │   └── onboarding/
 │       └── verification.py    # Onboarding verification helpers
-├── platform/
+├── hex_platform/
 │   ├── hardware.py            # Host hardware profiling
 │   └── diagnostics.py         # Platform diagnostic helpers
 ├── tools/
 │   └── filesystem.py          # Filesystem tool implementation internals
-├── skills/                    # Python skill compiler, execution, and retrieval engine
-├── resources/
-│   └── skills/
-│       ├── builtin/           # Packaged built-in skill data
-│       └── optional/          # Packaged optional skill data
-├── config_loader.py           # Shared configuration loading and model-selection writer
+├── skill_engine/              # Python skill compiler, execution, and retrieval engine
+├── resources/                 # Resource package support
+├── skills/
+│   └── builtin/               # Packaged built-in skill data
+├── optional-skills/           # Packaged optional skill data
 ├── capabilities/
 │   ├── browser.py             # Playwright headless browser with ariaSnapshot
 │   ├── vision.py              # Multimodal image and DOM visual diffing
@@ -170,23 +185,50 @@ src/harness_core/
 │   ├── git_autopilot.py       # Autonomous git branching, staging, and PRs
 │   ├── proof.py               # Cryptographic verification certificates
 │   └── gateways/              # Telegram & Discord webhook listeners
-└── models/
-    ├── credential_pool.py     # Multi-key pool, 429 rotation & cooldowns
-    └── model_metadata.py      # Provider catalog, socket probes, and specs
+├── models/
+│   ├── credential_pool.py     # Multi-key pool, 429 rotation & cooldowns
+│   └── model_metadata.py      # Provider catalog, socket probes, and specs
+├── providers/                # Provider integrations
+├── lsp/                      # Language-server integration
+├── gateways/                 # Gateway integration
+├── App/
+│   └── hex-desktop/          # Experimental macOS GPUI desktop crate
+├── crates/
+│   ├── hex-protocol/         # Shared Rust wire contract
+│   └── hex-tui/              # Native terminal cockpit
+├── Cargo.toml                # Root Cargo workspace, including App/hex-desktop
+├── migrations/               # Alembic migrations
+└── tests/                    # Python subsystem tests
 ```
 
 ---
 
 ### 3.1 Internal organization and compatibility boundaries
 
-The Python namespace remains `harness_core` under `src/`; the Rust crates and manifests remain in `crates/hex-protocol`, `crates/hex-tui`, and `crates/hex-desktop`. This is an internal organization change, not a new public API:
+The public Python namespace remains `harness_core`, with supported setuptools `package_dir` mappings from canonical package names to physical directories:
 
-- `client/commands/projects.py` and `client/commands/antigravity.py` contain project and Antigravity authentication command handlers. Existing public entry modules, including `client/cli.py`, `client/acp.py`, `client/tui.py`, and `client/onboard.py`, remain the import and launch surfaces.
-- `client/terminal/ansi.py` provides ANSI formatting helpers; `client/terminal/review.py` contains diff and review rendering. `client/onboarding/verification.py` contains onboarding verification helpers.
-- `platform/hardware.py` and `platform/diagnostics.py` contain host hardware profiling and diagnostic helpers. Configuration loading remains in `config_loader.py`; its `update_config_yaml_model()` is the shared model-selection writer used by onboarding and orchestration.
-- `storage/project_init.py` contains project stack detection and `.hex` initialization. `tools/filesystem.py` contains filesystem tool implementations behind the existing gateway. These focused extractions do not split the large orchestration or storage engines wholesale; the existing domain packages retain their responsibilities.
-- Packaged skill data lives under `resources/skills/builtin/` and `resources/skills/optional/`, distinct from the Python skill engine and skill-management modules.
-- Python tests are grouped by subsystem under `tests/<subsystem>/`; ACP/client coverage lives in `tests/client/`, and packaging/install coverage in `tests/packaging/`. Shared fixtures remain in `tests/fixtures/`; Rust tests stay with their crates.
+| Canonical package | Physical directory |
+| --- | --- |
+| `harness_core` | `harness_core/` |
+| `harness_core.core` | `agent/` |
+| `harness_core.client` | `hex_cli/` |
+| `harness_core.platform` | `hex_platform/` |
+| `harness_core.skills` | `skill_engine/` |
+| `harness_core.resources.skills` | `skills/` |
+| `harness_core.resources.skills.optional` | `optional-skills/` |
+| `harness_core.{cognition,providers,models,runtime,storage,capabilities,tools,lsp,resources,gateways}` | Matching repository-root directories |
+
+This is a physical relocation, not a new public API. The `harness_core/` anchor contains `__init__.py`, substantive shared provider, configuration, gateway, evaluation, graphify, adapter, MCP, and vendor-path modules, plus packaged SQL migrations; it is not a directory of forwarding wrappers.
+
+- `hex_cli/commands/projects.py` and `hex_cli/commands/antigravity.py` contain project and Antigravity authentication command handlers. The public entry modules now live in `hex_cli/cli.py`, `hex_cli/acp.py`, `hex_cli/tui.py`, and `hex_cli/onboard.py`, but retain their `harness_core.client.*` import and launch names. For example, `python -m harness_core.client.cli acp` is unchanged.
+- `hex_cli/terminal/ansi.py` provides ANSI formatting helpers; `hex_cli/terminal/review.py` contains diff and review rendering. `hex_cli/onboarding/verification.py` contains onboarding verification helpers.
+- `hex_platform/hardware.py` and `hex_platform/diagnostics.py` contain host hardware profiling and diagnostic helpers. Configuration loading lives in `harness_core/config_loader.py`; its `update_config_yaml_model()` remains the shared model-selection writer used by onboarding and orchestration.
+- `storage/project_init.py` contains project stack detection and `.hex` initialization. `tools/filesystem.py` contains filesystem tool implementations behind the existing gateway. The relocation does not split the large orchestration or storage engines wholesale; domain responsibilities are unchanged.
+- Packaged skill data lives under `skills/builtin/` and `optional-skills/`, distinct from the Python engine in `skill_engine/`. Package mappings and package-data declarations preserve the canonical resource namespace.
+- The Cargo workspace remains at the repository root. Protocol and TUI crates remain in `crates/hex-protocol/` and `crates/hex-tui/`; the desktop crate lives in `App/hex-desktop/`. Run `cargo run -p hex-desktop` or `cargo test -p hex-desktop` from the root as before. `App/` currently contains only the desktop app; no mobile app or placeholder mobile directory is introduced.
+- Python tests remain grouped by subsystem under `tests/<subsystem>/`; ACP/client coverage lives in `tests/client/`, and packaging/install coverage in `tests/packaging/`. Shared fixtures remain in `tests/fixtures/`; Rust tests stay with their crates.
+
+Development requires an editable install from the repository root: `python -m pip install -e ".[full]"`. Reinstall after the relocation to refresh setuptools' editable mappings; a raw repository-root or former source-directory `PYTHONPATH` cannot replace the package mapping. See [Contributing](../development/CONTRIBUTING.md) for setup.
 
 Root manifests, installers, and `assets/` stay in place, as does `.gsd/`. Documentation lives under `docs/{architecture,guides,reference,development,research,audits}/`; design references and their relative assets live together under `docs/design/mockups/`.
 
@@ -356,7 +398,7 @@ Spawning background reflection subagents on local hardware competes for memory b
 
 ## 11. Storage Lifecycle & Garbage Collection (`hex gc`)
 
-Task execution continuously produces CoW snapshots, CAS delta tarballs, and proof bundles. To prevent unbounded disk growth while preserving auditability, HEX implements an automated, scoped retention engine (`src/harness_core/storage/gc.py`):
+Task execution continuously produces CoW snapshots, CAS delta tarballs, and proof bundles. To prevent unbounded disk growth while preserving auditability, HEX implements an automated, scoped retention engine (`storage/gc.py`):
 
 ```text
   ┌─────────────────────────────────────────────────────────────────────────────┐

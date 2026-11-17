@@ -87,9 +87,9 @@ It would be a mistake to conclude that HEX needs to be rewritten or that its eng
 
 1. **A namespaced Python package and separate Rust clients are a reasonable foundation.** The broad separation of execution, cognition, storage, clients, and providers is already more intentional than a root full of unrelated scripts.
 2. **The native TUI has an actual event loop and backend launch path.** It is materially further along as an integrated surface than the desktop. See [crates/hex-tui/src/main.rs:216](file:///Users/anv./Development/Harness/crates/hex-tui/src/main.rs#L216).
-3. **Storage and isolation have concrete implementations.** The snapshot-provider interface and tree hashing are present in [src/harness_core/storage/cow.py:39](file:///Users/anv./Development/Harness/src/harness_core/storage/cow.py#L39); event recording and transactional task claiming exist in [src/harness_core/storage/db.py:803](file:///Users/anv./Development/Harness/src/harness_core/storage/db.py#L803) and [db.py:1845](file:///Users/anv./Development/Harness/src/harness_core/storage/db.py#L1845). This audit does not certify every isolation or performance claim.
-4. **Diagnostics are already structured.** Doctor models checks, severity, remediation, and fixability rather than just printing a banner: [src/harness_core/client/doctor.py:28](file:///Users/anv./Development/Harness/src/harness_core/client/doctor.py#L28).
-5. **Several features dismissed by older audits now exist.** Quick, automatic, blank-slate, and reasoning-aware setup are present; the Python console has real memory, rewind, and approval-lease dispatch. See [src/harness_core/client/onboard.py:356](file:///Users/anv./Development/Harness/src/harness_core/client/onboard.py#L356) and [src/harness_core/client/tui.py:1735](file:///Users/anv./Development/Harness/src/harness_core/client/tui.py#L1735).
+3. **Storage and isolation have concrete implementations.** The snapshot-provider interface and tree hashing are present in [storage/cow.py:39](file:///Users/anv./Development/Harness/storage/cow.py#L39); event recording and transactional task claiming exist in [storage/db.py:803](file:///Users/anv./Development/Harness/storage/db.py#L803) and [db.py:1845](file:///Users/anv./Development/Harness/storage/db.py#L1845). This audit does not certify every isolation or performance claim.
+4. **Diagnostics are already structured.** Doctor models checks, severity, remediation, and fixability rather than just printing a banner: [hex_cli/doctor.py:28](file:///Users/anv./Development/Harness/hex_cli/doctor.py#L28).
+5. **Several features dismissed by older audits now exist.** Quick, automatic, blank-slate, and reasoning-aware setup are present; the Python console has real memory, rewind, and approval-lease dispatch. See [hex_cli/onboard.py:356](file:///Users/anv./Development/Harness/hex_cli/onboard.py#L356) and [hex_cli/tui.py:1735](file:///Users/anv./Development/Harness/hex_cli/tui.py#L1735).
 6. **Useful tests exist.** The 56 selected tests passing is positive evidence for the tested components. The immediate deficiency is that the normal gate does not collect them.
 
 The opportunity is to make these capabilities available through a small number of coherent, tested workflows—not to replace them with another framework.
@@ -102,7 +102,7 @@ The opportunity is to make these capabilities available through a small number o
 
 **Priority: Release blocker for these commands. Evidence: source and local probes.**
 
-In [src/harness_core/client/acp.py:608](file:///Users/anv./Development/Harness/src/harness_core/client/acp.py#L608), several command branches construct reassuring text directly:
+In [hex_cli/acp.py:608](file:///Users/anv./Development/Harness/hex_cli/acp.py#L608), several command branches construct reassuring text directly:
 
 - `/scan` claims skills were evaluated and registered.
 - `/remember` claims a governed memory was recorded.
@@ -127,17 +127,17 @@ The native TUI delegates nonlocal slash commands to this server at [crates/hex-t
 
 **Priority: Release blocker for the desktop claim. Evidence: source wiring.**
 
-[crates/hex-desktop/src/main.rs:1](file:///Users/anv./Development/Harness/crates/hex-desktop/src/main.rs#L1) initializes the theme and opens `DesktopWindow::new()`. It does not connect the ACP bridge, subscribe to backend events, or register the shortcut initializer.
+[App/hex-desktop/src/main.rs:1](file:///Users/anv./Development/Harness/App/hex-desktop/src/main.rs#L1) initializes the theme and opens `DesktopWindow::new()`. It does not connect the ACP bridge, subscribe to backend events, or register the shortcut initializer.
 
-The shell starts with `acp_bridge: None`. Bridge attachment and event-consumption methods exist, but are not connected by this production startup: [crates/hex-desktop/src/ui/shell.rs:59](file:///Users/anv./Development/Harness/crates/hex-desktop/src/ui/shell.rs#L59).
+The shell starts with `acp_bridge: None`. Bridge attachment and event-consumption methods exist, but are not connected by this production startup: [App/hex-desktop/src/ui/shell.rs:59](file:///Users/anv./Development/Harness/App/hex-desktop/src/ui/shell.rs#L59).
 
 Additional signs of component scaffolding rather than integrated interaction:
 
-- The composer renders its stored text or placeholder in ordinary divs, not an editable input implementation: [crates/hex-desktop/src/ui/composer.rs:120](file:///Users/anv./Development/Harness/crates/hex-desktop/src/ui/composer.rs#L120).
-- Copy, Regenerate, and Branch have pointer cursors and hover styles but no action handlers: [crates/hex-desktop/src/ui/message.rs:155](file:///Users/anv./Development/Harness/crates/hex-desktop/src/ui/message.rs#L155).
-- New-chat/session-selection helpers change local shell state rather than establishing or loading a backend conversation: [shell.rs:172](file:///Users/anv./Development/Harness/crates/hex-desktop/src/ui/shell.rs#L172).
-- Shortcut bindings are constructed, but their initializer is not called from startup: [crates/hex-desktop/src/shortcuts.rs:109](file:///Users/anv./Development/Harness/crates/hex-desktop/src/shortcuts.rs#L109).
-- Tests directly call shell methods and inject events, bypassing the missing user-input/backend path: [shell.rs:321](file:///Users/anv./Development/Harness/crates/hex-desktop/src/ui/shell.rs#L321).
+- The composer renders its stored text or placeholder in ordinary divs, not an editable input implementation: [App/hex-desktop/src/ui/composer.rs:120](file:///Users/anv./Development/Harness/App/hex-desktop/src/ui/composer.rs#L120).
+- Copy, Regenerate, and Branch have pointer cursors and hover styles but no action handlers: [App/hex-desktop/src/ui/message.rs:155](file:///Users/anv./Development/Harness/App/hex-desktop/src/ui/message.rs#L155).
+- New-chat/session-selection helpers change local shell state rather than establishing or loading a backend conversation: [shell.rs:172](file:///Users/anv./Development/Harness/App/hex-desktop/src/ui/shell.rs#L172).
+- Shortcut bindings are constructed, but their initializer is not called from startup: [App/hex-desktop/src/shortcuts.rs:109](file:///Users/anv./Development/Harness/App/hex-desktop/src/shortcuts.rs#L109).
+- Tests directly call shell methods and inject events, bypassing the missing user-input/backend path: [shell.rs:321](file:///Users/anv./Development/Harness/App/hex-desktop/src/ui/shell.rs#L321).
 
 A source search found no desktop `on_click`, `on_action`, `on_key_down`, `EntityInputHandler`, or `FocusHandle` use. This is a concrete wiring finding; it is not a visual assessment from launching GPUI.
 
@@ -151,9 +151,9 @@ A source search found no desktop `on_click`, `on_action`, `on_key_down`, `Entity
 
 **Priority: Release blocker for the advertised native installation. Evidence: source, parser probe, wheel build.**
 
-The documented `hex desktop` command is not accepted by [src/harness_core/client/cli.py:57](file:///Users/anv./Development/Harness/src/harness_core/client/cli.py#L57). Meanwhile, [README.md:97](file:///Users/anv./Development/Harness/README.md#L97) and [docs/guides/RUNBOOK.md:60](file:///Users/anv./Development/Harness/docs/guides/RUNBOOK.md#L60) advertise native launch paths.
+The documented `hex desktop` command is not accepted by [hex_cli/cli.py:57](file:///Users/anv./Development/Harness/hex_cli/cli.py#L57). Meanwhile, [README.md:97](file:///Users/anv./Development/Harness/README.md#L97) and [docs/guides/RUNBOOK.md:60](file:///Users/anv./Development/Harness/docs/guides/RUNBOOK.md#L60) advertise native launch paths.
 
-The POSIX installer installs Python and links Python entry points, but does not install or build the Rust clients: [install.sh:112](file:///Users/anv./Development/Harness/install.sh#L112). The TUI launcher searches checkout build directories, PATH, and a user binary directory; otherwise it tries a source-tree Cargo build: [src/harness_core/client/tui_launcher.py:13](file:///Users/anv./Development/Harness/src/harness_core/client/tui_launcher.py#L13).
+The POSIX installer installs Python and links Python entry points, but does not install or build the Rust clients: [install.sh:112](file:///Users/anv./Development/Harness/install.sh#L112). The TUI launcher searches checkout build directories, PATH, and a user binary directory; otherwise it tries a source-tree Cargo build: [hex_cli/tui_launcher.py:13](file:///Users/anv./Development/Harness/hex_cli/tui_launcher.py#L13).
 
 That fallback assumes an environment resembling a development checkout. It is not a reliable distribution strategy for someone who installed a wheel and runs HEX from an unrelated project.
 
@@ -187,7 +187,7 @@ There is a separate static Windows concern: the documented remote-script invocat
 | End of stream | `session/update`, `updateType=stream_end`, `status=Ready` | Looks for update type `done` or status `complete`. |
 | Final prompt result | JSON-RPC response with task result | Awaits the response but discards it rather than converting it into completion state. |
 
-Sources: [acp.py:265](file:///Users/anv./Development/Harness/src/harness_core/client/acp.py#L265), [crates/hex-desktop/src/acp_bridge.rs:247](file:///Users/anv./Development/Harness/crates/hex-desktop/src/acp_bridge.rs#L247), and [acp_bridge.rs:342](file:///Users/anv./Development/Harness/crates/hex-desktop/src/acp_bridge.rs#L342).
+Sources: [acp.py:265](file:///Users/anv./Development/Harness/hex_cli/acp.py#L265), [App/hex-desktop/src/acp_bridge.rs:247](file:///Users/anv./Development/Harness/App/hex-desktop/src/acp_bridge.rs#L247), and [acp_bridge.rs:342](file:///Users/anv./Development/Harness/App/hex-desktop/src/acp_bridge.rs#L342).
 
 Wiring the existing desktop bridge into startup would therefore not, by itself, finish the product. Tool cards and terminal status still need a shared protocol contract. Independently written mock-server tests can pass while each side speaks a different protocol.
 
@@ -201,9 +201,9 @@ Wiring the existing desktop bridge into startup would therefore not, by itself, 
 
 At the ACP boundary:
 
-- Sessions are held in an in-memory dictionary, and load only finds a session in that process: [acp.py:31](file:///Users/anv./Development/Harness/src/harness_core/client/acp.py#L31), [acp.py:202](file:///Users/anv./Development/Harness/src/harness_core/client/acp.py#L202).
-- History is appended after a turn, but the next task request contains the current prompt and `surface=acp`, not prior dialogue or a conversation identifier: [acp.py:215](file:///Users/anv./Development/Harness/src/harness_core/client/acp.py#L215), [acp.py:356](file:///Users/anv./Development/Harness/src/harness_core/client/acp.py#L356).
-- Cancellation sets a flag, while the stdio request loop executes requests synchronously. A cancel request cannot be read while task execution occupies that loop: [acp.py:391](file:///Users/anv./Development/Harness/src/harness_core/client/acp.py#L391), [acp.py:656](file:///Users/anv./Development/Harness/src/harness_core/client/acp.py#L656).
+- Sessions are held in an in-memory dictionary, and load only finds a session in that process: [acp.py:31](file:///Users/anv./Development/Harness/hex_cli/acp.py#L31), [acp.py:202](file:///Users/anv./Development/Harness/hex_cli/acp.py#L202).
+- History is appended after a turn, but the next task request contains the current prompt and `surface=acp`, not prior dialogue or a conversation identifier: [acp.py:215](file:///Users/anv./Development/Harness/hex_cli/acp.py#L215), [acp.py:356](file:///Users/anv./Development/Harness/hex_cli/acp.py#L356).
+- Cancellation sets a flag, while the stdio request loop executes requests synchronously. A cancel request cannot be read while task execution occupies that loop: [acp.py:391](file:///Users/anv./Development/Harness/hex_cli/acp.py#L391), [acp.py:656](file:///Users/anv./Development/Harness/hex_cli/acp.py#L656).
 
 The native TUI adds its own inconsistencies:
 
@@ -225,7 +225,7 @@ These findings do not erase HEX's task ledger or memory system. They show that t
 
 The legacy Python console contains real implementations for several capabilities that are unavailable or simulated in ACP. Native TUI discovery is separately hardcoded in [crates/hex-tui/src/app.rs:163](file:///Users/anv./Development/Harness/crates/hex-tui/src/app.rs#L163). The README presents a broadly unified slash-command experience without adequately distinguishing those surfaces.
 
-Startup also changes the onboarding path. The CLI launches the native TUI and returns before the later Python missing-credentials and workspace-selection flow: [cli.py:774](file:///Users/anv./Development/Harness/src/harness_core/client/cli.py#L774). Tests using `HEX_TESTING` bypass that default native route: [cli.py:765](file:///Users/anv./Development/Harness/src/harness_core/client/cli.py#L765).
+Startup also changes the onboarding path. The CLI launches the native TUI and returns before the later Python missing-credentials and workspace-selection flow: [cli.py:774](file:///Users/anv./Development/Harness/hex_cli/cli.py#L774). Tests using `HEX_TESTING` bypass that default native route: [cli.py:765](file:///Users/anv./Development/Harness/hex_cli/cli.py#L765).
 
 **User impact:** A command can work in one mode, be unknown in another, and claim success without doing work in a third. Testing one surface does not establish the behavior of `hex` as launched by a new user.
 
@@ -275,13 +275,13 @@ The TUI's headless `--check` renders synthetic frames: [main.rs:99](file:///User
 
 **Priority: Medium-high. Evidence: source and parser probe.**
 
-[src/harness_core/config_loader.py:31](file:///Users/anv./Development/Harness/src/harness_core/config_loader.py#L31) optionally imports PyYAML. If unavailable, [config_loader.py:65](file:///Users/anv./Development/Harness/src/harness_core/config_loader.py#L65) falls back to a small indentation parser. PyYAML is not declared in the package dependencies.
+[harness_core/config_loader.py:31](file:///Users/anv./Development/Harness/harness_core/config_loader.py#L31) optionally imports PyYAML. If unavailable, [config_loader.py:65](file:///Users/anv./Development/Harness/harness_core/config_loader.py#L65) falls back to a small indentation parser. PyYAML is not declared in the package dependencies.
 
 The fallback was active in the audit environment. It parsed YAML values `false`, `3`, and `[file, terminal]` as strings rather than a boolean, number, and list. Parsing errors can also be reduced to an empty configuration.
 
 This establishes inconsistent types and hidden configuration failure; it does not establish a particular downstream security bypass.
 
-Onboarding also has direct configuration write paths: [onboard.py:180](file:///Users/anv./Development/Harness/src/harness_core/client/onboard.py#L180) and [onboard.py:1270](file:///Users/anv./Development/Harness/src/harness_core/client/onboard.py#L1270).
+Onboarding also has direct configuration write paths: [onboard.py:180](file:///Users/anv./Development/Harness/hex_cli/onboard.py#L180) and [onboard.py:1270](file:///Users/anv./Development/Harness/hex_cli/onboard.py#L1270).
 
 **Hermes reference:** Its shared writer distinguishes patching from replacement, refuses to overwrite after failed reads, checks unintended omitted settings, and preserves user-authored configuration structure: [benchmarks/hermes-agent/hermes_cli/config.py:1798](file:///Users/anv./Development/Harness/benchmarks/hermes-agent/hermes_cli/config.py#L1798). Static guards enforce the read/write ownership boundary.
 
@@ -295,7 +295,7 @@ Onboarding also has direct configuration write paths: [onboard.py:180](file:///U
 
 HEX does have onboarding and a first-task verification flow. The problem is its claim boundary.
 
-[onboard.py:211](file:///Users/anv./Development/Harness/src/harness_core/client/onboard.py#L211) creates workspace directories and a marker, probes installed tools, writes diagnostic/CAS artifacts, and records a ledger task. Those are useful checks. But it then writes “ALL SUBSYSTEMS OPERATIONAL (PASS),” transitions the task directly through success, and prints that CoW isolation passed without actually proving an isolated model-driven edit/test/patch journey: [onboard.py:258](file:///Users/anv./Development/Harness/src/harness_core/client/onboard.py#L258), [onboard.py:294](file:///Users/anv./Development/Harness/src/harness_core/client/onboard.py#L294), [onboard.py:338](file:///Users/anv./Development/Harness/src/harness_core/client/onboard.py#L338).
+[onboard.py:211](file:///Users/anv./Development/Harness/hex_cli/onboard.py#L211) creates workspace directories and a marker, probes installed tools, writes diagnostic/CAS artifacts, and records a ledger task. Those are useful checks. But it then writes “ALL SUBSYSTEMS OPERATIONAL (PASS),” transitions the task directly through success, and prints that CoW isolation passed without actually proving an isolated model-driven edit/test/patch journey: [onboard.py:258](file:///Users/anv./Development/Harness/hex_cli/onboard.py#L258), [onboard.py:294](file:///Users/anv./Development/Harness/hex_cli/onboard.py#L294), [onboard.py:338](file:///Users/anv./Development/Harness/hex_cli/onboard.py#L338).
 
 **Recommendation:** Call this a diagnostic smoke test and report exactly what passed, failed, or was not exercised. Offer a separate, explicit provider and workspace-verification task when configured. Never manufacture a successful task record as evidence that the task execution path works.
 
@@ -315,8 +315,8 @@ The documentation asserts a finished product more strongly than the inspected im
 
 - The README advertises a finished native desktop, memory/FPS numbers, and a hardcoded passing-test badge: [README.md:15](file:///Users/anv./Development/Harness/README.md#L15), [README.md:132](file:///Users/anv./Development/Harness/README.md#L132).
 - [docs/research/COMPARISON.md:34](file:///Users/anv./Development/Harness/docs/research/COMPARISON.md#L34) claims “100% feature parity.” Its claim that Hermes has only linear history conflicts with Hermes's registered rewind, branch, and rollback commands: [commands.py:83](file:///Users/anv./Development/Harness/benchmarks/hermes-agent/hermes_cli/commands.py#L83).
-- A `target_fps = 120` configuration default is not an FPS measurement; the window options do not consume that setting: [crates/hex-desktop/src/window.rs:26](file:///Users/anv./Development/Harness/crates/hex-desktop/src/window.rs#L26), [window.rs:75](file:///Users/anv./Development/Harness/crates/hex-desktop/src/window.rs#L75).
-- Package metadata says `0.22.0`, while the imported runtime version and ACP identity say `0.20.1`: [pyproject.toml:7](file:///Users/anv./Development/Harness/pyproject.toml#L7), [src/harness_core/__init__.py:8](file:///Users/anv./Development/Harness/src/harness_core/__init__.py#L8), [acp.py:143](file:///Users/anv./Development/Harness/src/harness_core/client/acp.py#L143).
+- A `target_fps = 120` configuration default is not an FPS measurement; the window options do not consume that setting: [App/hex-desktop/src/window.rs:26](file:///Users/anv./Development/Harness/App/hex-desktop/src/window.rs#L26), [window.rs:75](file:///Users/anv./Development/Harness/App/hex-desktop/src/window.rs#L75).
+- Package metadata says `0.22.0`, while the imported runtime version and ACP identity say `0.20.1`: [pyproject.toml:7](file:///Users/anv./Development/Harness/pyproject.toml#L7), [harness_core/__init__.py:8](file:///Users/anv./Development/Harness/harness_core/__init__.py#L8), [acp.py:143](file:///Users/anv./Development/Harness/hex_cli/acp.py#L143).
 - Contributor examples use the old `harness_core.cli` module location: [docs/development/CONTRIBUTING.md:31](file:///Users/anv./Development/Harness/docs/development/CONTRIBUTING.md#L31).
 - The README links a root license file that is absent, despite the package declaring Apache-2.0.
 
@@ -330,7 +330,7 @@ Independent component versions can be legitimate. Conflicting user-facing produc
 
 **Priority: Medium, after functional affordances. Evidence: design/source comparison; not a screenshot audit.**
 
-HEX's desktop borrows Hermes naming, dark-zinc styling, and familiar panels. That does not reproduce Hermes's interaction design. Even the assistant model label defaults to a hardcoded model name: [message.rs:122](file:///Users/anv./Development/Harness/crates/hex-desktop/src/ui/message.rs#L122).
+HEX's desktop borrows Hermes naming, dark-zinc styling, and familiar panels. That does not reproduce Hermes's interaction design. Even the assistant model label defaults to a hardcoded model name: [message.rs:122](file:///Users/anv./Development/Harness/App/hex-desktop/src/ui/message.rs#L122).
 
 Hermes's [apps/desktop/DESIGN.md:25](file:///Users/anv./Development/Harness/benchmarks/hermes-agent/apps/desktop/DESIGN.md#L25) describes behavioral principles as well as tokens: one home per action, visible feedback, no focus theft from background activity, consistent primitives, approval lifecycle, and accessibility expectations.
 
@@ -395,7 +395,7 @@ Measured sizes include comments and tests where present:
 | Gateway | 2,436 | Tool registration and invocation are concentrated here. |
 | CLI | 2,251 | `_main_impl` spans about 1,739 lines; parser construction another 450. |
 
-Representative anchors: [cli.py:509](file:///Users/anv./Development/Harness/src/harness_core/client/cli.py#L509), [src/harness_core/core/orchestrator.py:1818](file:///Users/anv./Development/Harness/src/harness_core/core/orchestrator.py#L1818), [src/harness_core/cognition/memory.py:694](file:///Users/anv./Development/Harness/src/harness_core/cognition/memory.py#L694), [src/harness_core/gateway.py:709](file:///Users/anv./Development/Harness/src/harness_core/gateway.py#L709).
+Representative anchors: [cli.py:509](file:///Users/anv./Development/Harness/hex_cli/cli.py#L509), [agent/orchestrator.py:1818](file:///Users/anv./Development/Harness/agent/orchestrator.py#L1818), [cognition/memory.py:694](file:///Users/anv./Development/Harness/cognition/memory.py#L694), [harness_core/gateway.py:709](file:///Users/anv./Development/Harness/harness_core/gateway.py#L709).
 
 Hermes also has multi-thousand-line modules. The lesson is to prevent further growth and extract along tested responsibilities—not claim that Hermes has solved monoliths or impose arbitrary mass splitting.
 

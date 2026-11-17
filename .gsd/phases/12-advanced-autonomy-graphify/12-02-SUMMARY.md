@@ -9,7 +9,7 @@
 
 ## 1. Accomplishments
 
-### A. SQLite FTS5 Full-Text Search Engine (`src/harness_core/search.py`)
+### A. SQLite FTS5 Full-Text Search Engine (`harness_core/search.py`)
 - Created `TaskSearchIndex` managing a dedicated SQLite FTS5 virtual table (`task_search_fts`) with unicode61 tokenizer diacritic removal.
 - Implemented `sanitize_fts5_query`:
   - Cleans input queries against FTS5 special operators and syntax (`+{}():^@/#&|~[]<>,;!?$=\'`).
@@ -19,14 +19,14 @@
 - Implemented `TaskSearchResult` with BM25 relevance scoring, column-specific match classification (`goal`, `tool_calls`, `execution_logs`), and snippet generation with `<b>...</b>` highlight tags.
 - Built `reindex_all(ledger)` to rebuild the virtual table from historical task, tool call, and event log records.
 
-### B. LedgerStore Synchronization & CLI Search (`src/harness_core/db.py`, `src/harness_core/cli.py`)
+### B. LedgerStore Synchronization & CLI Search (`harness_core/db.py`, `harness_core/cli.py`)
 - Integrated `search_index` property into `LedgerStore` with lazy initialization and attachment to the SQLite WAL database.
 - Added automatic FTS5 index updates on `submit_task` (and `submit_task_async`), `transition_task` (status updates), and `seal_tool_call` (tool invocation transcripts).
 - Added `search_tasks(query, project_id, limit)` method on `LedgerStore`.
 - Added `record_tool_call` convenience helper to `LedgerStore`.
-- Wired `hex search <query>` subcommand in `src/harness_core/cli.py` supporting `--project`, `--limit`, `--reindex`, and `--json` output formats.
+- Wired `hex search <query>` subcommand in `harness_core/cli.py` supporting `--project`, `--limit`, `--reindex`, and `--json` output formats.
 
-### C. State Backup, Safe Restore with Zip-Slip Defense & Support Dump (`src/harness_core/backup.py`)
+### C. State Backup, Safe Restore with Zip-Slip Defense & Support Dump (`harness_core/backup.py`)
 - Implemented `create_backup`:
   - Creates timestamped `hex-backup-<YYYYMMDD-HHMMSS>.zip` archives.
   - Automatically executes `PRAGMA wal_checkpoint(TRUNCATE)` on active SQLite databases.
@@ -47,7 +47,7 @@
     5. ACTIVE INTEGRATIONS & RECEPTORS (model credentials scrubbed to `[CONFIGURED - REDACTED]`)
     6. SCHEDULES & CUSTOM SKILLS (cron expressions, skill bundles)
     7. RECENT ERRORS (terminal reasons and failed task diagnostics)
-- Wired `hex backup`, `hex restore <archive>`, and `hex dump` subcommands into `src/harness_core/cli.py`.
+- Wired `hex backup`, `hex restore <archive>`, and `hex dump` subcommands into `harness_core/cli.py`.
 
 ### D. Verification & Test Suite (`tests/storage/test_search_and_backup.py`)
 - Authored 16 comprehensive unit and integration tests covering:

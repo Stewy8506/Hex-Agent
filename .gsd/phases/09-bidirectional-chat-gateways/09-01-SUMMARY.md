@@ -14,7 +14,7 @@
 ## 1. Accomplishments
 
 1. **Gateways Package & Telegram Transport Architecture:**
-   - Authored `src/harness_core/gateways/__init__.py` establishing the new gateways subsystem.
+   - Authored `gateways/__init__.py` establishing the new gateways subsystem.
    - Built `TelegramConfig` with complete environment variable parsing (`HEX_TELEGRAM_BOT_TOKEN`, `HEX_TELEGRAM_ALLOWED_USERS`, `HEX_TELEGRAM_ALLOWED_CHATS`, `HEX_TELEGRAM_POLL_INTERVAL`, `HEX_TELEGRAM_POLL_TIMEOUT`, `HEX_TELEGRAM_BASE_API_URL`, `HEX_TELEGRAM_DRY_RUN`).
    - Implemented `TelegramTransport` protocol and `HttpTelegramTransport` wrapping standard library `urllib.request` with timeout enforcement, JSON payload serialization, and resilient error recovery.
    - Built `MockTelegramTransport` enabling hermetic in-memory unit testing without network dependencies or external Telegram credentials.
@@ -98,4 +98,4 @@ OK (0 failures, 0 errors, 242/242 passing)
 
 ## 4. Next Steps
 
-- Proceed to Plan 09-02: Discord Bidirectional Bot Gateway (`src/harness_core/gateways/discord_bot.py`), Discord slash commands, interactive button components, and cross-platform verification.
+- Proceed to Plan 09-02: Discord Bidirectional Bot Gateway (`gateways/discord_bot.py`), Discord slash commands, interactive button components, and cross-platform verification.

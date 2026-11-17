@@ -23,7 +23,7 @@ duration_minutes: 8
 - [Rule 1 - Consistency] Updated test assertions in `tests/storage/test_db_dual_driver.py` to adhere strictly to the PRD Section 9 state machine contract (`SUBMITTED -> VALIDATING -> RUNNING -> VERIFYING -> SUCCEEDED`), and created valid attempts for checkpoint/tool call foreign key integrity.
 
 ## Files Changed
-- `src/harness_core/db.py`:
+- `harness_core/db.py`:
   - Implemented dual-driver URL inspection (`postgresql://`, `postgres://`, `postgresql+asyncpg://` -> `backend_type = 'postgres'`; otherwise `'sqlite'`).
   - Maintained zero-dependency SQLite local execution with `sqlite3.connect`, WAL journal mode, and `threading.RLock()`.
   - Added lazy `asyncpg` connection pool creation with configurable parameters (`min_size=2`, `max_size=20`, `command_timeout=30.0`).

@@ -5,7 +5,7 @@ Exposed the PTY Process Supervisor to autonomous agents and developers by regist
 
 ## 2. Key Changes & Deliverables
 
-### A. ToolGateway Process Management Tools (`src/harness_core/gateway.py`)
+### A. ToolGateway Process Management Tools (`harness_core/gateway.py`)
 - Registered 4 dedicated process supervisor tools in `TOOL_DEFINITIONS`:
   - `start_process`: Spawns a background command in an asynchronous pseudo-terminal (PTY) or pipe (`RiskClass.R2`). Confines `cwd` within workspace boundary via `_resolve_confined_path`. Scrubs secrets from commands and initial output slice using `redact_secrets`.
   - `read_terminal`: Reads incremental output slices (`offset`, `limit`) from ring buffer (`RiskClass.R0`). Scrubs secrets from returned stream text.
@@ -14,11 +14,11 @@ Exposed the PTY Process Supervisor to autonomous agents and developers by regist
 - Initialized `self.process_registry` in `ToolGateway.__init__` with fallback to `get_process_registry()`.
 - Updated legacy `_tool_process` to delegate to `self.process_registry` for backward compatibility while preserving protected PID checks.
 
-### B. Continuous Multi-Turn ReAct Loop Engine (`src/harness_core/react_loop.py`)
+### B. Continuous Multi-Turn ReAct Loop Engine (`harness_core/react_loop.py`)
 - Updated error classification in `ReActLoop._execute_tool_call` so that completed or failed background process states (where `ok=True`) are not falsely flagged as tool invocation errors.
 - Verified observation payload generation and message history append for process management tools without truncation errors.
 
-### C. HexConsole TUI Integration (`src/harness_core/tui.py`)
+### C. HexConsole TUI Integration (`harness_core/tui.py`)
 - Added `/ps` and `/processes` to `HexConsole.handle_slash_command` and `SLASH_COMMANDS` autocompletion list.
 - Implemented `_cmd_ps(arg: str = "")`:
   - `kill <proc_id>`: Terminates the target process and prints status confirmation.
@@ -26,7 +26,7 @@ Exposed the PTY Process Supervisor to autonomous agents and developers by regist
   - Empty argument: Renders formatted table of all supervised processes with colorized status badges (`RUNNING` green, `COMPLETED` blue, `FAILED` red, `KILLED` yellow), utilizing Rich `Table` if `HAS_RICH` is present, or formatted ANSI text fallback.
 - Added `/ps` entry to `_cmd_help()`.
 
-### D. HEX CLI Subcommand (`src/harness_core/cli.py`)
+### D. HEX CLI Subcommand (`harness_core/cli.py`)
 - Added `ps` subcommand to `build_parser()` with flags:
   - `--json`: Output raw JSON list or kill status.
   - `--kill <proc_id>`: Terminate process by ID.

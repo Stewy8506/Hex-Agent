@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Plan 03-01 establishes zero-dependency Model Context Protocol (MCP) JSON-RPC 2.0 client connectivity in `src/harness_core/mcp_client.py`. It implements `MCPClientAdapter`, `StdioMCPTransport`, `HttpSSEMCPTransport`, and dynamic `R0–R4` risk mapping with heuristic rules and per-server overrides. The client manages protocol handshake negotiation (`initialize` and `notifications/initialized`), dynamic tool listing (`tools/list`), input schema extraction, and tool invocation (`tools/call`) with execution timeouts and structured error handling. A mock MCP server and unit test suite were authored in `tests/tools/test_mcp_client.py`, raising the total repository test suite to 82 tests, all passing with zero regressions.
+Plan 03-01 establishes zero-dependency Model Context Protocol (MCP) JSON-RPC 2.0 client connectivity in `harness_core/mcp_client.py`. It implements `MCPClientAdapter`, `StdioMCPTransport`, `HttpSSEMCPTransport`, and dynamic `R0–R4` risk mapping with heuristic rules and per-server overrides. The client manages protocol handshake negotiation (`initialize` and `notifications/initialized`), dynamic tool listing (`tools/list`), input schema extraction, and tool invocation (`tools/call`) with execution timeouts and structured error handling. A mock MCP server and unit test suite were authored in `tests/tools/test_mcp_client.py`, raising the total repository test suite to 82 tests, all passing with zero regressions.
 
 ---
 
@@ -117,7 +117,7 @@ OK
 
 | File | Change | Description |
 |------|--------|-------------|
-| `src/harness_core/mcp_client.py` | Created | `MCPClientAdapter`, `StdioMCPTransport`, `HttpSSEMCPTransport`, `classify_mcp_tool_risk` |
+| `harness_core/mcp_client.py` | Created | `MCPClientAdapter`, `StdioMCPTransport`, `HttpSSEMCPTransport`, `classify_mcp_tool_risk` |
 | `tests/tools/test_mcp_client.py` | Created | Mock MCP server and unit test suite verifying handshake, discovery, invocation, timeouts, and teardown |
 
 ---

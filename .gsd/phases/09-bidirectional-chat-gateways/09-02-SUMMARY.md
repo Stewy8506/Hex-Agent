@@ -12,7 +12,7 @@
 
 ## 1. Accomplishments
 
-1. **Discord Interaction Bot Gateway (`src/harness_core/gateways/discord_bot.py`):**
+1. **Discord Interaction Bot Gateway (`gateways/discord_bot.py`):**
    - Implemented `DiscordConfig` dataclass with environment variable parsing (`HEX_DISCORD_BOT_TOKEN`, `HEX_DISCORD_APPLICATION_ID`, `HEX_DISCORD_PUBLIC_KEY`, `HEX_DISCORD_WEBHOOK_URL`, `HEX_DISCORD_ALLOWED_USERS`, `HEX_DISCORD_ALLOWED_GUILDS`, `HEX_DISCORD_ALLOWED_CHANNELS`, `HEX_DISCORD_DRY_RUN`).
    - Implemented `DiscordTransport` protocol, production `HttpDiscordTransport` (via standard library `urllib.request` communicating with `discord.com/api/v10`), and in-memory `MockDiscordTransport` for hermetic testing.
    - Enforced strict operator access control (`is_user_authorized`, `is_guild_authorized`, `is_channel_authorized`, and `check_access`) with explicit security audit logging (`SECURITY_AUDIT: Dropped unauthorized Discord interaction`).
@@ -28,11 +28,11 @@
    - Button callback `hex:diff:<id>` computes unified diff against base checkpoint and returns ephemeral response (Type 4, flags: 64).
    - Button callback `hex:cancel:<id>` cancels task and rolls back CoW workspace layer cleanly.
 
-3. **Multi-Gateway Supervisor (`GatewayManager` in `src/harness_core/gateways/manager.py`):**
+3. **Multi-Gateway Supervisor (`GatewayManager` in `gateways/manager.py`):**
    - Coordinates concurrent lifecycles, health reporting, polling loops, and graceful shutdown (`SIGINT`/`SIGTERM`) of both Telegram and Discord gateways.
    - Provides `start(daemon=...)`, `stop(timeout=...)`, `poll_once()`, and `get_status()` returning structured uptime, active gateway configs, task counts, and processed updates.
 
-4. **CLI Integration (`hex gateway` in `src/harness_core/cli.py`):**
+4. **CLI Integration (`hex gateway` in `harness_core/cli.py`):**
    - Wired `hex gateway start` and `hex gateway status` subcommands with options for `--telegram`, `--discord`, `--poll-interval`, `--project`, `--workspace`, `--once`, and `--data-dir`.
    - Verified formatted JSON status reporting and single-cycle polling mode.
 

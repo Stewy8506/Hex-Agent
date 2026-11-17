@@ -1,7 +1,7 @@
 # FIT & FINISH AUDIT REPORT: DOMAIN 3
 # Runtime Environments, PTY Background Process Supervisor & Tool Suite
 
-**Target Codebase:** HEX (`src/harness_core/process_registry.py`, `src/harness_core/code_kernel.py`, `src/harness_core/gateway.py`, `src/harness_core/cow.py`, `src/harness_core/sandbox.py`, `src/harness_core/web_search.py`, `src/harness_core/browser.py`)  
+**Target Codebase:** HEX (`harness_core/process_registry.py`, `harness_core/code_kernel.py`, `harness_core/gateway.py`, `harness_core/cow.py`, `harness_core/sandbox.py`, `harness_core/web_search.py`, `harness_core/browser.py`)\
 **Reference Benchmark:** Hermes Agent (`benchmarks/hermes-agent/tools/`)  
 **Audit Date:** 2026-11-14  
 **Audit Scope:** PTY Background Process Supervisor, Persistent REPL Code Kernel, Tool Gateway & Sandboxing (R0–R4, CoW isolation, secret redaction, path confinement), Tool Suite Depth & Execution Quality.
@@ -38,13 +38,13 @@ However, significant operational gaps exist when benchmarked against Hermes Agen
   - Uses `ptyprocess` on POSIX and `pywinpty` on Windows.
   - Maintains dual-layer output storage: an in-memory tail buffer (`_output_tail`) and an on-disk append-only log file (`ProcessOutputLogMixin`). This guarantees that even if a long-running process produces gigabytes of build logs, the agent can page through historical output via `read_terminal(offset=..., limit=...)` without unbounded memory consumption.
   - Features real-time regex pattern watching (`_check_watch_patterns`, lines 805–878) that triggers async notifications when specific patterns appear (e.g. server listening ports, compilation errors, interactive prompts).
-- **HEX Implementation (`src/harness_core/process_registry.py:47-121`):**
+- **HEX Implementation (`harness_core/process_registry.py:47-121`):**
   - Implements `CircularOutputBuffer` with a default cap of 200,000 characters (~200 KB).
   - Thread-safe synchronization via `threading.Lock`.
   - Cumulative character accounting (`_total_chars` tracks total volume emitted across process lifetime).
   - Slice calculation:
     ```python
-    # src/harness_core/process_registry.py:84-100
+    # harness_core/process_registry.py:84-100
     with self._lock:
         buf_len = len(self._buffer)
         total = self._total_chars
@@ -78,18 +78,18 @@ However, significant operational gaps exist when benchmarked against Hermes Agen
         pty.write(replies)
     ```
     Without this, curses programs block indefinitely waiting for standard input responses.
-- **HEX Implementation (`src/harness_core/process_registry.py:219-268`, `314-385`):**
+- **HEX Implementation (`harness_core/process_registry.py:219-268`, `314-385`):**
   - Allocates pseudo-terminal via standard library `pty.openpty()` on POSIX, with automatic fallback to standard pipes (`use_pty=False`) on Windows or headless environments without `/dev/ptmx`.
   - **Parent FD Cleanup Invariant:** HEX strictly prevents file descriptor leakage. In `spawn`:
     ```python
-    # src/harness_core/process_registry.py:250-252
+    # harness_core/process_registry.py:250-252
     # Parent must close the slave file descriptor immediately
     os.close(slave_fd)
     slave_fd = None
     ```
     And in `_reader_loop`'s `finally` block:
     ```python
-    # src/harness_core/process_registry.py:378-384
+    # harness_core/process_registry.py:378-384
     if session.pty_master_fd is not None:
         try:
             os.close(session.pty_master_fd)
@@ -107,11 +107,11 @@ However, significant operational gaps exist when benchmarked against Hermes Agen
   - **Anti-Orphan Descendant Snapshotting:** Before sending any signal, Hermes snapshots all recursive child processes via `psutil.Process(pid).children(recursive=True)` (lines 74–78). Once the parent terminates, children are reparented to `init`/PID 1 and cannot be discovered via PPID.
   - **PID Recycling Protection:** Re-validates the process creation timestamp against kernel boot time (`_host_pid_is_ours`, lines 45–50). If the OS recycled the PID onto an unrelated process, Hermes aborts termination rather than killing stranger processes.
   - **Two-Phase Graceful Shutdown:** Sends SIGTERM to parent first (giving Chromium/Electron time to save state), waits `_daemon_term_grace_seconds`, then terminates snapshot descendants, and finally escalates to SIGKILL. On Windows, executes `taskkill /PID <pid> /T /F`.
-- **HEX Implementation (`src/harness_core/process_registry.py:235-239`, `469-529`):**
+- **HEX Implementation (`harness_core/process_registry.py:235-239`, `469-529`):**
   - Enforces process group isolation at spawn using `preexec_fn=os.setsid` (or `start_new_session=True` on non-POSIX).
   - Termination handles entire process group:
     ```python
-    # src/harness_core/process_registry.py:479-509
+    # harness_core/process_registry.py:479-509
     if hasattr(os, "killpg") and hasattr(os, "getpgid"):
         try:
             pgid = os.getpgid(pid)
@@ -138,10 +138,10 @@ However, significant operational gaps exist when benchmarked against Hermes Agen
   - Spawns a long-running Python subprocess executing an embedded runner loop.
   - Communication protocol: JSON requests written to worker `sys.stdin`. Worker writes response header `\n{SENTINEL} {byte_length}\n` followed by UTF-8 encoded JSON payload to `sys.stdout`.
   - Preserves global variable bindings across turns in a persistent `GLOBALS` dictionary.
-- **HEX Implementation (`src/harness_core/code_kernel.py:42-180`):**
+- **HEX Implementation (`harness_core/code_kernel.py:42-180`):**
   - HEX achieves 100% wire-protocol parity with Hermes:
     ```python
-    # src/harness_core/code_kernel.py:150-155
+    # harness_core/code_kernel.py:150-155
     def _reply(payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         _real_stdout.buffer.write(("\n" + _SENTINEL + " " + str(len(body)) + "\n").encode("utf-8"))
@@ -150,7 +150,7 @@ However, significant operational gaps exist when benchmarked against Hermes Agen
     ```
   - Persistent namespace:
     ```python
-    # src/harness_core/code_kernel.py:44-45
+    # harness_core/code_kernel.py:44-45
     GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
     GLOBALS["GLOBALS"] = GLOBALS
     ```
@@ -171,11 +171,11 @@ However, significant operational gaps exist when benchmarked against Hermes Agen
        ```
 
 #### 2.3 Stale Module Detection via Disk Mtime
-- **Mechanism (`src/harness_core/code_kernel.py:57-86`):**
+- **Mechanism (`harness_core/code_kernel.py:57-86`):**
   - Autonomous agents frequently edit source code on disk using `write_file` or `patch`, and then immediately execute Python cells testing those changes. Because Python's `import` caches modules in `sys.modules`, subsequent `import foo` statements are no-ops and test stale bytecode.
   - HEX implements disk mtime tracking:
     ```python
-    # src/harness_core/code_kernel.py:57-77
+    # harness_core/code_kernel.py:57-77
     def _edited_modules(report):
         edited = []
         for name, module in list(sys.modules.items()):
@@ -198,7 +198,7 @@ However, significant operational gaps exist when benchmarked against Hermes Agen
   - If a file was modified on disk while imported, HEX flags `stale_modules` and injects an explicit warning advising the agent to `importlib.reload(module)` or call `code_kernel(reset=True)`.
 
 #### 2.4 Wedged Kernel Termination & Multi-Kernel Registry
-- **Timeout & Teardown (`src/harness_core/code_kernel.py:465-515`):**
+- **Timeout & Teardown (`harness_core/code_kernel.py:465-515`):**
   - Default execution timeout: 30 seconds.
   - When a cell times out (e.g., infinite loop, deadlocked thread, blocking C extension):
     1. Invokes `_kill_process_tree(self.proc, force=True)`, which kills the process group with SIGKILL.
@@ -206,7 +206,7 @@ However, significant operational gaps exist when benchmarked against Hermes Agen
     3. Sets `self.stop_event`.
     4. Discards the kernel from `KernelRegistry`.
     5. Returns a structured `TimeoutError` without crashing the agent or corrupting state.
-- **Kernel Pool Management (`src/harness_core/code_kernel.py:596-736`):**
+- **Kernel Pool Management (`harness_core/code_kernel.py:596-736`):**
   - `KernelRegistry` maintains up to 4 concurrent kernels keyed by `(owner, cwd)`.
   - A background daemon thread sweeps kernels exceeding an idle timeout of 1800 seconds (30 minutes).
   - Registers `atexit` hook `_shutdown_on_exit` ensuring no orphaned Python kernel processes survive gateway shutdown.
@@ -226,7 +226,7 @@ However, significant operational gaps exist when benchmarked against Hermes Agen
 ### 3. Tool Gateway & Sandboxing
 
 #### 3.1 Default-Deny R0–R4 Policy Engine
-HEX implements a rigorous policy engine in `src/harness_core/gateway.py` classifying every tool into discrete risk levels:
+HEX implements a rigorous policy engine in `harness_core/gateway.py` classifying every tool into discrete risk levels:
 
 ```mermaid
 flowchart TD
@@ -244,7 +244,7 @@ flowchart TD
     G2 -- "R0 / R1 / R2 (Normal)" --> AllowNormal["ALLOW: Execute Tool"]
 ```
 
-- **Policy Matrix (`src/harness_core/gateway.py:137-570`, `976-1005`):**
+- **Policy Matrix (`harness_core/gateway.py:137-570`, `976-1005`):**
   - **R0 (Read-Only / Local):** `read_file`, `list_files`, `search_files`, `todo`, `clarify`, `session_search`, `subagent_status`, `read_terminal`, `list_processes`. Fast-Path eligible.
   - **R1 (Read-Only / External & Index):** `web_search`, `web_extract`, `query_graphify`, `memory`, `lsp_*`, `image_inspect`, `subagent_wait`, `code_kernel`. Fast-Path eligible.
   - **R2 (Modifying Workspace / State):** `write_file`, `patch`, `run_tests`, `terminal`, `process`, `start_process`, `kill_process`, `delegate`, `browser`. Prohibited on Fast-Path.
@@ -285,7 +285,7 @@ flowchart TD
 - **Redaction (`gateway.py:59-75`):**
   Recursively sanitizes dictionaries and strings against regexes for API tokens (`sk-...`, `Bearer ...`, `ghp_...`, `AWS_SECRET_ACCESS_KEY`, RSA/SSH private keys), replacing them with `[REDACTED_SECRET]`.
 
-#### 3.5 Copy-on-Write (CoW) Isolation Engine (`src/harness_core/cow.py`)
+#### 3.5 Copy-on-Write (CoW) Isolation Engine (`harness_core/cow.py`)
 HEX implements snapshot and isolation providers exceeding Hermes:
 1. **`OverlayFSSnapshotProvider` (lines 404–681):**
    Linux kernel OverlayFS with isolated `lowerdir`, `upperdir`, `workdir`, and `merged` mount points. Enables instantaneous creation and rollback of workspace changes with zero disk duplication. Includes unmount safety and lazy cleanup (`umount -l`).
@@ -294,7 +294,7 @@ HEX implements snapshot and isolation providers exceeding Hermes:
 3. **`APFSAndPortableCoWProvider` (lines 308–402):**
    macOS APFS clonefile / reflink (`cp -c`) with portable hardlink/copy fallback.
 
-#### 3.6 Sandboxing Engine (`src/harness_core/sandbox.py`)
+#### 3.6 Sandboxing Engine (`harness_core/sandbox.py`)
 - Implements `ExecutionSandbox` protocol supporting:
   - `BubblewrapSandbox`: Unprivileged user namespace isolation on Linux (`bwrap --unshare-all --ro-bind / / --bind <workspace> <workspace> --unshare-net --die-with-parent`).
   - `DockerPodmanSandbox`: Containerized isolation with memory/CPU limits and read-only root filesystems.
@@ -312,13 +312,13 @@ HEX implements snapshot and isolation providers exceeding Hermes:
   - Captures high-resolution visual PNG screenshots (`Page.captureScreenshot`).
   - Handles browser dialogs (`Page.javascriptDialogOpening`), popup windows, and multi-frame contexts.
   - Supports persistent login profiles and secure password vault injection (`browser_vault_tool.py`).
-- **HEX Current Implementation (`src/harness_core/browser.py:118-280`):**
+- **HEX Current Implementation (`harness_core/browser.py:118-280`):**
   - `HeadlessBrowserSession` is an **in-process HTTP text scraper**.
   - Uses `urllib.request.urlopen` to download raw HTML and parses it using `HTMLParser`.
   - Simulates interactive element clicks by inspecting `<a href="...">` tags and issuing another `urllib` GET request.
   - **Screenshot Implementation Failure:**
     ```python
-    # src/harness_core/browser.py:260-279
+    # harness_core/browser.py:260-279
     def screenshot(self, output_path: Path | str | None = None) -> BrowserActionResult:
         """Capture rendered HTML or save DOM snapshot file."""
         ...
@@ -336,7 +336,7 @@ HEX implements snapshot and isolation providers exceeding Hermes:
   - Cannot render any client-side JavaScript, WebSockets, or canvas graphics.
 
 #### 4.2 Web Search & Content Extraction
-- **HEX Implementation (`src/harness_core/web_search.py:21-233`, `gateway.py:1466-1532`):**
+- **HEX Implementation (`harness_core/web_search.py:21-233`, `gateway.py:1466-1532`):**
   - Robust multi-provider search engine with automatic failover:
     1. Primary: Tavily Search API (`_search_tavily`) with markdown-optimized summaries.
     2. Secondary: Brave Search API (`_search_brave`).
@@ -348,7 +348,7 @@ HEX implements snapshot and isolation providers exceeding Hermes:
   - **Parity with Hermes:** 92%. Meets production standards for autonomous research.
 
 #### 4.3 File Operations & Patch Engine
-- **HEX Implementation (`src/harness_core/gateway.py:1206-1290`, `1732-1886`):**
+- **HEX Implementation (`harness_core/gateway.py:1206-1290`, `1732-1886`):**
   - `read_file`: Line-offset and limit paging.
   - `list_files`: Recursive tree traversal with depth control and ignore patterns.
   - `search_files`: Regex and substring search across workspace files.
@@ -363,7 +363,7 @@ HEX implements snapshot and isolation providers exceeding Hermes:
   - **No Post-Edit Syntax Verification:** Hermes runs immediate AST validation (`file_operations_lint.py`) following a patch, providing immediate compiler feedback before the turn ends.
 
 #### 4.4 Bash / Terminal Operations & Security Guards
-- **HEX Implementation (`src/harness_core/gateway.py:1951-2070`):**
+- **HEX Implementation (`harness_core/gateway.py:1951-2070`):**
   - Provides unified `terminal`, `start_process`, `read_terminal`, `kill_process`, `list_processes`, and `process` tools.
   - Exposes foreground and background execution models.
 - **Gaps vs. Hermes (`benchmarks/hermes-agent/tools/terminal_tool_guards.py:28-210`):**
@@ -380,12 +380,12 @@ HEX implements snapshot and isolation providers exceeding Hermes:
 
 | # | Gap / Vulnerability | Affected Components | Severity | Impact |
 |---|---|---|---|---|
-| **G3-01** | **Simulated Browser Cannot Render JS or Capture Images** | `src/harness_core/browser.py:118-280` | **CRITICAL** | Tool claims to take screenshots but writes `.html` text. Cannot interact with modern SPA web applications or verify UI visually. |
-| **G3-02** | **Tool Gateway Bypasses Sandbox Execution** | `src/harness_core/gateway.py:1951-2070`, `sandbox.py` | **HIGH** | `BubblewrapSandbox` and `DockerPodmanSandbox` are implemented but `_tool_terminal` executes directly on host via `ProcessRegistry`. |
-| **G3-03** | **Missing ANSI Query Responder in PTY Supervisor** | `src/harness_core/process_registry.py:314-385` | **MEDIUM** | Curses-based CLI utilities querying terminal size or cursor position deadlock or hang during background execution. |
-| **G3-04** | **Missing Kernel PID Recycling Protection** | `src/harness_core/process_registry.py:469-529` | **MEDIUM** | `kill()` does not verify kernel process start time. Rapidly recycled PIDs risk terminating innocent host processes. |
-| **G3-05** | **No In-Kernel Tool Calling (Code Mode RPC)** | `src/harness_core/code_kernel.py:42-180`, `gateway.py` | **MEDIUM** | Code executed inside Python REPL kernel cannot invoke other agent tools, preventing single-turn script composition. |
-| **G3-06** | **Missing Destructive Command Heuristic Guards** | `src/harness_core/gateway.py:1951-1990` | **MEDIUM** | Dangerous shell commands (`rm -rf /`, raw disk formatting) are not inspected or blocked prior to execution. |
+| **G3-01** | **Simulated Browser Cannot Render JS or Capture Images** | `harness_core/browser.py:118-280` | **CRITICAL** | Tool claims to take screenshots but writes `.html` text. Cannot interact with modern SPA web applications or verify UI visually. |
+| **G3-02** | **Tool Gateway Bypasses Sandbox Execution** | `harness_core/gateway.py:1951-2070`, `sandbox.py` | **HIGH** | `BubblewrapSandbox` and `DockerPodmanSandbox` are implemented but `_tool_terminal` executes directly on host via `ProcessRegistry`. |
+| **G3-03** | **Missing ANSI Query Responder in PTY Supervisor** | `harness_core/process_registry.py:314-385` | **MEDIUM** | Curses-based CLI utilities querying terminal size or cursor position deadlock or hang during background execution. |
+| **G3-04** | **Missing Kernel PID Recycling Protection** | `harness_core/process_registry.py:469-529` | **MEDIUM** | `kill()` does not verify kernel process start time. Rapidly recycled PIDs risk terminating innocent host processes. |
+| **G3-05** | **No In-Kernel Tool Calling (Code Mode RPC)** | `harness_core/code_kernel.py:42-180`, `gateway.py` | **MEDIUM** | Code executed inside Python REPL kernel cannot invoke other agent tools, preventing single-turn script composition. |
+| **G3-06** | **Missing Destructive Command Heuristic Guards** | `harness_core/gateway.py:1951-1990` | **MEDIUM** | Dangerous shell commands (`rm -rf /`, raw disk formatting) are not inspected or blocked prior to execution. |
 
 ---
 
@@ -423,7 +423,7 @@ flowchart TD
    In `process_registry.py::_reader_loop`, intercept ANSI escape sequences for cursor position (`\x1b[6n`) and device attributes (`\x1b[c`), immediately replying with standard dimensions (e.g. 120x30) to prevent curses utility deadlocks.
 
 3. **Replace Simulated Browser with Playwright / Chrome CDP (Priority 1):**
-   Replace `HeadlessBrowserSession` in `src/harness_core/browser.py` with an async Playwright or Chrome DevTools Protocol backend. Ensure `screenshot` emits genuine PNG image bytes that can be fed into `image_inspect` / vision models.
+   Replace `HeadlessBrowserSession` in `harness_core/browser.py` with an async Playwright or Chrome DevTools Protocol backend. Ensure `screenshot` emits genuine PNG image bytes that can be fed into `image_inspect` / vision models.
 
 4. **Add Terminal Command Guards (Priority 2):**
    Port Hermes's `terminal_tool_guards.py` patterns into `gateway.py::_tool_terminal`, blocking catastrophic commands (`rm -rf /`, `mkfs`, raw device manipulation) prior to dispatch.

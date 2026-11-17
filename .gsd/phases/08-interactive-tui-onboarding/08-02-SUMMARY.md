@@ -10,7 +10,7 @@
 
 ## 1. Accomplishments
 
-1. **One-Key Keyboard Approvals & Sandbox Shell (`src/harness_core/tui.py`):**
+1. **One-Key Keyboard Approvals & Sandbox Shell (`harness_core/tui.py`):**
    - Implemented `handle_approval_prompt` in `HexConsole` to intercept `ApprovalRequiredInterrupt` when privileged R3/R4 actions (such as `git_push`, remote command execution, or destructive operations) require operator intervention.
    - Designed a formatted ANSI alert panel presenting Approval ID, Task ID, Step ID, Risk Class badge (`[R0]` through `[R4]`), Blast Radius Summary, and secret-scrubbed action parameters via `redact_secrets`.
    - Built single-key interactive prompt loop supporting:
@@ -22,17 +22,17 @@
    - Handled non-interactive / EOF fallbacks safely by canceling the task without unhandled exceptions.
    - Wrapped prompt execution in `handle_user_prompt` with approval intercept and resumption.
 
-2. **Repository Stack Detection & Project Scaffolding (`src/harness_core/onboard.py`, `src/harness_core/cli.py`):**
-   - Implemented `detect_project_stack` in `src/harness_core/onboard.py` auto-detecting canonical markers for:
+2. **Repository Stack Detection & Project Scaffolding (`harness_core/onboard.py`, `harness_core/cli.py`):**
+   - Implemented `detect_project_stack` in `harness_core/onboard.py` auto-detecting canonical markers for:
      - Python: `pyproject.toml`, `setup.py`, `requirements.txt`, `pytest.ini` (`pytest`, `.py`).
      - Node / TypeScript: `package.json`, `tsconfig.json` (`npm test`, `.js`, `.ts`, `.jsx`, `.tsx`).
      - Rust: `Cargo.toml` (`cargo test`, `.rs`).
      - Go: `go.mod` (`go test ./...`, `.go`).
      - Generic fallback: `make test`.
    - Implemented `init_project` generating project-scoped `.hex/config.yaml` and `.hex/.gitignore` tailored to the detected stack. Preserves existing configuration unless `--force` is specified.
-   - Enhanced `hex init` in `src/harness_core/cli.py` with `--workspace` and `--force` flags, and added `--data-dir` support to the subparser. Outputs structured JSON with project metadata and seeded skills.
+   - Enhanced `hex init` in `harness_core/cli.py` with `--workspace` and `--force` flags, and added `--data-dir` support to the subparser. Outputs structured JSON with project metadata and seeded skills.
 
-3. **Database Ledger Support (`src/harness_core/db.py`):**
+3. **Database Ledger Support (`harness_core/db.py`):**
    - Enhanced `create_approval` and `create_approval_async` to accept `risk_class` and keyword arguments.
    - Added `get_approval` and `get_approval_async` methods to `LedgerStore` with dual-driver SQLite and PostgreSQL support.
 
@@ -100,9 +100,9 @@ OK
 
 ## 3. Deviations Handled Automatically
 
-1. **`risk_class` in `create_approval` & `get_approval` (`src/harness_core/db.py`):**
+1. **`risk_class` in `create_approval` & `get_approval` (`harness_core/db.py`):**
    - Added `risk_class` and `**extra` keyword argument handling to `create_approval` / `create_approval_async`, and added `get_approval` and `get_approval_async` to `LedgerStore` to satisfy contract expectations during approval retrieval.
-2. **`--data-dir` on `hex init` subparser (`src/harness_core/cli.py`):**
+2. **`--data-dir` on `hex init` subparser (`harness_core/cli.py`):**
    - Added `--data-dir` with `default=argparse.SUPPRESS` to `p_init` to allow `hex init --workspace <dir> --data-dir :memory:` to parse seamlessly when `--data-dir` is positioned after the subcommand.
 
 ---

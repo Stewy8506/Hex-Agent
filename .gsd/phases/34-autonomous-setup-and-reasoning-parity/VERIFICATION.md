@@ -11,12 +11,12 @@
 
 ## 1. Executive Summary
 
-Phase 34 successfully eliminates every architectural disparity between **Hermes Agent** (`benchmarks/hermes-agent/`) and **HEX Agent** (`src/harness_core/`) as documented in [docs/audits/HERMES_VS_HEX_SETUP_AUDIT.md](file:///Users/anv./Development/Harness/docs/audits/HERMES_VS_HEX_SETUP_AUDIT.md).
+Phase 34 successfully eliminates every architectural disparity between **Hermes Agent** (`benchmarks/hermes-agent/`) and **HEX Agent** (`harness_core/`) as documented in [docs/audits/HERMES_VS_HEX_SETUP_AUDIT.md](file:///Users/anv./Development/Harness/docs/audits/HERMES_VS_HEX_SETUP_AUDIT.md).
 
 HEX now possesses:
-1. **A First-Class Reasoning Effort Engine (`src/harness_core/reasoning_effort.py`):** Canonical 7-step ladder (`none`..`max`), nearest-level wire clamping protecting against HTTP 400 errors, wire translation into Anthropic Claude 3.7 token budgets (2,048 to 32,768) and Gemini `thinkingConfig`, dynamic runtime `/reasoning` slash command in Cockpit TUI, and setup effort picking.
-2. **Autonomous Agent Self-Setup (`src/harness_core/auto_setup.py`):** Non-invasive host discovery capturing Darwin ARM64 / Apple Silicon M4 / Metal / CUDA, devtools (`git`, `docker`, `python3`, `node`, `rustc`, `clang`, `brew`), Antigravity IDE SQLite OAuth credentials, provider keys, and messaging tokens. Headless bootstrapping via `hex setup --auto` and unconfigured launch interception.
-3. **Ergonomic Setup Flags & Curated Tiers (`src/harness_core/onboard.py`):** `--quick` (skips configured items), `--blank-slate` (minimal zero-overhead profile for CI/containers), `--reset` (factory restore), 4 curated provider tiers eliminating 26-option cognitive overload, and a guided First-Task verification beat running in an isolated CoW workspace with CAS SHA-256 indexing and `ledger.db` journaling.
+1. **A First-Class Reasoning Effort Engine (`harness_core/reasoning_effort.py`):** Canonical 7-step ladder (`none`..`max`), nearest-level wire clamping protecting against HTTP 400 errors, wire translation into Anthropic Claude 3.7 token budgets (2,048 to 32,768) and Gemini `thinkingConfig`, dynamic runtime `/reasoning` slash command in Cockpit TUI, and setup effort picking.
+2. **Autonomous Agent Self-Setup (`harness_core/auto_setup.py`):** Non-invasive host discovery capturing Darwin ARM64 / Apple Silicon M4 / Metal / CUDA, devtools (`git`, `docker`, `python3`, `node`, `rustc`, `clang`, `brew`), Antigravity IDE SQLite OAuth credentials, provider keys, and messaging tokens. Headless bootstrapping via `hex setup --auto` and unconfigured launch interception.
+3. **Ergonomic Setup Flags & Curated Tiers (`harness_core/onboard.py`):** `--quick` (skips configured items), `--blank-slate` (minimal zero-overhead profile for CI/containers), `--reset` (factory restore), 4 curated provider tiers eliminating 26-option cognitive overload, and a guided First-Task verification beat running in an isolated CoW workspace with CAS SHA-256 indexing and `ledger.db` journaling.
 
 ---
 

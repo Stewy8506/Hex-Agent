@@ -11,6 +11,7 @@ uninstall against the same contract.
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import shutil
 import subprocess
@@ -40,6 +41,82 @@ def _launcher_args(**overrides) -> argparse.Namespace:
     )
     base.update(overrides)
     return argparse.Namespace(**base)
+
+
+class TestOpenLayout(unittest.TestCase):
+    def test_domains_keep_canonical_imports(self) -> None:
+        directories = {
+            "harness_core": "harness_core",
+            "harness_core.core": "agent",
+            "harness_core.client": "hex_cli",
+            "harness_core.platform": "hex_platform",
+            "harness_core.skills": "skill_engine",
+            "harness_core.cognition": "cognition",
+            "harness_core.providers": "providers",
+            "harness_core.models": "models",
+            "harness_core.runtime": "runtime",
+            "harness_core.storage": "storage",
+            "harness_core.capabilities": "capabilities",
+            "harness_core.tools": "tools",
+            "harness_core.lsp": "lsp",
+            "harness_core.resources": "resources",
+            "harness_core.resources.skills": "skills",
+            "harness_core.resources.skills.optional": "optional-skills",
+        }
+        for name, directory in directories.items():
+            module = importlib.import_module(name)
+            self.assertEqual(module.__name__, name)
+            self.assertEqual(Path(module.__file__).resolve(), REPO_ROOT / directory / "__init__.py")
+
+    def test_existing_gateways_alias_preserves_identity(self) -> None:
+        self.assertIs(
+            importlib.import_module("harness_core.gateways"),
+            importlib.import_module("harness_core.capabilities.gateways"),
+        )
+
+    def test_nested_packages_keep_canonical_imports(self) -> None:
+        for name, directory in (
+            ("harness_core.client.commands", "hex_cli/commands"),
+            ("harness_core.client.onboarding", "hex_cli/onboarding"),
+            ("harness_core.client.terminal", "hex_cli/terminal"),
+            ("harness_core.capabilities.gateways", "capabilities/gateways"),
+        ):
+            module = importlib.import_module(name)
+            self.assertEqual(Path(module.__file__).resolve(), REPO_ROOT / directory / "__init__.py")
+
+    def test_stdlib_platform_is_not_shadowed(self) -> None:
+        import platform
+
+        self.assertTrue(platform.system())
+        self.assertNotEqual(Path(platform.__file__).resolve().parent, REPO_ROOT / "hex_platform")
+
+    def test_editable_imports_outside_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from harness_core import HarnessOrchestrator, LedgerStore, ToolGateway; "
+                 "from harness_core.client.cli import main; "
+                 "from harness_core.skills import SkillCompiler; "
+                 "from harness_core.resources import bundled_skills_dir; "
+                 "assert bundled_skills_dir().is_dir(); "
+                 "assert bundled_skills_dir(True).is_dir()"],
+                cwd=directory, capture_output=True, text=True, timeout=60,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_schema_uses_namespace_anchor(self) -> None:
+        from harness_core.storage.db import LedgerStore
+
+        read_text = Path.read_text
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(Path, "read_text", autospec=True, side_effect=read_text) as reader:
+                store = LedgerStore(Path(directory) / "ledger.db")
+                try:
+                    reader.assert_any_call(
+                        REPO_ROOT / "harness_core/migrations/0001_initial_schema.sql", encoding="utf-8",
+                    )
+                finally:
+                    store.close()
 
 
 class TestLauncherResolution(unittest.TestCase):
@@ -91,6 +168,28 @@ class TestLauncherResolution(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("install.sh", message)
         self.assertIn("--legacy", message)
+
+    def test_launcher_preserves_existing_pythonpath(self) -> None:
+        _make_executable(self.home / ".hex" / "bin" / "hex-tui")
+        with mock.patch.dict(os.environ, {"PYTHONPATH": "external-dependency-path"}):
+            with mock.patch.object(
+                tui_launcher.subprocess, "run", return_value=subprocess.CompletedProcess([], 0),
+            ) as run_mock:
+                self.assertEqual(tui_launcher.launch_hex_tui(_launcher_args(), self.fake_root), 0)
+        env = run_mock.call_args.kwargs["env"]
+        self.assertEqual(env["PYTHONPATH"], "external-dependency-path")
+        self.assertEqual(env["HEX_PYTHON_BIN"], sys.executable)
+        self.assertEqual(env["HEX_REPO_ROOT"], str(self.fake_root))
+
+    def test_launcher_does_not_inject_source_paths(self) -> None:
+        _make_executable(self.home / ".hex" / "bin" / "hex-tui")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("PYTHONPATH", None)
+            with mock.patch.object(
+                tui_launcher.subprocess, "run", return_value=subprocess.CompletedProcess([], 0),
+            ) as run_mock:
+                self.assertEqual(tui_launcher.launch_hex_tui(_launcher_args(), self.fake_root), 0)
+        self.assertNotIn("PYTHONPATH", run_mock.call_args.kwargs["env"])
 
     def test_explicit_developer_build_is_opt_in(self) -> None:
         stub_bin = _make_executable(self.root / "built" / "hex-tui")

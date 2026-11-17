@@ -1,7 +1,7 @@
 """F06 tests: one command catalog governs every surface, and first-run
 onboarding is reachable from the actual default (native) launch route.
 
-The shared catalog lives at src/harness_core/client/command_catalog.json.
+The shared catalog lives at hex_cli/command_catalog.json.
 These tests fail if ACP dispatch, console help/completion, or the launch
 flow drifts away from it.
 """

@@ -14,20 +14,20 @@
 ## 1. Accomplishments
 
 ### Task 1: ModelProvider Base Protocols & LocalMLXModelProvider Discovery
-- Created `src/harness_core/providers/base.py` defining:
+- Created `providers/base.py` defining:
   - `ModelUsage` dataclass with automatic `total_tokens` resolution and token/cost arithmetic (`add()`, `to_dict()`).
   - `ModelResponse` dataclass with latency measurements, finish reasons, token usage, and structured serializability.
   - `ProviderCapabilities` dataclass covering system prompt support, streaming flags, context windows, quantization profiles, and unified memory flags.
   - Pluggable abstract class `ModelProvider` and typed exceptions (`ModelProviderError`, `PolicyBlockedError`, `BudgetExceededError`, `ProviderUnavailableError`).
-- Implemented `LocalMLXModelProvider` in `src/harness_core/providers/mlx_provider.py`:
+- Implemented `LocalMLXModelProvider` in `providers/mlx_provider.py`:
   - Apple Silicon Darwin arm64 discovery (`is_apple_silicon()`).
   - Unified memory detection via `sysctl -n hw.memsize` (detected 16.0 GB on host hardware).
   - Dynamic `mlx_lm` import and model cache (`load_model()`).
   - Resilient zero-dependency fallback generation engine for environments without `mlx_lm` or weights.
-- Created `src/harness_core/providers/__init__.py` and re-export shim `src/harness_core/mlx_provider.py`.
+- Created `providers/__init__.py` and re-export shim `harness_core/mlx_provider.py`.
 
 ### Task 2: Tier-1 Context & Log Compressor Engine
-- Implemented `Tier1LogCompressor` in `src/harness_core/providers/mlx_provider.py`:
+- Implemented `Tier1LogCompressor` in `providers/mlx_provider.py`:
   - Secret redaction via `redact_secrets` before token estimation and compression.
   - Multi-pattern test failure and traceback frame extraction:
     - Failing test identifiers (`test_*`, `FAIL:`, `ERROR:`, `___ test_name ___`).
@@ -86,7 +86,7 @@
 
 ## 3. Deviations & Improvements
 
-- **Secret Redaction Pattern Extension (`src/harness_core/gateway.py`):**
+- **Secret Redaction Pattern Extension (`harness_core/gateway.py`):**
   - Updated `SECRET_PATTERNS` to `re.compile(r"(sk-[A-Za-z0-9\-_]{14,})")` to ensure hyphenated API keys such as Anthropic keys (`sk-ant-api03-...`) are sanitized alongside OpenAI keys (`sk-...`) and GitHub PATs (`ghp_...`), preventing secret leakage in failure digests.
 
 ---

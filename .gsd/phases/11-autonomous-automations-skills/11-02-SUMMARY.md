@@ -17,14 +17,14 @@ Key capabilities delivered:
 3. **Mandatory NVIDIA SkillSpector Gate:** Enforces static rule scanning (`SS-INJ-`, `SS-EXF-`, Unicode steganography), OSV vulnerable package checks, and semantic alignment analysis prior to disk persistence.
 4. **Clean Skill Active Registration:** Clean skills (`gate_decision == "ALLOW"`, `risk_score < 25`) are written to `skills/custom/<name>/SKILL.md` and indexed in the ledger `skills` table for prompt grounding.
 5. **Adversarial Quarantine Isolation:** Suspicious, injection, or high-risk skills (`gate_decision in ("QUARANTINE", "REQUIRE_APPROVAL")`, `risk_score >= 25`) are blocked from active registration and quarantined in `.hex/quarantine/<name>/SKILL.md` alongside an `audit.json` forensic scan report.
-6. **HEX CLI Integration:** Wired `hex skill` (`synthesize`, `list`, `scan`) subcommands into `src/harness_core/cli.py` with SkillSpector status badges (`[ACTIVE]`, `[QUARANTINED]`, `[PENDING]`).
+6. **HEX CLI Integration:** Wired `hex skill` (`synthesize`, `list`, `scan`) subcommands into `harness_core/cli.py` with SkillSpector status badges (`[ACTIVE]`, `[QUARANTINED]`, `[PENDING]`).
 7. **Empirical Validation:** Comprehensive 16-test suite in `tests/skills/test_skill_synthesis.py` and 346/346 full repository tests green.
 
 ---
 
 ## 2. Changes Made
 
-### A. Skill Synthesizer (`src/harness_core/skill_synthesizer.py`)
+### A. Skill Synthesizer (`harness_core/skill_synthesizer.py`)
 - Dataclass `SynthesizedSkill` with metadata, scan reports, disk path, status, and quarantine reasons.
 - `SkillSynthesizer` engine:
   - `extract_task_context(task_id)`: validates task completion, extracts deduplicated tools used, files modified from tool inputs and diffs, AST impact, and verification pass/fail status.
@@ -32,14 +32,14 @@ Key capabilities delivered:
   - `synthesize_skill(task_id, skill_name, dry_run)`: executes the mandatory NVIDIA SkillSpector gate on candidate bundles; gates clean skills to `custom_skills_dir` and quarantined skills to `quarantine_dir`.
   - `list_skills()`: enumerates built-in, custom, and quarantined skills with status badges.
 
-### B. Upstream SkillSpector Integration (`src/harness_core/skillspector.py`)
+### B. Upstream SkillSpector Integration (`harness_core/skillspector.py`)
 - Extracted `scan_bundle(bundle_dir)` to allow static, OSV, and semantic scanning of bundle directories and individual `SKILL.md` files without requiring immediate database persistence.
 - Refactored `scan_and_register_skill` to utilize `scan_bundle` and persist records cleanly.
 
-### C. Ledger Store (`src/harness_core/db.py`)
+### C. Ledger Store (`harness_core/db.py`)
 - Added `get_call_journal(task_id)` and `get_call_journal_async(task_id)` as official aliases for `list_tool_calls(task_id)`.
 
-### D. HEX CLI (`src/harness_core/cli.py`)
+### D. HEX CLI (`harness_core/cli.py`)
 - Added `hex skill` command with sub-actions:
   - `synthesize`: `--task`, `--name`, `--output-dir`, `--dry-run`.
   - `list`: displays built-in, custom, and quarantined skills with `[ACTIVE]` and `[QUARANTINED]` badges.

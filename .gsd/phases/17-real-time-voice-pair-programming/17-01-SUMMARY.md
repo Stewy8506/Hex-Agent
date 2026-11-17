@@ -1,12 +1,12 @@
 # Phase 17 Plan 01 Summary: Audio Capture, Speech-to-Text & Text-to-Speech Engine
 
 ## Executive Overview
-Successfully implemented the core zero-dependency voice engine for HEX (`src/harness_core/voice.py`) and integrated audio hardware & speech synthesis diagnostics into `HexDoctor` (`src/harness_core/doctor.py`). The audio engine supports asynchronous, thread-safe Text-to-Speech (TTS) synthesis across macOS (`say`) and Linux (`espeak`/`aplay`) with mock fallbacks, markdown/ANSI speech sanitization, push-to-talk/continuous Speech-to-Text (STT) capture interfaces, and robust diagnostic reporting that preserves system health status in headless CI environments.
+Successfully implemented the core zero-dependency voice engine for HEX (`harness_core/voice.py`) and integrated audio hardware & speech synthesis diagnostics into `HexDoctor` (`harness_core/doctor.py`). The audio engine supports asynchronous, thread-safe Text-to-Speech (TTS) synthesis across macOS (`say`) and Linux (`espeak`/`aplay`) with mock fallbacks, markdown/ANSI speech sanitization, push-to-talk/continuous Speech-to-Text (STT) capture interfaces, and robust diagnostic reporting that preserves system health status in headless CI environments.
 
 ## Executed Tasks
 
 ### Task 1: Core Voice Engine, VoiceConfig & Asynchronous Text-to-Speech (TTS) Pipeline
-- **Files Modified:** `src/harness_core/voice.py`, `tests/capabilities/test_voice_engine.py`
+- **Files Modified:** `harness_core/voice.py`, `tests/capabilities/test_voice_engine.py`
 - **Commit:** `b0270f8` (`feat(phase-17): implement core voice engine, voiceconfig and asynchronous tts pipeline`)
 - **Key Deliverables:**
   - `VoiceConfig`: Dataclass managing `tts_enabled`, `stt_enabled`, `voice_name`, `speech_rate` (clamped 80-400 wpm), `muted`, and `backend` ("auto", "macos_say", "linux_espeak", "mock") with `to_dict()` and `from_dict()` serialization.
@@ -15,7 +15,7 @@ Successfully implemented the core zero-dependency voice engine for HEX (`src/har
   - `VoiceEngine`: Background daemon worker thread consuming from a thread-safe queue to ensure sequential, non-overlapping speech with `speak()`, `mute()`, `unmute()`, `toggle_mute()`, `stop()`, and `shutdown()`.
 
 ### Task 2: Speech-to-Text (STT) Capture Interfaces, Audio Probing & Mock Transports
-- **Files Modified:** `src/harness_core/voice.py`, `tests/capabilities/test_voice_engine.py`
+- **Files Modified:** `harness_core/voice.py`, `tests/capabilities/test_voice_engine.py`
 - **Commit:** `4511554` (`feat(phase-17): implement speech-to-text capture interfaces audio probing and mock transports`)
 - **Key Deliverables:**
   - `probe_audio_hardware()`: Platform inspector surveying TTS synthesizers (`say`, `espeak-ng`, `espeak`, `festival`), audio players (`afplay`, `paplay`, `aplay`, `ffplay`), and recording tools (`rec`, `arecord`, `ffmpeg`).
@@ -25,7 +25,7 @@ Successfully implemented the core zero-dependency voice engine for HEX (`src/har
   - Integrated STT listeners and `push_to_talk` mode flag into `VoiceEngine`.
 
 ### Task 3: Audio Hardware & Speech Synthesis Check in HexDoctor
-- **Files Modified:** `src/harness_core/doctor.py`, `tests/client/test_doctor_and_recipes.py`
+- **Files Modified:** `harness_core/doctor.py`, `tests/client/test_doctor_and_recipes.py`
 - **Commit:** `c0448f4` (`feat(phase-17): integrate audio hardware and speech synthesis check into hexdoctor`)
 - **Key Deliverables:**
   - Added 9th diagnostic category ("Audio Hardware & Speech") to `HexDoctor` and `DoctorReport.format_summary` under `AUDIO HARDWARE & SPEECH ENGINES`.

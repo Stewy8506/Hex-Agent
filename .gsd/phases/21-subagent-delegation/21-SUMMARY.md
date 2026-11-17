@@ -10,21 +10,21 @@
 ## 1. Accomplishments
 
 ### Plan 21-01: SubagentManager Core & Role-Constrained CoW Sandboxing
-- Created `src/harness_core/subagent.py`:
+- Created `harness_core/subagent.py`:
   - `SubagentRole` enum (`RESEARCHER`, `CODER`, `TESTER`, `REVIEWER`, `PLANNER`, `GENERAL`).
   - `ROLE_ALLOWED_TOOLS` mapping enforcing least-privilege tool subsets (e.g. `RESEARCHER` is strictly read-only; `GENERAL` excludes `delegate` to prevent runaway child-tree branching).
   - `SubagentManager` supporting synchronous (`wait=True`) and asynchronous (`wait=False`) execution.
   - Isolated Copy-on-Write workspace branching under `<parent_ws>/.hex/subagents/<subagent_id>`.
   - Strict depth-capping logic enforcing `max_depth` (default 2), raising `MaxRecursionDepthExceededError` upon excess recursions.
-- Updated `src/harness_core/gateway.py`:
+- Updated `harness_core/gateway.py`:
   - Registered `delegate` (R2), `subagent_status` (R0), and `subagent_wait` (R1) tools with structured parameter schemas.
   - Added `TOOL_DEFINITIONS` metadata registry (now 24 total tools) and `ToolGateway.list_tool_definitions()`.
   - Implemented `_tool_delegate`, `_tool_subagent_status`, and `_tool_subagent_wait`.
 
 ### Plan 21-02: Orchestrator Integration & TUI /subagents Command
-- Updated `src/harness_core/orchestrator.py`:
+- Updated `harness_core/orchestrator.py`:
   - Initialized `SubagentManager` with ledger, CoW provider, router, and gateway bindings.
-- Updated `src/harness_core/tui.py`:
+- Updated `harness_core/tui.py`:
   - Added `/subagents` command to `HexConsole.SLASH_COMMANDS` and tab auto-complete.
   - Implemented `_cmd_subagents()` displaying structured agent status, depth, calls, and goal table.
   - Added `CockpitTUI = HexConsole` alias for backward compatibility.

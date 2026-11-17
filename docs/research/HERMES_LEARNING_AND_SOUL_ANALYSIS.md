@@ -143,15 +143,15 @@ While Hermes is pragmatic, an engineering analysis reveals substantial architect
 
 HEX already possesses low-level capabilities that surpass Hermes, but they currently lack Hermes's unified persona and memory UX:
 
-1. **`GovernedMemoryService` (`src/harness_core/router.py`)**:
+1. **`GovernedMemoryService` (`harness_core/router.py`)**:
    - Tracks AST symbols and file SHA-256 fingerprints (`_compute_code_fingerprints`).
    - Detects code staleness: `_is_memory_stale()` verifies whether cited AST symbols or files have mutated since the memory was formed.
    - Multi-scope isolation: `project`, `personal`, `episodic`.
    - Work-memory reflection via Graphify: writes `useful`, `dead_end`, and `corrected` lessons into `.hex/reflections/LESSONS.md`.
-2. **`LedgerStore` (`src/harness_core/ledger/store.py`)**:
+2. **`LedgerStore` (`harness_core/ledger/store.py`)**:
    - Cryptographic event chaining with BLAKE3 hashes and Merkle tree checkpoints.
    - Full append-only audit trail with CoW transaction rollbacks.
-3. **`SkillSpector` (`src/harness_core/skillspector.py`)**:
+3. **`SkillSpector` (`harness_core/skillspector.py`)**:
    - Static AST validation, dangerous system call detection, and OSV vulnerability scanning for skill bundles.
 
 ---

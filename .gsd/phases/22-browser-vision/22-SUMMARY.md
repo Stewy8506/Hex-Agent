@@ -10,18 +10,18 @@
 ## 1. Accomplishments
 
 ### Plan 22-01: Headless Browser Automation & CDP Engine
-- Created `src/harness_core/browser.py`:
+- Created `harness_core/browser.py`:
   - `HeadlessBrowserSession` providing automated navigation, accessibility tree snapshotting (`ariaSnapshot` with `@e1`, `@e2` element references), element interaction (click and type), DOM screenshot capture, and expression evaluation.
   - `BrowserManager` providing per-task session isolation, session pooling, and deterministic cleanup.
-- Updated `src/harness_core/gateway.py`:
+- Updated `harness_core/gateway.py`:
   - Registered `browser` tool across R2 risk class with actions: `navigate`, `snapshot`, `click`, `type`, `screenshot`, `evaluate`, `close`.
 
 ### Plan 22-02: Multimodal Vision Inspection & Empirical Verification
-- Created `src/harness_core/vision.py`:
+- Created `harness_core/vision.py`:
   - `VisionEngine` supporting local image files (PNG, JPG, WEBP, GIF, SVG, BMP) and remote image URLs.
   - Dimension extraction from image headers without heavy external image libraries.
   - Base64 encoding and structured visual analysis generation with model router dispatch.
-- Updated `src/harness_core/gateway.py`:
+- Updated `harness_core/gateway.py`:
   - Registered `image_inspect` tool in `TOOL_DEFINITIONS` across R1 risk class (total tool count now exactly 26).
 - Created `tests/capabilities/test_browser_and_vision.py`:
   - 6/6 unit and integration tests verifying browser navigation, element clicking and typing, screenshot generation, evaluation, image inspection, and error handling.

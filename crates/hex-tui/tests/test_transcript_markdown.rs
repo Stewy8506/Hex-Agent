@@ -156,13 +156,13 @@ fn test_wide_glyphs_are_measured_by_display_width() {
 #[test]
 fn test_identifiers_and_paths_are_not_mangled() {
     let lines = render_markdown(
-        "Call parse_config_yaml in src/harness_core/config_loader.py.",
+        "Call parse_config_yaml in harness_core/config_loader.py.",
         80,
         &theme(),
     );
     let text = rows(&lines).join(" ");
     assert!(text.contains("parse_config_yaml"));
-    assert!(text.contains("src/harness_core/config_loader.py"));
+    assert!(text.contains("harness_core/config_loader.py"));
     assert!(
         lines.iter().flat_map(|l| l.spans.iter()).all(|s| !s.style.add_modifier.contains(Modifier::ITALIC)),
         "underscores inside identifiers must not become emphasis"

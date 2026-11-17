@@ -20,7 +20,7 @@ Plan 28-02 integrated the stateful, persistent Python REPL engine into HEX's cen
 
 ## Key Changes & Implementations
 
-### 1. ToolGateway (`src/harness_core/gateway.py`)
+### 1. ToolGateway (`harness_core/gateway.py`)
 - Registered `code_kernel` schema in `TOOL_DEFINITIONS` with `risk_class: R2` and parameters `code`, `reset`, and `timeout`.
 - Added `kernel_registry: KernelRegistry | None` to `ToolGateway.__init__` with default fallback to `get_kernel_registry()`.
 - Implemented `execute_tool(tool_id, args, workspace_dir)` for direct interactive and programmatic invocation.
@@ -31,12 +31,12 @@ Plan 28-02 integrated the stateful, persistent Python REPL engine into HEX's cen
   - Generates stale module warnings if imported project files have changed on disk.
   - Returns structured execution dictionary: `status`, `output`, `stdout`, `stderr`, `execution_count`, `state_reset`, `duration_seconds`, and `warning`.
 
-### 2. Multi-Turn ReAct Loop (`src/harness_core/react_loop.py`)
+### 2. Multi-Turn ReAct Loop (`harness_core/react_loop.py`)
 - Added `session_id` tracking on `ReActLoop` instance, propagating it to gateway tool executions.
 - Injected `owner = session_id` into `code_kernel` tool call requests.
 - Formatted `code_kernel` observations to cleanly display stdout/stderr alongside any stale module warnings.
 
-### 3. TUI Cockpit (`src/harness_core/tui.py`)
+### 3. TUI Cockpit (`harness_core/tui.py`)
 - Added `/kernel` and `/repl` to `HexConsole.SLASH_COMMANDS` for tab-completion.
 - Added `/kernel` documentation to `/help`.
 - Implemented `_cmd_kernel(arg)` handling:

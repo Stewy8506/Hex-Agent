@@ -6,7 +6,7 @@
 **Date:** 2026-11-15  
 
 ## Accomplishments
-1. **Autonomous Environment Auto-Discovery (`src/harness_core/auto_setup.py`):**
+1. **Autonomous Environment Auto-Discovery (`harness_core/auto_setup.py`):**
    - Created `EnvironmentSnapshot` dataclass capturing hardware, Apple Silicon M-series, Metal/CUDA, devtools (`git`, `docker`, `python3`, `node`, `rustc`, `clang`, `brew`, `winget`, `flatpak`), Antigravity IDE OAuth tokens, environment provider keys, and Telegram/Discord bot tokens.
    - Built non-invasive `detect_environment()` resolving Antigravity IDE session tokens directly from local SQLite databases.
    - Built `synthesize_optimal_config()` prioritizing:

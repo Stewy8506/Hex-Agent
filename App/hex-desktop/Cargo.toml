@@ -6,7 +6,7 @@ description = "Native macOS Metal-accelerated desktop cockpit for HEX Agent usin
 
 [dependencies]
 gpui = "0.2.2"
-hex-protocol = { path = "../hex-protocol" }
+hex-protocol = { path = "../../crates/hex-protocol" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }

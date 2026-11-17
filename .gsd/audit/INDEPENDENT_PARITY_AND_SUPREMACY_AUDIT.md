@@ -2,7 +2,7 @@
 
 **Date:** November 15, 2026  
 **Auditor:** Independent Architecture & Verification Auditor (Clean Context)  
-**Target Codebase:** HEX Autonomous AI Workbench (`src/harness_core/`, `crates/hex-protocol/`, `crates/hex-tui/`, `tests/`)  
+**Target Codebase:** HEX Autonomous AI Workbench (`harness_core/`, `crates/hex-protocol/`, `crates/hex-tui/`, `tests/`)\
 **Reference Benchmark:** Nous Research Hermes Agent (`benchmarks/hermes-agent/`)  
 **Audit Scope:** System Prompt Architecture, Persona Engine, Capabilities & Tool Risk Tiering, Tool Dispatch Discipline & ReAct Resilience, Conversational Latency & KV-Cache Stability, Execution Models & Terminal Cockpit.  
 **Overall Verdict:** **SUPERIOR (100% Behavioral Parity Achieved + Decisive Architectural Supremacy across all 6 Core Dimensions)**
@@ -23,7 +23,7 @@ The audit evaluated both codebases across six non-negotiable operational dimensi
 
 ### 1.1 Head-to-Head Comparative Scorecard
 
-| Architectural Dimension | Hermes Agent Reference (`benchmarks/hermes-agent`) | HEX Agent (`src/harness_core/` & `crates/`) | Empirical Parity | Supremacy Delta |
+| Architectural Dimension | Hermes Agent Reference (`benchmarks/hermes-agent`) | HEX Agent (`harness_core/` & `crates/`) | Empirical Parity | Supremacy Delta |
 | :--- | :--- | :--- | :---: | :---: |
 | **1. System Prompt Assembly** | Ad-hoc joining of 3 tiers (`stable`, `context`, `volatile`). Dynamic file bloat up to 500,000 characters. | Rigid **5-Slot Prompt Pipeline** (`Slot 1: Identity`, `Slot 2: Mode`, `Slot 3: Env`, `Slot 4: Memory`, `Slot 5: Rules`). | **100% Parity** | **HEX SUPERIOR**<br>(Strict slotting, no prefix drift, injection fencing) |
 | **2. Persona & Token Budgeting** | Flat text `SOUL.md`. Truncation scales up to model window max (up to 500K chars), causing local model starvation. | Multi-tier soul resolution (`workspace_user` vs `global_user`). Rigid **~500-token cap (`MAX_SOUL_CHARS = 2500`)**. | **100% Parity** | **HEX SUPERIOR**<br>(Protects 7B-32B local Apple Silicon models from TTFT blowout) |
@@ -50,7 +50,7 @@ Hermes splits system prompt assembly across loosely coupled functions (`_identit
   Where `_CONTEXT_FILE_DYNAMIC_CEILING` is **500,000 characters**. On local Apple Silicon models (e.g. Qwen 7B/32B via MLX or Ollama), ingesting up to 500K characters of context files causes massive Time-To-First-Token (TTFT) latency spikes (>30 seconds) or catastrophic memory exhaustion.
 - **Cache Invalidation:** In Hermes, dynamic memory blocks are placed in the `volatile` tier and re-injected on every turn. If any note or memory is added or updated mid-session, the prefix cache is invalidated, forfeiting KV-cache discounts.
 
-#### HEX Agent (`src/harness_core/prompt_builder.py` and `soul.py`):
+#### HEX Agent (`harness_core/prompt_builder.py` and `soul.py`):
 HEX implements a mathematically rigid, deterministic 5-slot architecture:
 - **Slot #1: Identity (`SOUL.md`):** Resolved via `SoulManager` with explicit trust provenance (`SoulProvenance.WORKSPACE_USER` vs `SoulProvenance.GLOBAL_USER`). Capped strictly at `MAX_SOUL_CHARS = 2500` (~500 tokens) with `TRUNCATION_MARKER = "\n... [truncated to fit 500-token budget]"`.
 - **Slot #2: Mode Behavioral Overrides:** 3-4 punchy, non-bloated lines modulating behavior across `ARCHITECT` (`plan`), `BUILDER` (`agent`), and `SURGICAL CODER` (`code`).
@@ -68,7 +68,7 @@ HEX implements a mathematically rigid, deterministic 5-slot architecture:
 - **Contradiction Accumulation:** When the agent learns a new conflicting fact (e.g., migrating from MySQL to PostgreSQL), Hermes appends the new entry without removing the obsolete entry. This creates hallucination-inducing contradictory instructions in subsequent turns.
 - **No Code Awareness:** Hermes has zero concept of AST symbols or code fingerprints. It cannot detect whether a note regarding a function is still valid when code changes.
 
-#### HEX Agent (`src/harness_core/memory.py`):
+#### HEX Agent (`harness_core/memory.py`):
 HEX implements an enterprise-grade cognitive memory system comprising 8 specialized subsystems:
 1. **Zettelkasten Adaptive Memory (A-MEM) Controller (`AMEMController`):**
    - Implements semantic transition detection (`UPDATE` / `DELETE` / `NOOP` / `ADD`).
@@ -92,7 +92,7 @@ HEX implements an enterprise-grade cognitive memory system comprising 8 speciali
 #### Hermes Agent (`benchmarks/hermes-agent/agent/skill_commands.py`):
 In Hermes, skills are passive markdown files saved in `~/.hermes/skills/`. They contain natural language instructions with no executable validation gates, no static security scanners, and no automated regression assertion engine.
 
-#### HEX Agent (`src/harness_core/skills/` & `skillspector.py`):
+#### HEX Agent (`skill_engine/` & `skillspector.py`):
 HEX elevates skills from passive documentation into **active, verifiable software invariants**:
 1. **Hardline Authoring Standards (`SkillCompiler`):**
    - Enforces strict naming conventions, description length $\le 60$ characters ending in a period, `author: "HEX"`, and standard 8-section layout (`When to Use`, `Prerequisites`, `How to Run`, `Quick Reference`, `Procedure`, `Pitfalls`, `Verification`).
@@ -118,7 +118,7 @@ HEX elevates skills from passive documentation into **active, verifiable softwar
 - Monolithic mixing of tool execution, streaming, and error handling.
 - Does not handle Anthropic thinking block signatures defensively: assistant messages that replay unsigned thinking blocks trigger Anthropic API HTTP 400 errors (`"thinking block requires signature"`).
 
-#### HEX Agent (`src/harness_core/react_loop.py` & `providers/cloud_provider.py`):
+#### HEX Agent (`harness_core/react_loop.py` & `providers/cloud_provider.py`):
 HEX implements an isolated, continuous multi-turn ReAct engine with production fit-and-finish discipline:
 1. **Multi-Format Tool Call Parser:**
    - Robustly parses 5 different model formats: Native tool call dictionaries, XML `<tool_call>` tags, Markdown JSON code blocks, raw JSON strings, and embedded JSON objects.
@@ -139,7 +139,7 @@ HEX implements an isolated, continuous multi-turn ReAct engine with production f
 
 ### 2.5 4-Phase Context Compaction & KV-Cache Prefix Locking
 
-#### Context Compactor Architecture (`src/harness_core/context_compressor.py`):
+#### Context Compactor Architecture (`harness_core/context_compressor.py`):
 HEX eliminates context window starvation and prompt cache thrashing through a deterministic 4-phase compaction pipeline:
 1. **Phase 1: Stale Tool Output Demotion:**
    - Demotes historical tool outputs older than `keep_tool_rounds` (default: 4 rounds) if exceeding `min_demote_chars` (default: 1,000 chars).
@@ -166,17 +166,17 @@ HEX eliminates context window starvation and prompt cache thrashing through a de
    - Engineered in Rust using `ratatui` and `crossterm`.
    - Runs as an independent, lightweight compiled binary communicating with the Python harness over async JSON-RPC IPC.
    - Renders at a silky 60 FPS with zero terminal flicker, zero GIL lockup, collapsible tool call cards, side-by-side git diff panes, interactive approval modals, and live animated statuslines.
-2. **Agent Client Protocol (ACP) Server (`src/harness_core/acp.py`):**
+2. **Agent Client Protocol (ACP) Server (`harness_core/acp.py`):**
    - Standardized Agent Client Protocol implementation over stdio/JSON-RPC.
    - Connects HEX directly into modern editors (Zed, Neovim, VSCode) with native tool dispatch, file streaming, and session persistence.
-3. **PTY Background Process Supervisor (`src/harness_core/process_registry.py`):**
+3. **PTY Background Process Supervisor (`harness_core/process_registry.py`):**
    - Asynchronous pseudo-terminal (PTY) allocation on POSIX systems with pipe fallback.
    - Thread-safe circular ring buffer (100,000 characters) capturing real-time stdout/stderr streams.
    - Allows long-running processes (dev servers, test watchers, compilation pipelines) to run in the background and be inspected or terminated via `start_process`, `read_terminal`, `kill_process`, and `list_processes`.
-4. **Persistent REPL Python Code Kernel (`src/harness_core/code_kernel.py`):**
+4. **Persistent REPL Python Code Kernel (`harness_core/code_kernel.py`):**
    - Dedicated child process supervisor executing Python code in an interactive persistent namespace.
    - State, variables, functions, and imports persist across consecutive conversation turns inside the CoW workspace, matching Jupyter notebook semantics for iterative data science and engineering tasks.
-5. **Copy-on-Write (CoW) Workspace Isolation (`src/harness_core/cow.py`):**
+5. **Copy-on-Write (CoW) Workspace Isolation (`harness_core/cow.py`):**
    - Ephemeral workspace overlays providing file-level isolation for agent and subagent executions.
    - Changes are verified against tests before being merged back to the root project; failed tasks roll back atomically with zero workspace pollution.
 

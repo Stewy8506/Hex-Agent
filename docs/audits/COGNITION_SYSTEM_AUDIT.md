@@ -61,12 +61,12 @@ The central risk is **feature completeness at the execution boundary**. Several 
 
 ### Evidence
 
-- Hook parsing and execution live in `src/harness_core/skills/executor.py`.
+- Hook parsing and execution live in `skill_engine/executor.py`.
 - `rg` found `run_skill_verification()` and `assert_skill_regression_free()` referenced only in their unit tests and package export, not from a task completion, skill router, tool gateway, or orchestrator completion path.
 - The command executes with `shell=True` and starts from a copy of the complete parent environment:
 
 ```python
-# src/harness_core/skills/executor.py, lines 199-220
+# skill_engine/executor.py, lines 199-220
 env = os.environ.copy()
 ...
 proc = subprocess.run(
@@ -106,12 +106,12 @@ Suggested ownership: `orchestrator.py` owns state transition; `gateway.py`/sandb
 
 ### Evidence
 
-- `MemoryLifecycleManager.check_promotions()` is defined in `src/harness_core/memory.py` but has no production caller.
+- `MemoryLifecycleManager.check_promotions()` is defined in `harness_core/memory.py` but has no production caller.
 - `MemoryLifecycleManager.run_demotion_sweep()` is also only found in tests.
 - In `run_demotion_sweep()`, deletion proceeds whether `archive_entry()` succeeds or fails:
 
 ```python
-# src/harness_core/memory.py, lines 2222-2232
+# harness_core/memory.py, lines 2222-2232
 self.archive_entry(...)
 self.controller.delete_memory(item.id, target=item.scope)
 ```
@@ -145,7 +145,7 @@ The documented lifecycle is manual/test-only in practice:
 `ASTNodeMemoryStore.record_node_memory()` has no Graphify adapter parameter. Its default fingerprint call therefore passes `graphify_adapter=None`:
 
 ```python
-# src/harness_core/memory.py, lines 1062-1075
+# harness_core/memory.py, lines 1062-1075
 if code_fingerprint is None:
     code_fingerprint = compute_code_fingerprint(
         self.workspace_root, rel_path, symbol_name
@@ -183,7 +183,7 @@ The JSON store also prevents efficient indexed lookup, robust concurrent writes,
 `MemorySnapshot` keeps a class-level cache keyed only by workspace/global-home:
 
 ```python
-# src/harness_core/memory.py, lines 743-760
+# harness_core/memory.py, lines 743-760
 _cached_snapshots: Dict[str, str] = {}
 ...
 cache_key = f"{ws}:{gh}"
@@ -219,7 +219,7 @@ That differs from the desired behavior: immutable within a session, refreshed at
 `CuratedMemoryStore.execute_operations()` claims atomicity, but calls `add`, `replace`, `patch`, and `remove` one at a time. Each operation independently writes to disk. A later failure returns an error without rolling earlier changes back.
 
 ```python
-# src/harness_core/memory.py, lines 693-731
+# harness_core/memory.py, lines 693-731
 for op in operations:
     ...
     res = self.add(...)  # each call can commit independently
@@ -254,7 +254,7 @@ An LLM-generated multi-operation contradiction-resolution plan can leave memory 
 `should_execute_background_reflection()` correctly understands `idle` policy, but the production caller passes `is_idle=False` unconditionally:
 
 ```python
-# src/harness_core/orchestrator.py, lines 426-431
+# harness_core/orchestrator.py, lines 426-431
 allowed, reason = should_execute_background_reflection(
     policy=policy,
     router=getattr(self, "router", None),
@@ -288,7 +288,7 @@ For `learning.auto_reflect: idle`, every reflection is queued forever. For local
 The read-file handler appends formatted notes directly to source content:
 
 ```python
-# src/harness_core/gateway.py, lines 1226-1229
+# harness_core/gateway.py, lines 1226-1229
 memories = query_jit_memories_for_file(...)
 jit_block = format_jit_memories_block(memories, rel_p)
 injected_content = f"{content}\n\n{jit_block}"
@@ -320,7 +320,7 @@ Any poisoned or malformed learned note becomes prominent model-visible text imme
 The soul cap is 2,500 characters, then the truncation suffix is appended:
 
 ```python
-# src/harness_core/soul.py, lines 160-170
+# harness_core/soul.py, lines 160-170
 return content[:MAX_SOUL_CHARS].rstrip() + "\n... [truncated to fit 500-token budget]"
 ```
 
@@ -329,7 +329,7 @@ This can exceed the cap and does not reliably represent 500 tokens across langua
 In `PromptBuilder`, a workspace soul is considered non-user-authored:
 
 ```python
-# src/harness_core/prompt_builder.py, lines 143-145
+# harness_core/prompt_builder.py, lines 143-145
 user_authored = not is_distribution_profile and source_scope in ("global", "default")
 ```
 

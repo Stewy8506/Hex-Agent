@@ -9,7 +9,7 @@
 
 ## 1. Objectives Delivered
 
-1. **Created `src/harness_core/react_loop.py`**:
+1. **Created `harness_core/react_loop.py`**:
    - `ReActConfig`: dataclass configuring `max_turns` (default 30), `temperature` (default 0.2), `system_prompt`, `budget_tokens` (default 100,000), and `stop_sequences`.
    - `ToolCallRequest`: dataclass capturing `call_id`, `name`, and `arguments`.
    - `ToolCallResult`: dataclass capturing `call_id`, `name`, `output`, `is_error`, and `duration_ms`.

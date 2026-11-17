@@ -10,7 +10,7 @@
 ## 1. Accomplishments
 
 ### Plan 23-01: ACP JSON-RPC 2.0 Server Core & Stdio Transport
-- Created `src/harness_core/acp.py`:
+- Created `harness_core/acp.py`:
   - `ACPServer` implementing the Agent Client Protocol (ACP) standard over stdio.
   - JSON-RPC 2.0 dispatch for `initialize`, `session/new`, `session/load`, `session/prompt`, `session/cancel`, `session/list`, `tools/list`, and `tools/call`.
   - Content-Length and line-delimited message framing.
@@ -18,7 +18,7 @@
   - Fast-path execution bridging with `HarnessOrchestrator`.
 
 ### Plan 23-02: CLI Subcommand, Tool Approval Bridge & Empirical Verification
-- Updated `src/harness_core/cli.py`:
+- Updated `harness_core/cli.py`:
   - Added `hex acp` subcommand with `--check` (environment and protocol readiness audit) and `--setup` (generates ready-to-paste configurations for Zed and Neovim).
 - Created `tests/client/test_acp_server.py`:
   - 7/7 unit and integration tests covering handshake, session lifecycle, tool execution, orchestrator prompt execution, session cancellation, and CLI flags.

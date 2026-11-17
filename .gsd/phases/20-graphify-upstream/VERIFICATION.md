@@ -101,7 +101,7 @@ test_ingest_upstream_graph_valid_json (tests.tools.test_graphify_upstream_wiring
 ### Must-Have 3: CLI Subcommand Suite `hex graphify`
 
 **Requirement:**
-- CLI exposure: `hex graphify` (`status`, `update`, `ingest`, `god-nodes`, `affected`, `tree`) in `src/harness_core/cli.py`.
+- CLI exposure: `hex graphify` (`status`, `update`, `ingest`, `god-nodes`, `affected`, `tree`) in `harness_core/cli.py`.
 
 **Verification Commands & Outputs:**
 

@@ -1,11 +1,11 @@
 # Phase 38 Plan 01 Summary: Crate Initialization, Metal Pipeline & Hermes Design System
 
 ## 1. Overview
-Phase 38 Plan 01 initializes `crates/hex-desktop` as an active member of the Cargo workspace, establishes the native macOS Metal-accelerated window configuration at 120 FPS via Zed's `gpui` framework (v0.2.2), and ports the complete Hermes Design System (Dark Zinc palette, translucent vibrancy, and typography hierarchy) with comprehensive unit and integration test coverage.
+Phase 38 Plan 01 initializes `App/hex-desktop` as an active member of the Cargo workspace, establishes the native macOS Metal-accelerated window configuration at 120 FPS via Zed's `gpui` framework (v0.2.2), and ports the complete Hermes Design System (Dark Zinc palette, translucent vibrancy, and typography hierarchy) with comprehensive unit and integration test coverage.
 
 Key accomplishments:
 1. **Workspace Member & Metal Build Setup**:
-   - Registered `crates/hex-desktop` in root `Cargo.toml`.
+   - Registered `App/hex-desktop` in root `Cargo.toml`.
    - Resolved macOS Metal toolchain requirements via `.cargo/config.toml` (`DEVELOPER_DIR = "/Applications/Xcode-beta.app/Contents/Developer"`), enabling seamless native Metal shader compilation without manual environment tweaks.
    - Configured `WindowConfig` with default 1200x800 dimensions, centered placement, 900x600 minimum size, `TitlebarOptions` with transparent titlebar and custom traffic light placement (`point(px(14.0), px(16.0))`), `WindowBackgroundAppearance::Blurred` for native macOS window vibrancy, and 120 FPS target refresh rate for Apple Silicon ProMotion displays.
 2. **Hermes Design System Tokens & Typography**:
@@ -30,7 +30,7 @@ Key accomplishments:
    - Implemented `gpui::Global` on `HermesTheme` with `HermesTheme::init(cx)` and `HermesTheme::get(cx)` accessors.
    - Implemented WCAG 2.1 relative luminance and contrast ratio algorithms.
 3. **Headless GPUI Testing & Contrast Validation**:
-   - Implemented `crates/hex-desktop/tests/test_theme_and_window.rs` testing hex-to-rgb conversion accuracy, luminance contrast ratios (`text_primary` on `canvas_bg` > 19.0:1, far exceeding the 12:1 plan requirement and WCAG AAA 7:1; `text_primary` on `card_bg` > 16.7:1, far exceeding 9:1), window bounds, and view lifecycle in `gpui::TestAppContext`.
+   - Implemented `App/hex-desktop/tests/test_theme_and_window.rs` testing hex-to-rgb conversion accuracy, luminance contrast ratios (`text_primary` on `canvas_bg` > 19.0:1, far exceeding the 12:1 plan requirement and WCAG AAA 7:1; `text_primary` on `card_bg` > 16.7:1, far exceeding 9:1), window bounds, and view lifecycle in `gpui::TestAppContext`.
 
 ---
 
@@ -38,25 +38,25 @@ Key accomplishments:
 
 ### Task 1: Initialize hex-desktop Crate, Workspace Registration & Metal Window Configuration
 - **Files Modified / Created:**
-  - `Cargo.toml`: Added `"crates/hex-desktop"` to workspace members.
+  - `Cargo.toml`: Added `"App/hex-desktop"` to workspace members.
   - `.cargo/config.toml`: Configured `DEVELOPER_DIR` for Metal shader compilation via Xcode toolchain.
-  - `crates/hex-desktop/Cargo.toml`: Configured `hex-desktop` package with `gpui = "0.2.2"`, `hex-protocol`, `serde`, `tokio`, `chrono`, and `anyhow`.
-  - `crates/hex-desktop/src/window.rs`: Implemented `WindowConfig` and `DesktopWindow`.
-  - `crates/hex-desktop/src/main.rs`: Created GPUI Application launcher.
-  - `crates/hex-desktop/src/lib.rs`: Exposed library modules.
+  - `App/hex-desktop/Cargo.toml`: Configured `hex-desktop` package with `gpui = "0.2.2"`, `hex-protocol`, `serde`, `tokio`, `chrono`, and `anyhow`.
+  - `App/hex-desktop/src/window.rs`: Implemented `WindowConfig` and `DesktopWindow`.
+  - `App/hex-desktop/src/main.rs`: Created GPUI Application launcher.
+  - `App/hex-desktop/src/lib.rs`: Exposed library modules.
 - **Commit:** `97fd6e7 feat(phase-38): initialize hex-desktop crate and metal window configuration`
 
 ### Task 2: Implement Hermes Design System Tokens, Zinc Palette & Typography
 - **Files Modified / Created:**
-  - `crates/hex-desktop/src/theme.rs`: Implemented `HermesTheme`, `TypographyTokens`, WCAG luminance calculation (`relative_luminance`, `contrast_ratio`), and `gpui::Global` integration.
-  - `crates/hex-desktop/src/lib.rs`: Re-exported theme tokens and helper functions.
-  - `crates/hex-desktop/src/main.rs`: Initialized `HermesTheme` on app startup.
+  - `App/hex-desktop/src/theme.rs`: Implemented `HermesTheme`, `TypographyTokens`, WCAG luminance calculation (`relative_luminance`, `contrast_ratio`), and `gpui::Global` integration.
+  - `App/hex-desktop/src/lib.rs`: Re-exported theme tokens and helper functions.
+  - `App/hex-desktop/src/main.rs`: Initialized `HermesTheme` on app startup.
 - **Commit:** `8cfe018 feat(phase-38): implement hermes design system tokens and typography`
 
 ### Task 3: Build Metal Render Test Harness & Headless Component Fixtures
 - **Files Modified / Created:**
-  - `crates/hex-desktop/Cargo.toml`: Enabled `gpui`'s `test-support` feature in `dev-dependencies`.
-  - `crates/hex-desktop/tests/test_theme_and_window.rs`: Authored automated test suite for theme tokens, WCAG contrast verification, WindowConfig default bounds, display centering, titlebar settings, and headless `DesktopWindow` view state transitions in `TestAppContext`.
+  - `App/hex-desktop/Cargo.toml`: Enabled `gpui`'s `test-support` feature in `dev-dependencies`.
+  - `App/hex-desktop/tests/test_theme_and_window.rs`: Authored automated test suite for theme tokens, WCAG contrast verification, WindowConfig default bounds, display centering, titlebar settings, and headless `DesktopWindow` view state transitions in `TestAppContext`.
 - **Commit:** `ee0398f feat(phase-38): add theme contrast and headless window test suite`
 
 ---

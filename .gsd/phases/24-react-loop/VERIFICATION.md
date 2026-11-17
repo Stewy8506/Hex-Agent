@@ -13,10 +13,10 @@
 Phase 24 establishes the continuous multi-turn autonomous ReAct tool loop in HEX, achieving core Hermes agent parity. The workbench can now execute iterative reasoning, tool-dispatch, and observation cycles up to configurable turn limits (default 30 turns), parsing tool requests across diverse model formats (XML `<tool_call>`, Markdown JSON fences, raw JSON, and balanced-brace embedded objects), executing tools through `ToolGateway`, sealing call journal steps in `LedgerStore`, and handling clean termination conditions (`<finish>`, turn limits, or natural final answers).
 
 The engine is fully integrated into:
-1. `ReActLoop` in `src/harness_core/react_loop.py`.
-2. `HarnessOrchestrator.run_agent_loop` in `src/harness_core/orchestrator.py`.
-3. `/react [on|off]` slash command and live progressive tool cards in `src/harness_core/tui.py`.
-4. `--react` CLI flags in `src/harness_core/cli.py` across root, `hex run`, and `hex chat`.
+1. `ReActLoop` in `harness_core/react_loop.py`.
+2. `HarnessOrchestrator.run_agent_loop` in `harness_core/orchestrator.py`.
+3. `/react [on|off]` slash command and live progressive tool cards in `harness_core/tui.py`.
+4. `--react` CLI flags in `harness_core/cli.py` across root, `hex run`, and `hex chat`.
 5. Comprehensive test suite in `tests/core/test_react_loop.py` (31 tests passing in ~8.5s).
 
 ---
@@ -26,7 +26,7 @@ The engine is fully integrated into:
 ### Must-Have 1: `ReActLoop` Multi-Turn Tool Execution, Multi-Format Parsing & Termination Guards
 
 **Requirement:**
-- `ReActLoop` in `src/harness_core/react_loop.py` handles iterative multi-turn tool execution.
+- `ReActLoop` in `harness_core/react_loop.py` handles iterative multi-turn tool execution.
 - Parses structured tool calls across JSON, XML `<tool_call>`, and Markdown fences.
 - Dispatches tool invocations to `ToolGateway.tools[name].handler(workspace_root, arguments)`.
 - Enforces termination conditions: `<finish>`, max turns exhaustion, and natural completion (no tool calls).
@@ -74,7 +74,7 @@ Natural answer termination verified: True no_tool_calls Direct natural response 
 ### Must-Have 2: `HarnessOrchestrator.run_agent_loop` Wiring & Ledger Recording
 
 **Requirement:**
-- `HarnessOrchestrator.run_agent_loop` in `src/harness_core/orchestrator.py` wires `ReActLoop` to router and gateway.
+- `HarnessOrchestrator.run_agent_loop` in `harness_core/orchestrator.py` wires `ReActLoop` to router and gateway.
 - Manages complete task lifecycle in `LedgerStore` through valid CAS state transitions: `SUBMITTED -> VALIDATING -> RUNNING -> VERIFYING -> SUCCEEDED`.
 - Records steps and tool calls in `LedgerStore` (`begin_tool_call` / `seal_tool_call`).
 
@@ -91,7 +91,7 @@ Task status: SUCCEEDED | Tool calls sealed: 1 read_file SEALED
 
 ---
 
-### Must-Have 3: `/react [on|off]` TUI Command in `src/harness_core/tui.py`
+### Must-Have 3: `/react [on|off]` TUI Command in `harness_core/tui.py`
 
 **Requirement:**
 - Slash command `/react` toggles autonomous ReAct mode on/off in `HexConsole`.
@@ -143,7 +143,7 @@ OK
 
 ---
 
-### Must-Have 4: `--react` CLI Flag in `src/harness_core/cli.py`
+### Must-Have 4: `--react` CLI Flag in `harness_core/cli.py`
 
 **Requirement:**
 - `--react` flag registered on root parser, `hex run`, and `hex chat`.
@@ -246,10 +246,10 @@ OK
 
 | Artifact Path | Level 1: Exists | Level 2: Substantive | Level 3: Wired | Notes |
 |---|:---:|:---:|:---:|---|
-| `src/harness_core/react_loop.py` | ✓ | ✓ (835 lines) | ✓ | Implements `ReActLoop`, `ReActConfig`, `ReActTurn`, multi-format parsing, execution dispatch, and ledger sealing. |
-| `src/harness_core/orchestrator.py` | ✓ | ✓ (2,235 lines) | ✓ | Implements `run_agent_loop` (lines 411-615), wiring router, gateway, and ledger state transitions. |
-| `src/harness_core/tui.py` | ✓ | ✓ (3,056 lines) | ✓ | Registers `/react`, implements `_cmd_react`, and hooks `_handle_react_loop_prompt`. |
-| `src/harness_core/cli.py` | ✓ | ✓ (1,808 lines) | ✓ | Registers `--react` flag on root, `hex run`, and `hex chat` subparsers. |
+| `harness_core/react_loop.py` | ✓ | ✓ (835 lines) | ✓ | Implements `ReActLoop`, `ReActConfig`, `ReActTurn`, multi-format parsing, execution dispatch, and ledger sealing. |
+| `harness_core/orchestrator.py` | ✓ | ✓ (2,235 lines) | ✓ | Implements `run_agent_loop` (lines 411-615), wiring router, gateway, and ledger state transitions. |
+| `harness_core/tui.py` | ✓ | ✓ (3,056 lines) | ✓ | Registers `/react`, implements `_cmd_react`, and hooks `_handle_react_loop_prompt`. |
+| `harness_core/cli.py` | ✓ | ✓ (1,808 lines) | ✓ | Registers `--react` flag on root, `hex run`, and `hex chat` subparsers. |
 | `tests/core/test_react_loop.py` | ✓ | ✓ (626 lines) | ✓ | 31 unit and integration test cases covering core, orchestrator, TUI, CLI, and ledger recording. |
 
 ---
@@ -268,7 +268,7 @@ OK
 
 ## 5. Non-Blocking Observations
 
-1. In `src/harness_core/orchestrator.py` (lines 594-604), `self.ledger.record_event` is called with `event_type="REACT_SESSION_COMPLETED"` without the required keyword-only `reason_code` parameter (`reason_code="REACT_SESSION_RECORDED"`). While task state transitions (`VALIDATING`, `RUNNING`, `VERIFYING`, `SUCCEEDED`) and all tool call steps are sealed into the database, this standalone event is swallowed by the `except Exception: pass` block. It does not affect functionality or any must-haves, but adding `reason_code` in a future polish pass is recommended for full audit trail perfection.
+1. In `harness_core/orchestrator.py` (lines 594-604), `self.ledger.record_event` is called with `event_type="REACT_SESSION_COMPLETED"` without the required keyword-only `reason_code` parameter (`reason_code="REACT_SESSION_RECORDED"`). While task state transitions (`VALIDATING`, `RUNNING`, `VERIFYING`, `SUCCEEDED`) and all tool call steps are sealed into the database, this standalone event is swallowed by the `except Exception: pass` block. It does not affect functionality or any must-haves, but adding `reason_code` in a future polish pass is recommended for full audit trail perfection.
 
 ---
 

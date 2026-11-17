@@ -7,7 +7,7 @@ Establish first-class identity and persona modulation in HEX without prompt bloa
 
 ## Tasks
 
-### Task 30-01: SoulManager & Developer DNA Resolution (`src/harness_core/soul.py`)
+### Task 30-01: SoulManager & Developer DNA Resolution (`harness_core/soul.py`)
 - **Description:** Implement `SoulManager` managing the lifecycle, seeding, legacy upgrades, and multi-tier resolution of HEX persona and Developer DNA.
 - **Components:**
   1. Multi-tier resolution hierarchy: `~/.hex/SOUL.md` (global developer identity) vs `.hex/SOUL.md` (workspace project rules).
@@ -27,7 +27,7 @@ Establish first-class identity and persona modulation in HEX without prompt bloa
 
 ---
 
-### Task 30-02: Punchy Mode Modulators, Security Gate & Prompt Pipeline Slotting (`src/harness_core/prompt_builder.py`)
+### Task 30-02: Punchy Mode Modulators, Security Gate & Prompt Pipeline Slotting (`harness_core/prompt_builder.py`)
 - **Description:** Implement `PromptBuilder` to assemble system prompts according to the strict 5-slot architecture with 3–4 line punchy mode modulators, prompt-injection heuristic scanning, and wire it into `HarnessOrchestrator.run_agent_loop` and `ReActLoop`.
 - **Components:**
   1. 5-slot prompt architecture:

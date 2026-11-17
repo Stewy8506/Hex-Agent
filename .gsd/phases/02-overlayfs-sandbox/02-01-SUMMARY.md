@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Plan 02-01 expands the durable Copy-on-Write (CoW) workspace abstraction in `src/harness_core/cow.py` beyond macOS APFS clones to native Linux filesystems. Two production-grade providers—`OverlayFSSnapshotProvider` and `BtrfsSnapshotProvider`—were implemented adhering strictly to the `WorkspaceSnapshotProvider` protocol. A platform auto-detection factory (`get_default_snapshot_provider`) was added to automatically select the optimal snapshot provider for the runtime environment (Darwin APFS -> Linux Btrfs -> Linux OverlayFS -> portable CoW copy). `HarnessOrchestrator` was updated to accept dependency-injected snapshot providers while defaulting to host auto-detection. A comprehensive contract test suite of 19 tests was authored in `tests/storage/test_cow_providers.py`, raising the total repository test suite to 58 tests, all passing with zero regressions.
+Plan 02-01 expands the durable Copy-on-Write (CoW) workspace abstraction in `harness_core/cow.py` beyond macOS APFS clones to native Linux filesystems. Two production-grade providers—`OverlayFSSnapshotProvider` and `BtrfsSnapshotProvider`—were implemented adhering strictly to the `WorkspaceSnapshotProvider` protocol. A platform auto-detection factory (`get_default_snapshot_provider`) was added to automatically select the optimal snapshot provider for the runtime environment (Darwin APFS -> Linux Btrfs -> Linux OverlayFS -> portable CoW copy). `HarnessOrchestrator` was updated to accept dependency-injected snapshot providers while defaulting to host auto-detection. A comprehensive contract test suite of 19 tests was authored in `tests/storage/test_cow_providers.py`, raising the total repository test suite to 58 tests, all passing with zero regressions.
 
 ---
 

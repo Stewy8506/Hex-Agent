@@ -25,7 +25,7 @@
   - Implemented `search_node_memories(query, limit=10)` with query sanitization and fallback to `LIKE` queries.
   - Built automatic, one-time legacy migration from `.hex/memories/ast_memories.json` when the SQLite database is empty.
 - **Compatibility Adapter (`graphify_adapter.py`)**:
-  - Added `src/harness_core/graphify_adapter.py` re-exporting `ActiveGraphifyAdapter` and `SymbolDef` for clean modular imports.
+  - Added `harness_core/graphify_adapter.py` re-exporting `ActiveGraphifyAdapter` and `SymbolDef` for clean modular imports.
 
 ### Task 2: Untrusted Observation Fencing, Byte Caps & Write-Time Injection Scanning (F-07)
 - **Write-Time Prompt Injection Scanning (`record_node_memory`)**:

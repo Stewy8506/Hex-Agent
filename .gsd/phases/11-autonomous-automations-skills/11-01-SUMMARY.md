@@ -16,7 +16,7 @@ Plan 11-01 delivers the continuous background scheduling and OS residency founda
 ## 2. Completed Tasks
 
 ### Task 1: Implement Native 5-Field Cron Parser, ScheduledJob & TaskScheduler Engine with Webhook Alerts
-- **Source:** [`src/harness_core/scheduler.py`](file:///Users/anv./Development/Harness/src/harness_core/scheduler.py) and [`src/harness_core/webhooks.py`](file:///Users/anv./Development/Harness/src/harness_core/webhooks.py)
+- **Source:** [`harness_core/scheduler.py`](file:///Users/anv./Development/Harness/harness_core/scheduler.py) and [`harness_core/webhooks.py`](file:///Users/anv./Development/Harness/harness_core/webhooks.py)
 - **Features Implemented:**
   - `CronParser`: Zero-dependency parser for standard 5-field cron expressions (`minute`, `hour`, `day_of_month`, `month`, `day_of_week`). Supports wildcards (`*`), step values (`*/n`), exact values, ranges (`a-b`), lists (`a,b,c`), and step ranges (`a-b/n`). Normalizes Sunday (0 and 7).
   - `CronParser.matches(dt)`: Evaluates datetime against all 5 cron fields.
@@ -30,7 +30,7 @@ Plan 11-01 delivers the continuous background scheduling and OS residency founda
   - `WebhookNotifier.send_alert`: Added rich Telegram HTML and Discord embed alert formatting for failure notifications.
 
 ### Task 2: Implement OS Daemon Service Installer for macOS LaunchAgent & Linux Systemd
-- **Source:** [`src/harness_core/daemon.py`](file:///Users/anv./Development/Harness/src/harness_core/daemon.py)
+- **Source:** [`harness_core/daemon.py`](file:///Users/anv./Development/Harness/harness_core/daemon.py)
 - **Features Implemented:**
   - `DaemonConfig`: Configures service name (`ai.hex.daemon`), description, Python interpreter path, CLI arguments, data/config directories, interval, and logging destinations.
   - `DaemonInstaller.generate_launchd_plist`: Generates valid Apple XML plist format with `ProgramArguments`, `RunAtLoad`, `StartInterval`, `KeepAlive`, `EnvironmentVariables` (`HEX_DATA_DIR`, `PATH`, `HEX_CONFIG`), and stdout/stderr file log paths.
@@ -40,7 +40,7 @@ Plan 11-01 delivers the continuous background scheduling and OS residency founda
   - `DaemonInstaller.get_daemon_status`: Inspects active OS service status via `launchctl` or `systemctl`.
 
 ### Task 3: CLI Integration and Comprehensive Unit & Integration Tests
-- **Source:** [`src/harness_core/cli.py`](file:///Users/anv./Development/Harness/src/harness_core/cli.py) and [`tests/runtime/test_scheduler_and_daemon.py`](file:///Users/anv./Development/Harness/tests/runtime/test_scheduler_and_daemon.py)
+- **Source:** [`harness_core/cli.py`](file:///Users/anv./Development/Harness/harness_core/cli.py) and [`tests/runtime/test_scheduler_and_daemon.py`](file:///Users/anv./Development/Harness/tests/runtime/test_scheduler_and_daemon.py)
 - **CLI Commands Wired:**
   - `hex schedule add <cron> --goal <desc> [--project <id>] [--storage-path <path>]`: Registers new scheduled job and prints JSON output with `job_id` and `next_run`.
   - `hex schedule list [--all] [--storage-path <path>]`: Lists all registered scheduled jobs in JSON format.
@@ -99,9 +99,9 @@ Plan 11-01 delivers the continuous background scheduling and OS residency founda
 
 | File | Status | Description |
 |------|--------|-------------|
-| `src/harness_core/scheduler.py` | Created | Zero-dependency 5-field cron parser, `ScheduledJob`, and atomic `TaskScheduler` engine with webhook alerts |
-| `src/harness_core/daemon.py` | Created | `DaemonConfig` and `DaemonInstaller` generating macOS LaunchAgent plist and Linux systemd service units with dry-run support |
-| `src/harness_core/webhooks.py` | Modified | Added `send_alert` method for Telegram HTML and Discord embed failure alerting |
-| `src/harness_core/cli.py` | Modified | Added `hex schedule` and `hex daemon` command parsers and dispatch logic |
+| `harness_core/scheduler.py` | Created | Zero-dependency 5-field cron parser, `ScheduledJob`, and atomic `TaskScheduler` engine with webhook alerts |
+| `harness_core/daemon.py` | Created | `DaemonConfig` and `DaemonInstaller` generating macOS LaunchAgent plist and Linux systemd service units with dry-run support |
+| `harness_core/webhooks.py` | Modified | Added `send_alert` method for Telegram HTML and Discord embed failure alerting |
+| `harness_core/cli.py` | Modified | Added `hex schedule` and `hex daemon` command parsers and dispatch logic |
 | `tests/runtime/test_scheduler_and_daemon.py` | Created | 25 unit and integration tests for cron parsing, scheduling engine, daemon installer, and CLI invocations |
 | `.gsd/phases/11-autonomous-automations-skills/11-01-SUMMARY.md` | Created | This verification and execution summary |

@@ -1,11 +1,11 @@
 # Plan 28-01: Persistent In-Memory Python CodeKernel & KernelRegistry Summary
 
 ## 1. Overview
-Delivered the persistent REPL code kernel engine and bounded kernel registry in `src/harness_core/code_kernel.py` matching the Hermes Agent reference (`benchmarks/hermes-agent/tools/code_kernel.py`). This establishes an isolated child Python subprocess supervisor for executing multi-turn code cells while preserving namespace state (`GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}`), communicating via a cryptographic sentinel framed protocol, enforcing output clipping with disk spill fallback, tracking stale imported modules edited on disk, terminating wedged executions via SIGKILL, and managing process lifecycles via a thread-safe `KernelRegistry`.
+Delivered the persistent REPL code kernel engine and bounded kernel registry in `harness_core/code_kernel.py` matching the Hermes Agent reference (`benchmarks/hermes-agent/tools/code_kernel.py`). This establishes an isolated child Python subprocess supervisor for executing multi-turn code cells while preserving namespace state (`GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}`), communicating via a cryptographic sentinel framed protocol, enforcing output clipping with disk spill fallback, tracking stale imported modules edited on disk, terminating wedged executions via SIGKILL, and managing process lifecycles via a thread-safe `KernelRegistry`.
 
 ## 2. Key Accomplishments
 
-### Task 1: Runner Script, Framed Protocol & Persistent CodeKernel Subprocess Engine (`src/harness_core/code_kernel.py`)
+### Task 1: Runner Script, Framed Protocol & Persistent CodeKernel Subprocess Engine (`harness_core/code_kernel.py`)
 - **Child Runner Generation:** Authored `KERNEL_RUNNER_SOURCE` and `RUNNER_CELL_SOURCE` running a continuous request loop over `sys.stdin` with `contextlib.redirect_stdout` and `contextlib.redirect_stderr`.
 - **Sentinel Framed Wire Protocol:** Implemented bidirectional framing using dynamic cryptographic sentinels (`@@HEX-KERNEL-<token>@@`):
   `b"\n" + sentinel.encode() + b" " + str(len(body)).encode() + b"\n" + body`
@@ -15,7 +15,7 @@ Delivered the persistent REPL code kernel engine and bounded kernel registry in 
 - **Process Group & Timeout Termination:** Configured `start_new_session=True` on POSIX and `_kill_process_tree` with escalation from SIGTERM to SIGKILL (`os.killpg`), preventing orphaned or wedged processes on execution timeouts.
 - **Commit:** `29d44d5 feat(phase-28): persistent repl code kernel subprocess engine and kernel registry`
 
-### Task 2: KernelRegistry, LRU / Idle Eviction, Stale Warning Formatter & Unit Test Suite (`src/harness_core/code_kernel.py`, `tests/runtime/test_code_kernel.py`)
+### Task 2: KernelRegistry, LRU / Idle Eviction, Stale Warning Formatter & Unit Test Suite (`harness_core/code_kernel.py`, `tests/runtime/test_code_kernel.py`)
 - **KernelRegistry Lifecycle & LRU Pooling:** Built thread-safe registry keyed by `(owner, cwd)` with bounded capacity (`max_kernels=4`), idle timeout sweeping (`idle_timeout=1800`), unpinned LRU eviction, and graceful shutdown.
 - **Background Idle Reaper:** Periodic background daemon thread sweeping expired idle kernels without blocking interactive execution.
 - **Stale Module Warning Formatter:** Implemented `stale_modules_warning(stale_modules)` producing model-friendly advisories with secret redaction.

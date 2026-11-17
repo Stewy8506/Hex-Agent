@@ -48,7 +48,7 @@
 - **Goal:** Incorporate top developer ergonomics identified from reverse-engineering Nous Research HEX Agent: `hex doctor` diagnostic suite, deep multi-framework recipe detection, SQLite FTS5 full-text transcript search, single-command state backup and diagnostic dump, and optimized multi-language Graphify caching.
 - **Must-haves:**
   - `hex doctor` with `--fix` and `--live` diagnosing Python runtime, M4/GPU acceleration, CoW drivers, sandboxes, and API keys.
-  - Multi-framework recipe detector in `src/harness_core/recipes.py` discovering bootstrap/build/test commands across Python, Node.js, Rust, Go, Makefile, and Docker.
+  - Multi-framework recipe detector in `harness_core/recipes.py` discovering bootstrap/build/test commands across Python, Node.js, Rust, Go, Makefile, and Docker.
   - SQLite FTS5 full-text search across past tasks, tool call journals, and transcripts via `hex search "<query>"`.
   - State backup and plain-text support dump via `hex backup` and `hex dump`.
   - Incremental disk caching and multi-language support in `ActiveGraphifyAdapter`.
@@ -328,7 +328,7 @@
 ```
 
 ### Phase 24: Continuous Multi-Turn ReAct Tool Loop (Hermes Parity Pillar 1)
-- **Goal:** Implement an autonomous multi-turn ReAct loop in `src/harness_core/react_loop.py` capable of executing up to 50 continuous turns per session, invoking tools iteratively through `ToolGateway`, appending outputs to dialogue history, and running until task completion or error boundary.
+- **Goal:** Implement an autonomous multi-turn ReAct loop in `harness_core/react_loop.py` capable of executing up to 50 continuous turns per session, invoking tools iteratively through `ToolGateway`, appending outputs to dialogue history, and running until task completion or error boundary.
 - **Must-haves:**
   - `ReActLoop` class with cycle limits, token budget monitoring, and early-termination guards (`<finish>` or no remaining tool calls).
   - Integration with `HarnessOrchestrator.run_agent_loop` and `HexConsole`.
@@ -341,11 +341,11 @@
   - Cargo workspace with `crates/hex-protocol` (shared domain models, JSON-RPC 2.0 ACP client, diff parser) and `crates/hex-tui` (Ratatui binary).
   - Instant $<2\text{ ms}$ startup, dual-buffer zero-flicker differential rendering on alt-screen.
   - Interactive multi-pane cockpit layout: sticky header with CoW status and model, active streaming dialogue viewport with collapsible tool call accordions, colorized unified/side-by-side git diff pane, and interactive text composer with command autocompletion.
-  - Python launcher integration: `hex tui` or `hex chat --ratatui` launching the native binary connected over stdio to `src/harness_core/acp.py`.
+  - Python launcher integration: `hex tui` or `hex chat --ratatui` launching the native binary connected over stdio to `harness_core/acp.py`.
 - **Verification:** `cargo test --workspace` unit tests for JSON-RPC message serialization/deserialization, state transitions, and integration tests running `hex-tui --check`.
 
 ### Phase 26: 4-Phase Context Compactor & Prompt Cache Locking (Hermes Parity Pillar 3)
-- **Goal:** Implement a production-grade 4-phase context compactor in `src/harness_core/context_compressor.py` matching `agent/context_compressor.py` in Hermes: stale tool output demotion, atomic tool-pair boundary protection, middle-turn compression, and static prompt-cache prefix locking.
+- **Goal:** Implement a production-grade 4-phase context compactor in `harness_core/context_compressor.py` matching `agent/context_compressor.py` in Hermes: stale tool output demotion, atomic tool-pair boundary protection, middle-turn compression, and static prompt-cache prefix locking.
 - **Must-haves:**
   - `ContextCompactor` with `compact_messages(messages, budget_tokens)` preserving system prompt head and recent turn tail.
   - Strict preservation of `<tool_call>` and corresponding `<tool_result>` pairs (never splitting an atomic pair).
@@ -354,7 +354,7 @@
 - **Verification:** Unit tests verifying token budget adherence, atomic pair preservation, stale tool pruning, and cache prefix stability.
 
 ### Phase 27: PTY Background Process Supervisor & Stream Registry (Hermes Parity Pillar 4)
-- **Goal:** Implement an asynchronous pseudo-terminal (PTY) process registry in `src/harness_core/process_registry.py` matching `tools/process_registry.py` in Hermes, allowing long-running background tasks (e.g. dev servers, build processes) to run and be inspected.
+- **Goal:** Implement an asynchronous pseudo-terminal (PTY) process registry in `harness_core/process_registry.py` matching `tools/process_registry.py` in Hermes, allowing long-running background tasks (e.g. dev servers, build processes) to run and be inspected.
 - **Must-haves:**
   - `ProcessRegistry` supporting process creation, PTY allocation, circular ring buffer for stdout/stderr, and graceful termination.
   - Gateway tools: `start_process`, `read_terminal`, `kill_process`, `list_processes`.
@@ -362,7 +362,7 @@
 - **Verification:** Unit tests verifying background process startup, non-blocking tail reads from ring buffer, process listing, and safe termination.
 
 ### Phase 28: Persistent REPL Code Kernel with Cross-Turn State (Hermes Parity Pillar 5)
-- **Goal:** Implement an interactive persistent Python code kernel in `src/harness_core/code_kernel.py` matching `tools/code_kernel.py` in Hermes, enabling persistent variables, functions, and imports across consecutive turns within the task CoW workspace.
+- **Goal:** Implement an interactive persistent Python code kernel in `harness_core/code_kernel.py` matching `tools/code_kernel.py` in Hermes, enabling persistent variables, functions, and imports across consecutive turns within the task CoW workspace.
 - **Must-haves:**
   - `PersistentCodeKernel` executing code snippets with state preservation, capturing stdout/stderr and expression values.
   - Gateway tool: `code_kernel` with timeout protection and memory isolation.
@@ -392,9 +392,9 @@
 ### Phase 30: Multi-Tier Soul Engine & Dynamic Mode Modulators
 - **Goal:** Establish first-class identity and persona modulation in HEX without prompt bloat, separating machine-wide developer DNA (`~/.hex/USER.md` + `~/.hex/SOUL.md`) from repository architecture (`.hex/`), and providing punchy 3–4 line mode modulators for `plan`, `agent`, and `code`.
 - **Must-haves:**
-  - `SoulManager` in `src/harness_core/soul.py`: global vs workspace resolution, compact budget discipline (~300–500 tokens), default template auto-seeding, legacy template hash detection, and `/rename <name>` support.
+  - `SoulManager` in `harness_core/soul.py`: global vs workspace resolution, compact budget discipline (~300–500 tokens), default template auto-seeding, legacy template hash detection, and `/rename <name>` support.
   - Punchy 3–4 line behavioral overrides for `plan` (architect), `agent` (builder), and `code` (surgical coder) injected right below Slot #1.
-  - Prompt pipeline slotting in `src/harness_core/prompt_builder.py` and integration into `HarnessOrchestrator.run_agent_loop` and `ReActLoop`.
+  - Prompt pipeline slotting in `harness_core/prompt_builder.py` and integration into `HarnessOrchestrator.run_agent_loop` and `ReActLoop`.
   - Prompt injection heuristic scanning: warn for user-authored souls, block third-party distribution souls.
 - **Verification:** Unit tests verifying soul resolution hierarchy, seeding, legacy upgrades, `/rename`, mode modulator injection, and injection scanning.
 
@@ -487,20 +487,20 @@
 ```
 [x] Phase 36: Clean Package Restructuring & Multi-Credential Resilience
 [x] Phase 37: Conversational Workflow Supremacy, Timeline Rewind & MoA
-[x] Phase 38: Native macOS GPUI Desktop Cockpit (crates/hex-desktop)
+[x] Phase 38: Native macOS GPUI Desktop Cockpit (App/hex-desktop)
 [ ] Phase 39: Expanded Connectors, Plugin Ecosystem & OS Automation
 ```
 
 ---
 
 ### Phase 36: Clean Package Restructuring & Multi-Credential Resilience
-- **Goal:** Reorganize the monolithic `src/harness_core/` into clean domain packages (`core/`, `storage/`, `cognition/`, `runtime/`, `capabilities/`, `gateways/`, `providers/`) with full backward-compatibility re-exports, implement multi-credential rotation pools, transient endpoint blackholing, local socket introspection, and OS Keychain integration.
+- **Goal:** Reorganize the monolithic `harness_core/` into clean domain packages (`core/`, `storage/`, `cognition/`, `runtime/`, `capabilities/`, `gateways/`, `providers/`) with full backward-compatibility re-exports, implement multi-credential rotation pools, transient endpoint blackholing, local socket introspection, and OS Keychain integration.
 - **Must-haves:**
   - **Plan 36-01: Modular Package Restructuring & Backward Compatibility Layer**:
-    - Restructure `src/harness_core/` into domain subpackages with top-level `__init__.py` facade re-exports preserving 100% of existing import paths.
+    - Restructure `harness_core/` into domain subpackages with top-level `__init__.py` facade re-exports preserving 100% of existing import paths.
     - Validate with complete test suite passing (zero broken imports).
   - **Plan 36-02: Multi-Credential Pool & Endpoint Blackholing**:
-    - Implement `CredentialPool` in `src/harness_core/` supporting multiple keys per provider, automatic round-robin / least-utilized dispatch, and cooldown queues on HTTP 429/overload.
+    - Implement `CredentialPool` in `harness_core/` supporting multiple keys per provider, automatic round-robin / least-utilized dispatch, and cooldown queues on HTTP 429/overload.
     - Implement 30s transient endpoint blackholing (`_endpoint_blackholed`) for failed local/custom server connections, preventing orchestrator thread freezes.
   - **Plan 36-03: Local Server Socket Introspection & OS Keychain Vault**:
     - Implement live local socket probes for Ollama (`/api/show` Modelfile `num_ctx` vs GGUF max), LM Studio (`/api/v0/models`), llama.cpp (`/props`), and vLLM (`/v1/models`).
@@ -516,7 +516,7 @@
     - Implement `/rewind` command in engine and TUI, allowing rollback to any prior turn with historical timeline branching.
     - Implement asynchronous background LLM session title generation (3-5 words) updating Start screen and session switchers.
   - **Plan 37-02: Mixture-of-Agents (MoA) & Repetition Sentry**:
-    - Implement `MoALoop` in `src/harness_core/` enabling proposer-aggregator multi-model synthesis within a turn.
+    - Implement `MoALoop` in `harness_core/` enabling proposer-aggregator multi-model synthesis within a turn.
     - Implement `RepetitionGuard` detecting token/action loops across consecutive turns with out-of-band steering injection, plus thinking tag scrubbers.
   - **Plan 37-03: Temporal Approval Leasing & Mobile Async Reactions**:
     - Implement approval leasing for command patterns and working directories with expiration timers.
@@ -525,11 +525,11 @@
 
 ---
 
-### Phase 38: Native macOS GPUI Desktop Cockpit (`crates/hex-desktop`)
+### Phase 38: Native macOS GPUI Desktop Cockpit (`App/hex-desktop`)
 - **Goal:** Build an ultra-fast, GPU-accelerated desktop application for macOS using Zed's `gpui` framework rendering natively via Metal at 120 FPS, achieving 100% visual and functional parity with the HTML mockup and Ratatui cockpit.
 - **Must-haves:**
   - **Plan 38-01: GPUI Workspace Setup, Metal Pipeline & Design Tokens**:
-    - Create `crates/hex-desktop` linking to `hex-protocol` and `gpui`.
+    - Create `App/hex-desktop` linking to `hex-protocol` and `gpui`.
     - Configure macOS Metal rendering target, window vibrancy, Truecolor design tokens matching HTML mockup (`#0e0e0e`, `#0c0c0c`, `#151515`, `#8fbf93`, `#c98b8b`, `#7aa7ff`), and typography.
   - **Plan 38-02: Screen 0 Start & Screen 1 Active Cockpit**:
     - Screen 0 Start: Project telemetry, animated canvas, angled prompt card with rotating placeholder, shortcut badges, and interactive session resume selector.

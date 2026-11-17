@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-15  
 **Auditor Role:** Senior Verification & Architecture Auditor (Independent)  
-**Target Codebase:** HEX Autonomous AI Workbench (`src/harness_core/`)  
+**Target Codebase:** HEX Autonomous AI Workbench (`harness_core/`)\
 **Baseline Benchmark:** Nous Research Hermes Agent (`benchmarks/hermes-agent/`)  
 **Overall Verdict:** **SUPERIOR (100% Behavioral Parity + 8 Critical Architectural Advancements)**
 
@@ -138,12 +138,12 @@ During the audit, two minor API ergonomics discrepancies were identified and imm
 
 1. **`SkillExecutionEngine.run_skill_verification` Flexibility:**
    - *Observation:* The method expected a pre-extracted `SkillVerificationHook` instance. Passing a raw skill string or frontmatter block raised an `AttributeError`.
-   - *Fix Applied:* Updated `run_skill_verification` in `src/harness_core/skills/executor.py` to auto-detect string inputs and invoke `extract_verification_hook(hook)` automatically.
+   - *Fix Applied:* Updated `run_skill_verification` in `skill_engine/executor.py` to auto-detect string inputs and invoke `extract_verification_hook(hook)` automatically.
    - *Commit:* `ab8cc83` (`fix(core): improve ergonomics of run_skill_verification and query_jit_memories_for_file`).
 
 2. **`query_jit_memories_for_file` Parameter Consistency:**
    - *Observation:* `query_jit_memories_for_file` used `workspace_dir` as a required positional argument, whereas several caller conventions use `workspace_root`.
-   - *Fix Applied:* Updated `query_jit_memories_for_file` in `src/harness_core/memory.py` to accept `workspace_root` as an aliased keyword argument and default safely to `Path.cwd()`.
+   - *Fix Applied:* Updated `query_jit_memories_for_file` in `harness_core/memory.py` to accept `workspace_root` as an aliased keyword argument and default safely to `Path.cwd()`.
    - *Commit:* `ab8cc83`.
 
 ---

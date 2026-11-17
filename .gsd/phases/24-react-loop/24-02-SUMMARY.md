@@ -9,7 +9,7 @@
 
 ## 1. Objectives Delivered
 
-1. **Integrated `run_agent_loop` into `HarnessOrchestrator` (`src/harness_core/orchestrator.py`)**:
+1. **Integrated `run_agent_loop` into `HarnessOrchestrator` (`harness_core/orchestrator.py`)**:
    - Implemented `run_agent_loop(self, goal: str, workspace_root: Path | str | None = None, max_turns: int = 30, task_id: str | None = None) -> dict[str, Any]`.
    - Wires `ReActLoop` using `self.gateway`, `self.ledger`, and a model caller backed by `self.router.execute_routed_request(...)` when active cloud/provider credentials are configured.
    - Built deterministic tool planner fallback for offline/unconfigured environments, inspecting workspace structure, tool definitions, observations, and goals.
@@ -17,7 +17,7 @@
    - Records `REACT_SESSION_COMPLETED` audit event with turns count, termination reason, and final answer into the ledger.
    - Returns structured dictionary: `{"success": bool, "final_answer": str, "turns_count": int, "termination_reason": str, "turns": list, "task_id": str}`.
 
-2. **Added `/react` Slash Command & Progressive Tool Cards to `HexConsole` (`src/harness_core/tui.py`)**:
+2. **Added `/react` Slash Command & Progressive Tool Cards to `HexConsole` (`harness_core/tui.py`)**:
    - Registered `/react` in `HexConsole.SLASH_COMMANDS` and `/help` menu.
    - Implemented `_cmd_react(arg: str)`: supports `/react on`, `/react off`, and toggle (`/react`), printing colored status feedback.
    - Added `react_mode: bool = False` parameter to `HexConsole.__init__`.
@@ -29,7 +29,7 @@
      - Tool observation results: `✓ Observation [<name>] (<latency>ms)` or `✖ Error [<name>]`.
      - Terminal result card with Markdown formatting and hands-free voice commentary integration.
 
-3. **Added `--react` Flag to CLI Subcommands (`src/harness_core/cli.py`)**:
+3. **Added `--react` Flag to CLI Subcommands (`harness_core/cli.py`)**:
    - Added `--react` (`action="store_true"`) to root parser, `hex run` / `hex exec`, and `hex chat` / `hex tui`.
    - Passed `react_mode=bool(getattr(args, "react", False))` to `HexConsole` instantiation.
    - Handled `--react` in `cmd in ("run", "exec")` to execute `orch.run_agent_loop(goal=args.goal, workspace_root=ws_root)` and emit structured JSON results.

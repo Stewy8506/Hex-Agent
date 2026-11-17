@@ -1,7 +1,7 @@
 # FIT & FINISH AUDIT REPORT: DOMAIN 1
 # Agent Core, Multi-Turn ReAct Loop & Prompt Engine
 
-**Target Codebase:** HEX (`src/harness_core/react_loop.py`, `src/harness_core/context_compressor.py`, `src/harness_core/router.py`, `src/harness_core/orchestrator.py`, `src/harness_core/providers/*`)  
+**Target Codebase:** HEX (`harness_core/react_loop.py`, `harness_core/context_compressor.py`, `harness_core/router.py`, `harness_core/orchestrator.py`, `providers/*`)\
 **Reference Benchmark:** Hermes Agent (`benchmarks/hermes-agent/agent/`)  
 **Audit Date:** 2026-11-14  
 **Audit Scope:** Multi-Turn Reasoning Loop Robustness, Context Compaction & Token Budget Management, Thinking Block Retention & Provider Payloads, Code Quality & Exception Safety.
@@ -32,11 +32,11 @@ HEX implements a substantial, highly structured foundational architecture for au
   - **Durability Invariant (Persist-Before-Execute):** Before any tool executes, the assistant turn containing tool calls is incrementally persisted to the session database (`agent._flush_messages_to_session_db`, lines 130–140). If a destructive tool restarts the runtime or crashes the process, session resume immediately sees the executed block.
   - **Tool Call Batch Expansion & Normalization (`benchmarks/hermes-agent/agent/tool_call_batches.py:14-60`):** Tool calls undergo provider ID normalization (`normalize_provider_tool_call_ids`), batch expansion, and deduplication (`agent._deduplicate_tool_calls`, lines 97–103).
   - **Mixed-Batch Validation (`benchmarks/hermes-agent/agent/turn_tool_round.py:104-129`):** When a model emits both valid and invalid tool calls in a single turn, Hermes keeps *every* emitted call in the assistant message to maintain wire schema integrity, emits synthetic error `role: "tool"` messages for the invalid ones, and executes only the valid tools.
-- **HEX Implementation (`src/harness_core/react_loop.py:201-450`, `736-883`):**
+- **HEX Implementation (`harness_core/react_loop.py:201-450`, `736-883`):**
   - **Parsing Versatility (`react_loop.py:201-449`):** `parse_tool_calls` provides fallback parsing across 6 formats: native dicts with `tool_calls`, XML tags (`<tool_call>`), markdown JSON blocks (` ```json `), raw top-level JSON, embedded JSON objects via brace counting (`_find_json_objects`), and text outside tags as `thought`.
   - **Message Representation Deviation (`react_loop.py:829-873`):** Tool outputs are appended into `self.messages` not as `role: "tool"` with matching `tool_call_id`, but as `role: "user"` with XML wrapper strings:
     ```python
-    # src/harness_core/react_loop.py:866-873
+    # harness_core/react_loop.py:866-873
     self.messages.append(
         {
             "role": "user",
@@ -47,7 +47,7 @@ HEX implements a substantial, highly structured foundational architecture for au
     )
     ```
     This creates an immediate mismatch for native OpenAI or Anthropic tool formats, where consecutive user messages or user-role tool results violate API protocol rules.
-  - **Plaintext Prompt Serialization in Orchestrator (`src/harness_core/orchestrator.py:468-484`):**
+  - **Plaintext Prompt Serialization in Orchestrator (`harness_core/orchestrator.py:468-484`):**
     When running via `orchestrator.py::run_react_loop`, `_react_model_caller` serializes all chat history into a single string using `ReActLoop._format_messages_to_prompt`:
     ```python
     prompt_str = ReActLoop._format_messages_to_prompt(messages)
@@ -65,7 +65,7 @@ HEX implements a substantial, highly structured foundational architecture for au
   - Hermes checks `_neutralise_replay_echo_ghosts` to detect repetitive cycling or hallucinated replay echoes.
   - Explicit handling of finish reasons: `stop`, `tool_calls`, `length` (context truncation recovery via `truncated_tool_call_retries`), and `content_filter`.
   - Iteration budget warning injection: warns model when reaching the final turns of its iteration cap before hard termination.
-- **HEX Implementation (`src/harness_core/react_loop.py:785-827`, `884-887`):**
+- **HEX Implementation (`harness_core/react_loop.py:785-827`, `884-887`):**
   - Evaluates `<finish>...</finish>` tags, case-insensitive `<finish>` markers, or an empty `tool_calls` list as termination (`termination_reason="finish"` or `"no_tool_calls"`).
   - Hard limit at `config.max_turns` (default 30).
   - **Gaps:** Does not inspect API finish reasons (e.g. `finish_reason == "length"`). Truncated JSON outputs are treated as parse errors or plaintext thoughts, leading to unexpected premature termination or malformed execution loops.
@@ -76,7 +76,7 @@ HEX implements a substantial, highly structured foundational architecture for au
   - Emits real-time tokens to streaming consumers (TUI, WebSocket, CLI).
   - Stalled chunk watchdog detects dead sockets and token droughts.
   - Stores partial streamed assistant text (`_current_streamed_assistant_text`) to allow seamless recovery on connection drop.
-- **HEX Implementation (`src/harness_core/react_loop.py:455-475`, `897-907`):**
+- **HEX Implementation (`harness_core/react_loop.py:455-475`, `897-907`):**
   - Model caller invocation is strictly blocking and synchronous (`self.model_caller(messages)`).
   - `run_async` (`react_loop.py:897-907`) is a thin wrapper calling `loop.run_in_executor(None, self.run, ...)`.
   - There is no generator or event dispatch mechanism inside `ReActLoop` to emit token chunks, tool start/end events, or thinking deltas to the UI/TUI during execution.
@@ -91,7 +91,7 @@ HEX implements a substantial, highly structured foundational architecture for au
     1. *Gateway Session Hygiene (85% threshold):* Runs before agent invocation to protect against overnight or multi-turn conversational bloat.
     2. *Agent ContextCompressor (50% threshold):* In-loop proactive compaction triggered by token accounting.
   - Multi-pass compression: Tool output truncation, media eviction, summary template generation with verified user provenance, skill marker reinjection (`_reinject_pruned_skill_markers`), and shadow summary elimination (`drop_shadowed_checkpoints`).
-- **HEX Implementation (`src/harness_core/context_compressor.py:210-1124`):**
+- **HEX Implementation (`harness_core/context_compressor.py:210-1124`):**
   - HEX implements an explicit 4-phase pipeline in `context_compressor.py`:
     - **Phase 1: Tool Demotion (`demote_stale_tail_tools`, lines 210–328):** Scans backwards from the tail, identifies tool rounds, protects recent `keep_tool_rounds` (default 4), and demotes bulky tool outputs exceeding `min_demote_chars` (default 1000) using head/tail preservation (`elide_middle`) and `HEX_COMPRESSION_MARKER_PREFIX`. Tool errors are protected from demotion (`_is_tool_error`, line 286).
     - **Phase 2: Atomic Boundary Protection (`find_tool_call_groups`, `align_boundary_forward`, `align_boundary_backward`, `validate_atomic_boundaries`, `sanitize_tool_pairs`, lines 335–607):** Computes atomic spans for tool calls and matching results for both structured and XML formats. `align_boundary_forward` and `align_boundary_backward` ensure a compaction cut never splits a tool call from its result.
@@ -106,7 +106,7 @@ HEX implements a substantial, highly structured foundational architecture for au
 - **Hermes Baseline (`benchmarks/hermes-agent/agent/context_compressor.py:4492-4550`):**
   - Resolves tool call ID variants across OpenAI, Anthropic, Bedrock, and LiteLLM wrappers (`_tool_call_id_variants`).
   - Strips orphan tool results and unresponded tool calls while keeping matched pairs intact.
-- **HEX Implementation (`src/harness_core/context_compressor.py:335-607`):**
+- **HEX Implementation (`harness_core/context_compressor.py:335-607`):**
   - `find_tool_call_groups` parses both structured OpenAI-style (`tool_calls` list with `id`/`call_id`) and XML `<tool_call>` / `<observation>` pairs.
   - `sanitize_tool_pairs` (lines 545–607) strips orphan tool messages lacking a preceding assistant call, and strips unresolved tool calls from assistant messages if no matching tool response exists.
   - `validate_atomic_boundaries` (lines 449–543) provides an empirical verification predicate ensuring zero broken pairs.
@@ -115,7 +115,7 @@ HEX implements a substantial, highly structured foundational architecture for au
 #### 2.3 Stale Output Pruning & Historical Media Eviction
 - **Hermes Baseline (`benchmarks/hermes-agent/agent/context_compressor.py:1427-1454`):**
   - Replaces historical base64 image blocks prior to the tail with placeholder strings (`_replace_image_parts`, `_strip_images_from_tool_msg`) to prevent HTTP 413 (Payload Too Large).
-- **HEX Implementation (`src/harness_core/context_compressor.py:610-659`):**
+- **HEX Implementation (`harness_core/context_compressor.py:610-659`):**
   - `strip_historical_media` replaces base64 images and `image_url` dictionaries prior to `tail_start` with `[historical image omitted at compaction]`.
   - Supports both content part arrays (`[{"type": "image_url", ...}]`) and inline data URIs in string content.
   - **Parity Rating:** **95%** — Full parity with Hermes.
@@ -126,13 +126,13 @@ HEX implements a substantial, highly structured foundational architecture for au
   - Distinguishes native Anthropic vs proxy/LiteLLM endpoints (`tool_part_markers`).
   - Automatically selects legal transaction endpoints (`_completed_transaction_endpoint_indexes`) so markers never land on partial turns.
   - Manages auto-TTL (`auto_cache_ttl_for_source`: `1h` for human, `5m` for machine).
-- **HEX Implementation (`src/harness_core/context_compressor.py:1130-1269`):**
+- **HEX Implementation (`harness_core/context_compressor.py:1130-1269`):**
   - `stabilize_prompt_cache_prefix` strips duplicate system messages and pins canonical system instructions to index 0.
   - `apply_cache_control_breakpoints` injects up to 4 breakpoints: (1) last tool definition, (2) system prompt, (3) latest context summary, (4) second-to-last turn in active tail.
-  - **Gap in HEX Integration (`src/harness_core/providers/cloud_provider.py:752-785`):**
+  - **Gap in HEX Integration (`providers/cloud_provider.py:752-785`):**
     While `apply_cache_control_breakpoints` is defined in `context_compressor.py`, `cloud_provider.py` does not call it. Instead, `cloud_provider.py` uses a static, hardcoded check:
     ```python
-    # src/harness_core/providers/cloud_provider.py:752-758
+    # providers/cloud_provider.py:752-758
     if enable_prompt_caching and cacheable_prefix:
         user_content = [
             {"type": "text", "text": cacheable_prefix, "cache_control": {"type": "ephemeral"}},
@@ -158,7 +158,7 @@ HEX implements a substantial, highly structured foundational architecture for au
     3. Filters out only the invalid signed blocks on retry and future session loads (`strip_rejected_thinking`) without mutating canonical history.
     4. Drops duplicate readable mirrors (`reasoning`, `reasoning_content`) so invalid blocks don't re-enter as unsigned reasoning.
     5. Carries fingerprints forward across context compaction boundaries (`carry_rejected_thinking_to_session`).
-- **HEX Implementation (`src/harness_core/providers/antigravity_provider.py`, `cloud_provider.py`):**
+- **HEX Implementation (`providers/antigravity_provider.py`, `cloud_provider.py`):**
   - `registry.py` defines model identifiers including `claude-opus-4-6-thinking` and `claude-3-7-sonnet-20250219`.
   - **Zero Thinking Block Retention:** Neither `antigravity_provider.py` nor `cloud_provider.py` preserves `type: "thinking"` blocks with cryptographic signatures. Thinking is either discarded or concatenated into plain text.
   - **No Signature Rejection Handling:** If a model returns signed thinking blocks that are subsequently re-sent following compaction or edit, and the provider rejects them with HTTP 400, HEX has no suppression mechanism and the session crashes fatally.
@@ -167,14 +167,14 @@ HEX implements a substantial, highly structured foundational architecture for au
 - **Hermes Baseline (`benchmarks/hermes-agent/agent/reasoning_effort.py`, `agent/turn_usage.py`):**
   - Configurable `reasoning_effort` (`low`, `medium`, `high`) passed to OpenAI `/chat/completions` for o1/o3-mini.
   - Tracks `completion_tokens_details.reasoning_tokens` and includes them in context window accounting and billing telemetry.
-- **HEX Implementation (`src/harness_core/router.py`, `cloud_provider.py`):**
+- **HEX Implementation (`harness_core/router.py`, `cloud_provider.py`):**
   - `registry.py:149-150` includes `o1` and `o3-mini`.
   - However, `cloud_provider.py` does not pass `reasoning_effort` in request payloads, and does not parse `reasoning_tokens` out of usage telemetry into `ModelResponse.usage`.
 
 #### 3.3 Gemini Thinking Budgets
 - **Hermes Baseline (`benchmarks/hermes-agent/agent/turn_api_request.py`):**
   - Passes `thinkingConfig: {"thinkingBudget": ...}` for Gemini 2.5 Flash / Pro thinking models.
-- **HEX Implementation (`src/harness_core/providers/antigravity_provider.py:317`):**
+- **HEX Implementation (`providers/antigravity_provider.py:317`):**
   - Lists `gemini-2.5-flash-thinking` and `gemini-2.5-pro`.
   - Request payloads (`antigravity_provider.py:1372-1415`) do not configure `thinkingConfig` or set thinking budgets.
 
@@ -187,10 +187,10 @@ HEX implements a substantial, highly structured foundational architecture for au
   - Comprehensive error categorization (`ClassifiedError`).
   - Pre-classification recovery: Strips images and retries on HTTP 413 (`_strip_request_images_and_retry`), fixes Unicode encoding failures (`_recover_unicode_encode_error`), handles format errors (`_recover_format_errors`).
   - Post-classification recovery: Parses rate limit reset timestamps (`limit_reset_epoch`), calculates backoff with jitter (`compute_error_backoff`), implements interruptible sleep (`interruptible_backoff_sleep`), auto-refreshes expired transport credentials on 401 (`_refresh_credentials_after_401`), and executes tier/model fallback (`route_classified_error`).
-- **HEX Implementation (`src/harness_core/react_loop.py:761-780`):**
+- **HEX Implementation (`harness_core/react_loop.py:761-780`):**
   - Model invocation inside `ReActLoop.run` is wrapped in a single raw try/except block:
     ```python
-    # src/harness_core/react_loop.py:761-779
+    # harness_core/react_loop.py:761-779
     try:
         response = self._call_model(self.messages)
     except Exception as e:
@@ -212,7 +212,7 @@ HEX implements a substantial, highly structured foundational architecture for au
 #### 4.2 Concurrency & Execution Performance
 - **Hermes Baseline:**
   - Fully asynchronous core architecture with non-blocking I/O, background turn processing, and cancellation hooks.
-- **HEX Implementation (`src/harness_core/react_loop.py:486-618`, `897-907`):**
+- **HEX Implementation (`harness_core/react_loop.py:486-618`, `897-907`):**
   - Tool execution is synchronous and blocking. If a shell command or browser tool takes 60 seconds, the thread is blocked.
   - `run_async` simply delegates to `run_in_executor`. Under high session load, this can exhaust Python threadpools.
 
@@ -241,10 +241,10 @@ HEX implements a substantial, highly structured foundational architecture for au
 ## Actionable Remediation Roadmap
 
 ### Priority 1: In-Loop Exponential Backoff & Transient Error Recovery
-**Target:** `src/harness_core/react_loop.py`  
+**Target:** `harness_core/react_loop.py`\
 **Prescription:** Wrap `_call_model` with a retry loop supporting exponential backoff with jitter for transient errors (HTTP 429, 500, 502, 503, 504, timeout).
 ```python
-# Remediation in src/harness_core/react_loop.py
+# Remediation in harness_core/react_loop.py
 max_retries = 3
 backoff_base = 2.0
 for attempt in range(max_retries + 1):
@@ -259,7 +259,7 @@ for attempt in range(max_retries + 1):
 ```
 
 ### Priority 2: Native Tool Message Formatting & Structured Protocol
-**Target:** `src/harness_core/react_loop.py` & `src/harness_core/orchestrator.py`  
+**Target:** `harness_core/react_loop.py` & `harness_core/orchestrator.py`\
 **Prescription:** Support standard `role: "tool"` (OpenAI) and content-part `tool_result` (Anthropic) alongside XML fallback:
 ```python
 # Format observation properly based on active mode
@@ -280,17 +280,17 @@ else:
 ```
 
 ### Priority 3: Anthropic Thinking Block Retention & Rejection Suppression
-**Target:** `src/harness_core/providers/cloud_provider.py` & `src/harness_core/context_compressor.py`  
+**Target:** `providers/cloud_provider.py` & `harness_core/context_compressor.py`\
 **Prescription:**
 1. In `cloud_provider.py`, preserve `type: "thinking"` and `signature` blocks when converting responses.
 2. Implement durable fingerprinting of rejected signatures (`_fingerprint`) matching `benchmarks/hermes-agent/agent/anthropic_thinking_replay.py:30-150` so that if Anthropic returns HTTP 400 for a signature, HEX drops the bad signature from the request copy and retries automatically.
 
 ### Priority 4: Shadow Checkpoint Deduplication in Compactor
-**Target:** `src/harness_core/context_compressor.py`  
+**Target:** `harness_core/context_compressor.py`\
 **Prescription:** Add a pre-compaction step in `ContextCompactor.compact_messages` that collapses prior `SUMMARY_HEADER` messages so only the newest consolidated summary remains in context.
 
 ### Priority 5: Streaming Token Event Dispatch
-**Target:** `src/harness_core/react_loop.py`  
+**Target:** `harness_core/react_loop.py`\
 **Prescription:** Add an optional `on_event` callback or async generator to `ReActLoop` emitting `TokenChunk`, `ToolStart`, `ToolEnd`, and `TurnComplete` events for real-time frontend and TUI visualization.
 
 ---

@@ -17,7 +17,7 @@ Executed the comprehensive subpackage import migration and stub removal sweep ac
 - `capabilities/`: `browser.py`, `vision.py`, `voice.py`, `search.py`, `web_search.py`, `git_autopilot.py`, `github_action.py`, `proof.py`, `recipes.py`, `webhooks.py`
 - `models/`: `model_metadata.py`, `credential_pool.py`
 
-All 47 top-level forwarding stub files under `src/harness_core/` were removed. All imports and `unittest.mock.patch` paths across 122 repository files were updated to target the domain subpackages directly.
+All 47 top-level forwarding stub files under `harness_core/` were removed. All imports and `unittest.mock.patch` paths across 122 repository files were updated to target the domain subpackages directly.
 
 ---
 
@@ -29,8 +29,8 @@ All 47 top-level forwarding stub files under `src/harness_core/` were removed. A
    - Updated `hex.bat` and `install.ps1` invocations to invoke `-m harness_core.client.cli`.
    - Updated `crates/hex-protocol/src/client.rs` to spawn the ACP server using `harness_core.client.cli`.
    - Updated all `unittest.mock.patch("harness_core.<module>...")` strings in `tests/` to target their respective domain subpackage paths.
-   - Updated relative imports in `src/harness_core/` root files (`gateway.py`, `config_loader.py`, `graphify.py`, `harness2_adapter.py`) to point to domain subpackages.
-   - Preserved `src/harness_core/__init__.py` clean dynamic exports for all 7 domain namespaces and top-level symbols (`HarnessOrchestrator`, `LedgerStore`, `TwoTierModelRouter`, `ToolGateway`).
+   - Updated relative imports in `harness_core/` root files (`gateway.py`, `config_loader.py`, `graphify.py`, `harness2_adapter.py`) to point to domain subpackages.
+   - Preserved `harness_core/__init__.py` clean dynamic exports for all 7 domain namespaces and top-level symbols (`HarnessOrchestrator`, `LedgerStore`, `TwoTierModelRouter`, `ToolGateway`).
 
 2. **Purge of 47 Top-Level Forwarding Stub Files:**
    - Deleted:

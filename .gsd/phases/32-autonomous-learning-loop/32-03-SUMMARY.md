@@ -12,18 +12,18 @@
 
 | Must-Have Requirement | Status | Evidence / Verification |
 |---|---|---|
-| **HybridLearningRetriever** combines SQLite FTS5 BM25 ranking with Active Graphify AST 1-hop caller/callee traversal | **Delivered** | `src/harness_core/skills/retrieval.py`, `tests/cognition/test_autonomous_learning.py::test_hybrid_retrieval_lexical_and_ast_ranking` |
+| **HybridLearningRetriever** combines SQLite FTS5 BM25 ranking with Active Graphify AST 1-hop caller/callee traversal | **Delivered** | `skill_engine/retrieval.py`, `tests/cognition/test_autonomous_learning.py::test_hybrid_retrieval_lexical_and_ast_ranking` |
 | Querying learned skills and memories surfaces both lexical keyword matches and connected AST caller/callee gotchas | **Delivered** | `HybridLearningRetriever.query()` fuses BM25 lexical scores with structural AST proximity boost (`2.5` direct, `1.8` 1-hop caller/callee) |
-| CLI command `hex learn <target>` compiles skills with `--name`, `--global`, `--verify`, `--dry-run`, and `--json` flags | **Delivered** | `src/harness_core/cli.py`, 4 unit tests in `tests/skills/test_skill_synthesis.py` |
-| TUI slash command `/learn <target>` provides interactive skill preview, dry-run toggle, and status indicators in HexConsole | **Delivered** | `src/harness_core/tui.py`, `tests/cognition/test_autonomous_learning.py::test_tui_learn_slash_command` |
-| `/skills` command displays `[VERIFY: <cmd>]` tag when a skill carries a `verify:` hook | **Delivered** | `src/harness_core/tui.py::_cmd_skills()`, `tests/cognition/test_autonomous_learning.py::test_tui_skills_display_with_verify_tag` |
+| CLI command `hex learn <target>` compiles skills with `--name`, `--global`, `--verify`, `--dry-run`, and `--json` flags | **Delivered** | `harness_core/cli.py`, 4 unit tests in `tests/skills/test_skill_synthesis.py` |
+| TUI slash command `/learn <target>` provides interactive skill preview, dry-run toggle, and status indicators in HexConsole | **Delivered** | `harness_core/tui.py`, `tests/cognition/test_autonomous_learning.py::test_tui_learn_slash_command` |
+| `/skills` command displays `[VERIFY: <cmd>]` tag when a skill carries a `verify:` hook | **Delivered** | `harness_core/tui.py::_cmd_skills()`, `tests/cognition/test_autonomous_learning.py::test_tui_skills_display_with_verify_tag` |
 | Complete test suites in `tests/skills/test_skill_synthesis.py` and `tests/cognition/test_autonomous_learning.py` pass 100% cleanly | **Delivered** | 55/55 tests green (0 regressions across 800+ repo tests) |
 
 ---
 
 ## 2. Key Architecture & Implementation Details
 
-1. **Hybrid Cross-Session Retrieval (`src/harness_core/skills/retrieval.py`):**
+1. **Hybrid Cross-Session Retrieval (`skill_engine/retrieval.py`):**
    - **`RetrievalMatch` Dataclass**: Exposes `item_type` (`"skill" | "lesson" | "memory"`), `identifier`, `title`, `content`, `score`, `match_type` (`"lexical_fts5" | "ast_1hop" | "hybrid"`), `source_file`, and `associated_symbols`.
    - **`HybridLearningRetriever`**:
      - *Step 1 (Lexical FTS5 Retrieval)*: Scans and indexes workspace skills (`.hex/skills/`, `skills/`), global skills (`~/.hex/skills/`), reflections (`.hex/reflections/LESSONS.md`), active markdown memories (`MEMORY.md`, `GUARDRAILS.md`, `USER.md`), and cold archived memories (`archive.db`) into an in-memory SQLite FTS5 table with BM25 ranking (`unicode61` tokenizer).
@@ -31,7 +31,7 @@
      - *Step 3 (Score Fusion & Re-Ranking)*: Merges BM25 lexical scores with AST structural proximity boosts (`2.5` direct, `1.8` 1-hop caller/callee), assigning `match_type="hybrid"` when an item satisfies both, and sorts top-K candidates.
      - `find_skills_for_task(goal, target_files)`: Specialized query for task intake and autonomous replanning.
 
-2. **CLI Ergonomics (`src/harness_core/cli.py`):**
+2. **CLI Ergonomics (`harness_core/cli.py`):**
    - Implemented `hex learn <target>` with arguments:
      - `target`: File, directory, past task ID, or quoted description.
      - `--name`: Validated lowercase-hyphenated skill name.
@@ -41,7 +41,7 @@
      - `--json`: Structured JSON emission of compilation result and scan report.
    - Outputs colorized formatted card showing name, description, scope, disk location, verification command, and SkillSpector gate decision.
 
-3. **TUI Ergonomics (`src/harness_core/tui.py`):**
+3. **TUI Ergonomics (`harness_core/tui.py`):**
    - Added `/learn [target] [--global] [--dry-run]` slash command to `HexConsole`. If no target is passed, synthesizes from recent dialogue history.
    - Updated `_cmd_help` to document `/learn <target>`.
    - Updated `_cmd_skills` to dynamically inspect `verify` hooks and display `[VERIFY: <cmd>]` tag alongside SkillSpector risk badge.

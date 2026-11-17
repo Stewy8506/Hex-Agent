@@ -5,7 +5,7 @@
 **Auditor:** Independent GSD Verifier  
 **Date:** 2026-11-16  
 **Status:** **PASS**  
-**Audit Scope:** Hermes-parity live context window resolution, models.dev registry lookup, disk caching, CLI parameter propagation, and dynamic token formatting across Python backend (`src/harness_core`) and Rust TUI (`crates/hex-tui`).
+**Audit Scope:** Hermes-parity live context window resolution, models.dev registry lookup, disk caching, CLI parameter propagation, and dynamic token formatting across Python backend (`harness_core`) and Rust TUI (`crates/hex-tui`).
 
 ---
 
@@ -13,7 +13,7 @@
 
 An independent empirical verification was conducted on branch `tui_redesign` in `/Users/anv./Development/Harness`. All audit scopes have been verified directly in the codebase, corroborated with unit, integration, and headless execution tests, and proven with captured tool outputs:
 
-1. **Canonical Model Context Resolution (`src/harness_core/model_metadata.py`):**
+1. **Canonical Model Context Resolution (`harness_core/model_metadata.py`):**
    - `DEFAULT_CONTEXT_LENGTHS` incorporates longest-prefix matching for all major canonical model families:
      - Gemma 4 (`gemma-4-31b-it`, `gemma-4-26b`, `gemma-4`, `gemma4`) -> **256,000** (256k).
      - Google Gemini Pro (`gemini-3-pro`, `gemini-2.5-pro`, `gemini-1.5-pro`) -> **2,097,152** (2M).
@@ -28,7 +28,7 @@ An independent empirical verification was conducted on branch `tui_redesign` in 
    - `lookup_models_dev_context` retrieves provider/model context ceilings from `https://models.dev/api.json` with conditional ETag caching, falling back to primary disk cache in `~/.hex/models_dev_cache.json` and secondary fallback in `~/.hermes/models_dev_cache.json` with 24-hour TTL and backoff retry logic.
    - `format_context_tokens` cleanly renders token counts without trailing zeroes (e.g. 256,000 -> `256k`, 200,000 -> `200k`, 1,000,000 -> `1M`, 1,048,576 -> `1.0M`, 2,097,152 -> `2.1M`).
 
-2. **TUI Launcher Argument Resolution (`src/harness_core/tui_launcher.py`):**
+2. **TUI Launcher Argument Resolution (`harness_core/tui_launcher.py`):**
    - `build_tui_cmd_args` resolves active model selection from CLI flags, falling back to `.hex/config.yaml` or workspace configuration.
    - When context ceiling is not explicitly passed, it resolves the maximum context window via `get_model_context_length(model, provider=provider)` and appends `--model <model>` and `--max-tokens <tokens>` to the spawned `hex-tui` command.
 
@@ -50,10 +50,10 @@ An independent empirical verification was conducted on branch `tui_redesign` in 
 
 | # | Must-Have Item | Specification | Empirical Evidence | Verdict |
 |---|----------------|---------------|-------------------|---------|
-| 1 | **Canonical Family Context Mapping** | `DEFAULT_CONTEXT_LENGTHS` matches canonical families: Gemma 4 (256k), Gemini (1M/2M), Claude (200k/1M), GPT-4o (128k), DeepSeek (1M), Qwen (131k/1M), LLaMA (131k), fallback (128k) | `src/harness_core/model_metadata.py:24-122`. Verified in `tests/models/test_model_metadata.py::test_longest_prefix_matching`. | **PASS** |
-| 2 | **models.dev Registry & Cache** | `lookup_models_dev_context` supports `~/.hex/models_dev_cache.json` disk cache and ETag conditional revalidation | `src/harness_core/model_metadata.py:130-276`. Verified in `tests/models/test_model_metadata.py::test_models_dev_lookup` and Python live cache test. | **PASS** |
-| 3 | **Token String Formatting (Python)** | `format_context_tokens` formats clean strings: `256k`, `200k`, `128k`, `1M`, `1.0M`, `2.1M` | `src/harness_core/model_metadata.py:334-340`. Verified in `tests/models/test_model_metadata.py::test_format_context_tokens`. | **PASS** |
-| 4 | **Launcher Dynamic Resolution** | `build_tui_cmd_args` resolves active model and passes `--model` and `--max-tokens` to `hex-tui` | `src/harness_core/tui_launcher.py:117-151`. Verified in `tests/models/test_model_metadata.py::test_tui_launcher_args_with_max_tokens` and launcher tests. | **PASS** |
+| 1 | **Canonical Family Context Mapping** | `DEFAULT_CONTEXT_LENGTHS` matches canonical families: Gemma 4 (256k), Gemini (1M/2M), Claude (200k/1M), GPT-4o (128k), DeepSeek (1M), Qwen (131k/1M), LLaMA (131k), fallback (128k) | `harness_core/model_metadata.py:24-122`. Verified in `tests/models/test_model_metadata.py::test_longest_prefix_matching`. | **PASS** |
+| 2 | **models.dev Registry & Cache** | `lookup_models_dev_context` supports `~/.hex/models_dev_cache.json` disk cache and ETag conditional revalidation | `harness_core/model_metadata.py:130-276`. Verified in `tests/models/test_model_metadata.py::test_models_dev_lookup` and Python live cache test. | **PASS** |
+| 3 | **Token String Formatting (Python)** | `format_context_tokens` formats clean strings: `256k`, `200k`, `128k`, `1M`, `1.0M`, `2.1M` | `harness_core/model_metadata.py:334-340`. Verified in `tests/models/test_model_metadata.py::test_format_context_tokens`. | **PASS** |
+| 4 | **Launcher Dynamic Resolution** | `build_tui_cmd_args` resolves active model and passes `--model` and `--max-tokens` to `hex-tui` | `harness_core/tui_launcher.py:117-151`. Verified in `tests/models/test_model_metadata.py::test_tui_launcher_args_with_max_tokens` and launcher tests. | **PASS** |
 | 5 | **CLI Parameter & Alias Support** | `hex-tui` CLI parser accepts `--max-tokens` and `--context-window` alias | `crates/hex-tui/src/main.rs:62-63,120-122,212-214`. Verified via `target/release/hex-tui --help` and `--check`. | **PASS** |
 | 6 | **Fallback Resolution & Live Updates** | `app.rs` provides `resolve_fallback_model_context` and dynamic `set_max_tokens` method | `crates/hex-tui/src/app.rs:1004-1031,1256-1260`. Verified in `crates/hex-tui/tests/test_context_window.rs`. | **PASS** |
 | 7 | **Right Rail Display Formatting** | `format_tokens` renders `256k`, `1.0M`, `200k` in right rail context section | `crates/hex-tui/src/ui/right_rail.rs:18-29,81-85`. Verified in `crates/hex-tui/tests/test_context_window.rs::test_format_tokens`. | **PASS** |

@@ -6,7 +6,7 @@
 **Date:** 2026-11-15  
 
 ## Accomplishments
-1. **Canonical Reasoning Effort Engine (`src/harness_core/reasoning_effort.py`):**
+1. **Canonical Reasoning Effort Engine (`harness_core/reasoning_effort.py`):**
    - Implemented canonical effort ladder: `("none", "minimal", "low", "medium", "high", "xhigh", "max")`.
    - Defined supported effort sets for OpenAI, Anthropic, Gemini, DeepSeek, Grok, Kimi, and OpenRouter.
    - Built nearest-weaker-level clamping engine (`clamp_effort`) preventing wire rejection (HTTP 400).

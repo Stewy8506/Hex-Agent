@@ -67,36 +67,63 @@ testpaths = ["tests"]
 
 [tool.setuptools]
 include-package-data = false
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["harness_core*"]
-# Skill bundles are data, including their scripts, not importable engine packages.
-exclude = [
-    "harness_core.skills.*",
-    "harness_core.optional_skills",
-    "harness_core.optional_skills.*",
+py-modules = []
+packages = [
+    "harness_core",
+    "harness_core.capabilities",
+    "harness_core.capabilities.gateways",
+    "harness_core.client",
+    "harness_core.client.commands",
+    "harness_core.client.onboarding",
+    "harness_core.client.terminal",
+    "harness_core.cognition",
+    "harness_core.core",
+    "harness_core.gateways",
+    "harness_core.lsp",
+    "harness_core.models",
+    "harness_core.platform",
+    "harness_core.providers",
+    "harness_core.resources",
     "harness_core.resources.skills",
-    "harness_core.resources.skills.*",
+    "harness_core.resources.skills.optional",
+    "harness_core.runtime",
+    "harness_core.skills",
+    "harness_core.storage",
+    "harness_core.tools",
 ]
+
+[tool.setuptools.package-dir]
+harness_core = "harness_core"
+"harness_core.capabilities" = "capabilities"
+"harness_core.client" = "hex_cli"
+"harness_core.cognition" = "cognition"
+"harness_core.core" = "agent"
+"harness_core.gateways" = "gateways"
+"harness_core.lsp" = "lsp"
+"harness_core.models" = "models"
+"harness_core.platform" = "hex_platform"
+"harness_core.providers" = "providers"
+"harness_core.resources" = "resources"
+"harness_core.resources.skills" = "skills"
+"harness_core.resources.skills.optional" = "optional-skills"
+"harness_core.runtime" = "runtime"
+"harness_core.skills" = "skill_engine"
+"harness_core.storage" = "storage"
+"harness_core.tools" = "tools"
 
 [tool.setuptools.package-data]
-harness_core = [
-    "migrations/*.sql",
-    "client/command_catalog.json",
+harness_core = ["migrations/*.sql"]
+"harness_core.client" = ["command_catalog.json"]
+"harness_core.resources.skills" = [
+    "builtin/**/*",
+    "builtin/**/.*",
 ]
-"harness_core.resources" = [
-    # Ship every extension and extensionless asset, plus hidden bundle files.
-    "skills/builtin/**/*",
-    "skills/builtin/**/.*",
-    "skills/optional/**/*",
-    "skills/optional/**/.*",
-]
+"harness_core.resources.skills.optional" = ["**/*", "**/.*"]
 
 [tool.setuptools.exclude-package-data]
-"harness_core.resources" = [
-    "skills/**/__pycache__/*",
-    "skills/**/*.pyc",
-    "skills/**/*.pyo",
-    "skills/**/.DS_Store",
+"*" = [
+    "**/__pycache__/*",
+    "**/*.pyc",
+    "**/*.pyo",
+    "**/.DS_Store",
 ]

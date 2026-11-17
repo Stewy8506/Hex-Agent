@@ -15,7 +15,7 @@ Plan 10-01 delivers the foundational Git automation and Pull Request engine of *
 
 ## 2. Key Components Delivered
 
-### 1. `GitAutopilotConfig` & GitHub Transports (`src/harness_core/git_autopilot.py`)
+### 1. `GitAutopilotConfig` & GitHub Transports (`harness_core/git_autopilot.py`)
 - **Configuration Dataclass:** `GitAutopilotConfig` with `author_name`, `author_email`, `branch_prefix`, `default_base_branch`, `github_token`, `repo_slug`, and `dry_run`.
 - **Environment Parser:** `GitAutopilotConfig.from_env()` supporting `HEX_GITHUB_TOKEN` / `GITHUB_TOKEN`, `HEX_GIT_AUTHOR_NAME`, `HEX_GIT_AUTHOR_EMAIL`, `HEX_GIT_BRANCH_PREFIX`, `HEX_GITHUB_REPOSITORY` / `GITHUB_REPOSITORY`, and `HEX_GIT_DRY_RUN`.
 - **Pluggable GitHub Transport Interface:**
@@ -23,7 +23,7 @@ Plan 10-01 delivers the foundational Git automation and Pull Request engine of *
   - `MockGitHubTransport`: In-memory recording mock returning structured PR metadata (`number=101`, `html_url`, `created_prs`, `comments`).
   - `SubprocessGitHubTransport`: Priority 1 execution via `gh` CLI (`gh pr create`, `gh issue comment`, `gh pr view`); Priority 2 fallback to GitHub REST API (`https://api.github.com/repos/{owner}/{repo}/pulls`) via `urllib.request`.
 
-### 2. `GitAutopilot` Engine & PR Formatter (`src/harness_core/git_autopilot.py`)
+### 2. `GitAutopilot` Engine & PR Formatter (`harness_core/git_autopilot.py`)
 - **Sanitized Branch Creation:** `create_task_branch(task_id, goal)` generates formatted branches (`hex/task-<clean_id>-<slug>`) with smart token boundary slugification.
 - **Atomic Conventional Commits:** `commit_task_changes(task_id, scope, description, files, commit_type)` enforces conventional commit format `<type>(<scope>): <description>` with `Task-ID: <id>` and `Automated-By: HEX Autonomous Workbench`. In `dry_run` mode, returns deterministic mock SHAs (`mock-sha-<id>`).
 - **Rich PR Markdown Generator:** `generate_pr_summary(task_id, goal, proof_bundle, ast_impact)` formats:
@@ -32,7 +32,7 @@ Plan 10-01 delivers the foundational Git automation and Pull Request engine of *
   - Proof-Carrying Artifact verification table (`Verification Status`, `Diff SHA-256`, `Merkle Tree SHA-256`, `Exit Code`, `Pinned Tests`, `Runtime Digest`, `Ledger Signature`).
 - **Pull Request Dispatch:** `create_pull_request(branch, title, body, base)` delegates to the configured transport.
 
-### 3. CLI Integration: `hex run` and `hex exec` (`src/harness_core/cli.py`)
+### 3. CLI Integration: `hex run` and `hex exec` (`harness_core/cli.py`)
 - Added `run` subcommand with alias `exec` supporting `--pr`, `--branch`, `--base-branch`, and `--dry-run`.
 - Seamlessly submits and executes tasks through `HarnessOrchestrator.submit_and_run`.
 - On task success: creates/checks out task branch, creates conventional commit, generates rich PR summary, and creates Pull Request.

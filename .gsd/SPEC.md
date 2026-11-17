@@ -117,13 +117,13 @@ Every implementation task must produce empirical verification output before mark
 ## 6. Milestone M10: Finished Product Parity & Execution Excellence (Phases 24–27)
 
 ### 6.1 Continuous Multi-Turn ReAct Tool Loop (Phase 24)
-- **Autonomous Tool-Calling Engine (`src/harness_core/react_loop.py`):**
+- **Autonomous Tool-Calling Engine (`harness_core/react_loop.py`):**
   - Implements a continuous iterative ReAct loop (up to 50 configurable turns per session).
   - Handles model tool calls, executes through `ToolGateway` (respecting R0–R4 risk gating), appends tool results, and re-prompts until task completion or explicit final response.
   - Deeply integrated into `HarnessOrchestrator.run_agent_loop` and `HexConsole` for autonomous execution without human step-prompting.
 
 ### 6.2 4-Phase Context Compactor & Prompt Cache Locking (Phase 25)
-- **Multi-Stage Compactor (`src/harness_core/context_compressor.py`):**
+- **Multi-Stage Compactor (`harness_core/context_compressor.py`):**
   - 4-phase strategy:
     1. *Stale Tool Output Demotion*: Truncate bulky terminal/file outputs older than $N$ turns while preserving status/error headers.
     2. *Atomic Tool-Pair Protection*: Never split a `<tool_call>` / `<tool_result>` pair across compaction boundaries.
@@ -131,13 +131,13 @@ Every implementation task must produce empirical verification output before mark
     4. *Prompt Cache Pinning*: Guarantees static system instructions, tool schemas, and environment headers occupy an immutable prefix to achieve >90% KV prompt cache hit rate across Anthropic, Gemini, and OpenAI.
 
 ### 6.3 PTY Background Process Supervisor & Stream Registry (Phase 26)
-- **Process Supervisor (`src/harness_core/process_registry.py`):**
+- **Process Supervisor (`harness_core/process_registry.py`):**
   - Manages long-running background processes (dev servers, file watchers, test daemons, build pipelines) with PTY allocation.
   - Circular stream buffers for stdout/stderr with non-blocking tail reads.
   - Gateway tools: `start_process`, `read_terminal`, `kill_process`, `list_processes`.
 
 ### 6.4 Persistent REPL Code Kernel (Phase 27)
-- **In-Memory Code Kernel (`src/harness_core/code_kernel.py`):**
+- **In-Memory Code Kernel (`harness_core/code_kernel.py`):**
   - Persistent interactive Python session maintaining variables, imported modules, and runtime state across turns inside the task CoW workspace.
   - Captures stdout, stderr, and rich evaluation results.
   - Gateway tool: `code_kernel` with timeout protection and memory fences.
@@ -187,7 +187,7 @@ Every implementation task must produce empirical verification output before mark
 ## 8. Milestone M13: Autonomous Adaptive Setup & Reasoning Effort Parity (Phase 34)
 
 ### 8.1 Model Reasoning Effort Engine & Wire Clamping
-- **Canonical Effort Ladder:** `("none", "minimal", "low", "medium", "high", "xhigh", "max")` in `src/harness_core/reasoning_effort.py`.
+- **Canonical Effort Ladder:** `("none", "minimal", "low", "medium", "high", "xhigh", "max")` in `harness_core/reasoning_effort.py`.
 - **Wire Vocabulary Mapping & Clamping:**
   - OpenAI / Codex: `reasoning_effort: "low" | "medium" | "high"`
   - Anthropic: `thinking: {"type": "enabled", "budget_tokens": ...}` (scaled by tier: low=2048, medium=8192, high=16384, max=32768)
@@ -220,7 +220,7 @@ Every implementation task must produce empirical verification output before mark
 ## 9. Milestone M15: Hermes Parity & Native GPUI Desktop Application (Phases 36–39)
 
 ### 9.1 Phase 36: Resilient Model Infrastructure & Multi-Credential Pool
-- **Multi-Credential Pool (`src/harness_core/credential_pool.py`):**
+- **Multi-Credential Pool (`harness_core/credential_pool.py`):**
   - Pool of API keys per provider with round-robin / least-utilized selection.
   - Automatic rotation on HTTP 429 / quota exhaustion with exponential backoff and jitter.
   - Model cooldown queues (`(provider, model) -> cooldown_until`) protecting against transient 503s without taking down the entire provider.
@@ -236,17 +236,17 @@ Every implementation task must produce empirical verification output before mark
   - Ability to roll back session state to any previous user or assistant turn, archiving post-rewind turns into a branched timeline.
 - **Asynchronous Session Title Synthesis:**
   - Background LLM worker synthesizing clean 3–5 word session titles after Turn 1/2 for Start screen resume cards and session pickers.
-- **Mixture-of-Agents (MoA) Orchestration (`src/harness_core/moa.py`):**
+- **Mixture-of-Agents (MoA) Orchestration (`harness_core/moa.py`):**
   - Proposer-Aggregator multi-model synthesis within a single turn.
-- **Degenerate Loop & Repetition Sentry (`src/harness_core/repetition_guard.py`):**
+- **Degenerate Loop & Repetition Sentry (`harness_core/repetition_guard.py`):**
   - Real-time n-gram and action repetition interceptors; thinking tag scrubber for reasoning models.
 - **Approval Leasing & Mobile Reaction Wait:**
   - Temporal approval leases for safe command patterns; asynchronous waiting for mobile chat reactions.
 
-### 9.3 Phase 38: Native macOS GPUI Desktop Cockpit (`crates/hex-desktop`)
+### 9.3 Phase 38: Native macOS GPUI Desktop Cockpit (`App/hex-desktop`)
 - **GPU-Accelerated Rust Desktop Client:**
   - Built with Zed's `gpui` framework rendering natively via Metal on macOS at 120 FPS.
-  - Architecture: `crates/hex-desktop` linking with `hex-protocol` and connecting via stdio ACP or Unix domain socket to `harness_core`.
+  - Architecture: `App/hex-desktop` linking with `hex-protocol` and connecting via stdio ACP or Unix domain socket to `harness_core`.
   - Full screen and visual parity with HTML mockup:
     - Screen 0: Start screen with animated canvas, project telemetry, prompt input, shortcut badges, and recent sessions.
     - Screen 1: Active cockpit with streaming transcript, sage/rose tinted inline diffs, right rail telemetry, and message composer.

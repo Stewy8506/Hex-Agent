@@ -149,14 +149,17 @@ class TestPackagingAndVendorResolution(unittest.TestCase):
             # Verify packaged built-in skills
             has_skills = any(name.startswith("harness_core/resources/skills/builtin/") and name.endswith("SKILL.md") for name in namelist)
             self.assertTrue(has_skills, f"Expected built-in skills in wheel, found: {namelist}")
-            resources = REPO_ROOT / "src/harness_core/resources/skills"
-            for asset in resources.rglob("*"):
-                if not asset.is_file() or "__pycache__" in asset.parts or asset.name == ".DS_Store":
-                    continue
-                if asset.suffix in (".pyc", ".pyo"):
-                    continue
-                packaged_path = asset.relative_to(REPO_ROOT / "src").as_posix()
-                self.assertEqual(zf.read(packaged_path), asset.read_bytes(), packaged_path)
+            for directory, prefix in (
+                (REPO_ROOT / "skills/builtin", "harness_core/resources/skills/builtin"),
+                (REPO_ROOT / "optional-skills", "harness_core/resources/skills/optional"),
+            ):
+                for asset in directory.rglob("*"):
+                    if not asset.is_file() or "__pycache__" in asset.parts or asset.name == ".DS_Store":
+                        continue
+                    if asset.suffix in (".pyc", ".pyo"):
+                        continue
+                    packaged_path = f"{prefix}/{asset.relative_to(directory).as_posix()}"
+                    self.assertEqual(zf.read(packaged_path), asset.read_bytes(), packaged_path)
 
             # Verify entry points declare 'hex' and 'harness'
             entry_point_files = [n for n in namelist if n.endswith("entry_points.txt")]

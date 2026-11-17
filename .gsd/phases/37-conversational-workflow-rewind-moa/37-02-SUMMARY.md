@@ -2,9 +2,9 @@
 
 ## 1. Overview
 Phase 37 Plan 02 delivers two high-impact cognitive systems for reasoning and execution supremacy in the HEX Workbench:
-1. **Mixture-of-Agents (MoA) Multi-Model Synthesis Engine (`src/harness_core/core/moa.py`)**:
+1. **Mixture-of-Agents (MoA) Multi-Model Synthesis Engine (`agent/moa.py`)**:
    Coordinates concurrent reasoning queries across multiple candidate proposer models in parallel, handles timeouts and partial proposer failures gracefully, synthesizes cohesive solutions via a primary aggregator model, attributes per-model token consumption and latency metrics, and falls back directly to the aggregator if proposers fail. Deeply integrated into `ReActLoop` and `HarnessOrchestrator` with hash-chained ledger event journaling (`MOA_SYNTHESIS_COMPLETED`).
-2. **Degenerate Loop / Repetition Sentry & Thinking Tag Scrubber (`src/harness_core/cognition/repetition_sentry.py`)**:
+2. **Degenerate Loop / Repetition Sentry & Thinking Tag Scrubber (`cognition/repetition_sentry.py`)**:
    Intercepts model token repetition loops using fast line-echo, 60-character sliding-window, and periodic anchor scans while protecting legitimate tabular/batch multiline structures. Detects tool call thrashing (repeated identical calls $\ge 3$ times with error/empty output) and cyclical ping-pong action loops (e.g. `A -> B -> A -> B`), halts redundant executions, and injects authoritative out-of-band system steering prompts (`[SYSTEM STEERING: ...]`). Scrubs thinking tags (`<think>...</think>`, `<thought>`, `<reasoning>`, and unclosed streaming tails) to prevent reasoning leakage into dialogue history or storage.
 
 ---
@@ -13,19 +13,19 @@ Phase 37 Plan 02 delivers two high-impact cognitive systems for reasoning and ex
 
 ### Task 1: Mixture-of-Agents (MoA) Proposer-Aggregator Engine
 - **Files Modified / Created:**
-  - `src/harness_core/core/moa.py`: Implemented `ProposerConfig`, `MoAConfig`, `ProposerOutput`, `MoAResult`, and `MixtureOfAgents` with `query_proposers`, `build_aggregator_prompt`, and `synthesize`.
-  - `src/harness_core/core/__init__.py`: Exported MoA classes and configuration models via lazy loader and `__all__`.
-  - `src/harness_core/core/orchestrator.py`: Wired `moa_config` through `HarnessOrchestrator.__init__` and `run_agent_loop`.
-  - `src/harness_core/core/react_loop.py`: Added `moa_config` to `ReActConfig`, attached `moa_result` to `ReActTurn`, routed reasoning turns through `MixtureOfAgents.synthesize`, recorded `_record_moa_in_ledger` with `MOA_SYNTHESIS_COMPLETED` hash-chained ledger events, and enabled dictionary subscripting / contains on `ReActTurn` and `MoAResult`.
+  - `agent/moa.py`: Implemented `ProposerConfig`, `MoAConfig`, `ProposerOutput`, `MoAResult`, and `MixtureOfAgents` with `query_proposers`, `build_aggregator_prompt`, and `synthesize`.
+  - `agent/__init__.py`: Exported MoA classes and configuration models via lazy loader and `__all__`.
+  - `agent/orchestrator.py`: Wired `moa_config` through `HarnessOrchestrator.__init__` and `run_agent_loop`.
+  - `agent/react_loop.py`: Added `moa_config` to `ReActConfig`, attached `moa_result` to `ReActTurn`, routed reasoning turns through `MixtureOfAgents.synthesize`, recorded `_record_moa_in_ledger` with `MOA_SYNTHESIS_COMPLETED` hash-chained ledger events, and enabled dictionary subscripting / contains on `ReActTurn` and `MoAResult`.
   - `tests/core/test_mixture_of_agents.py`: Authored 7 comprehensive unit and integration tests covering parallel execution, partial proposer resilience, timeout isolation, fallback when all proposers fail, aggregator prompt compilation, ReActLoop integration with ledger validation, and orchestrator wiring.
 - **Commit:** `8aa5b65 feat(phase-37): implement mixture-of-agents proposer-aggregator engine`
 
 ### Task 2: Degenerate Loop / Repetition Sentry & Thinking Tag Scrubber
 - **Files Modified / Created:**
-  - `src/harness_core/cognition/repetition_sentry.py`: Implemented `is_repetition_dominated`, `is_runaway_repetition` (with `_line_repetition_dominated`, `_window_count_dominated`, `_periodic_run_dominated`, and distinct non-empty line ratio gating), `ActionRecord`, `ActionLoopDetector` (tracking identical call repeats $\ge 3$ and ping-pong cycles $\ge 2$), `generate_steering_prompt`, `strip_thinking_tags` (closed tags and unclosed streaming tails), and `RepetitionSentry`.
-  - `src/harness_core/cognition/__init__.py`: Exported `RepetitionSentry`, `ActionLoopDetector`, `strip_thinking_tags`, and related symbols in lazy loader and `__all__`.
-  - `src/harness_core/core/react_loop.py`: Wired `is_runaway_repetition` and token repetition steering into `_invoke_caller`, integrated `ActionLoopDetector` into tool invocation cycles to intercept thrashing and inject out-of-band steering prompts without redundant execution, and cleaned assistant outputs with `strip_thinking_tags` before persisting to `messages` and `turns`.
-  - `src/harness_core/client/tui.py`: Filtered assistant outputs and ReAct results with `strip_thinking_tags` before console display and message history persistence.
+  - `cognition/repetition_sentry.py`: Implemented `is_repetition_dominated`, `is_runaway_repetition` (with `_line_repetition_dominated`, `_window_count_dominated`, `_periodic_run_dominated`, and distinct non-empty line ratio gating), `ActionRecord`, `ActionLoopDetector` (tracking identical call repeats $\ge 3$ and ping-pong cycles $\ge 2$), `generate_steering_prompt`, `strip_thinking_tags` (closed tags and unclosed streaming tails), and `RepetitionSentry`.
+  - `cognition/__init__.py`: Exported `RepetitionSentry`, `ActionLoopDetector`, `strip_thinking_tags`, and related symbols in lazy loader and `__all__`.
+  - `agent/react_loop.py`: Wired `is_runaway_repetition` and token repetition steering into `_invoke_caller`, integrated `ActionLoopDetector` into tool invocation cycles to intercept thrashing and inject out-of-band steering prompts without redundant execution, and cleaned assistant outputs with `strip_thinking_tags` before persisting to `messages` and `turns`.
+  - `hex_cli/tui.py`: Filtered assistant outputs and ReAct results with `strip_thinking_tags` before console display and message history persistence.
   - `tests/cognition/test_repetition_sentry.py`: Authored 16 unit and integration tests covering verbatim line repeats, window dominance, legitimate batch inserts and markdown tables without false positives, action thrashing, ping-pong cycle detection, authoritative steering prompts, closed and unclosed thinking tag extraction, and ReActLoop integration.
 - **Commit:** `32a8da2 feat(phase-37): implement repetition sentry and thinking tag scrubber`
 

@@ -23,8 +23,8 @@
 - Committed as `feat(phase-31): node-bound AST memory model and 1-hop traversal` (`1a98a35`).
 
 ### Task 2: JIT Observation Injection & KV-Cache Immutability Verification
-- Enhanced `ToolGateway._tool_read_file` in `src/harness_core/gateway.py` to resolve AST symbols and query JIT memories/guardrails for the target file, dynamically appending the formatted AST memory block to `res["content"]` and populating `res["ast_memories"]`. Clean un-annotated files return unmodified content without overhead.
-- Enhanced `ReActLoop._execute_tool_call` in `src/harness_core/react_loop.py` with strict KV-cache prefix freeze guards: captures pre-execution `system_prompt` and initial `messages[0]` system instruction, asserting 100% byte-identity in `finally:` blocks.
+- Enhanced `ToolGateway._tool_read_file` in `harness_core/gateway.py` to resolve AST symbols and query JIT memories/guardrails for the target file, dynamically appending the formatted AST memory block to `res["content"]` and populating `res["ast_memories"]`. Clean un-annotated files return unmodified content without overhead.
+- Enhanced `ReActLoop._execute_tool_call` in `harness_core/react_loop.py` with strict KV-cache prefix freeze guards: captures pre-execution `system_prompt` and initial `messages[0]` system instruction, asserting 100% byte-identity in `finally:` blocks.
 - Added comprehensive unit and integration tests in `tests/cognition/test_ast_scoped_memory.py` covering:
   - AST memory CRUD, persistence, and querying by symbol and path.
   - 1-hop caller and callee invariant resolution.

@@ -43,35 +43,37 @@
 
 | Task # | Task Description | Files Modified | Commit |
 |--------|------------------|----------------|--------|
-| Task 1 | Implement live model discovery endpoints and fallback catalog across providers | `src/harness_core/providers/antigravity_provider.py`<br>`src/harness_core/providers/cloud_provider.py` | `52e3d1c feat(providers): implement live model discovery endpoints and fallback catalog` |
-| Task 2 | Invert onboarding wizard and integrate interactive /model selector in TUI | `src/harness_core/onboard.py`<br>`src/harness_core/tui.py` | `4bc2e23 feat(onboard): invert onboarding flow and add live tui model discovery` |
-| Task 3 | Author unit and integration tests for live model discovery and fallback | `tests/client/test_live_model_discovery.py`<br>`src/harness_core/tui.py` | `0834031 test(discovery): author unit and integration tests for live model discovery and fallback` |
+| Task 1 | Implement live model discovery endpoints and fallback catalog across providers | `providers/antigravity_provider.py`<br>`providers/cloud_provider.py` | `52e3d1c feat(providers): implement live model discovery endpoints and fallback catalog` |
+| Task 2 | Invert onboarding wizard and integrate interactive /model selector in TUI | `harness_core/onboard.py`<br>`harness_core/tui.py` | `4bc2e23 feat(onboard): invert onboarding flow and add live tui model discovery` |
+| Task 3 | Author unit and integration tests for live model discovery and fallback | `tests/client/test_live_model_discovery.py`<br>`harness_core/tui.py` | `0834031 test(discovery): author unit and integration tests for live model discovery and fallback` |
 
 ---
 
 ## 3. Verification & Empirical Proof
 
+To rerun these commands after relocation, first run `.venv/bin/python -m pip install -e ".[full]"` from the checkout root to refresh editable package mappings. Recorded outputs and test counts below remain historical.
+
 1. **Live Discovery & Fallback Verification:**
    ```bash
-   PYTHONPATH=src .venv/bin/python -c "from harness_core.providers.cloud_provider import fetch_available_models; print(fetch_available_models('openai', 'invalid-key'))"
+   .venv/bin/python -c "from harness_core.providers.cloud_provider import fetch_available_models; print(fetch_available_models('openai', 'invalid-key'))"
    # Output: [('gpt-4o', 'gpt-4o [offline fallback]'), ('o1', 'o1 [offline fallback]'), ('o3-mini', 'o3-mini [offline fallback]'), ('gpt-4o-mini', 'gpt-4o-mini [offline fallback]')]
    ```
 
 2. **Inverted Onboarding Verification:**
    ```bash
-   PYTHONPATH=src .venv/bin/python -c "from harness_core.onboard import run_onboard_wizard; res = run_onboard_wizard(non_interactive=True, defaults_only=True); assert 'model' in res; print('SUCCESS: model =', res['model'])"
+   .venv/bin/python -c "from harness_core.onboard import run_onboard_wizard; res = run_onboard_wizard(non_interactive=True, defaults_only=True); assert 'model' in res; print('SUCCESS: model =', res['model'])"
    # Output: SUCCESS: model = gemini-2.5-pro
    ```
 
 3. **Dedicated Test Suite (`tests/client/test_live_model_discovery.py`):**
    ```bash
-   PYTHONPATH=src .venv/bin/python -m unittest tests/client/test_live_model_discovery.py
+   .venv/bin/python -m unittest tests/client/test_live_model_discovery.py
    # Output: Ran 12 tests in 0.088s, OK
    ```
 
 4. **Full Regression Suite:**
    ```bash
-   PYTHONPATH=src .venv/bin/python -m unittest discover tests
+   .venv/bin/python -m unittest discover tests
    # Output: Ran 434 tests in 42.252s, OK (0 failures, 0 errors)
    ```
 

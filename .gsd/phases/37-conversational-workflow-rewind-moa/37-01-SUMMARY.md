@@ -13,21 +13,21 @@ Phase 37 Plan 01 delivers two core capabilities for conversational workflow supr
 
 ### Task 1: Conversational Timeline Rewind Engine with Ledger Branching
 - **Files Modified / Created:**
-  - `src/harness_core/storage/timeline_rewind.py`: Implemented `RewindTarget`, `RewindResult`, `group_messages_by_turn`, and `TimelineRewindManager`.
-  - `src/harness_core/storage/db.py`: Added `dialogue_turns` table schema and indexing, implemented `record_dialogue_turn`, `save_dialogue_turns`, `get_active_dialogue`, `get_all_dialogue_turns`, `revert_tool_calls_for_turns`, and `record_timeline_branch`.
-  - `src/harness_core/storage/__init__.py`: Exported `timeline_rewind` submodule and classes.
-  - `src/harness_core/core/react_loop.py`: Added `rewind_to(turn_spec)`.
-  - `src/harness_core/client/tui.py`: Added `/rewind` and `/undo` slash commands, `_cmd_rewind`, and updated `/help`.
+  - `storage/timeline_rewind.py`: Implemented `RewindTarget`, `RewindResult`, `group_messages_by_turn`, and `TimelineRewindManager`.
+  - `storage/db.py`: Added `dialogue_turns` table schema and indexing, implemented `record_dialogue_turn`, `save_dialogue_turns`, `get_active_dialogue`, `get_all_dialogue_turns`, `revert_tool_calls_for_turns`, and `record_timeline_branch`.
+  - `storage/__init__.py`: Exported `timeline_rewind` submodule and classes.
+  - `agent/react_loop.py`: Added `rewind_to(turn_spec)`.
+  - `hex_cli/tui.py`: Added `/rewind` and `/undo` slash commands, `_cmd_rewind`, and updated `/help`.
   - `tests/storage/test_timeline_rewind.py`: Authored 8 unit and integration tests covering relative offsets, absolute turns, boundary clamping, branch ledger integrity, tool call reversal, `ReActLoop`, and `HexConsole`.
 - **Commit:** `ac53068 feat(phase-37): implement conversational timeline rewind engine with ledger branching`
 
 ### Task 2: Asynchronous Background LLM Session Title Synthesis
 - **Files Modified / Created:**
-  - `src/harness_core/cognition/title_synthesizer.py`: Implemented `TitleProvenance` (USER > LLM > DERIVED), `derive_instant_title`, `validate_synthesized_title` with word count ceiling ($\le 12$ words), CJK character limit ($\le 20$ chars), answer-shaped rejection heuristics, and `SessionTitleSynthesizer` non-blocking worker.
-  - `src/harness_core/cognition/__init__.py`: Exported `title_synthesizer` submodule and classes.
-  - `src/harness_core/storage/db.py`: Implemented `update_task_goal` enforcing provenance hierarchy and hash-chained `TASK_TITLE_UPDATED` events.
-  - `src/harness_core/core/react_loop.py`: Integrated instant title derivation before Turn 1 and scheduled background title synthesis upon Turn 1 completion.
-  - `src/harness_core/client/tui.py`: Wired instant title seeding and background synthesis into `HexConsole`.
+  - `cognition/title_synthesizer.py`: Implemented `TitleProvenance` (USER > LLM > DERIVED), `derive_instant_title`, `validate_synthesized_title` with word count ceiling ($\le 12$ words), CJK character limit ($\le 20$ chars), answer-shaped rejection heuristics, and `SessionTitleSynthesizer` non-blocking worker.
+  - `cognition/__init__.py`: Exported `title_synthesizer` submodule and classes.
+  - `storage/db.py`: Implemented `update_task_goal` enforcing provenance hierarchy and hash-chained `TASK_TITLE_UPDATED` events.
+  - `agent/react_loop.py`: Integrated instant title derivation before Turn 1 and scheduled background title synthesis upon Turn 1 completion.
+  - `hex_cli/tui.py`: Wired instant title seeding and background synthesis into `HexConsole`.
   - `tests/cognition/test_title_synthesis.py`: Authored 8 unit and integration tests covering instant derivation, validation guards, provenance hierarchy enforcement, non-blocking execution, and Start screen resume query retrieval.
 - **Commit:** `7168da2 feat(phase-37): implement asynchronous background llm session title synthesis`
 

@@ -10,7 +10,7 @@
 
 ## 1. Accomplishments
 
-1. **Core TUI Rendering Engine & Diff Visualizers (`src/harness_core/tui.py`):**
+1. **Core TUI Rendering Engine & Diff Visualizers (`harness_core/tui.py`):**
    - Implemented terminal rendering with optional `rich` support and robust, zero-dependency ANSI fallbacks (`\033[32m` green, `\033[31m` red, `\033[33m` yellow, `\033[36m` cyan, `\033[1m` bold, `\033[0m` reset) with Unicode box-drawing characters.
    - Built `render_unified_diff` highlighting chunk headers (`@@`) in cyan, additions (`+`) in green, deletions (`-`) in red, and file headers (`---`, `+++`) in bold yellow.
    - Built `render_side_by_side_diff` aligning old and new content into two side-by-side columns with a vertical divider `│` and colorized line replacements.
@@ -18,7 +18,7 @@
    - Implemented `StreamingTokenRenderer` for progressive chunk streaming, code-fence detection, and syntax highlighting.
    - Built `render_session_banner` displaying current model, compressor status, sandbox backend, and CoW store in a double-bordered ANSI header.
 
-2. **Interactive `HexConsole` REPL & Slash Commands (`src/harness_core/tui.py`, `src/harness_core/cli.py`):**
+2. **Interactive `HexConsole` REPL & Slash Commands (`harness_core/tui.py`, `harness_core/cli.py`):**
    - Implemented `HexConsole` pair-programming console managing session state, prompt loop (`hex> `), command history, active task tracking, and token/cost telemetry.
    - Built 10 interactive slash command handlers:
      - `/help`: prints formatted table of commands with syntax and purpose.
@@ -32,9 +32,9 @@
      - `/clear`: clears the terminal screen via ANSI `\033[H\033[2J`.
      - `/quit` / `/exit`: cleanly terminates console session.
    - Integrated natural language prompt dispatch submitting `TaskSubmitRequest` to `HarnessOrchestrator`, live token streaming, and Proof-Carrying Artifact verification display.
-   - Wired `hex chat` subcommand into `src/harness_core/cli.py` with flags `--project`, `--workspace`, `--model`, `--no-stream`, and `--data-dir`.
+   - Wired `hex chat` subcommand into `harness_core/cli.py` with flags `--project`, `--workspace`, `--model`, `--no-stream`, and `--data-dir`.
 
-3. **Database & CoW Enhancements (`src/harness_core/db.py`, `src/harness_core/cow.py`):**
+3. **Database & CoW Enhancements (`harness_core/db.py`, `harness_core/cow.py`):**
    - Added `list_skills` and `list_skills_async` to `LedgerStore` querying registered skills and latest scan reports.
    - Implemented `compute_workspace_diff` across `WorkspaceSnapshotProvider` implementations (`APFSAndPortableCoWProvider`, `OverlayFSSnapshotProvider`, `BtrfsSnapshotProvider`).
 
@@ -153,9 +153,9 @@ OK
 ## 3. Deviations Handled Automatically
 
 1. **`compute_workspace_diff` Implementation:**
-   - Implemented `compute_workspace_diff` in `src/harness_core/cow.py` walking directory trees while respecting `IGNORE_DIRS`, computing text diff chunks with `difflib.unified_diff`, and attaching the method to `WorkspaceSnapshotProvider` protocol and all 3 provider implementations (`APFSAndPortableCoWProvider`, `OverlayFSSnapshotProvider`, `BtrfsSnapshotProvider`).
+   - Implemented `compute_workspace_diff` in `harness_core/cow.py` walking directory trees while respecting `IGNORE_DIRS`, computing text diff chunks with `difflib.unified_diff`, and attaching the method to `WorkspaceSnapshotProvider` protocol and all 3 provider implementations (`APFSAndPortableCoWProvider`, `OverlayFSSnapshotProvider`, `BtrfsSnapshotProvider`).
 2. **`list_skills` and `list_skills_async` in `LedgerStore`:**
-   - Added `list_skills` and `list_skills_async` in `src/harness_core/db.py` to enable `/skills` slash command and CLI introspection.
+   - Added `list_skills` and `list_skills_async` in `harness_core/db.py` to enable `/skills` slash command and CLI introspection.
 3. **CLI Subcommand Argument Placement:**
    - Added `--data-dir` with `default=argparse.SUPPRESS` to `p_chat` so that invocations like `main(['chat', '--data-dir', ':memory:'])` are cleanly accepted by `argparse` without error.
 

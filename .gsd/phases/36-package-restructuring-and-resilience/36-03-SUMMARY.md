@@ -15,7 +15,7 @@ Phase 36 Plan 03 implemented live local server socket and model introspection pr
 ## 2. Completed Tasks & Outcomes
 
 ### Task 1: Live Local Server Socket & Model Introspection Probes
-- **File Modified:** `src/harness_core/models/model_metadata.py`, `src/harness_core/models/__init__.py`
+- **File Modified:** `models/model_metadata.py`, `models/__init__.py`
 - **Commit:** `ed7fcea` (`feat(phase-36): implement live local server socket and model introspection probes`)
 - **Key Deliverables:**
   - Implemented live introspection probes for:
@@ -27,13 +27,13 @@ Phase 36 Plan 03 implemented live local server socket and model introspection pr
   - Integrated 30-second transient endpoint blackholing (`_endpoint_blackholed`, `_note_endpoint_blackholed`, `_note_if_connect_timeout`) preventing TCP connect hangs from stalling TUI or orchestrator operations.
   - Implemented in-memory probe result caching (`_endpoint_model_metadata_cache`) with 300s TTL.
   - Wired live probe resolution into `get_model_context_length(model, base_url=...)`.
-  - Re-exported `probe_local_server` in `src/harness_core/models/__init__.py`.
+  - Re-exported `probe_local_server` in `models/__init__.py`.
 
 ### Task 2: OS Keychain Secure Vault and Plaintext Config Migration
-- **Files Modified / Created:** `src/harness_core/storage/vault_keychain.py`, `src/harness_core/storage/__init__.py`, `pyproject.toml`
+- **Files Modified / Created:** `storage/vault_keychain.py`, `storage/__init__.py`, `pyproject.toml`
 - **Commit:** `afed48c` (`feat(phase-36): implement OS Keychain secure vault and plaintext config migration`)
 - **Key Deliverables:**
-  - Created `src/harness_core/storage/vault_keychain.py` with standard `keyring` library integration.
+  - Created `storage/vault_keychain.py` with standard `keyring` library integration.
   - Implemented `_is_os_keychain(backend) -> bool` auditing keyring backends to ensure only genuine OS credential stores (macOS Keychain, Linux Secret Service / KWallet, Windows DPAPI / Credential Manager) are accepted, rejecting insecure stubs (`keyring.backends.null`, `keyring.backends.fail`, `keyrings.alt`).
   - Implemented core API:
     - `SERVICE = "HEX Autonomous AI Workbench"`
@@ -48,10 +48,10 @@ Phase 36 Plan 03 implemented live local server socket and model introspection pr
     - Securely transfers secrets to the OS Keychain under standardized accounts (`f"{provider}_api_key"`).
     - Scrubs plaintext secrets from files on disk, replacing with `keychain` references and enforcing `0o600` POSIX file permissions.
     - Degrades gracefully on headless servers without raising unhandled exceptions.
-  - Exported symbols cleanly in `src/harness_core/storage/__init__.py`.
+  - Exported symbols cleanly in `storage/__init__.py`.
 
 ### Task 3: Comprehensive Unit Test Suites
-- **Files Created / Modified:** `tests/models/test_local_socket_introspection.py`, `tests/storage/test_vault_keychain.py`, `src/harness_core/models/model_metadata.py`, `src/harness_core/storage/vault_keychain.py`
+- **Files Created / Modified:** `tests/models/test_local_socket_introspection.py`, `tests/storage/test_vault_keychain.py`, `models/model_metadata.py`, `storage/vault_keychain.py`
 - **Commit:** `a743cb5` (`feat(phase-36): author comprehensive unit tests for local socket introspection and OS keychain vault`)
 - **Key Deliverables:**
   - 10 unit tests in `tests/models/test_local_socket_introspection.py` covering Ollama `num_ctx`, Ollama GGUF fallback, Ollama tags/ps discovery, LM Studio v0 and v1 context extraction, llama.cpp `/props`, vLLM `/v1/models`, connect timeout 30s blackholing, probe caching, and `get_model_context_length` integration.

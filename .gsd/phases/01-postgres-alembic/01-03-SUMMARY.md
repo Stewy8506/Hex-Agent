@@ -12,7 +12,7 @@
 Plan 01-03 successfully designed, implemented, and empirically verified non-blocking task queue claiming and concurrent lease assignment across both PostgreSQL 16+ and SQLite WAL backends. 
 
 Key deliverables:
-1. **Queue Claiming Architecture in `LedgerStore` (`src/harness_core/db.py`):**
+1. **Queue Claiming Architecture in `LedgerStore` (`harness_core/db.py`):**
    - Implemented `claim_next_task` (sync) and `claim_next_task_async` (async).
    - PostgreSQL: Atomic transaction selecting the highest-priority `QUEUED` task using `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`, transitioning status to `RUNNING` (`version = version + 1`), generating attempt ID and lease ID, monotonically incrementing `fencing_token`, and recording a `STATE_RUNNING` (`QUEUE_CLAIMED`) event with SHA-256 hash chaining.
    - SQLite: Atomic `BEGIN IMMEDIATE` transaction block under mutual exclusion lock (`self._lock`) with identical state transition, lease/attempt generation, and event chaining.
@@ -33,8 +33,8 @@ Key deliverables:
 
 | Task | Name | Files | Commit | Status |
 |------|------|-------|--------|--------|
-| Task 1 | Implement atomic task claiming with `SELECT ... FOR UPDATE SKIP LOCKED` | `src/harness_core/db.py` | `1dd92ba` | Completed |
-| Task 2 | Author concurrent multi-worker lease claiming test suite | `tests/storage/test_postgres_concurrency.py`, `src/harness_core/db.py` | `da6439f` | Completed |
+| Task 1 | Implement atomic task claiming with `SELECT ... FOR UPDATE SKIP LOCKED` | `harness_core/db.py` | `1dd92ba` | Completed |
+| Task 2 | Author concurrent multi-worker lease claiming test suite | `tests/storage/test_postgres_concurrency.py`, `harness_core/db.py` | `da6439f` | Completed |
 
 ---
 

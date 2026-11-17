@@ -11,12 +11,12 @@
 ## 1. Accomplishments
 
 ### Task 1: Native Tool Schema History Formatting & Transient Error Retry Resilience
-- **Native Tool Role Schema in ReAct Loop (`src/harness_core/react_loop.py`):**
+- **Native Tool Role Schema in ReAct Loop (`harness_core/react_loop.py`):**
   - Updated tool execution output appending in `ReActLoop.run` so tool observations emit standard `role: "tool"` schemas with `tool_call_id`, `name`, and unescaped `content` (`obs_payload`), while preserving `observation` XML tags (`obs_content`) for backward compatibility with existing tests and prompting engines.
   - Aligned message serialization with OpenAI/Anthropic/Gemini multi-turn tool calling specifications where each tool result references the preceding assistant's `tool_call_id`.
   - Updated `_format_messages_to_prompt` to format `role == "TOOL"` into standard plaintext prompt blocks `[TOOL ({tool_name})]\n{content}`.
   - Updated `HarnessOrchestrator.run_agent_loop` deterministic tool planner fallback to inspect `role in ("user", "observation", "tool")` and read `m.get("observation") or m.get("content")`.
-- **Transient Error Retry Resilience (`src/harness_core/react_loop.py`):**
+- **Transient Error Retry Resilience (`harness_core/react_loop.py`):**
   - Added configurable retry parameters to `ReActConfig`: `max_retries: int = 3`, `initial_retry_delay: float = 0.5`, `backoff_factor: float = 2.0`, and `retry_jitter: float = 0.1`.
   - Implemented `_is_transient_error(exc: Exception) -> bool` classifying HTTP 429 (rate limit), 503 (service unavailable / overloaded), 502, 504, 529, timeouts (`TimeoutError`, `socket.timeout`), and connection errors as transient, while immediately rejecting non-transient errors (HTTP 400, 401, 403, 404, `ValueError`, `TypeError`, `BudgetExceededError`, `PolicyBlockedError`).
   - Implemented iterative retry loop in `_call_model` with exponential backoff and randomized jitter, tracking `retry_count` on `ReActLoop` and `ReActSessionResult`.
@@ -24,7 +24,7 @@
   - Ran `tests/core/test_react_loop.py` (31/31 unit and integration tests passing).
 
 ### Task 2: Anthropic Thinking Block Signature Preservation & Comprehensive Resilience Tests
-- **Anthropic Thinking Block Protection & Tool Translation (`src/harness_core/providers/cloud_provider.py`):**
+- **Anthropic Thinking Block Protection & Tool Translation (`providers/cloud_provider.py`):**
   - In `_parse_response`, detected content blocks with `item.get("type") == "thinking"` and indexed them under `data["thinking_blocks"]`, `data["thinking"]`, and `data["signature"]` so multi-turn loops retain valid thinking signatures.
   - In `_build_request`, translated `role: "tool"` messages to Anthropic's native `tool_result` content block inside a `role: "user"` message (`{"role": "user", "content": [{"type": "tool_result", "tool_use_id": msg["tool_call_id"], "content": str(msg["content"])}]}`).
   - Hardened assistant thinking block serialization:
@@ -51,7 +51,7 @@
 ## 2. Deviations
 
 1. **Deterministic tool planner in `orchestrator.py`:**
-   - *Deviation:* Updated `_react_model_caller` in `src/harness_core/orchestrator.py` to check `m.get("role") in ("user", "observation", "tool")` and read `m.get("observation") or m.get("content")`.
+   - *Deviation:* Updated `_react_model_caller` in `harness_core/orchestrator.py` to check `m.get("role") in ("user", "observation", "tool")` and read `m.get("observation") or m.get("content")`.
    - *Justification:* When ReAct loop emitted native `role: "tool"`, deterministic tool execution tests in `test_react_loop.py` (`test_run_agent_loop_deterministic_tool_execution` and `test_run_agent_loop_custom_workspace`) required seeing the observation in history to trigger completion.
 
 ---

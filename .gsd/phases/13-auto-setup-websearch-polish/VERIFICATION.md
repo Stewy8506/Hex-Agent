@@ -20,7 +20,7 @@ Milestone M5 / Phase 13 has been subjected to empirical verification. All 7 must
 
 ## 2. Empirical Verification Evidence
 
-### Must-Have 1: Interactive Terminal UI Selector (`src/harness_core/ui_selector.py`)
+### Must-Have 1: Interactive Terminal UI Selector (`harness_core/ui_selector.py`)
 - **Requirements:** POSIX interactive arrow-key navigation (`↑`/`↓`, `k`/`j`), `[•]` radio display, `[✓]` multi-select checkbox with Space toggle, `prompt_secret` visual masking.
 - **Command Executed:**
 ```bash
@@ -76,7 +76,7 @@ MUST-HAVE 1: PASSED
 
 ---
 
-### Must-Have 2: Environment Hydration & Credential Detection (`src/harness_core/config_loader.py`)
+### Must-Have 2: Environment Hydration & Credential Detection (`harness_core/config_loader.py`)
 - **Requirements:** `load_hex_environment` discovers `credentials.env` and `config.yaml` and injects variables into `os.environ`. `has_active_credentials` accurately differentiates between active and zero-key unconfigured states.
 - **Command Executed:**
 ```bash
@@ -126,7 +126,7 @@ MUST-HAVE 2: PASSED
 
 ---
 
-### Must-Have 3: Autonomous Web Search Tool (`src/harness_core/web_search.py`, `src/harness_core/gateway.py`)
+### Must-Have 3: Autonomous Web Search Tool (`harness_core/web_search.py`, `harness_core/gateway.py`)
 - **Requirements:** Autonomous multi-engine search via DuckDuckGo (zero-key instant fallback), Tavily, and Brave. Registered in `ToolGateway` as an R1 read-only tool.
 - **Command Executed:**
 ```bash
@@ -173,7 +173,7 @@ MUST-HAVE 3: PASSED
 
 ---
 
-### Must-Have 4: 4-Step Interactive Onboarding Wizard (`src/harness_core/onboard.py`)
+### Must-Have 4: 4-Step Interactive Onboarding Wizard (`harness_core/onboard.py`)
 - **Requirements:** 4-step wizard using `select_option` and `prompt_secret` for Model Provider, Web Search Engine, Remote Messaging Gateways, and Hardware Profile. Secures `credentials.env` (0600) and writes `config.yaml`.
 - **Command Executed:**
 ```bash
@@ -227,7 +227,7 @@ MUST-HAVE 4: PASSED
 
 ---
 
-### Must-Have 5: First-Run Startup Interceptor (`src/harness_core/cli.py`)
+### Must-Have 5: First-Run Startup Interceptor (`harness_core/cli.py`)
 - **Requirements:** Intercept unconfigured launches on `hex` or `hex chat` and automatically initiate `run_onboard_wizard()`.
 - **Command Executed:**
 ```bash

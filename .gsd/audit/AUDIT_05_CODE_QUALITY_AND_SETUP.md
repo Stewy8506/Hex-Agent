@@ -14,7 +14,7 @@ This audit evaluates **Domain 5: Code Quality, Resilience, Evals & Setup Ergonom
 
 The audit was conducted by inspecting source implementations, dependency graphs, database drivers, subprocess managers, signal handlers, test structures, and evaluation harnesses across both repositories:
 - **Hermes Agent Reference:** `benchmarks/hermes-agent/setup-hermes.sh`, `setup-hermes.ps1`, `pyproject.toml`, `pm/`, `hermes_cli/`, `hermes_state_*.py`, `tests/`, `evals/`, `scripts/run_tests_parallel.py`.
-- **HEX Target:** `install.sh`, `pyproject.toml`, `src/harness_core/onboard.py`, `src/harness_core/ui_selector.py`, `src/harness_core/db.py`, `src/harness_core/cli.py`, `src/harness_core/process_registry.py`, `src/harness_core/worker_daemon.py`, `migrations/`, `alembic.ini`, `tests/`.
+- **HEX Target:** `install.sh`, `pyproject.toml`, `harness_core/onboard.py`, `harness_core/ui_selector.py`, `harness_core/db.py`, `harness_core/cli.py`, `harness_core/process_registry.py`, `harness_core/worker_daemon.py`, `migrations/`, `alembic.ini`, `tests/`.
 
 ### 1.1 Comparative Scorecard
 
@@ -65,7 +65,7 @@ HEX provides a clean, single universal shell installer and lightweight package s
 
 A critical usability differentiator is how interactive terminal prompts render when selecting providers, models, and workflows.
 
-| Feature / Trait | Hermes Agent (`hermes_cli/curses_ui.py`) | HEX (`src/harness_core/ui_selector.py`) | Technical Advantage |
+| Feature / Trait | Hermes Agent (`hermes_cli/curses_ui.py`) | HEX (`harness_core/ui_selector.py`) | Technical Advantage |
 |---|---|---|---|
 | **Underlying Engine** | Python `curses` module (908 lines) | Pure ANSI escape sequences + `termios`/`tty` (429 lines) | **HEX:** Zero dependency, no C extension bindings, no curses terminal breakage. |
 | **Viewport Windowing** | Manual line clipping (`_addnstr`, swallows `curses.error`) | Scroll-locked dynamic viewport windowing (`_adjust_window`, max 14 rows) | **HEX:** Prevents terminal scroll-drift and cursor corruption on long option lists. |
@@ -75,7 +75,7 @@ A critical usability differentiator is how interactive terminal prompts render w
 | **Non-TTY / CI Fallback** | Numbered text fallback | Auto-detects `not in_stream.isatty()`, emits clean numbered list | **HEX:** Deterministic CI/CD and scripted pipeline execution. |
 | **Ctrl+C / Cancel Handling** | Complex `MenuNavigationHandler` context vars | Context manager restores terminal modes, raises `SelectorCancelledError` | **HEX:** Terminal state is guaranteed clean even upon abrupt cancellation. |
 
-#### HEX Viewport-Lock Implementation (`src/harness_core/ui_selector.py:138-176`):
+#### HEX Viewport-Lock Implementation (`harness_core/ui_selector.py:138-176`):
 ```python
 # Viewport window dimensions
 term_size = shutil.get_terminal_size((80, 24))
@@ -98,15 +98,15 @@ This guarantees that when selecting from 26+ providers or 50+ models, the termin
 ### 2.3 OAuth Auto-Detection & Quota Onboarding
 
 HEX introduces an onboarding flow centered around Google Antigravity OAuth:
-- **Auto-Detection (`src/harness_core/onboard.py:223-244`):**
+- **Auto-Detection (`harness_core/onboard.py:223-244`):**
   - Instantiates `AntigravityOAuthManager(auth_file=cfg_dir / "antigravity_auth.json")`.
   - Automatically checks local IDE tokens (e.g. from VS Code Antigravity extensions) and existing credentials.
   - If a valid token is found, reports: `Antigravity Quota: Detected ({ag_cred.source}) — Ready for subscription quota routing`.
-- **Browser PKCE OAuth 2.0 Flow (`src/harness_core/onboard.py:452-474`):**
+- **Browser PKCE OAuth 2.0 Flow (`harness_core/onboard.py:452-474`):**
   - Generates PKCE code challenge and verifier pairs.
   - Automatically opens Google authentication in the user's default browser.
   - Operator pastes the redirect callback URL or authorization code to complete token exchange without exposing client secrets.
-- **Live Model Discovery (`src/harness_core/onboard.py:513-542`):**
+- **Live Model Discovery (`harness_core/onboard.py:513-542`):**
   - Live probes the Antigravity backend (`fetch_available_models("antigravity", api_key=antigravity_token)`) to populate active model options (`claude-opus-4-6-thinking`, `gemini-2.5-pro`, `gemini-2.5-flash`).
   - Gracefully falls back to curated offline models if network or token issues arise.
 
@@ -116,7 +116,7 @@ In contrast, Hermes Agent relies on traditional API key entry into `.env` for mo
 
 ### 2.4 Multi-Provider Registry Parity
 
-HEX centralizes all provider configurations into a declarative specification (`src/harness_core/providers/registry.py`):
+HEX centralizes all provider configurations into a declarative specification (`providers/registry.py`):
 - **26 Fully-Supported Providers:**
   - *Featured:* Google Antigravity, Anthropic, OpenAI, Google Gemini.
   - *Fast Cloud:* Groq, Cerebras, Together AI, Fireworks AI, DeepSeek, xAI.
@@ -132,7 +132,7 @@ HEX centralizes all provider configurations into a declarative specification (`s
 
 ### 2.5 CLI Subcommands Ergonomics
 
-HEX exposes an intuitive, Unix-standard CLI implemented via `argparse` with command aliases (`src/harness_core/cli.py`):
+HEX exposes an intuitive, Unix-standard CLI implemented via `argparse` with command aliases (`harness_core/cli.py`):
 
 | CLI Command / Subcommand | Primary Purpose | Equivalent in Hermes Agent |
 |---|---|---|
@@ -164,7 +164,7 @@ HEX exposes an intuitive, Unix-standard CLI implemented via `argparse` with comm
 ```
                                ┌─────────────────────────────────────────────────────────┐
                                │                    HEX LedgerStore                      │
-                               │               (src/harness_core/db.py)                  │
+                               │               (harness_core/db.py)                  │
                                └───────────────────────────┬─────────────────────────────┘
                                                            │
                              ┌─────────────────────────────┴─────────────────────────────┐
@@ -187,11 +187,11 @@ HEX exposes an intuitive, Unix-standard CLI implemented via `argparse` with comm
   - **No PostgreSQL Support:** Cannot run across multiple physical machines or worker nodes without sharing a raw SQLite file over NFS/SMB, which triggers severe locking and database corruption issues.
   - **No `SKIP LOCKED` Concurrency:** Workers must contend for global SQLite locks, resulting in frequent `sqlite3.OperationalError: database is locked`.
 
-#### HEX AI Workbench Target (`src/harness_core/db.py:117-210`):
+#### HEX AI Workbench Target (`harness_core/db.py:117-210`):
 - Full dual-driver transactional engine supporting both **SQLite WAL** and **PostgreSQL 16**.
 - **PostgreSQL 16 Engine (`asyncpg`):**
   - Native asynchronous connection pool (`min_size=2`, `max_size=20`, `command_timeout=30.0s`).
-  - Implements `FOR UPDATE SKIP LOCKED` for lock-free multi-worker concurrency (`src/harness_core/db.py:120-127`):
+  - Implements `FOR UPDATE SKIP LOCKED` for lock-free multi-worker concurrency (`harness_core/db.py:120-127`):
     ```sql
     SELECT task_id, priority, version, active_workspace_tree_sha, policy_snapshot_id
     FROM tasks
@@ -203,10 +203,10 @@ HEX exposes an intuitive, Unix-standard CLI implemented via `argparse` with comm
 - **SQLite Engine (`sqlite3`):**
   - Enables Write-Ahead Logging (`PRAGMA journal_mode=WAL;`) and foreign keys (`PRAGMA foreign_keys=ON;`).
   - Supports both on-disk database files and in-memory (`:memory:`) databases for ultra-fast, zero-overhead unit testing.
-- **Dynamic Query Normalization (`src/harness_core/db.py:216-250`):**
+- **Dynamic Query Normalization (`harness_core/db.py:216-250`):**
   - Translates positional `?` placeholders to PostgreSQL `$1, $2, ...` syntax dynamically while preserving question marks inside string literals.
   - Automatically serializes JSON dictionaries and datetimes.
-- **`_SyncRunner` Thread Isolation (`src/harness_core/db.py:99-115`):**
+- **`_SyncRunner` Thread Isolation (`harness_core/db.py:99-115`):**
   - Executes async database calls safely from synchronous contexts without event-loop collision, enabling seamless CLI usage.
 
 ---
@@ -220,7 +220,7 @@ For any event $E_i$ at sequence $i$:
 $$H_0 = 0^{64} \quad (\text{Genesis Hash})$$
 $$H_i = \text{SHA-256}\Big(H_{i-1} \parallel \text{task\_id} \parallel i \parallel \text{event\_type} \parallel \text{prior\_state} \parallel \text{next\_state} \parallel \text{reason\_code} \parallel \text{workspace\_tree\_sha} \parallel \text{canonical\_json}(\text{payload}) \parallel \text{occurred\_at}\Big)$$
 
-#### Implementation in `src/harness_core/db.py:808-872`:
+#### Implementation in `harness_core/db.py:808-872`:
 ```python
 last = self.conn.execute(
     "SELECT sequence_no, event_sha256 FROM task_events WHERE task_id = ? ORDER BY sequence_no DESC LIMIT 1",
@@ -291,7 +291,7 @@ A notorious problem in long-running AI workbench agents is orphaned subprocesses
   - Inspects process environment variables looking for `HERMES_HOME`.
   - Forcibly kills any matching PID.
 
-#### HEX AI Workbench Target (`src/harness_core/process_registry.py:1-602`):
+#### HEX AI Workbench Target (`harness_core/process_registry.py:1-602`):
 HEX implements an architected PTY Process Supervisor (`ProcessRegistry`):
 1. **POSIX Pseudo-Terminal (PTY) Allocation (`process_registry.py:270-295`):**
    - Allocates true PTYs (`pty.openpty()`) so child tools receive proper ANSI color and interactive terminal signals, with a transparent fallback to standard pipes.
@@ -320,7 +320,7 @@ HEX implements an architected PTY Process Supervisor (`ProcessRegistry`):
 
 ### 4.2 Distributed Worker Resilience & CAS Lease Fencing
 
-In distributed mode, workers can crash, lose network connectivity, or hang. HEX guarantees split-brain prevention through Compare-And-Swap (CAS) lease fencing (`src/harness_core/worker_daemon.py:421-565`):
+In distributed mode, workers can crash, lose network connectivity, or hang. HEX guarantees split-brain prevention through Compare-And-Swap (CAS) lease fencing (`harness_core/worker_daemon.py:421-565`):
 - **Worker Heartbeat Thread (`worker_daemon.py:471-496`):**
   - Runs in a background thread with an interval of $\text{interval} = \frac{\text{lease\_ttl}}{3.0}$ (default 100 seconds for 300s TTL).
   - Automatically renews the active lease via `renew_lease(lease_id, fencing_token)`.

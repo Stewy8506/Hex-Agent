@@ -88,14 +88,14 @@ tests/cognition/test_title_synthesis.py::test_start_screen_resume_query_retrieva
 ```
 
 ### 2.2 Implementation Architecture
-- `src/harness_core/storage/timeline_rewind.py`:
+- `storage/timeline_rewind.py`:
   - `group_messages_by_turn(messages)` partitions chat message streams into 1-based user-led conversational turns (Turn 0 reserved for system initialization).
   - `TimelineRewindManager.rewind(task_id, target, messages)` resolves relative offsets (`-1`, `-2`) and absolute turn IDs (`2`, `turn_2`), clamps to boundaries, marks superseded turns `is_active = 0` under unique `branch_id = "br_rewind_<uuid>"`, marks uncommitted tool calls `REVERTED`, and appends a cryptographically hash-chained `TIMELINE_REWOUND` event.
-- `src/harness_core/storage/db.py`:
+- `storage/db.py`:
   - `dialogue_turns` table tracks `turn_index`, `role`, `content`, `is_active`, `branch_id`.
   - `revert_tool_calls_for_turns(task_id, turn_indices)` safely marks tool executions as reverted.
   - `update_task_goal(task_id, new_goal, provenance)` enforces provenance rank checking.
-- `src/harness_core/cognition/title_synthesizer.py`:
+- `cognition/title_synthesizer.py`:
   - `TitleProvenance`: `USER` (rank 3) > `LLM` (rank 2) > `DERIVED` (rank 1).
   - `derive_instant_title`: Deterministic Stage 1 extraction from first non-empty line of prompt (<= 48 characters).
   - `validate_synthesized_title`: Anti-chatter guard rejecting prompt echoes, answers starting with conversational filler ("Certainly", "Yes"), responses > 12 words or > 20 CJK chars.
@@ -149,12 +149,12 @@ tests/cognition/test_repetition_sentry.py::TestReActLoopRepetitionIntegration::t
 ```
 
 ### 3.2 Implementation Architecture
-- `src/harness_core/core/moa.py`:
+- `agent/moa.py`:
   - `MixtureOfAgents` executes proposer queries concurrently in a bounded `ThreadPoolExecutor`, respecting individual per-proposer `timeout_seconds`.
   - As long as `min_proposers_required` (default 1) succeed, `build_aggregator_prompt` structures the candidates into a cohesive synthesis prompt for the primary aggregator.
   - Complete fallback to the primary aggregator alone if all proposers fail or timeout.
   - Records per-proposer latency, tokens, error state, and aggregator synthesis metrics into `task_events` as `MOA_SYNTHESIS_COMPLETED`.
-- `src/harness_core/cognition/repetition_sentry.py`:
+- `cognition/repetition_sentry.py`:
   - Token repetition sentry evaluates `_line_repetition_dominated`, `_window_count_dominated` (60-char sliding window $\ge 5$ times covering $\ge 50\%$), and `_periodic_run_dominated` (measuring periodic repeating phrase anchors).
   - High-precision distinct line ratio (`distinct_lines / total_lines <= 0.5`) prevents false positives on SQL batch inserts, migration scripts, and large markdown tables.
   - `ActionLoopDetector` tracks recent tool call tuples `(tool_name, args_hash, is_error)`. Identifies identical repeat thrashing ($\ge 3$ consecutive errors/empty calls) and ping-pong tool cycles ($\ge 2$ sequences).
@@ -206,12 +206,12 @@ tests/capabilities/test_mobile_reaction_listener.py::test_tool_gateway_mobile_br
 ```
 
 ### 4.2 Implementation Architecture
-- `src/harness_core/core/approval_lease.py`:
+- `agent/approval_lease.py`:
   - `ApprovalLease`: Dataclass tracking `lease_id`, `command_prefix`, `allowed_paths`, `granted_at`, `ttl_seconds`, `expires_at`, `is_revoked`.
   - `ApprovalLeaseManager`: Provides `grant_lease`, `check_lease`, `revoke_lease`, and `cleanup_expired`. Normalizes commands across diverse argument names (`command`, `cmd`, `CommandLine`, `args`, `script`) and target paths, validating boundary-safe prefixes.
   - Integrates with `ToolGateway` and `ReActLoop`: matching tool calls execute with `policy_decision = "LEASE_APPROVED"` without blocking.
   - Interactive `/lease` slash command in `HexConsole` (`list`, `grant`, `revoke`, `cleanup`).
-- `src/harness_core/capabilities/gateways/reaction_listener.py`:
+- `capabilities/gateways/reaction_listener.py`:
   - `MobileApprovalBridge`: Bridges privileged R3 tool execution requests to Telegram and Discord bots.
   - Creates thread-safe `threading.Event` keyed by `request_id`, awaiting operator response up to `timeout_seconds` (`HEX_APPROVAL_TIMEOUT`, default 60s).
   - Handles inline button callbacks (`approve:<id>`, `deny:<id>`) and reaction emojis (`👍`, `+1`, `✅` -> APPROVE; `👎`, `-1`, `❌` -> DENY).
@@ -272,18 +272,18 @@ test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 
 | Must-Have Requirement | Source Plan | Artifacts Verified | Status |
 |---|---|---|---|
-| Conversational timeline rewind (`/rewind <turn_id \| -N>`) safely rolls back dialogue history, uncommitted tool outputs, and in-memory execution states without data loss | `37-01` | `src/harness_core/storage/timeline_rewind.py`, `src/harness_core/core/react_loop.py`, `src/harness_core/client/tui.py` | **PASS** |
-| Rewinding preserves abandoned turns under historical branch IDs in the SQLite ledger rather than performing hard destructive deletes | `37-01` | `src/harness_core/storage/db.py`, `src/harness_core/storage/timeline_rewind.py`, `tests/storage/test_timeline_rewind.py` | **PASS** |
-| Asynchronous background LLM session title synthesis spawns a non-blocking worker after Turn 1, updating `tasks.goal` with a clean 3-5 word title in the ledger | `37-01` | `src/harness_core/cognition/title_synthesizer.py`, `src/harness_core/storage/db.py`, `tests/cognition/test_title_synthesis.py` | **PASS** |
-| Synthesized session titles are queryable and immediately reflected in the Start screen resume list and session switchers | `37-01` | `src/harness_core/cognition/title_synthesizer.py`, `tests/cognition/test_title_synthesis.py` | **PASS** |
-| Mixture-of-Agents (`moa.py`) executes concurrent queries across multiple proposer models and synthesizes candidate responses through a primary aggregator model | `37-02` | `src/harness_core/core/moa.py`, `src/harness_core/core/orchestrator.py`, `tests/core/test_mixture_of_agents.py` | **PASS** |
-| Partial proposer timeouts or failures are gracefully handled with fallback synthesis, attributing per-model token consumption and latency | `37-02` | `src/harness_core/core/moa.py`, `tests/core/test_mixture_of_agents.py` | **PASS** |
-| Repetition sentry (`repetition_sentry.py`) detects runaway token repetition, tool call thrashing, and cyclical ping-pong action loops across turns | `37-02` | `src/harness_core/cognition/repetition_sentry.py`, `tests/cognition/test_repetition_sentry.py` | **PASS** |
-| Degenerate loops trigger out-of-band steering prompt injections to force alternative problem-solving strategies, and thinking tags are stripped cleanly from output | `37-02` | `src/harness_core/cognition/repetition_sentry.py`, `src/harness_core/core/react_loop.py`, `tests/cognition/test_repetition_sentry.py` | **PASS** |
-| Temporal approval leasing (`approval_lease.py`) grants time-bounded auto-approval leases for safe command prefixes and working directories | `37-03` | `src/harness_core/core/approval_lease.py`, `src/harness_core/storage/db.py`, `tests/core/test_approval_lease.py` | **PASS** |
-| Tool calls matching an active lease execute immediately with `policy_decision='LEASE_APPROVED'` without blocking for human input until the lease TTL expires | `37-03` | `src/harness_core/core/approval_lease.py`, `src/harness_core/core/react_loop.py`, `tests/core/test_approval_lease.py` | **PASS** |
-| Mobile reaction listener bridge (`reaction_listener.py`) dispatches interactive approval requests to Telegram and Discord and awaits external operator confirmation | `37-03` | `src/harness_core/capabilities/gateways/reaction_listener.py`, `src/harness_core/capabilities/gateways/telegram_bot.py`, `src/harness_core/capabilities/gateways/discord_bot.py`, `tests/capabilities/test_mobile_reaction_listener.py` | **PASS** |
-| If mobile operator response is not received within the configurable fallback timeout, the wait cleanly expires and safely falls back to default-deny or CLI input | `37-03` | `src/harness_core/capabilities/gateways/reaction_listener.py`, `tests/capabilities/test_mobile_reaction_listener.py` | **PASS** |
+| Conversational timeline rewind (`/rewind <turn_id \| -N>`) safely rolls back dialogue history, uncommitted tool outputs, and in-memory execution states without data loss | `37-01` | `storage/timeline_rewind.py`, `agent/react_loop.py`, `hex_cli/tui.py` | **PASS** |
+| Rewinding preserves abandoned turns under historical branch IDs in the SQLite ledger rather than performing hard destructive deletes | `37-01` | `storage/db.py`, `storage/timeline_rewind.py`, `tests/storage/test_timeline_rewind.py` | **PASS** |
+| Asynchronous background LLM session title synthesis spawns a non-blocking worker after Turn 1, updating `tasks.goal` with a clean 3-5 word title in the ledger | `37-01` | `cognition/title_synthesizer.py`, `storage/db.py`, `tests/cognition/test_title_synthesis.py` | **PASS** |
+| Synthesized session titles are queryable and immediately reflected in the Start screen resume list and session switchers | `37-01` | `cognition/title_synthesizer.py`, `tests/cognition/test_title_synthesis.py` | **PASS** |
+| Mixture-of-Agents (`moa.py`) executes concurrent queries across multiple proposer models and synthesizes candidate responses through a primary aggregator model | `37-02` | `agent/moa.py`, `agent/orchestrator.py`, `tests/core/test_mixture_of_agents.py` | **PASS** |
+| Partial proposer timeouts or failures are gracefully handled with fallback synthesis, attributing per-model token consumption and latency | `37-02` | `agent/moa.py`, `tests/core/test_mixture_of_agents.py` | **PASS** |
+| Repetition sentry (`repetition_sentry.py`) detects runaway token repetition, tool call thrashing, and cyclical ping-pong action loops across turns | `37-02` | `cognition/repetition_sentry.py`, `tests/cognition/test_repetition_sentry.py` | **PASS** |
+| Degenerate loops trigger out-of-band steering prompt injections to force alternative problem-solving strategies, and thinking tags are stripped cleanly from output | `37-02` | `cognition/repetition_sentry.py`, `agent/react_loop.py`, `tests/cognition/test_repetition_sentry.py` | **PASS** |
+| Temporal approval leasing (`approval_lease.py`) grants time-bounded auto-approval leases for safe command prefixes and working directories | `37-03` | `agent/approval_lease.py`, `storage/db.py`, `tests/core/test_approval_lease.py` | **PASS** |
+| Tool calls matching an active lease execute immediately with `policy_decision='LEASE_APPROVED'` without blocking for human input until the lease TTL expires | `37-03` | `agent/approval_lease.py`, `agent/react_loop.py`, `tests/core/test_approval_lease.py` | **PASS** |
+| Mobile reaction listener bridge (`reaction_listener.py`) dispatches interactive approval requests to Telegram and Discord and awaits external operator confirmation | `37-03` | `capabilities/gateways/reaction_listener.py`, `capabilities/gateways/telegram_bot.py`, `capabilities/gateways/discord_bot.py`, `tests/capabilities/test_mobile_reaction_listener.py` | **PASS** |
+| If mobile operator response is not received within the configurable fallback timeout, the wait cleanly expires and safely falls back to default-deny or CLI input | `37-03` | `capabilities/gateways/reaction_listener.py`, `tests/capabilities/test_mobile_reaction_listener.py` | **PASS** |
 
 ---
 

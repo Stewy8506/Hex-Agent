@@ -26,7 +26,7 @@ def get_vendor_dir() -> Path:
         return pkg_vendor
 
     # 3. Development git repository root (vendor/ at project root)
-    repo_vendor = Path(__file__).resolve().parents[2] / "vendor"
+    repo_vendor = Path(__file__).resolve().parents[1] / "vendor"
     if repo_vendor.is_dir():
         return repo_vendor
 

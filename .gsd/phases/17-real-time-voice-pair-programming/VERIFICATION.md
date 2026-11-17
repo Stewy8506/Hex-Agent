@@ -20,7 +20,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 1. VoiceConfig Data Model & Serialization
 - **Requirement:** `VoiceConfig` data model managing `tts_enabled`, `stt_enabled`, `voice_name`, `speech_rate` (clamped 80–400 wpm), `muted`, and `backend` ("auto", "macos_say", "linux_espeak", "mock") with dictionary round-trip serialization.
-- **File:** `src/harness_core/voice.py`
+- **File:** `harness_core/voice.py`
 - **Empirical Command:**
   ```python
   from harness_core.voice import VoiceConfig
@@ -35,7 +35,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 2. Spoken Text Sanitization (`clean_text_for_speech`)
 - **Requirement:** Strips ANSI escape codes, replaces markdown code fences (```...```) with spoken placeholders ("code snippet omitted"), flattens links `[text](url)` to text, removes raw URLs, header hashes, markdown formatting, and truncates text at natural word boundaries.
-- **File:** `src/harness_core/voice.py`
+- **File:** `harness_core/voice.py`
 - **Empirical Command & Real Output:**
   ```bash
   python -c "from harness_core.voice import clean_text_for_speech; raw = '\x1b[32mSuccess!\x1b[0m Check [docs](https://example.com) and run:\n\`\`\`python\nprint(123)\n\`\`\`\n# Header\n* Bullet item'; print(repr(clean_text_for_speech(raw)))"
@@ -45,7 +45,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 3. Asynchronous VoiceEngine Worker & TTS Synthesis
 - **Requirement:** Background worker daemon thread consuming sequentially from a thread-safe queue to eliminate overlapping audio playback, supporting macOS `/usr/bin/say`, Linux `espeak`/`festival`, and deterministic `MockTTSProvider`.
-- **File:** `src/harness_core/voice.py`
+- **File:** `harness_core/voice.py`
 - **Empirical Command:**
   ```bash
   python -c "from harness_core.voice import VoiceEngine, VoiceConfig, MockTTSProvider; tts = MockTTSProvider(); eng = VoiceEngine(VoiceConfig(backend='mock'), tts_provider=tts); eng.speak('Hello world'); import time; time.sleep(0.3); assert tts.spoken_history == ['Hello world']; eng.shutdown(); print('VoiceEngine async worker verified')"
@@ -55,7 +55,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 4. Audio Mute Controls & State Toggling
 - **Requirement:** Instant mute toggle (`mute()`, `unmute()`, `toggle_mute()`, `is_muted()`) that purges active queues and suppresses audio output while preserving console operations.
-- **File:** `src/harness_core/voice.py`
+- **File:** `harness_core/voice.py`
 - **Empirical Evidence:**
   ```python
   engine.mute()
@@ -68,7 +68,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 5. Zero-Dependency Audio Prober & STT Abstraction
 - **Requirement:** `probe_audio_hardware()` surveys available platform synthesizers (`say`, `espeak`), players (`afplay`, `aplay`), and audio inputs (`rec`, `arecord`, `ffmpeg`). STT abstractions provide push-to-talk and continuous listening protocols with `MockSTTProvider` test injection.
-- **File:** `src/harness_core/voice.py`
+- **File:** `harness_core/voice.py`
 - **Empirical Command & Real Output:**
   ```bash
   python -c "from harness_core.voice import probe_audio_hardware; print(probe_audio_hardware())"
@@ -78,7 +78,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 6. HexDoctor Audio Diagnostics (Category 9)
 - **Requirement:** HexDoctor inspects speech synthesis, audio player, and audio capture devices as Category 9 (`audio: "AUDIO HARDWARE & SPEECH ENGINES"`). Missing hardware reports benign `warning` status, never breaking CI runner health.
-- **Files:** `src/harness_core/doctor.py`, `tests/client/test_doctor_and_recipes.py`
+- **Files:** `harness_core/doctor.py`, `tests/client/test_doctor_and_recipes.py`
 - **Empirical Command & Real Output:**
   ```bash
   python -m harness_core.cli doctor
@@ -94,7 +94,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 7. TUI `/voice` Slash Command Suite
 - **Requirement:** TUI provides `/voice on`, `/voice off`, `/voice mute`, `/voice status`, `/voice rate <wpm>`, `/voice voice <name>`.
-- **File:** `src/harness_core/tui.py`
+- **File:** `harness_core/tui.py`
 - **Empirical Evidence:**
   - `console.handle_slash_command("/voice on")` -> Enables TTS/STT, announces audio active.
   - `console.handle_slash_command("/voice mute")` -> Toggles mute state.
@@ -105,7 +105,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 8. Live Voice Status Badges in TUI
 - **Requirement:** Status bar and session headers display live voice indicators (`🎙️ ON`, `🔇 MUTED`, `🎙️ OFF`).
-- **File:** `src/harness_core/tui.py`
+- **File:** `harness_core/tui.py`
 - **Empirical Evidence:**
   - `render_status_bar(voice_status="ON")` contains `" 🎙️ ON "`
   - `render_status_bar(voice_status="MUTED")` contains `" 🔇 MUTED "`
@@ -115,7 +115,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 9. Automatic Spoken Agent Commentary
 - **Requirement:** On task completion, agent extracts a concise spoken summary (first 1–2 sentences) without reading code fences or blocking the interactive prompt.
-- **File:** `src/harness_core/tui.py` (`HexConsole.handle_user_prompt`)
+- **File:** `harness_core/tui.py` (`HexConsole.handle_user_prompt`)
 - **Empirical Evidence:**
   - Input Summary: `"Created authentication middleware in auth.py. \`\`\`python\ndef auth(): pass\`\`\` All 15 tests green."`
   - Spoken Utterance: `"Created authentication middleware in auth.py. code snippet omitted All 15 tests green."`
@@ -123,7 +123,7 @@ Every must-have requirement specified in `.gsd/ROADMAP.md`, `17-01-PLAN.md`, and
 
 ### 10. CLI Voice Ergonomics & Standalone Command
 - **Requirement:** Standalone `hex voice` subcommand and `--voice`, `--voice-name`, `--speech-rate` flags on `hex` and `hex chat`.
-- **Files:** `src/harness_core/cli.py`
+- **Files:** `harness_core/cli.py`
 - **Empirical Evidence:**
   - `hex voice --voice-name Samantha --speech-rate 210` correctly initializes `HexConsole(voice_enabled=True, voice_name="Samantha", speech_rate=210)`.
   - `hex chat --voice` correctly initializes `HexConsole(voice_enabled=True)`.

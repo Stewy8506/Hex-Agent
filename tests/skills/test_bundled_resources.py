@@ -16,7 +16,8 @@ class TestBundledResources(unittest.TestCase):
         for optional in (False, True):
             root = bundled_skills_dir(optional=optional)
             self.assertTrue(root.is_dir())
-            self.assertEqual(root.parent, REPO_ROOT / "src/harness_core/resources/skills")
+            expected = REPO_ROOT / "optional-skills" if optional else REPO_ROOT / "skills/builtin"
+            self.assertEqual(root, expected)
             self.assertTrue(list(root.rglob("SKILL.md")))
         self.assertEqual(SkillCompiler.__module__, "harness_core.skills.compiler")
         self.assertEqual(SkillExecutionEngine.__module__, "harness_core.skills.executor")

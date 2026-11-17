@@ -1,12 +1,12 @@
 # Phase 18 Plan 01 Summary: Google Research Harness² Experience Library Integration
 
 ## Executive Overview
-Successfully integrated Google Research Harness²'s per-domain Experience Library (`harness2.core.library.Library`) directly into `HarnessOrchestrator` (`src/harness_core/orchestrator.py`). The orchestrator now lazily instantiates and caches domain-scoped `Library` instances under a configurable library root (`data_dir / "harness2_library"` by default), automatically validates and records post-task experience (`cue`, `lesson`, and `evidence`) upon task success, materializes the adopted component tree (`OPENCODE_SURFACE`), generates canonical `EXPERIENCE.md`, rebuilds `INDEX.md`, logs hash-chained `HARNESS2_EXPERIENCE_RECORDED` ledger events, and retrieves proven domain lessons to inject into autonomous repair and planning prompts.
+Successfully integrated Google Research Harness²'s per-domain Experience Library (`harness2.core.library.Library`) directly into `HarnessOrchestrator` (`harness_core/orchestrator.py`). The orchestrator now lazily instantiates and caches domain-scoped `Library` instances under a configurable library root (`data_dir / "harness2_library"` by default), automatically validates and records post-task experience (`cue`, `lesson`, and `evidence`) upon task success, materializes the adopted component tree (`OPENCODE_SURFACE`), generates canonical `EXPERIENCE.md`, rebuilds `INDEX.md`, logs hash-chained `HARNESS2_EXPERIENCE_RECORDED` ledger events, and retrieves proven domain lessons to inject into autonomous repair and planning prompts.
 
 ## Executed Tasks
 
 ### Task 1: Wire harness2.core.library.Library Engine and Post-Task Experience Recording into HarnessOrchestrator
-- **Files Modified:** `src/harness_core/orchestrator.py`
+- **Files Modified:** `harness_core/orchestrator.py`
 - **Commit:** `3207cbe` (`feat(phase-18): wire harness2 library and experience recording into orchestrator`)
 - **Key Deliverables:**
   - Resolved Google Research Harness² vendor path (`VENDOR_HARNESS2 = get_harness2_dir()`) and imported `Library`, `domain_dir`, `has_experience`, and `OPENCODE_SURFACE`.
@@ -16,7 +16,7 @@ Successfully integrated Google Research Harness²'s per-domain Experience Librar
   - Wired post-task experience recording into `_execute_standard_dag()` on task success, logging hash-chained `HARNESS2_EXPERIENCE_RECORDED` ledger events.
 
 ### Task 2: Implement Pre-Task Domain Experience Retrieval and Context Injection into Planning and Repair Loops
-- **Files Modified:** `src/harness_core/orchestrator.py`
+- **Files Modified:** `harness_core/orchestrator.py`
 - **Commit:** `0bea440` (`feat(phase-18): implement pre-task experience retrieval and repair context injection`)
 - **Key Deliverables:**
   - Implemented `retrieve_domain_experience(domain, max_entries=5)` reading `INDEX.md` and parsing `EXPERIENCE.md` files to extract cues, lessons, and evidence, formatting markdown context for model reasoning.

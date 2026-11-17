@@ -1,6 +1,6 @@
 # Hermes Parity Verification: Live Context Window Resolution & Dynamic Formatting
 
-**Scope:** Head-to-Head Comparison between HEX (`src/harness_core`, `crates/hex-tui`) and Hermes (`benchmarks/hermes-agent`)  
+**Scope:** Head-to-Head Comparison between HEX (`harness_core`, `crates/hex-tui`) and Hermes (`benchmarks/hermes-agent`)\
 **Auditor:** Independent GSD Verifier  
 **Date:** 2026-11-16  
 **Status:** **PASS**  
@@ -25,9 +25,9 @@ An exhaustive empirical verification was conducted comparing HEX's live model co
 
 ## 2. Comparative Analysis Matrix
 
-| Feature / Dimension | Hermes Implementation (`benchmarks/hermes-agent`) | HEX Implementation (`src/harness_core`, `crates/hex-tui`) | Alignment Verdict |
+| Feature / Dimension | Hermes Implementation (`benchmarks/hermes-agent`) | HEX Implementation (`harness_core`, `crates/hex-tui`) | Alignment Verdict |
 |---|---|---|---|
-| **Default Fallback Context** | `DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]` (`256_000` tokens) | `DEFAULT_FALLBACK_CONTEXT = 256_000` (`src/harness_core/model_metadata.py:21`) | **PASS** (Exact match) |
+| **Default Fallback Context** | `DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]` (`256_000` tokens) | `DEFAULT_FALLBACK_CONTEXT = 256_000` (`harness_core/model_metadata.py:21`) | **PASS** (Exact match) |
 | **Context Probe Tiers** | `[256_000, 128_000, 64_000, 32_000, 16_000, 8_000]` | `[256_000, 128_000, 64_000, 32_000, 16_000, 8_000]` (`model_metadata.py:22`) | **PASS** (Exact match) |
 | **Version Normalization** | `_normalize_model_version(model)`: `model.replace(".", "-")` | `_normalize_model_version(model)`: `model.replace(".", "-")` (`model_metadata.py:330`) | **PASS** (Exact match) |
 | **Catalog Substring Match** | `_catalog_key_matches(key, model_lower)`: matches normalized versions | `_catalog_key_matches(key, model_lower)`: normalized substring match (`model_metadata.py:335`) | **PASS** (Exact match) |
@@ -44,11 +44,12 @@ A dedicated automated head-to-head comparison harness was executed comparing Her
 
 ### 3.1 Head-to-Head Comparison Execution Trace
 
+To rerun this trace after relocation, first run `.venv/bin/python -m pip install -e ".[full]"` from the checkout root to refresh HEX's editable package mappings. The benchmark's own path setup and recorded results remain historical.
+
 ```bash
 .venv/bin/python3 -c "import sys
 sys.path.insert(0, '/Users/anv./.hermes/installs/79b60832a39a193a/environments/21cc15bdac4a4691a7da0b4380edf199/venv/lib/python3.14/site-packages')
 sys.path.insert(0, 'benchmarks/hermes-agent')
-sys.path.insert(0, 'src')
 
 import harness_core.model_metadata as hex_meta
 import agent.model_metadata as hermes_meta

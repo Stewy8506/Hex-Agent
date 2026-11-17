@@ -2,7 +2,7 @@
 
 The JSONL fixtures in tests/fixtures/acp_wire/ are captured from the actual
 Python server (scripted orchestrator, no live provider calls) and are also
-consumed by the Rust client tests in crates/hex-desktop and crates/hex-tui,
+consumed by the Rust client tests in App/hex-desktop and crates/hex-tui,
 so both sides of the wire are proven against one contract.
 
 Regenerate fixtures after an intentional protocol change:

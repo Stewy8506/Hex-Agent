@@ -10,7 +10,7 @@
 ## 1. Summary of Completed Work
 
 ### Task 1: Multi-Turn Autonomous Repair Loop in HarnessOrchestrator
-- Enhanced `HarnessOrchestrator.__init__` in `src/harness_core/orchestrator.py` to accept an optional `repair_patch_generator: Callable[..., list[dict[str, Any]]] | None = None` for deterministic testing, custom strategies, and model router dispatch.
+- Enhanced `HarnessOrchestrator.__init__` in `harness_core/orchestrator.py` to accept an optional `repair_patch_generator: Callable[..., list[dict[str, Any]]] | None = None` for deterministic testing, custom strategies, and model router dispatch.
 - Implemented `generate_repair_patch(task_id, attempt_ws, failure_digest, blast_report, modified_files)`:
   - Supports custom/mock patch generators with flexible signatures.
   - Automatically extracts candidate failing source files from failure tracebacks and compressed digests.
@@ -33,11 +33,11 @@
   - Updates attempt record with `FAILED` status and failure classification.
   - Safely transitions task state to `NEEDS_ATTENTION` with terminal reason and comprehensive payload (including `forensic_snapshot_path`, `verification_results`, `repair_attempts`).
   - Base project workspace `source_ws` is guaranteed to remain pristine and uncorrupted on repair failure.
-- Updated `src/harness_core/models.py`:
+- Updated `harness_core/models.py`:
   - Enhanced `TaskBudget.from_dict` to accept existing `TaskBudget` instances transparently.
   - Documented retry ceiling (`max_retries_per_step = 2`) and cost limit (`max_cost_usd = 2.0`) constraints.
   - Confirmed state machine permits `TaskState.VERIFYING -> TaskState.NEEDS_ATTENTION`, `TaskState.VERIFYING -> TaskState.RUNNING`, and `TaskState.RUNNING -> TaskState.NEEDS_ATTENTION`.
-- Hardened `src/harness_core/db.py`:
+- Hardened `harness_core/db.py`:
   - Updated `transition_task` and `transition_task_async` to preserve `terminal_reason` when explicitly provided on state transitions (including non-terminal interrupts like `NEEDS_ATTENTION`).
 
 ### Task 3: Autonomous Repair Benchmark and Retry Escalation Test Suite
@@ -90,5 +90,5 @@
 
 ## 4. Deviations & Blockers
 
-- Minor deviation: Hardened `src/harness_core/db.py` to preserve `terminal_reason` when passed into `transition_task` / `transition_task_async` for `NEEDS_ATTENTION` state transitions, ensuring detailed diagnosis reasons are permanently retained on the task record.
+- Minor deviation: Hardened `harness_core/db.py` to preserve `terminal_reason` when passed into `transition_task` / `transition_task_async` for `NEEDS_ATTENTION` state transitions, ensuring detailed diagnosis reasons are permanently retained on the task record.
 - No blockers. All must-haves confirmed and verified.

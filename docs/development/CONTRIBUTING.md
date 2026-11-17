@@ -9,6 +9,7 @@ Thank you for your interest in contributing to **HEX**! Whether fixing a bug, ad
 ### Prerequisites:
 - **Python 3.10+** (Python 3.12 recommended)
 - **Rust / Cargo 1.80+** (for compiling `crates/hex-tui` and `crates/hex-protocol`)
+- **macOS and the Xcode/Metal toolchain** for the experimental desktop in `App/hex-desktop/`
 - **Git**
 
 ### Clone & Install:
@@ -20,9 +21,11 @@ cd Harness
 python3 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install dependencies in editable mode
-pip install -e ".[full,test]"
+# Required developer install from the repository root
+python -m pip install -e ".[full]"
 ```
+
+Re-run this editable install after the source relocation, including in an existing virtual environment, to refresh setuptools' `package_dir` mappings. The `full` extra includes the Python test dependencies. Do not rely on adding the checkout root or the former source directory to `PYTHONPATH`: the physical root domains still import through the canonical `harness_core.*` namespace.
 
 ---
 
@@ -55,15 +58,15 @@ cargo test -p hex-desktop
 
 ### Source placement
 
-Keep the `harness_core` namespace and the existing `crates/hex-{protocol,tui,desktop}` crates and Rust manifests. Existing public entry modules, including `client/cli.py`, `client/acp.py`, `client/tui.py`, and `client/onboard.py`, remain the CLI/import surfaces; do not replace them with internal paths.
+Use the open repository-root layout while keeping canonical `harness_core.*` imports and all existing CLI contracts. Supported setuptools `package_dir` mappings connect `harness_core.core` to `agent/`, `harness_core.client` to `hex_cli/`, `harness_core.platform` to `hex_platform/`, and `harness_core.skills` to `skill_engine/`. The `cognition/`, `providers/`, `models/`, `runtime/`, `storage/`, `capabilities/`, `tools/`, `lsp/`, `resources/`, and `gateways/` domains also live at the repository root, without renaming their public packages.
 
-Use the focused internal modules under `src/harness_core/`:
-
-- `client/commands/projects.py` and `client/commands/antigravity.py` own project and Antigravity authentication command handlers.
-- `client/terminal/ansi.py` and `client/terminal/review.py` own ANSI formatting and review/diff rendering; `client/onboarding/verification.py` owns onboarding verification helpers.
-- `platform/hardware.py` and `platform/diagnostics.py` own host hardware profiling and diagnostic helpers. Configuration stays in `config_loader.py`; use its shared `update_config_yaml_model()` writer for model-selection updates from onboarding and orchestration.
+- `harness_core/` is the substantive package anchor, not a wrapper layer. It retains `__init__.py`, shared configuration/provider/gateway/evaluation/graphify/adapter/MCP/vendor-path modules, and packaged SQL migrations.
+- `hex_cli/commands/projects.py` and `hex_cli/commands/antigravity.py` own project and Antigravity authentication command handlers.
+- `hex_cli/terminal/ansi.py` and `hex_cli/terminal/review.py` own ANSI formatting and review/diff rendering; `hex_cli/onboarding/verification.py` owns onboarding verification helpers. Entry modules live in `hex_cli/cli.py`, `hex_cli/acp.py`, `hex_cli/tui.py`, and `hex_cli/onboard.py`; keep their `harness_core.client.*` launch/import names, rather than importing by physical directory name.
+- `hex_platform/hardware.py` and `hex_platform/diagnostics.py` own host hardware profiling and diagnostic helpers. Configuration stays in `harness_core/config_loader.py`; use its shared `update_config_yaml_model()` writer for model-selection updates from onboarding and orchestration.
 - `storage/project_init.py` owns project stack detection and `.hex` initialization. Filesystem tool implementations live in `tools/filesystem.py` behind the existing gateway.
-- `resources/skills/builtin/` and `resources/skills/optional/` contain packaged skill data, not the Python skill engine. Skill-management code remains in its existing modules.
+- `skills/builtin/` and `optional-skills/` contain packaged skill data, not the Python engine in `skill_engine/`. Their canonical resource package names are preserved by the package mappings.
+- The root `Cargo.toml` remains the workspace manifest. `crates/hex-protocol/` and `crates/hex-tui/` stay in place; the experimental macOS desktop lives in `App/hex-desktop/`. Run Cargo commands from the root using the unchanged package names. There is no new mobile app or placeholder mobile directory.
 
 Place tests under the matching `tests/<subsystem>/`; shared fixtures remain in `tests/fixtures/`, and Rust tests stay with their crates. Root manifests, installers, `assets/`, and `.gsd/` are not relocated. This layout does not imply a wholesale split of large orchestration or storage modules. Documentation lives under `docs/{architecture,guides,reference,development,research,audits}/`, with design references and their assets together in `docs/design/mockups/`. See [Source Layout](../architecture/ARCHITECTURE.md#3-python-source-layout-srcharness_core) for the layout and compatibility boundaries.
 

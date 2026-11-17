@@ -19,12 +19,12 @@ All 5 core capabilities and 7 verification objectives mandated in `.gsd/ROADMAP.
 
 | Requirement Area | Target Implementation | Status | Empirical Proof |
 |------------------|----------------------|--------|-----------------|
-| **Stdio JSON-RPC 2.0 Framing** | `src/harness_core/lsp/client.py` (`StdioLSPTransport`) | **PASS** | `Content-Length: <n>\r\n\r\n` framing, reader threads, request demuxing verified |
-| **LSP Lifecycle & Document Sync** | `src/harness_core/lsp/client.py` (`LSPClient`) | **PASS** | Handshake (`initialize`/`initialized`), `didOpen`, `didChange`, `didClose`, `shutdown`, `exit` verified |
-| **Polyglot Registry & Auto-Detection** | `src/harness_core/lsp/registry.py` (`LanguageServerRegistry`) | **PASS** | 6 language families (Python, TS/JS, Go, Rust, C/C++, Java), 9 server specs, `shutil.which` verified |
-| **ToolGateway R1 Tools** | `src/harness_core/gateway.py` (`ToolGateway`) | **PASS** | `lsp_diagnostics`, `lsp_definition`, `lsp_references`, `lsp_hover` registered as R1 with graceful fallbacks |
-| **Repair Pre-Flight Interceptor** | `src/harness_core/orchestrator.py` (`_run_compiler_preflight`) | **PASS** | Syntax/type errors intercepted before test suite, `LSP_COMPILER_PREFLIGHT_FAILED` logged in ledger |
-| **CLI & TUI Ergonomics** | `src/harness_core/cli.py`, `src/harness_core/tui.py` | **PASS** | `hex lsp [status|diagnostics|definition|hover]` and TUI `/lsp` commands operational |
+| **Stdio JSON-RPC 2.0 Framing** | `lsp/client.py` (`StdioLSPTransport`) | **PASS** | `Content-Length: <n>\r\n\r\n` framing, reader threads, request demuxing verified |
+| **LSP Lifecycle & Document Sync** | `lsp/client.py` (`LSPClient`) | **PASS** | Handshake (`initialize`/`initialized`), `didOpen`, `didChange`, `didClose`, `shutdown`, `exit` verified |
+| **Polyglot Registry & Auto-Detection** | `lsp/registry.py` (`LanguageServerRegistry`) | **PASS** | 6 language families (Python, TS/JS, Go, Rust, C/C++, Java), 9 server specs, `shutil.which` verified |
+| **ToolGateway R1 Tools** | `harness_core/gateway.py` (`ToolGateway`) | **PASS** | `lsp_diagnostics`, `lsp_definition`, `lsp_references`, `lsp_hover` registered as R1 with graceful fallbacks |
+| **Repair Pre-Flight Interceptor** | `harness_core/orchestrator.py` (`_run_compiler_preflight`) | **PASS** | Syntax/type errors intercepted before test suite, `LSP_COMPILER_PREFLIGHT_FAILED` logged in ledger |
+| **CLI & TUI Ergonomics** | `harness_core/cli.py`, `harness_core/tui.py` | **PASS** | `hex lsp [status|diagnostics|definition|hover]` and TUI `/lsp` commands operational |
 | **Regression & Full Test Suite** | Full test discovery across repository | **PASS** | 480/480 tests passing in 129.98s |
 
 ---
@@ -32,7 +32,7 @@ All 5 core capabilities and 7 verification objectives mandated in `.gsd/ROADMAP.
 ## 2. Requirement-by-Requirement Evidence
 
 ### Requirement 1: Stdio JSON-RPC 2.0 LSP Client & Protocol Framing
-- **File:** `src/harness_core/lsp/client.py`
+- **File:** `lsp/client.py`
 - **Features Verified:**
   - `StdioLSPTransport` formats outbound JSON payloads with HTTP-style `Content-Length: <n>\r\n\r\n` headers and UTF-8 encoding.
   - Background `_read_stdout_loop` parses header lines, extracts `Content-Length`, reads exact body byte chunks, and decodes JSON-RPC messages.
@@ -66,7 +66,7 @@ All 5 core capabilities and 7 verification objectives mandated in `.gsd/ROADMAP.
 ---
 
 ### Requirement 2: Polyglot Language Server Registry & Auto-Detection
-- **File:** `src/harness_core/lsp/registry.py`
+- **File:** `lsp/registry.py`
 - **Features Verified:**
   - Configurations pre-registered for 6 language families:
     1. **Python:** `pyright` (args: `["--stdio"]`), `ruff` (args: `["server"]`), `pylsp`
@@ -89,7 +89,7 @@ All 5 core capabilities and 7 verification objectives mandated in `.gsd/ROADMAP.
 ---
 
 ### Requirement 3: ToolGateway Integration
-- **File:** `src/harness_core/gateway.py`
+- **File:** `harness_core/gateway.py`
 - **Features Verified:**
   - 4 read-only tools registered in `ToolGateway._register_builtin_tools`:
     * `lsp_diagnostics` (RiskClass.R1)
@@ -117,7 +117,7 @@ All 5 core capabilities and 7 verification objectives mandated in `.gsd/ROADMAP.
 ---
 
 ### Requirement 4: Autonomous Repair Pre-Flight Interceptor
-- **File:** `src/harness_core/orchestrator.py`
+- **File:** `harness_core/orchestrator.py`
 - **Features Verified:**
   - `_run_compiler_preflight(attempt_ws, modified_files)` synchronizes modified files with active language servers via `did_open`/`did_change` and polls for fatal errors (severity=1 / ERROR) with a bounded 1.5s timeout.
   - Embedded into `_execute_standard_dag` at two critical checkpoints:
@@ -140,7 +140,7 @@ All 5 core capabilities and 7 verification objectives mandated in `.gsd/ROADMAP.
 ---
 
 ### Requirement 5: CLI & TUI Ergonomics
-- **Files:** `src/harness_core/cli.py`, `src/harness_core/tui.py`
+- **Files:** `harness_core/cli.py`, `harness_core/tui.py`
 - **Features Verified:**
   - CLI `hex lsp` subcommands:
     * `hex lsp status [--workspace <path>] [--json]`

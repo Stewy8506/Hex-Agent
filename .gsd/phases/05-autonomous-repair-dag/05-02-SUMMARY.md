@@ -10,18 +10,18 @@
 ## 1. Summary of Completed Work
 
 ### Task 1: Implement Dynamic DAG Replanning and Selective Subgraph Invalidation
-- Implemented `HarnessOrchestrator.replan_dag` in `src/harness_core/orchestrator.py`:
+- Implemented `HarnessOrchestrator.replan_dag` in `harness_core/orchestrator.py`:
   - **Downstream Dependency Analysis:** Constructs directed child adjacency graph from `node.get("depends_on")` and performs breadth-first search (BFS) reachability traversal from `mutated_step_id` to identify all transitive downstream dependent step IDs.
   - **File Overlap & Target Detection:** Checks if any step's inputs, targets, or side effects (`path`, `target`, `file`, `targets`, `inputs`, `files`, `side_effects`) overlap with `actual_modified_files` or blast radius tests, adding affected steps and their downstream children to the invalidation set.
   - **Selective Subgraph Invalidation:** Selectively marks only downstream dependent steps as `INVALIDATED` and removes them from `completed_step_ids` for re-execution. Preserves independent completed steps as `COMPLETED` without re-running them.
   - **Dynamic Blast-Radius Test Pinning:** Interrogates Active Graphify (`self.graphify.compute_blast_radius`), extracts newly discovered `impacted_tests`, and merges them into `blast_radius_checks`.
   - **Monotonic Plan Revisions:** Saves new plan with monotonically incremented `revision` and sets `supersedes_revision` to previous revision.
   - **Cryptographically Hash-Chained Task Event:** Records `PLAN_REVISED` task event with reason `SELECTIVE_SUBGRAPH_INVALIDATION`, active workspace Merkle tree SHA, and structured payload detailing mutated, invalidated, and preserved step IDs alongside pinned tests.
-- Refactored `_execute_standard_dag` in `src/harness_core/orchestrator.py`:
+- Refactored `_execute_standard_dag` in `harness_core/orchestrator.py`:
   - Converted sequential step iteration to a dynamic DAG dependency resolver loop (`while True`) that picks ready nodes whose dependencies are all satisfied.
   - Added unexpected side-effects detection comparing actual modified files against declared `side_effects` (`actual - declared`).
   - Automatically triggers `replan_dag` when unexpected file modifications occur, when explicit `trigger_replan` is requested, or when Active Graphify discovers unpinned downstream tests/callers.
-- Enhanced `src/harness_core/db.py`:
+- Enhanced `harness_core/db.py`:
   - Added `PlanNode` object serialization support to `save_plan` and `save_plan_async`.
   - Implemented `get_plan_revision`, `get_plan_revision_async`, `list_plans`, and `list_plans_async` for complete dual-driver (SQLite & PostgreSQL) plan versioning.
 

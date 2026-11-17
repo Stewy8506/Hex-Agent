@@ -25,13 +25,13 @@ Empirical verification confirms **12 of 12 must-haves verified**, with **455 of 
 
 | # | Truth | Status | Empirical Evidence |
 |---|---|---|---|
-| 1 | Authenticate-first onboarding sequence across providers | ✓ VERIFIED | `src/harness_core/onboard.py` lines 217–344 prompts for OAuth/PKCE/API keys (`prompt_secret`) before invoking `fetch_available_models`. Verified via test `test_onboard_wizard_requests_auth_before_model_discovery`. |
+| 1 | Authenticate-first onboarding sequence across providers | ✓ VERIFIED | `harness_core/onboard.py` lines 217–344 prompts for OAuth/PKCE/API keys (`prompt_secret`) before invoking `fetch_available_models`. Verified via test `test_onboard_wizard_requests_auth_before_model_discovery`. |
 | 2 | Live model discovery querying Antigravity companion endpoint | ✓ VERIFIED | `AntigravityModelProvider` and `AntigravityOAuthManager` query `POST /v1internal:fetchAvailableModels`, parsing display names and quota remaining fractions (`{displayName} ({pct}% quota remaining)`). Verified via test and mock verification. |
 | 3 | Live model discovery for Anthropic, OpenAI, Gemini, and Ollama | ✓ VERIFIED | `fetch_available_models` in `cloud_provider.py` queries `GET /v1/models` (Anthropic), `GET /v1/models` with `gpt-4o/o1/o3-mini` filter (OpenAI), `GET /v1beta/models` with `generateContent` filter (Gemini), and `GET /api/tags` (Ollama). Mock evaluation confirms exact parsing. |
 | 4 | Resilient 3.0s timeout & offline fallback badging (`[offline fallback]`) | ✓ VERIFIED | Running `fetch_available_models('openai', 'invalid-key')` and `fetch_available_models('fake_token')` returns tuples tagged with `[offline fallback]`. Standard library `urllib.request` with `timeout=3.0` catches all network and auth errors. |
-| 5 | Interactive `/model` command in TUI querying live provider models | ✓ VERIFIED | `_cmd_model` in `src/harness_core/tui.py` detects interactive TTY, queries active provider via `fetch_available_models`, prompts via `select_option`, updates router model, and prints `✓ Active model switched to: {model_id}`. |
+| 5 | Interactive `/model` command in TUI querying live provider models | ✓ VERIFIED | `_cmd_model` in `harness_core/tui.py` detects interactive TTY, queries active provider via `fetch_available_models`, prompts via `select_option`, updates router model, and prints `✓ Active model switched to: {model_id}`. |
 | 6 | Unit tests for live model discovery pass | ✓ VERIFIED | `tests/client/test_live_model_discovery.py` passed: 12 tests in 0.116s, OK. |
-| 7 | Global project registry in `~/.hex/projects.json` | ✓ VERIFIED | `ProjectRegistry` in `src/harness_core/project_registry.py` provides atomic file replacement (`tempfile` + `os.replace`), tracking `name`, `path`, `stack`, `last_active`, and `task_count`. Tested in `test_project_registry_crud_and_persistence`. |
+| 7 | Global project registry in `~/.hex/projects.json` | ✓ VERIFIED | `ProjectRegistry` in `harness_core/project_registry.py` provides atomic file replacement (`tempfile` + `os.replace`), tracking `name`, `path`, `stack`, `last_active`, and `task_count`. Tested in `test_project_registry_crud_and_persistence`. |
 | 8 | Automatic enclosing project detection | ✓ VERIFIED | `detect_enclosing_project` in `project_registry.py` climbs parent directories discovering `.hex` or `.git` boundaries (excluding bare `$HOME`). Tested in `test_detect_enclosing_project_nested_subdirectories`. |
 | 9 | Daily project switcher ("What project do you want to work on today?") | ✓ VERIFIED | `cli.py` triggers `select_option` prompt when launched outside any workspace in interactive mode (`chat`/`tui`), offering registered projects, `[+]` register existing folder, or `[★]` initialize current directory. Tested in `test_cli_daily_switcher_interactive`. |
 | 10 | Folder-scoped context isolation | ✓ VERIFIED | Project registration automatically creates `<project>/.hex/` with `config.yaml`, `reflections/LESSONS.md`, and `data/` directory. Tested in `test_folder_scoped_context_isolation`. |
@@ -44,12 +44,12 @@ Empirical verification confirms **12 of 12 must-haves verified**, with **455 of 
 
 | Path | Exists | Substantive | Wired | Notes |
 |---|---|---|---|---|
-| `src/harness_core/providers/antigravity_provider.py` | ✓ | ✓ | ✓ | Contains `fetch_available_models`, `AntigravityOAuthManager.fetch_available_models`, and `AntigravityModelProvider.fetch_available_models` with quota percentage parsing and fallback |
-| `src/harness_core/providers/cloud_provider.py` | ✓ | ✓ | ✓ | Multi-provider `fetch_available_models` querying Anthropic, OpenAI, Gemini, and Ollama with 3.0s timeout and curated offline fallbacks |
-| `src/harness_core/project_registry.py` | ✓ | ✓ | ✓ | `ProjectRecord` and `ProjectRegistry` managing `~/.hex/projects.json`, enclosing project detection, and folder-scoped `.hex/` structures |
-| `src/harness_core/onboard.py` | ✓ | ✓ | ✓ | Inverted authenticate-first wizard flow, project registration in `init_project`, reflections and data directory scaffolding |
-| `src/harness_core/cli.py` | ✓ | ✓ | ✓ | `hex setup` canonical rename with `onboard` alias, `hex project` CLI subcommands, and interactive daily project switcher |
-| `src/harness_core/tui.py` | ✓ | ✓ | ✓ | Interactive `/model` live selector and `/project` status/list/switch commands |
+| `providers/antigravity_provider.py` | ✓ | ✓ | ✓ | Contains `fetch_available_models`, `AntigravityOAuthManager.fetch_available_models`, and `AntigravityModelProvider.fetch_available_models` with quota percentage parsing and fallback |
+| `providers/cloud_provider.py` | ✓ | ✓ | ✓ | Multi-provider `fetch_available_models` querying Anthropic, OpenAI, Gemini, and Ollama with 3.0s timeout and curated offline fallbacks |
+| `harness_core/project_registry.py` | ✓ | ✓ | ✓ | `ProjectRecord` and `ProjectRegistry` managing `~/.hex/projects.json`, enclosing project detection, and folder-scoped `.hex/` structures |
+| `harness_core/onboard.py` | ✓ | ✓ | ✓ | Inverted authenticate-first wizard flow, project registration in `init_project`, reflections and data directory scaffolding |
+| `harness_core/cli.py` | ✓ | ✓ | ✓ | `hex setup` canonical rename with `onboard` alias, `hex project` CLI subcommands, and interactive daily project switcher |
+| `harness_core/tui.py` | ✓ | ✓ | ✓ | Interactive `/model` live selector and `/project` status/list/switch commands |
 | `tests/client/test_live_model_discovery.py` | ✓ | ✓ | ✓ | 12 dedicated unit and integration tests covering all providers and fallback paths |
 | `tests/storage/test_project_registry_and_workspace.py` | ✓ | ✓ | ✓ | 20 dedicated unit and integration tests covering registry persistence, switcher, and workspace isolation |
 

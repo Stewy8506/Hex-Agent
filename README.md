@@ -150,7 +150,7 @@ HEX will clone an isolated scratchpad, implement the code, run your test runner,
 ## 🖥️ Native macOS GPUI Desktop Cockpit (`hex-desktop`) — Experimental
 
 > **Status: experimental.** The desktop runs a working chat flow against the
-> Python engine over ACP, covered end to end by `crates/hex-desktop/tests/test_chat_flow.rs`.
+> Python engine over ACP, covered end to end by `App/hex-desktop/tests/test_chat_flow.rs`.
 > It is distributed from source only, and some panels are not yet fed by live
 > data (see *Not yet live* below). Performance figures (FPS, RAM) have not been
 > benchmarked and are not claimed. The mockup below shows the target design.
@@ -166,7 +166,7 @@ The app attaches to `/tmp/hex-acp.sock` if present, otherwise it spawns
 `HEX_PYTHON_BIN`, then `$VIRTUAL_ENV`, then the repo's `.venv/bin/python`,
 then `python3`.
 
-The desktop is built with Zed's **GPUI** framework (`crates/hex-desktop`):
+The desktop is built with Zed's **GPUI** framework (`App/hex-desktop`):
 
 ```text
 ┌───────────────────────────┬────────────────────────────────────────────────────────┐
@@ -288,28 +288,43 @@ Production agent reliability requires resilient upstream connectivity:
 
 ## 🏗️ Clean Subpackage Architecture
 
-HEX's Python package (`src/harness_core/`) keeps its domain packages and public entry modules, with focused helpers in client, platform, and tool internals. Representative layout:
+HEX uses an open repository-root layout: Python domains are visible at the root, while the public package namespace remains `harness_core`. Representative layout:
 
 ```text
-src/harness_core/
-├── core/           # Orchestrator, ReAct loop, router, subagents, MoA, approval leases
-├── storage/        # DB, CoW sandboxes, rewind, GC, Keychain, project_init.py
-├── cognition/      # Memory, reflections, SkillSpector, title synthesizer, repetition sentry
-├── runtime/        # Process registry, code execution kernels, daemon, task scheduler
-├── client/         # Public CLI, ACP, TUI, and onboarding entry modules
-│   ├── commands/   # projects.py, antigravity.py
-│   ├── terminal/   # ansi.py, review.py
-│   └── onboarding/ # verification.py
-├── platform/       # hardware.py, diagnostics.py
-├── tools/          # filesystem.py implementation behind the gateway
-├── skills/         # Python skill compiler, execution, and retrieval engine
-├── resources/      # skills/builtin/ and skills/optional/ data, not the skill engine
-├── config_loader.py # Shared configuration loading and model-selection writer
-├── capabilities/   # Browser, vision, voice, search, git autopilot, GitHub actions, gateways
-└── models/         # Model metadata, credential pool, provider routing
+Harness/
+├── harness_core/    # Package anchor: __init__.py, shared configuration/provider/gateway modules, SQL migrations
+├── agent/           # Orchestrator, ReAct loop, router, subagents, MoA, approval leases
+├── storage/         # DB, CoW sandboxes, rewind, GC, Keychain, project_init.py
+├── cognition/       # Memory, reflections, SkillSpector, title synthesizer, repetition sentry
+├── runtime/         # Process registry, code execution kernels, daemon, task scheduler
+├── hex_cli/         # CLI, ACP, TUI, onboarding; commands/, terminal/, onboarding/ helpers
+├── hex_platform/    # hardware.py, diagnostics.py
+├── tools/           # filesystem.py implementation behind the gateway
+├── skill_engine/    # Python skill compiler, execution, and retrieval engine
+├── resources/       # Resource package support, not skill-engine code
+├── skills/builtin/  # Packaged built-in skill data
+├── optional-skills/ # Packaged optional skill data
+├── capabilities/    # Browser, vision, voice, search, git autopilot, GitHub actions, gateways
+├── providers/       # Provider integrations
+├── models/          # Model metadata, credential pool, provider routing
+├── lsp/             # Language-server integration
+├── gateways/        # Gateway integration
+├── App/hex-desktop/ # Experimental macOS GPUI desktop crate
+├── crates/          # hex-protocol and hex-tui; root Cargo workspace remains
+└── tests/           # Python tests grouped by subsystem
 ```
 
-The namespace remains `harness_core`; public launch/import paths, Rust crates and manifests, root installers, and shared test fixtures stay in place. Python tests live under `tests/<subsystem>/`. This organization does not imply a wholesale split of large core or storage modules.
+Supported setuptools `package_dir` mappings connect these physical directories to the unchanged `harness_core.*` imports and CLI entry points (for example, `harness_core.core` maps to `agent/` and `harness_core.client` to `hex_cli/`). The `harness_core/` anchor contains substantive shared modules, not forwarding wrappers. Root manifests, installers, assets, and shared test fixtures stay in place; this relocation does not imply a wholesale split of large core or storage modules.
+
+For development, install from the repository root into an activated virtual environment:
+
+```bash
+python -m pip install -e ".[full]"
+# Desktop development (macOS; requires the Metal/Xcode toolchain):
+cargo run -p hex-desktop
+```
+
+Re-run the editable install after the relocation, even in an existing environment, to refresh setuptools' editable package mappings. Adding the repository root to `PYTHONPATH` is not a substitute for this install. See [Contributing](docs/development/CONTRIBUTING.md) for setup and tests.
 
 ---
 
@@ -365,7 +380,7 @@ HEX replaces flat memory files with an active **Cognitive Self-Evolution Engine*
 ## ⌨️ Daily Commands
 
 Slash commands differ by surface. Availability is declared once in
-[`src/harness_core/client/command_catalog.json`](src/harness_core/client/command_catalog.json) —
+[`hex_cli/command_catalog.json`](hex_cli/command_catalog.json) —
 the single source of truth that drives console help/completion, the Rust TUI's
 embedded autocomplete, and ACP dispatch (consistency-tested on both sides).
 The table below is a human-friendly summary of that catalog.

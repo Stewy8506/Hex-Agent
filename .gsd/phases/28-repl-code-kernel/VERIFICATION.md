@@ -1,15 +1,15 @@
 # Phase 28: Persistent REPL Code Kernel with Cross-Turn State — Verification Report
 
-**Phase Goal:** Implement an interactive persistent Python code kernel in `src/harness_core/code_kernel.py` matching `tools/code_kernel.py` in Hermes Agent, enabling persistent variables, functions, and imports across consecutive turns within the task CoW workspace.
+**Phase Goal:** Implement an interactive persistent Python code kernel in `harness_core/code_kernel.py` matching `tools/code_kernel.py` in Hermes Agent, enabling persistent variables, functions, and imports across consecutive turns within the task CoW workspace.
 
 **Verification Status:** PASS  
 **Auditor:** GSD Verifier  
 **Reference Codebase:** `benchmarks/hermes-agent/tools/code_kernel.py` & `benchmarks/hermes-agent/tests/tools/test_code_kernel.py`  
 **Target Codebase:**
-- `src/harness_core/code_kernel.py`
-- `src/harness_core/gateway.py`
-- `src/harness_core/react_loop.py`
-- `src/harness_core/tui.py`
+- `harness_core/code_kernel.py`
+- `harness_core/gateway.py`
+- `harness_core/react_loop.py`
+- `harness_core/tui.py`
 - `tests/runtime/test_code_kernel.py`
 - `tests/tools/test_gateway_code_kernel.py`
 
@@ -17,21 +17,21 @@
 
 ## 1. Hermes Parity Line-by-Line Audit Matrix
 
-| Requirement Area | Hermes Reference (`benchmarks/hermes-agent/tools/code_kernel.py`) | Harness Core (`src/harness_core/code_kernel.py`, `gateway.py`, `react_loop.py`, `tui.py`) | Parity Status | Evidence & Details |
+| Requirement Area | Hermes Reference (`benchmarks/hermes-agent/tools/code_kernel.py`) | Harness Core (`harness_core/code_kernel.py`, `gateway.py`, `react_loop.py`, `tui.py`) | Parity Status | Evidence & Details |
 |---|---|---|---|---|
-| **1. Wire Protocol & Framing** | Lines 128, 206–210 (`_reply`), Lines 521–575 (`_stdout_reader`), Lines 577–582 (`_stderr_reader`): Sentinel string framing `\n<SENTINEL> <length>\n<body>` over `sys.stdout.buffer`, chunked read1, length parsing, JSON decode, and raw byte pass-through. | `src/harness_core/code_kernel.py` Lines 126, 150–155 (`_reply`), Lines 280–337 (`_stdout_reader`), Lines 339–351 (`_stderr_reader`): Identical sentinel framing `\n<SENTINEL> <length>\n<body>`, length extraction, non-blocking chunk reading, JSON decoding, raw byte fallback into `raw_buffer`, and distinct `stderr_buffer`. | **PASS** | `test_stdout_and_stderr_separation` verified streams arrive in separate fields without leakage. |
-| **2. Namespace & State Retention** | Lines 48–49 (`RUNNER_CELL_SOURCE`): `GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}`, cell exec in `GLOBALS`. | `src/harness_core/code_kernel.py` Lines 44–45, 101: `GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}`, persistent across cells. | **PASS** | `test_cross_call_variable_persistence` & `test_state_persistence_across_calls` verified variable/function persistence across sequential turns. |
-| **3. Module Staleness Detection** | Lines 55–90: `_MODULE_RECORDS`, `_scan_edited_modules(report)` tracking mtime and `__spec__` of imported project files, ignoring stdlib & site-packages. Lines 794–809: `stale_modules_warning` format string advising `importlib.reload(...)` or `reset=True`. | `src/harness_core/code_kernel.py` Lines 52–85: `_scan_edited_modules(report)` safely using `object.__getattribute__` to avoid lazy loaders, comparing `mtime_ns` and `spec`. Lines 200–218: `stale_modules_warning` advisory with secret redaction. | **PASS** | `test_stale_module_detection` & `test_stale_module_warning` verified on-disk source file modifications trigger stale module advisories. |
-| **4. Output Capping & Disk Spill** | Line 43: `_RUNNER_CAPTURE_BYTES = 1_000_000` (1MB), Lines 130–131, 191–204: 5MB disk spill (`_SPILL_CAP = 5_000_000`) writing full stdout to `cell_XXXXXX_stdout.txt` in spill directory when clipped. | `src/harness_core/code_kernel.py` Lines 37–38, 127–129, 135–147, 530–536: 1MB in-memory capture cap, 5MB disk spill cap to `HEX_KERNEL_SPILL_DIR`, with paging advisory warning returned to agent. | **PASS** | `test_output_capping_and_spill` verified 1.2MB stdout is clipped to 1MB and full output saved to disk. |
-| **5. Timeout & Wedged Process Termination** | Lines 351–352, 783–784, 824–826: `_kill_process_group` (SIGTERM escalated to SIGKILL), `_REGISTRY.discard(key, kernel)` dropping dead kernel immediately from registry, error reported cleanly. | `src/harness_core/code_kernel.py` Lines 245–278 (`_kill_process_tree` with `os.killpg(pgid, sig)`), Lines 495–512 (escalates to SIGKILL on timeout), `discard_kernel` dropping dead kernel from registry and tracking `_reset_keys`. `gateway.py` Line 2309: drops timed out kernel. | **PASS** | Standalone test & `test_timeout_handling` verified `len(registry._kernels) == 0` immediately upon timeout, and subsequent call recovers with `state_reset: True`. |
-| **6. Reset & Lifecycle Management** | Lines 369–394 (`KernelRegistry`), Lines 403–404 (`DEFAULT_MAX_SESSION_KERNELS=4`, `DEFAULT_KERNEL_IDLE_TIMEOUT=1800`), Lines 684–711 (`_acquire_kernel`), Lines 745–775 (background idle reaper), Line 499 (`atexit.register`). | `src/harness_core/code_kernel.py` Lines 585–702 (`KernelRegistry` with `max_kernels=4`, `idle_timeout=1800.0`, LRU eviction, background reaper thread), Lines 726–731 (`atexit.register`). | **PASS** | `test_kernel_reset_clears_state`, `test_registry_isolation_and_lru_eviction`, and `test_registry_idle_sweep` all pass. |
-| **7. Security, Policy & Secret Scrubbing** | Hermes `redact_sensitive_text(code_file=True)` on outputs, tracebacks, and warnings; process execution inside sandboxed target cwd. | `src/harness_core/gateway.py` Lines 580–594, 945–952, 2310–2323: Default-deny `RiskClass.R2`, rejected on fast-path tasks; `redact_secrets` applied to stdout, stderr, traceback, and warning strings. Subprocess spawned in `workspace_dir`. | **PASS** | `test_secret_redaction` & `test_risk_policy_gating_r2` verified token scrubbing and R2 policy enforcement. |
+| **1. Wire Protocol & Framing** | Lines 128, 206–210 (`_reply`), Lines 521–575 (`_stdout_reader`), Lines 577–582 (`_stderr_reader`): Sentinel string framing `\n<SENTINEL> <length>\n<body>` over `sys.stdout.buffer`, chunked read1, length parsing, JSON decode, and raw byte pass-through. | `harness_core/code_kernel.py` Lines 126, 150–155 (`_reply`), Lines 280–337 (`_stdout_reader`), Lines 339–351 (`_stderr_reader`): Identical sentinel framing `\n<SENTINEL> <length>\n<body>`, length extraction, non-blocking chunk reading, JSON decoding, raw byte fallback into `raw_buffer`, and distinct `stderr_buffer`. | **PASS** | `test_stdout_and_stderr_separation` verified streams arrive in separate fields without leakage. |
+| **2. Namespace & State Retention** | Lines 48–49 (`RUNNER_CELL_SOURCE`): `GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}`, cell exec in `GLOBALS`. | `harness_core/code_kernel.py` Lines 44–45, 101: `GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}`, persistent across cells. | **PASS** | `test_cross_call_variable_persistence` & `test_state_persistence_across_calls` verified variable/function persistence across sequential turns. |
+| **3. Module Staleness Detection** | Lines 55–90: `_MODULE_RECORDS`, `_scan_edited_modules(report)` tracking mtime and `__spec__` of imported project files, ignoring stdlib & site-packages. Lines 794–809: `stale_modules_warning` format string advising `importlib.reload(...)` or `reset=True`. | `harness_core/code_kernel.py` Lines 52–85: `_scan_edited_modules(report)` safely using `object.__getattribute__` to avoid lazy loaders, comparing `mtime_ns` and `spec`. Lines 200–218: `stale_modules_warning` advisory with secret redaction. | **PASS** | `test_stale_module_detection` & `test_stale_module_warning` verified on-disk source file modifications trigger stale module advisories. |
+| **4. Output Capping & Disk Spill** | Line 43: `_RUNNER_CAPTURE_BYTES = 1_000_000` (1MB), Lines 130–131, 191–204: 5MB disk spill (`_SPILL_CAP = 5_000_000`) writing full stdout to `cell_XXXXXX_stdout.txt` in spill directory when clipped. | `harness_core/code_kernel.py` Lines 37–38, 127–129, 135–147, 530–536: 1MB in-memory capture cap, 5MB disk spill cap to `HEX_KERNEL_SPILL_DIR`, with paging advisory warning returned to agent. | **PASS** | `test_output_capping_and_spill` verified 1.2MB stdout is clipped to 1MB and full output saved to disk. |
+| **5. Timeout & Wedged Process Termination** | Lines 351–352, 783–784, 824–826: `_kill_process_group` (SIGTERM escalated to SIGKILL), `_REGISTRY.discard(key, kernel)` dropping dead kernel immediately from registry, error reported cleanly. | `harness_core/code_kernel.py` Lines 245–278 (`_kill_process_tree` with `os.killpg(pgid, sig)`), Lines 495–512 (escalates to SIGKILL on timeout), `discard_kernel` dropping dead kernel from registry and tracking `_reset_keys`. `gateway.py` Line 2309: drops timed out kernel. | **PASS** | Standalone test & `test_timeout_handling` verified `len(registry._kernels) == 0` immediately upon timeout, and subsequent call recovers with `state_reset: True`. |
+| **6. Reset & Lifecycle Management** | Lines 369–394 (`KernelRegistry`), Lines 403–404 (`DEFAULT_MAX_SESSION_KERNELS=4`, `DEFAULT_KERNEL_IDLE_TIMEOUT=1800`), Lines 684–711 (`_acquire_kernel`), Lines 745–775 (background idle reaper), Line 499 (`atexit.register`). | `harness_core/code_kernel.py` Lines 585–702 (`KernelRegistry` with `max_kernels=4`, `idle_timeout=1800.0`, LRU eviction, background reaper thread), Lines 726–731 (`atexit.register`). | **PASS** | `test_kernel_reset_clears_state`, `test_registry_isolation_and_lru_eviction`, and `test_registry_idle_sweep` all pass. |
+| **7. Security, Policy & Secret Scrubbing** | Hermes `redact_sensitive_text(code_file=True)` on outputs, tracebacks, and warnings; process execution inside sandboxed target cwd. | `harness_core/gateway.py` Lines 580–594, 945–952, 2310–2323: Default-deny `RiskClass.R2`, rejected on fast-path tasks; `redact_secrets` applied to stdout, stderr, traceback, and warning strings. Subprocess spawned in `workspace_dir`. | **PASS** | `test_secret_redaction` & `test_risk_policy_gating_r2` verified token scrubbing and R2 policy enforcement. |
 
 ---
 
 ## 2. Component Integration Verification
 
-### 2.1 ToolGateway (`src/harness_core/gateway.py`)
+### 2.1 ToolGateway (`harness_core/gateway.py`)
 - **Schema & Registration:** Tool `code_kernel` registered in `TOOL_DEFINITIONS` with `risk_class: RiskClass.R2`, parameters `code` (required), `reset` (boolean, default False), and `timeout` (number, default 30.0s).
 - **Execution:** Programmatic dispatch via `execute_tool("code_kernel", args, workspace_dir)`.
 - **Policy Enforcement:** Fully evaluated through `evaluate_policy`:
@@ -40,13 +40,13 @@
   - Constrained tasks: DENY if `code_kernel` not in `allowed_tools`.
 - **Secret Redaction:** `redact_secrets` scrubs API tokens (`ghp_...`, `sk-...`, etc.) from stdout, stderr, and tracebacks.
 
-### 2.2 Multi-Turn ReActLoop (`src/harness_core/react_loop.py`)
+### 2.2 Multi-Turn ReActLoop (`harness_core/react_loop.py`)
 - **Session Identity:** `self.session_id` configured and passed through reasoning cycles.
 - **Context Injection:** Injects `call.arguments["owner"] = self.session_id` into `code_kernel` tool calls and assigns `self.gateway._active_session_key = self.session_id`.
 - **Multi-Turn State Retention:** Variables defined in turn 1 (`numbers = [10, 20, 30]`) survive into turn 2 (`sum(numbers)` -> `60`).
 - **Observation Formatting:** Formats kernel results cleanly into message history with `[Warning: ...]` when modules are stale.
 
-### 2.3 HexConsole TUI (`src/harness_core/tui.py`)
+### 2.3 HexConsole TUI (`harness_core/tui.py`)
 - **Command Routing:** Tab-autocompleted slash commands `/kernel` and `/repl` registered in `SLASH_COMMANDS` and documented in `/help`.
 - **Subcommands:**
   - `/kernel status`: Renders Rich / ANSI table of active kernels showing `OWNER`, `CWD`, `STATUS` (RUNNING/DEAD/PENDING), `PID`, `EXEC COUNT`, `UPTIME`, and `LAST USED`.

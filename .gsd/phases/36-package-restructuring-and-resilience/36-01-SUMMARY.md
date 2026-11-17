@@ -1,11 +1,11 @@
 # Summary 36-01: Modular Package Restructuring & Backward Compatibility Layer
 
 ## Overview
-Successfully decomposed the monolithic, flat `src/harness_core/` codebase into 7 well-structured domain subpackages (`core/`, `storage/`, `cognition/`, `runtime/`, `client/`, `capabilities/`, and `models/`) while building an airtight backward-compatibility facade in `src/harness_core/__init__.py` and top-level forwarding stubs for all 46 relocated modules.
+Successfully decomposed the monolithic, flat `harness_core/` codebase into 7 well-structured domain subpackages (`core/`, `storage/`, `cognition/`, `runtime/`, `client/`, `capabilities/`, and `models/`) while building an airtight backward-compatibility facade in `harness_core/__init__.py` and top-level forwarding stubs for all 46 relocated modules.
 
 ## Accomplishments
 
-1. **Domain Subpackage Architecture (`src/harness_core/`):**
+1. **Domain Subpackage Architecture (`harness_core/`):**
    - **`core/`**: Orchestration, multi-turn ReAct loops, two-tier model routing, core domain models, subagent delegation, and reasoning effort controls (`orchestrator.py`, `react_loop.py`, `router.py`, `models.py`, `subagent.py`, `reasoning_effort.py`).
    - **`storage/`**: State ledger store, Copy-on-Write snapshot providers (APFS, OverlayFS, Btrfs), sandboxing execution environments, disaster recovery backup/restore, retention garbage collector, and workspace project registry (`db.py`, `cow.py`, `sandbox.py`, `backup.py`, `gc.py`, `project_registry.py`).
    - **`cognition/`**: Multi-tier soul persona engine, AST-scoped & curated memory lifecycle, reflection synthesis, NVIDIA SkillSpector security scanner, autonomous skill synthesizer, unified prompt builder, and 4-phase context compactor (`soul.py`, `memory.py`, `reflection.py`, `skillspector.py`, `skill_synthesizer.py`, `prompt_builder.py`, `context_compressor.py`).
@@ -19,13 +19,13 @@ Successfully decomposed the monolithic, flat `src/harness_core/` codebase into 7
    - Prevented circular dependency loops across subsystems during top-level package intake while enabling clean dot-notation namespace imports (`harness_core.storage.db.LedgerStore`, `harness_core.core.orchestrator.HarnessOrchestrator`).
 
 3. **100% Backward-Compatibility Facade with Transparent `sys.modules` Aliasing:**
-   - For every relocated module, maintained a top-level stub in `src/harness_core/<module>.py` that registers `sys.modules[__name__] = _impl`.
+   - For every relocated module, maintained a top-level stub in `harness_core/<module>.py` that registers `sys.modules[__name__] = _impl`.
    - Guaranteed that identity checks (`is`), `isinstance`, `unittest.mock.patch("harness_core.<module>.<func>")`, and CLI execution (`python -m harness_core.cli`) function with zero breakage across existing test suites, client applications, and subagent scripts.
    - Hardened `Path(__file__)` directory traversals across `storage/db.py`, `client/cli.py`, `client/onboard.py`, `client/tui.py`, `client/acp.py`, `client/tui_launcher.py`, `cognition/prompt_builder.py`, `cognition/skill_synthesizer.py`, and `core/orchestrator.py` to seamlessly resolve migrations, schemas, built-in skills, and repository roots from nested subpackages.
 
 ## Commits Landed
 
-1. `fb27e33`: `feat(phase-36): organize src/harness_core into domain subpackages` (Task 1)
+1. `fb27e33`: `feat(phase-36): organize harness_core into domain subpackages` (Task 1)
 2. `20dc39b`: `feat(phase-36): create backward-compatibility facade and top-level stub modules` (Task 2)
 3. `a5dfd76`: `feat(phase-36): full test suite regression verification and path resolution hardening` (Task 3)
 

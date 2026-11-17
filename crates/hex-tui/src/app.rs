@@ -429,7 +429,7 @@ pub fn available_slash_commands() -> &'static [SlashCommand] {
             commands: Vec<CatalogEntry>,
         }
         let catalog: Catalog = serde_json::from_str(include_str!(
-            "../../../src/harness_core/client/command_catalog.json"
+            "../../../hex_cli/command_catalog.json"
         ))
         .expect("embedded command catalog must parse");
         catalog
@@ -3078,7 +3078,7 @@ mod tests {
             commands: Vec<Entry>,
         }
         let catalog: Catalog = serde_json::from_str(include_str!(
-            "../../../src/harness_core/client/command_catalog.json"
+            "../../../hex_cli/command_catalog.json"
         ))
         .unwrap();
 

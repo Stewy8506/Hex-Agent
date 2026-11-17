@@ -1,12 +1,12 @@
 # Phase 17 Plan 02 Summary: Interactive TUI Voice Mode, CLI Ergonomics & End-to-End Test Suite
 
 ## Executive Overview
-Successfully delivered interactive real-time hands-free voice mode and CLI ergonomics for HEX (`src/harness_core/tui.py`, `src/harness_core/cli.py`), completing Milestone M7. Developers can now activate voice mode via `/voice` TUI slash commands, launch directly with `hex voice` or `hex chat --voice`, observe live microphone and TTS status badges in both the session header and bottom status bar, and receive non-blocking, natural spoken commentary summarizing completed tasks with code fences and ANSI escapes cleanly stripped. Comprehensive unit and integration tests (`tests/capabilities/test_voice_engine.py`) verify all voice capabilities with 100% offline determinism and zero failures.
+Successfully delivered interactive real-time hands-free voice mode and CLI ergonomics for HEX (`harness_core/tui.py`, `harness_core/cli.py`), completing Milestone M7. Developers can now activate voice mode via `/voice` TUI slash commands, launch directly with `hex voice` or `hex chat --voice`, observe live microphone and TTS status badges in both the session header and bottom status bar, and receive non-blocking, natural spoken commentary summarizing completed tasks with code fences and ANSI escapes cleanly stripped. Comprehensive unit and integration tests (`tests/capabilities/test_voice_engine.py`) verify all voice capabilities with 100% offline determinism and zero failures.
 
 ## Executed Tasks
 
 ### Task 1: Implement TUI Voice Mode, Status Badges & Spoken Agent Commentary
-- **Files Modified:** `src/harness_core/tui.py`
+- **Files Modified:** `harness_core/tui.py`
 - **Commit:** `8095f8c` (`feat(phase-17): implement tui voice mode status badges and spoken commentary`)
 - **Key Deliverables:**
   - Integrated `VoiceEngine` into `HexConsole.__init__` with configurable `voice_enabled`, `voice_name`, and `speech_rate`.
@@ -22,7 +22,7 @@ Successfully delivered interactive real-time hands-free voice mode and CLI ergon
   - Wired graceful shutdown of `voice_engine` across prompt exits, `KeyboardInterrupt`, and `/quit`.
 
 ### Task 2: Implement CLI Voice Ergonomics (hex voice & hex chat --voice)
-- **Files Modified:** `src/harness_core/cli.py`
+- **Files Modified:** `harness_core/cli.py`
 - **Commit:** `af8ea70` (`feat(phase-17): implement cli voice ergonomics and standalone voice command`)
 - **Key Deliverables:**
   - Added global and chat flags: `--voice`, `--voice-name`, and `--speech-rate`.

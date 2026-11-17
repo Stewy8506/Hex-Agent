@@ -93,8 +93,8 @@ $ .venv/bin/pytest tests/skills/test_skillspector_ast_wiring.py tests/skills/tes
 ---
 
 ## 5. Artifacts Produced
-- `src/harness_core/skills/__init__.py`
-- `src/harness_core/skills/compiler.py`
-- `src/harness_core/skills/executor.py`
-- `src/harness_core/skillspector.py` (updated frontmatter parsing and OSV checking)
+- `skill_engine/__init__.py`
+- `skill_engine/compiler.py`
+- `skill_engine/executor.py`
+- `harness_core/skillspector.py` (updated frontmatter parsing and OSV checking)
 - `tests/skills/test_skill_synthesis.py` (30 test cases)

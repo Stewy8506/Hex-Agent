@@ -4,14 +4,14 @@
 **Status:** Success (7/7 plan tests green, zero regressions)
 
 ## Accomplishments
-1. **Interactive 4-Step Arrow-Key Setup Wizard (`src/harness_core/onboard.py`):**
+1. **Interactive 4-Step Arrow-Key Setup Wizard (`harness_core/onboard.py`):**
    - Step 1: Model Provider & Authentication (`select_option` radio selector across Google Antigravity OAuth, Claude, OpenAI, Gemini, and Local MLX/Ollama with masked `prompt_secret`).
    - Step 2: Web Search Provider Selection (`select_option` for DuckDuckGo free default, Tavily Search, Brave Search, and Air-gapped).
    - Step 3: Remote Messaging Gateways (`select_option` for Telegram Bot token/users, Discord Bot token/webhooks, Both, or Skip).
    - Step 4: Machine Profile & Isolation Confirmation (displays detected specs and isolation modes).
    - Saves `credentials.env` (0600) and `config.yaml`, and automatically hydrates running process via `load_hex_environment(override=True)`.
 
-2. **First-Run Startup Interceptor (`src/harness_core/cli.py`):**
+2. **First-Run Startup Interceptor (`harness_core/cli.py`):**
    - Automatically intercepts unconfigured execution on bare `hex` or `hex chat`/`tui`.
    - Welcomes the operator and automatically launches the interactive setup wizard instead of dropping into an unconfigured/broken chat.
    - Proceeds directly into the interactive TUI cockpit once configured.

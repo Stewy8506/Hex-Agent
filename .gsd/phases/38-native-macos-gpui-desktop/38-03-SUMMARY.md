@@ -13,19 +13,19 @@
 ## 1. Executive Summary
 
 Phase 38 Plan 03 delivered the final interactive cockpit layer for HEX Desktop, matching Hermes Desktop UI and Phase 37 runtime capabilities in Zed's GPUI framework:
-1. **Interactive Tool Approval Modal (`crates/hex-desktop/src/ui/modals/approval.rs`)**:
+1. **Interactive Tool Approval Modal (`App/hex-desktop/src/ui/modals/approval.rs`)**:
    - Shield/warning header with tool badges and risk classification tag (R3 Amber / R4 Rose).
    - Command / script preview box with monospace styling.
    - 3-Way Radio: `[1] Allow once` (hotkey `y`), `[2] Allow all in session` (hotkey `a`), `[3] Deny` (hotkey `n`).
    - 15-Minute Auto-Approval Lease Toggle: integrates directly with Phase 37 temporal leasing (`lease_duration:900`), granting 0ms auto-approval for matching subsequent commands.
-2. **Command Palette Modal (`crates/hex-desktop/src/ui/modals/palette.rs`)**:
+2. **Command Palette Modal (`App/hex-desktop/src/ui/modals/palette.rs`)**:
    - Auto-focused search input with real-time fuzzy filtering over actions, navigation, and sessions.
    - Grouped entries: `ACTIONS` (New Chat, Clear History, Export Transcript, Compact Context), `NAVIGATION` (Open Settings, Switch Workspace, Toggle Sidebar), `SESSIONS` (dynamically populated from session list).
    - Keyboard navigation (`Up`/`Down`, `Enter` to execute, `Esc` to dismiss).
-3. **Model Picker Modal (`crates/hex-desktop/src/ui/modals/model_picker.rs`)**:
+3. **Model Picker Modal (`App/hex-desktop/src/ui/modals/model_picker.rs`)**:
    - Searchable catalog of models grouped by provider: Anthropic, OpenAI, Local MLX / Ollama, OpenRouter.
    - Context length badges (`200k`, `128k`, `32k`), latency/capability tier tags (`Hybrid Reasoning`, `Local 0ms Metal`), and active selection checkmarks (`✓`).
-4. **ACP JSON-RPC 2.0 Client Bridge (`crates/hex-desktop/src/acp_bridge.rs`)**:
+4. **ACP JSON-RPC 2.0 Client Bridge (`App/hex-desktop/src/acp_bridge.rs`)**:
    - Multi-transport connection: connects via Unix domain socket (`/tmp/hex-acp.sock`) or spawns child process (`python -m harness_core.client.cli acp`) or generic async streams.
    - Handshake: sends `initialize` request negotiating capabilities with `harness_core`.
    - Outbound requests: `new_session`, `send_prompt`, `cancel_session`, `send_approval_decision`.
@@ -86,11 +86,11 @@ Total: 122/122 workspace Rust tests passing with 0 failures, 0 warnings.
 
 | Truth / Requirement | Status | Evidence |
 |---|---|---|
-| Interactive Tool Approval Modal renders 3-way radio options and 15-minute lease toggle | VERIFIED | `crates/hex-desktop/src/ui/modals/approval.rs`, `test_tool_approval_workflow_with_15m_lease` |
-| Command Palette modal provides fuzzy matching over actions, sessions, and navigation via Cmd+K | VERIFIED | `crates/hex-desktop/src/ui/modals/palette.rs`, `test_command_palette_fuzzy_search_and_actions` |
-| Model Picker modal lists models grouped by provider with context length badges and selection checkmarks | VERIFIED | `crates/hex-desktop/src/ui/modals/model_picker.rs`, `test_model_picker_workflow` |
-| ACP Bridge connects hex-desktop to harness_core via local socket or stdio JSON-RPC 2.0 | VERIFIED | `crates/hex-desktop/src/acp_bridge.rs`, `test_mock_acp_handshake_and_stdio` |
-| Global macOS shortcuts (Cmd+K, Cmd+N, Cmd+Enter, Esc, Cmd+B) and native application menu wired | VERIFIED | `crates/hex-desktop/src/shortcuts.rs`, `crates/hex-desktop/src/menu.rs`, `test_desktop_cockpit_shortcuts_and_menus` |
+| Interactive Tool Approval Modal renders 3-way radio options and 15-minute lease toggle | VERIFIED | `App/hex-desktop/src/ui/modals/approval.rs`, `test_tool_approval_workflow_with_15m_lease` |
+| Command Palette modal provides fuzzy matching over actions, sessions, and navigation via Cmd+K | VERIFIED | `App/hex-desktop/src/ui/modals/palette.rs`, `test_command_palette_fuzzy_search_and_actions` |
+| Model Picker modal lists models grouped by provider with context length badges and selection checkmarks | VERIFIED | `App/hex-desktop/src/ui/modals/model_picker.rs`, `test_model_picker_workflow` |
+| ACP Bridge connects hex-desktop to harness_core via local socket or stdio JSON-RPC 2.0 | VERIFIED | `App/hex-desktop/src/acp_bridge.rs`, `test_mock_acp_handshake_and_stdio` |
+| Global macOS shortcuts (Cmd+K, Cmd+N, Cmd+Enter, Esc, Cmd+B) and native application menu wired | VERIFIED | `App/hex-desktop/src/shortcuts.rs`, `App/hex-desktop/src/menu.rs`, `test_desktop_cockpit_shortcuts_and_menus` |
 
 ---
 

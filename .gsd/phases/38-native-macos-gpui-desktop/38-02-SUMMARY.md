@@ -33,33 +33,33 @@ Key accomplishments:
 
 ### Task 1: Implement Dual-Pane Shell Layout & Left Sidebar Navigation
 - **Files Modified / Created:**
-  - `crates/hex-desktop/src/ui/mod.rs`: Created UI module root.
-  - `crates/hex-desktop/src/ui/session_list.rs`: Implemented `SessionItem`, `SessionListView`, `SessionGroupCategory`, relative time formatting, and date classification.
-  - `crates/hex-desktop/src/ui/sidebar.rs`: Implemented `SidebarView`, `ProviderState`, `ProviderStatus`, workspace header, new chat button, search input, and status chip.
-  - `crates/hex-desktop/src/ui/shell.rs`: Implemented `AppShell`, `ShellView`, 260px collapsible sidebar layout, and split divider.
-  - `crates/hex-desktop/src/lib.rs`: Re-exported UI types.
-  - `crates/hex-desktop/src/window.rs`: Integrated `AppShell` into `DesktopWindow`.
+  - `App/hex-desktop/src/ui/mod.rs`: Created UI module root.
+  - `App/hex-desktop/src/ui/session_list.rs`: Implemented `SessionItem`, `SessionListView`, `SessionGroupCategory`, relative time formatting, and date classification.
+  - `App/hex-desktop/src/ui/sidebar.rs`: Implemented `SidebarView`, `ProviderState`, `ProviderStatus`, workspace header, new chat button, search input, and status chip.
+  - `App/hex-desktop/src/ui/shell.rs`: Implemented `AppShell`, `ShellView`, 260px collapsible sidebar layout, and split divider.
+  - `App/hex-desktop/src/lib.rs`: Re-exported UI types.
+  - `App/hex-desktop/src/window.rs`: Integrated `AppShell` into `DesktopWindow`.
 - **Commit:** `ef08011 feat(desktop): implement dual-pane shell layout and left sidebar navigation`
 
 ### Task 2: Implement Message Feed, Collapsible Reasoning Folds & Tool Call Cards
 - **Files Modified / Created:**
-  - `crates/hex-desktop/src/ui/diff_view.rs`: Implemented `DiffView` with sage green/rose red additions/deletions, line number gutters, and hunk headers.
-  - `crates/hex-desktop/src/ui/reasoning.rs`: Implemented `ThinkingDisclosure` with elapsed timer formatting and dynamic Hermes labels.
-  - `crates/hex-desktop/src/ui/tool_card.rs`: Implemented `ToolCallCard`, `ToolStatus`, icon detection, collapsible input/output, and integrated diff view.
-  - `crates/hex-desktop/src/ui/message.rs`: Implemented `UserMessageCard` and `AssistantMessageView`.
-  - `crates/hex-desktop/src/ui/feed.rs`: Implemented `MessageFeed` and `MessageItem`.
-  - `crates/hex-desktop/src/ui/shell.rs`: Connected `MessageFeed` into `AppShell`'s main conversation pane.
-  - `crates/hex-desktop/src/ui/mod.rs` & `crates/hex-desktop/src/lib.rs`: Re-exported components.
+  - `App/hex-desktop/src/ui/diff_view.rs`: Implemented `DiffView` with sage green/rose red additions/deletions, line number gutters, and hunk headers.
+  - `App/hex-desktop/src/ui/reasoning.rs`: Implemented `ThinkingDisclosure` with elapsed timer formatting and dynamic Hermes labels.
+  - `App/hex-desktop/src/ui/tool_card.rs`: Implemented `ToolCallCard`, `ToolStatus`, icon detection, collapsible input/output, and integrated diff view.
+  - `App/hex-desktop/src/ui/message.rs`: Implemented `UserMessageCard` and `AssistantMessageView`.
+  - `App/hex-desktop/src/ui/feed.rs`: Implemented `MessageFeed` and `MessageItem`.
+  - `App/hex-desktop/src/ui/shell.rs`: Connected `MessageFeed` into `AppShell`'s main conversation pane.
+  - `App/hex-desktop/src/ui/mod.rs` & `App/hex-desktop/src/lib.rs`: Re-exported components.
 - **Commit:** `df51bfb feat(desktop): implement message feed, collapsible reasoning folds and tool call cards`
 
 ### Task 3: Implement Bottom Composer, Token Gauge & Model Selector Pill
 - **Files Modified / Created:**
-  - `crates/hex-desktop/src/ui/token_gauge.rs`: Implemented `TokenGaugeWidget`, `render_ascii_progress_bar`, `format_token_number`, and `GaugeThreshold`.
-  - `crates/hex-desktop/src/ui/model_pill.rs`: Implemented `ModelSelectorPill`, `provider_dot_color`, and `SendButton`.
-  - `crates/hex-desktop/src/ui/composer.rs`: Implemented `PromptComposer` with multiline auto-growth, Enter/Shift+Enter key handling, and controls toolbar.
-  - `crates/hex-desktop/src/ui/shell.rs`: Connected `PromptComposer` into `AppShell`'s bottom container.
-  - `crates/hex-desktop/src/ui/mod.rs` & `crates/hex-desktop/src/lib.rs`: Re-exported composer types.
-  - `crates/hex-desktop/tests/test_feed_and_composer.rs`: Comprehensive integration and component test suite covering token gauge, reasoning folds, diff classification, feed streaming, composer key handling, and GPUI `TestAppContext`.
+  - `App/hex-desktop/src/ui/token_gauge.rs`: Implemented `TokenGaugeWidget`, `render_ascii_progress_bar`, `format_token_number`, and `GaugeThreshold`.
+  - `App/hex-desktop/src/ui/model_pill.rs`: Implemented `ModelSelectorPill`, `provider_dot_color`, and `SendButton`.
+  - `App/hex-desktop/src/ui/composer.rs`: Implemented `PromptComposer` with multiline auto-growth, Enter/Shift+Enter key handling, and controls toolbar.
+  - `App/hex-desktop/src/ui/shell.rs`: Connected `PromptComposer` into `AppShell`'s bottom container.
+  - `App/hex-desktop/src/ui/mod.rs` & `App/hex-desktop/src/lib.rs`: Re-exported composer types.
+  - `App/hex-desktop/tests/test_feed_and_composer.rs`: Comprehensive integration and component test suite covering token gauge, reasoning folds, diff classification, feed streaming, composer key handling, and GPUI `TestAppContext`.
 - **Commit:** `527a69a feat(desktop): implement bottom composer, token gauge, and model selector pill`
 
 ---
@@ -133,4 +133,4 @@ Total Rust Workspace Tests: 106 passed; 0 failed; 0 regressions.
 ## 4. Deviations & Discoveries
 1. **GPUI Overflow Styling in Div**: In `gpui-0.2.2`, the `Styled` macro generates `overflow_hidden()`, `overflow_x_hidden()`, and `overflow_y_hidden()` methods rather than an arbitrary `overflow_y_scroll()`. Containers in the feed and sidebar use `overflow_y_hidden()` combined with flex layout to maintain clean bounds without overflowing outside the window.
 2. **Trailing Newlines in Prompt Line Counting**: Rust's standard library `str::lines()` treats a trailing newline `\n` as a line terminator rather than creating an empty trailing line (so `"foo\n".lines().count() == 1`). Using `input_text.split('\n').count()` accurately counts trailing newlines when users press `Shift+Enter` to add a new empty line in the composer.
-3. **Macro Recursion with Test Attributes**: In `crates/hex-desktop`, `gpui` defines a `test` macro for async UI tests. In standard synchronous unit test modules, importing `use core::prelude::v1::test;` and configuring `#![recursion_limit = "256"]` in `src/lib.rs` prevents compiler macro expansion recursion limits and allows standard unit tests and GPUI `TestAppContext` tests to coexist seamlessly.
+3. **Macro Recursion with Test Attributes**: In `App/hex-desktop`, `gpui` defines a `test` macro for async UI tests. In standard synchronous unit test modules, importing `use core::prelude::v1::test;` and configuring `#![recursion_limit = "256"]` in `src/lib.rs` prevents compiler macro expansion recursion limits and allows standard unit tests and GPUI `TestAppContext` tests to coexist seamlessly.

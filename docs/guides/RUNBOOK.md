@@ -10,7 +10,7 @@ HEX operates as a resilient, distributed autonomous execution engine consisting 
 
 ### 1.1 Control Plane & Cockpits
 - **CLI (`hex`)**: The primary command interface with specialized subcommands (`run`/`exec`, `submit`, `status`, `chat`, `tui`, `voice`, `acp`, `up`, `auth`, `quota`, `doctor`, `project`, `recipe`, `graphify`, `eval`, `harness2-eval`, `gateway`, `schedule`, `daemon`, `gc`, `uninstall`).
-- **Native macOS GPUI Desktop Cockpit (experimental)**: GPU-accelerated native macOS application built with Zed's GPUI crate (`crates/hex-desktop`). The desktop runs a working ACP chat flow against the Python engine; it is distributed from source only. Launch with `cargo run -p hex-desktop` — there is no `hex desktop` subcommand yet.
+- **Native macOS GPUI Desktop Cockpit (experimental)**: GPU-accelerated native macOS application built with Zed's GPUI crate (`App/hex-desktop`). The desktop runs a working ACP chat flow against the Python engine; it is distributed from source only. Launch with `cargo run -p hex-desktop` — there is no `hex desktop` subcommand yet.
 - **Native Rust Terminal Cockpit (`hex tui`)**: 60 FPS Ratatui terminal cockpit (`crates/hex-tui`, <20MB RAM) with side-by-side split diffs (`/sbs`), fuzzy slash autocomplete, and true-color themes.
 - **REST API (`/v1/*`)**: Handles task submission (`POST /v1/tasks`), status inspection (`GET /v1/tasks/{id}`), dynamic DAG replanning, worker registration, and remote approval decisions on default port `8420`.
 - **SSE Event Stream (`GET /v1/tasks/{id}/events?stream=true`)**: Real-time event streaming for UI control surfaces and external monitors.
@@ -54,7 +54,7 @@ HEX operates as a resilient, distributed autonomous execution engine consisting 
 HEX provides two high-performance native frontends:
 
 #### 1. Native macOS GPUI Desktop Cockpit (experimental)
-Built with Zed's GPU-accelerated GPUI framework (`crates/hex-desktop`). It runs real chat sessions over ACP and is exercised end to end by `crates/hex-desktop/tests/test_chat_flow.rs`. There is no `hex desktop` subcommand or packaged binary yet.
+Built with Zed's GPU-accelerated GPUI framework (`App/hex-desktop`). It runs real chat sessions over ACP and is exercised end to end by `App/hex-desktop/tests/test_chat_flow.rs`. There is no `hex desktop` subcommand or packaged binary yet.
 
 ```bash
 # Compile and launch with Cargo (requires Xcode Metal toolchain):
@@ -461,8 +461,8 @@ sudo systemctl stop hex.service
 # 2. Check out target tag or release commit
 git checkout v1.0.0
 
-# 3. Re-install virtual environment dependencies
-.venv/bin/pip install -e .
+# 3. Re-install dependencies and refresh editable package mappings
+.venv/bin/python -m pip install -e ".[full]"
 ```
 
 ### 6.2 Database Migration Downgrades with Alembic
@@ -495,7 +495,7 @@ HEX provides a built-in production server command with graceful shutdown:
 hex server --host 0.0.0.0 --port 8420 --workers 4 --drain-timeout 10.0
 ```
 
-Or using `uvicorn` with `src/harness_core/client/asgi.py`:
+Or using `uvicorn` with `hex_cli/asgi.py`:
 
 ```bash
 uvicorn harness_core.client.asgi:app \
@@ -507,6 +507,8 @@ uvicorn harness_core.client.asgi:app \
 ```
 
 ### 7.2 Systemd Unit File Configuration (Linux)
+For a source deployment at `/opt/hex`, first install into the service virtual environment from that checkout root with `.venv/bin/python -m pip install -e ".[full]"`. Reinstall after relocation to refresh the editable package mappings; do not use the former source-directory `PYTHONPATH` override.
+
 Create `/etc/systemd/system/hex.service`:
 
 ```ini
@@ -520,7 +522,6 @@ Type=simple
 User=hex
 Group=hex
 WorkingDirectory=/opt/hex
-Environment="PYTHONPATH=/opt/hex/src"
 Environment="DATABASE_URL=postgresql://hex:secret@localhost:5432/hex_prod"
 Environment="HARNESS_DATA_DIR=/var/lib/harness"
 ExecStart=/opt/hex/.venv/bin/hex server --host 0.0.0.0 --port 8420 --drain-timeout 10.0

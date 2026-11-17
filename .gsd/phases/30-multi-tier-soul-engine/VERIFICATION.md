@@ -13,19 +13,19 @@ Phase 30 establishes first-class persona management, Developer DNA resolution, a
 
 The implementation was independently reviewed and empirically validated against all requirements in `.gsd/ROADMAP.md` and `.gsd/phases/30-multi-tier-soul-engine/PLAN.md`:
 
-1. **SoulManager & Developer DNA (`src/harness_core/soul.py`):**
+1. **SoulManager & Developer DNA (`harness_core/soul.py`):**
    - Multi-tier resolution hierarchy: repository-specific workspace `.hex/SOUL.md` seamlessly overrides global `~/.hex/SOUL.md` (or `$HEX_HOME/SOUL.md`), which in turn falls back to the built-in compact default `HEX` persona.
    - Machine-wide Developer DNA: `~/.hex/USER.md` separates individual engineering preferences (architecture conventions, verification habits, formatting style) from project-level instructions.
    - Atomic template seeding & safe in-place upgrades: missing files are seeded atomically via temporary PID-stamped files; known legacy default template fingerprints (`_LEGACY_TEMPLATE_SOULS`) are detected and upgraded without destroying custom user edits.
    - Strict budget discipline: `MAX_SOUL_CHARS = 2500` (~300–500 tokens) prevents prompt bloat and protects KV-cache performance on local models (such as 8B/9B Qwen 2.5 Coder or Llama 3.1).
    - Dynamic identity renaming: `rename_identity` / `/rename <name>` updates the persona identity both in memory and on disk.
 
-2. **Punchy Mode Modulators & 5-Slot Prompt Pipeline (`src/harness_core/prompt_builder.py`):**
+2. **Punchy Mode Modulators & 5-Slot Prompt Pipeline (`harness_core/prompt_builder.py`):**
    - Strict 5-Slot Architecture: Slot #1 (Soul identity), Slot #2 (Mode behavioral override), Slot #3 (Environment context & execution boundaries), Slot #4 (Fenced curated memory snapshot), Slot #5 (Project rules: `AGENTS.md`, `.cursorrules`, `CLAUDE.md`).
    - Punchy 3–4 line behavioral overrides: `plan` (inquisitive architect, edge-case probing, no code before specs locked), `agent` (decisive builder, empirical tests, minimal chatter), `code` (surgical diff specialist, strict YAGNI, zero unrequested boilerplate).
    - Security gate / Prompt injection scanner: Heuristic regex threat scanner detecting `ignore_instructions`, `jailbreak_mode`, `prompt_override`, and `secret_exfiltration`. User-authored souls (`~/.hex/SOUL.md`) issue a warning but remain loaded; third-party, cloned, or remote distribution profiles are strictly blocked (`[BLOCKED: ...]`).
 
-3. **End-to-End System Integration (`src/harness_core/orchestrator.py` & `src/harness_core/tui.py`):**
+3. **End-to-End System Integration (`harness_core/orchestrator.py` & `harness_core/tui.py`):**
    - `HarnessOrchestrator.run_agent_loop` dynamically invokes `self.prompt_builder.build_system_prompt()` with the specified mode, workspace root, curated memory, and rules, passing `system_directive` to `ReActConfig` and the underlying model router.
    - `HexConsole` in `tui.py` handles `/rename <name>`, `/mode <plan|agent|code>`, and dynamically forwards the active mode to `run_agent_loop`.
 
@@ -35,12 +35,12 @@ The implementation was independently reviewed and empirically validated against 
 
 | Must-Have | Status | Empirical Evidence |
 |:---|:---:|:---|
-| **1. Multi-tier soul resolution hierarchy** (`workspace` > `global` > `default`) | **PASS** | `src/harness_core/soul.py` lines 131–159; `tests/cognition/test_soul_manager.py:test_soul_manager_resolution_hierarchy` passes. Verified workspace `.hex/SOUL.md` overrides `~/.hex/SOUL.md`. |
-| **2. Atomic template seeding & legacy template upgrades** | **PASS** | `src/harness_core/soul.py` lines 90–130; `test_soul_manager_initialization_seeds_defaults`, `test_soul_manager_upgrades_legacy_template`, and `test_soul_manager_preserves_custom_user_soul` pass. All 4 legacy template fingerprints upgrade; user customizations preserved. |
-| **3. Compact token budget discipline (~300–500 tokens / 2,500 chars)** | **PASS** | `src/harness_core/soul.py` lines 62, 160–171 (`_enforce_budget`); `test_soul_manager_enforces_budget` passes. Strings exceeding 2,500 chars truncated with notice. |
-| **4. Dynamic identity renaming (`rename_identity` / `/rename`)** | **PASS** | `src/harness_core/soul.py` lines 181–238, `src/harness_core/tui.py` lines 1759–1772; `test_soul_manager_rename_identity` passes. TUI `/rename Athena` tested and verified. |
-| **5. Punchy 3–4 line mode modulators (`plan`, `agent`, `code`)** | **PASS** | `src/harness_core/prompt_builder.py` lines 86–105 (`MODE_MODULATORS`); `test_prompt_builder_mode_modulators` passes. Each mode contains exactly 4 lines (1 header + 3 punchy constraint bullet points). |
-| **6. 5-slot ordered prompt assembly & security threat scanner** | **PASS** | `src/harness_core/prompt_builder.py` lines 24–84, 108–198; `test_scan_for_threats`, `test_scan_context_content_user_authored_vs_remote`, `test_prompt_builder_5_slot_assembly`, and `test_orchestrator_integration_with_prompt_builder_and_soul` pass. |
+| **1. Multi-tier soul resolution hierarchy** (`workspace` > `global` > `default`) | **PASS** | `harness_core/soul.py` lines 131–159; `tests/cognition/test_soul_manager.py:test_soul_manager_resolution_hierarchy` passes. Verified workspace `.hex/SOUL.md` overrides `~/.hex/SOUL.md`. |
+| **2. Atomic template seeding & legacy template upgrades** | **PASS** | `harness_core/soul.py` lines 90–130; `test_soul_manager_initialization_seeds_defaults`, `test_soul_manager_upgrades_legacy_template`, and `test_soul_manager_preserves_custom_user_soul` pass. All 4 legacy template fingerprints upgrade; user customizations preserved. |
+| **3. Compact token budget discipline (~300–500 tokens / 2,500 chars)** | **PASS** | `harness_core/soul.py` lines 62, 160–171 (`_enforce_budget`); `test_soul_manager_enforces_budget` passes. Strings exceeding 2,500 chars truncated with notice. |
+| **4. Dynamic identity renaming (`rename_identity` / `/rename`)** | **PASS** | `harness_core/soul.py` lines 181–238, `harness_core/tui.py` lines 1759–1772; `test_soul_manager_rename_identity` passes. TUI `/rename Athena` tested and verified. |
+| **5. Punchy 3–4 line mode modulators (`plan`, `agent`, `code`)** | **PASS** | `harness_core/prompt_builder.py` lines 86–105 (`MODE_MODULATORS`); `test_prompt_builder_mode_modulators` passes. Each mode contains exactly 4 lines (1 header + 3 punchy constraint bullet points). |
+| **6. 5-slot ordered prompt assembly & security threat scanner** | **PASS** | `harness_core/prompt_builder.py` lines 24–84, 108–198; `test_scan_for_threats`, `test_scan_context_content_user_authored_vs_remote`, `test_prompt_builder_5_slot_assembly`, and `test_orchestrator_integration_with_prompt_builder_and_soul` pass. |
 
 ---
 
@@ -159,7 +159,7 @@ orch.run_agent_loop called with mode='code'
 
 ## 4. Parity Comparison: HEX vs Hermes Agent
 
-| Capability / Architecture | Hermes Agent (`benchmarks/hermes-agent`) | HEX (`src/harness_core`) | Verdict |
+| Capability / Architecture | Hermes Agent (`benchmarks/hermes-agent`) | HEX (`harness_core`) | Verdict |
 |:---|:---|:---|:---:|
 | **Identity File Scope** | Global only (`HERMES_HOME/SOUL.md`). Switching requires explicit profile directory arguments (`--profile`). | Multi-tier: repository-specific `.hex/SOUL.md` seamlessly overrides global `~/.hex/SOUL.md`, falling back to default `HEX` persona. | **HEX ADVANTAGE** |
 | **Developer DNA** | Not separated from agent persona. User preferences mixed with model instructions. | Dedicated `~/.hex/USER.md` machine-wide profile for user coding habits, testing rigor, and conventions. | **HEX ADVANTAGE** |

@@ -10,7 +10,7 @@
 
 ## 1. Accomplishments
 
-1. **Outbound Approval Webhooks & Formatters (`src/harness_core/webhooks.py`):**
+1. **Outbound Approval Webhooks & Formatters (`harness_core/webhooks.py`):**
    - Implemented `WebhookConfig` with defaults and environment variable parsing (`HARNESS_TELEGRAM_BOT_TOKEN`, `HARNESS_TELEGRAM_CHAT_ID`, `HARNESS_DISCORD_WEBHOOK_URL`, `HARNESS_PUBLIC_BASE_URL`, `HARNESS_WEBHOOK_DRY_RUN`, `HARNESS_WEBHOOK_TIMEOUT`).
    - Implemented `format_telegram_approval` producing rich Markdown alerts with Task ID, Step ID, Tool Name, Risk Level, scrubbed parameters snippet (truncated at 1,000 chars), and Telegram `inline_keyboard` approval URL buttons for one-tap mobile decisioning.
    - Implemented `format_discord_approval` formatting Discord webhook embeds with color coding (0xFF9900 for R3, 0xFF0000 for R4), structured fields, and direct markdown Approve/Reject links.
@@ -18,7 +18,7 @@
    - Implemented `format_decision_broadcast` notifying Telegram and Discord channels when an approval has been decided (`APPROVED` / `REJECTED`).
    - Implemented `WebhookNotifier` with dry-run/mocking mode capturing sent payloads without network calls, and robust HTTP delivery with timeout and error handling.
 
-2. **Interactive Decision Endpoints & Orchestrator Integration (`src/harness_core/server.py`, `src/harness_core/gateway.py`, `src/harness_core/orchestrator.py`):**
+2. **Interactive Decision Endpoints & Orchestrator Integration (`harness_core/server.py`, `harness_core/gateway.py`, `harness_core/orchestrator.py`):**
    - Enhanced `/v1/approvals/{approval_id}:decide` in `HarnessAPIApp` to support both `GET` and `POST` methods.
    - Supported query parameters (`?decision=approve`, `?decision=reject`, `?comment=...`, `?auto_resume=...`) enabling direct clicks from Telegram, Discord, and mobile browsers.
    - Implemented decision normalization accepting natural language variants (`approve`, `allow`, `yes` -> `APPROVED`; `reject`, `deny`, `no` -> `REJECTED`).

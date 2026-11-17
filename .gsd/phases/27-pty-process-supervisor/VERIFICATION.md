@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Phase 27 delivers an asynchronous pseudo-terminal (PTY) background process supervisor and circular stream registry in `src/harness_core/process_registry.py`, matching the Hermes Agent background process architecture. The supervisor provides thread-safe lifecycle control (`spawn`, `poll`, `read_output`, `get_tail_output`, `wait`, `kill`, `list_processes`, `cleanup_all`), native POSIX pseudo-terminal allocation with transparent fallback to standard pipes, a rolling 200 KB circular ring buffer (`CircularOutputBuffer`), background non-blocking daemon reader threads, full state transitions (`RUNNING`, `COMPLETED`, `FAILED`, `KILLED`), process group signaling (`os.killpg`) to eliminate orphan/zombie processes, and automated `atexit` teardown hooks.
+Phase 27 delivers an asynchronous pseudo-terminal (PTY) background process supervisor and circular stream registry in `harness_core/process_registry.py`, matching the Hermes Agent background process architecture. The supervisor provides thread-safe lifecycle control (`spawn`, `poll`, `read_output`, `get_tail_output`, `wait`, `kill`, `list_processes`, `cleanup_all`), native POSIX pseudo-terminal allocation with transparent fallback to standard pipes, a rolling 200 KB circular ring buffer (`CircularOutputBuffer`), background non-blocking daemon reader threads, full state transitions (`RUNNING`, `COMPLETED`, `FAILED`, `KILLED`), process group signaling (`os.killpg`) to eliminate orphan/zombie processes, and automated `atexit` teardown hooks.
 
 The supervisor is exposed to agents and human operators through:
 1. `ToolGateway` process tools: `start_process` (R2), `read_terminal` (R0), `kill_process` (R2), `list_processes` (R0).
@@ -25,13 +25,13 @@ All 7 Hermes parity requirements and all phase must-haves have been verified thr
 
 | Hermes Reference | Harness Implementation | Parity Status | Evidence & Parity Details |
 |---|---|---|---|
-| `benchmarks/hermes-agent/tools/process_registry.py` (L61: `MAX_OUTPUT_CHARS = 200_000`, `ProcessSession.output_buffer`) | `src/harness_core/process_registry.py` (`CircularOutputBuffer`, `ProcessSession`) | **FULL PARITY** | 200,000 char default ring buffer; thread-safe locking; head-trimming when exceeded; cumulative `total_chars` counter. |
-| `benchmarks/hermes-agent/tools/process_registry.py` & `read_terminal_tool.py` (L35-49: `read_pane(window, offset, count)`) | `src/harness_core/process_registry.py` (`CircularOutputBuffer.read`, `read_output`) & `src/harness_core/gateway.py` (`_tool_read_terminal`) | **FULL PARITY** | Windowed read with `offset` and `limit`; relative buffer offset calculation; `has_more` flag; bounds clamping. |
-| `benchmarks/hermes-agent/tools/process_registry_termination.py` (L33-131: SIGTERM parent/descendants, grace window, SIGKILL escalation) | `src/harness_core/process_registry.py` (`ProcessRegistry.kill`, `cleanup_all`) | **FULL PARITY** | Process group targeting via `os.killpg(os.getpgid(pid))`; graceful SIGTERM followed by 1.0s wait; automatic escalation to SIGKILL; instant SIGKILL on `force=True`. |
-| `benchmarks/hermes-agent/tools/process_registry.py` (L100-104: PTY spawn + fallback, non-blocking select reader) | `src/harness_core/process_registry.py` (`spawn`, `_reader_loop`) | **FULL PARITY** | POSIX `pty.openpty()` with raw termios variables (`TERM=xterm-256color`, `PAGER=cat`, `GIT_PAGER=cat`), slave fd closed in parent, fallback to `subprocess.PIPE` (`DEVNULL` stdin, `STDOUT` stderr); non-blocking `select.select` reader with incremental UTF-8 decoder and final drain. |
-| `benchmarks/hermes-agent/tools/terminal_tool_background.py` (L237: `_redact_terminal_error_text`, secret masking) | `src/harness_core/gateway.py` (`_tool_start_process`, `_tool_read_terminal`, `_tool_list_processes`) | **FULL PARITY** | `redact_secrets` invoked over commands, initial output tail, stream slices, and process list dictionaries. |
-| `benchmarks/hermes-agent/tools/process_registry.py` (L562-566: `exited`, `exit_code`, `completion_reason`) | `src/harness_core/process_registry.py` (`ProcessStatus`, `mark_finished`) | **FULL PARITY** | Explicit enum `ProcessStatus`: `RUNNING`, `COMPLETED` (exit code 0), `FAILED` (exit code != 0), `KILLED`. |
-| `benchmarks/hermes-agent/tools/process_registry.py` (L646: `mark_exited`, exit code tracking) | `src/harness_core/process_registry.py` (`ProcessRegistry.poll`, `wait`, `_reader_loop`) | **FULL PARITY** | Child exit code harvested via `process.wait()` / `process.poll()`; propagated to session dict, slice queries, and gateway outputs. |
+| `benchmarks/hermes-agent/tools/process_registry.py` (L61: `MAX_OUTPUT_CHARS = 200_000`, `ProcessSession.output_buffer`) | `harness_core/process_registry.py` (`CircularOutputBuffer`, `ProcessSession`) | **FULL PARITY** | 200,000 char default ring buffer; thread-safe locking; head-trimming when exceeded; cumulative `total_chars` counter. |
+| `benchmarks/hermes-agent/tools/process_registry.py` & `read_terminal_tool.py` (L35-49: `read_pane(window, offset, count)`) | `harness_core/process_registry.py` (`CircularOutputBuffer.read`, `read_output`) & `harness_core/gateway.py` (`_tool_read_terminal`) | **FULL PARITY** | Windowed read with `offset` and `limit`; relative buffer offset calculation; `has_more` flag; bounds clamping. |
+| `benchmarks/hermes-agent/tools/process_registry_termination.py` (L33-131: SIGTERM parent/descendants, grace window, SIGKILL escalation) | `harness_core/process_registry.py` (`ProcessRegistry.kill`, `cleanup_all`) | **FULL PARITY** | Process group targeting via `os.killpg(os.getpgid(pid))`; graceful SIGTERM followed by 1.0s wait; automatic escalation to SIGKILL; instant SIGKILL on `force=True`. |
+| `benchmarks/hermes-agent/tools/process_registry.py` (L100-104: PTY spawn + fallback, non-blocking select reader) | `harness_core/process_registry.py` (`spawn`, `_reader_loop`) | **FULL PARITY** | POSIX `pty.openpty()` with raw termios variables (`TERM=xterm-256color`, `PAGER=cat`, `GIT_PAGER=cat`), slave fd closed in parent, fallback to `subprocess.PIPE` (`DEVNULL` stdin, `STDOUT` stderr); non-blocking `select.select` reader with incremental UTF-8 decoder and final drain. |
+| `benchmarks/hermes-agent/tools/terminal_tool_background.py` (L237: `_redact_terminal_error_text`, secret masking) | `harness_core/gateway.py` (`_tool_start_process`, `_tool_read_terminal`, `_tool_list_processes`) | **FULL PARITY** | `redact_secrets` invoked over commands, initial output tail, stream slices, and process list dictionaries. |
+| `benchmarks/hermes-agent/tools/process_registry.py` (L562-566: `exited`, `exit_code`, `completion_reason`) | `harness_core/process_registry.py` (`ProcessStatus`, `mark_finished`) | **FULL PARITY** | Explicit enum `ProcessStatus`: `RUNNING`, `COMPLETED` (exit code 0), `FAILED` (exit code != 0), `KILLED`. |
+| `benchmarks/hermes-agent/tools/process_registry.py` (L646: `mark_exited`, exit code tracking) | `harness_core/process_registry.py` (`ProcessRegistry.poll`, `wait`, `_reader_loop`) | **FULL PARITY** | Child exit code harvested via `process.wait()` / `process.poll()`; propagated to session dict, slice queries, and gateway outputs. |
 
 ---
 
@@ -39,13 +39,13 @@ All 7 Hermes parity requirements and all phase must-haves have been verified thr
 
 ### 3.1. Ring Buffer Sizing (200 KB Max Output Chars)
 - **Hermes Implementation:** `MAX_OUTPUT_CHARS = 200_000`. In `_append_locked()`, string appends and trims `[-self.max_output_chars:]`.
-- **Harness Implementation:** `CircularOutputBuffer(max_chars=200_000)` in `src/harness_core/process_registry.py` (lines 47–121). On `append()`, acquires `threading.Lock`, appends to `_buffer`, increments cumulative `_total_chars`, and executes `self._buffer = self._buffer[-self.max_chars:]`.
+- **Harness Implementation:** `CircularOutputBuffer(max_chars=200_000)` in `harness_core/process_registry.py` (lines 47–121). On `append()`, acquires `threading.Lock`, appends to `_buffer`, increments cumulative `_total_chars`, and executes `self._buffer = self._buffer[-self.max_chars:]`.
 - **Audit Finding:** Identical 200,000 char capacity, thread-safe locking, and exact tail slicing behavior.
 - **Verdict:** PASS.
 
 ### 3.2. Slicing with Offset and Limit
 - **Hermes Implementation:** `_output_tail(session, n)` and windowed pane reads with offset / limit.
-- **Harness Implementation:** `CircularOutputBuffer.read(offset=0, limit=2000)` in `src/harness_core/process_registry.py` (lines 70–100). Determines buffer boundaries relative to cumulative stream position:
+- **Harness Implementation:** `CircularOutputBuffer.read(offset=0, limit=2000)` in `harness_core/process_registry.py` (lines 70–100). Determines buffer boundaries relative to cumulative stream position:
   ```python
   buf_len = len(self._buffer)
   total = self._total_chars
@@ -61,7 +61,7 @@ All 7 Hermes parity requirements and all phase must-haves have been verified thr
 
 ### 3.3. Process Group Kill / Termination (SIGTERM → SIGKILL Escalation)
 - **Hermes Implementation:** `ProcessTerminationMixin._terminate_host_pid()` sends SIGTERM, waits for grace period, and escalates surviving PIDs to SIGKILL.
-- **Harness Implementation:** `ProcessRegistry.kill(process_id, force=False)` in `src/harness_core/process_registry.py` (lines 469–529):
+- **Harness Implementation:** `ProcessRegistry.kill(process_id, force=False)` in `harness_core/process_registry.py` (lines 469–529):
   1. Identifies process group: `pgid = os.getpgid(pid)`.
   2. Dispatches initial signal via `os.killpg(pgid, signal.SIGTERM)` (or `os.kill` fallback).
   3. If `not force`, enters grace timeout `session.process.wait(timeout=1.0)`.
@@ -74,7 +74,7 @@ All 7 Hermes parity requirements and all phase must-haves have been verified thr
 
 ### 3.4. Non-Blocking Async Stdout/Stderr Streaming via PTY with Pipe Fallback
 - **Hermes Implementation:** PTY allocation with fallback to subprocess pipes; non-blocking select loop reading chunks into the buffer.
-- **Harness Implementation:** `ProcessRegistry.spawn()` and `_reader_loop()` in `src/harness_core/process_registry.py` (lines 180–398):
+- **Harness Implementation:** `ProcessRegistry.spawn()` and `_reader_loop()` in `harness_core/process_registry.py` (lines 180–398):
   1. Attempts POSIX `pty.openpty()`. Sets terminal variables (`TERM=xterm-256color`, `PAGER=cat`, `GIT_PAGER=cat`).
   2. Spawns subprocess with `preexec_fn=os.setsid` and `close_fds=True`.
   3. Parent immediately closes slave descriptor to ensure clean EOF delivery.
@@ -87,7 +87,7 @@ All 7 Hermes parity requirements and all phase must-haves have been verified thr
 
 ### 3.5. Secret Scrubbing in Command Execution and Output Reads
 - **Hermes Implementation:** Masking and redacting sensitive tokens in logs and process results.
-- **Harness Implementation:** `src/harness_core/gateway.py` (lines 1947–2023):
+- **Harness Implementation:** `harness_core/gateway.py` (lines 1947–2023):
   - `_tool_start_process`: Scrubbed initial output tail via `redact_secrets()`; entire returned payload scrubbed before returning.
   - `_tool_read_terminal`: Output slice passed through `redact_secrets()`.
   - `_tool_list_processes`: Process records passed through `redact_secrets()`.
@@ -97,7 +97,7 @@ All 7 Hermes parity requirements and all phase must-haves have been verified thr
 
 ### 3.6. Status Transitions (RUNNING, COMPLETED, FAILED, KILLED)
 - **Hermes Implementation:** Process lifecycle states tracking live, finished, failed, and killed processes.
-- **Harness Implementation:** `ProcessStatus` enum in `src/harness_core/process_registry.py`:
+- **Harness Implementation:** `ProcessStatus` enum in `harness_core/process_registry.py`:
   - `RUNNING = "running"`: Initial state on spawn.
   - `COMPLETED = "completed"`: Reaped exit code == 0.
   - `FAILED = "failed"`: Reaped exit code != 0.
@@ -119,21 +119,21 @@ All 7 Hermes parity requirements and all phase must-haves have been verified thr
 ## 4. Operator & Tool Interface Verification
 
 ### 4.1. ToolGateway Process Management Tools
-In `src/harness_core/gateway.py`:
+In `harness_core/gateway.py`:
 - `start_process`: Registered with `RiskClass.R2`, parameters `command` (required), `cwd`, `pty`. Confines working directory to workspace boundary using `_resolve_confined_path`.
 - `read_terminal`: Registered with `RiskClass.R0`, parameters `process_id` (required), `offset`, `limit`.
 - `kill_process`: Registered with `RiskClass.R2`, parameters `process_id` (required), `force`.
 - `list_processes`: Registered with `RiskClass.R0`, parameters `status` (`running`, `completed`, `failed`, `killed`, `all`).
 
 ### 4.2. TUI Cockpit (`/ps` & `/processes`)
-In `src/harness_core/tui.py`:
+In `harness_core/tui.py`:
 - Registered in `handle_slash_command`, `SLASH_COMMANDS` autocompletion list, and `_cmd_help()`.
 - `/ps`: Renders table of tracked processes showing `ID`, `PID`, `STATUS` (colorized badges), `UPTIME`, `PTY`, `COMMAND`, and `OUTPUT TAIL`. Utilizes Rich `Table` if available with ANSI text fallback.
 - `/ps <proc_id>`: Displays comprehensive details and 2000-character terminal tail.
 - `/ps kill <proc_id>`: Terminates the target process and prints status confirmation.
 
 ### 4.3. CLI Subcommand (`hex ps`)
-In `src/harness_core/cli.py`:
+In `harness_core/cli.py`:
 - `hex ps`: Formatted table listing of active and completed processes.
 - `hex ps --json`: Machine-readable JSON output.
 - `hex ps --kill <id> [--force]`: Signals process termination via SIGTERM or SIGKILL.

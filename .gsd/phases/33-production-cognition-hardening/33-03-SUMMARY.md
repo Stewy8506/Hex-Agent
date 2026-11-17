@@ -23,24 +23,24 @@ Plan 33-03 closed three critical production cognition findings from `audit.md`:
 ## 2. Tasks Delivered
 
 ### Task 1: Archive-Before-Delete, FTS Idempotency, and Lifecycle Scheduling (F-02)
-- **Files Modified:** `src/harness_core/memory.py`, `src/harness_core/orchestrator.py`, `src/harness_core/router.py`, `tests/cognition/test_durable_lifecycle_and_reflection.py`
+- **Files Modified:** `harness_core/memory.py`, `harness_core/orchestrator.py`, `harness_core/router.py`, `tests/cognition/test_durable_lifecycle_and_reflection.py`
 - **Changes:**
   - `MemoryLifecycleManager.archive_entry()`: Wrapped in explicit SQLite transaction context (`with conn:`); cleans prior matching rows from `archived_memories_fts` (`DELETE FROM archived_memories_fts WHERE memory_id = ?`) before re-inserting to prevent FTS row duplication on retry; returns `True` only after transaction commit.
   - `MemoryLifecycleManager.run_demotion_sweep()`: Evaluates `archived_ok = self.archive_entry(...)`. If archival fails, logs error and retains active note in `MEMORY.md`/`USER.md` without invoking controller deletion.
   - `HarnessOrchestrator._execute_standard_dag()` & `run_agent_loop()`: Integrated automatic promotion check (`check_promotions()`) at successful task completion, promoting high-confidence reflections ($\ge 3$ hits) to `MEMORY.md`.
   - Added `run_lifecycle_maintenance(workspace_root, retention_days=30)` helper and orchestrator method.
-  - Added `GovernedMemoryService.lifecycle_mgr` property in `src/harness_core/router.py`.
+  - Added `GovernedMemoryService.lifecycle_mgr` property in `harness_core/router.py`.
 - **Commit:** `1b4fd36`
 
 ### Task 2: Transactional Batch Operations and Verified Physical Deletion (F-05)
-- **Files Modified:** `src/harness_core/memory.py`, `tests/cognition/test_durable_lifecycle_and_reflection.py`
+- **Files Modified:** `harness_core/memory.py`, `tests/cognition/test_durable_lifecycle_and_reflection.py`
 - **Changes:**
   - `CuratedMemoryStore.execute_operations()`: Implemented multi-file locking in deterministic sorted order via `ExitStack`; performs drift checks across all target files; creates in-memory staging copies and rollback snapshots; validates all operations (`add`, `replace`, `patch`, `remove`) against character limits and text matches; writes only after 100% of operations pass validation; automatically restores original file contents if any multi-file disk write fails.
   - `AMEMController.delete_memory()` & `process_memory(action="DELETE")`: Checked `self.store.remove(...)` return dictionary; if physical disk removal fails (`not res.get("ok")`), metadata in `self._items` and `self._tag_index` is strictly preserved and an error dictionary is returned.
 - **Commit:** `6315ca8`
 
 ### Task 3: Idle Reflection Worker Draining Queue (F-06)
-- **Files Modified:** `src/harness_core/orchestrator.py`, `tests/cognition/test_durable_lifecycle_and_reflection.py`
+- **Files Modified:** `harness_core/orchestrator.py`, `tests/cognition/test_durable_lifecycle_and_reflection.py`
 - **Changes:**
   - `_handle_post_task_reflection()`: Added `final_patch`, `retry_count: 0`, and file-locking protection (`_file_lock`) when appending suppressed reflection candidates to `pending_reflections.json`.
   - `process_pending_reflections()`: Drains queued pending reflections under file lock when system is idle (`is_idle=True`); synthesizes lessons via `ReflectionSynthesizer`; updates `LESSONS.md`, memory lifecycle reflections, and negative guardrails; tracks candidate status (`processing` -> `completed` / `failed`); enforces a 3-strike retry ceiling.

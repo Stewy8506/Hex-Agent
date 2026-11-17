@@ -2,7 +2,7 @@
 
 ## Implementation Summary
 
-In Plan 26-01, we implemented Phases 1 and 2 of the 4-Phase Context Compactor in `src/harness_core/context_compressor.py` matching Hermes Agent (`agent/context_compressor.py`, `agent/context_compressor_tail.py`, and `agent/compression_marker.py`), accompanied by an extensive test suite in `tests/cognition/test_context_compressor_tail_pruning.py`.
+In Plan 26-01, we implemented Phases 1 and 2 of the 4-Phase Context Compactor in `harness_core/context_compressor.py` matching Hermes Agent (`agent/context_compressor.py`, `agent/context_compressor_tail.py`, and `agent/compression_marker.py`), accompanied by an extensive test suite in `tests/cognition/test_context_compressor_tail_pruning.py`.
 
 ### 1. Token Estimation & Elision Markers (Task 1)
 - Implemented `estimate_tokens_rough`: ceiling-based character-to-token heuristic (~4 chars/token, minimum 1 token for non-empty text, 0 for empty/None).

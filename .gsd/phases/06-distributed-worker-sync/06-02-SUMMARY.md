@@ -16,39 +16,39 @@ Plan 06-02 delivered cross-machine Copy-on-Write (CoW) delta archive mobility, a
 
 | Task # | Task Description | Files Touched | Git Commit |
 |---|---|---|---|
-| **Task 1** | Implement Cross-Machine CoW Delta Archive Export/Import & CAS Artifact Transfer | `src/harness_core/cow.py`, `src/harness_core/server.py`, `src/harness_core/orchestrator.py`, `src/harness_core/worker_daemon.py`, `src/harness_core/db.py`, `src/harness_core/gateway.py` | `3307303` (`feat(phase-06): implement CoW delta archive import, CAS artifact transfer and workspace reconstruction`) |
-| **Task 2** | Implement Lease Expiry Handover, 0ms Journal Replay & Monotonic Fencing Defense | `src/harness_core/db.py`, `src/harness_core/models.py`, `tests/storage/test_postgres_concurrency.py` | `4fe5938` (`feat(phase-06): implement lease expiry handover and monotonic fencing token defense`) |
-| **Task 3** | Author Comprehensive Test Suite for Cross-Machine CoW Sync & Fencing Defense | `src/harness_core/cow.py`, `src/harness_core/db.py`, `tests/integration/test_cross_machine_cow_sync.py` | `7500c9c` (`feat(phase-06): author cross-machine CoW delta sync and fencing defense test suite`) |
+| **Task 1** | Implement Cross-Machine CoW Delta Archive Export/Import & CAS Artifact Transfer | `harness_core/cow.py`, `harness_core/server.py`, `harness_core/orchestrator.py`, `harness_core/worker_daemon.py`, `harness_core/db.py`, `harness_core/gateway.py` | `3307303` (`feat(phase-06): implement CoW delta archive import, CAS artifact transfer and workspace reconstruction`) |
+| **Task 2** | Implement Lease Expiry Handover, 0ms Journal Replay & Monotonic Fencing Defense | `harness_core/db.py`, `harness_core/models.py`, `tests/storage/test_postgres_concurrency.py` | `4fe5938` (`feat(phase-06): implement lease expiry handover and monotonic fencing token defense`) |
+| **Task 3** | Author Comprehensive Test Suite for Cross-Machine CoW Sync & Fencing Defense | `harness_core/cow.py`, `harness_core/db.py`, `tests/integration/test_cross_machine_cow_sync.py` | `7500c9c` (`feat(phase-06): author cross-machine CoW delta sync and fencing defense test suite`) |
 
 ---
 
 ## 3. Implementation Details
 
-1. **CoW Delta Archive Import/Export with Tar-Slip Defense (`src/harness_core/cow.py`):**
+1. **CoW Delta Archive Import/Export with Tar-Slip Defense (`harness_core/cow.py`):**
    - Added `import_delta_archive` to `WorkspaceSnapshotProvider` protocol, `APFSAndPortableCoWProvider`, `OverlayFSSnapshotProvider`, and `BtrfsSnapshotProvider`, along with standalone module functions `export_delta_archive` and `import_delta_archive`.
    - Built strict tar-slip traversal protection inspecting all `tarinfo` member paths, rejecting any archive entries containing `..` path segments or resolving outside the target workspace with `ValueError`.
    - Handled both flat archives and archives containing a root `workspace/` folder directly unpacking into the target workspace.
    - Cleans pre-existing non-ignored files in target workspace prior to unpacking to ensure 100% deterministic Merkle tree SHA parity.
 
-2. **CAS Artifact REST Endpoints & Worker Transfer Client (`src/harness_core/server.py`, `src/harness_core/worker_daemon.py`):**
+2. **CAS Artifact REST Endpoints & Worker Transfer Client (`harness_core/server.py`, `harness_core/worker_daemon.py`):**
    - `POST /v1/artifacts/delta`: Accepts raw `.tar.gz` gzip streams or JSON with base64 payload, stores bundle deterministically in `<data_dir>/cas/<sha256>.tar.gz`, and records the artifact in the ledger with `kind="cow_delta_archive"`.
    - `GET /v1/artifacts/{artifact_id}/file`: Streams raw archive bytes with `Content-Type: application/gzip` and `Content-Disposition`.
    - Added `POST /v1/tasks/{task_id}:transition` supporting fencing token validation and HTTP 409 Conflict mapping.
    - Enhanced `DirectLedgerWorkerClient` and `RestWorkerClient` with `list_artifacts`, `download_artifact`, and `upload_delta_artifact`.
 
-3. **Orchestrator Remote Workspace Export and Reconstruction (`src/harness_core/orchestrator.py`):**
+3. **Orchestrator Remote Workspace Export and Reconstruction (`harness_core/orchestrator.py`):**
    - Implemented `export_workspace_delta(task_id, attempt_ws)` exporting workspace state to CAS delta archive and updating `active_workspace_tree_sha`.
    - Automatically exports workspace delta archives upon step completion and approval/forensic checkpoints.
    - Implemented `reconstruct_workspace_from_delta(task_id, target_ws)` unpacking latest delta bundle and verifying `reconstructed_tree_sha == task["active_workspace_tree_sha"]`, raising `ValueError` on any mismatch.
    - Updated `_execute_standard_dag` to reconstruct workspace from CAS delta archives upon failover claim and pass `fencing_token` into gateway tool invocations.
 
-4. **Lease Expiry Reaping, Takeover, and Monotonic Fencing Defense (`src/harness_core/db.py`):**
+4. **Lease Expiry Reaping, Takeover, and Monotonic Fencing Defense (`harness_core/db.py`):**
    - Added `reap_expired_leases` (sync and async) finding all tasks in `RUNNING` or `VERIFYING` whose leases have expired (`released_at IS NULL AND expires_at < now`), releasing the expired leases and transitioning tasks back to `QUEUED` with `reason_code="LEASE_EXPIRED"`.
    - In `claim_next_task` / `claim_next_task_async`, automatically calls `reap_expired_leases`, queries `max_tok = MAX(fencing_token)`, and assigns `next_token = max_tok + 1` (e.g. 1 -> 2).
    - Records `LEASE_TAKEOVER` hash-chained task events capturing `prior_fencing_token`, `new_fencing_token`, `worker_id`, and `lease_id`.
    - Hardened `begin_tool_call`, `seal_tool_call`, `transition_task`, `renew_lease`, and `release_lease` against stale fencing tokens (`fencing_token < max_tok`), raising `ConcurrencyFenceError`.
 
-5. **0ms Tool Journal Replay (`src/harness_core/gateway.py`):**
+5. **0ms Tool Journal Replay (`harness_core/gateway.py`):**
    - Propagated active `fencing_token` from orchestrator into `ToolGateway.invoke` and `execute_code_mode_composition`.
    - Replays previously sealed tool calls in 0ms (< 15ms) directly from the call journal (`_replayed == True`, `replayed_from_call_id`), without invoking external tools or subprocesses.
 

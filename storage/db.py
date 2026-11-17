@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import harness_core
 from harness_core.core.models import TaskBudget, TaskState, TaskSubmitRequest, VALID_TRANSITIONS, utcnow_iso
 
 
@@ -312,7 +313,7 @@ class LedgerStore:
             # 1. Bundled package schema (storage/migrations or harness_core/migrations)
             for candidate in [
                 Path(__file__).resolve().parent / "migrations" / "0001_initial_schema.sql",
-                Path(__file__).resolve().parent.parent / "migrations" / "0001_initial_schema.sql",
+                Path(harness_core.__file__).resolve().parent / "migrations" / "0001_initial_schema.sql",
             ]:
                 if candidate.is_file():
                     schema_sql_path = candidate

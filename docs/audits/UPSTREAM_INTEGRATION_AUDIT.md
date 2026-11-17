@@ -22,15 +22,15 @@ All three upstream codebases are physically vendored in `vendor/`:
 | **Google Research Harness²** | [google-research/harness2](https://github.com/google-research/harness2) | **Yes** (`vendor/harness2`) | **~98% Wired** (`OrchestratorBenchmarkAdapter`, `runmark` rollout caching, `LLMRouterProposer`, quad substrates [`Opencode`, `Codex`, `Claude`, `Gemini`], concurrent sweeps, selection, judging, statistical reporting, Experience Library, speculative branch reflection, and background self-improvement hook) | **Phase 18 Complete & Verified.** Full Propose–Probe–Compose loop with selection, judging, statistical reporting, automated speculative branch reflection into `EXPERIENCE.md`, and background self-improvement execution hook. |
 | **NVIDIA SkillSpector** | [NVIDIA/SkillSpector](https://github.com/NVIDIA/SkillSpector), v2.12.0 | **Yes** (`vendor/skillspector`, v2.12.0) | **~95% Wired** (Behavioral AST dangerous execution analyzer, taint tracker, live OSV.dev batch vulnerability client with offline cache fallback, 71 YARA rules across 17 categories, risk-scoring gateway, and automatic quarantine) | **Phase 19 Complete & Verified.** Upstream AST dangerous execution analyzer (`python_ast.py`, `behavioral_ast.py`), reflective sink / gadget chain detection, and live `osv_client.py` batch vulnerability queries with offline cache fallback (`KNOWN_OSV_VULNS`). |
 | **Graphify** | [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) | **Yes** (`vendor/graphify`) | **~95% Wired** (`GraphifyUpstreamRunner` CLI/module/in-process runner, `ActiveGraphifyAdapter` NetworkX artifact ingestion, polyglot blast-radius tracking, multi-language test pinning in `write_file`, `hex graphify` CLI suite, D3 tree visualization, and 0ms Python AST fallback) | **Phase 20 Complete & Verified.** Upstream CLI runner, tree-sitter artifact ingestion (`graphify-out/graph.json` & `.hex/graph.json`), polyglot blast-radius calculation across 6 language families, architectural topology (`god-nodes`, cycles), and interactive D3 HTML export. |
-| **PostgreSQL 16 + SQLite WAL + Alembic** | `PRD.md` Section 8.1 & 10 | **Native Drivers** (`asyncpg` + `sqlite3`) | **100% Wired** (`src/harness_core/db.py`) | Dual-driver architecture with connection pooling, `SKIP LOCKED` concurrency, cryptographic hash chaining (`verify_event_chain`), and reversible Alembic migrations. |
-| **Model Routing & Antigravity OAuth** | `PRD.md` Section 6.6 (`FR-045a`) | **Native SDKs** | **100% Wired** (`src/harness_core/router.py`, `providers/`) | Antigravity OAuth PKCE & local `state.vscdb` import, live quota inspection (`hex quota`), Gemini, Anthropic Claude, OpenAI, and Apple Silicon MLX log compression. |
-| **Copy-on-Write (CoW) Provider** | `PRD.md` Section 6.2 (`FR-012a`) | **Native OS binaries** | **100% Wired** (`src/harness_core/cow.py`) | Apple APFS clone mode (`cp -c -R`), Linux OverlayFS, Merkle SHA-256 tree hashing, and CAS `.tar.gz` delta sync. |
+| **PostgreSQL 16 + SQLite WAL + Alembic** | `PRD.md` Section 8.1 & 10 | **Native Drivers** (`asyncpg` + `sqlite3`) | **100% Wired** (`harness_core/db.py`) | Dual-driver architecture with connection pooling, `SKIP LOCKED` concurrency, cryptographic hash chaining (`verify_event_chain`), and reversible Alembic migrations. |
+| **Model Routing & Antigravity OAuth** | `PRD.md` Section 6.6 (`FR-045a`) | **Native SDKs** | **100% Wired** (`harness_core/router.py`, `providers/`) | Antigravity OAuth PKCE & local `state.vscdb` import, live quota inspection (`hex quota`), Gemini, Anthropic Claude, OpenAI, and Apple Silicon MLX log compression. |
+| **Copy-on-Write (CoW) Provider** | `PRD.md` Section 6.2 (`FR-012a`) | **Native OS binaries** | **100% Wired** (`harness_core/cow.py`) | Apple APFS clone mode (`cp -c -R`), Linux OverlayFS, Merkle SHA-256 tree hashing, and CAS `.tar.gz` delta sync. |
 
 ---
 
 ## 2. Deep-Dive Audit: The Three External Pillars
 
-### 2.1 Google Research Harness² (`vendor/harness2` vs. `src/harness_core/harness2_adapter.py`)
+### 2.1 Google Research Harness² (`vendor/harness2` vs. `harness_core/harness2_adapter.py`)
 
 [Google Research Harness²](https://github.com/google-research/harness2) provides autonomous prompt and harness evolution using contrastive **Propose–Probe–Compose** sweeps, candidate selection, and cross-task Experience Libraries.
 
@@ -57,7 +57,7 @@ All three upstream codebases are physically vendored in `vendor/`:
 
 ---
 
-### 2.2 NVIDIA SkillSpector (`vendor/skillspector` vs. `src/harness_core/skillspector.py`)
+### 2.2 NVIDIA SkillSpector (`vendor/skillspector` vs. `harness_core/skillspector.py`)
 
 [NVIDIA SkillSpector](https://github.com/NVIDIA/SkillSpector) provides a comprehensive security analysis pipeline for agent skills and tools.
 
@@ -78,7 +78,7 @@ All three upstream codebases are physically vendored in `vendor/`:
 
 ---
 
-### 2.3 Graphify (`vendor/graphify` vs. `src/harness_core/graphify.py`)
+### 2.3 Graphify (`vendor/graphify` vs. `harness_core/graphify.py`)
 
 [Graphify Labs](https://github.com/Graphify-Labs/graphify) is a multi-language AST and knowledge-graph engine.
 
@@ -92,7 +92,7 @@ All three upstream codebases are physically vendored in `vendor/`:
   1. **`GraphifyUpstreamRunner` Execution Bridge**: Discovers `graphify` CLI executable (`which graphify`) or executes via `sys.executable -m graphify` with `vendor/graphify` injected into `PYTHONPATH`, with an in-process fallback using `graphify.watch._rebuild_code`.
   2. **Upstream Graph Ingestion Adapter (`ActiveGraphifyAdapter.ingest_upstream_graph`)**: Loads `graphify-out/graph.json` or `.hex/graph.json` into NetworkX `DiGraph`, distinguishing `EXTRACTED` vs `INFERRED` edges, mapping nodes, `SymbolDef` records, file qualification paths, and reverse callers. Retains 0ms native Python AST fallback when upstream artifacts are absent.
   3. **Full CLI Subcommand Suite**: Exposed via `hex graphify` with `status`, `update`, `ingest`, `god-nodes`, `affected`, and `tree`.
-  4. **Polyglot Blast-Radius Tracking**: Unified blast-radius tracking in `ActiveGraphifyAdapter.compute_blast_radius` and `ActiveBlastRadiusInterceptor` in `src/harness_core/gateway.py` across 6 language families: Python (`.py`), TypeScript/JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`), Go (`.go`), Rust (`.rs`), Java (`.java`), and C/C++ (`.c`, `.cpp`, `.cc`, `.h`, `.hpp`).
+  4. **Polyglot Blast-Radius Tracking**: Unified blast-radius tracking in `ActiveGraphifyAdapter.compute_blast_radius` and `ActiveBlastRadiusInterceptor` in `harness_core/gateway.py` across 6 language families: Python (`.py`), TypeScript/JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`), Go (`.go`), Rust (`.rs`), Java (`.java`), and C/C++ (`.c`, `.cpp`, `.cc`, `.h`, `.hpp`).
   5. **Multi-Language Test Detection & Pinning**: `_is_test_file` recognizes test files across all supported languages (e.g., `test_*.py`, `*.test.ts`, `*_test.go`, `*_test.rs`, `*Test.java`, `*_test.cpp`) and automatically pins affected downstream tests to `plans.blast_radius_checks_json` during `R2` `write_file` tool calls.
   6. **Zero-Token Architectural Topology**: Wires `graphify.analyze` (`god_nodes`, `find_import_cycles`, `graph_diff`, `surprising_connections`) for topological insight and circular dependency detection without LLM token waste.
   7. **Interactive D3 Tree Visualization**: Wires `graphify.tree_html` (`build_tree`, `emit_html`) to export interactive visual architecture graphs.

@@ -349,7 +349,7 @@ HEX TUI headless verification passed: 1 virtual frame rendered successfully.
 - **Verification:** PASS.
 
 ### Complaint 2: Model output missing / hangs on "Reasoning..."
-- **Code Inspection (`src/harness_core/acp.py` lines 263-309):**
+- **Code Inspection (`harness_core/acp.py` lines 263-309):**
   `_handle_session_prompt` extracts synthesized deliverable/result from the task execution payload and ledger:
   ```python
   deliverable = (
@@ -407,6 +407,8 @@ HEX TUI headless verification passed: 1 virtual frame rendered successfully.
 
 ### Empirical Test Execution Proof
 
+To rerun these commands after relocation, first run `.venv/bin/python -m pip install -e ".[full]"` from the checkout root to refresh editable package mappings. Recorded outputs and test counts below remain historical.
+
 1. **Rust Workspace Tests:**
    ```bash
    cargo test --workspace
@@ -423,7 +425,7 @@ HEX TUI headless verification passed: 1 virtual frame rendered successfully.
 
 2. **Python ACP & Launcher Tests:**
    ```bash
-   PYTHONPATH=src .venv/bin/python -m unittest tests/client/test_acp_server.py tests/client/test_rust_tui_launcher.py
+   .venv/bin/python -m unittest tests/client/test_acp_server.py tests/client/test_rust_tui_launcher.py
    ```
    Output:
    ```

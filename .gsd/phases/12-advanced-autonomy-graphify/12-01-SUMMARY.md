@@ -11,13 +11,13 @@
 ## 1. Executive Summary
 
 Plan 12-01 successfully brings HEX Agent parity and advanced Active Graphify performance enhancements to HEX:
-1. **System Diagnostics & Self-Healing (`src/harness_core/doctor.py`):**
+1. **System Diagnostics & Self-Healing (`harness_core/doctor.py`):**
    - Implemented `HexDoctor`, `DoctorReport`, and `DoctorCheckResult` inspecting 8 diagnostic categories: Python runtime, Apple Silicon M4 / GPU acceleration, CoW snapshot providers (APFS/OverlayFS/Btrfs), sandboxes (bwrap/docker/restricted_subprocess), model credentials, git status, disk storage (>2GB threshold), and workbench directories/config.
    - Built self-healing `--fix` mode auto-creating missing directories (`.hex/`, `.hex/data/`, `skills/custom/`, `.hex/quarantine/`), generating default `.hex/config.yaml`, and setting standard permissions.
    - Built `--live` bounded connectivity ping testing configured model endpoints and outbound reachability.
    - Registered `hex doctor` CLI subcommand with `--fix`, `--live`, `--json`, and `--no-color`.
 
-2. **Multi-Framework Recipe Detection (`src/harness_core/recipes.py`):**
+2. **Multi-Framework Recipe Detection (`harness_core/recipes.py`):**
    - Implemented `Recipe` dataclass and zero-config `detect_recipe()` inspecting repositories in strict precedence:
      - Node.js / TypeScript: pnpm, yarn, bun, npm, Next.js (port 3000), Vite (port 5173), NestJS/Express.
      - Python: uv, poetry, pipenv, pytest, django (manage.py), and unittest.
@@ -25,11 +25,11 @@ Plan 12-01 successfully brings HEX Agent parity and advanced Active Graphify per
      - Go: go.mod (`go test ./...`, `go build ./...`).
      - Makefile: `make test` detection.
      - Docker Compose: `docker-compose.yml` (`docker compose run --rm test`).
-   - Integrated into `ToolGateway._tool_run_tests` (`src/harness_core/gateway.py`) to automatically execute detected test commands and record recipe metadata.
-   - Integrated into `HarnessOrchestrator` (`src/harness_core/orchestrator.py`) injecting detected recipes into task execution context.
+   - Integrated into `ToolGateway._tool_run_tests` (`harness_core/gateway.py`) to automatically execute detected test commands and record recipe metadata.
+   - Integrated into `HarnessOrchestrator` (`harness_core/orchestrator.py`) injecting detected recipes into task execution context.
    - Registered `hex recipe [workspace]` CLI subcommand with `--json` and formatted output.
 
-3. **Graphify Persistent Disk Cache & Multi-Language Awareness (`src/harness_core/graphify.py`):**
+3. **Graphify Persistent Disk Cache & Multi-Language Awareness (`harness_core/graphify.py`):**
    - Implemented persistent on-disk caching in `.hex/graph.json` with mtime and SHA validation.
    - Warm repository startup reloads from `.hex/graph.json` in **< 30ms** (< 5ms observed) with 100% cache hits on unchanged files.
    - Enhanced multi-language symbol extraction across TypeScript/React (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`), Rust (`.rs`), and Go (`.go`) alongside Python.

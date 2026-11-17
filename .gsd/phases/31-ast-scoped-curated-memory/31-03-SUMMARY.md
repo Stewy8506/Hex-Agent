@@ -11,7 +11,7 @@
 ### Task 1: Zettelkasten A-MEM Controller & Contradiction Resolution
 - Implemented `MemoryItem` structured dataclass with `id`, `text`, `tags` (`[[concept-tag]]`), `scope` (`memory` | `user` | `guardrails`), `hit_counter`, `created_at`, and `last_referenced_at`.
 - Implemented `extract_wiki_tags` regex parser extracting and normalizing wiki-style `[[tag]]` concept links.
-- Implemented `AMEMController` in `src/harness_core/memory.py`:
+- Implemented `AMEMController` in `harness_core/memory.py`:
   - CRUD Decision Engine supporting `ADD`, `UPDATE`, `DELETE`, and `NOOP`.
   - Inverted tag index (`_tag_index: dict[str, set[str]]`) mapping concept tags to memory item IDs.
   - Neighborhood retrieval `get_linked_neighborhood(tag: str) -> list[MemoryItem]` allowing localized retrieval of conceptual neighborhoods without prompt token explosion.
@@ -22,7 +22,7 @@
 - Committed as `feat(phase-31): implement zettelkasten a-mem controller and contradiction resolution` (`9880f20`).
 
 ### Task 2: Memory Lifecycle Engine & SQLite FTS5 Cold Archival
-- Implemented `MemoryLifecycleManager` in `src/harness_core/memory.py`:
+- Implemented `MemoryLifecycleManager` in `harness_core/memory.py`:
   - Hit counter and reference tracking with `record_reference(entry_id: str)` updating timestamps and incrementing usage.
   - Tracking reflections from `.hex/reflections/LESSONS.md` via `record_reflection` and JSON metadata synchronization.
   - Promotion protocol in `check_promotions() -> list[dict]` and `promote_entry(entry_id, target)`: reflections with $\ge 3$ hits qualify for promotion into active `MEMORY.md` (or flag for skill compilation when $\ge 5$).
@@ -32,16 +32,16 @@
 - Committed as `feat(phase-31): implement confidence decay hit-counter promotion and sqlite fts5 cold archival` (`72eb71c`).
 
 ### Task 3: Lightweight .history/ Snapshots & Rollback CLI/TUI Ergonomics
-- Implemented `HistorySnapshotManager` in `src/harness_core/memory.py`:
+- Implemented `HistorySnapshotManager` in `harness_core/memory.py`:
   - Saves timestamped `<filename>.<timestamp>.bak` snapshots into `.hex/memories/.history/` on every write operation in `CuratedMemoryStore` and `GuardrailsManager`.
   - Automatically bounds snapshot history to 20 per file with FIFO pruning.
   - Provides inspection via `list_history(target) -> list[dict]` and instant restoration via `rollback(target, timestamp) -> bool`.
-- Extended CLI subcommands in `src/harness_core/cli.py`:
+- Extended CLI subcommands in `harness_core/cli.py`:
   - `hex memory list [--target user|memory|guardrails] [--json]`
   - `hex memory search "<query>" [--limit <n>] [--json]`
   - `hex memory history [--target <target>] [--json]`
   - `hex memory rollback <target> <timestamp>`
-- Extended TUI slash commands in `src/harness_core/tui.py`:
+- Extended TUI slash commands in `harness_core/tui.py`:
   - `/memory`: displays governed curated memory token/char summary and active guardrail count.
   - `/memory history [target]`: lists timestamped snapshots.
   - `/memory rollback <timestamp>`: executes safe rollback to chosen snapshot.

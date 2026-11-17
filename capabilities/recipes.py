@@ -1,4 +1,4 @@
-"""Multi-Framework Run-Recipe Auto-Detection Engine (`src/harness_core/recipes.py`).
+"""Multi-Framework Run-Recipe Auto-Detection Engine (`capabilities/recipes.py`).
 
 Auto-detects project lifecycle recipes (bootstrap, build, test, start) across:
 1. Node.js / TypeScript (pnpm, yarn, bun, npm, Next.js, Vite, NestJS)

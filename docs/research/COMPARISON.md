@@ -37,7 +37,7 @@ HEX differentiates itself with architectural bets on isolation, verifiable execu
 
 #### 1. Native GPUI Desktop vs. Electron Overhead:
 - **Hermes**: Packages an Electron-based desktop application consuming **~400MB of RAM**, bundled with a full Chromium engine, Node.js runtime, and web layout pipeline.
-- **HEX**: Implements a native macOS desktop cockpit (`crates/hex-desktop`) using Zed's **GPUI** framework, rendering directly via Apple Silicon Metal shaders with no bundled browser runtime. The cockpit is **experimental**: it runs real chat sessions over ACP but ships from source only, and some panels (token gauge, reasoning folds) are not yet fed by live data. Memory-footprint advantages are expected from the architecture but not yet benchmarked.
+- **HEX**: Implements a native macOS desktop cockpit (`App/hex-desktop`) using Zed's **GPUI** framework, rendering directly via Apple Silicon Metal shaders with no bundled browser runtime. The cockpit is **experimental**: it runs real chat sessions over ACP but ships from source only, and some panels (token gauge, reasoning folds) are not yet fed by live data. Memory-footprint advantages are expected from the architecture but not yet benchmarked.
 - **Terminal Alternative**: In addition to the desktop app, HEX provides a standalone Ratatui TUI (`hex-tui`) for terminal purists — this is the supported daily terminal surface.
 
 #### 2. Filesystem Isolation (CoW vs. Host Mutations):

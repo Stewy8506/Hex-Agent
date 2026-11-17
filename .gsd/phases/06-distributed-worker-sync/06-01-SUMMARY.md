@@ -16,15 +16,15 @@ Plan 06-01 implemented the standalone distributed `WorkerDaemon` architecture, s
 
 | Task # | Task Description | Files Touched | Git Commit |
 |---|---|---|---|
-| **Task 1** | Implement Lease Renewal, Worker Heartbeat & REST API Worker Endpoints | `src/harness_core/db.py`, `src/harness_core/server.py` | `8164909` (`feat(phase-06): implement lease renewal, worker heartbeat and REST worker endpoints`) |
-| **Task 2** | Implement WorkerDaemon Architecture and `harness worker` CLI Command | `src/harness_core/cow.py`, `src/harness_core/worker_daemon.py`, `src/harness_core/cli.py` | `1e362e2` (`feat(phase-06): implement WorkerDaemon architecture and harness worker CLI command`) |
-| **Task 3** | Author Unit & Integration Test Suite for WorkerDaemon | `src/harness_core/db.py`, `src/harness_core/orchestrator.py`, `src/harness_core/server.py`, `src/harness_core/worker_daemon.py`, `tests/runtime/test_worker_daemon.py` | `b497785` (`feat(phase-06): author worker daemon and REST client test suite`) |
+| **Task 1** | Implement Lease Renewal, Worker Heartbeat & REST API Worker Endpoints | `harness_core/db.py`, `harness_core/server.py` | `8164909` (`feat(phase-06): implement lease renewal, worker heartbeat and REST worker endpoints`) |
+| **Task 2** | Implement WorkerDaemon Architecture and `harness worker` CLI Command | `harness_core/cow.py`, `harness_core/worker_daemon.py`, `harness_core/cli.py` | `1e362e2` (`feat(phase-06): implement WorkerDaemon architecture and harness worker CLI command`) |
+| **Task 3** | Author Unit & Integration Test Suite for WorkerDaemon | `harness_core/db.py`, `harness_core/orchestrator.py`, `harness_core/server.py`, `harness_core/worker_daemon.py`, `tests/runtime/test_worker_daemon.py` | `b497785` (`feat(phase-06): author worker daemon and REST client test suite`) |
 
 ---
 
 ## 3. Implementation Details
 
-1. ** authoritative Ledger Lease Management (`src/harness_core/db.py`):**
+1. ** authoritative Ledger Lease Management (`harness_core/db.py`):**
    - Implemented `renew_lease` and `renew_lease_async` with CAS fencing token validation against active task max token and released status, raising `ConcurrencyFenceError` on stale or superseded leases.
    - Enforced monotonic lease expiration advancement (`expires = max(now + ttl_seconds, cur_expires + 1)`).
    - Implemented `release_lease` and `release_lease_async` updating `released_at = now`.
@@ -32,14 +32,14 @@ Plan 06-01 implemented the standalone distributed `WorkerDaemon` architecture, s
    - Added `get_lease` and `get_worker` inspection helpers across SQLite WAL and PostgreSQL engines.
    - Enabled flexible dict payload submission in `submit_task` / `submit_task_async` defaulting to `QUEUED` state.
 
-2. **REST API Server Endpoints & Authentication (`src/harness_core/server.py`):**
+2. **REST API Server Endpoints & Authentication (`harness_core/server.py`):**
    - Added worker authentication support (`auth_token`) via case-insensitive `X-Worker-Token` and `Authorization: Bearer <token>` headers.
    - Implemented worker routes: `POST /v1/workers/register` and `POST /v1/workers/heartbeat`.
    - Implemented atomic claim route: `POST /v1/tasks/claim` returning claimed task or `{"task": None}`.
    - Implemented lease control routes: `POST /v1/leases/{lease_id}:renew` and `POST /v1/leases/{lease_id}:release`.
    - Mapped `ConcurrencyFenceError` to HTTP 409 Conflict.
 
-3. **Distributed Worker Architecture (`src/harness_core/worker_daemon.py`):**
+3. **Distributed Worker Architecture (`harness_core/worker_daemon.py`):**
    - `inspect_machine_profile`: Discovers hardware architecture, Darwin ARM64 (`m4_air`), GPU presence, CoW snapshot backend, memory/CPU cores, and local LLM models.
    - `WorkerClient` Protocol: Defines unified interface for worker operations.
    - `DirectLedgerWorkerClient`: Zero-network local ledger client executing via `HarnessOrchestrator`.
@@ -50,10 +50,10 @@ Plan 06-01 implemented the standalone distributed `WorkerDaemon` architecture, s
      - Polling claim loop `_claim_loop` with `--once` execution mode support.
      - Signal handlers for `SIGINT` / `SIGTERM` invoking graceful lease release and thread shutdown.
 
-4. **CLI Subcommand Integration (`src/harness_core/cli.py`):**
+4. **CLI Subcommand Integration (`harness_core/cli.py`):**
    - Registered `harness worker` with `--worker-id`, `--machine-class`, `--poll-interval`, `--lease-ttl`, `--server-url`, `--token`, and `--once` arguments.
 
-5. **Orchestrator Attempt Reuse (`src/harness_core/orchestrator.py`):**
+5. **Orchestrator Attempt Reuse (`harness_core/orchestrator.py`):**
    - Enhanced `execute_task`, `_execute_fast_path`, and `_execute_standard_dag` with optional `lease_info` reuse to avoid creating duplicate attempts on claimed tasks.
 
 ---
@@ -105,9 +105,9 @@ Plan 06-01 implemented the standalone distributed `WorkerDaemon` architecture, s
 
 ## 5. Deviations & In-Scope Bug Fixes
 
-- **Rule 1 (Bug Fix): Dict Task Submission Handling:** `submit_task` in `src/harness_core/db.py` was adapted to accept dictionary inputs directly (in addition to `TaskSubmitRequest` dataclasses) and default dictionary submissions to `QUEUED` so tasks submitted directly in unit test scripts are immediately claimable.
+- **Rule 1 (Bug Fix): Dict Task Submission Handling:** `submit_task` in `harness_core/db.py` was adapted to accept dictionary inputs directly (in addition to `TaskSubmitRequest` dataclasses) and default dictionary submissions to `QUEUED` so tasks submitted directly in unit test scripts are immediately claimable.
 - **Rule 1 (Bug Fix): Monotonic Lease Renewal:** `renew_lease` was updated to guarantee monotonic extension even when renewed with a TTL shorter than the remaining lease duration (`max(now + ttl_seconds, cur_expires + 1)`).
-- **Rule 1 (Bug Fix): Orchestrator Claimed Attempt Reuse:** `execute_task` in `src/harness_core/orchestrator.py` was updated to accept `lease_info` so tasks claimed by `WorkerDaemon` reuse the atomic claim attempt rather than generating a redundant second attempt.
+- **Rule 1 (Bug Fix): Orchestrator Claimed Attempt Reuse:** `execute_task` in `harness_core/orchestrator.py` was updated to accept `lease_info` so tasks claimed by `WorkerDaemon` reuse the atomic claim attempt rather than generating a redundant second attempt.
 - **Rule 1 (Bug Fix): Hermetic REST Client Testing:** Provided a mock `urlopen` dispatcher in `tests/runtime/test_worker_daemon.py` routing directly to `HarnessAPIApp.handle_request`, allowing exhaustive testing of REST serialization, authentication, and HTTP error code translation hermetically within the sandbox.
 
 ---

@@ -10,12 +10,12 @@
 
 ## 1. Accomplishments
 
-1. **Standard Health Checks, Production ASGI Adapter & Graceful Draining (`src/harness_core/server.py`, `src/harness_core/asgi.py`, `src/harness_core/cli.py`):**
+1. **Standard Health Checks, Production ASGI Adapter & Graceful Draining (`harness_core/server.py`, `harness_core/asgi.py`, `harness_core/cli.py`):**
    - Added `start_time` and `is_draining` state tracking to `HarnessAPIApp`.
    - Implemented standard liveness probe `GET /livez` returning HTTP 200 OK with process uptime in seconds and semantic version string.
    - Implemented standard readiness probe `GET /healthz` actively testing database connectivity (`list_workers`), CoW storage filesystem access via canary probe (`.health_canary`), and worker health metrics (heartbeat within 300 seconds).
    - Enforced immediate traffic shedding: when `is_draining` is active, `/healthz` returns HTTP 503 Service Unavailable with `status: draining`, while `/livez` remains 200 OK.
-   - Implemented `HarnessASGIAdapter` in `src/harness_core/asgi.py` implementing the complete ASGI 3.0 specification:
+   - Implemented `HarnessASGIAdapter` in `harness_core/asgi.py` implementing the complete ASGI 3.0 specification:
      - Handles `lifespan` startup (verifying database connectivity) and shutdown (activating task draining).
      - Handles `http` scope with chunked body aggregation, header normalization, query string extraction, and SSE streaming (`stream=true`).
      - Provided factory `get_asgi_app` and module-level `app = get_asgi_app()`.

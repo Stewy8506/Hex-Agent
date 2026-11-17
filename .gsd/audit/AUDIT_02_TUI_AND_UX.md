@@ -1,7 +1,7 @@
 # Deep Fit & Finish Audit: Terminal Cockpit, Visual Polish, Animations & TUI Ergonomics
 
 **Audit Reference:** Hermes Agent (`benchmarks/hermes-agent/ui-tui/`)  
-**Audit Target:** HEX Autonomous AI Workbench (`crates/hex-tui/`, `src/harness_core/tui.py`, `src/harness_core/ui_selector.py`)  
+**Audit Target:** HEX Autonomous AI Workbench (`crates/hex-tui/`, `harness_core/tui.py`, `harness_core/ui_selector.py`)\
 **Audit Scope:** DOMAIN 2 — Terminal Cockpit, Visual Polish, Animations & TUI Ergonomics  
 **Date:** November 2026  
 **Auditor:** GSD Deep Research Agent  
@@ -31,7 +31,7 @@
 - **Flash-Free Boot (`themeBoot.ts#L1-L60`):** Caches the last resolved theme and background color to `~/.hermes/tui-theme-boot.json`. This completely eliminates startup color flicker while awaiting asynchronous OSC-11 terminal background queries or gateway skin synchronization.
 
 #### HEX Target Implementation
-- **Skin Architecture:** Defined in `crates/hex-tui/src/ui/design.rs#L6-L57` and mirrored in Python `src/harness_core/tui.py#L136-L275`. Exports 5 skins:
+- **Skin Architecture:** Defined in `crates/hex-tui/src/ui/design.rs#L6-L57` and mirrored in Python `harness_core/tui.py#L136-L275`. Exports 5 skins:
   1. `AMBER`: Warm gold (`#F59E0B`), bronze shadow, amber border (`#B4762A`), dark surface (`#1C1917`), prompt `⚕`.
   2. `CYBERPUNK`: Neon cyan (`#00F5FF`), magenta (`#F472B6`), slate surface (`#0F172A`), prompt `⚡`.
   3. `MATRIX`: Phosphor emerald (`#34D399`), jade category, deep green surface (`#061C14`), prompt `⌘`.
@@ -84,7 +84,7 @@
   - Input field uses `❯ ` in skin accent color with cycling placeholder prompts (`PROMPTS`) when empty (`input.rs#L74-L84`).
   - Cursor blinking controlled by animation clock `app.animation_frame % 20 < 12` (`input.rs#L97-L100`).
   - Horizontal line scrolling (`input_window` in `input.rs#L106-L136`) with `…` ellipsis when input string exceeds terminal width.
-- **Python CLI Composer (`src/harness_core/tui.py#L1450-L1530`):**
+- **Python CLI Composer (`harness_core/tui.py#L1450-L1530`):**
   - `_read_docked_input` with raw terminal input handling, custom redraw loop (`_redraw`), in-line cursor positioning, and slash command autocompletion.
 - **Fit & Finish Gap:**
   - `hex-tui` does not support multiline input. Pressing Enter immediately submits; Shift+Enter or Ctrl+J does not insert a newline.
@@ -107,7 +107,7 @@
   - 10-frame braille array: `["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]`.
   - 6 rotating status verbs: `["Thinking", "Analyzing", "Exploring", "Formulating", "Reflecting", "Synthesizing"]`.
   - Driven by `AppEvent::Tick` in `main.rs#L303-L305` calling `app.advance_animation()`.
-- **Python CLI Morphing Spinner (`src/harness_core/tui.py#L671-L753`):**
+- **Python CLI Morphing Spinner (`harness_core/tui.py#L671-L753`):**
   - Highly sophisticated `ActivitySpinner` in Python with matrix-like braille shimmer wave transitions (`BRAILLE_SHIMMER`).
   - Seamlessly morphs between phrases (e.g. `Thinking...` -> `Analyzing...`) over a 3.5s display + 0.35s transition duration.
 - **Fit & Finish Gap:**
@@ -230,9 +230,9 @@
 
 ---
 
-### 3.2 Python CLI Viewport Windowing (`src/harness_core/ui_selector.py`)
+### 3.2 Python CLI Viewport Windowing (`harness_core/ui_selector.py`)
 
-- In `src/harness_core/ui_selector.py#L60-L76` and `L138-L186`, HEX has an exemplary terminal windowing implementation for terminal selection prompts:
+- In `harness_core/ui_selector.py#L60-L76` and `L138-L186`, HEX has an exemplary terminal windowing implementation for terminal selection prompts:
   - `_adjust_window`: Clamps the visible window around the active cursor.
   - Overflow indicators: Renders `▲ X more above (↑/k/PgUp)` and `▼ Y more below (↓/j/PgDn)` when options exceed terminal budget.
   - Keyboard mappings (`_UP_KEYS`, `_DOWN_KEYS`, `_PGUP_KEYS`, `_PGDN_KEYS`, `_HOME_KEYS`, `_END_KEYS`).
@@ -260,7 +260,7 @@
   - Typing `/model` displays current model as text.
   - Typing `/model <name>` switches the active string.
   - No dropdown, no fuzzy selection popup, no reasoning effort selector.
-- **Python CLI (`src/harness_core/tui.py#L2013-L2088`):**
+- **Python CLI (`harness_core/tui.py#L2013-L2088`):**
   - If `/model` is typed without arguments in interactive mode, `_cmd_model` dynamically fetches live models via `fetch_available_models(active_provider)`.
   - Presents them using `select_option` from `ui_selector.py` with arrow-key selection.
   - Automatically updates orchestrator router, provider model ID, and saves persistent project overrides.
@@ -307,7 +307,7 @@
   - Formats filenames (`--- a/...` in LightRed, `+++ b/...` in LightGreen).
   - Formats hunks (`@@ -old,count +new,count @@` in Cyan bold).
   - Colorized line types (`DiffLineType::Added` in LightGreen, `DiffLineType::Deleted` in LightRed, `DiffLineType::Context` in DarkGray).
-- **Python CLI Side-by-Side Diff (`src/harness_core/tui.py#L392-L450`):**
+- **Python CLI Side-by-Side Diff (`harness_core/tui.py#L392-L450`):**
   - Includes `render_side_by_side_diff` producing genuine 2-column side-by-side terminal diffs with line numbers, addition markers (`+`), and deletion markers (`-`).
 - **Fit & Finish Gap:**
   - `crates/hex-tui` only renders unified diffs, not side-by-side diffs (even though `/sbs` is in the slash command list!).
@@ -384,11 +384,11 @@
 
 7. **Port Python Shimmer Wave Morphing to Rust Cockpit:**
    - **File:** `crates/hex-tui/src/ui/status_bar.rs` and `design.rs`
-   - **Fix:** Port the 3.5s + 0.35s braille wave morphing transition from `src/harness_core/tui.py#L671-L740` into `hex-tui` for smooth status transitions between "Thinking...", "Analyzing...", and "Synthesizing...".
+   - **Fix:** Port the 3.5s + 0.35s braille wave morphing transition from `harness_core/tui.py#L671-L740` into `hex-tui` for smooth status transitions between "Thinking...", "Analyzing...", and "Synthesizing...".
 
 8. **Side-by-Side Diff Implementation (`/sbs`):**
    - **File:** `crates/hex-tui/src/ui/diff.rs`
-   - **Fix:** Port the two-column diff layout from `src/harness_core/tui.py#L392-L450` into `crates/hex-tui` to provide side-by-side file comparison in split view.
+   - **Fix:** Port the two-column diff layout from `harness_core/tui.py#L392-L450` into `crates/hex-tui` to provide side-by-side file comparison in split view.
 
 9. **Fuzzy Search for Slash Commands:**
    - **File:** `crates/hex-tui/src/app.rs#L641-L655`

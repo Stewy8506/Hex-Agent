@@ -5,7 +5,7 @@
 **Status:** Complete  
 
 ## Accomplishments
-1. **Polyglot Extension Expansion & Symbol Extraction in `src/harness_core/graphify.py`**:
+1. **Polyglot Extension Expansion & Symbol Extraction in `harness_core/graphify.py`**:
    - Expanded `SUPPORTED_CODE_EXTENSIONS` to include Java (`.java`) and C/C++ (`.c`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`) alongside Python, TypeScript/JavaScript, Go, and Rust.
    - Enhanced `_index_polyglot_file` with regex extractors for Java imports, classes/records, methods, and generic calls, and C/C++ includes, classes/structs, functions, and generic calls.
    - Updated `ActiveGraphifyAdapter._is_test_file(rel_path: str) -> bool`:
@@ -26,7 +26,7 @@
    - Maps affected node IDs to their source files across all supported languages and pins affected test files into `impacted_tests`.
    - Generates descriptive warning messages detailing polyglot modified files, 1-hop/2-hop dependents, and impacted tests.
 
-3. **ActiveBlastRadiusInterceptor & ToolGateway R2 Write Hook in `src/harness_core/gateway.py`**:
+3. **ActiveBlastRadiusInterceptor & ToolGateway R2 Write Hook in `harness_core/gateway.py`**:
    - Defined `ActiveBlastRadiusInterceptor` wrapping `ActiveGraphifyAdapter.compute_blast_radius` with `inspect_file_modification(ws_path, rel_p, ...)` filtering on `SUPPORTED_CODE_EXTENSIONS` and returning `BlastRadiusReport | None`.
    - Updated `ToolGateway.invoke` for `write_file`: replaced Python-only check with `Path(rel_p).suffix.lower() in SUPPORTED_CODE_EXTENSIONS`.
    - Attached `ast_blast_radius` to the sanitized tool invocation result.

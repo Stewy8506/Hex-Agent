@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Plan 03-02 completes the security gating, dynamic tool registration, and 0ms call journaling memoization for external Model Context Protocol (MCP) servers. `SkillSecurityScanner` in `src/harness_core/skillspector.py` was extended to validate external MCP manifests and tool schemas against prompt injections, hidden instructions, and semantic misalignment, pinning the manifest's canonical SHA-256 digest. `ToolGateway` in `src/harness_core/gateway.py` integrates `register_mcp_server`, enforcing default-deny policy (R0–R4), secret redaction, and call-level journal memoization. A comprehensive end-to-end test suite in `tests/tools/test_mcp_gateway_journal.py` empirically proves prompt injection quarantine, manifest tampering detection, 0ms memoized replay on simulated crashes, and R0–R4 policy enforcement with 0 subprocess calls on replay.
+Plan 03-02 completes the security gating, dynamic tool registration, and 0ms call journaling memoization for external Model Context Protocol (MCP) servers. `SkillSecurityScanner` in `harness_core/skillspector.py` was extended to validate external MCP manifests and tool schemas against prompt injections, hidden instructions, and semantic misalignment, pinning the manifest's canonical SHA-256 digest. `ToolGateway` in `harness_core/gateway.py` integrates `register_mcp_server`, enforcing default-deny policy (R0–R4), secret redaction, and call-level journal memoization. A comprehensive end-to-end test suite in `tests/tools/test_mcp_gateway_journal.py` empirically proves prompt injection quarantine, manifest tampering detection, 0ms memoized replay on simulated crashes, and R0–R4 policy enforcement with 0 subprocess calls on replay.
 
 ---
 
@@ -131,8 +131,8 @@ OK
 
 | File | Change | Description |
 |------|--------|-------------|
-| `src/harness_core/skillspector.py` | Modified | Added `compute_mcp_manifest_sha256`, `scan_mcp_manifest`, `verify_mcp_manifest_integrity`, and prompt injection rules |
-| `src/harness_core/gateway.py` | Modified | Added `register_mcp_server`, MCP server state pinning, and `_duration_ms`/`_result_sha256` in sealed calls |
+| `harness_core/skillspector.py` | Modified | Added `compute_mcp_manifest_sha256`, `scan_mcp_manifest`, `verify_mcp_manifest_integrity`, and prompt injection rules |
+| `harness_core/gateway.py` | Modified | Added `register_mcp_server`, MCP server state pinning, and `_duration_ms`/`_result_sha256` in sealed calls |
 | `tests/tools/test_mcp_gateway_journal.py` | Created | Comprehensive 10-test verification suite for MCP security gate, 0ms replay, and policy enforcement |
 
 ---
