@@ -62,8 +62,8 @@ test = [
 ]
 
 [project.scripts]
-hex = "harness_core.client.cli:main"
-harness = "harness_core.client.cli:main"
+hex = "harness_core.client.cli:entrypoint"
+harness = "harness_core.client.cli:entrypoint"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

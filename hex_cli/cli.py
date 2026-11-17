@@ -21,18 +21,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from harness_core import __version__
-from harness_core.core.models import TaskSubmitRequest
-from harness_core.core.orchestrator import HarnessOrchestrator
-from harness_core.client.server import run_http_server
 
+if TYPE_CHECKING:
+    from harness_core.core.orchestrator import HarnessOrchestrator
+
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_DIR = Path.home() / ".hex" / "data"
 
@@ -48,8 +51,18 @@ def seed_default_skills(orch: HarnessOrchestrator, repo_root: Path) -> list[dict
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the CLI without replacing an embedding caller's process."""
+    return _run_main(argv, process_handoff=False)
+
+
+def entrypoint() -> int:
+    """Real command-line entry; interactive native launches may replace Python."""
+    return _run_main(None, process_handoff=True)
+
+
+def _run_main(argv: list[str] | None, *, process_handoff: bool) -> int:
     try:
-        return _main_impl(argv)
+        return _main_impl(argv, process_handoff=process_handoff)
     except KeyboardInterrupt:
         print("\n\x1b[90m[Interrupted by user]\x1b[0m")
         return 130
@@ -540,9 +553,11 @@ def _maybe_first_run_setup(args: Any, *, force_interactive: bool) -> None:
 
     if args.cmd not in (None, "chat", "voice", "tui"):
         return
-    if has_active_credentials():
-        return
     if not (sys.stdin.isatty() or force_interactive) or getattr(args, "quiet", False):
+        return
+    # Credential discovery imports provider implementations; only pay that
+    # cost when this route can actually offer interactive setup.
+    if has_active_credentials():
         return
 
     print("\n◈ Welcome to HEX. No model provider or API key was detected.")
@@ -572,7 +587,7 @@ def _maybe_first_run_setup(args: Any, *, force_interactive: bool) -> None:
     load_hex_environment(config_dir=cfg_dir, override=True)
 
 
-def _main_impl(argv: list[str] | None = None) -> int:
+def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) -> int:
     env_data_dir = os.environ.get("HEX_DATA_DIR") or os.environ.get("HARNESS_DATA_DIR")
     default_dir = env_data_dir
     if not default_dir:
@@ -661,6 +676,61 @@ def _main_impl(argv: list[str] | None = None) -> int:
         repo_candidate = Path(__file__).resolve().parents[2]
     repo_root = repo_candidate if (repo_candidate / "pyproject.toml").is_file() else Path.cwd()
 
+    if args.cmd == "acp":
+        from harness_core.client.acp import ACPServer
+
+        ws = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd().resolve()
+        # Keep the old CLI's enclosing-project environment, but not its registry
+        # writes or unused orchestrator. ACP itself still owns cwd/--workspace
+        # and lazily creates its backend in <workspace>/.hex/data.
+        config_workspace = repo_root
+        if getattr(args, "workspace", None):
+            config_workspace = ws
+        else:
+            home = Path.home().resolve()
+            for candidate in (ws, *ws.parents):
+                if (candidate / ".git").is_dir() or (
+                    (candidate / ".hex").is_dir() and candidate != home
+                ):
+                    config_workspace = candidate
+                    break
+        load_hex_environment(workspace_root=config_workspace, override=True)
+        if getattr(args, "base_url", None):
+            os.environ["HEX_CLOUD_BASE_URL"] = str(args.base_url).strip().rstrip("/")
+
+        if getattr(args, "check", False):
+            print("\n🔍 HEX ACP Health Check")
+            print("=" * 40)
+            print("  ✓ ACP Module:        Loaded (JSON-RPC 2.0 stdio)")
+            print("  ✓ Python Runtime:    OK")
+            print("  ✓ Stdio Transport:   Ready")
+            print(f"  ✓ Workspace Root:    {ws}")
+            print("  ✓ Compatible with:   Zed, Neovim (avante.nvim/codecompanion), VSCode\n")
+            return 0
+
+        if getattr(args, "setup", False):
+            zed_config = {
+                "agent": {
+                    "name": "HEX",
+                    "command": "hex",
+                    "args": ["acp"],
+                    "protocol": "acp",
+                }
+            }
+            print("\n⚙️  HEX Editor Integration Snippets")
+            print("=" * 60)
+            print("Add to your Zed editor configuration (.zed/settings.json):")
+            print(json.dumps(zed_config, indent=2))
+            print("\nFor Neovim (avante.nvim / codecompanion):")
+            print('  provider = "acp",')
+            print('  acp_command = { "hex", "acp" },')
+            print("=" * 60 + "\n")
+            return 0
+
+        server = ACPServer(workspace_root=ws)
+        server.run_stdio()
+        return 0
+
     is_test_runner = _is_test_runner()
     force_interactive = bool(os.environ.get("HEX_FORCE_INTERACTIVE"))
 
@@ -681,6 +751,15 @@ def _main_impl(argv: list[str] | None = None) -> int:
     if launch_rust:
         from harness_core.client.tui_launcher import launch_hex_tui
         try:
+            if (
+                process_handoff
+                and os.name == "posix"
+                and not is_test_runner
+                and not getattr(args, "check", False)
+                and sys.stdin.isatty()
+                and sys.stdout.isatty()
+            ):
+                return launch_hex_tui(args, repo_root, process_handoff=True)
             return launch_hex_tui(args, repo_root)
         except Exception as exc:
             logger.warning(
@@ -766,6 +845,8 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
     if ws_root:
         load_hex_environment(workspace_root=ws_root, override=True)
+
+    from harness_core.core.orchestrator import HarnessOrchestrator
 
     orch = HarnessOrchestrator(bound_data_dir, default_workspace=ws_root)
 
@@ -859,10 +940,13 @@ def _main_impl(argv: list[str] | None = None) -> int:
                 return 0
             except ImportError:
                 print("uvicorn not installed; falling back to built-in HTTP server with GracefulServerRunner")
+        from harness_core.client.server import run_http_server
+
         run_http_server(orch, host=args.host, port=args.port, drain_timeout=args.drain_timeout)
         return 0
 
     if args.cmd in ("run", "exec"):
+        from harness_core.core.models import TaskSubmitRequest
         from harness_core.capabilities.git_autopilot import GitAutopilot, GitAutopilotConfig
 
         ws_root = Path(args.workspace).resolve() if getattr(args, "workspace", None) else ws_root
@@ -975,6 +1059,8 @@ def _main_impl(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "submit":
+        from harness_core.core.models import TaskSubmitRequest
+
         if active_project:
             registry.touch_active(ws_root)
         task_project_id = active_project.id if active_project and args.project == "default" else args.project
@@ -1898,43 +1984,6 @@ def _main_impl(argv: list[str] | None = None) -> int:
                 print(f"Interactive architecture tree HTML generated: {out_file}")
             return 0
 
-    if args.cmd == "acp":
-        from harness_core.client.acp import ACPServer
-
-        if getattr(args, "check", False):
-            print("\n🔍 HEX ACP Health Check")
-            print("=" * 40)
-            print("  ✓ ACP Module:        Loaded (JSON-RPC 2.0 stdio)")
-            print("  ✓ Python Runtime:    OK")
-            print("  ✓ Stdio Transport:   Ready")
-            print(f"  ✓ Workspace Root:    {Path(args.workspace).resolve() if getattr(args, 'workspace', None) else Path.cwd().resolve()}")
-            print("  ✓ Compatible with:   Zed, Neovim (avante.nvim/codecompanion), VSCode\n")
-            return 0
-
-        if getattr(args, "setup", False):
-            zed_config = {
-                "agent": {
-                    "name": "HEX",
-                    "command": "hex",
-                    "args": ["acp"],
-                    "protocol": "acp",
-                }
-            }
-            print("\n⚙️  HEX Editor Integration Snippets")
-            print("=" * 60)
-            print("Add to your Zed editor configuration (.zed/settings.json):")
-            print(json.dumps(zed_config, indent=2))
-            print("\nFor Neovim (avante.nvim / codecompanion):")
-            print('  provider = "acp",')
-            print('  acp_command = { "hex", "acp" },')
-            print("=" * 60 + "\n")
-            return 0
-
-        ws = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd().resolve()
-        server = ACPServer(workspace_root=ws)
-        server.run_stdio()
-        return 0
-
     if args.cmd == "ps":
         from harness_core.runtime.process_registry import get_process_registry
         registry = get_process_registry()
@@ -2142,4 +2191,4 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(entrypoint())

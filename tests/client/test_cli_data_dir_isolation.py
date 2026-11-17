@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from harness_core.client import cli
+from harness_core.core import orchestrator
 
 
 from tests import REPO_ROOT
@@ -22,14 +23,14 @@ from tests import REPO_ROOT
 
 def _run_capturing_data_dir(argv: list[str]) -> tuple[int, Path | None]:
     captured: dict[str, Path] = {}
-    real_orchestrator = cli.HarnessOrchestrator
+    real_orchestrator = orchestrator.HarnessOrchestrator
 
     def spy(data_dir, *args, **kwargs):
         captured["data_dir"] = Path(str(data_dir)).resolve()
         return real_orchestrator(data_dir, *args, **kwargs)
 
     out = io.StringIO()
-    with patch.object(cli, "HarnessOrchestrator", spy), patch("sys.stdout", out):
+    with patch.object(orchestrator, "HarnessOrchestrator", spy), patch("sys.stdout", out):
         code = cli.main(argv)
     return code, captured.get("data_dir")
 

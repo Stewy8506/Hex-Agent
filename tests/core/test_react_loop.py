@@ -677,7 +677,7 @@ class TestCLIReActFlags(unittest.TestCase):
 
     def test_cli_top_level_react_flag(self) -> None:
         with patch("harness_core.client.tui.HexConsole") as mock_console_cls, \
-             patch("harness_core.client.cli.HarnessOrchestrator"):
+             patch("harness_core.core.orchestrator.HarnessOrchestrator"):
             mock_inst = MagicMock()
             mock_inst.start.return_value = 0
             mock_console_cls.return_value = mock_inst
@@ -690,7 +690,7 @@ class TestCLIReActFlags(unittest.TestCase):
 
     def test_cli_chat_react_flag(self) -> None:
         with patch("harness_core.client.tui.HexConsole") as mock_console_cls, \
-             patch("harness_core.client.cli.HarnessOrchestrator"):
+             patch("harness_core.core.orchestrator.HarnessOrchestrator"):
             mock_inst = MagicMock()
             mock_inst.start.return_value = 0
             mock_console_cls.return_value = mock_inst
@@ -711,7 +711,7 @@ class TestCLIReActFlags(unittest.TestCase):
             "turns": [],
         }
 
-        with patch("harness_core.client.cli.HarnessOrchestrator", return_value=mock_orch):
+        with patch("harness_core.core.orchestrator.HarnessOrchestrator", return_value=mock_orch):
             code = cli_main(["run", "--react", "Test autonomous goal"])
             self.assertEqual(code, 0)
             mock_orch.run_agent_loop.assert_called_once()

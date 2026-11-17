@@ -203,12 +203,15 @@ def build_tui_cmd_args(args: Any, bin_path: Path) -> List[str]:
     return cmd
 
 
-def launch_hex_tui(args: Any, repo_root: Optional[Path] = None) -> int:
+def launch_hex_tui(
+    args: Any, repo_root: Optional[Path] = None, *, process_handoff: bool = False
+) -> int:
     """Locate the installed hex-tui and execute it.
 
     A source build happens only when explicitly requested (--build or
     HEX_DEV_BUILD=1); a missing installation is an honest error, not an
-    implicit cargo rescue (F03 install contract).
+    implicit cargo rescue (F03 install contract). The real interactive CLI may
+    opt into a non-returning POSIX exec; all other callers default to subprocess.
     """
     root = repo_root or find_repo_root()
     release_mode = bool(getattr(args, "release", False))
@@ -231,6 +234,10 @@ def launch_hex_tui(args: Any, repo_root: Optional[Path] = None) -> int:
     if hasattr(sys, "base_prefix") and sys.prefix != sys.base_prefix:
         env["VIRTUAL_ENV"] = sys.prefix
 
-    # If --check is passed, print or forward exit code
+    # Only the real interactive CLI opts in; checks and library calls retain
+    # their returning subprocess contract, as does Windows.
+    if process_handoff and os.name == "posix" and not getattr(args, "check", False):
+        os.execve(str(bin_path), cmd, env)
+
     result = subprocess.run(cmd, env=env, check=False)
     return result.returncode

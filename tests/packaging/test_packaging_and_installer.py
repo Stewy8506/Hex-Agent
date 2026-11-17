@@ -126,6 +126,22 @@ class TestPackagingAndVendorResolution(unittest.TestCase):
         self.assertIn(".venv\\Scripts\\python.exe", bat_content)
         self.assertIn("harness_core.client.cli", bat_content)
 
+    def test_console_script_targets_load_the_real_cli_entrypoint(self) -> None:
+        from importlib.metadata import EntryPoint
+        from harness_core.client import cli
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        with (REPO_ROOT / "pyproject.toml").open("rb") as manifest:
+            scripts = tomllib.load(manifest)["project"]["scripts"]
+        for name in ("hex", "harness"):
+            with self.subTest(script=name):
+                entry = EntryPoint(name=name, value=scripts[name], group="console_scripts")
+                self.assertIs(entry.load(), cli.entrypoint)
+                self.assertIsNot(entry.load(), cli.main)
+
     def test_built_wheel_structure(self) -> None:
         """Wheel in dist/ contains all required package data (migrations, skills, console scripts)."""
         dist_dir = REPO_ROOT / "dist"
@@ -165,8 +181,8 @@ class TestPackagingAndVendorResolution(unittest.TestCase):
             entry_point_files = [n for n in namelist if n.endswith("entry_points.txt")]
             self.assertTrue(len(entry_point_files) > 0)
             entry_points_text = zf.read(entry_point_files[0]).decode("utf-8")
-            self.assertIn("hex = harness_core.client.cli:main", entry_points_text)
-            self.assertIn("harness = harness_core.client.cli:main", entry_points_text)
+            self.assertIn("hex = harness_core.client.cli:entrypoint", entry_points_text)
+            self.assertIn("harness = harness_core.client.cli:entrypoint", entry_points_text)
 
 
 if __name__ == "__main__":

@@ -444,7 +444,7 @@ class TestCliScheduleAndDaemon(unittest.TestCase):
         scheduler.save_jobs([job])
 
         out = io.StringIO()
-        with patch("sys.stdout", out), patch("harness_core.client.cli.HarnessOrchestrator") as mock_orch_cls:
+        with patch("sys.stdout", out), patch("harness_core.core.orchestrator.HarnessOrchestrator") as mock_orch_cls:
             mock_orch = MagicMock()
             mock_orch.submit_and_run.return_value = {
                 "task_id": "tsk_cli_test",
