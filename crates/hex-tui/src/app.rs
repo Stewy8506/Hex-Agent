@@ -606,6 +606,7 @@ pub struct App {
     // timers of their own, which keeps redraw cost predictable.
     pub animation_frame: u64,
     pub session_started: Instant,
+    pub screen_transition_started: Option<Instant>,
 
     // Mouse hover tracking and animated transitions
     pub mouse_pos: Option<(u16, u16)>,
@@ -1417,6 +1418,7 @@ impl App {
             active_diagnostic: None,
             animation_frame: 0,
             session_started: Instant::now(),
+            screen_transition_started: None,
 
             mouse_pos: None,
             hovered_resume_row: None,
@@ -1443,7 +1445,7 @@ impl App {
 
     /// Add a user message to dialogue history.
     pub fn add_user_message(&mut self, content: &str) {
-        self.screen_state = ScreenState::Session;
+        self.switch_screen(ScreenState::Session);
         self.dialogue_items.push(DialogueItem::Message(MessageItem {
             role: Role::User,
             content: content.to_string(),
@@ -1455,7 +1457,7 @@ impl App {
 
     /// Add an assistant response message to dialogue history.
     pub fn add_assistant_message(&mut self, content: &str) {
-        self.screen_state = ScreenState::Session;
+        self.switch_screen(ScreenState::Session);
         let plan_source = if self.transcript_store.is_some() {
             let mut end = content.len().min(crate::history::MESSAGE_DISPLAY_BYTES);
             while !content.is_char_boundary(end) { end -= 1; }
@@ -1755,7 +1757,7 @@ impl App {
         self.dialogue_metrics.set((0, 0));
         self.dialogue_entrance.set((0, None));
         self.session_id = session_id.to_string();
-        self.screen_state = ScreenState::Session;
+        self.switch_screen(ScreenState::Session);
         self.focus = Focus::Input;
         self.pending_delete_index = None;
         if items.is_empty() {
@@ -2050,7 +2052,7 @@ impl App {
         duration_ms: Option<u64>,
         status: Option<&str>,
     ) {
-        self.screen_state = ScreenState::Session;
+        self.switch_screen(ScreenState::Session);
         let mut item = ToolCallItem {
             id: id.to_string(),
             tool: tool.to_string(),
@@ -2152,7 +2154,7 @@ impl App {
 
     /// Load unified diff text into state and parse it.
     pub fn load_diff(&mut self, diff_text: &str) {
-        self.screen_state = ScreenState::Session;
+        self.switch_screen(ScreenState::Session);
         self.diff_transcript_id = None;
         if self.transcript_store.is_some() && (diff_text.len() > crate::history::MESSAGE_DISPLAY_BYTES || diff_text.lines().take(513).count() > 512) {
             let stored = if self.transcript_error.is_none() {
@@ -2515,7 +2517,7 @@ impl App {
             return None;
         }
 
-        self.screen_state = ScreenState::Session;
+        self.switch_screen(ScreenState::Session);
         self.suggestion_index = self.suggestion_index.wrapping_add(1);
         self.command_history.push(trimmed.clone());
         self.history_index = None;
@@ -2529,7 +2531,14 @@ impl App {
     }
 
     pub fn switch_screen(&mut self, screen: ScreenState) {
-        self.screen_state = screen;
+        if self.screen_state != screen {
+            self.screen_transition_started = if screen == ScreenState::Session {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            self.screen_state = screen;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2688,6 +2697,10 @@ impl App {
         use crate::ui::animation::{MAX_ENTRANCE_BLOCKS, RISE_MS, RISE_STAGGER_MS};
         let (settled, born_at) = self.dialogue_entrance.get();
         let now = std::time::Instant::now();
+        if self.screen_transition_started.is_some() {
+            self.dialogue_entrance.set((len, None));
+            return (len, now);
+        }
         let Some(born) = born_at else {
             if len > settled {
                 self.dialogue_entrance.set((settled, Some(now)));
@@ -2711,6 +2724,11 @@ impl App {
 
     pub fn advance_animation(&mut self) {
         self.animation_frame = self.animation_frame.wrapping_add(1);
+        if self.screen_transition_started.is_some_and(|started| {
+            started.elapsed() >= std::time::Duration::from_millis(crate::ui::animation::SCREEN_REVEAL_MS)
+        }) {
+            self.screen_transition_started = None;
+        }
 
         let visible_sessions = self.resume_visible_count();
         let (window_offset, _) = self.resume_window();

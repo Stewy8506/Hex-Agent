@@ -97,12 +97,20 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         }
     }
 
+    let reveal = if anim.is_reduced() {
+        1.0
+    } else {
+        app.screen_transition_started.map_or(1.0, |started| {
+            crate::ui::animation::screen_reveal_factor(started.elapsed())
+        })
+    };
     // Render Left Canvas
-    render_left_canvas(app, theme, anim, h_chunks[0], buf);
+    render_left_canvas(app, theme, anim, reveal, h_chunks[0], buf);
 
     // Render Right Rail
     if show_rail {
         right_rail::render(app, theme, anim, h_chunks[2], buf);
+        crate::ui::animation::apply_screen_reveal(h_chunks[2], reveal, buf);
     }
 }
 
@@ -162,7 +170,7 @@ fn truncate_middle(text: &str, max: usize) -> String {
     format!("…{tail}")
 }
 
-fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, buf: &mut Buffer) {
+fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, reveal: f32, area: Rect, buf: &mut Buffer) {
     // Vertical split for canvas:
     // 1. Scrollable Transcript & Activity Stream (Flexible)
     // 2. Message Composer Box (5 rows: border, pad, content, pad, border)
@@ -224,6 +232,8 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
             );
         }
     }
+
+    crate::ui::animation::apply_screen_reveal(stream_area, reveal, buf);
 
     // ─────────────────────────────────────────────
     // 3. Message Composer Box

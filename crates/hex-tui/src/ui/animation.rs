@@ -25,6 +25,7 @@ pub const BRAILLE_FRAMES: [&str; 10] = [
 
 /// Mockup `.ln`: `animation: rise .6s cubic-bezier(.2,.7,.2,1) forwards`.
 pub const RISE_MS: u64 = 600;
+pub const SCREEN_REVEAL_MS: u64 = 240;
 /// Per-line entrance delay, so a block settles in reading order.
 pub const RISE_STAGGER_MS: u64 = 120;
 /// A resumed transcript settles at once; only the newest blocks rise.
@@ -222,6 +223,79 @@ pub fn apply_top_fade(area: ratatui::layout::Rect, fade_rows: u16, bg_color: Col
             let fg = cell.fg;
             cell.set_fg(interpolate_color(bg_color, fg, factor));
         }
+    }
+}
+
+pub fn screen_reveal_factor(age: Duration) -> f32 {
+    if age >= Duration::from_millis(SCREEN_REVEAL_MS) {
+        return 1.0;
+    }
+    let t = age.as_secs_f32() / (SCREEN_REVEAL_MS as f32 / 1000.0);
+    // A normalized critically damped response settles without overshoot or a hard stop.
+    let response = (1.0 - (1.0 + 8.0 * t) * (-8.0 * t).exp()) / (1.0 - 9.0 * (-8.0_f32).exp());
+    0.6 + 0.4 * response.clamp(0.0, 1.0)
+}
+
+pub fn apply_screen_reveal(area: ratatui::layout::Rect, factor: f32, buf: &mut ratatui::buffer::Buffer) {
+    if factor >= 1.0 {
+        return;
+    }
+    let area = area.intersection(buf.area);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            if cell.symbol() != " " {
+                cell.set_fg(reveal_color(cell.fg, cell.bg, factor.clamp(0.0, 1.0)));
+            }
+        }
+    }
+}
+
+fn indexed_rgb(index: u8) -> (u8, u8, u8) {
+    if index >= 232 {
+        let value = 8 + (index - 232) * 10;
+        (value, value, value)
+    } else {
+        let levels = [0, 95, 135, 175, 215, 255];
+        let index = index - 16;
+        (
+            levels[(index / 36) as usize],
+            levels[(index / 6 % 6) as usize],
+            levels[(index % 6) as usize],
+        )
+    }
+}
+
+fn cube_level(value: u8) -> u8 {
+    match value {
+        0..=47 => 0,
+        48..=114 => 1,
+        115..=154 => 2,
+        155..=194 => 3,
+        195..=234 => 4,
+        _ => 5,
+    }
+}
+
+fn reveal_color(fg: Color, bg: Color, factor: f32) -> Color {
+    match (fg, bg) {
+        (Color::Rgb(..), Color::Rgb(..)) => interpolate_color(bg, fg, factor),
+        (Color::Indexed(f), Color::Indexed(b)) if f >= 16 && b >= 16 => {
+            let foreground = indexed_rgb(f);
+            let background = indexed_rgb(b);
+            let mix = |a: u8, b: u8| (b as f32 + (a as f32 - b as f32) * factor).round() as u8;
+            let (r, g, b) = (
+                mix(foreground.0, background.0),
+                mix(foreground.1, background.1),
+                mix(foreground.2, background.2),
+            );
+            if f >= 232 {
+                Color::Indexed(232 + ((r as f32 - 8.0) / 10.0).round().clamp(0.0, 23.0) as u8)
+            } else {
+                Color::Indexed(16 + cube_level(r) * 36 + cube_level(g) * 6 + cube_level(b))
+            }
+        }
+        _ => fg,
     }
 }
 
