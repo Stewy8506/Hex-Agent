@@ -14,13 +14,18 @@ from __future__ import annotations
 
 import ast
 import io
-import re
+import sys
 import tokenize
 import warnings
 from bisect import bisect_right
 from collections import OrderedDict
 from collections.abc import Callable
 from threading import Lock
+
+if sys.version_info < (3, 11):
+    import regex as re
+else:
+    import re
 
 from skillspector.python_ast import MAX_PYTHON_AST_SOURCE_CHARS
 

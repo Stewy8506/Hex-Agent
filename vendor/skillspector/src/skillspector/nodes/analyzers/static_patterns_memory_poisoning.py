@@ -24,9 +24,13 @@ Framework: ASI06, AML.T0080.
 
 from __future__ import annotations
 
-import re
 import sys
 from collections.abc import Iterator
+
+if sys.version_info < (3, 11):
+    import regex as re
+else:
+    import re
 
 from skillspector.logging_config import get_logger
 from skillspector.models import AnalyzerFinding, Location, Severity

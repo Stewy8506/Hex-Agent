@@ -16,12 +16,15 @@ import unicodedata
 from array import array
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import lru_cache
 from io import StringIO
-from typing import NotRequired
 
-from typing_extensions import TypedDict
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
+
+from typing_extensions import NotRequired, TypedDict
 
 from skillspector.unicode_confusables import ASCII_CONFUSABLE_SKELETON
 

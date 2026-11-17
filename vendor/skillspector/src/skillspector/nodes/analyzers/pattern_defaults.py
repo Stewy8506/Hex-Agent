@@ -17,7 +17,10 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
 
 
 # Pattern category for tagging findings (static pattern analyzers)

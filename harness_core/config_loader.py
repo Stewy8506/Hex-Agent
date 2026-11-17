@@ -584,7 +584,10 @@ def load_retention_config(workspace_root: Path | str | None = None) -> dict[str,
         try:
             if p.suffix == ".toml":
                 try:
-                    import tomllib  # type: ignore[import-not-found]
+                    try:
+                        import tomllib
+                    except ModuleNotFoundError:
+                        import tomli as tomllib
                     content = p.read_bytes()
                     data = tomllib.loads(content.decode("utf-8"))
                     ret = data.get("retention")

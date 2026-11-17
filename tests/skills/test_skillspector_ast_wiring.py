@@ -54,6 +54,25 @@ class TestSkillSpectorASTWiring(unittest.TestCase):
         """Verify upstream AST analyzer from vendor/skillspector is imported cleanly."""
         self.assertTrue(UPSTREAM_AST_AVAILABLE, "UPSTREAM_AST_AVAILABLE should be True")
 
+    def test_paragraph_matching_accepts_compiled_patterns(self) -> None:
+        import re
+
+        from skillspector.nodes.analyzers import static_runner
+
+        content = "needle\n\nNEEDLE\n\nother"
+        patterns = (
+            "(?i)needle",
+            re.compile("needle", re.IGNORECASE),
+            static_runner.re.compile("needle", static_runner.re.IGNORECASE),
+        )
+        for pattern in patterns:
+            with self.subTest(pattern=pattern):
+                matches = list(static_runner.iter_paragraph_matches(pattern, content))
+                self.assertEqual([match.group() for match in matches], ["needle", "NEEDLE"])
+
+        with self.assertRaises(ValueError):
+            list(static_runner.iter_paragraph_matches(patterns[1], content, re.IGNORECASE))
+
     def test_ast_detects_eval_and_exec(self) -> None:
         """Verify AST analyzer detects eval() and exec() dangerous builtins."""
         code = (

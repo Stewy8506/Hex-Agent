@@ -91,11 +91,14 @@ def run_first_task_verification(
             provider.rollback_workspace(ws_dir, snap.snapshot_path)
             if dirty.exists():
                 raise RuntimeError("rollback did not remove the dirty probe file")
-            if (ws_dir / "marker.txt").read_text(encoding="utf-8") != "hex-first-task-seed":
+            verified_marker = (ws_dir / "marker.txt").read_text(encoding="utf-8")
+            if verified_marker != "hex-first-task-seed":
                 raise RuntimeError("rollback did not restore the seed marker content")
         finally:
             provider.discard_snapshot(snap.snapshot_path)
             shutil.rmtree(seed_dir, ignore_errors=True)
+        # Overlay cleanup unmounts the clone; retain its verified diagnostic marker.
+        (ws_dir / "marker.txt").write_text(verified_marker, encoding="utf-8")
         record("cow_isolation", "passed", f"Clone, write isolation, and rollback verified via {cow_backend}")
     except Exception as exc:
         record("cow_isolation", "failed", f"{type(exc).__name__}: {exc}")

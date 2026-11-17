@@ -33,9 +33,13 @@ from bisect import bisect_right
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from enum import StrEnum
 from threading import RLock
 from uuid import uuid4
+
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
 
 # Keep this in sync with the existing static-analyzer size gate.  It lives here
 # so prewarming does not parse files that AST consumers will skip anyway.

@@ -37,16 +37,24 @@ import functools
 import io
 import json
 import os
-import re
 import shlex
 import sys
 import time
-import tomllib
 from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
+
+if sys.version_info < (3, 11):
+    import regex as re
+else:
+    import re
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.version import InvalidVersion, Version

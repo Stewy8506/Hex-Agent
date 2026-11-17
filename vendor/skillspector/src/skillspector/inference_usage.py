@@ -16,7 +16,7 @@ import re
 import threading
 import weakref
 from collections.abc import Mapping, Sequence
-from typing import NotRequired, TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult

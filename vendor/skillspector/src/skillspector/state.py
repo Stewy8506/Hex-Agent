@@ -22,9 +22,9 @@ import operator
 import os
 from dataclasses import dataclass, field
 from time import monotonic
-from typing import Annotated, NotRequired
+from typing import Annotated
 
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from skillspector.artifacts import ArtifactRecord, BundleReference
 from skillspector.inference_usage import InferenceUsageRecord

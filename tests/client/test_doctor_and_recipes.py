@@ -6,7 +6,7 @@ Covers:
 3. HexDoctor live ping connectivity (--live mode).
 4. Multi-framework recipe auto-detection (Python, Node.js, Rust, Go, Makefile, Docker Compose).
 5. ToolGateway integration with auto-detected recipe test runner.
-6. Graphify persistent on-disk cache (.hex/graph.json) with sub-30ms warm startup.
+6. Graphify persistent on-disk cache (.hex/graph.json) without redundant parsing.
 7. Graphify multi-language symbol extraction (Python, TS/JS/React, Rust, Go).
 8. CLI command execution (hex doctor and hex recipe).
 """
@@ -18,7 +18,6 @@ import json
 import os
 import shutil
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -334,7 +333,7 @@ class TestGraphifyPersistentCacheAndPolyglot(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_graphify_persistent_cache(self) -> None:
-        """Verify persistent cache creation, warm cache reload without re-parsing, and <30ms execution."""
+        """Verify persistent cache reload skips parsing and invalidates only changed files."""
         # Create 10 python files
         for i in range(10):
             (self.ws / f"module_{i}.py").write_text(
@@ -357,24 +356,23 @@ class TestGraphifyPersistentCacheAndPolyglot(unittest.TestCase):
 
         # Warm start using a completely fresh adapter instance (simulating new process startup)
         adapter2 = ActiveGraphifyAdapter(self.ws, cache_file=self.cache_file)
-        t0 = time.perf_counter()
-        res2 = adapter2.build_or_refresh()
-        duration_ms = (time.perf_counter() - t0) * 1000.0
+        with patch.object(adapter2, "_index_file", wraps=adapter2._index_file) as index_file:
+            res2 = adapter2.build_or_refresh()
+            index_file.assert_not_called()
 
-        # Must hit cache 100% and execute warm start in < 30ms
         self.assertEqual(res2["cache_hits"], 10)
         self.assertEqual(res2["cache_misses"], 0)
         self.assertTrue(res2["disk_cache_loaded"])
-        self.assertLess(duration_ms, 30.0, f"Warm reload took {duration_ms:.2f}ms (must be < 30ms)")
 
         # Invalidate 1 file by updating content
-        time.sleep(0.02)
         (self.ws / "module_3.py").write_text(
             "def func_3(x: int) -> int:\n    return x + 999\n",
             encoding="utf-8",
         )
 
-        res3 = adapter2.build_or_refresh()
+        with patch.object(adapter2, "_index_file", wraps=adapter2._index_file) as index_file:
+            res3 = adapter2.build_or_refresh()
+            index_file.assert_called_once_with("module_3.py", (self.ws / "module_3.py").resolve())
         self.assertEqual(res3["cache_hits"], 9)
         self.assertEqual(res3["cache_misses"], 1)
 

@@ -162,6 +162,40 @@ webhooks:
         self.assertEqual(provider_check["status"], "skipped")
         self.assertGreater(res.get("chain_verified_events", 0), 0)
 
+    def test_first_task_verification_preserves_marker_after_overlay_cleanup(self) -> None:
+        from unittest.mock import patch
+
+        from harness_core.storage.cow import OverlayFSSnapshotProvider
+
+        provider = OverlayFSSnapshotProvider(
+            self.root / "data" / "cow_snapshots", simulate=True, mode="fuse",
+        )
+        real_unmount = provider._unmount
+
+        def unmount(merged):
+            real_unmount(merged)
+            for entry in Path(merged).iterdir():
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+
+        with patch(
+            "harness_core.storage.cow.get_default_snapshot_provider", return_value=provider,
+        ), patch.object(provider, "_unmount", side_effect=unmount) as unmount_mock:
+            res = run_first_task_verification(
+                config_dir=self.root,
+                target_dir=self.root / "ft_overlay",
+            )
+
+        self.assertEqual(res["status"], "passed")
+        self.assertEqual(unmount_mock.call_count, 2)
+        self.assertFalse(provider._active_mounts)
+        workspace = Path(res["cow_workspace"])
+        self.assertEqual((workspace / "marker.txt").read_text(encoding="utf-8"), "hex-first-task-seed")
+        self.assertTrue((workspace / ".hex_workspace").is_file())
+        self.assertFalse((workspace / "dirty_probe.txt").exists())
+
     def test_first_task_verification_fails_when_required_tool_missing(self) -> None:
         """Missing git must fail the beat honestly instead of reporting PASS."""
         from unittest.mock import patch

@@ -22,10 +22,14 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import InitVar, dataclass, field
-from enum import StrEnum
 from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol
 from uuid import uuid4
+
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
 
 if TYPE_CHECKING:
     from skillspector.state import SkillspectorState

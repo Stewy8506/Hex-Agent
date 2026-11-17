@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Mapping
-from enum import StrEnum
 from hashlib import sha256
-from typing import Final, NotRequired, cast
+from typing import Final, cast
 
-from typing_extensions import TypedDict
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
+
+from typing_extensions import NotRequired, TypedDict
 
 logger = logging.getLogger(__name__)
 

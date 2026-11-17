@@ -26,13 +26,17 @@ from __future__ import annotations
 
 import ast
 import heapq
-import re
 import sys
 import time
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from hashlib import sha256
+
+if sys.version_info < (3, 11):
+    import regex as re
+else:
+    import re
 
 from skillspector.artifacts import (
     SecurityTextView,

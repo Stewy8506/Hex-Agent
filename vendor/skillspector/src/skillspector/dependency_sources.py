@@ -15,11 +15,15 @@ import os
 import re
 import shlex
 import time
-import tomllib
 import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 from skillspector.inspection_ledger import MAX_FINDING_OUTPUT_RECORDS, LedgerReason
 from skillspector.logging_config import get_logger

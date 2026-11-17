@@ -21,7 +21,7 @@ import inspect
 import json
 import math
 import os
-import re
+import sys
 import time
 import unicodedata
 from array import array
@@ -32,6 +32,11 @@ from dataclasses import dataclass, field
 from inspect import getattr_static
 from itertools import chain
 from typing import cast
+
+if sys.version_info < (3, 11):
+    import regex as re
+else:
+    import re
 
 from skillspector.artifacts import (
     ContentKind,
@@ -329,7 +334,12 @@ def iter_paragraph_matches(
     pattern: str | re.Pattern[str], content: str, flags: int = 0
 ) -> Iterator[re.Match[str]]:
     """Match prose within paragraphs; executable and structured rules use finditer."""
-    regex = re.compile(pattern, flags)
+    if isinstance(pattern, str):
+        regex = re.compile(pattern, flags)
+    else:
+        if flags:
+            raise ValueError("cannot process flags argument with a compiled pattern")
+        regex = pattern
     ranges = _paragraph_ranges(content)
     if not ranges:
         yield from regex.finditer(content)
