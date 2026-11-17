@@ -1,5 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -13,6 +14,138 @@ use super::style::HexTheme;
 use crate::app::{App, DialogueItem};
 use hex_protocol::models::Role;
 
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn incremental_markdown_matches_full_render_at_every_unicode_delta() {
+        for text in [
+            "Intro **bold**.\n\n# Heading\n\n- item\n\n```rust\nlet x = 1;\n\nlet y = 2;\n```\n\nFinal 世界😀",
+            "\n\n\nhello\n\n\n> quoted\n\n~~~\n\ncode\n~~~\n\nlast",
+        ] {
+            let mut app = App::new("p", "m", "cow");
+            app.dialogue_items.clear();
+            app.add_assistant_message("");
+            app.is_busy = true;
+            let mut layout = TranscriptLayout::default();
+            for ch in text.chars() {
+                app.append_assistant_delta(&ch.to_string());
+                let content = match &app.dialogue_items[0] { DialogueItem::Message(m) => &m.content, _ => unreachable!() };
+                let block = layout.streaming_block(&app, 0, 40, &HexTheme::truecolor(), content);
+                let actual: Vec<_> = block.iter().cloned().collect();
+                assert_eq!(actual, render_markdown(content, 40, &HexTheme::truecolor()), "at {content:?}");
+                assert!(layout.retained_render_bytes() <= RENDER_CACHE_BYTES);
+            }
+        }
+    }
+
+    #[test]
+    fn cache_reuses_rows_and_stays_below_its_byte_budget() {
+        let mut app = App::new("p", "m", "cow");
+        app.dialogue_items.clear();
+        for i in 0..300 {
+            app.add_assistant_message(&format!("message {i} {}", "words ".repeat(100)));
+        }
+        let mut layout = TranscriptLayout::default();
+        for i in 0..300 {
+            let key = signature(&app, i, None, &HexTheme::truecolor());
+            layout.block(
+                &app,
+                i,
+                None,
+                40,
+                &HexTheme::truecolor(),
+                &AnimationState::new(),
+                key,
+            );
+            assert!(layout.retained_render_bytes() <= RENDER_CACHE_BYTES);
+        }
+        let parses = layout.markdown_parses;
+        let key = signature(&app, 299, None, &HexTheme::truecolor());
+        layout.block(
+            &app,
+            299,
+            None,
+            40,
+            &HexTheme::truecolor(),
+            &AnimationState::new(),
+            key,
+        );
+        assert_eq!(layout.markdown_parses, parses);
+        assert!(layout.cache_hits > 0);
+        app.add_assistant_message(&"huge ".repeat(100_000));
+        let key = signature(&app, 300, None, &HexTheme::truecolor());
+        layout.block(
+            &app,
+            300,
+            None,
+            40,
+            &HexTheme::truecolor(),
+            &AnimationState::new(),
+            key,
+        );
+        assert!(layout.retained_render_bytes() <= RENDER_CACHE_BYTES);
+        assert!(!layout.cache.iter().any(|block| block.key == (key, 40)));
+    }
+}
+
+pub const RENDER_CACHE_BYTES: usize = 2 * 1024 * 1024;
+const CACHE_ENTRIES: usize = 256;
+
+fn line_bytes(lines: &Vec<Line<'static>>) -> usize {
+    std::mem::size_of::<Vec<Line<'static>>>()
+        + lines.capacity() * std::mem::size_of::<Line<'static>>()
+        + lines
+            .iter()
+            .map(|line| {
+                line.spans.capacity() * std::mem::size_of::<Span<'static>>()
+                    + line
+                        .spans
+                        .iter()
+                        .map(|span| match &span.content {
+                            std::borrow::Cow::Owned(text) => text.capacity(),
+                            std::borrow::Cow::Borrowed(_) => 0,
+                        })
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+        + 2 * std::mem::size_of::<usize>()
+}
+
+struct CachedBlock {
+    key: (u64, u16),
+    lines: Rc<Vec<Line<'static>>>,
+    bytes: usize,
+    used: u64,
+}
+
+struct StreamingMarkdown {
+    index: usize,
+    width: u16,
+    theme: HexTheme,
+    sealed_end: usize,
+    sealed_hash: u64,
+    prefix: Rc<Vec<Line<'static>>>,
+}
+
+struct BlockLines {
+    prefix: Option<Rc<Vec<Line<'static>>>>,
+    tail: Rc<Vec<Line<'static>>>,
+}
+
+impl BlockLines {
+    fn len(&self) -> usize {
+        self.prefix.as_ref().map_or(0, |lines| lines.len()) + self.tail.len()
+    }
+    fn iter(&self) -> impl Iterator<Item = &Line<'static>> {
+        self.prefix
+            .iter()
+            .flat_map(|lines| lines.iter())
+            .chain(self.tail.iter())
+    }
+}
+
 #[derive(Default)]
 pub struct TranscriptLayout {
     width: u16,
@@ -20,11 +153,184 @@ pub struct TranscriptLayout {
     requested_scroll: usize,
     resolved_scroll: usize,
     prefix_rows: usize,
+    cache: Vec<CachedBlock>,
+    cache_bytes: usize,
+    cache_clock: u64,
+    stream: Option<StreamingMarkdown>,
+    pub markdown_parses: usize,
+    pub cache_hits: usize,
 }
 
 impl TranscriptLayout {
     pub fn requested_scroll(&self) -> usize {
         self.requested_scroll
+    }
+
+    pub fn retained_render_bytes(&self) -> usize {
+        self.cache_bytes
+            + self.cache.capacity() * std::mem::size_of::<CachedBlock>()
+            + self.stream.as_ref().map_or(0, |stream| {
+                line_bytes(&stream.prefix) + std::mem::size_of::<StreamingMarkdown>()
+            })
+    }
+
+    fn evict_for(&mut self, bytes: usize) {
+        while !self.cache.is_empty()
+            && (self.retained_render_bytes()
+                + bytes
+                + std::mem::size_of::<CachedBlock>() * CACHE_ENTRIES
+                > RENDER_CACHE_BYTES
+                || self.cache.len() >= CACHE_ENTRIES)
+        {
+            let oldest = self
+                .cache
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, block)| block.used)
+                .unwrap()
+                .0;
+            self.cache_bytes -= self.cache.swap_remove(oldest).bytes;
+        }
+    }
+
+    fn block(
+        &mut self,
+        app: &App,
+        index: usize,
+        diagnostic: Option<usize>,
+        width: u16,
+        theme: &HexTheme,
+        anim: &AnimationState,
+        key: u64,
+    ) -> BlockLines {
+        if app.is_busy && index + 1 == app.dialogue_items.len() {
+            if let DialogueItem::Message(message) = &app.dialogue_items[index] {
+                if message.role == Role::Assistant {
+                    return self.streaming_block(app, index, width, theme, &message.content);
+                }
+            }
+        }
+        let cacheable = matches!(
+            &app.dialogue_items[index],
+            DialogueItem::Message(_)
+                | DialogueItem::ToolCall(crate::app::ToolCallItem {
+                    result: Some(_),
+                    ..
+                })
+        );
+        self.cache_clock = self.cache_clock.wrapping_add(1);
+        if cacheable {
+            if let Some(block) = self
+                .cache
+                .iter_mut()
+                .find(|block| block.key == (key, width))
+            {
+                block.used = self.cache_clock;
+                self.cache_hits += 1;
+                return BlockLines {
+                    prefix: None,
+                    tail: block.lines.clone(),
+                };
+            }
+        }
+        self.markdown_parses += usize::from(matches!(
+            app.dialogue_items[index],
+            DialogueItem::Message(_)
+        ));
+        let lines = Rc::new(item_lines(app, index, diagnostic, width, theme, anim));
+        if cacheable {
+            let bytes = line_bytes(&lines);
+            self.evict_for(bytes);
+            if self.retained_render_bytes()
+                + bytes
+                + CACHE_ENTRIES * std::mem::size_of::<CachedBlock>()
+                <= RENDER_CACHE_BYTES
+            {
+                self.cache.push(CachedBlock {
+                    key: (key, width),
+                    lines: lines.clone(),
+                    bytes,
+                    used: self.cache_clock,
+                });
+                self.cache_bytes += bytes;
+            }
+        }
+        BlockLines {
+            prefix: None,
+            tail: lines,
+        }
+    }
+
+    fn streaming_block(
+        &mut self,
+        app: &App,
+        index: usize,
+        width: u16,
+        theme: &HexTheme,
+        text: &str,
+    ) -> BlockLines {
+        let hash_prefix = |end: usize| {
+            let mut hash = DefaultHasher::new();
+            text[..end].hash(&mut hash);
+            hash.finish()
+        };
+        if self.stream.as_ref().is_none_or(|stream| {
+            stream.index != index
+                || stream.width != width
+                || stream.theme != *theme
+                || stream.sealed_end > text.len()
+                || !text.is_char_boundary(stream.sealed_end)
+                || stream.sealed_hash != hash_prefix(stream.sealed_end)
+        }) {
+            let prefix = if index > 0 || app.current_thought.is_some() {
+                vec![Line::raw("")]
+            } else {
+                Vec::new()
+            };
+            self.stream = Some(StreamingMarkdown {
+                index,
+                width,
+                theme: *theme,
+                sealed_end: 0,
+                sealed_hash: hash_prefix(0),
+                prefix: Rc::new(prefix),
+            });
+        }
+        let sealed_end = super::markdown::settled_boundary(text);
+        let stream = self.stream.as_mut().unwrap();
+        if sealed_end > stream.sealed_end {
+            let chunk =
+                render_markdown(&text[stream.sealed_end..sealed_end], width as usize, theme);
+            let prefix = Rc::make_mut(&mut stream.prefix);
+            if prefix.iter().any(|line| line.width() > 0) && !chunk.is_empty() {
+                prefix.push(Line::raw(""));
+            }
+            prefix.extend(chunk);
+            stream.sealed_end = sealed_end;
+            stream.sealed_hash = hash_prefix(sealed_end);
+            self.markdown_parses += 1;
+        }
+        let mut tail = render_markdown(&text[stream.sealed_end..], width as usize, theme);
+        self.markdown_parses += 1;
+        if stream.prefix.iter().any(|line| line.width() > 0) && !tail.is_empty() {
+            tail.insert(0, Line::raw(""));
+        }
+        self.evict_for(0);
+        if self.retained_render_bytes() > RENDER_CACHE_BYTES {
+            self.stream = None;
+            let mut lines = render_markdown(text, width as usize, theme);
+            if index > 0 || app.current_thought.is_some() {
+                lines.insert(0, Line::raw(""));
+            }
+            return BlockLines {
+                prefix: None,
+                tail: Rc::new(lines),
+            };
+        }
+        BlockLines {
+            prefix: Some(self.stream.as_ref().unwrap().prefix.clone()),
+            tail: Rc::new(tail),
+        }
     }
 }
 
@@ -39,7 +345,7 @@ fn signature(app: &App, index: usize, diagnostic: Option<usize>, theme: &HexThem
     match &app.dialogue_items[index] {
         DialogueItem::Message(m) => {
             m.content.hash(&mut hash);
-            format!("{:?}", m.role).hash(&mut hash);
+            m.role.hash(&mut hash);
         }
         DialogueItem::ToolCall(t) => {
             t.id.hash(&mut hash);
@@ -68,7 +374,7 @@ fn signature(app: &App, index: usize, diagnostic: Option<usize>, theme: &HexThem
     if diagnostic == Some(index) {
         format!("{:?}", app.active_diagnostic).hash(&mut hash);
     }
-    format!("{:?}", theme).hash(&mut hash);
+    theme.hash(&mut hash);
     hash.finish()
 }
 
@@ -302,6 +608,9 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         .flat_map(|line| wrap_line(line, area.width as usize))
         .collect();
     let mut layout = app.transcript_layout.borrow_mut();
+    if !app.is_busy {
+        layout.stream = None;
+    }
     let anchor = if !app.follow_dialogue && layout.requested_scroll == app.dialogue_scroll {
         layout.entries.iter().enumerate().find_map(|(i, entry)| {
             (layout.resolved_scroll >= entry.start
@@ -319,7 +628,9 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         let height = if !reflow && old.is_some_and(|entry| entry.signature == key) {
             old.unwrap().height
         } else {
-            item_lines(app, index, diagnostic, area.width, theme, anim).len()
+            layout
+                .block(app, index, diagnostic, area.width, theme, anim, key)
+                .len()
         };
         let entry = Entry {
             signature: key,
@@ -375,7 +686,9 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         if entry.start >= end {
             break;
         }
-        let mut lines = item_lines(app, index, diagnostic, area.width, theme, anim);
+        let start = entry.start;
+        let key = entry.signature;
+        let lines = layout.block(app, index, diagnostic, area.width, theme, anim, key);
         let tool_header = if matches!(app.dialogue_items[index], DialogueItem::ToolCall(_))
             && (index > 0 || app.current_thought.is_some())
             && !matches!(
@@ -386,19 +699,22 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         } else {
             0
         };
-        if !anim.is_reduced() && index >= first_rising && seen < app.dialogue_items.len() {
-            let factor = animation::rise_factor(
+        let factor = if !anim.is_reduced()
+            && index >= first_rising
+            && seen < app.dialogue_items.len()
+        {
+            animation::rise_factor(
                 born.elapsed(),
                 std::time::Duration::from_millis(RISE_STAGGER_MS * (index - first_rising) as u64),
-            );
-            let blank = usize::from(lines.first().is_some_and(|line| line.width() == 0));
-            for line in lines.iter_mut().skip(blank) {
-                animation::apply_entrance_fade(line, factor, theme.window_bg);
-            }
-        }
-        for (row, line) in lines.into_iter().enumerate() {
-            let absolute = entry.start + row;
+            )
+        } else {
+            1.0
+        };
+        for (row, line) in lines.iter().enumerate() {
+            let absolute = start + row;
             if absolute >= scroll && absolute < end {
+                let mut line = line.clone();
+                animation::apply_entrance_fade(&mut line, factor, theme.window_bg);
                 if matches!(app.dialogue_items[index], DialogueItem::ToolCall(_))
                     && row == tool_header
                 {

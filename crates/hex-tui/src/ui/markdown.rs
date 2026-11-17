@@ -378,6 +378,24 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
     Some((label, url, paren + 1))
 }
 
+pub fn settled_boundary(text: &str) -> usize {
+    let mut fence = None;
+    let mut offset = 0;
+    let mut settled = 0;
+    for line in text.split_inclusive('\n') {
+        offset += line.len();
+        let trimmed = line.trim();
+        if let Some(marker) = fence {
+            if is_fence_close(trimmed, marker) { fence = None; }
+        } else if let Some(marker) = fence_open(trimmed) {
+            fence = Some(marker);
+        } else if trimmed.is_empty() && line.ends_with('\n') {
+            settled = offset;
+        }
+    }
+    settled
+}
+
 pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     let style = line.style;
     wrap_spans(line.spans, width.max(1), 0, 0)

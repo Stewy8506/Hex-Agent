@@ -6,7 +6,7 @@
 use ratatui::style::Color;
 
 /// Theme tokens representing the HEX Agent Cockpit visual design system.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HexTheme {
     /// Canvas/outermost terminal background (#000000 or #0a0a0a)
     pub canvas_bg: Color,
