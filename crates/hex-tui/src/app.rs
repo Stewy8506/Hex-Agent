@@ -3,6 +3,7 @@
 use hex_protocol::diff::UnifiedDiff;
 use hex_protocol::models::Role;
 use std::time::Instant;
+pub use crate::history::TranscriptStore;
 
 /// Focused viewport pane in the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -363,7 +364,7 @@ pub struct PaletteMatch {
 }
 
 /// A regular conversational message item in dialogue.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MessageItem {
     pub role: Role,
     pub content: String,
@@ -371,7 +372,7 @@ pub struct MessageItem {
 }
 
 /// An expandable/collapsible tool invocation block.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallItem {
     pub id: String,
     pub tool: String,
@@ -380,11 +381,12 @@ pub struct ToolCallItem {
     pub duration_ms: Option<u64>,
     pub exit_status: Option<String>,
     pub collapsed: bool,
+    #[serde(skip)]
     pub started_at: Option<std::time::Instant>,
 }
 
 /// Dialogue viewport item (either a chat message or a tool call).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DialogueItem {
     Message(MessageItem),
     ToolCall(ToolCallItem),
@@ -445,7 +447,7 @@ pub fn available_slash_commands() -> &'static [SlashCommand] {
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolResultRef {
     pub task_id: String,
     pub call_id: String,
@@ -538,6 +540,12 @@ pub struct App {
     // Dialogue items and scrolling
     pub dialogue_items: Vec<DialogueItem>,
     pub tool_result_refs: std::collections::HashMap<String, ToolResultRef>,
+    pub transcript_store: Option<TranscriptStore>,
+    pub transcript_error: Option<String>,
+    pub(crate) transcript_ids: Vec<(usize, usize)>,
+    pub(crate) transcript_history_stored: bool,
+    /// Full source command for a deliberately partial visible diff.
+    pub diff_transcript_id: Option<usize>,
     pub dialogue_scroll: usize,
     pub dialogue_view_offset: std::cell::Cell<usize>,
     pub transcript_layout: std::cell::RefCell<crate::ui::transcript::TranscriptLayout>,
@@ -1360,6 +1368,11 @@ impl App {
 
             dialogue_items: Vec::new(),
             tool_result_refs: std::collections::HashMap::new(),
+            transcript_store: None,
+            transcript_error: None,
+            transcript_ids: Vec::new(),
+            transcript_history_stored: false,
+            diff_transcript_id: None,
             dialogue_scroll: 0,
             dialogue_view_offset: std::cell::Cell::new(0),
             transcript_layout: std::cell::RefCell::new(Default::default()),
@@ -1436,13 +1449,19 @@ impl App {
             content: content.to_string(),
             timestamp: chrono_now(),
         }));
+        self.enforce_transcript_budget();
         self.scroll_dialogue_to_bottom();
     }
 
     /// Add an assistant response message to dialogue history.
     pub fn add_assistant_message(&mut self, content: &str) {
         self.screen_state = ScreenState::Session;
-        let detected = extract_plan_steps_from_text(content);
+        let plan_source = if self.transcript_store.is_some() {
+            let mut end = content.len().min(crate::history::MESSAGE_DISPLAY_BYTES);
+            while !content.is_char_boundary(end) { end -= 1; }
+            &content[..end]
+        } else { content };
+        let detected = extract_plan_steps_from_text(plan_source);
         if !detected.is_empty() {
             self.plan_steps = detected;
         }
@@ -1451,6 +1470,7 @@ impl App {
             content: content.to_string(),
             timestamp: chrono_now(),
         }));
+        self.enforce_transcript_budget();
     }
 
     /// Replay a loaded session transcript so resumed conversations keep their dialogue.
@@ -1468,11 +1488,26 @@ impl App {
     /// Append a streaming token delta to the active Assistant message, or create one if none exists.
     pub fn append_assistant_delta(&mut self, delta: &str) {
         self.active_turn_has_streamed = true;
-        if let Some(DialogueItem::Message(msg)) = self.dialogue_items.last_mut() {
-            if msg.role == Role::Assistant {
-                msg.content.push_str(delta);
-                return;
+        let index = self.dialogue_items.len().saturating_sub(1);
+        if matches!(self.dialogue_items.last(), Some(DialogueItem::Message(msg)) if msg.role == Role::Assistant) {
+            let stored = self.stored_message_id(index);
+            let durable = if self.transcript_error.is_none() {
+                if let (Some(id), Some(store)) = (stored, self.transcript_store.as_mut()) {
+                    match store.append_delta(id, delta) {
+                        Ok(()) => true,
+                        Err(e) => { self.transcript_error = Some(e); false }
+                    }
+                } else { false }
+            } else { false };
+            if let DialogueItem::Message(msg) = &mut self.dialogue_items[index] {
+                if durable && delta.len() >= crate::history::MESSAGE_DISPLAY_BYTES {
+                    msg.content = crate::history::recent_tail(delta, stored.unwrap());
+                } else {
+                    msg.content.push_str(delta);
+                }
             }
+            self.enforce_transcript_budget();
+            return;
         }
         self.add_assistant_message(delta);
     }
@@ -1484,6 +1519,7 @@ impl App {
             content: content.to_string(),
             timestamp: chrono_now(),
         }));
+        self.enforce_transcript_budget();
     }
 
     /// Model label for display. Empty means the runtime has not reported one.
@@ -1674,7 +1710,39 @@ impl App {
     /// runtime, which has no memory of it.
     pub fn resume_session(&mut self, session_id: &str) -> bool {
         let ws = std::path::PathBuf::from(&self.workspace_path);
+        let next_store = if self.transcript_store.is_some() {
+            match TranscriptStore::new(&ws, session_id) {
+                Ok(store) => Some(store),
+                Err(e) => { self.transcript_error = Some(e); return false; }
+            }
+        } else { None };
+        if next_store.is_some() {
+            let archived = (|| {
+                self.archive_resident_transcript()?;
+                for command in &self.command_history {
+                    self.transcript_store.as_mut().unwrap().append_text(&Role::User, "command", command)?;
+                }
+                if self.diff_transcript_id.is_none() {
+                    if let Some(raw) = &self.raw_diff {
+                        self.transcript_store.as_mut().unwrap().append_text(&Role::System, "diff", raw)?;
+                    }
+                }
+                Ok::<(), String>(())
+            })();
+            if let Err(e) = archived { self.transcript_error = Some(e); return false; }
+            self.command_history = Vec::new();
+            self.history_index = None;
+            self.clear_diff();
+        }
         let items = load_session_dialogue_from_db(&ws, session_id);
+        self.transcript_store = next_store;
+        self.transcript_ids = Vec::new();
+        self.transcript_history_stored = false;
+        *self.transcript_layout.borrow_mut() = Default::default();
+        self.dialogue_view_offset.set(0);
+        self.dialogue_scroll = 0;
+        self.dialogue_metrics.set((0, 0));
+        self.dialogue_entrance.set((0, None));
         self.session_id = session_id.to_string();
         self.screen_state = ScreenState::Session;
         self.pending_delete_index = None;
@@ -1705,6 +1773,7 @@ impl App {
         self.recalculate_tokens();
         self.scroll_dialogue_to_bottom();
         self.status_message = format!("Resumed session {}", session_id);
+        self.enforce_transcript_budget();
         true
     }
 
@@ -1970,84 +2039,65 @@ impl App {
         status: Option<&str>,
     ) {
         self.screen_state = ScreenState::Session;
-        self.dialogue_items
-            .push(DialogueItem::ToolCall(ToolCallItem {
-                id: id.to_string(),
-                tool: tool.to_string(),
-                args: tool_preview(args, 1000),
-                result: None,
-                duration_ms,
-                exit_status: status
-                    .map(|s| s.to_string())
-                    .or_else(|| Some("RUNNING".to_string())),
-                collapsed: true,
-                started_at: Some(std::time::Instant::now()),
-            }));
+        let mut item = ToolCallItem {
+            id: id.to_string(),
+            tool: tool.to_string(),
+            args: tool_preview(args, 1000),
+            result: None,
+            duration_ms,
+            exit_status: status.map(str::to_string).or_else(|| Some("RUNNING".to_string())),
+            collapsed: true,
+            started_at: Some(std::time::Instant::now()),
+        };
+        if self.transcript_store.is_some() && args.chars().nth(1000).is_some() {
+            if self.transcript_error.is_some() {
+                item.args = args.to_string();
+            } else {
+                match self.transcript_store.as_mut().unwrap().append_tool(&item, self.tool_result_refs.get(id), args) {
+                    Ok(stored) => item.args = format!("{} [full arguments: /transcript {stored}]", crate::history::short_prefix(args, 4000)),
+                    Err(e) => { self.transcript_error = Some(e); item.args = args.to_string(); }
+                }
+            }
+        }
+        self.dialogue_items.push(DialogueItem::ToolCall(item));
+        self.enforce_transcript_budget();
     }
 
     /// Mark a tool call as completed.
     pub fn complete_tool_call(&mut self, id: &str, result: &str, duration_ms: u64, is_err: bool) {
-        let mut matched = false;
-        // 1. Direct match by exact tool call ID
-        for item in &mut self.dialogue_items {
-            if let DialogueItem::ToolCall(tc) = item {
-                if tc.id == id {
-                    tc.result = Some(tool_preview(result, if is_err { 4000 } else { 300 }));
-                    tc.duration_ms = Some(duration_ms);
-                    tc.exit_status = Some(if is_err {
-                        "ERROR".to_string()
-                    } else {
-                        "OK".to_string()
-                    });
-                    matched = true;
-                    break;
-                }
-            }
-        }
-        // 2. Fallback: match by tool name or prefix if ID had generation variance
-        if !matched {
-            for item in self.dialogue_items.iter_mut().rev() {
-                if let DialogueItem::ToolCall(tc) = item {
-                    if tc.exit_status.as_deref() == Some("RUNNING")
-                        && (tc.tool == id || tc.id.starts_with(id) || id.starts_with(&tc.tool))
-                    {
-                        tc.result = Some(tool_preview(result, if is_err { 4000 } else { 300 }));
-                        tc.duration_ms = Some(duration_ms);
-                        tc.exit_status = Some(if is_err {
-                            "ERROR".to_string()
-                        } else {
-                            "OK".to_string()
-                        });
-                        matched = true;
-                        break;
+        let index = self.dialogue_items.iter().position(|item| matches!(item, DialogueItem::ToolCall(tc) if tc.id == id))
+            .or_else(|| self.dialogue_items.iter().rposition(|item| matches!(item, DialogueItem::ToolCall(tc)
+                if tc.exit_status.as_deref() == Some("RUNNING") && (tc.tool == id || tc.id.starts_with(id) || id.starts_with(&tc.tool)))))
+            .or_else(|| self.dialogue_items.iter().rposition(|item| matches!(item, DialogueItem::ToolCall(tc) if tc.exit_status.as_deref() == Some("RUNNING"))));
+        if let Some(index) = index {
+            let DialogueItem::ToolCall(tc) = &self.dialogue_items[index] else { unreachable!() };
+            let mut completed = tc.clone();
+            let limit = if is_err { 4000 } else { 300 };
+            completed.result = Some(tool_preview(result, limit));
+            completed.duration_ms = Some(duration_ms);
+            completed.exit_status = Some(if is_err { "ERROR" } else { "OK" }.to_string());
+            if self.transcript_store.is_some() && result.chars().nth(limit).is_some() {
+                if self.transcript_error.is_some() {
+                    completed.result = Some(result.to_string());
+                } else {
+                    match self.transcript_store.as_mut().unwrap().append_tool(&completed, self.tool_result_refs.get(&completed.id), result) {
+                        Ok(stored) => completed.result = Some(format!("{} [full result: /transcript {stored}]", crate::history::short_prefix(result, limit * 4))),
+                        Err(e) => { self.transcript_error = Some(e); completed.result = Some(result.to_string()); }
                     }
                 }
             }
+            self.dialogue_items[index] = DialogueItem::ToolCall(completed);
+            self.transcript_ids.retain(|(resident, _)| *resident != index);
         }
-        // 3. Fallback: match the latest RUNNING tool call
-        if !matched {
-            for item in self.dialogue_items.iter_mut().rev() {
-                if let DialogueItem::ToolCall(tc) = item {
-                    if tc.exit_status.as_deref() == Some("RUNNING") {
-                        tc.result = Some(tool_preview(result, if is_err { 4000 } else { 300 }));
-                        tc.duration_ms = Some(duration_ms);
-                        tc.exit_status = Some(if is_err {
-                            "ERROR".to_string()
-                        } else {
-                            "OK".to_string()
-                        });
-                        break;
-                    }
-                }
-            }
-        }
+        self.enforce_transcript_budget();
     }
 
     /// Close all running tool calls when an assistant turn completes.
     pub fn close_running_tool_calls(&mut self) {
-        for item in &mut self.dialogue_items {
+        for (index, item) in self.dialogue_items.iter_mut().enumerate() {
             if let DialogueItem::ToolCall(tc) = item {
                 if tc.exit_status.as_deref() == Some("RUNNING") {
+                    self.transcript_ids.retain(|(resident, _)| *resident != index);
                     tc.exit_status = Some("OK".to_string());
                     if tc.duration_ms.is_none() {
                         if let Some(started) = tc.started_at {
@@ -2057,6 +2107,7 @@ impl App {
                 }
             }
         }
+        self.enforce_transcript_budget();
     }
 
     /// Toggle collapsed state of a specific tool call by index.
@@ -2090,16 +2141,46 @@ impl App {
     /// Load unified diff text into state and parse it.
     pub fn load_diff(&mut self, diff_text: &str) {
         self.screen_state = ScreenState::Session;
-        self.raw_diff = Some(diff_text.to_string());
-        self.active_diff = Some(UnifiedDiff::parse(diff_text));
+        self.diff_transcript_id = None;
+        if self.transcript_store.is_some() && (diff_text.len() > crate::history::MESSAGE_DISPLAY_BYTES || diff_text.lines().take(513).count() > 512) {
+            let stored = if self.transcript_error.is_none() {
+                self.transcript_store.as_mut().unwrap().append_text(&Role::System, "diff", diff_text)
+            } else { Err(self.transcript_error.clone().unwrap()) };
+            match stored {
+                Ok(id) => {
+                    let preview = crate::history::diff_prefix(diff_text);
+                    let notice = format!("PARTIAL DIFF PREVIEW — full source: /transcript {id}");
+                    self.raw_diff = Some(format!("{notice}\n{preview}"));
+                    let mut parsed = UnifiedDiff::parse(preview);
+                    // Label inside the pane too, not only in a transient status row.
+                    parsed.files.insert(0, hex_protocol::diff::DiffFile {
+                        old_path: None, new_path: Some(notice.clone()), is_new: false,
+                        is_deleted: false, is_binary: false, hunks: Vec::new(),
+                    });
+                    self.active_diff = Some(parsed);
+                    self.diff_transcript_id = Some(id);
+                    self.status_message = notice;
+                }
+                Err(e) => {
+                    self.transcript_error = Some(e);
+                    self.raw_diff = Some(diff_text.to_string());
+                    self.active_diff = None;
+                }
+            }
+        } else {
+            self.raw_diff = Some(diff_text.to_string());
+            self.active_diff = Some(UnifiedDiff::parse(diff_text));
+        }
         self.show_diff = true;
         self.diff_scroll = 0;
+        self.enforce_transcript_budget();
     }
 
     /// Clear diff pane.
     pub fn clear_diff(&mut self) {
         self.raw_diff = None;
         self.active_diff = None;
+        self.diff_transcript_id = None;
         self.show_diff = false;
         self.diff_scroll = 0;
         if self.focus == Focus::Diff {
@@ -2409,6 +2490,7 @@ impl App {
         self.cursor_pos = 0;
         // A new prompt retires the previous turn's failure card.
         self.active_diagnostic = None;
+        self.enforce_transcript_budget();
 
         Some(trimmed)
     }
@@ -2542,6 +2624,9 @@ impl App {
                 }
                 self.dialogue_scroll = self.dialogue_scroll.saturating_sub(1);
                 self.follow_dialogue = false;
+                if self.dialogue_scroll == 0 && self.transcript_history_stored {
+                    self.status_message = "Earlier dialogue stored: /history; full text: /transcript ID".to_string();
+                }
             }
             Focus::Diff => {
                 self.diff_scroll = self.diff_scroll.saturating_sub(1);

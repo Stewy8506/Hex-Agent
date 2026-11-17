@@ -72,6 +72,38 @@
       "tui_local": true
     },
     {
+      "name": "/history",
+      "aliases": [],
+      "usage": "/history [before]",
+      "description": "Browse older native transcript archive pages",
+      "surfaces": {"console": "unavailable", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
+      "name": "/transcript",
+      "aliases": [],
+      "usage": "/transcript <record_id> [offset]",
+      "description": "Read exact archived transcript content in byte-offset pages",
+      "surfaces": {"console": "unavailable", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
+      "name": "/session-history",
+      "aliases": [],
+      "usage": "/session-history [before]",
+      "description": "Browse durable conversation turns without loading the whole session",
+      "surfaces": {"console": "unavailable", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
+      "name": "/history-turn",
+      "aliases": [],
+      "usage": "/history-turn <turn_index> <prompt|response> [offset]",
+      "description": "Read the complete prompt or response of a durable turn",
+      "surfaces": {"console": "unavailable", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
       "name": "/sbs",
       "aliases": [],
       "usage": "/sbs <file>",

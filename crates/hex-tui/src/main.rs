@@ -223,75 +223,103 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     }
 
     // Try connecting to ACP server in background
-    let ws_path = args.workspace.as_deref();
+    let backend_workspace = PathBuf::from(&app.workspace_path);
+    let ws_path = Some(backend_workspace.as_path());
     let maybe_client = AcpClient::spawn_acp_server(ws_path).await;
-    let acp_client = match maybe_client {
-        Ok(client) => {
-            app.connection_status = "Connected".to_string();
-            // Resume a requested session first; only fall back to a fresh
-            // session when the server cannot load the supplied identifier.
-            let mut resumed = false;
-            if let Some(requested) = args.session.as_deref() {
-                match client.session_load(requested).await {
-                    Ok(loaded) => {
-                        app.session_id = loaded.session_id.clone();
-                        app.model_name = loaded.model.clone();
-                        app.replay_session_history(&loaded.history);
-                        app.add_system_message(&format!(
-                            "Resumed session {} ({} prior turn{}).",
+    let acp_client =
+        match maybe_client {
+            Ok(client) => {
+                app.connection_status = "Connected".to_string();
+                // Resume a requested session first; only fall back to a fresh
+                // session when the server cannot load the supplied identifier.
+                let mut resumed = false;
+                if let Some(requested) = args.session.as_deref() {
+                    match client.session_load_paged(requested).await {
+                        Ok(loaded) => {
+                            app.session_id = loaded.session_id.clone();
+                            app.model_name = loaded.model.clone();
+                            for entry in &loaded.page.history {
+                                let turn = &entry.turn;
+                                if !turn.prompt.is_empty() {
+                                    app.add_user_message(&turn.prompt);
+                                }
+                                if entry.prompt_chars > turn.prompt.chars().count() {
+                                    app.add_system_message(&format!(
+                                        "Full prompt: /history-turn {} prompt",
+                                        entry.turn_index
+                                    ));
+                                }
+                                if !turn.response.is_empty() {
+                                    app.add_assistant_message(&turn.response);
+                                }
+                                if entry.response_chars > turn.response.chars().count() {
+                                    app.add_system_message(&format!(
+                                        "Full response: /history-turn {} response",
+                                        entry.turn_index
+                                    ));
+                                }
+                            }
+                            app.add_system_message(&format!(
+                            "Resumed session {} ({} prior turn{}). Older turns: /session-history",
                             loaded.session_id,
-                            loaded.history_count,
-                            if loaded.history_count == 1 { "" } else { "s" }
+                            loaded.page.history_count,
+                            if loaded.page.history_count == 1 { "" } else { "s" }
                         ));
-                        resumed = true;
-                    }
-                    Err(e) => {
-                        app.add_system_message(&format!(
-                            "Could not resume session {}: {}. Starting a new session.",
-                            requested, e
-                        ));
+                            resumed = true;
+                        }
+                        Err(e) => {
+                            app.add_system_message(&format!(
+                                "Could not resume session {}: {}. Starting a new session.",
+                                requested, e
+                            ));
+                        }
                     }
                 }
-            }
-            if !resumed {
-                // Handshake session to populate dynamic tools, skills, cow backend, and active model
-                match client
-                    .session_new(ws_path.and_then(|p| p.to_str()), args.model.as_deref())
-                    .await
-                {
-                    Ok(sess) => {
-                        app.session_id = sess.session_id;
-                        app.model_name = sess.model;
-                        if let Some(prov) = sess.provider {
-                            app.provider_name = prov;
+                if !resumed {
+                    // Handshake session to populate dynamic tools, skills, cow backend, and active model
+                    match client
+                        .session_new(ws_path.and_then(|p| p.to_str()), args.model.as_deref())
+                        .await
+                    {
+                        Ok(sess) => {
+                            app.session_id = sess.session_id;
+                            app.model_name = sess.model;
+                            if let Some(prov) = sess.provider {
+                                app.provider_name = prov;
+                            }
+                            if let Some(tc) = sess.tools_count {
+                                app.tools_count = tc;
+                            }
+                            if let Some(sc) = sess.skills_count {
+                                app.skills_count = sc;
+                            }
+                            if let Some(cow) = sess.cow_backend {
+                                app.cow_mode = cow;
+                            }
+                            if let Some(splash) = sess.splash_text {
+                                app.splash_text = Some(splash);
+                            }
                         }
-                        if let Some(tc) = sess.tools_count {
-                            app.tools_count = tc;
+                        Err(e) => {
+                            app.add_system_message(&format!("Session handshake notice: {}", e));
                         }
-                        if let Some(sc) = sess.skills_count {
-                            app.skills_count = sc;
-                        }
-                        if let Some(cow) = sess.cow_backend {
-                            app.cow_mode = cow;
-                        }
-                        if let Some(splash) = sess.splash_text {
-                            app.splash_text = Some(splash);
-                        }
-                    }
-                    Err(e) => {
-                        app.add_system_message(&format!("Session handshake notice: {}", e));
                     }
                 }
+                Some(client)
             }
-            Some(client)
-        }
-        Err(err) => {
-            app.connection_status = "Standalone".to_string();
-            app.add_system_message(&format!("Running in standalone mode: {}", err));
-            None
-        }
-    };
+            Err(err) => {
+                app.connection_status = "Standalone".to_string();
+                app.add_system_message(&format!("Running in standalone mode: {}", err));
+                None
+            }
+        };
 
+    if let Err(error) = app.enable_transcript_storage() {
+        app.add_system_message(&format!(
+            "Transcript archive unavailable; history remains in memory: {error}"
+        ));
+    }
+    app.enforce_transcript_budget();
     let mut events = EventHandler::new(50);
     let event_tx = events.sender();
 
@@ -342,6 +370,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     pacer.mark_dirty();
                     last_change = std::time::Instant::now();
                 }
+                let storage_was_failed = app.transcript_error.is_some();
                 match event {
                     AppEvent::Key(key) => {
                         handle_key_event(&mut app, key, acp_client.as_ref(), event_tx.clone())
@@ -398,7 +427,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     }
                     AppEvent::Notice(msg) => app.add_system_message(&msg),
                     AppEvent::AssistantResponse(msg) => {
-                        let detected_plan = hex_tui::app::extract_plan_steps_from_text(&msg);
+                        let mut plan_end = msg.len().min(64 * 1024);
+                        while !msg.is_char_boundary(plan_end) { plan_end -= 1; }
+                        let detected_plan = hex_tui::app::extract_plan_steps_from_text(&msg[..plan_end]);
                         if !detected_plan.is_empty() {
                             app.plan_steps = detected_plan;
                         }
@@ -492,6 +523,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     }
                     AppEvent::Resize(_, _) => {}
                 }
+                app.enforce_transcript_budget();
+                if !storage_was_failed {
+                    if let Some(error) = app.transcript_error.clone() {
+                        app.add_system_message(&format!("Transcript persistence failed; eviction stopped and source retained: {error}"));
+                        pacer.mark_dirty();
+                    }
+                }
             }
         }
         Ok::<(), anyhow::Error>(())
@@ -500,10 +538,11 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     if let Some(task) = notification_task {
         task.abort();
     }
+    let archived = app.flush_transcript().map_err(anyhow::Error::msg);
     if let Some(client) = &acp_client {
         let _ = client.close().await;
     }
-    result
+    result.and(archived)
 }
 
 /// Ask the server to stop the active turn. With a live connection the busy
@@ -676,7 +715,16 @@ async fn handle_key_event(
     if app.show_palette {
         match key.code {
             KeyCode::Enter => {
-                if app.palette_query.starts_with("tool-result ") {
+                if matches!(
+                    app.palette_query.split_whitespace().next(),
+                    Some(
+                        "tool-result"
+                            | "history"
+                            | "transcript"
+                            | "session-history"
+                            | "history-turn"
+                    )
+                ) {
                     let command = format!("/{}", app.palette_query);
                     app.close_palette();
                     execute_submitted_text(app, command, acp_client, event_tx).await?;
@@ -876,6 +924,39 @@ async fn execute_palette_command(
     execute_submitted_text(app, command.to_string(), acp_client, event_tx).await
 }
 
+fn format_history_page(page: &hex_protocol::models::HistoryPage) -> String {
+    let mut text = format!(
+        "Stored session history ({} total turns):\n",
+        page.history_count
+    );
+    for entry in &page.history {
+        let turn = &entry.turn;
+        text.push_str(&format!(
+            "\nTurn {} [{}]\n> {}\n{}\n",
+            entry.turn_index, turn.status, turn.prompt, turn.response
+        ));
+        for (field, total, shown) in [
+            ("prompt", entry.prompt_chars, turn.prompt.chars().count()),
+            (
+                "response",
+                entry.response_chars,
+                turn.response.chars().count(),
+            ),
+        ] {
+            if total > shown {
+                text.push_str(&format!(
+                    "Full {field}: /history-turn {} {field}\n",
+                    entry.turn_index
+                ));
+            }
+        }
+    }
+    if let Some(before) = page.next_before {
+        text.push_str(&format!("\nOlder turns: /session-history {before}"));
+    }
+    text
+}
+
 /// Execute user entered text (slash commands or regular prompt).
 async fn execute_submitted_text(
     app: &mut App,
@@ -911,6 +992,136 @@ async fn execute_submitted_text(
                 app.add_system_message(&format!("Diff viewer mode: {}", mode_str));
                 return Ok(());
             }
+            "/history" => {
+                let before = parts.get(1).map(|value| value.parse::<usize>()).transpose();
+                if parts.len() > 2 || before.is_err() {
+                    app.add_system_message("Usage: /history [before]");
+                    return Ok(());
+                }
+                let notice = match app.transcript_store.as_ref() {
+                    Some(store) => match store.summary(before.unwrap()) {
+                        Ok(summary) => {
+                            let mut text = format!(
+                                "Native archive ({} stored records):\n",
+                                summary.total_count
+                            );
+                            for line in summary.content.lines() {
+                                text.push_str(line);
+                                if let Some(id) = line.split_whitespace().next() {
+                                    text.push_str(&format!("\n  Full text: /transcript {id}\n"));
+                                }
+                            }
+                            if let Some(before) = summary.next_before {
+                                text.push_str(&format!("\nOlder records: /history {before}"));
+                            }
+                            text
+                        }
+                        Err(error) => format!("Could not read native history: {error}"),
+                    },
+                    None => "Native archive is unavailable; the transcript remains in memory."
+                        .to_string(),
+                };
+                app.add_system_message(&notice);
+                return Ok(());
+            }
+            "/transcript" => {
+                let id = parts.get(1).and_then(|value| value.parse::<usize>().ok());
+                let offset = parts
+                    .get(2)
+                    .map(|value| value.parse::<usize>())
+                    .unwrap_or(Ok(0));
+                if parts.len() > 3 || id.is_none() || offset.is_err() {
+                    app.add_system_message("Usage: /transcript <record_id> [offset]");
+                    return Ok(());
+                }
+                let id = id.unwrap();
+                let offset = offset.unwrap();
+                let notice = match app.transcript_store.as_ref() {
+                    Some(store) => match store.page(id, offset) {
+                        Ok(page) => {
+                            let next = page
+                                .next_offset
+                                .map(|next| format!("\nNext page: /transcript {id} {next}"))
+                                .unwrap_or_default();
+                            format!(
+                                "Stored transcript {id} (offset {offset}, {} bytes):\n{}{next}",
+                                page.total_bytes, page.content
+                            )
+                        }
+                        Err(error) => format!("Could not read stored transcript: {error}"),
+                    },
+                    None => "Native archive is unavailable; the transcript remains in memory."
+                        .to_string(),
+                };
+                app.add_system_message(&notice);
+                return Ok(());
+            }
+            "/session-history" => {
+                let before = parts.get(1).map(|value| value.parse::<usize>()).transpose();
+                if parts.len() > 2 || before.is_err() {
+                    app.add_system_message("Usage: /session-history [before]");
+                    return Ok(());
+                }
+                let Some(client) = acp_client.cloned() else {
+                    app.add_system_message("Reconnect to read durable conversation turns.");
+                    return Ok(());
+                };
+                let session = app.session_id.clone();
+                let before = before.unwrap();
+                tokio::spawn(async move {
+                    let notice = match client.session_history(&session, before).await {
+                        Ok(page) => format_history_page(&page),
+                        Err(error) => format!("Could not read session history: {error}"),
+                    };
+                    let _ = event_tx.send(AppEvent::Notice(notice)).await;
+                });
+                return Ok(());
+            }
+            "/history-turn" => {
+                let index = parts.get(1).and_then(|value| value.parse::<usize>().ok());
+                let field = parts.get(2).copied();
+                let offset = parts
+                    .get(3)
+                    .map(|value| value.parse::<usize>())
+                    .unwrap_or(Ok(0));
+                if parts.len() > 4
+                    || index.is_none()
+                    || !matches!(field, Some("prompt" | "response"))
+                    || offset.is_err()
+                {
+                    app.add_system_message(
+                        "Usage: /history-turn <turn_index> <prompt|response> [offset]",
+                    );
+                    return Ok(());
+                }
+                let Some(client) = acp_client.cloned() else {
+                    app.add_system_message("Reconnect to read durable conversation turns.");
+                    return Ok(());
+                };
+                let session = app.session_id.clone();
+                let index = index.unwrap();
+                let field = field.unwrap().to_owned();
+                let offset = offset.unwrap();
+                tokio::spawn(async move {
+                    let notice = match client
+                        .session_history_content(&session, index, &field, offset)
+                        .await
+                    {
+                        Ok(page) => {
+                            let next = page
+                                .next_offset
+                                .map(|next| {
+                                    format!("\nNext page: /history-turn {index} {field} {next}")
+                                })
+                                .unwrap_or_default();
+                            format!("Stored turn {index} {field} (offset {offset}, {} characters):\n{}{next}", page.total_chars, page.content)
+                        }
+                        Err(error) => format!("Could not read stored turn: {error}"),
+                    };
+                    let _ = event_tx.send(AppEvent::Notice(notice)).await;
+                });
+                return Ok(());
+            }
             "/tool-result" => {
                 let selected = parts.get(1).map(|id| (*id).to_string()).or_else(|| {
                     app.dialogue_items.iter().rev().find_map(|item| {
@@ -935,6 +1146,11 @@ async fn execute_submitted_text(
                     app.tool_result_refs
                         .get(&id)
                         .cloned()
+                        .or_else(|| {
+                            app.transcript_store
+                                .as_ref()
+                                .and_then(|store| store.find_tool_reference(&id))
+                        })
                         .map(|reference| (id, reference))
                 }) else {
                     app.add_system_message("No stored tool result reference is available.");
@@ -988,9 +1204,14 @@ async fn execute_submitted_text(
                 return Ok(());
             }
             "/clear" => {
-                app.tool_result_refs.clear();
-                app.dialogue_items.clear();
-                app.add_system_message("Dialogue viewport cleared.");
+                match app.clear_transcript() {
+                    Ok(()) => app.add_system_message(
+                        "Dialogue viewport cleared; stored history remains available.",
+                    ),
+                    Err(error) => app.add_system_message(&format!(
+                        "Could not persist transcript; viewport retained: {error}"
+                    )),
+                }
                 return Ok(());
             }
             "/quit" => {
@@ -1157,7 +1378,10 @@ async fn execute_submitted_text(
         let client_clone = client.clone();
         let tx = event_tx.clone();
         tokio::spawn(async move {
-            match client_clone.session_prompt(&sess_id, &prompt_text).await {
+            match client_clone
+                .session_prompt_paged(&sess_id, &prompt_text)
+                .await
+            {
                 Ok(resp) => {
                     let txt = resp.text_content();
                     if !txt.is_empty() {
@@ -1245,9 +1469,8 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                         }
                     }
                 }
-                // Authoritative terminal events own turn completion.
+                // Retain the streaming marker until the prompt response, even if the display prefix was archived.
                 if terminal {
-                    app.active_turn_has_streamed = false;
                     app.cancel_requested = false;
                     app.close_running_tool_calls();
                     app.clear_approval_request();
@@ -1321,6 +1544,45 @@ mod wire_contract_tests {
     use hex_protocol::models::Role;
     use hex_tui::app::DialogueItem;
 
+    #[test]
+    fn history_summary_preserves_unicode_lengths_and_navigation() {
+        let page = serde_json::from_value(serde_json::json!({
+            "history": [{"turnIndex": 7, "prompt": "世界", "response": "complete",
+                "promptChars": 2, "responseChars": 9000, "status": "completed"}],
+            "historyCount": 80, "nextBefore": 7
+        }))
+        .unwrap();
+        let text = format_history_page(&page);
+        assert!(text.contains("80 total turns"));
+        assert!(text.contains("Turn 7 [completed]"));
+        assert!(text.contains("Full response: /history-turn 7 response"));
+        assert!(!text.contains("Full prompt:"));
+        assert!(text.contains("Older turns: /session-history 7"));
+    }
+
+    #[tokio::test]
+    async fn history_commands_validate_before_dispatch() {
+        let mut app = App::new("p", "m", "cow");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        for command in [
+            "/session-history -1",
+            "/session-history 1 extra",
+            "/history-turn nope prompt",
+            "/history-turn 0 invalid",
+            "/history-turn 0 response -1",
+        ] {
+            execute_submitted_text(&mut app, command.to_owned(), None, tx.clone())
+                .await
+                .unwrap();
+            let Some(DialogueItem::Message(message)) = app.dialogue_items.last() else {
+                panic!("missing usage notice")
+            };
+            assert!(message.content.starts_with("Usage:"));
+            assert!(!app.is_busy);
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
     fn fixture(name: &str) -> Vec<serde_json::Value> {
         let path = format!(
             "{}/../../tests/fixtures/acp_wire/{}",
@@ -1353,7 +1615,7 @@ mod wire_contract_tests {
 
         assert!(!app.is_busy, "turn must end unbusy");
         assert_eq!(app.status_message, "Ready");
-        assert!(!app.active_turn_has_streamed);
+        assert!(app.active_turn_has_streamed);
 
         let assistant_text: String = app
             .dialogue_items

@@ -18,10 +18,13 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
 import uuid
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -129,6 +132,232 @@ def _bounded_tool_preview(payload: Any, *, error: bool = False) -> str:
     return visit(payload, limit, 0)[0]
 
 
+class SQLiteHistory(Sequence[dict[str, Any]]):
+    """Append-only transcript handle. No connections or records are retained."""
+
+    def __init__(self, path: Path, session_id: str) -> None:
+        self.path = path
+        self.session_id = session_id
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(str(self.path), timeout=30)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
+    def initialize(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS history (
+                    session_id TEXT NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    record_json TEXT NOT NULL,
+                    task_id TEXT,
+                    metadata_json TEXT NOT NULL,
+                    prompt TEXT,
+                    response TEXT,
+                    prompt_chars INTEGER NOT NULL,
+                    response_chars INTEGER NOT NULL,
+                    PRIMARY KEY (session_id, turn_index)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS history_tasks ON history(session_id, task_id)")
+
+    def _insert(self, conn: sqlite3.Connection, index: int, record: dict[str, Any]) -> None:
+        prompt = record.get("prompt")
+        response = record.get("response")
+        prompt = prompt if isinstance(prompt, str) else None
+        response = response if isinstance(response, str) else None
+        metadata = dict(record)
+        for name, text in (("prompt", prompt), ("response", response)):
+            if text is not None:
+                metadata[name] = ""
+        task_id = record.get("task_id")
+        conn.execute("""
+            INSERT INTO history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, turn_index) DO NOTHING
+        """, (
+            self.session_id, index, json.dumps(record, ensure_ascii=False),
+            str(task_id) if task_id is not None else None,
+            json.dumps(metadata, ensure_ascii=False), prompt, response,
+            len(prompt) if prompt is not None else 0,
+            len(response) if response is not None else 0,
+        ))
+
+    def migrate(self, records: Sequence[dict[str, Any]]) -> None:
+        self.initialize()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for index, record in enumerate(records):
+                self._insert(conn, index, record)
+
+    def append(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            # Allocate ordinals inside the write transaction, including across threads.
+            conn.execute("BEGIN IMMEDIATE")
+            index = conn.execute(
+                "SELECT COALESCE(MAX(turn_index) + 1, 0) FROM history WHERE session_id = ?",
+                (self.session_id,),
+            ).fetchone()[0]
+            self._insert(conn, index, record)
+
+    def __len__(self) -> int:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM history WHERE session_id = ?", (self.session_id,)
+            ).fetchone()[0]
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        if not isinstance(index, int):
+            raise TypeError("History indices must be integers or slices")
+        if index < 0:
+            index += len(self)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT record_json FROM history WHERE session_id = ? AND turn_index = ?",
+                (self.session_id, index),
+            ).fetchone()
+        if row is None:
+            raise IndexError("History index out of range")
+        return json.loads(row[0])
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        for index in range(len(self)):
+            yield self[index]
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, Sequence):
+            return NotImplemented
+        return len(self) == len(other) and all(a == b for a, b in zip(self, other))
+
+    def has_task(self, task_id: str) -> bool:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT 1 FROM history WHERE session_id = ? AND task_id = ? LIMIT 1",
+                (self.session_id, task_id),
+            ).fetchone() is not None
+
+    def task_ids(self) -> set[str]:
+        with self._connect() as conn:
+            return {row[0] for row in conn.execute(
+                "SELECT DISTINCT task_id FROM history WHERE session_id = ? AND task_id IS NOT NULL AND task_id != ''",
+                (self.session_id,),
+            )}
+
+    @staticmethod
+    def _clip_prefix(text: str, budget: int) -> str:
+        # Budget for default JSON escaping too, which is at least as large as the
+        # server's ensure_ascii=False UTF-8 encoding (notably for astral Unicode).
+        if len(json.dumps(text)) - 2 <= budget:
+            return text
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if len(json.dumps(text[:mid])) - 2 <= budget:
+                low = mid
+            else:
+                high = mid - 1
+        return text[:low]
+
+    def page(self, before: int, limit: int, base: dict[str, Any] | None = None) -> dict[str, Any]:
+        result = dict(base or {})
+        with self._connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM history WHERE session_id = ?", (self.session_id,)
+            ).fetchone()[0]
+            if before > count:
+                raise ValueError("before exceeds historyCount")
+            start = max(0, before - limit)
+            # Reject impossible metadata pages without allocating their full JSON.
+            metadata_bytes = conn.execute("""
+                SELECT COALESCE(SUM(length(CAST(metadata_json AS BLOB))), 0)
+                FROM history WHERE session_id = ? AND turn_index >= ? AND turn_index < ?
+            """, (self.session_id, start, before)).fetchone()[0]
+            if metadata_bytes > 64 * 1024:
+                raise ValueError("History page metadata exceeds 64 KiB")
+            records = []
+            text_fields = []
+            for index, metadata, pc, rc, pt, rt in conn.execute("""
+                SELECT turn_index, metadata_json, prompt_chars, response_chars,
+                       prompt IS NOT NULL, response IS NOT NULL
+                FROM history WHERE session_id = ? AND turn_index >= ? AND turn_index < ?
+                ORDER BY turn_index
+            """, (self.session_id, start, before)):
+                record = json.loads(metadata)
+                record.update(turnIndex=index, promptChars=pc, responseChars=rc)
+                records.append(record)
+                for name, is_text in (("prompt", pt), ("response", rt)):
+                    if is_text:
+                        text_fields.append((record, index, name))
+            result.update(history=records, historyCount=count)
+            if start > 0 and records:
+                result["nextBefore"] = records[0]["turnIndex"]
+            remaining = 64 * 1024 - len(json.dumps(result).encode("utf-8"))
+            if remaining < 0:
+                raise ValueError("History page metadata exceeds 64 KiB")
+            budget = remaining // max(1, len(text_fields))
+            for record, index, name in text_fields:
+                cap = min(4096, budget)
+                # BLOB slicing also preserves embedded NULs. At most four UTF-8
+                # bytes per Unicode character; never select the original JSON.
+                raw = conn.execute(
+                    f"SELECT substr(CAST({name} AS BLOB), 1, ?) FROM history WHERE session_id = ? AND turn_index = ?",
+                    (cap * 4, self.session_id, index),
+                ).fetchone()[0]
+                prefix = raw.decode("utf-8", errors="ignore")[:cap]
+                record[name] = self._clip_prefix(prefix, budget)
+        return result
+
+    def content(self, index: int, name: str, offset: int, limit: int) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""SELECT {name}_chars, {name} IS NOT NULL,
+                           length({name}) = {name}_chars, substr({name}, ?, ?)
+                    FROM history WHERE session_id = ? AND turn_index = ?""",
+                (offset + 1, limit, self.session_id, index),
+            ).fetchone()
+            if row is None:
+                raise ValueError("turnIndex is out of range")
+            total, is_text, no_nul, content = row
+            if not is_text:
+                raise ValueError("History field has no text content")
+            if offset > total:
+                raise ValueError("offset exceeds totalChars")
+            if not no_nul:
+                # SQLite TEXT substr/length stops at NUL. Only this exceptional
+                # case needs bounded BLOB scanning to locate Unicode offsets.
+                byte_offset = 1
+                chars_left = offset
+                pieces = []
+                wanted = min(limit, total - offset)
+                while chars_left or wanted:
+                    raw = conn.execute(
+                        f"SELECT substr(CAST({name} AS BLOB), ?, 16384) FROM history WHERE session_id = ? AND turn_index = ?",
+                        (byte_offset, self.session_id, index),
+                    ).fetchone()[0]
+                    text = raw.decode("utf-8", errors="ignore")
+                    if not text:
+                        raise ValueError("Invalid stored history text")
+                    byte_offset += len(text.encode("utf-8"))
+                    skip = min(chars_left, len(text))
+                    chars_left -= skip
+                    if not chars_left:
+                        part = text[skip:skip + wanted]
+                        pieces.append(part)
+                        wanted -= len(part)
+                content = "".join(pieces)
+        result = {"content": content, "totalChars": total}
+        if offset + len(content) < total:
+            result["nextOffset"] = offset + len(content)
+        return result
+
+
 @dataclass
 class ACPSession:
     """Active ACP editor session."""
@@ -136,7 +365,7 @@ class ACPSession:
     session_id: str
     workspace_root: Path
     model: str = "default"
-    history: list[dict[str, Any]] = field(default_factory=list)
+    history: list[dict[str, Any]] | SQLiteHistory = field(default_factory=list)
     cancelled: bool = False
     created_at: float = field(default_factory=time.time)
     last_task_id: str | None = None
@@ -145,6 +374,16 @@ class ACPSession:
 
     def __post_init__(self) -> None:
         self.cancel_ack.set()
+
+    def has_task(self, task_id: str) -> bool:
+        if isinstance(self.history, SQLiteHistory):
+            return self.history.has_task(task_id)
+        return any(turn.get("task_id") == task_id for turn in self.history)
+
+    def task_ids(self) -> set[str]:
+        if isinstance(self.history, SQLiteHistory):
+            return self.history.task_ids()
+        return {str(turn["task_id"]) for turn in self.history if turn.get("task_id")}
 
 
 class ACPServer:
@@ -164,6 +403,7 @@ class ACPServer:
         self.approval_bridge: Any | None = None
         self._lock = threading.Lock()
         self._write_lock = threading.Lock()
+        self._persist_lock = threading.RLock()
 
     def _emit(self, obj: dict[str, Any]) -> None:
         """Serialize one JSON-RPC message to stdout (thread-safe)."""
@@ -182,49 +422,71 @@ class ACPServer:
         return self.workspace_root / ".hex" / "data" / "acp_sessions"
 
     def _session_path(self, session_id: str) -> Path | None:
-        if not re.fullmatch(r"[A-Za-z0-9_\-]+", session_id or ""):
+        if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_\-]+", session_id):
             return None
         return self._sessions_dir / f"{session_id}.json"
 
-    def _persist_session(self, sess: ACPSession) -> None:
+    def _persist_session(self, sess: ACPSession) -> bool:
         path = self._session_path(sess.session_id)
         if path is None:
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "session_id": sess.session_id,
-                "workspace_root": str(sess.workspace_root),
-                "model": sess.model,
-                "created_at": sess.created_at,
-                "last_task_id": sess.last_task_id,
-                "history": sess.history,
-            }
-            # Per-thread tmp name: the cancel handler and the turn worker can
-            # persist the same session concurrently.
-            tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(path)
-        except Exception as exc:
-            logger.warning("Failed to persist ACP session %s: %s", sess.session_id, exc)
+            return False
+        with self._persist_lock:
+            try:
+                history = sess.history
+                if not isinstance(history, SQLiteHistory):
+                    durable = SQLiteHistory(self._sessions_dir / "history.db", sess.session_id)
+                    # Commit all legacy records first. A failed metadata replace
+                    # leaves both the source JSON and its in-memory list intact.
+                    durable.migrate(history)
+                else:
+                    durable = history
+                payload = {
+                    "session_id": sess.session_id,
+                    "workspace_root": str(sess.workspace_root),
+                    "model": sess.model,
+                    "created_at": sess.created_at,
+                    "last_task_id": sess.last_task_id,
+                    "history_store": "sqlite",
+                }
+                tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
+                tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp.replace(path)
+                sess.history = durable
+                return True
+            except Exception as exc:
+                logger.warning("Failed to persist ACP session %s: %s", sess.session_id, exc)
+                return False
 
     def _load_session_from_disk(self, session_id: str) -> ACPSession | None:
         path = self._session_path(session_id)
         if path is None or not path.is_file():
             return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return ACPSession(
-                session_id=data["session_id"],
-                workspace_root=Path(data.get("workspace_root") or self.workspace_root),
-                model=data.get("model", "default"),
-                history=list(data.get("history") or []),
-                created_at=float(data.get("created_at") or time.time()),
-                last_task_id=data.get("last_task_id"),
-            )
-        except Exception as exc:
-            logger.warning("Failed to load ACP session %s from disk: %s", session_id, exc)
-            return None
+        with self._persist_lock:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if data["session_id"] != session_id:
+                    raise ValueError("Session metadata identity does not match its path")
+                if data.get("history_store") == "sqlite":
+                    db_path = self._sessions_dir / "history.db"
+                    if not db_path.is_file():
+                        raise FileNotFoundError("Session history storage is missing")
+                    history = SQLiteHistory(db_path, session_id)
+                else:
+                    history = data.get("history") or []
+                sess = ACPSession(
+                    session_id=session_id,
+                    workspace_root=Path(data.get("workspace_root") or self.workspace_root),
+                    model=data.get("model", "default"),
+                    history=history,
+                    created_at=float(data.get("created_at") or time.time()),
+                    last_task_id=data.get("last_task_id"),
+                )
+                if not isinstance(history, SQLiteHistory):
+                    self._persist_session(sess)
+                return sess
+            except Exception as exc:
+                logger.warning("Failed to load ACP session %s from disk: %s", session_id, exc)
+                return None
 
     @property
     def orchestrator(self) -> Any:
@@ -270,7 +532,9 @@ class ACPServer:
         """Process incoming JSON-RPC 2.0 request and return structured response."""
         req_id = req.get("id")
         method = req.get("method")
-        params = req.get("params") or {}
+        params = req.get("params", {})
+        if method not in ("session/load", "session/history", "session/historyContent", "session/toolResult"):
+            params = params or {}
 
         if not method:
             return {
@@ -286,6 +550,10 @@ class ACPServer:
                 res = self._handle_session_new(params)
             elif method == "session/load":
                 res = self._handle_session_load(params)
+            elif method == "session/history":
+                res = self._handle_session_history(params)
+            elif method == "session/historyContent":
+                res = self._handle_session_history_content(params)
             elif method == "session/prompt":
                 res = self._handle_session_prompt(params)
             elif method == "session/cancel":
@@ -324,7 +592,9 @@ class ACPServer:
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "error": {
-                    "code": -32602 if method == "session/toolResult" and isinstance(exc, (ValueError, TypeError)) else -32000,
+                    "code": -32602 if method in {
+                        "session/toolResult", "session/load", "session/history", "session/historyContent"
+                    } and isinstance(exc, (ValueError, TypeError)) else -32000,
                     "message": str(exc),
                 },
             }
@@ -406,26 +676,86 @@ class ACPServer:
             "splashText": splash_text,
         }
 
-    def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _validate_history_params(self, params: Any, allowed: set[str]) -> None:
+        if not isinstance(params, dict):
+            raise ValueError("Session history params must be an object")
+        if params.keys() - allowed:
+            raise ValueError("Unknown session history parameter")
         sid = params.get("sessionId")
+        if not isinstance(sid, str) or len(sid) > 256 or self._session_path(sid) is None:
+            raise ValueError("sessionId must be a valid session identifier")
+
+    @staticmethod
+    def _history_integer(params: dict[str, Any], name: str, default: int, minimum: int, maximum: int) -> int:
+        value = params.get(name, default)
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be an integer between {minimum} and {maximum}")
+        return value
+
+    def _existing_session(self, sid: str) -> ACPSession:
         with self._lock:
             sess = self.sessions.get(sid)
         if sess is None:
             sess = self._load_session_from_disk(sid)
-            if sess is not None:
-                with self._lock:
-                    self.sessions[sid] = sess
         if sess is None:
             raise KeyError(f"Session not found: {sid}")
-        return {
+        return sess
+
+    def _durable_history(self, sess: ACPSession) -> SQLiteHistory:
+        if not isinstance(sess.history, SQLiteHistory):
+            if not self._persist_session(sess):
+                raise OSError("Session history persistence unavailable; source retained")
+        return sess.history
+
+    def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._validate_history_params(params, {"sessionId", "paged"})
+        paged = params.get("paged", False)
+        if type(paged) is not bool:
+            raise ValueError("paged must be a boolean")
+        sess = self._existing_session(params["sessionId"])
+        with self._lock:
+            self.sessions[sess.session_id] = sess
+        result = {
             "sessionId": sess.session_id,
             "cwd": str(sess.workspace_root),
             "model": sess.model,
-            "historyCount": len(sess.history),
-            "history": sess.history,
         }
+        if paged:
+            history = self._durable_history(sess)
+            return history.page(len(history), 32, result)
+        result.update(historyCount=len(sess.history), history=list(sess.history))
+        return result
+
+    def _handle_session_history(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._validate_history_params(params, {"sessionId", "before", "limit"})
+        limit = self._history_integer(params, "limit", 32, 1, 32)
+        # Validate even before looking up storage, without treating bool as int.
+        before = self._history_integer(params, "before", 0, 0, 2**31 - 1)
+        history = self._durable_history(self._existing_session(params["sessionId"]))
+        return history.page(before if "before" in params else len(history), limit)
+
+    def _handle_session_history_content(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._validate_history_params(params, {"sessionId", "turnIndex", "field", "offset", "limit"})
+        if "turnIndex" not in params:
+            raise ValueError("turnIndex is required")
+        index = self._history_integer(params, "turnIndex", 0, 0, 2**31 - 1)
+        name = params.get("field")
+        if not isinstance(name, str) or name not in {"prompt", "response"}:
+            raise ValueError("field must be prompt or response")
+        offset = self._history_integer(params, "offset", 0, 0, 2**31 - 1)
+        limit = self._history_integer(params, "limit", 4096, 1, 4096)
+        history = self._durable_history(self._existing_session(params["sessionId"]))
+        return history.content(index, name, offset, limit)
+
+    def _append_history(self, sess: ACPSession, record: dict[str, Any]) -> None:
+        with self._persist_lock:
+            sess.history.append(record)
+            if not isinstance(sess.history, SQLiteHistory):
+                self._persist_session(sess)
 
     def _handle_session_prompt(self, params: dict[str, Any]) -> dict[str, Any]:
+        if type(params.get("pagedResponse", False)) is not bool:
+            raise ValueError("pagedResponse must be a boolean")
         sid = params.get("sessionId")
         with self._lock:
             sess = self.sessions.get(sid)
@@ -474,6 +804,8 @@ class ACPServer:
         self, sess: ACPSession, params: dict[str, Any], prompt_text: str
     ) -> dict[str, Any]:
         start_t = time.time()
+        if not isinstance(sess.history, SQLiteHistory):
+            self._persist_session(sess)
 
         # Carry prior dialogue so follow-up turns keep conversation context.
         conversation_history: list[dict[str, str]] = []
@@ -500,22 +832,28 @@ class ACPServer:
         task_id = sub_res["task_id"]
         sess.last_task_id = task_id
 
+        paged_response = params.get("pagedResponse", False)
         streamed = False
 
         def stream_cb(chunk: str) -> None:
             nonlocal streamed
             if not chunk or sess.cancelled:
                 return
-            streamed = True
-            self._emit({
-                "jsonrpc": "2.0",
-                "method": "session/update",
-                "params": {
-                    "sessionId": sess.session_id,
-                    "updateType": "agent_response",
-                    "delta": chunk,
-                },
-            })
+            # Iterate slices lazily; model callbacks may contain an entire answer.
+            step = 4096 if paged_response else len(chunk)
+            for offset in range(0, len(chunk), step):
+                if sess.cancelled:
+                    return
+                streamed = True
+                self._emit({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": sess.session_id,
+                        "updateType": "agent_response",
+                        "delta": chunk[offset:offset + step] if paged_response else chunk,
+                    },
+                })
 
         active_tool_calls: dict[str, str] = {}
 
@@ -575,7 +913,7 @@ class ACPServer:
             # terminal events; run_stdio sets the ack after emitting it.
             sess.cancel_ack.wait(timeout=5.0)
             terminal_reason = "Session execution was cancelled."
-            sess.history.append({
+            self._append_history(sess, {
                 "task_id": task_id,
                 "prompt": prompt_text,
                 "status": status_str,
@@ -635,7 +973,7 @@ class ACPServer:
             or "Task completed."
         )
 
-        sess.history.append({
+        self._append_history(sess, {
             "task_id": task_id,
             "prompt": prompt_text,
             "status": status_str,
@@ -643,7 +981,13 @@ class ACPServer:
             "duration": time.time() - start_t,
         })
 
-        # Send final ready notification (if no stream occurred, include delta)
+        terminal_text = str(terminal_reason)
+        paged_final = paged_response and not streamed and len(terminal_text) > 4096
+        if paged_final:
+            # The complete original is committed before these synthetic deltas.
+            stream_cb(terminal_text)
+
+        # Never fall back to a huge Ready delta if cancellation suppressed slices.
         update_notif: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": "session/update",
@@ -653,9 +997,13 @@ class ACPServer:
                 "status": "Ready",
             },
         }
-        if not streamed:
-            update_notif["params"]["delta"] = str(terminal_reason)
+        if not streamed and not paged_final:
+            update_notif["params"]["delta"] = terminal_text
         self._emit(update_notif)
+
+        if paged_response and len(terminal_text) > 4096:
+            turn_index = len(sess.history) - 1
+            terminal_text = terminal_text[:4096] + f"\n[Full response: /history-turn {turn_index} response]"
 
         return {
             "sessionId": sess.session_id,
@@ -663,7 +1011,7 @@ class ACPServer:
             "content": [
                 {
                     "type": "text",
-                    "text": str(terminal_reason),
+                    "text": terminal_text,
                 }
             ],
             "taskId": task_id,
@@ -701,24 +1049,25 @@ class ACPServer:
     def _handle_session_list(self, params: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             known = dict(self.sessions)
-        # Merge durable sessions from disk so restarts keep the listing complete.
+
+        def summary(sess: ACPSession) -> dict[str, Any]:
+            return {
+                "sessionId": sess.session_id,
+                "cwd": str(sess.workspace_root),
+                "model": sess.model,
+                "created_at": sess.created_at,
+                "turns": len(sess.history),
+            }
+
+        sess_list = [summary(sess) for sess in known.values()]
+        # Inactive sessions contribute only metadata, never retained transcripts.
         if self._sessions_dir.is_dir():
             for path in sorted(self._sessions_dir.glob("*.json")):
-                sid = path.stem
-                if sid not in known:
-                    sess = self._load_session_from_disk(sid)
+                if path.stem not in known:
+                    sess = self._load_session_from_disk(path.stem)
                     if sess is not None:
-                        known[sid] = sess
-        sess_list = [
-            {
-                "sessionId": s.session_id,
-                "cwd": str(s.workspace_root),
-                "model": s.model,
-                "created_at": s.created_at,
-                "turns": len(s.history),
-            }
-            for s in known.values()
-        ]
+                        sess_list.append(summary(sess))
+                    del sess
         return {"sessions": sess_list}
 
     def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -788,9 +1137,7 @@ class ACPServer:
             sess = self._load_session_from_disk(sid)
         if sess is None:
             raise KeyError(f"Session not found: {sid}")
-        if task_id != sess.last_task_id and not any(
-            turn.get("task_id") == task_id for turn in sess.history
-        ):
+        if task_id != sess.last_task_id and not sess.has_task(task_id):
             raise KeyError("Task does not belong to this session")
         ledger = getattr(self.orchestrator, "ledger", None)
         if ledger is None:
@@ -815,10 +1162,7 @@ class ACPServer:
         if sess is not None:
             if sess.last_task_id:
                 task_ids.add(str(sess.last_task_id))
-            for turn in sess.history:
-                tid = turn.get("task_id")
-                if tid:
-                    task_ids.add(str(tid))
+            task_ids.update(sess.task_ids())
 
         records: list[dict[str, Any]] = []
         mgr = getattr(self.orchestrator, "subagent_manager", None)
@@ -877,6 +1221,7 @@ class ACPServer:
         if sess is None:
             sess = ACPSession(session_id=sid, workspace_root=self.workspace_root)
             self.sessions[sid] = sess
+            self._persist_session(sess)
 
         handlers = self._command_handlers()
 

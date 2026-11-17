@@ -4,8 +4,8 @@ use hex_protocol::AcpClient;
 
 #[tokio::test]
 async fn test_live_acp_server_subprocess() {
-    // Check if python or venv exists
-    let client = match AcpClient::spawn_acp_server(None).await {
+    let workspace = tempfile::tempdir().unwrap();
+    let client = match AcpClient::spawn_acp_server(Some(workspace.path())).await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Skipping live ACP test: failed to spawn server ({})", e);
@@ -26,17 +26,34 @@ async fn test_live_acp_server_subprocess() {
     assert!(init_resp.capabilities.session.streaming);
 
     // 3. Tools list
-    let tools = client.tools_list().await.expect("tools_list should succeed");
+    let tools = client
+        .tools_list()
+        .await
+        .expect("tools_list should succeed");
     assert!(!tools.is_empty(), "ACP server should expose gateway tools");
     let has_read = tools.iter().any(|t| t.name == "read_file");
     assert!(has_read, "read_file tool should be available");
 
     // 4. Session new
     let sess = client
-        .session_new(Some("."), None)
+        .session_new(workspace.path().to_str(), None)
         .await
         .expect("session_new should succeed");
     assert!(!sess.session_id.is_empty());
+    assert!(workspace
+        .path()
+        .join(".hex/data/acp_sessions/history.db")
+        .is_file());
+    let loaded = client
+        .session_load_paged(&sess.session_id)
+        .await
+        .expect("paged load should succeed");
+    assert_eq!(
+        std::path::Path::new(&loaded.cwd).canonicalize().unwrap(),
+        workspace.path().canonicalize().unwrap()
+    );
+    assert_eq!(loaded.page.history_count, 0);
+    assert!(loaded.page.history.is_empty());
 
     // 5. Clean teardown
     client.close().await.expect("close should succeed");

@@ -46,7 +46,8 @@ fn notification_retained_bytes(notification: &JsonRpcNotification) -> usize {
                     + values.iter().map(heap_bytes).sum::<usize>()
             }
             serde_json::Value::Object(values) => {
-                values.len() * (std::mem::size_of::<(String, serde_json::Value)>() + 64)
+                // A one-entry object still allocates a complete B-tree node.
+                values.len() * (11 * std::mem::size_of::<(String, serde_json::Value)>() + 128)
                     + values
                         .iter()
                         .map(|(key, value)| key.capacity() + heap_bytes(value))
@@ -365,6 +366,9 @@ impl AcpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if let Some(workspace) = workspace_root {
+            cmd.arg("--workspace").arg(workspace);
+        }
 
         let mut child = cmd.spawn()?;
 
@@ -512,6 +516,39 @@ impl AcpClient {
         self.send_request("session/load", params).await
     }
 
+    pub async fn session_load_paged(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::models::PagedSessionLoad, AcpError> {
+        self.send_request(
+            "session/load",
+            serde_json::json!({"sessionId": session_id, "paged": true}),
+        )
+        .await
+    }
+
+    pub async fn session_history(
+        &self,
+        session_id: &str,
+        before: Option<usize>,
+    ) -> Result<crate::models::HistoryPage, AcpError> {
+        let mut params = serde_json::json!({"sessionId": session_id});
+        if let Some(before) = before {
+            params["before"] = before.into();
+        }
+        self.send_request("session/history", params).await
+    }
+
+    pub async fn session_history_content(
+        &self,
+        session_id: &str,
+        turn_index: usize,
+        field: &str,
+        offset: usize,
+    ) -> Result<crate::models::ToolResultPage, AcpError> {
+        self.send_request("session/historyContent", serde_json::json!({"sessionId": session_id, "turnIndex": turn_index, "field": field, "offset": offset, "limit": 4096})).await
+    }
+
     /// Send a prompt to the active session.
     pub async fn session_prompt(
         &self,
@@ -519,6 +556,17 @@ impl AcpClient {
         prompt_text: &str,
     ) -> Result<SessionPromptResponse, AcpError> {
         let params = SessionPromptParams::new_text(session_id, prompt_text);
+        self.send_request("session/prompt", params).await
+    }
+
+    pub async fn session_prompt_paged(
+        &self,
+        session_id: &str,
+        prompt_text: &str,
+    ) -> Result<SessionPromptResponse, AcpError> {
+        let mut params =
+            serde_json::to_value(SessionPromptParams::new_text(session_id, prompt_text))?;
+        params["pagedResponse"] = serde_json::json!(true);
         self.send_request("session/prompt", params).await
     }
 
@@ -921,6 +969,90 @@ mod tests {
         assert_eq!(res.approval_id, "appr_1");
         assert_eq!(res.decision, "approve");
         assert_eq!(res.status, "acknowledged");
+    }
+
+    #[tokio::test]
+    async fn test_client_history_paging_rpc() {
+        let (client_read, mut server_write) = tokio::io::duplex(4096);
+        let (server_read, client_write) = tokio::io::duplex(4096);
+        let client = AcpClient::from_streams(client_read, client_write);
+        let server = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            let page = serde_json::json!({
+                "history": [{"turnIndex": 8, "prompt": "世界", "response": "tail",
+                    "promptChars": 9000, "responseChars": 12000}],
+                "historyCount": 40, "nextBefore": 8
+            });
+            let requests = [
+                (
+                    "session/load",
+                    serde_json::json!({"sessionId": "ses_1", "paged": true}),
+                ),
+                (
+                    "session/history",
+                    serde_json::json!({"sessionId": "ses_1", "before": 8}),
+                ),
+                ("session/history", serde_json::json!({"sessionId": "ses_1"})),
+                (
+                    "session/historyContent",
+                    serde_json::json!({"sessionId": "ses_1",
+                    "turnIndex": 8, "field": "response", "offset": 4096, "limit": 4096}),
+                ),
+                (
+                    "session/prompt",
+                    serde_json::json!({"sessionId": "ses_1", "prompt": "hello", "pagedResponse": true}),
+                ),
+            ];
+            for (method, params) in requests {
+                let line = lines.next_line().await.unwrap().unwrap();
+                let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+                assert_eq!(req.method, method);
+                assert_eq!(req.params, Some(params));
+                let result = match method {
+                    "session/load" => {
+                        let mut result = page.clone();
+                        result["sessionId"] = serde_json::json!("ses_1");
+                        result["cwd"] = serde_json::json!("/workspace");
+                        result["model"] = serde_json::json!("test");
+                        result
+                    }
+                    "session/historyContent" => serde_json::json!({
+                        "content": "世界", "totalChars": 12000, "nextOffset": 4098
+                    }),
+                    "session/prompt" => {
+                        serde_json::json!({"sessionId": "ses_1", "status": "completed", "taskId": "tsk_1", "content": [{"type": "text", "text": "世界"}]})
+                    }
+                    _ => page.clone(),
+                };
+                let response =
+                    serde_json::json!({"jsonrpc": "2.0", "id": req.id, "result": result});
+                server_write
+                    .write_all((response.to_string() + "\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let loaded = client.session_load_paged("ses_1").await.unwrap();
+        assert_eq!(loaded.page.history_count, 40);
+        assert_eq!(loaded.page.history[0].prompt_chars, 9000);
+        let older = client.session_history("ses_1", Some(8)).await.unwrap();
+        assert_eq!(older.next_before, Some(8));
+        assert_eq!(client.session_history("ses_1", None).await.unwrap(), older);
+        let content = client
+            .session_history_content("ses_1", 8, "response", 4096)
+            .await
+            .unwrap();
+        assert_eq!(content.content, "世界");
+        assert_eq!(content.next_offset, Some(4098));
+        assert_eq!(
+            client
+                .session_prompt_paged("ses_1", "hello")
+                .await
+                .unwrap()
+                .text_content(),
+            "世界"
+        );
+        server.await.unwrap();
     }
 
     #[tokio::test]

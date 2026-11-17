@@ -434,6 +434,35 @@ pub struct SessionHistoryTurn {
     pub status: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PagedHistoryTurn {
+    #[serde(flatten)]
+    pub turn: SessionHistoryTurn,
+    pub turn_index: usize,
+    pub prompt_chars: usize,
+    pub response_chars: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    pub history: Vec<PagedHistoryTurn>,
+    pub history_count: usize,
+    #[serde(default)]
+    pub next_before: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PagedSessionLoad {
+    pub session_id: String,
+    pub cwd: String,
+    pub model: String,
+    #[serde(flatten)]
+    pub page: HistoryPage,
+}
+
 /// Parameters for `session/prompt`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -901,6 +930,20 @@ mod tests {
         assert_eq!(resp.history[0].prompt, "hello");
         assert_eq!(resp.history[0].response, "hi there");
         assert_eq!(resp.history[0].task_id.as_deref(), Some("tsk_acp_1"));
+    }
+
+    #[test]
+    fn paged_history_preserves_full_lengths_and_older_cursor() {
+        let page: PagedSessionLoad = serde_json::from_value(serde_json::json!({
+            "sessionId": "ses_1", "cwd": "/tmp", "model": "fixture",
+            "historyCount": 100, "nextBefore": 99,
+            "history": [{"turnIndex": 99, "task_id": "tsk_99", "prompt": "hello", "response": "世界", "status": "completed", "promptChars": 5000, "responseChars": 9000}]
+        })).unwrap();
+        assert_eq!(page.page.history_count, 100);
+        assert_eq!(page.page.next_before, Some(99));
+        assert_eq!(page.page.history[0].turn_index, 99);
+        assert_eq!(page.page.history[0].turn.task_id.as_deref(), Some("tsk_99"));
+        assert_eq!(page.page.history[0].response_chars, 9000);
     }
 
     #[test]

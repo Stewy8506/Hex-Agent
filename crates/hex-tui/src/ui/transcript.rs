@@ -166,6 +166,24 @@ impl TranscriptLayout {
         self.requested_scroll
     }
 
+    pub fn discarded_rows(&self, items: usize) -> usize {
+        self.entries.iter().take(items).map(|entry| entry.height).sum()
+    }
+
+    pub fn discard_items(&mut self, start: usize, end: usize) {
+        let end = end.min(self.entries.len());
+        let start = start.min(end);
+        self.entries.drain(start..end);
+        self.entries.shrink_to_fit();
+        let mut row = self.prefix_rows;
+        for entry in &mut self.entries {
+            entry.start = row;
+            row += entry.height;
+        }
+        self.stream = None;
+        self.requested_scroll = usize::MAX;
+    }
+
     pub fn retained_render_bytes(&self) -> usize {
         self.cache_bytes
             + self.cache.capacity() * std::mem::size_of::<CachedBlock>()
