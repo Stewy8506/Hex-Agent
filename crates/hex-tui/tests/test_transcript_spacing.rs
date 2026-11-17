@@ -160,8 +160,66 @@ fn test_tool_rows_keep_their_indent_and_gain_a_gap() {
     let after = find_row(&buf, "after the tool");
 
     assert!(tool > before + 1, "gap before the tool row");
-    assert_eq!(first_col(&row(&buf, find_row(&buf, "line one"))), 8, "tool output keeps its 4-column indent");
+    assert_eq!(first_col(&row(&buf, find_row(&buf, "line one"))), 12, "tool output aligns under the indented action");
     assert!(after > result + 1, "gap after the tool result");
     let between: String = (CONTENT_X..87).map(|x| buf[(x, result + 1)].symbol().to_string()).collect();
     assert!(between.trim().is_empty(), "the gap row is really blank");
+}
+
+#[test]
+fn test_consecutive_tools_form_an_indented_tree_separate_from_prose() {
+    let mut app = app_with(&["before the actions"]);
+    app.add_tool_call("files", "list_files", "{}", None, None);
+    app.complete_tool_call("files", "done", 100, false);
+    app.add_tool_call("graph", "query_graphify", "{}", None, None);
+    app.complete_tool_call("graph", "done", 100, false);
+    app.add_assistant_message("final output");
+    app.dialogue_entrance.set((app.dialogue_items.len(), None));
+
+    for width in [60, 120] {
+        let buf = render(&app, width, 40);
+        let before = find_row(&buf, "before the actions");
+        let first = find_row(&buf, "list_files");
+        let last = find_row(&buf, "query_graphify");
+        let answer = find_row(&buf, "final output");
+        assert!(first > before + 1);
+        assert_eq!(last, first + 1, "consecutive actions have no empty rows");
+        assert!(answer > last + 1, "prose starts after a gap");
+        assert_eq!(buf[(CONTENT_X + 4, first)].symbol(), "├");
+        assert_eq!(buf[(CONTENT_X + 4, last)].symbol(), "└");
+        for y in [first, last] {
+            assert_eq!(buf[(CONTENT_X + 4, y)].fg, HexTheme::truecolor().accent_blue);
+        }
+        assert_eq!(col_of(&row(&buf, first), "list_files"), (CONTENT_X + 8) as usize);
+        assert_eq!(first_col(&row(&buf, answer)), PROSE_X as usize);
+        assert!(!row(&buf, answer - 1).contains("HEX"), "no assistant-name header");
+    }
+}
+
+#[test]
+fn test_tool_tree_stops_at_messages_and_indents_expanded_results() {
+    let mut app = app_with(&[]);
+    app.add_tool_call("files", "list_files", "{}", None, None);
+    app.complete_tool_call("files", "expanded output", 100, false);
+    if let hex_tui::app::DialogueItem::ToolCall(tool) = app.dialogue_items.last_mut().unwrap() {
+        tool.collapsed = false;
+    }
+    app.add_tool_call("graph", "query_graphify", "{}", None, None);
+    app.complete_tool_call("graph", "done", 100, false);
+    app.add_assistant_message("between groups");
+    app.add_tool_call("search", "search_files", "{}", None, None);
+    app.complete_tool_call("search", "done", 100, false);
+    app.dialogue_entrance.set((app.dialogue_items.len(), None));
+
+    let buf = render(&app, 120, 40);
+    let expanded = find_row(&buf, "expanded output");
+    let last = find_row(&buf, "query_graphify");
+    let second_group = find_row(&buf, "search_files");
+    assert_eq!(buf[(CONTENT_X + 4, expanded)].symbol(), "│");
+    assert_eq!(buf[(CONTENT_X + 4, expanded)].fg, HexTheme::truecolor().accent_blue);
+    assert_eq!(col_of(&row(&buf, expanded), "expanded output"), (CONTENT_X + 8) as usize);
+    assert_eq!(last, expanded + 1);
+    assert_eq!(buf[(CONTENT_X + 4, last)].symbol(), "└");
+    assert_eq!(buf[(CONTENT_X + 4, second_group)].symbol(), "└");
+    assert!(second_group > find_row(&buf, "between groups") + 1);
 }

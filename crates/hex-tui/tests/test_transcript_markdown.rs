@@ -187,6 +187,27 @@ fn test_blank_lines_separate_blocks_without_piling_up() {
 }
 
 #[test]
+fn test_structural_markers_use_the_cursor_accent_without_coloring_prose() {
+    for t in [HexTheme::truecolor(), HexTheme::color_256()] {
+        let lines = render_markdown("# Heading\n\n- bullet\n  - nested\n1. numbered\n\n> quoted", 60, &t);
+        for marker in ["•", "1.", "│ "] {
+            let matching: Vec<_> = lines.iter().flat_map(|line| &line.spans)
+                .filter(|span| span.content == marker).collect();
+            assert!(!matching.is_empty(), "missing marker {marker:?}");
+            assert!(matching.iter().all(|span| span.style.fg == Some(t.accent_blue)));
+        }
+        for body in ["bullet", "nested", "numbered", "quoted"] {
+            let span = lines.iter().flat_map(|line| &line.spans)
+                .find(|span| span.content.contains(body)).unwrap();
+            assert_eq!(span.style.fg, Some(t.text_muted));
+        }
+        let heading = lines.iter().flat_map(|line| &line.spans)
+            .find(|span| span.content.contains("Heading")).unwrap();
+        assert_eq!(heading.style.fg, Some(t.text_bright));
+    }
+}
+
+#[test]
 fn test_plain_text_is_unchanged() {
     let lines = render_markdown("just a plain sentence", 60, &theme());
     assert_eq!(rows(&lines), vec!["  just a plain sentence".to_string()]);

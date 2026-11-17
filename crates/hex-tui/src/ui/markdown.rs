@@ -80,7 +80,7 @@ pub fn render_markdown(text: &str, width: usize, theme: &HexTheme) -> Vec<Line<'
             let depth = (indent_cols / 2).min(4);
             let marker_indent = PROSE_INDENT + depth * 2;
             let text_indent = marker_indent + item.marker_width + 1;
-            let marker_style = Style::default().fg(theme.text_extra_dim);
+            let marker_style = Style::default().fg(theme.accent_blue);
             let spans = inline_spans(&item.body, Style::default().fg(theme.text_muted), theme);
             let rows = wrap_spans(spans, width, text_indent, text_indent);
             for (i, row) in rows.into_iter().enumerate() {
@@ -105,7 +105,7 @@ pub fn render_markdown(text: &str, width: usize, theme: &HexTheme) -> Vec<Line<'
             for row in wrap_spans(spans, width, PROSE_INDENT + 2, PROSE_INDENT + 2) {
                 let mut line = vec![
                     Span::raw(" ".repeat(PROSE_INDENT)),
-                    Span::styled("│ ", Style::default().fg(theme.text_extra_dim)),
+                    Span::styled("│ ", Style::default().fg(theme.accent_blue)),
                 ];
                 line.extend(row);
                 out.push(Line::from(line));

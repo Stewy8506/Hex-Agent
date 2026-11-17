@@ -22,6 +22,7 @@ use crate::ui::style::HexTheme;
 /// Canvas breathing room: 3 columns each side, 1 row on top (mockup 28px/14px).
 const CANVAS_PAD_X: u16 = 3;
 const CANVAS_PAD_TOP: u16 = 1;
+const TOOL_INDENT: usize = 4;
 /// Below this window width the right rail is dropped instead of squeezing the
 /// transcript into an unreadable column.
 const MIN_WIDTH_FOR_RAIL: u16 = 92;
@@ -247,10 +248,12 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
             block_started = true;
         }
 
-        // Dialogue messages and tool invocations, one blank row between blocks.
         let mut block_starts: Vec<usize> = Vec::new();
         for (index, item) in app.dialogue_items.iter().enumerate() {
-            if block_started {
+            let continues_tools = matches!(item, DialogueItem::ToolCall(_))
+                && index > 0
+                && matches!(&app.dialogue_items[index - 1], DialogueItem::ToolCall(_));
+            if block_started && !continues_tools {
                 lines.push(Line::raw(""));
             }
             block_started = true;
@@ -290,7 +293,11 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                         theme.text_dim
                     };
 
+                    let has_next_tool = matches!(app.dialogue_items.get(index + 1), Some(DialogueItem::ToolCall(_)));
+                    let branch = if has_next_tool { "├" } else { "└" };
                     let tool_line = Line::from(vec![
+                        Span::raw(" ".repeat(TOOL_INDENT)),
+                        Span::styled(format!("{branch} "), Style::default().fg(theme.accent_blue)),
                         spinner,
                         Span::styled(format!("{:<7} ", t.tool), Style::default().fg(verb_color)),
                         Span::styled(crate::app::tool_args_label(&t.args), Style::default().fg(theme.text_bright)),
@@ -302,8 +309,10 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                     if let Some(ref res) = t.result {
                         if !t.collapsed {
                             for res_line in res.lines().take(4) {
+                                let continuation = if has_next_tool { "│   " } else { "    " };
                                 lines.push(Line::from(vec![
-                                    Span::raw("    "),
+                                    Span::raw(" ".repeat(TOOL_INDENT)),
+                                    Span::styled(continuation, Style::default().fg(theme.accent_blue)),
                                     Span::styled(res_line, Style::default().fg(theme.text_extra_dim)),
                                 ]));
                             }
