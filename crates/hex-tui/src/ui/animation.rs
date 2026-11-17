@@ -121,7 +121,7 @@ impl AnimationState {
     /// Generates spans with a shimmering gradient sweep across a thinking line.
     ///
     /// The sweep runs across text on a 2.4s linear cycle.
-    pub fn render_shimmer<'a>(&self, text: &'a str, base_color: Color, highlight_color: Color) -> Vec<Span<'a>> {
+    pub fn render_shimmer(&self, text: &str, base_color: Color, highlight_color: Color) -> Vec<Span<'static>> {
         let chars: Vec<char> = text.chars().collect();
         if chars.is_empty() {
             return vec![];

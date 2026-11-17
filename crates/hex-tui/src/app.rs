@@ -539,6 +539,8 @@ pub struct App {
     pub dialogue_items: Vec<DialogueItem>,
     pub tool_result_refs: std::collections::HashMap<String, ToolResultRef>,
     pub dialogue_scroll: usize,
+    pub dialogue_view_offset: std::cell::Cell<usize>,
+    pub transcript_layout: std::cell::RefCell<crate::ui::transcript::TranscriptLayout>,
     pub follow_dialogue: bool,
     /// (total transcript rows, viewport rows) as last measured by the renderer.
     /// Wrapping depends on the terminal width, so only the renderer knows the
@@ -1359,6 +1361,8 @@ impl App {
             dialogue_items: Vec::new(),
             tool_result_refs: std::collections::HashMap::new(),
             dialogue_scroll: 0,
+            dialogue_view_offset: std::cell::Cell::new(0),
+            transcript_layout: std::cell::RefCell::new(Default::default()),
             follow_dialogue: true,
             dialogue_metrics: std::cell::Cell::new((0, 0)),
             dialogue_entrance: std::cell::Cell::new((0, None)),
@@ -1447,7 +1451,6 @@ impl App {
             content: content.to_string(),
             timestamp: chrono_now(),
         }));
-        self.scroll_dialogue_to_bottom();
     }
 
     /// Replay a loaded session transcript so resumed conversations keep their dialogue.
@@ -1468,7 +1471,6 @@ impl App {
         if let Some(DialogueItem::Message(msg)) = self.dialogue_items.last_mut() {
             if msg.role == Role::Assistant {
                 msg.content.push_str(delta);
-                self.scroll_dialogue_to_bottom();
                 return;
             }
         }
@@ -1482,7 +1484,6 @@ impl App {
             content: content.to_string(),
             timestamp: chrono_now(),
         }));
-        self.scroll_dialogue_to_bottom();
     }
 
     /// Model label for display. Empty means the runtime has not reported one.
@@ -1982,7 +1983,6 @@ impl App {
                 collapsed: true,
                 started_at: Some(std::time::Instant::now()),
             }));
-        self.scroll_dialogue_to_bottom();
     }
 
     /// Mark a tool call as completed.
@@ -2532,6 +2532,9 @@ impl App {
     pub fn scroll_up(&mut self) {
         match self.focus {
             Focus::Dialogue | Focus::Input => {
+                if !self.follow_dialogue && self.transcript_layout.borrow().requested_scroll() == self.dialogue_scroll {
+                    self.dialogue_scroll = self.dialogue_view_offset.get();
+                }
                 let (total, viewport) = self.dialogue_metrics.get();
                 if self.follow_dialogue && self.dialogue_scroll == 0 && total > viewport {
                     // Leaving the pinned bottom: start from the real last row.
@@ -2550,6 +2553,9 @@ impl App {
     pub fn scroll_down(&mut self) {
         match self.focus {
             Focus::Dialogue | Focus::Input => {
+                if !self.follow_dialogue && self.transcript_layout.borrow().requested_scroll() == self.dialogue_scroll {
+                    self.dialogue_scroll = self.dialogue_view_offset.get();
+                }
                 self.dialogue_scroll = self.dialogue_scroll.saturating_add(1);
                 let (total, viewport) = self.dialogue_metrics.get();
                 if total > viewport && self.dialogue_scroll >= total - viewport {

@@ -378,6 +378,14 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
     Some((label, url, paren + 1))
 }
 
+pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let style = line.style;
+    wrap_spans(line.spans, width.max(1), 0, 0)
+        .into_iter()
+        .map(|spans| Line::from(spans).style(style))
+        .collect()
+}
+
 /// Greedy word wrap that keeps every character's style intact.
 fn wrap_spans(
     spans: Vec<Span<'static>>,

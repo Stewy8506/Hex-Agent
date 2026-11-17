@@ -14,6 +14,7 @@ pub mod right_rail;
 pub mod screens;
 pub mod status_bar;
 pub mod style;
+pub mod transcript;
 pub mod widgets;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
