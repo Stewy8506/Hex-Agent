@@ -15,7 +15,7 @@ use ratatui::Terminal;
 
 use hex_protocol::client::AcpClient;
 use hex_tui::app::{available_slash_commands, App, ApprovalRequest, Focus, ScreenState};
-use hex_tui::event::{AppEvent, EventHandler};
+use hex_tui::event::{AppEvent, EventHandler, FramePacer};
 use hex_tui::ui;
 use hex_tui::ui::design::{format_available_skills, format_available_tools};
 
@@ -59,7 +59,11 @@ struct Args {
     #[arg(long, help = "Assistant display name (default: HEX)")]
     name: Option<String>,
 
-    #[arg(long, visible_alias = "context-window", help = "Maximum context window tokens")]
+    #[arg(
+        long,
+        visible_alias = "context-window",
+        help = "Maximum context window tokens"
+    )]
     max_tokens: Option<usize>,
 }
 
@@ -163,7 +167,8 @@ fn run_headless_check(args: Args) -> Result<()> {
     let buffer2 = terminal.backend().buffer().clone();
     let content2 = format!("{:?}", buffer2);
     assert!(
-        content2.contains("Create a high-performance HTTP service") || content2.contains("server.rs"),
+        content2.contains("Create a high-performance HTTP service")
+            || content2.contains("server.rs"),
         "Virtual buffer must contain session dialogue and tool activity"
     );
     assert!(
@@ -185,7 +190,9 @@ fn run_headless_check(args: Args) -> Result<()> {
     let approval_buffer = terminal.backend().buffer().clone();
     let approval_content = format!("{:?}", approval_buffer);
     assert!(
-        approval_content.contains("APPROVAL REQUIRED") || approval_content.contains("DESTRUCTIVE") || approval_content.contains("rm -rf"),
+        approval_content.contains("APPROVAL REQUIRED")
+            || approval_content.contains("DESTRUCTIVE")
+            || approval_content.contains("rm -rf"),
         "Virtual buffer must render approval modal"
     );
 
@@ -288,148 +295,215 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     let mut events = EventHandler::new(50);
     let event_tx = events.sender();
 
-    // If ACP client connected, forward notifications to event loop
-    if let Some(client) = &acp_client {
-        let mut notif_rx = client.subscribe();
+    let notification_task = if let Some(client) = &acp_client {
+        let mut notif_rx = client.subscribe_lossless().await;
         let notif_tx = event_tx.clone();
-        tokio::spawn(async move {
-            while let Ok(notif) = notif_rx.recv().await {
-                if notif_tx.send(AppEvent::Notification(notif)).is_err() {
-                    break;
+        Some(tokio::spawn(async move {
+            while let Some(notif) = notif_rx.recv().await {
+                if notif_tx.send(AppEvent::Notification(notif)).await.is_err() {
+                    return;
                 }
             }
-        });
-    }
+            let _ = notif_tx
+                .send(AppEvent::Error("ACP connection closed.".into()))
+                .await;
+        }))
+    } else {
+        None
+    };
 
-    while !app.should_quit {
-        terminal.draw(|f| ui::draw(f, &app))?;
+    let mut pacer = FramePacer::new(std::time::Duration::from_millis(50));
+    let mut last_change = std::time::Instant::now();
+    let anim = ui::animation::AnimationState::with_start(app.session_started);
+    let mut cursor = anim.cursor_visible();
+    let mut placeholder = anim.placeholder_prompt();
+    let hover_state = |app: &App| {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        for level in app
+            .row_hover_levels
+            .iter()
+            .chain(&app.delete_hover_levels)
+            .chain(&app.shortcut_hover_levels)
+            .chain([&app.input_hover_level, &app.toggle_hover_level])
+        {
+            level.to_bits().hash(&mut hash);
+        }
+        hash.finish()
+    };
+    let result = async {
+        while !app.should_quit {
+            if pacer.draw_due(std::time::Instant::now()) {
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
 
-        if let Some(event) = events.next().await {
-            match event {
-                AppEvent::Key(key) => {
-                    handle_key_event(&mut app, key, acp_client.as_ref(), event_tx.clone()).await?;
+            if let Some(event) = events.next().await {
+                if !matches!(event, AppEvent::Tick) {
+                    pacer.mark_dirty();
+                    last_change = std::time::Instant::now();
                 }
-                AppEvent::Mouse(mouse) => match mouse.kind {
-                    crossterm::event::MouseEventKind::ScrollUp => {
-                        if app.screen_state == ScreenState::Start && !app.resume_sessions.is_empty() {
-                            app.scroll_resume(-3);
-                        } else {
-                            app.scroll_up();
-                            app.scroll_up();
-                        }
+                match event {
+                    AppEvent::Key(key) => {
+                        handle_key_event(&mut app, key, acp_client.as_ref(), event_tx.clone())
+                            .await?;
                     }
-                    crossterm::event::MouseEventKind::ScrollDown => {
-                        if app.screen_state == ScreenState::Start && !app.resume_sessions.is_empty() {
-                            app.scroll_resume(3);
-                        } else {
-                            app.scroll_down();
-                            app.scroll_down();
-                        }
-                    }
-                    crossterm::event::MouseEventKind::Moved
-                    | crossterm::event::MouseEventKind::Drag(_) => {
-                        let term_rect = terminal
-                            .size()
-                            .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
-                            .unwrap_or(ratatui::layout::Rect::new(0, 0, 120, 36));
-                        app.handle_mouse_move(mouse.column, mouse.row, term_rect);
-                    }
-                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
-                        if app.screen_state == ScreenState::Start =>
-                    {
-                        let term_rect = terminal
-                            .size()
-                            .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
-                            .unwrap_or(ratatui::layout::Rect::new(0, 0, 120, 36));
-                        let resume_rect = app.get_start_resume_area(term_rect);
-                        handle_start_mouse_click(&mut app, mouse.column, mouse.row, resume_rect);
-                    }
-                    _ => {}
-                },
-                AppEvent::Notification(notif) => {
-                    handle_notification(&mut app, notif);
-                }
-                AppEvent::AssistantResponse(msg) => {
-                    let detected_plan = hex_tui::app::extract_plan_steps_from_text(&msg);
-                    if !detected_plan.is_empty() {
-                        app.plan_steps = detected_plan;
-                    }
-                    let already_populated = app.active_turn_has_streamed
-                        || app.dialogue_items.iter().rev().any(|item| {
-                            if let hex_tui::app::DialogueItem::Message(m) = item {
-                                if m.role == hex_protocol::models::Role::Assistant {
-                                    let check_len = msg.len().min(40);
-                                    return check_len > 0
-                                        && (m.content == msg
-                                            || m.content.contains(&msg[..check_len]));
-                                }
+                    AppEvent::Mouse(mouse) => match mouse.kind {
+                        crossterm::event::MouseEventKind::ScrollUp => {
+                            if app.screen_state == ScreenState::Start
+                                && !app.resume_sessions.is_empty()
+                            {
+                                app.scroll_resume(-3);
+                            } else {
+                                app.scroll_up();
+                                app.scroll_up();
                             }
-                            false
-                        });
-                    if !already_populated {
-                        app.add_assistant_message(&msg);
+                        }
+                        crossterm::event::MouseEventKind::ScrollDown => {
+                            if app.screen_state == ScreenState::Start
+                                && !app.resume_sessions.is_empty()
+                            {
+                                app.scroll_resume(3);
+                            } else {
+                                app.scroll_down();
+                                app.scroll_down();
+                            }
+                        }
+                        crossterm::event::MouseEventKind::Moved
+                        | crossterm::event::MouseEventKind::Drag(_) => {
+                            let term_rect = terminal
+                                .size()
+                                .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
+                                .unwrap_or(ratatui::layout::Rect::new(0, 0, 120, 36));
+                            app.handle_mouse_move(mouse.column, mouse.row, term_rect);
+                        }
+                        crossterm::event::MouseEventKind::Down(
+                            crossterm::event::MouseButton::Left,
+                        ) if app.screen_state == ScreenState::Start => {
+                            let term_rect = terminal
+                                .size()
+                                .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
+                                .unwrap_or(ratatui::layout::Rect::new(0, 0, 120, 36));
+                            let resume_rect = app.get_start_resume_area(term_rect);
+                            handle_start_mouse_click(
+                                &mut app,
+                                mouse.column,
+                                mouse.row,
+                                resume_rect,
+                            );
+                        }
+                        _ => {}
+                    },
+                    AppEvent::Notification(packet) => {
+                        handle_notification(&mut app, packet.notification);
                     }
-                    app.active_turn_has_streamed = false;
-                    app.cancel_requested = false;
-                    app.close_running_tool_calls();
-                    app.clear_approval_request();
-                    app.is_busy = false;
-                    app.busy_started_at = None;
-                    app.status_message = "Ready".to_string();
-                }
-                AppEvent::Subagents(Ok(agents)) => {
-                    app.set_subagent_telemetry(&agents);
-                    app.open_subagent_modal(&agents);
-                    app.status_message = if agents.is_empty() {
-                        "No subagents in this session".to_string()
-                    } else {
-                        format!("{} subagent(s)", agents.len())
-                    };
-                }
-                AppEvent::Subagents(Err(err)) => {
-                    app.status_message = "Ready".to_string();
-                    app.add_system_message(&err);
-                }
-                AppEvent::Ready => {
-                    app.active_turn_has_streamed = false;
-                    app.cancel_requested = false;
-                    app.close_running_tool_calls();
-                    app.clear_approval_request();
-                    app.is_busy = false;
-                    app.busy_started_at = None;
-                    app.status_message = "Ready".to_string();
-                }
-                AppEvent::AcpMessage(msg) => {
-                    app.close_running_tool_calls();
-                    app.clear_approval_request();
-                    app.add_system_message(&msg);
-                    app.is_busy = false;
-                    app.busy_started_at = None;
-                    app.status_message = "Ready".to_string();
-                }
-                AppEvent::Error(err) => {
-                    app.close_running_tool_calls();
-                    app.clear_approval_request();
-                    app.add_system_message(&format!("Error: {}", err));
-                    app.cancel_requested = false;
-                    app.is_busy = false;
-                    app.busy_started_at = None;
-                    app.status_message = "Ready".to_string();
-                }
-                AppEvent::Tick => {
-                    app.advance_animation();
-                    // Turn completion is owned by authoritative server events
-                    // (stream_end / terminal status / prompt response), never
-                    // by a delta-gap heuristic.
-                }
-                AppEvent::Resize(_, _) => {
-                    // Handled on next draw
+                    AppEvent::Notice(msg) => app.add_system_message(&msg),
+                    AppEvent::AssistantResponse(msg) => {
+                        let detected_plan = hex_tui::app::extract_plan_steps_from_text(&msg);
+                        if !detected_plan.is_empty() {
+                            app.plan_steps = detected_plan;
+                        }
+                        let already_populated = app.active_turn_has_streamed
+                            || app.dialogue_items.iter().rev().any(|item| {
+                                if let hex_tui::app::DialogueItem::Message(m) = item {
+                                    if m.role == hex_protocol::models::Role::Assistant {
+                                        let check_len = msg
+                                            .char_indices()
+                                            .nth(40)
+                                            .map_or(msg.len(), |(byte, _)| byte);
+                                        return check_len > 0
+                                            && (m.content == msg
+                                                || m.content.contains(&msg[..check_len]));
+                                    }
+                                }
+                                false
+                            });
+                        if !already_populated {
+                            app.add_assistant_message(&msg);
+                        }
+                        app.active_turn_has_streamed = false;
+                        app.cancel_requested = false;
+                        app.close_running_tool_calls();
+                        app.clear_approval_request();
+                        app.is_busy = false;
+                        app.busy_started_at = None;
+                        app.status_message = "Ready".to_string();
+                    }
+                    AppEvent::Subagents(Ok(agents)) => {
+                        app.set_subagent_telemetry(&agents);
+                        app.open_subagent_modal(&agents);
+                        app.status_message = if agents.is_empty() {
+                            "No subagents in this session".to_string()
+                        } else {
+                            format!("{} subagent(s)", agents.len())
+                        };
+                    }
+                    AppEvent::Subagents(Err(err)) => {
+                        app.status_message = "Ready".to_string();
+                        app.add_system_message(&err);
+                    }
+                    AppEvent::Ready => {
+                        app.active_turn_has_streamed = false;
+                        app.cancel_requested = false;
+                        app.close_running_tool_calls();
+                        app.clear_approval_request();
+                        app.is_busy = false;
+                        app.busy_started_at = None;
+                        app.status_message = "Ready".to_string();
+                    }
+                    AppEvent::AcpMessage(msg) => {
+                        app.close_running_tool_calls();
+                        app.clear_approval_request();
+                        app.add_system_message(&msg);
+                        app.is_busy = false;
+                        app.busy_started_at = None;
+                        app.status_message = "Ready".to_string();
+                    }
+                    AppEvent::Error(err) => {
+                        app.close_running_tool_calls();
+                        app.clear_approval_request();
+                        app.add_system_message(&format!("Error: {}", err));
+                        app.cancel_requested = false;
+                        app.is_busy = false;
+                        app.busy_started_at = None;
+                        app.status_message = "Ready".to_string();
+                    }
+                    AppEvent::Tick => {
+                        let before_hover = hover_state(&app);
+                        app.advance_animation();
+                        let continuous = !anim.is_reduced()
+                            && (app.is_busy
+                                || app
+                                    .plan_steps
+                                    .iter()
+                                    .any(|step| step.status == hex_tui::app::StepStatus::Active)
+                                || last_change.elapsed() < std::time::Duration::from_millis(1200));
+                        let next_cursor = anim.cursor_visible();
+                        let next_placeholder = anim.placeholder_prompt();
+                        if continuous
+                            || before_hover != hover_state(&app)
+                            || cursor != next_cursor
+                            || (app.screen_state == ScreenState::Start
+                                && placeholder != next_placeholder)
+                        {
+                            pacer.mark_dirty();
+                        }
+                        cursor = next_cursor;
+                        placeholder = next_placeholder;
+                    }
+                    AppEvent::Resize(_, _) => {}
                 }
             }
         }
+        Ok::<(), anyhow::Error>(())
     }
-
-    Ok(())
+    .await;
+    if let Some(task) = notification_task {
+        task.abort();
+    }
+    if let Some(client) = &acp_client {
+        let _ = client.close().await;
+    }
+    result
 }
 
 /// Ask the server to stop the active turn. With a live connection the busy
@@ -502,7 +576,7 @@ async fn handle_key_event(
     app: &mut App,
     key: crossterm::event::KeyEvent,
     acp_client: Option<&AcpClient>,
-    event_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    event_tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<()> {
     // Global hotkeys: Ctrl+C cancels an in-flight turn first; a second
     // Ctrl+C while cancelling (or Ctrl+C when idle) quits the application.
@@ -575,7 +649,9 @@ async fn handle_key_event(
         match key.code {
             KeyCode::Up => app.move_permission_selection(-1),
             KeyCode::Down => app.move_permission_selection(1),
-            KeyCode::Enter => submit_approval_decision(app, acp_client, app.selected_permission_index),
+            KeyCode::Enter => {
+                submit_approval_decision(app, acp_client, app.selected_permission_index)
+            }
             KeyCode::Char('y') | KeyCode::Char('Y') => submit_approval_decision(app, acp_client, 0),
             KeyCode::Char('a') | KeyCode::Char('A') => submit_approval_decision(app, acp_client, 1),
             KeyCode::Char('n') | KeyCode::Char('N') => submit_approval_decision(app, acp_client, 2),
@@ -644,7 +720,11 @@ async fn handle_key_event(
             && !app.resume_sessions.is_empty();
         if on_resume_list {
             let page = app.resume_visible_count().max(1) as i32;
-            app.scroll_resume(if key.code == KeyCode::PageUp { -page } else { page });
+            app.scroll_resume(if key.code == KeyCode::PageUp {
+                -page
+            } else {
+                page
+            });
         } else if key.code == KeyCode::PageUp {
             app.handle_page_up();
         } else {
@@ -655,75 +735,88 @@ async fn handle_key_event(
 
     // Focus-specific key actions
     match app.focus {
-        Focus::Input => {
-            match key.code {
-                KeyCode::Enter => {
-                    if app.is_busy {
-                        app.status_message = "Agent busy - please wait... (Esc to cancel)".to_string();
+        Focus::Input => match key.code {
+            KeyCode::Enter => {
+                if app.is_busy {
+                    app.status_message = "Agent busy - please wait... (Esc to cancel)".to_string();
+                    return Ok(());
+                }
+
+                if app.screen_state == ScreenState::Start
+                    && app.input_buffer.is_empty()
+                    && !app.resume_sessions.is_empty()
+                {
+                    if app.selected_resume_index < app.resume_sessions.len() {
+                        let session = app.resume_sessions[app.selected_resume_index].clone();
+                        app.resume_session(&session.session_id);
+                        return Ok(());
+                    } else if Some(app.selected_resume_index) == app.resume_toggle_index() {
+                        app.toggle_show_all_resume();
                         return Ok(());
                     }
+                }
 
-                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        if app.selected_resume_index < app.resume_sessions.len() {
-                            let session = app.resume_sessions[app.selected_resume_index].clone();
-                            app.resume_session(&session.session_id);
-                            return Ok(());
-                        } else if Some(app.selected_resume_index) == app.resume_toggle_index() {
-                            app.toggle_show_all_resume();
-                            return Ok(());
-                        }
-                    }
-
-                    if let Some(text) = app.submit_input() {
-                        execute_submitted_text(app, text, acp_client, event_tx).await?;
-                    }
+                if let Some(text) = app.submit_input() {
+                    execute_submitted_text(app, text, acp_client, event_tx).await?;
                 }
-                KeyCode::Char('d') => {
-                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        if app.selected_resume_index < app.resume_sessions.len() {
-                            app.request_delete_resume_session(app.selected_resume_index);
-                            return Ok(());
-                        }
-                    }
-                    app.insert_char('d');
-                }
-                KeyCode::Char('/') if app.input_buffer.is_empty() => app.open_palette(),
-                KeyCode::Char(c) => app.insert_char(c),
-                KeyCode::Backspace => app.delete_char(),
-                KeyCode::Delete => {
-                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        if app.selected_resume_index < app.resume_sessions.len() {
-                            app.request_delete_resume_session(app.selected_resume_index);
-                            return Ok(());
-                        }
-                    }
-                    app.delete_char_forward();
-                }
-                KeyCode::Left => app.move_cursor_left(),
-                KeyCode::Right => app.move_cursor_right(),
-                KeyCode::Home => app.move_cursor_start(),
-                KeyCode::End => app.move_cursor_end(),
-                KeyCode::Up => {
-                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        app.move_resume_selection(-1);
-                    } else if app.input_buffer.is_empty() {
-                        app.scroll_up();
-                    } else {
-                        app.history_up();
-                    }
-                }
-                KeyCode::Down => {
-                    if app.screen_state == ScreenState::Start && app.input_buffer.is_empty() && !app.resume_sessions.is_empty() {
-                        app.move_resume_selection(1);
-                    } else if app.input_buffer.is_empty() {
-                        app.scroll_down();
-                    } else {
-                        app.history_down();
-                    }
-                }
-                _ => {}
             }
-        }
+            KeyCode::Char('d') => {
+                if app.screen_state == ScreenState::Start
+                    && app.input_buffer.is_empty()
+                    && !app.resume_sessions.is_empty()
+                {
+                    if app.selected_resume_index < app.resume_sessions.len() {
+                        app.request_delete_resume_session(app.selected_resume_index);
+                        return Ok(());
+                    }
+                }
+                app.insert_char('d');
+            }
+            KeyCode::Char('/') if app.input_buffer.is_empty() => app.open_palette(),
+            KeyCode::Char(c) => app.insert_char(c),
+            KeyCode::Backspace => app.delete_char(),
+            KeyCode::Delete => {
+                if app.screen_state == ScreenState::Start
+                    && app.input_buffer.is_empty()
+                    && !app.resume_sessions.is_empty()
+                {
+                    if app.selected_resume_index < app.resume_sessions.len() {
+                        app.request_delete_resume_session(app.selected_resume_index);
+                        return Ok(());
+                    }
+                }
+                app.delete_char_forward();
+            }
+            KeyCode::Left => app.move_cursor_left(),
+            KeyCode::Right => app.move_cursor_right(),
+            KeyCode::Home => app.move_cursor_start(),
+            KeyCode::End => app.move_cursor_end(),
+            KeyCode::Up => {
+                if app.screen_state == ScreenState::Start
+                    && app.input_buffer.is_empty()
+                    && !app.resume_sessions.is_empty()
+                {
+                    app.move_resume_selection(-1);
+                } else if app.input_buffer.is_empty() {
+                    app.scroll_up();
+                } else {
+                    app.history_up();
+                }
+            }
+            KeyCode::Down => {
+                if app.screen_state == ScreenState::Start
+                    && app.input_buffer.is_empty()
+                    && !app.resume_sessions.is_empty()
+                {
+                    app.move_resume_selection(1);
+                } else if app.input_buffer.is_empty() {
+                    app.scroll_down();
+                } else {
+                    app.history_down();
+                }
+            }
+            _ => {}
+        },
         Focus::Dialogue => match key.code {
             KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
             KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
@@ -749,7 +842,7 @@ async fn handle_key_event(
 fn open_agents_modal(
     app: &mut App,
     acp_client: Option<&AcpClient>,
-    event_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    event_tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) {
     match acp_client {
         Some(client) => {
@@ -761,7 +854,7 @@ fn open_agents_modal(
                     .session_subagents(&sess_id)
                     .await
                     .map_err(|err| format!("Could not load subagents: {}", err));
-                let _ = event_tx.send(AppEvent::Subagents(result));
+                let _ = event_tx.send(AppEvent::Subagents(result)).await;
             });
         }
         None => app.open_subagent_modal(&[]),
@@ -773,7 +866,7 @@ async fn execute_palette_command(
     app: &mut App,
     command: &str,
     acp_client: Option<&AcpClient>,
-    event_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    event_tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<()> {
     if command == "session:switch" {
         app.switch_screen(ScreenState::Start);
@@ -788,7 +881,7 @@ async fn execute_submitted_text(
     app: &mut App,
     text: String,
     acp_client: Option<&AcpClient>,
-    event_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    event_tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<()> {
     if text.starts_with('/') {
         let parts: Vec<&str> = text.split_whitespace().collect();
@@ -810,7 +903,11 @@ async fn execute_submitted_text(
                 if app.side_by_side && (app.active_diff.is_some() || app.raw_diff.is_some()) {
                     app.show_diff = true;
                 }
-                let mode_str = if app.side_by_side { "side-by-side" } else { "unified" };
+                let mode_str = if app.side_by_side {
+                    "side-by-side"
+                } else {
+                    "unified"
+                };
                 app.add_system_message(&format!("Diff viewer mode: {}", mode_str));
                 return Ok(());
             }
@@ -818,17 +915,27 @@ async fn execute_submitted_text(
                 let selected = parts.get(1).map(|id| (*id).to_string()).or_else(|| {
                     app.dialogue_items.iter().rev().find_map(|item| {
                         if let hex_tui::app::DialogueItem::ToolCall(tool) = item {
-                            app.tool_result_refs.contains_key(&tool.id).then(|| tool.id.clone())
-                        } else { None }
+                            app.tool_result_refs
+                                .contains_key(&tool.id)
+                                .then(|| tool.id.clone())
+                        } else {
+                            None
+                        }
                     })
                 });
-                let offset = parts.get(2).map(|value| value.parse::<usize>()).unwrap_or(Ok(0));
+                let offset = parts
+                    .get(2)
+                    .map(|value| value.parse::<usize>())
+                    .unwrap_or(Ok(0));
                 if parts.len() > 3 || offset.is_err() {
                     app.add_system_message("Usage: /tool-result [call_id] [offset]");
                     return Ok(());
                 }
                 let Some((id, reference)) = selected.and_then(|id| {
-                    app.tool_result_refs.get(&id).cloned().map(|reference| (id, reference))
+                    app.tool_result_refs
+                        .get(&id)
+                        .cloned()
+                        .map(|reference| (id, reference))
                 }) else {
                     app.add_system_message("No stored tool result reference is available.");
                     return Ok(());
@@ -844,20 +951,39 @@ async fn execute_submitted_text(
                 tokio::spawn(async move {
                     let result = if reference.local {
                         tokio::task::spawn_blocking(move || {
-                            hex_tui::app::load_tool_result_page(&workspace, &reference.task_id, &reference.call_id, offset)
-                        }).await.map_err(|e| e.to_string()).and_then(|result| result)
+                            hex_tui::app::load_tool_result_page(
+                                &workspace,
+                                &reference.task_id,
+                                &reference.call_id,
+                                offset,
+                            )
+                        })
+                        .await
+                        .map_err(|e| e.to_string())
+                        .and_then(|result| result)
                     } else {
-                        client.unwrap().session_tool_result(&session, &reference.task_id, &reference.call_id, offset)
-                            .await.map_err(|e| e.to_string())
+                        client
+                            .unwrap()
+                            .session_tool_result(
+                                &session,
+                                &reference.task_id,
+                                &reference.call_id,
+                                offset,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())
                     };
                     let notice = match result {
                         Ok(page) => {
-                            let next = page.next_offset.map(|next| format!("\nNext page: /tool-result {id} {next}")).unwrap_or_default();
+                            let next = page
+                                .next_offset
+                                .map(|next| format!("\nNext page: /tool-result {id} {next}"))
+                                .unwrap_or_default();
                             format!("Stored tool result {id} (offset {offset}, {} characters total):\n{}{next}", page.total_chars, page.content)
                         }
                         Err(error) => format!("Could not read stored tool result: {error}"),
                     };
-                    let _ = event_tx.send(AppEvent::AcpMessage(notice));
+                    let _ = event_tx.send(AppEvent::Notice(notice)).await;
                 });
                 return Ok(());
             }
@@ -924,13 +1050,15 @@ async fn execute_submitted_text(
                     .await
                 {
                     Ok(resp) => {
-                        let _ = tx.send(AppEvent::AcpMessage(resp.output));
+                        let _ = tx.send(AppEvent::AcpMessage(resp.output)).await;
                     }
                     Err(err) => {
-                        let _ = tx.send(AppEvent::Error(format!(
-                            "Command {} failed: {}",
-                            cmd_str, err
-                        )));
+                        let _ = tx
+                            .send(AppEvent::Error(format!(
+                                "Command {} failed: {}",
+                                cmd_str, err
+                            )))
+                            .await;
                     }
                 }
             });
@@ -958,7 +1086,11 @@ async fn execute_submitted_text(
                 if app.side_by_side && (app.active_diff.is_some() || app.raw_diff.is_some()) {
                     app.show_diff = true;
                 }
-                let mode_str = if app.side_by_side { "side-by-side" } else { "unified" };
+                let mode_str = if app.side_by_side {
+                    "side-by-side"
+                } else {
+                    "unified"
+                };
                 app.add_system_message(&format!("Diff viewer mode: {}", mode_str));
             }
             "/skills" => {
@@ -1029,13 +1161,15 @@ async fn execute_submitted_text(
                 Ok(resp) => {
                     let txt = resp.text_content();
                     if !txt.is_empty() {
-                        let _ = tx.send(AppEvent::AssistantResponse(txt));
+                        let _ = tx.send(AppEvent::AssistantResponse(txt)).await;
                     } else {
-                        let _ = tx.send(AppEvent::Ready);
+                        let _ = tx.send(AppEvent::Ready).await;
                     }
                 }
                 Err(err) => {
-                    let _ = tx.send(AppEvent::Error(format!("Prompt failed: {}", err)));
+                    let _ = tx
+                        .send(AppEvent::Error(format!("Prompt failed: {}", err)))
+                        .await;
                 }
             }
         });
@@ -1070,18 +1204,35 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                 }
                 if let Some(tool_val) = update.tool {
                     if let Some(tool_obj) = tool_val.as_object() {
-                        let ev_type = tool_obj.get("eventType").and_then(|v| v.as_str()).unwrap_or("");
-                        let tool_id = tool_obj.get("toolId").and_then(|v| v.as_str()).unwrap_or("tool");
-                        let call_id = tool_obj.get("callId").and_then(|v| v.as_str()).unwrap_or(tool_id);
+                        let ev_type = tool_obj
+                            .get("eventType")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let tool_id = tool_obj
+                            .get("toolId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("tool");
+                        let call_id = tool_obj
+                            .get("callId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(tool_id);
                         let dur = tool_obj.get("durationMs").and_then(|v| v.as_u64());
-                        let payload_str = tool_obj.get("payload").and_then(|v| v.as_str()).unwrap_or("");
+                        let payload_str = tool_obj
+                            .get("payload")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         if let (Some(task), Some(ledger_call)) = (
                             tool_obj.get("taskId").and_then(|v| v.as_str()),
                             tool_obj.get("ledgerCallId").and_then(|v| v.as_str()),
                         ) {
-                            app.tool_result_refs.insert(call_id.to_string(), hex_tui::app::ToolResultRef {
-                                task_id: task.to_string(), call_id: ledger_call.to_string(), local: false,
-                            });
+                            app.tool_result_refs.insert(
+                                call_id.to_string(),
+                                hex_tui::app::ToolResultRef {
+                                    task_id: task.to_string(),
+                                    call_id: ledger_call.to_string(),
+                                    local: false,
+                                },
+                            );
                         }
 
                         if ev_type == "start" {
@@ -1103,12 +1254,13 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                     app.is_busy = false;
                     app.busy_started_at = None;
                     let st = status_val.as_deref().unwrap_or("Ready");
-                    app.status_message =
-                        if st.eq_ignore_ascii_case("ready") || st.eq_ignore_ascii_case("completed") {
-                            "Ready".to_string()
-                        } else {
-                            st.to_string()
-                        };
+                    app.status_message = if st.eq_ignore_ascii_case("ready")
+                        || st.eq_ignore_ascii_case("completed")
+                    {
+                        "Ready".to_string()
+                    } else {
+                        st.to_string()
+                    };
                 } else if let Some(st) = status_val {
                     app.status_message = st;
                 }
@@ -1148,7 +1300,11 @@ fn setup_panic_hook() {
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -1207,7 +1363,10 @@ mod wire_contract_tests {
                 _ => None,
             })
             .collect();
-        assert!(assistant_text.contains("Hello world"), "got: {assistant_text}");
+        assert!(
+            assistant_text.contains("Hello world"),
+            "got: {assistant_text}"
+        );
 
         let tool = app
             .dialogue_items
@@ -1228,10 +1387,19 @@ mod wire_contract_tests {
         let mut app = App::new("p", "m", "cow");
         app.open_palette();
         app.palette_query = "tool-result unknown 4096".to_string();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_key_event(&mut app, crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), None, tx).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
+        handle_key_event(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            None,
+            tx,
+        )
+        .await
+        .unwrap();
         assert!(!app.show_palette);
-        assert!(matches!(app.dialogue_items.last(), Some(DialogueItem::Message(m)) if m.content.contains("No stored tool result reference")));
+        assert!(
+            matches!(app.dialogue_items.last(), Some(DialogueItem::Message(m)) if m.content.contains("No stored tool result reference"))
+        );
     }
 
     #[test]
@@ -1245,14 +1413,17 @@ mod wire_contract_tests {
                     "taskId": "task_1", "ledgerCallId": "durable_call",
                     "payload": "short preview", "durationMs": 12
                 }}
-            })).unwrap();
+            }))
+            .unwrap();
             handle_notification(&mut app, notification);
         }
         let reference = &app.tool_result_refs["ui_call"];
         assert_eq!(reference.task_id, "task_1");
         assert_eq!(reference.call_id, "durable_call");
         assert!(!reference.local);
-        assert!(matches!(app.dialogue_items.last(), Some(DialogueItem::ToolCall(t)) if t.id == "ui_call"));
+        assert!(
+            matches!(app.dialogue_items.last(), Some(DialogueItem::ToolCall(t)) if t.id == "ui_call")
+        );
     }
 
     #[test]
@@ -1271,7 +1442,10 @@ mod wire_contract_tests {
                 _ => None,
             })
             .collect();
-        assert!(assistant_text.contains("Fixture answer."), "got: {assistant_text}");
+        assert!(
+            assistant_text.contains("Fixture answer."),
+            "got: {assistant_text}"
+        );
     }
 }
 
@@ -1323,10 +1497,12 @@ mod session_lifecycle_tests {
     async fn ctrl_c_cancels_busy_turn_before_quitting() {
         let mut app = App::new("p", "m", "cow");
         app.is_busy = true;
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
 
         // First Ctrl+C while busy: cancel journey, not quit (standalone settles locally).
-        handle_key_event(&mut app, ctrl_c(), None, tx.clone()).await.unwrap();
+        handle_key_event(&mut app, ctrl_c(), None, tx.clone())
+            .await
+            .unwrap();
         assert!(!app.should_quit, "first Ctrl+C must cancel, not quit");
         assert!(!app.is_busy, "standalone cancel settles locally");
         assert!(app
@@ -1335,15 +1511,19 @@ mod session_lifecycle_tests {
             .any(|d| matches!(d, DialogueItem::Message(m) if m.role == Role::System && m.content.contains("cancelled"))));
 
         // Second Ctrl+C: quit.
-        handle_key_event(&mut app, ctrl_c(), None, tx).await.unwrap();
+        handle_key_event(&mut app, ctrl_c(), None, tx)
+            .await
+            .unwrap();
         assert!(app.should_quit);
     }
 
     #[tokio::test]
     async fn ctrl_c_quits_when_idle() {
         let mut app = App::new("p", "m", "cow");
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_key_event(&mut app, ctrl_c(), None, tx).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
+        handle_key_event(&mut app, ctrl_c(), None, tx)
+            .await
+            .unwrap();
         assert!(app.should_quit);
     }
 
@@ -1356,10 +1536,15 @@ mod session_lifecycle_tests {
         for screen in [ScreenState::Start, ScreenState::Session] {
             let mut app = App::new("p", "m", "cow");
             app.screen_state = screen;
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            handle_key_event(&mut app, key(KeyCode::Char('/')), None, tx).await.unwrap();
+            let (tx, _rx) = tokio::sync::mpsc::channel(128);
+            handle_key_event(&mut app, key(KeyCode::Char('/')), None, tx)
+                .await
+                .unwrap();
             assert!(app.show_palette, "palette must open on {screen:?}");
-            assert!(app.input_buffer.is_empty(), "the slash is not typed into the composer");
+            assert!(
+                app.input_buffer.is_empty(),
+                "the slash is not typed into the composer"
+            );
             assert!(app.palette_query.is_empty());
         }
     }
@@ -1367,11 +1552,15 @@ mod session_lifecycle_tests {
     #[tokio::test]
     async fn slash_inside_existing_text_stays_literal() {
         let mut app = App::new("p", "m", "cow");
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
         for c in "path".chars() {
-            handle_key_event(&mut app, key(KeyCode::Char(c)), None, tx.clone()).await.unwrap();
+            handle_key_event(&mut app, key(KeyCode::Char(c)), None, tx.clone())
+                .await
+                .unwrap();
         }
-        handle_key_event(&mut app, key(KeyCode::Char('/')), None, tx).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Char('/')), None, tx)
+            .await
+            .unwrap();
         assert!(!app.show_palette);
         assert_eq!(app.input_buffer, "path/");
     }
@@ -1380,18 +1569,30 @@ mod session_lifecycle_tests {
     async fn palette_query_filters_and_enter_runs_the_real_command() {
         let mut app = App::new("p", "m", "cow");
         app.add_assistant_message("some earlier output");
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_key_event(&mut app, key(KeyCode::Char('/')), None, tx.clone()).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
+        handle_key_event(&mut app, key(KeyCode::Char('/')), None, tx.clone())
+            .await
+            .unwrap();
         for c in "clr".chars() {
-            handle_key_event(&mut app, key(KeyCode::Char(c)), None, tx.clone()).await.unwrap();
+            handle_key_event(&mut app, key(KeyCode::Char(c)), None, tx.clone())
+                .await
+                .unwrap();
         }
         assert_eq!(app.palette_query, "clr");
         assert!(app.input_buffer.is_empty(), "typing belongs to the palette");
-        assert_eq!(app.palette_selected().map(|i| i.command), Some("/clear".to_string()));
+        assert_eq!(
+            app.palette_selected().map(|i| i.command),
+            Some("/clear".to_string())
+        );
 
-        handle_key_event(&mut app, key(KeyCode::Enter), None, tx).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Enter), None, tx)
+            .await
+            .unwrap();
         assert!(!app.show_palette);
-        assert!(app.dialogue_items.iter().any(|d| matches!(d, DialogueItem::Message(m)
+        assert!(app
+            .dialogue_items
+            .iter()
+            .any(|d| matches!(d, DialogueItem::Message(m)
             if m.role == Role::System && m.content.contains("cleared"))));
     }
 
@@ -1400,11 +1601,17 @@ mod session_lifecycle_tests {
         let mut app = App::new("p", "m", "cow");
         app.input_buffer = "draft goal".to_string();
         app.cursor_pos = app.input_buffer.len();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_key_event(&mut app, ctrl_p(), None, tx.clone()).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
+        handle_key_event(&mut app, ctrl_p(), None, tx.clone())
+            .await
+            .unwrap();
         assert!(app.show_palette);
-        handle_key_event(&mut app, key(KeyCode::Char('x')), None, tx.clone()).await.unwrap();
-        handle_key_event(&mut app, key(KeyCode::Esc), None, tx).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Char('x')), None, tx.clone())
+            .await
+            .unwrap();
+        handle_key_event(&mut app, key(KeyCode::Esc), None, tx)
+            .await
+            .unwrap();
         assert!(!app.show_palette);
         assert_eq!(app.input_buffer, "draft goal", "the composer is untouched");
         assert!(app.palette_query.is_empty());
@@ -1413,28 +1620,50 @@ mod session_lifecycle_tests {
     #[tokio::test]
     async fn backspace_on_an_empty_query_closes_the_palette() {
         let mut app = App::new("p", "m", "cow");
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_key_event(&mut app, ctrl_p(), None, tx.clone()).await.unwrap();
-        handle_key_event(&mut app, key(KeyCode::Char('a')), None, tx.clone()).await.unwrap();
-        handle_key_event(&mut app, key(KeyCode::Backspace), None, tx.clone()).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
+        handle_key_event(&mut app, ctrl_p(), None, tx.clone())
+            .await
+            .unwrap();
+        handle_key_event(&mut app, key(KeyCode::Char('a')), None, tx.clone())
+            .await
+            .unwrap();
+        handle_key_event(&mut app, key(KeyCode::Backspace), None, tx.clone())
+            .await
+            .unwrap();
         assert!(app.show_palette, "first backspace only clears the query");
-        handle_key_event(&mut app, key(KeyCode::Backspace), None, tx).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Backspace), None, tx)
+            .await
+            .unwrap();
         assert!(!app.show_palette);
     }
 
     #[tokio::test]
     async fn ctrl_p_toggles_and_arrows_move_the_selection() {
         let mut app = App::new("p", "m", "cow");
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_key_event(&mut app, ctrl_p(), None, tx.clone()).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
+        handle_key_event(&mut app, ctrl_p(), None, tx.clone())
+            .await
+            .unwrap();
         assert!(app.show_palette);
-        handle_key_event(&mut app, key(KeyCode::Down), None, tx.clone()).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Down), None, tx.clone())
+            .await
+            .unwrap();
         assert_eq!(app.selected_palette_index, 1);
-        handle_key_event(&mut app, key(KeyCode::Up), None, tx.clone()).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Up), None, tx.clone())
+            .await
+            .unwrap();
         assert_eq!(app.selected_palette_index, 0);
-        handle_key_event(&mut app, key(KeyCode::Up), None, tx.clone()).await.unwrap();
-        assert_eq!(app.selected_palette_index, app.palette_results().len() - 1, "wraps around");
-        handle_key_event(&mut app, ctrl_p(), None, tx).await.unwrap();
+        handle_key_event(&mut app, key(KeyCode::Up), None, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.selected_palette_index,
+            app.palette_results().len() - 1,
+            "wraps around"
+        );
+        handle_key_event(&mut app, ctrl_p(), None, tx)
+            .await
+            .unwrap();
         assert!(!app.show_palette);
     }
 
@@ -1564,14 +1793,21 @@ mod keymap_truth_tests {
             (_, "f2") => assert!(app.show_diff),
             (Scope::Global, "f3") => assert_ne!(app.mode, "agent"),
             (Scope::Session, "tab") => {
-                assert!(app.active_subagent_modal.is_some(), "tab must open the agents drill-down")
+                assert!(
+                    app.active_subagent_modal.is_some(),
+                    "tab must open the agents drill-down"
+                )
             }
             (Scope::Session, "ctrl+p") => assert!(app.show_palette),
             (Scope::Session, "esc") => assert!(!app.is_busy),
             (Scope::Session, "enter") => assert!(app.dialogue_items.iter().any(|d| matches!(d,
                 DialogueItem::Message(m) if m.role == Role::User && m.content == "hello"))),
             (Scope::Session, "pgup" | "up") => {
-                assert!(!app.follow_dialogue, "{} did not leave the pinned bottom", b.label)
+                assert!(
+                    !app.follow_dialogue,
+                    "{} did not leave the pinned bottom",
+                    b.label
+                )
             }
             (Scope::Session, "pgdn" | "down") => {
                 assert!(app.dialogue_scroll > 0, "{} did not scroll down", b.label)
@@ -1589,22 +1825,39 @@ mod keymap_truth_tests {
             (Scope::Palette, "backspace") => assert!(app.palette_query.is_empty()),
             (Scope::Approval, "up/down") => assert_eq!(app.selected_permission_index, 2),
             (Scope::Approval, "down") => assert_eq!(app.selected_permission_index, 1),
-            (Scope::Approval, "enter") | (Scope::Approval, "y") | (Scope::Approval, "a")
-            | (Scope::Approval, "n") | (Scope::Approval, "esc") => {
-                assert!(app.active_approval.is_none(), "{} left the modal open", b.label)
+            (Scope::Approval, "enter")
+            | (Scope::Approval, "y")
+            | (Scope::Approval, "a")
+            | (Scope::Approval, "n")
+            | (Scope::Approval, "esc") => {
+                assert!(
+                    app.active_approval.is_none(),
+                    "{} left the modal open",
+                    b.label
+                )
             }
             (Scope::Approval, "d") => assert!(app.show_diff),
             (Scope::Agents, "up/down") => {
-                assert_eq!(app.active_subagent_modal.as_ref().unwrap().activity_scroll, 1)
+                assert_eq!(
+                    app.active_subagent_modal.as_ref().unwrap().activity_scroll,
+                    1
+                )
             }
             (Scope::Agents, "down") => {
-                assert_eq!(app.active_subagent_modal.as_ref().unwrap().activity_scroll, 1)
+                assert_eq!(
+                    app.active_subagent_modal.as_ref().unwrap().activity_scroll,
+                    1
+                )
             }
             (Scope::Agents, "e") => {
                 assert!(app.active_subagent_modal.as_ref().unwrap().is_expanded)
             }
             (Scope::Agents, "esc") | (Scope::Agents, "tab") => {
-                assert!(app.active_subagent_modal.is_none(), "{} left the modal open", b.label)
+                assert!(
+                    app.active_subagent_modal.is_none(),
+                    "{} left the modal open",
+                    b.label
+                )
             }
             other => panic!("advertised binding {other:?} has no verified effect"),
         }
@@ -1614,23 +1867,37 @@ mod keymap_truth_tests {
     async fn every_advertised_binding_really_works() {
         for b in BINDINGS {
             let mut app = fixture(b);
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            handle_key_event(&mut app, b.event(), None, tx).await.unwrap();
+            let (tx, _rx) = tokio::sync::mpsc::channel(128);
+            handle_key_event(&mut app, b.event(), None, tx)
+                .await
+                .unwrap();
             assert_effect(&app, b);
         }
     }
 
     #[test]
     fn no_surface_advertises_a_binding_that_was_removed() {
-        for scope in [Scope::Session, Scope::Start, Scope::Palette, Scope::Approval, Scope::Agents] {
+        for scope in [
+            Scope::Session,
+            Scope::Start,
+            Scope::Palette,
+            Scope::Approval,
+            Scope::Agents,
+        ] {
             let hints = keymap::footer_hints(scope);
             assert!(!hints.is_empty());
             for stale in ["tab mode", "ctrl+r", "@ files", "esc dismiss"] {
-                assert!(!hints.contains(stale), "{scope:?} still advertises {stale:?}");
+                assert!(
+                    !hints.contains(stale),
+                    "{scope:?} still advertises {stale:?}"
+                );
             }
         }
         assert!(keymap::footer_hints(Scope::Session).contains("tab agents"));
-        let listed: usize = keymap::help_sections().iter().map(|(_, rows)| rows.len()).sum();
+        let listed: usize = keymap::help_sections()
+            .iter()
+            .map(|(_, rows)| rows.len())
+            .sum();
         assert_eq!(listed, BINDINGS.len(), "help must list the whole table");
     }
 }

@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 
 use crate::error::AcpError;
@@ -27,6 +27,40 @@ use crate::models::{
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
 
+pub const MAX_WIRE_FRAME_BYTES: usize = 8 * 1024 * 1024;
+pub const NOTIFICATION_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+type LosslessSender = Arc<Mutex<Option<mpsc::Sender<NotificationPacket>>>>;
+
+#[derive(Debug)]
+pub struct NotificationPacket {
+    pub notification: JsonRpcNotification,
+    _permit: OwnedSemaphorePermit,
+}
+
+fn notification_retained_bytes(notification: &JsonRpcNotification) -> usize {
+    fn heap_bytes(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::String(text) => text.capacity(),
+            serde_json::Value::Array(values) => {
+                values.capacity() * std::mem::size_of::<serde_json::Value>()
+                    + values.iter().map(heap_bytes).sum::<usize>()
+            }
+            serde_json::Value::Object(values) => {
+                values.len() * (std::mem::size_of::<(String, serde_json::Value)>() + 64)
+                    + values
+                        .iter()
+                        .map(|(key, value)| key.capacity() + heap_bytes(value))
+                        .sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+    std::mem::size_of::<NotificationPacket>()
+        + notification.jsonrpc.capacity()
+        + notification.method.capacity()
+        + notification.params.as_ref().map_or(0, heap_bytes)
+}
+
 /// Asynchronous ACP JSON-RPC 2.0 client.
 #[derive(Clone)]
 pub struct AcpClient {
@@ -34,6 +68,7 @@ pub struct AcpClient {
     writer_tx: mpsc::Sender<String>,
     pending: PendingMap,
     notifications_tx: broadcast::Sender<JsonRpcNotification>,
+    lossless_tx: LosslessSender,
     child: Option<Arc<Mutex<tokio::process::Child>>>,
     default_timeout: Duration,
 }
@@ -49,6 +84,8 @@ impl AcpClient {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let (writer_tx, mut writer_rx) = mpsc::channel::<String>(128);
         let (notifications_tx, _) = broadcast::channel::<JsonRpcNotification>(256);
+        let lossless_tx: LosslessSender = Arc::new(Mutex::new(None));
+        let notification_bytes = Arc::new(Semaphore::new(NOTIFICATION_BUFFER_BYTES));
 
         // Background writer task
         tokio::spawn(async move {
@@ -65,21 +102,26 @@ impl AcpClient {
         // Background reader task
         let pending_clone = Arc::clone(&pending);
         let notif_tx = notifications_tx.clone();
+        let lossless = lossless_tx.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(reader).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
+            let mut reader = BufReader::new(reader);
+            loop {
+                let mut line = Vec::new();
+                match (&mut reader)
+                    .take((MAX_WIRE_FRAME_BYTES + 1) as u64)
+                    .read_until(b'\n', &mut line)
+                    .await
+                {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if line.len() > MAX_WIRE_FRAME_BYTES => break,
+                    Ok(_) => {}
+                }
+                if line.iter().all(u8::is_ascii_whitespace) {
                     continue;
                 }
-
-                // Parse incoming JSON
-                let val: serde_json::Value = match serde_json::from_str(trimmed) {
+                let mut val: serde_json::Value = match serde_json::from_slice(&line) {
                     Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("[hex-protocol] Failed to parse JSON-RPC line: {} ({})", trimmed, e);
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
 
                 // Check if this is a response (has id)
@@ -96,8 +138,11 @@ impl AcpClient {
                         if let Some(req_id) = id_u64 {
                             let mut map = pending_clone.lock().await;
                             if let Some(sender) = map.remove(&req_id) {
-                                if let Some(err_val) = val.get("error").filter(|e| !e.is_null()) {
-                                    match serde_json::from_value::<crate::models::JsonRpcError>(err_val.clone()) {
+                                if let Some(err_val) = val.get_mut("error").filter(|e| !e.is_null())
+                                {
+                                    match serde_json::from_value::<crate::models::JsonRpcError>(
+                                        err_val.take(),
+                                    ) {
                                         Ok(rpc_err) => {
                                             let _ = sender.send(Err(AcpError::Rpc(rpc_err)));
                                         }
@@ -105,8 +150,8 @@ impl AcpClient {
                                             let _ = sender.send(Err(AcpError::Json(e)));
                                         }
                                     }
-                                } else if let Some(res_val) = val.get("result") {
-                                    let _ = sender.send(Ok(res_val.clone()));
+                                } else if let Some(res_val) = val.get_mut("result") {
+                                    let _ = sender.send(Ok(res_val.take()));
                                 } else {
                                     let _ = sender.send(Ok(serde_json::Value::Null));
                                 }
@@ -117,15 +162,48 @@ impl AcpClient {
                 }
 
                 // Check if this is a notification (no id, but method)
-                if let Some(method_val) = val.get("method").and_then(|m| m.as_str()) {
+                if let Some(method) = val
+                    .get("method")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_owned)
+                {
                     let notification = JsonRpcNotification {
                         jsonrpc: "2.0".to_string(),
-                        method: method_val.to_string(),
-                        params: val.get("params").cloned(),
+                        method,
+                        params: val.get_mut("params").map(serde_json::Value::take),
                     };
-                    let _ = notif_tx.send(notification);
+                    drop(line);
+                    if notif_tx.receiver_count() > 0 {
+                        let _ = notif_tx.send(notification.clone());
+                    }
+                    let sender = lossless.lock().await.clone();
+                    if let Some(sender) = sender {
+                        let bytes = notification_retained_bytes(&notification);
+                        if bytes > NOTIFICATION_BUFFER_BYTES {
+                            break;
+                        }
+                        let permit = match notification_bytes
+                            .clone()
+                            .acquire_many_owned(bytes as u32)
+                            .await
+                        {
+                            Ok(permit) => permit,
+                            Err(_) => break,
+                        };
+                        if sender
+                            .send(NotificationPacket {
+                                notification,
+                                _permit: permit,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            *lossless.lock().await = None;
+                        }
+                    }
                 }
             }
+            *lossless.lock().await = None;
 
             // Connection ended; reject any pending requests
             let mut map = pending_clone.lock().await;
@@ -139,28 +217,31 @@ impl AcpClient {
             writer_tx,
             pending,
             notifications_tx,
+            lossless_tx,
             child: None,
             default_timeout: Duration::from_secs(60),
         }
     }
 
     /// Spawn a child process and communicate via stdio.
-    pub async fn spawn(
-        command: &str,
-        args: &[&str],
-        cwd: Option<&Path>,
-    ) -> Result<Self, AcpError> {
+    pub async fn spawn(command: &str, args: &[&str], cwd: Option<&Path>) -> Result<Self, AcpError> {
         let mut cmd = Command::new(command);
         cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
 
         let mut child = cmd.spawn()?;
+        if let Some(mut stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+            });
+        }
         let stdout = child.stdout.take().ok_or_else(|| {
             AcpError::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
@@ -180,10 +261,14 @@ impl AcpClient {
     }
 
     fn find_repo_root(start_path: &Path) -> Option<PathBuf> {
-        start_path.ancestors().find(|curr| {
-            curr.join("pyproject.toml").exists()
-                && (curr.join("harness_core/__init__.py").is_file() || curr.join(".venv").exists())
-        }).map(Path::to_path_buf)
+        start_path
+            .ancestors()
+            .find(|curr| {
+                curr.join("pyproject.toml").exists()
+                    && (curr.join("harness_core/__init__.py").is_file()
+                        || curr.join(".venv").exists())
+            })
+            .map(Path::to_path_buf)
     }
 
     /// Helper to locate repository root containing the harness_core namespace or virtual environment.
@@ -278,17 +363,14 @@ impl AcpClient {
             .current_dir(&repo_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         let mut child = cmd.spawn()?;
 
-        // Capture child stderr quietly so it does not corrupt the alternate-screen terminal
-        if let Some(child_stderr) = child.stderr.take() {
+        if let Some(mut stderr) = child.stderr.take() {
             tokio::spawn(async move {
-                let mut lines = BufReader::new(child_stderr).lines();
-                while let Ok(Some(_line)) = lines.next_line().await {
-                    // Silently consume to prevent pipe buffer stalls
-                }
+                let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
             });
         }
 
@@ -320,6 +402,12 @@ impl AcpClient {
         self.notifications_tx.subscribe()
     }
 
+    pub async fn subscribe_lossless(&self) -> mpsc::Receiver<NotificationPacket> {
+        let (tx, rx) = mpsc::channel(128);
+        *self.lossless_tx.lock().await = Some(tx);
+        rx
+    }
+
     /// Send a raw JSON-RPC request and await response.
     pub async fn send_request<Req: Serialize, Resp: DeserializeOwned>(
         &self,
@@ -329,11 +417,8 @@ impl AcpClient {
         let req_id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let params_val = serde_json::to_value(params)?;
 
-        let request = JsonRpcRequest::new(
-            RequestId::Number(req_id as i64),
-            method,
-            Some(params_val),
-        );
+        let request =
+            JsonRpcRequest::new(RequestId::Number(req_id as i64), method, Some(params_val));
 
         let (tx, rx) = oneshot::channel();
         {
@@ -388,7 +473,10 @@ impl AcpClient {
     // -----------------------------------------------------------------------
 
     /// Initialize the ACP session and negotiate capabilities.
-    pub async fn initialize(&self, client_info: Option<ClientInfo>) -> Result<InitializeResponse, AcpError> {
+    pub async fn initialize(
+        &self,
+        client_info: Option<ClientInfo>,
+    ) -> Result<InitializeResponse, AcpError> {
         let params = InitializeParams {
             protocol_version: Some("2024-11-05".to_string()),
             client_info: client_info.or_else(|| {
@@ -435,7 +523,10 @@ impl AcpClient {
     }
 
     /// Cancel prompt execution on an active session.
-    pub async fn session_cancel(&self, session_id: &str) -> Result<SessionCancelResponse, AcpError> {
+    pub async fn session_cancel(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionCancelResponse, AcpError> {
         let params = SessionCancelParams {
             session_id: session_id.to_string(),
         };
@@ -532,9 +623,7 @@ impl AcpClient {
 
     /// Ping server for liveness check.
     pub async fn ping(&self) -> Result<bool, AcpError> {
-        let resp: serde_json::Value = self
-            .send_request("ping", serde_json::json!({}))
-            .await?;
+        let resp: serde_json::Value = self.send_request("ping", serde_json::json!({})).await?;
         Ok(resp.get("pong").and_then(|v| v.as_bool()).unwrap_or(true))
     }
 
@@ -557,6 +646,107 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
 
+    #[tokio::test]
+    async fn lossless_bursts_preserve_notification_order() {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let (read, write) = tokio::io::split(client_io);
+        let client = AcpClient::from_streams(read, write);
+        let mut notifications = client.subscribe_lossless().await;
+        let (_, mut output) = tokio::io::split(server_io);
+        let producer = tokio::spawn(async move {
+            for i in 0..2000 {
+                let line = format!("{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"seq\":{i}}}}}\n");
+                output.write_all(line.as_bytes()).await.unwrap();
+            }
+            output
+                .write_all(b"{\"method\":\"approval/request\",\"params\":{\"seq\":2000}}\n")
+                .await
+                .unwrap();
+        });
+        timeout(Duration::from_secs(5), async {
+            for i in 0..=2000 {
+                let packet = notifications.recv().await.unwrap();
+                assert_eq!(packet.notification.params.unwrap()["seq"], i);
+            }
+            producer.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn notification_byte_permits_follow_packets_until_consumed() {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let (read, write) = tokio::io::split(client_io);
+        let client = AcpClient::from_streams(read, write);
+        let mut notifications = client.subscribe_lossless().await;
+        let (_, mut output) = tokio::io::split(server_io);
+        let producer = tokio::spawn(async move {
+            let line = format!(
+                "{{\"method\":\"session/update\",\"params\":\"{}\"}}\n",
+                "x".repeat(2 * 1024 * 1024)
+            );
+            for _ in 0..12 {
+                output.write_all(line.as_bytes()).await.unwrap();
+            }
+        });
+        let mut held = Vec::new();
+        while let Ok(Some(packet)) = timeout(Duration::from_millis(200), notifications.recv()).await
+        {
+            held.push(packet);
+        }
+        assert!(!held.is_empty());
+        assert!(held.len() < 12);
+        let bytes: usize = held.iter().map(|packet| packet._permit.num_permits()).sum();
+        assert!(bytes <= NOTIFICATION_BUFFER_BYTES);
+        assert!(!producer.is_finished());
+        let received = held.len();
+        drop(held);
+        timeout(Duration::from_secs(5), async {
+            for _ in received..12 {
+                drop(notifications.recv().await.unwrap());
+            }
+            producer.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_wire_frame_closes_subscription_and_pending_requests() {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let (read, write) = tokio::io::split(client_io);
+        let client = AcpClient::from_streams(read, write);
+        let mut notifications = client.subscribe_lossless().await;
+        let (pending_tx, pending_rx) = oneshot::channel();
+        client.pending.lock().await.insert(42, pending_tx);
+        let (_, mut output) = tokio::io::split(server_io);
+        let producer = tokio::spawn(async move {
+            let _ = output
+                .write_all(&vec![b'x'; MAX_WIRE_FRAME_BYTES + 1])
+                .await;
+        });
+        assert!(timeout(Duration::from_secs(5), notifications.recv())
+            .await
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            pending_rx.await.unwrap(),
+            Err(AcpError::ConnectionClosed)
+        ));
+        producer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_client_reaps_owned_backend() {
+        let client = AcpClient::spawn("/bin/sh", &["-c", "read line"], None)
+            .await
+            .unwrap();
+        client.close().await.unwrap();
+        let mut child = client.child.as_ref().unwrap().lock().await;
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
     #[test]
     fn test_find_repo_root_from_relocated_desktop() {
         let repo = tempfile::tempdir().unwrap();
@@ -566,7 +756,10 @@ mod tests {
         let desktop = repo.path().join("App/hex-desktop/src");
         std::fs::create_dir_all(&desktop).unwrap();
 
-        assert_eq!(AcpClient::find_repo_root(&desktop), Some(repo.path().to_path_buf()));
+        assert_eq!(
+            AcpClient::find_repo_root(&desktop),
+            Some(repo.path().to_path_buf())
+        );
     }
 
     #[test]
@@ -580,7 +773,10 @@ mod tests {
         std::fs::write(nested.join("pyproject.toml"), "").unwrap();
         std::fs::create_dir_all(nested.join("src/harness_core")).unwrap();
 
-        assert_eq!(AcpClient::find_repo_root(&nested), Some(repo.path().to_path_buf()));
+        assert_eq!(
+            AcpClient::find_repo_root(&nested),
+            Some(repo.path().to_path_buf())
+        );
     }
 
     #[test]
@@ -600,7 +796,10 @@ mod tests {
         let nested = repo.path().join("workspace");
         std::fs::create_dir(&nested).unwrap();
 
-        assert_eq!(AcpClient::find_repo_root(&nested), Some(repo.path().to_path_buf()));
+        assert_eq!(
+            AcpClient::find_repo_root(&nested),
+            Some(repo.path().to_path_buf())
+        );
     }
 
     #[tokio::test]
@@ -752,7 +951,10 @@ mod tests {
             }
         });
 
-        let res = client.session_command("ses_1", "/doctor", None).await.unwrap();
+        let res = client
+            .session_command("ses_1", "/doctor", None)
+            .await
+            .unwrap();
         assert_eq!(res.command, "/doctor");
         assert!(res.output.contains("Doctor check complete"));
     }
