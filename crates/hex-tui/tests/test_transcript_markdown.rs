@@ -214,6 +214,90 @@ fn test_plain_text_is_unchanged() {
 }
 
 #[test]
+fn test_system_notices_are_italic_on_every_wrapped_row_without_affecting_other_roles() {
+    for width in [60, 120] {
+        let mut app = session_with("ordinary assistant response");
+        app.dialogue_items.clear();
+        app.add_user_message("operator input");
+        app.add_tool_call("files", "list_files", "{}", None, None);
+        app.complete_tool_call("files", "done", 100, false);
+        app.add_assistant_message("ordinary assistant response");
+        app.add_system_message(
+            "Showing stored history. Previous messages remain visible, but the next prompt starts a fresh conversation without runtime memory.",
+        );
+        app.dialogue_entrance.set((app.dialogue_items.len(), None));
+        app.dialogue_scroll = 0;
+        let buf = screen(&app, width, 40);
+        let first = (0..buf.area.height)
+            .find(|y| row_text(&buf, *y).contains("Showing stored history.")).unwrap();
+        let last = (first..buf.area.height)
+            .find(|y| row_text(&buf, *y).contains("memory.")).unwrap();
+        assert!(last > first, "the notice should wrap at width {width}");
+        for y in first..=last {
+            for x in 6..buf.area.width - 1 {
+                let cell = &buf[(x, y)];
+                if cell.symbol() == "│" {
+                    break;
+                }
+                if !cell.symbol().trim().is_empty() {
+                    assert!(cell.modifier.contains(Modifier::ITALIC), "notice cell at {x},{y} must be italic");
+                }
+            }
+        }
+        for text in ["operator input", "list_files", "ordinary assistant response"] {
+            let y = (0..buf.area.height).find(|y| row_text(&buf, *y).contains(text)).unwrap();
+            let chars: Vec<_> = row_text(&buf, y).chars().collect();
+            let needle: Vec<_> = text.chars().collect();
+            let x = chars.windows(needle.len()).position(|part| part == needle).unwrap() as u16;
+            for offset in 0..needle.len() as u16 {
+                assert!(!buf[(x + offset, y)].modifier.contains(Modifier::ITALIC), "{text} must not inherit system styling");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_italic_system_markdown_preserves_existing_emphasis_and_accents() {
+    for t in [HexTheme::truecolor(), HexTheme::color_256()] {
+        let mut app = session_with("");
+        app.dialogue_items.clear();
+        app.add_system_message(
+            "# System report\n\n**Approved** `safe_tool`\n\n- tool_allowed\n\n> retained_history\n\n```text\ncommand_output\n```\n\n[details](https://example.com/hex)",
+        );
+        app.dialogue_entrance.set((app.dialogue_items.len(), None));
+        app.dialogue_scroll = 0;
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::empty(area);
+        session::render(&app, &t, &AnimationState::new(), area, &mut buf);
+        for (text, emphasis) in [
+            ("System report", Modifier::BOLD),
+            ("Approved", Modifier::BOLD),
+            ("safe_tool", Modifier::empty()),
+            ("•", Modifier::empty()),
+            ("tool_allowed", Modifier::empty()),
+            ("│ retained_history", Modifier::empty()),
+            ("command_output", Modifier::empty()),
+            ("details", Modifier::UNDERLINED),
+        ] {
+            let y = (0..area.height).find(|y| row_text(&buf, *y).contains(text)).unwrap();
+            let chars: Vec<_> = row_text(&buf, y).chars().collect();
+            let needle: Vec<_> = text.chars().collect();
+            let x = chars.windows(needle.len()).position(|part| part == needle).unwrap() as u16;
+            for offset in 0..needle.len() as u16 {
+                let cell = &buf[(x + offset, y)];
+                assert!(cell.modifier.contains(Modifier::ITALIC | emphasis), "{text} must preserve emphasis and be italic");
+                if matches!(text, "safe_tool" | "command_output") {
+                    assert_eq!(cell.bg, t.hover_bg);
+                }
+            }
+            if matches!(text, "•" | "│ retained_history" | "details") {
+                assert_eq!(buf[(x, y)].fg, t.accent_blue);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_transcript_shows_the_newest_formatted_message() {
     let mut app = App::new("proj", "test-model", "apfs_clone");
     app.screen_state = ScreenState::Session;

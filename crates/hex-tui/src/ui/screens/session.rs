@@ -2,7 +2,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
 
@@ -266,11 +266,17 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
                             Span::styled(&m.content, Style::default().fg(theme.text_bright)),
                         ]));
                     } else {
-                        lines.extend(crate::ui::markdown::render_markdown(
+                        let mut message_lines = crate::ui::markdown::render_markdown(
                             &m.content,
                             stream_area.width as usize,
                             theme,
-                        ));
+                        );
+                        if m.role == Role::System {
+                            for line in &mut message_lines {
+                                line.style = line.style.add_modifier(Modifier::ITALIC);
+                            }
+                        }
+                        lines.extend(message_lines);
                     }
                 }
                 DialogueItem::ToolCall(t) => {
