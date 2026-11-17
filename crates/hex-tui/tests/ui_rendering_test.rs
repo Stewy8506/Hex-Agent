@@ -101,7 +101,7 @@ fn test_screen_1_session_and_right_rail_rendering() {
     assert!(content.contains("ast-walker"), "Must render subagent name");
 
     // 4. Composer & Status Footer
-    assert!(content.contains("build"), "Footer must contain build mode");
+    assert!(content.contains(&format!("{} ·", app.mode)), "Footer must contain the active mode");
     assert!(content.contains("claude-3-7-sonnet"), "Footer must contain model name");
     assert!(content.contains("tokens"), "Footer must contain token telemetry");
     assert!(content.contains("ctrl+p commands"), "Footer must contain commands hint");

@@ -287,19 +287,24 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, area: 
     // ─────────────────────────────────────────────
     // 4. Status Bar Footer
     // ─────────────────────────────────────────────
-    let status_tag = if app.active_diagnostic.is_some() {
-        Span::styled("1 failing", Style::default().fg(theme.rose_fg))
-    } else {
-        Span::styled("build", Style::default().fg(theme.text_bright))
-    };
+    let mode_tag = Span::styled(&app.mode, Style::default().fg(match app.mode.as_str() {
+        "agent" => theme.accent_blue,
+        "plan" => theme.rose_fg,
+        _ => theme.text_bright,
+    }));
 
     let mut footer_left = vec![
-        status_tag,
+        mode_tag,
         Span::styled(" · ", Style::default().fg(theme.text_extra_dim)),
         Span::styled(app.model_label(), Style::default().fg(theme.text_dim)),
         Span::styled(" · ", Style::default().fg(theme.text_extra_dim)),
         Span::styled(format!("{:.1}k tokens", app.tokens_used as f64 / 1000.0), Style::default().fg(theme.text_dim)),
     ];
+
+    if app.active_diagnostic.is_some() {
+        footer_left.push(Span::styled(" · ", Style::default().fg(theme.text_extra_dim)));
+        footer_left.push(Span::styled("1 failing", Style::default().fg(theme.rose_fg)));
+    }
 
     let hint_scope = if app.active_approval.is_some() {
         keymap::Scope::Approval

@@ -1,5 +1,4 @@
-//! G05: a tool failure renders as an inline transcript card, and Tab opens the
-//! agents drill-down fed by real `session/subagents` records.
+//! Inline tool-failure cards and the agents drill-down fed by real records.
 
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;

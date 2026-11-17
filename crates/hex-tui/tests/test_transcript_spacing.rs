@@ -103,13 +103,13 @@ fn test_composer_is_five_rows_with_inner_padding() {
 #[test]
 fn test_footer_is_inset_and_does_not_collide() {
     let buf = render(&app_with(&["some output"]), 120, 40);
-    let y = find_row(&buf, "build");
+    let y = find_row(&buf, "agent ·");
     assert_eq!(first_col(&row(&buf, y)), CONTENT_X as usize);
     let text = row(&buf, y);
     assert!(text.contains("esc interrupt"), "hints still fit at 120 columns");
-    let build_at = text.find("build").unwrap();
+    let mode_at = text.find("agent").unwrap();
     let hints_at = text.find("esc interrupt").unwrap();
-    assert!(hints_at > build_at + 10, "left telemetry and right hints must not overlap");
+    assert!(hints_at > mode_at + 10, "left telemetry and right hints must not overlap");
 }
 
 #[test]

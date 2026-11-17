@@ -284,6 +284,60 @@ fn test_start_screen_hover_and_pulse_animation_styles() {
 }
 
 #[test]
+fn mode_labels_follow_tab_and_use_mode_colours_on_both_screens() {
+    use hex_tui::ui::screens::error_view::DiagnosticFailure;
+
+    for theme in [HexTheme::truecolor(), HexTheme::color_256()] {
+        for width in [60, 120, 241] {
+            for state in [ScreenState::Start, ScreenState::Session] {
+                for failing in [false, true] {
+                    if state == ScreenState::Start && failing {
+                        continue;
+                    }
+                    let mut app = App::new("mode-test", "mode-fixture", "sandbox");
+                    app.screen_state = state;
+                    if failing {
+                        app.active_diagnostic = Some(DiagnosticFailure::from_tool_error(
+                            "terminal", "{}", r#"{"exit_code":1,"error":"test failed"}"#, 10,
+                        ));
+                    }
+                    for (mode, colour) in [
+                        ("agent", theme.accent_blue),
+                        ("plan", theme.rose_fg),
+                        ("code", theme.text_bright),
+                        ("agent", theme.accent_blue),
+                    ] {
+                        assert_eq!(app.mode, mode);
+                        let area = Rect::new(3, 2, width, 40);
+                        let mut buf = Buffer::empty(area);
+                        let anim = AnimationState::new();
+                        if state == ScreenState::Start {
+                            start::render(&app, &theme, &anim, area, &mut buf);
+                        } else {
+                            session::render(&app, &theme, &anim, area, &mut buf);
+                        }
+                        let needle = format!("{mode} · mode-fixture");
+                        let (y, text) = (area.y..area.bottom()).map(|y| {
+                            let text = (area.x..area.right()).map(|x| buf[(x, y)].symbol()).collect::<String>();
+                            (y, text)
+                        }).find(|(_, text)| text.contains(&needle)).expect("active mode must be visible");
+                        let prefix = text.find(&needle).unwrap();
+                        let x = area.x + text[..prefix].chars().count() as u16;
+                        for offset in 0..mode.len() as u16 {
+                            assert_eq!(buf[(x + offset, y)].fg, colour, "{state:?}/{mode}/{width}");
+                        }
+                        if failing {
+                            assert!(text.contains("1 failing"), "failure badge must not replace the mode");
+                        }
+                        app.handle_tab();
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn empty_composer_caret_stays_at_the_hint_start_when_typing_and_clearing() {
     use std::time::{Duration, Instant};
     use ratatui::style::Color;

@@ -151,7 +151,11 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
 
         let mut bottom_spans = vec![
             Span::raw("  "),
-            Span::styled(&app.mode, Style::default().fg(Color::Rgb(242, 242, 242))),
+            Span::styled(&app.mode, Style::default().fg(match app.mode.as_str() {
+                "agent" => theme.accent_blue,
+                "plan" => theme.rose_fg,
+                _ => theme.text_bright,
+            })),
             Span::styled(" · ", Style::default().fg(Color::Rgb(74, 74, 74))),
             Span::styled(app.model_label(), Style::default().fg(Color::Rgb(140, 140, 140))),
         ];
