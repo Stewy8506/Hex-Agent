@@ -6,7 +6,9 @@ reports, so these tests pin the wire contract rather than the pixels.
 
 from __future__ import annotations
 
+import json
 import os
+import tracemalloc
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -362,10 +364,231 @@ def test_error_payload_keeps_detail_past_the_success_cap(tmp_path: Path) -> None
     assert [u["eventType"] for u in updates] == ["start", "error", "start", "complete"]
 
     error = updates[1]
-    assert len(error["payload"]) == 4000
-    assert "assert ['b.ts'] == ['a.ts']" in error["payload"]
+    assert len(error["payload"].encode("utf-8")) <= 4000
+    diagnostics = json.loads(error["payload"])
+    assert diagnostics["exit_code"] == 1
+    assert diagnostics["_truncated"] is True
+    assert "assert ['b.ts'] == ['a.ts']" in diagnostics["stderr"]
     assert error["durationMs"] == 2500
     # The card is attached to the call that produced it.
     assert error["callId"] == updates[0]["callId"]
     assert updates[3]["callId"] == updates[2]["callId"]
-    assert len(updates[3]["payload"]) == 300
+    assert len(updates[3]["payload"].encode("utf-8")) <= 300
+    assert json.loads(updates[3]["payload"])["_truncated"] is True
+
+
+@pytest.mark.parametrize("error", [False, True])
+def test_five_megabyte_previews_have_bounded_allocations(tmp_path: Path, error: bool) -> None:
+    from harness_core.client.acp import _bounded_tool_preview
+
+    huge = "x" * (5 * 1024 * 1024)
+    payload = {"stdout": huge, "error": "real diagnostic", "stderr": huge, "exit_code": 7}
+    tracemalloc.start()
+    try:
+        text = _bounded_tool_preview(payload, error=error)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 256 * 1024
+    assert len(text.encode("utf-8")) <= (4000 if error else 300)
+    preview = json.loads(text)
+    assert preview["exit_code"] == 7
+    if error:
+        assert preview["error"] == "real diagnostic"
+        assert preview["stderr"].startswith("x")
+    assert payload["stdout"] is huge  # The engine's result is untouched.
+    assert payload["stderr"] is huge
+
+
+def test_previews_bound_visits_depth_keys_and_unicode() -> None:
+    from harness_core.client.acp import _bounded_tool_preview
+
+    class CountingDict(dict):
+        visited = 0
+
+        def items(self):
+            for item in super().items():
+                self.visited += 1
+                yield item
+
+    wide = CountingDict((str(i), None) for i in range(10000))
+    deep = []
+    for _ in range(100):
+        deep = [deep]
+    wide["deep"] = deep
+    wide["stderr"] = "😀\n\\\"" * 1000000
+    wide["error"] = "é" * 1000000
+    wide["exit_code"] = 1
+    for value in (wide, deep, {"\n" * 1000000: wide}):
+        text = _bounded_tool_preview(value, error=True)
+        assert len(text.encode("utf-8")) <= 4000
+        json.loads(text)
+    assert wide.visited <= 256
+    diagnostics = json.loads(_bounded_tool_preview(wide, error=True))
+    assert diagnostics["exit_code"] == 1
+    assert diagnostics["stderr"].startswith("😀")
+    assert diagnostics["error"].startswith("é")
+
+
+def test_non_json_objects_do_not_run_unbounded_string_conversion() -> None:
+    from harness_core.client.acp import _bounded_tool_preview
+
+    class NoString:
+        def __str__(self):
+            raise AssertionError("preview must not call user __str__")
+
+    assert json.loads(_bounded_tool_preview(NoString(), error=True))["error"] == "<NoString>"
+    assert json.loads(_bounded_tool_preview("failure", error=True)) == {"error": "failure"}
+
+
+@pytest.fixture
+def result_server(tmp_path: Path):
+    from harness_core.client.acp import ACPSession
+    from harness_core.storage.db import LedgerStore
+
+    ledger = LedgerStore(":memory:")
+    task_ids = [ledger.submit_task(TaskSubmitRequest(goal=f"task {i}"))["task_id"] for i in range(3)]
+    calls = []
+    for task_id in task_ids:
+        call_id = ledger.record_tool_call(task_id=task_id, tool_name="terminal")
+        ledger.seal_tool_call(call_id, {"stdout": f"full result {task_id}"})
+        calls.append(call_id)
+    server = ACPServer(orchestrator=SimpleNamespace(ledger=ledger), workspace_root=tmp_path)
+    sess = ACPSession("owned", tmp_path, last_task_id=task_ids[1], history=[{"task_id": task_ids[0]}])
+    server.sessions[sess.session_id] = sess
+    try:
+        yield server, task_ids, calls
+    finally:
+        ledger.close()
+
+
+def result_request(server, task_id, call_id, **params):
+    return server.handle_request({
+        "jsonrpc": "2.0", "id": 91, "method": "session/toolResult",
+        "params": {"sessionId": "owned", "taskId": task_id, "callId": call_id, **params},
+    })
+
+
+def test_tool_result_authorizes_current_history_and_durable_session(result_server) -> None:
+    server, tasks, calls = result_server
+    for i in (0, 1):
+        result = result_request(server, tasks[i], calls[i])["result"]
+        assert json.loads(result["content"])["stdout"] == f"full result {tasks[i]}"
+        assert result["totalChars"] == len(result["content"])
+        assert "nextOffset" not in result
+    server._persist_session(server.sessions["owned"])
+    server.sessions.clear()
+    assert "result" in result_request(server, tasks[0], calls[0], limit=10)
+    assert "owned" not in server.sessions  # This read never creates sessions.
+
+
+def test_tool_result_rejects_foreign_unknown_tasks_calls_and_sessions(result_server) -> None:
+    server, tasks, calls = result_server
+    for task, call in ((tasks[2], calls[2]), (tasks[0], calls[1]), (tasks[0], "missing"), ("missing", calls[0])):
+        assert "error" in result_request(server, task, call)
+    assert "error" in result_request(server, tasks[0], calls[0], sessionId="missing")
+    assert "missing" not in server.sessions
+    assert not server._session_path("missing").exists()
+    assert "error" in result_request(server, tasks[0], calls[0], sessionId="../owned")
+
+
+@pytest.mark.parametrize("params", [
+    {"offset": -1}, {"offset": True}, {"offset": "0"}, {"offset": 1.5},
+    {"offset": 2**31}, {"limit": 0}, {"limit": -1}, {"limit": True},
+    {"limit": "4096"}, {"limit": None}, {"taskId": []}, {"callId": ""},
+    {"sessionId": None}, {"result_ref": "/etc/passwd"},
+])
+def test_tool_result_invalid_arguments(result_server, params) -> None:
+    server, tasks, calls = result_server
+    response = result_request(server, tasks[0], calls[0], **params)
+    assert response["error"]["code"] == -32602
+    assert response["id"] == 91
+
+
+def test_tool_result_missing_and_nonobject_params(result_server) -> None:
+    server, _, _ = result_server
+    for params in ({}, ["not an object"], {"sessionId": "owned"}):
+        response = server.handle_request({"id": 91, "method": "session/toolResult", "params": params})
+        assert response["error"]["code"] == -32602
+
+
+class JournalOrchestrator:
+    """Real gateway/storage, with no production orchestrator/provider construction."""
+
+    def __init__(self, ledger, handler, *, replay=False):
+        from harness_core.gateway import ToolGateway
+
+        self.ledger = ledger
+        self.gateway = ToolGateway(ledger)
+        self.gateway.approval_bridge = object()
+        self.gateway.register_tool(ToolSpec("fixture", "fixture", RiskClass.R0, handler))
+        self.replay = replay
+
+    def submit_task(self, req):
+        return self.ledger.submit_task(req)
+
+    def execute_task(self, task_id, stream_callback, tool_callback):
+        for _ in range(2 if self.replay else 1):
+            attempt = self.ledger.acquire_lease_and_attempt(task_id, "fixture")
+            tool_callback("start", "fixture", {})
+            try:
+                result = self.gateway.invoke(
+                    task_id=task_id, attempt_id=attempt["attempt_id"], step_id="fixture",
+                    sequence_in_step=1, tool_id="fixture", args={}, workspace_dir=".",
+                )
+            except Exception as exc:
+                tool_callback("error", "fixture", {"ok": False, "error": str(exc)})
+                raise
+            tool_callback("complete", "fixture", result)
+        return {"status": "SUCCEEDED", "result": "done"}
+
+
+def test_replay_notification_references_its_own_durable_call(tmp_path: Path) -> None:
+    from harness_core.storage.db import LedgerStore
+
+    ledger = LedgerStore(":memory:")
+    invocations = []
+    def handler(ws, args):
+        invocations.append(1)
+        return {"ok": True, "stdout": "full output"}
+    try:
+        server = ACPServer(orchestrator=JournalOrchestrator(ledger, handler, replay=True), workspace_root=tmp_path)
+        server.emitted = []
+        server._emit = server.emitted.append
+        updates = tool_updates(server, new_session(server))
+        first, replay = updates[1], updates[3]
+        assert first["ledgerCallId"] != replay["ledgerCallId"]
+        assert first["callId"] == updates[0]["callId"]
+        assert replay["callId"] == updates[2]["callId"]
+        page = ledger.get_tool_result_page(replay["taskId"], replay["ledgerCallId"])
+        result = json.loads(page["content"])
+        assert result["_call_id"] == replay["ledgerCallId"]
+        assert result["_replayed_from_call_id"] == first["ledgerCallId"]
+        assert result["stdout"] == "full output"
+        assert invocations == [1]
+    finally:
+        ledger.close()
+
+
+def test_exception_reference_preserves_the_original_agent_error(tmp_path: Path) -> None:
+    from harness_core.storage.db import LedgerStore
+
+    failure = RuntimeError("original failure")
+    def handler(ws, args):
+        raise failure
+    ledger = LedgerStore(":memory:")
+    try:
+        server = ACPServer(orchestrator=JournalOrchestrator(ledger, handler), workspace_root=tmp_path)
+        server.emitted = []
+        server._emit = server.emitted.append
+        updates = tool_updates(server, new_session(server))
+        error = updates[1]
+        assert error["eventType"] == "error"
+        assert error["callId"] == updates[0]["callId"]
+        assert error["ledgerCallId"] == failure._hex_ledger_call_id
+        result = ledger.get_tool_result_page(error["taskId"], error["ledgerCallId"])
+        assert json.loads(result["content"]) == {"ok": False, "error": "original failure"}
+        assert str(failure) == "original failure"
+        assert type(failure) is RuntimeError
+    finally:
+        ledger.close()

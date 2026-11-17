@@ -501,6 +501,26 @@ impl AcpClient {
         self.send_request("session/command", params).await
     }
 
+    pub async fn session_tool_result(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        call_id: &str,
+        offset: usize,
+    ) -> Result<crate::models::ToolResultPage, AcpError> {
+        self.send_request(
+            "session/toolResult",
+            crate::models::ToolResultPageParams {
+                session_id: session_id.to_string(),
+                task_id: task_id.to_string(),
+                call_id: call_id.to_string(),
+                offset,
+                limit: 4096,
+            },
+        )
+        .await
+    }
+
     /// Query the subagents this session's tasks have spawned.
     pub async fn session_subagents(&self, session_id: &str) -> Result<Vec<SubagentInfo>, AcpError> {
         let params = SessionSubagentsParams {

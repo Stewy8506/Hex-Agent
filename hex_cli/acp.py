@@ -31,6 +31,104 @@ from harness_core import __version__
 logger = logging.getLogger(__name__)
 
 
+def _bounded_tool_preview(payload: Any, *, error: bool = False) -> str:
+    """Display-only JSON preview; never traverse or serialize the full result."""
+    limit = 4000 if error else 300
+    max_string = 1024 if error else 256
+    nodes_left = 128
+    priority = ("exit_code", "stderr", "error")
+
+    def quoted(value: str, budget: int, cap: int = max_string) -> tuple[str, bool]:
+        prefix = value[:min(cap, budget)]
+        truncated = len(prefix) < len(value)
+        text = json.dumps(prefix + ("..." if truncated else ""))
+        if len(text) <= budget:
+            return text, truncated
+        # Only bounded prefixes are encoded, even for multi-megabyte strings.
+        low, high = 0, len(prefix)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if len(json.dumps(prefix[:mid] + "...")) <= budget:
+                low = mid
+            else:
+                high = mid - 1
+        return json.dumps(prefix[:low] + "..."), True
+
+    def visit(value: Any, budget: int, depth: int) -> tuple[str, bool]:
+        nonlocal nodes_left
+        nodes_left -= 1
+        if depth >= 6 or nodes_left <= 0:
+            return '"..."', True
+        if isinstance(value, str):
+            return quoted(value, budget)
+        if value is None or isinstance(value, (bool, float, int)):
+            if isinstance(value, int) and value.bit_length() > 256:
+                return '"..."', True
+            try:
+                text = json.dumps(value, allow_nan=False)
+            except ValueError:
+                return "null", True
+            return (text, False) if len(text) <= budget else ('"..."', True)
+        if isinstance(value, (dict, list, tuple)):
+            if budget < 32:
+                return '"..."', True
+            is_dict = isinstance(value, dict)
+            parts: list[str] = []
+            used = 2
+            truncated = False
+            marker = '"_truncated": true' if is_dict else '"..."'
+
+            def entries() -> Any:
+                if is_dict:
+                    for key in priority:
+                        if key in value:
+                            yield key, value[key]
+                    for key, child in value.items():
+                        if key not in priority:
+                            yield key, child
+                else:
+                    yield from enumerate(value)
+
+            count = 0
+            for key, child in entries():
+                # Reserve closing delimiters and an explicit truncation marker.
+                remaining = budget - used - len(marker) - 4
+                if nodes_left <= 1 or remaining < 24:
+                    truncated = True
+                    break
+                label = ""
+                if is_dict:
+                    key_text, key_cut = quoted(key if isinstance(key, str) else "<key>", remaining - 8, 64)
+                    label = key_text + ": "
+                    truncated |= key_cut
+                child_budget = remaining - len(label) - (2 if parts else 0)
+                if child_budget < 8:
+                    truncated = True
+                    break
+                # A large stderr must not crowd out the error or exit code.
+                if is_dict and key in priority:
+                    child_budget = min(child_budget, max(8, budget // 3))
+                text, child_cut = visit(child, child_budget, depth + 1)
+                parts.append(label + text)
+                used += len(label) + len(text) + (2 if len(parts) > 1 else 0)
+                truncated |= child_cut
+                count += 1
+            truncated |= count < len(value)
+            if truncated:
+                parts.append(marker)
+            opening, closing = ("{", "}") if is_dict else ("[", "]")
+            return opening + ", ".join(parts) + closing, truncated
+        # Avoid arbitrary __str__/__repr__ implementations with unbounded output.
+        return quoted("<" + type(value).__name__[:64] + ">", budget)
+
+    if error and not isinstance(payload, dict):
+        payload = {"error": payload}
+    if isinstance(payload, str):
+        # Preserve plain success chips while bounding their UTF-8 wire size.
+        return payload[:limit].encode("utf-8", errors="replace")[:limit].decode("utf-8", errors="ignore")
+    return visit(payload, limit, 0)[0]
+
+
 @dataclass
 class ACPSession:
     """Active ACP editor session."""
@@ -204,6 +302,8 @@ class ACPServer:
                 res = self._handle_session_command(params)
             elif method == "session/subagents":
                 res = self._handle_session_subagents(params)
+            elif method == "session/toolResult":
+                res = self._handle_session_tool_result(params)
             elif method == "ping":
                 res = {"pong": True}
             else:
@@ -223,7 +323,10 @@ class ACPServer:
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "error": {"code": -32000, "message": str(exc)},
+                "error": {
+                    "code": -32602 if method == "session/toolResult" and isinstance(exc, (ValueError, TypeError)) else -32000,
+                    "message": str(exc),
+                },
             }
 
     def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -397,12 +500,13 @@ class ACPServer:
         task_id = sub_res["task_id"]
         sess.last_task_id = task_id
 
-        streamed_chunks: list[str] = []
+        streamed = False
 
         def stream_cb(chunk: str) -> None:
+            nonlocal streamed
             if not chunk or sess.cancelled:
                 return
-            streamed_chunks.append(chunk)
+            streamed = True
             self._emit({
                 "jsonrpc": "2.0",
                 "method": "session/update",
@@ -424,13 +528,24 @@ class ACPServer:
             else:
                 call_id = active_tool_calls.pop(tool_id, f"{tool_id}_{int(time.time() * 1000)}")
 
-            if isinstance(payload, (dict, list)):
-                payload_text = json.dumps(payload, default=str)
-            else:
-                payload_text = str(payload)
-            # A failure carries the stderr/exit detail the client's diagnostic
-            # card renders; successful calls only need the short result chip.
-            payload_limit = 4000 if event_type == "error" else 300
+            tool = {
+                "eventType": event_type,
+                "toolId": tool_id,
+                "callId": call_id,
+                "durationMs": dur_ms,
+                "payload": _bounded_tool_preview(payload, error=event_type == "error"),
+            }
+            if event_type != "start":
+                tool["taskId"] = task_id
+                ledger_call_id = payload.get("_call_id") if isinstance(payload, dict) else None
+                if not ledger_call_id and event_type == "error":
+                    # The orchestrator invokes this callback inside its except
+                    # block; no journal lookup or tool-name guessing is needed.
+                    exc = sys.exc_info()[1]
+                    if getattr(exc, "_hex_task_id", None) == task_id:
+                        ledger_call_id = getattr(exc, "_hex_ledger_call_id", None)
+                if isinstance(ledger_call_id, str) and ledger_call_id:
+                    tool["ledgerCallId"] = ledger_call_id
 
             self._emit({
                 "jsonrpc": "2.0",
@@ -438,13 +553,7 @@ class ACPServer:
                 "params": {
                     "sessionId": sess.session_id,
                     "updateType": "tool",
-                    "tool": {
-                        "eventType": event_type,
-                        "toolId": tool_id,
-                        "callId": call_id,
-                        "durationMs": dur_ms,
-                        "payload": payload_text[:payload_limit],
-                    },
+                    "tool": tool,
                 },
             })
 
@@ -489,7 +598,7 @@ class ACPServer:
                 "taskId": task_id,
             }
 
-        if streamed_chunks:
+        if streamed:
             # Emit stream_end notification immediately matching Hermes _stream_delta(None)
             self._emit({
                 "jsonrpc": "2.0",
@@ -544,7 +653,7 @@ class ACPServer:
                 "status": "Ready",
             },
         }
-        if not streamed_chunks:
+        if not streamed:
             update_notif["params"]["delta"] = str(terminal_reason)
         self._emit(update_notif)
 
@@ -662,6 +771,33 @@ class ACPServer:
             "decision": decision,
             "status": "applied" if applied else "acknowledged",
         }
+
+    def _handle_session_tool_result(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            raise ValueError("session/toolResult params must be an object")
+        if params.keys() - {"sessionId", "taskId", "callId", "offset", "limit"}:
+            raise ValueError("Unknown session/toolResult parameter")
+        for key in ("sessionId", "taskId", "callId"):
+            value = params.get(key)
+            if not isinstance(value, str) or not value.strip() or len(value) > 256:
+                raise ValueError(f"{key} must be a nonempty string of at most 256 characters")
+        sid, task_id, call_id = params["sessionId"], params["taskId"], params["callId"]
+        with self._lock:
+            sess = self.sessions.get(sid)
+        if sess is None:
+            sess = self._load_session_from_disk(sid)
+        if sess is None:
+            raise KeyError(f"Session not found: {sid}")
+        if task_id != sess.last_task_id and not any(
+            turn.get("task_id") == task_id for turn in sess.history
+        ):
+            raise KeyError("Task does not belong to this session")
+        ledger = getattr(self.orchestrator, "ledger", None)
+        if ledger is None:
+            raise KeyError("Tool result storage unavailable")
+        return ledger.get_tool_result_page(
+            task_id, call_id, offset=params.get("offset", 0), limit=params.get("limit", 4096)
+        )
 
     def _handle_session_subagents(self, params: dict[str, Any]) -> dict[str, Any]:
         """Structured subagent telemetry for this session's own tasks.

@@ -303,5 +303,69 @@ class TestConcurrentCancellation(unittest.TestCase):
                 self.assertIn("earlier answer", stub.prompts[0])
 
 
+class TestStreamRetentionAndTerminalOrdering(unittest.TestCase):
+    def test_streaming_does_not_retain_five_megabytes_of_chunks(self) -> None:
+        import tracemalloc
+        from harness_core.client.acp import ACPSession
+
+        class StreamingOrchestrator(RecordingOrchestrator):
+            peak = 0
+            def execute_task(inner, task_id, stream_callback=None, tool_callback=None):
+                tracemalloc.start()
+                try:
+                    for i in range(160):
+                        stream_callback(str(i) + "x" * 32768)
+                    _, inner.peak = tracemalloc.get_traced_memory()
+                finally:
+                    tracemalloc.stop()
+                return {"status": "SUCCEEDED", "result": "final answer"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            orch = StreamingOrchestrator()
+            server = ACPServer(orchestrator=orch, workspace_root=tmp)
+            sess = ACPSession("stream", Path(tmp))
+            updates = []
+            server._emit = lambda obj: updates.append((obj["params"]["updateType"], "delta" in obj["params"]))
+            result = server._execute_prompt_turn(sess, {}, "stream")
+            self.assertLess(orch.peak, 512 * 1024)
+            self.assertEqual(updates[-2:], [("stream_end", False), ("status", False)])
+            self.assertEqual(result["content"][0]["text"], "final answer")
+
+    def test_empty_stream_and_cancellation_keep_terminal_behavior(self) -> None:
+        from harness_core.client.acp import ACPSession
+
+        for chunks, cancel_at, expected in (
+            (["", ""], None, ["status"]),
+            (["a", "", "b"], None, ["agent_response", "agent_response", "stream_end", "status"]),
+            (["a", "b"], 0, ["status"]),
+            (["a", "b"], 1, ["agent_response", "status"]),
+        ):
+            with self.subTest(chunks=chunks, cancel_at=cancel_at), tempfile.TemporaryDirectory() as tmp:
+                sess = ACPSession("stream", Path(tmp))
+                class ScriptedOrchestrator(RecordingOrchestrator):
+                    def execute_task(inner, task_id, stream_callback=None, tool_callback=None):
+                        for i, chunk in enumerate(chunks):
+                            if i == cancel_at:
+                                sess.cancelled = True
+                            stream_callback(chunk)
+                            if sess.cancelled:
+                                tool_callback("complete", "terminal", {"stdout": "suppressed"})
+                        return {"status": "SUCCEEDED", "result": "final answer"}
+                server = ACPServer(orchestrator=ScriptedOrchestrator(), workspace_root=tmp)
+                messages = []
+                server._emit = messages.append
+                result = server._execute_prompt_turn(sess, {}, "stream")
+                updates = [m["params"] for m in messages]
+                self.assertEqual([u["updateType"] for u in updates], expected)
+                if cancel_at is not None:
+                    self.assertEqual(result["status"], "cancelled")
+                    self.assertEqual(updates[-1]["status"], "Cancelled")
+                    self.assertNotIn("delta", updates[-1])
+                elif not any(chunks):
+                    self.assertEqual(updates[-1]["delta"], "final answer")
+                else:
+                    self.assertNotIn("delta", updates[-1])
+
+
 if __name__ == "__main__":
     unittest.main()

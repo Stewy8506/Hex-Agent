@@ -672,6 +672,24 @@ pub struct SessionCommandResponse {
     pub is_error: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolResultPageParams {
+    pub session_id: String,
+    pub task_id: String,
+    pub call_id: String,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolResultPage {
+    pub content: String,
+    pub next_offset: Option<usize>,
+    pub total_chars: usize,
+}
+
 /// Parameters for `session/subagents`, the cockpit's agents drill-down query.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

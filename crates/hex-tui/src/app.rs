@@ -445,6 +445,63 @@ pub fn available_slash_commands() -> &'static [SlashCommand] {
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct ToolResultRef {
+    pub task_id: String,
+    pub call_id: String,
+    pub local: bool,
+}
+
+pub fn tool_preview(text: &str, limit: usize) -> String {
+    let end = text.char_indices().nth(limit).map(|(i, _)| i);
+    match end {
+        Some(end) => format!("{}… [full result: /tool-result]", &text[..end]),
+        None => text.to_string(),
+    }
+}
+
+pub fn load_tool_result_page(
+    workspace: &std::path::Path,
+    task_id: &str,
+    call_id: &str,
+    offset: usize,
+) -> Result<hex_protocol::models::ToolResultPage, String> {
+    if [task_id, call_id].iter().any(|id| {
+        id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    }) {
+        return Err("Invalid tool result identifier".to_string());
+    }
+    if offset >= i64::MAX as usize {
+        return Err("Invalid tool result offset".to_string());
+    }
+    let db = workspace.join(".hex/data/ledger.db");
+    if !db.is_file() {
+        return Err("No stored ledger in this workspace".to_string());
+    }
+    let sql = format!(
+        "SELECT substr(result_json, {}, 4096) AS content, length(result_json) AS totalChars FROM tool_calls WHERE task_id = '{task_id}' AND call_id = '{call_id}' AND result_json IS NOT NULL;",
+        offset.saturating_add(1)
+    );
+    let output = get_sqlite_command()
+        .args([db.to_str().ok_or("Invalid workspace path")?, "-json", &sql])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("Could not read stored tool result".to_string());
+    }
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    let row = rows.first().ok_or("Tool result not found in this task")?;
+    let content = row["content"].as_str().unwrap_or("").to_string();
+    let total_chars = row["totalChars"].as_u64().unwrap_or(0) as usize;
+    let next = offset.saturating_add(content.chars().count());
+    Ok(hex_protocol::models::ToolResultPage {
+        content,
+        total_chars,
+        next_offset: (next < total_chars).then_some(next),
+    })
+}
+
 /// Top-level application state.
 pub struct App {
     // Session metadata
@@ -480,6 +537,7 @@ pub struct App {
 
     // Dialogue items and scrolling
     pub dialogue_items: Vec<DialogueItem>,
+    pub tool_result_refs: std::collections::HashMap<String, ToolResultRef>,
     pub dialogue_scroll: usize,
     pub follow_dialogue: bool,
     /// (total transcript rows, viewport rows) as last measured by the renderer.
@@ -938,7 +996,7 @@ pub fn load_session_dialogue_from_db(dir: &std::path::Path, task_id: &str) -> Ve
 
     // 2. Fetch tool calls
     let tc_sql = format!(
-        "SELECT call_id, tool_id, arguments_redacted_json, result_json, status FROM tool_calls WHERE task_id = '{}' ORDER BY started_at;",
+        "SELECT call_id, tool_id, substr(arguments_redacted_json, 1, 1000) AS arguments_redacted_json, substr(result_json, 1, CASE WHEN status = 'FAILED' THEN 4000 ELSE 300 END) AS result_json, length(result_json) > CASE WHEN status = 'FAILED' THEN 4000 ELSE 300 END AS result_truncated, status FROM tool_calls WHERE task_id = '{}' ORDER BY started_at;",
         clean_id
     );
     let mut cmd_tc = get_sqlite_command();
@@ -976,10 +1034,12 @@ pub fn load_session_dialogue_from_db(dir: &std::path::Path, task_id: &str) -> Ve
             };
 
             items.push(DialogueItem::ToolCall(ToolCallItem {
-                id,
+                id: id.clone(),
                 tool,
                 args: args_display,
-                result: if res_raw.is_empty() { None } else { Some(res_raw.to_string()) },
+                result: if res_raw.is_empty() { None } else if r["result_truncated"].as_i64() == Some(1) {
+                    Some(format!("{res_raw}… [full result: /tool-result {id}]"))
+                } else { Some(res_raw.to_string()) },
                 duration_ms: Some(120),
                 exit_status: Some(format!("exit {}", if status == "FAILED" { "1" } else { "0" })),
                 collapsed: true,
@@ -1297,6 +1357,7 @@ impl App {
             cancel_requested: false,
 
             dialogue_items: Vec::new(),
+            tool_result_refs: std::collections::HashMap::new(),
             dialogue_scroll: 0,
             follow_dialogue: true,
             dialogue_metrics: std::cell::Cell::new((0, 0)),
@@ -1630,6 +1691,13 @@ impl App {
                 timestamp: "now".to_string(),
             }));
         }
+        self.tool_result_refs = self.dialogue_items.iter().filter_map(|item| {
+            if let DialogueItem::ToolCall(tool) = item {
+                Some((tool.id.clone(), ToolResultRef {
+                    task_id: session_id.to_string(), call_id: tool.id.clone(), local: true,
+                }))
+            } else { None }
+        }).collect();
         self.plan_steps = load_session_plan_from_db(&ws, session_id);
         self.input_buffer.clear();
         self.cursor_pos = 0;
@@ -1905,7 +1973,7 @@ impl App {
             .push(DialogueItem::ToolCall(ToolCallItem {
                 id: id.to_string(),
                 tool: tool.to_string(),
-                args: args.to_string(),
+                args: tool_preview(args, 1000),
                 result: None,
                 duration_ms,
                 exit_status: status
@@ -1924,7 +1992,7 @@ impl App {
         for item in &mut self.dialogue_items {
             if let DialogueItem::ToolCall(tc) = item {
                 if tc.id == id {
-                    tc.result = Some(result.to_string());
+                    tc.result = Some(tool_preview(result, if is_err { 4000 } else { 300 }));
                     tc.duration_ms = Some(duration_ms);
                     tc.exit_status = Some(if is_err {
                         "ERROR".to_string()
@@ -1943,7 +2011,7 @@ impl App {
                     if tc.exit_status.as_deref() == Some("RUNNING")
                         && (tc.tool == id || tc.id.starts_with(id) || id.starts_with(&tc.tool))
                     {
-                        tc.result = Some(result.to_string());
+                        tc.result = Some(tool_preview(result, if is_err { 4000 } else { 300 }));
                         tc.duration_ms = Some(duration_ms);
                         tc.exit_status = Some(if is_err {
                             "ERROR".to_string()
@@ -1961,7 +2029,7 @@ impl App {
             for item in self.dialogue_items.iter_mut().rev() {
                 if let DialogueItem::ToolCall(tc) = item {
                     if tc.exit_status.as_deref() == Some("RUNNING") {
-                        tc.result = Some(result.to_string());
+                        tc.result = Some(tool_preview(result, if is_err { 4000 } else { 300 }));
                         tc.duration_ms = Some(duration_ms);
                         tc.exit_status = Some(if is_err {
                             "ERROR".to_string()

@@ -600,7 +600,11 @@ async fn handle_key_event(
     if app.show_palette {
         match key.code {
             KeyCode::Enter => {
-                if let Some(item) = app.palette_selected() {
+                if app.palette_query.starts_with("tool-result ") {
+                    let command = format!("/{}", app.palette_query);
+                    app.close_palette();
+                    execute_submitted_text(app, command, acp_client, event_tx).await?;
+                } else if let Some(item) = app.palette_selected() {
                     app.close_palette();
                     execute_palette_command(app, &item.command, acp_client, event_tx).await?;
                 }
@@ -810,7 +814,55 @@ async fn execute_submitted_text(
                 app.add_system_message(&format!("Diff viewer mode: {}", mode_str));
                 return Ok(());
             }
+            "/tool-result" => {
+                let selected = parts.get(1).map(|id| (*id).to_string()).or_else(|| {
+                    app.dialogue_items.iter().rev().find_map(|item| {
+                        if let hex_tui::app::DialogueItem::ToolCall(tool) = item {
+                            app.tool_result_refs.contains_key(&tool.id).then(|| tool.id.clone())
+                        } else { None }
+                    })
+                });
+                let offset = parts.get(2).map(|value| value.parse::<usize>()).unwrap_or(Ok(0));
+                if parts.len() > 3 || offset.is_err() {
+                    app.add_system_message("Usage: /tool-result [call_id] [offset]");
+                    return Ok(());
+                }
+                let Some((id, reference)) = selected.and_then(|id| {
+                    app.tool_result_refs.get(&id).cloned().map(|reference| (id, reference))
+                }) else {
+                    app.add_system_message("No stored tool result reference is available.");
+                    return Ok(());
+                };
+                let offset = offset.unwrap();
+                let workspace = PathBuf::from(&app.workspace_path);
+                let session = app.session_id.clone();
+                let client = acp_client.cloned();
+                if !reference.local && client.is_none() {
+                    app.add_system_message("Reconnect to read this tool's stored result.");
+                    return Ok(());
+                }
+                tokio::spawn(async move {
+                    let result = if reference.local {
+                        tokio::task::spawn_blocking(move || {
+                            hex_tui::app::load_tool_result_page(&workspace, &reference.task_id, &reference.call_id, offset)
+                        }).await.map_err(|e| e.to_string()).and_then(|result| result)
+                    } else {
+                        client.unwrap().session_tool_result(&session, &reference.task_id, &reference.call_id, offset)
+                            .await.map_err(|e| e.to_string())
+                    };
+                    let notice = match result {
+                        Ok(page) => {
+                            let next = page.next_offset.map(|next| format!("\nNext page: /tool-result {id} {next}")).unwrap_or_default();
+                            format!("Stored tool result {id} (offset {offset}, {} characters total):\n{}{next}", page.total_chars, page.content)
+                        }
+                        Err(error) => format!("Could not read stored tool result: {error}"),
+                    };
+                    let _ = event_tx.send(AppEvent::AcpMessage(notice));
+                });
+                return Ok(());
+            }
             "/clear" => {
+                app.tool_result_refs.clear();
                 app.dialogue_items.clear();
                 app.add_system_message("Dialogue viewport cleared.");
                 return Ok(());
@@ -1023,6 +1075,14 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                         let call_id = tool_obj.get("callId").and_then(|v| v.as_str()).unwrap_or(tool_id);
                         let dur = tool_obj.get("durationMs").and_then(|v| v.as_u64());
                         let payload_str = tool_obj.get("payload").and_then(|v| v.as_str()).unwrap_or("");
+                        if let (Some(task), Some(ledger_call)) = (
+                            tool_obj.get("taskId").and_then(|v| v.as_str()),
+                            tool_obj.get("ledgerCallId").and_then(|v| v.as_str()),
+                        ) {
+                            app.tool_result_refs.insert(call_id.to_string(), hex_tui::app::ToolResultRef {
+                                task_id: task.to_string(), call_id: ledger_call.to_string(), local: false,
+                            });
+                        }
 
                         if ev_type == "start" {
                             app.add_tool_call(call_id, tool_id, payload_str, dur, Some("RUNNING"));
@@ -1161,6 +1221,38 @@ mod wire_contract_tests {
         assert_eq!(tool.exit_status.as_deref(), Some("OK"));
         assert_eq!(tool.duration_ms, Some(12));
         assert!(tool.result.as_deref().unwrap_or("").contains("a.py"));
+    }
+
+    #[tokio::test]
+    async fn palette_accepts_tool_result_arguments() {
+        let mut app = App::new("p", "m", "cow");
+        app.open_palette();
+        app.palette_query = "tool-result unknown 4096".to_string();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_key_event(&mut app, crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), None, tx).await.unwrap();
+        assert!(!app.show_palette);
+        assert!(matches!(app.dialogue_items.last(), Some(DialogueItem::Message(m)) if m.content.contains("No stored tool result reference")));
+    }
+
+    #[test]
+    fn tool_results_keep_durable_ids_separate_from_ui_correlation() {
+        let mut app = App::new("p", "m", "cow");
+        for event in ["start", "complete"] {
+            let notification = serde_json::from_value(serde_json::json!({
+                "jsonrpc": "2.0", "method": "session/update",
+                "params": {"sessionId": "session_1", "updateType": "tool", "tool": {
+                    "eventType": event, "callId": "ui_call", "toolId": "terminal",
+                    "taskId": "task_1", "ledgerCallId": "durable_call",
+                    "payload": "short preview", "durationMs": 12
+                }}
+            })).unwrap();
+            handle_notification(&mut app, notification);
+        }
+        let reference = &app.tool_result_refs["ui_call"];
+        assert_eq!(reference.task_id, "task_1");
+        assert_eq!(reference.call_id, "durable_call");
+        assert!(!reference.local);
+        assert!(matches!(app.dialogue_items.last(), Some(DialogueItem::ToolCall(t)) if t.id == "ui_call"));
     }
 
     #[test]

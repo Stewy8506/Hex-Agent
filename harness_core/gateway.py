@@ -1134,6 +1134,7 @@ class ToolGateway(FileToolsMixin):
                 fencing_token=fencing_token,
             )
             replayed_result = dict(prior["result"])
+            replayed_result["_call_id"] = replay_call_id
             replayed_result["_replayed"] = True
             replayed_result["_replayed_from_call_id"] = prior["call_id"]
             replayed_result["_replay_latency_ms"] = round((time.perf_counter() - t0) * 1000, 3)
@@ -1168,6 +1169,10 @@ class ToolGateway(FileToolsMixin):
         except Exception as exc:
             err_payload = {"ok": False, "error": redact_secrets(str(exc))}
             self.ledger.seal_tool_call(call_id, err_payload, status="FAILED", fencing_token=fencing_token)
+            # Out-of-band diagnostic reference; preserve the original exception
+            # and its agent-facing message. ACP reads it in the caller's catch.
+            exc._hex_ledger_call_id = call_id
+            exc._hex_task_id = task_id
             raise
 
         duration_ms = round((time.perf_counter() - t0) * 1000, 3)

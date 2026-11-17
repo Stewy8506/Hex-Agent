@@ -3186,6 +3186,60 @@ class LedgerStore:
             )
             return [self._row_to_dict(r) for r in rows if r is not None]  # type: ignore[misc]
 
+    @staticmethod
+    def _tool_result_page_bounds(offset: int, limit: int) -> tuple[int, int]:
+        if type(offset) is not int or not 0 <= offset < 2**31 - 1:
+            raise ValueError("offset must be an integer between 0 and 2147483646")
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        return offset, min(limit, 4096)
+
+    @staticmethod
+    def _tool_result_page(row: Any, offset: int) -> dict[str, Any]:
+        if row is None:
+            raise KeyError("Tool result not found for this task and call")
+        content, total = row["content"], int(row["total_chars"])
+        page: dict[str, Any] = {"content": content, "totalChars": total}
+        next_offset = offset + len(content)
+        if next_offset < total:
+            page["nextOffset"] = next_offset
+        return page
+
+    def get_tool_result_page(
+        self, task_id: str, call_id: str, offset: int = 0, limit: int = 4096
+    ) -> dict[str, Any]:
+        """Read raw stored JSON by character, without loading/parsing a result.
+
+        Call and task must both match. result_ref is deliberately never opened.
+        Session authorization belongs to the calling surface.
+        """
+        offset, limit = self._tool_result_page_bounds(offset, limit)
+        if self.backend_type == "postgres":
+            return self._run_sync(self.get_tool_result_page_async, task_id, call_id, offset, limit)
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT substr(result_json, ?, ?) AS content, length(result_json) AS total_chars "
+                "FROM tool_calls WHERE task_id = ? AND call_id = ? AND result_json IS NOT NULL",
+                (offset + 1, limit, task_id, call_id),
+            ).fetchone()
+        return self._tool_result_page(row, offset)
+
+    async def get_tool_result_page_async(
+        self, task_id: str, call_id: str, offset: int = 0, limit: int = 4096
+    ) -> dict[str, Any]:
+        offset, limit = self._tool_result_page_bounds(offset, limit)
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.get_tool_result_page, task_id, call_id, offset, limit)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT substr(result_json::text, $1::integer, $2::integer) AS content, "
+                "length(result_json::text) AS total_chars FROM tool_calls "
+                "WHERE task_id = $3 AND call_id = $4 AND result_json IS NOT NULL",
+                offset + 1, limit, task_id, call_id,
+            )
+        return self._tool_result_page(row, offset)
+
     def get_call_journal(self, task_id: str) -> list[dict[str, Any]]:
         return self.list_tool_calls(task_id)
 

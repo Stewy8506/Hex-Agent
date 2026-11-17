@@ -11,7 +11,9 @@ Verifies PRD Section 6.1, 6.2, 9, 10, and Phase 01 Plan 02:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import tracemalloc
 import sys
 import unittest
 from pathlib import Path
@@ -429,6 +431,109 @@ class TestHashChainingIntegrity(unittest.TestCase):
                 f"Broken hash chain at sequence {ev['sequence_no']}",
             )
             prev_hash = ev["event_sha256"]
+
+
+class TestToolResultPages(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = LedgerStore(":memory:")
+        self.task_id = self.store.submit_task(TaskSubmitRequest(goal="paged result"))["task_id"]
+        self.call_id = self.store.record_tool_call(task_id=self.task_id, tool_name="terminal")
+
+    def tearDown(self) -> None:
+        self.store.close()
+
+    def _store_raw(self, text: str) -> None:
+        self.store.conn.execute(
+            "UPDATE tool_calls SET result_json = ?, status = 'SEALED' WHERE call_id = ?",
+            (text, self.call_id),
+        )
+        self.store.conn.commit()
+
+    def test_unicode_pages_reconstruct_exact_stored_json_sync_and_async(self) -> None:
+        text = json.dumps({"stderr": "a😀é中e\u0301\n\\\"" * 300, "exit_code": 1}, ensure_ascii=False)
+        self._store_raw(text)
+        for asynchronous in (False, True):
+            chunks = []
+            offset = 0
+            while True:
+                if asynchronous:
+                    page = asyncio.run(self.store.get_tool_result_page_async(self.task_id, self.call_id, offset, 17))
+                else:
+                    page = self.store.get_tool_result_page(self.task_id, self.call_id, offset, 17)
+                self.assertEqual(page["content"], text[offset:offset + 17])
+                self.assertEqual(page["totalChars"], len(text))
+                self.assertLessEqual(len(page["content"]), 17)
+                self.assertEqual(page, self.store.get_tool_result_page(self.task_id, self.call_id, offset, 17))
+                chunks.append(page["content"])
+                if "nextOffset" not in page:
+                    break
+                self.assertGreater(page["nextOffset"], offset)
+                offset = page["nextOffset"]
+            self.assertEqual("".join(chunks), text)
+            self.assertEqual(json.loads("".join(chunks)), json.loads(text))
+        for offset in (len(text), len(text) + 20):
+            self.assertEqual(self.store.get_tool_result_page(self.task_id, self.call_id, offset),
+                             {"content": "", "totalChars": len(text)})
+
+    def test_five_megabyte_result_read_clamps_without_whole_result_allocation(self) -> None:
+        text = json.dumps({"stdout": "x" * (5 * 1024 * 1024)})
+        self._store_raw(text)
+        tracemalloc.start()
+        try:
+            page = self.store.get_tool_result_page(self.task_id, self.call_id, limit=10**9)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 256 * 1024)
+        self.assertEqual(page, {"content": text[:4096], "totalChars": len(text), "nextOffset": 4096})
+        self.assertEqual(self.store.get_tool_result_page(self.task_id, self.call_id), page)
+
+    def test_unavailable_foreign_and_ref_only_results_are_not_opened(self) -> None:
+        with self.assertRaises(KeyError):
+            self.store.get_tool_result_page(self.task_id, self.call_id)
+        self.store.conn.execute("UPDATE tool_calls SET result_ref = '/etc/passwd' WHERE call_id = ?", (self.call_id,))
+        with self.assertRaises(KeyError):
+            self.store.get_tool_result_page(self.task_id, self.call_id)
+        self._store_raw('{"ok": true}')
+        for task_id, call_id in (("foreign", self.call_id), (self.task_id, "missing"), (self.task_id, "' OR 1=1 --")):
+            with self.assertRaises(KeyError):
+                self.store.get_tool_result_page(task_id, call_id)
+
+    def test_invalid_page_bounds(self) -> None:
+        for offset, limit in ((-1, 10), (True, 10), ("0", 10), (2**31, 10), (0, 0), (0, -1), (0, True), (0, 3.5)):
+            with self.assertRaises(ValueError):
+                self.store.get_tool_result_page(self.task_id, self.call_id, offset, limit)
+
+    def test_postgres_uses_parameterized_database_character_slicing(self) -> None:
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock
+
+        text = '{"stdout":"😀é中"}'
+        queries = []
+        class Connection:
+            async def fetchrow(inner, sql, *params):
+                queries.append((sql, params))
+                start, limit, task_id, call_id = params
+                if task_id != self.task_id or call_id != self.call_id:
+                    return None
+                return {"content": text[start - 1:start - 1 + limit], "total_chars": len(text)}
+        class Pool:
+            @asynccontextmanager
+            async def acquire(inner):
+                yield Connection()
+        # Reuse the injected pool seam, without a PostgreSQL server or imports.
+        self.store.backend_type = "postgres"
+        self.store.get_pool = AsyncMock(return_value=Pool())
+        try:
+            page = self.store.get_tool_result_page(self.task_id, self.call_id, 10, 10**9)
+            self.assertEqual(page, {"content": text[10:], "totalChars": len(text)})
+            self.assertEqual(queries[0][1], (11, 4096, self.task_id, self.call_id))
+            self.assertIn("substr(result_json::text", queries[0][0])
+            self.assertIn("length(result_json::text)", queries[0][0])
+            with self.assertRaises(KeyError):
+                asyncio.run(self.store.get_tool_result_page_async("foreign", self.call_id))
+        finally:
+            self.store.backend_type = "sqlite"
 
 
 if __name__ == "__main__":

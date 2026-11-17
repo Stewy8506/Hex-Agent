@@ -64,6 +64,14 @@
       "tui_local": true
     },
     {
+      "name": "/tool-result",
+      "aliases": [],
+      "usage": "/tool-result [call_id] [offset]",
+      "description": "Read a page of the latest or selected tool's full stored result",
+      "surfaces": {"console": "unavailable", "tui": "supported", "acp": "unavailable"},
+      "tui_local": true
+    },
+    {
       "name": "/sbs",
       "aliases": [],
       "usage": "/sbs <file>",
