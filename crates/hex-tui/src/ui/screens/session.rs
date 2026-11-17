@@ -22,6 +22,7 @@ const CANVAS_PAD_TOP: u16 = 1;
 const MIN_WIDTH_FOR_RAIL: u16 = 92;
 
 pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, buf: &mut Buffer) {
+    app.sidebar.clear_geometry();
     if area.height < 15 || area.width < 50 {
         let msg = Paragraph::new("HEX AGENT - Expand terminal to view Cockpit")
             .style(Style::default().fg(theme.text_bright));
@@ -73,13 +74,7 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
     // 2. Main Viewport: Canvas vs Right Rail
     // ─────────────────────────────────────────────
     let show_rail = v_chunks[2].width >= MIN_WIDTH_FOR_RAIL.saturating_sub(2);
-    let rail_width = if show_rail {
-        ((v_chunks[2].width as f32 * 0.23).round() as u16)
-            .clamp(28, 44)
-            .min(v_chunks[2].width.saturating_sub(40))
-    } else {
-        0
-    };
+    let rail_width = app.sidebar.width_for(v_chunks[2].width);
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(if show_rail {

@@ -28,12 +28,16 @@ use crate::app::{App, ScreenState};
 /// Primary render entrypoint called on each frame.
 pub fn draw(frame: &mut Frame, app: &App) {
     let size = frame.area();
+    app.sidebar.clear_geometry();
     let theme = style::HexTheme::detect();
     let anim = animation::AnimationState::with_start(app.session_started);
 
     // Side-by-side dedicated diff inspection mode if toggled
     if app.side_by_side && app.show_diff {
         diff::render(frame, app, size);
+        if app.sidebar.show_settings {
+            right_rail::render_settings(app, &theme, size, frame.buffer_mut());
+        }
         return;
     }
 
@@ -45,6 +49,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ScreenState::Session => {
             screens::session::render(app, &theme, &anim, size, frame.buffer_mut());
         }
+    }
+
+    if app.sidebar.show_settings {
+        right_rail::render_settings(app, &theme, size, frame.buffer_mut());
     }
 
     // 2. Command Palette Modal Overlay
@@ -70,7 +78,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
     // Tall enough that the binding table does not squeeze out the command list.
-    let popup = centered_rect(70, 85, area);
+    let popup = centered_rect(85, 95, area);
     frame.render_widget(Clear, popup);
 
     let s = design::skin(&app.skin_name);
@@ -107,7 +115,7 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
     lines.push(Line::from(Span::styled(
-        "Mouse wheel scrolls the transcript and the resume list.",
+        "Wheel scrolls the pane under the pointer; drag the sidebar divider to resize.",
         Style::default().fg(s.muted),
     )));
     lines.push(Line::raw(""));

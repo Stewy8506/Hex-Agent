@@ -162,12 +162,15 @@ fn test_palette_fuzzy_ranking_and_subsequence() {
     let mut app = App::new("test_proj", "gemini-2.5-pro", "OverlayFS");
     app.open_palette();
 
-    // 1. Empty query -> every catalog command plus the session switch entry
     assert_eq!(app.palette_results().len(), app.palette_items.len());
+    let navigation: Vec<_> = app.palette_items.iter()
+        .filter(|item| !item.command.starts_with('/'))
+        .map(|item| item.command.as_str()).collect();
+    assert_eq!(navigation, ["session:switch", "sidebar:settings"]);
     assert_eq!(
         app.palette_items.len(),
-        hex_tui::app::available_slash_commands().len() + 1,
-        "Palette must be built from the real command catalog"
+        hex_tui::app::available_slash_commands().len() + navigation.len(),
+        "Palette must contain the real command catalog and supported navigation actions"
     );
 
     // 2. Subsequence match: 'ast' matches '/blast'

@@ -222,6 +222,10 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
         app.max_tokens = tok;
     }
 
+    if let Err(error) = app.sidebar.load(std::path::Path::new(&app.workspace_path)) {
+        app.add_system_message(&format!("Sidebar preferences unavailable: {error}"));
+    }
+
     // Try connecting to ACP server in background
     let backend_workspace = PathBuf::from(&app.workspace_path);
     let ws_path = Some(backend_workspace.as_path());
@@ -376,50 +380,10 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         handle_key_event(&mut app, key, acp_client.as_ref(), event_tx.clone())
                             .await?;
                     }
-                    AppEvent::Mouse(mouse) => match mouse.kind {
-                        crossterm::event::MouseEventKind::ScrollUp => {
-                            if app.screen_state == ScreenState::Start
-                                && !app.resume_sessions.is_empty()
-                            {
-                                app.scroll_resume(-3);
-                            } else {
-                                app.scroll_up();
-                                app.scroll_up();
-                            }
-                        }
-                        crossterm::event::MouseEventKind::ScrollDown => {
-                            if app.screen_state == ScreenState::Start
-                                && !app.resume_sessions.is_empty()
-                            {
-                                app.scroll_resume(3);
-                            } else {
-                                app.scroll_down();
-                                app.scroll_down();
-                            }
-                        }
-                        crossterm::event::MouseEventKind::Moved
-                        | crossterm::event::MouseEventKind::Drag(_) => {
-                            let term_rect = terminal
-                                .size()
-                                .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
-                                .unwrap_or(ratatui::layout::Rect::new(0, 0, 120, 36));
-                            app.handle_mouse_move(mouse.column, mouse.row, term_rect);
-                        }
-                        crossterm::event::MouseEventKind::Down(
-                            crossterm::event::MouseButton::Left,
-                        ) if app.screen_state == ScreenState::Start => {
-                            let term_rect = terminal
-                                .size()
-                                .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
-                                .unwrap_or(ratatui::layout::Rect::new(0, 0, 120, 36));
-                            handle_start_mouse_click(
-                                &mut app,
-                                mouse.column,
-                                mouse.row,
-                                term_rect,
-                            );
-                        }
-                        _ => {}
+                    AppEvent::Mouse(mouse) => {
+                        let term_rect = terminal.size()
+                            .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))?;
+                        handle_mouse_event(&mut app, mouse, term_rect);
                     },
                     AppEvent::Notification(packet) => {
                         handle_notification(&mut app, packet.notification);
@@ -609,6 +573,74 @@ fn submit_approval_decision(app: &mut App, acp_client: Option<&AcpClient>, optio
     }
 }
 
+fn save_sidebar_preferences(app: &mut App) {
+    if let Err(error) = app.sidebar.save() {
+        app.add_system_message(&format!("Could not save sidebar preferences: {error}"));
+    }
+}
+
+fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent, area: ratatui::layout::Rect) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    if app.show_palette || app.show_help || app.active_approval.is_some()
+        || app.active_subagent_modal.is_some() || app.sidebar.show_settings
+        || (app.side_by_side && app.show_diff)
+    {
+        app.sidebar.resizing = false;
+        return;
+    }
+    let rail = app.sidebar.area.get();
+    let in_rail = app.screen_state == ScreenState::Session
+        && rail.contains((mouse.column, mouse.row).into());
+    if app.sidebar.resizing {
+        match mouse.kind {
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let width = area.right().saturating_sub(mouse.column.saturating_add(2))
+                    .min(area.width.saturating_sub(43));
+                app.sidebar.resize_to(width);
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                app.sidebar.resizing = false;
+                save_sidebar_preferences(app);
+            }
+            _ => {}
+        }
+        return;
+    }
+    match mouse.kind {
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let delta = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+            if in_rail {
+                app.sidebar.scroll_by(delta);
+            } else if app.screen_state == ScreenState::Start && !app.resume_sessions.is_empty() {
+                app.scroll_resume(delta);
+            } else if delta < 0 {
+                app.scroll_up();
+                app.scroll_up();
+            } else {
+                app.scroll_down();
+                app.scroll_down();
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if app.screen_state == ScreenState::Session && rail.width > 0
+                && mouse.column + 1 == rail.x && mouse.row >= rail.y && mouse.row < rail.bottom()
+            {
+                app.sidebar.resizing = true;
+            } else if in_rail {
+                if app.sidebar.click(mouse.column, mouse.row) {
+                    save_sidebar_preferences(app);
+                }
+            } else if app.screen_state == ScreenState::Start {
+                handle_start_mouse_click(app, mouse.column, mouse.row, area);
+            }
+        }
+        MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+            app.handle_mouse_move(mouse.column, mouse.row, area);
+        }
+        _ => {}
+    }
+}
+
 /// Process keyboard inputs.
 async fn handle_key_event(
     app: &mut App,
@@ -669,6 +701,10 @@ async fn handle_key_event(
         }
         if app.active_approval.is_some() {
             submit_approval_decision(app, acp_client, 2);
+            return Ok(());
+        }
+        if app.sidebar.show_settings {
+            app.sidebar.show_settings = false;
             return Ok(());
         }
         if app.cancel_pending_delete() {
@@ -749,6 +785,26 @@ async fn handle_key_event(
             app.show_help = false;
         }
         return Ok(());
+    }
+
+    if app.sidebar.show_settings {
+        if key.code == KeyCode::Tab {
+            app.handle_tab();
+        } else if app.sidebar.settings_key(key.code) {
+            save_sidebar_preferences(app);
+        }
+        return Ok(());
+    }
+    if key.code == KeyCode::F(4) {
+        app.sidebar.show_settings = true;
+        return Ok(());
+    }
+    if app.screen_state == ScreenState::Session && key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Up => { app.sidebar.scroll_by(-3); return Ok(()); }
+            KeyCode::Down => { app.sidebar.scroll_by(3); return Ok(()); }
+            _ => {}
+        }
     }
 
     if key.code == KeyCode::Tab {
@@ -884,6 +940,10 @@ async fn execute_palette_command(
     acp_client: Option<&AcpClient>,
     event_tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<()> {
+    if command == "sidebar:settings" {
+        app.sidebar.show_settings = true;
+        return Ok(());
+    }
     if command == "session:switch" {
         app.switch_screen(ScreenState::Start);
         let focus = if app.resume_sessions.is_empty() { Focus::Input } else { Focus::Resume };
@@ -1973,6 +2033,10 @@ mod keymap_truth_tests {
                         app.input_buffer = "hello".to_string();
                         app.cursor_pos = 5;
                     }
+                    "ctrl+up" | "ctrl+down" => {
+                        app.sidebar.metrics.set((100, 20));
+                        app.sidebar.scroll.set(if b.label == "ctrl+up" { 10 } else { 0 });
+                    }
                     "pgdn" | "down" => {
                         // Already scrolled up: paging down moves toward the bottom.
                         app.follow_dialogue = false;
@@ -2041,6 +2105,9 @@ mod keymap_truth_tests {
             (Scope::Global, "f1") | (Scope::Start, "f1") => assert!(app.show_help),
             (_, "f2") => assert!(app.show_diff),
             (Scope::Global, "f3") => assert_ne!(app.mode, "agent"),
+            (Scope::Global, "f4") => assert!(app.sidebar.show_settings),
+            (Scope::Session, "ctrl+up") => assert_eq!(app.sidebar.scroll.get(), 7),
+            (Scope::Session, "ctrl+down") => assert_eq!(app.sidebar.scroll.get(), 3),
             (Scope::Session | Scope::Start, "tab") => {
                 assert_eq!(app.mode, "plan");
                 assert!(app.active_subagent_modal.is_none());
@@ -2124,6 +2191,129 @@ mod keymap_truth_tests {
                 .await
                 .unwrap();
             assert_effect(&app, b);
+        }
+    }
+
+    fn sidebar_fixture() -> App {
+        let mut app = App::new("p", "m", "cow");
+        app.screen_state = ScreenState::Session;
+        app.changed_files = (0..12).map(|i| hex_tui::app::ChangedFile {
+            path: format!("src/file_{i}.rs"), additions: 12, deletions: 3,
+        }).collect();
+        app.plan_steps = (0..14).map(|i| hex_tui::app::PlanStep {
+            title: format!("Plan step {i}"), status: hex_tui::app::StepStatus::Pending,
+        }).collect();
+        app
+    }
+
+    fn paint_sidebar(app: &App) {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        hex_tui::ui::screens::session::render(app, &hex_tui::ui::style::HexTheme::truecolor(),
+            &hex_tui::ui::animation::AnimationState::new(), area, &mut buffer);
+    }
+
+    fn mouse(app: &mut App, kind: crossterm::event::MouseEventKind, x: u16, y: u16) {
+        handle_mouse_event(app, crossterm::event::MouseEvent {
+            kind, column: x, row: y, modifiers: KeyModifiers::NONE,
+        }, ratatui::layout::Rect::new(0, 0, 120, 40));
+    }
+
+    #[test]
+    fn sidebar_wheel_and_clicks_do_not_move_the_transcript() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        use hex_tui::sidebar::SidebarAction;
+        let mut app = sidebar_fixture();
+        app.subagents = (0..8).map(|i| hex_tui::app::SubagentTelemetry {
+            name: format!("worker {i}"), status: "pass".to_string(), detail: String::new(),
+            is_running: false, has_failed: false,
+        }).collect();
+        paint_sidebar(&app);
+        let rail = app.sidebar.area.get();
+        let transcript = (app.dialogue_scroll, app.follow_dialogue);
+        mouse(&mut app, MouseEventKind::ScrollDown, rail.x + 2, rail.y + 5);
+        assert!(app.sidebar.scroll.get() > 0);
+        assert_eq!((app.dialogue_scroll, app.follow_dialogue), transcript);
+        app.sidebar.scroll.set(0);
+        paint_sidebar(&app);
+        let target = app.sidebar.hit_targets.borrow().iter()
+            .find(|(_, action)| *action == SidebarAction::ToggleChanges)
+            .map(|(rect, _)| *rect).expect("overflow link visible");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), target.x, target.y);
+        assert!(app.sidebar.show_all_changed);
+        assert_eq!(app.focus, Focus::Input);
+        assert_eq!((app.dialogue_scroll, app.follow_dialogue), transcript);
+        mouse(&mut app, MouseEventKind::ScrollUp, 4, 10);
+        assert!(!app.follow_dialogue, "wheel outside sidebar still scrolls transcript");
+    }
+
+    #[test]
+    fn divider_drag_resizes_without_stealing_input() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = sidebar_fixture();
+        paint_sidebar(&app);
+        let rail = app.sidebar.area.get();
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), rail.x - 1, rail.y + 3);
+        assert!(app.sidebar.resizing);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), rail.x - 9, rail.y + 3);
+        assert_eq!(app.sidebar.preferences.width, Some(rail.width + 8));
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), rail.x - 9, rail.y + 3);
+        assert!(!app.sidebar.resizing);
+        assert_eq!(app.focus, Focus::Input);
+        paint_sidebar(&app);
+        assert!(app.sidebar.area.get().width > rail.width);
+    }
+
+    #[tokio::test]
+    async fn sidebar_settings_preserve_drafts_and_tab_mode_cycling() {
+        let mut app = sidebar_fixture();
+        app.input_buffer = "世 draft".to_string();
+        app.cursor_pos = 2;
+        paint_sidebar(&app);
+        press(&mut app, KeyCode::F(4)).await;
+        assert!(app.sidebar.show_settings);
+        press(&mut app, KeyCode::Down).await;
+        press(&mut app, KeyCode::Char('c')).await;
+        assert!(app.sidebar.preferences.sections[1].collapsed);
+        press(&mut app, KeyCode::Tab).await;
+        assert_eq!(app.mode, "plan");
+        assert!(app.sidebar.show_settings);
+        press(&mut app, KeyCode::Esc).await;
+        assert!(!app.sidebar.show_settings);
+        assert_eq!(app.input_buffer, "世 draft");
+        assert_eq!(app.cursor_pos, 2);
+        let (tx, _rx) = tokio::sync::mpsc::channel(128);
+        execute_palette_command(&mut app, "sidebar:settings", None, tx).await.unwrap();
+        assert!(app.sidebar.show_settings);
+        assert_eq!(app.input_buffer, "世 draft");
+    }
+
+    #[tokio::test]
+    async fn modals_keep_mouse_and_sidebar_keys_from_changing_background_state() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        for modal in ["palette", "help", "approval", "agents", "sidebar"] {
+            let mut app = sidebar_fixture();
+            paint_sidebar(&app);
+            let rail = app.sidebar.area.get();
+            match modal {
+                "palette" => app.open_palette(),
+                "help" => app.show_help = true,
+                "approval" => app.active_approval = fixture(
+                    BINDINGS.iter().find(|b| b.scope == Scope::Approval).unwrap()
+                ).active_approval,
+                "agents" => app.open_subagent_modal(&[]),
+                _ => app.sidebar.show_settings = true,
+            }
+            let preferences = app.sidebar.preferences.clone();
+            mouse(&mut app, MouseEventKind::ScrollDown, rail.x + 2, rail.y + 5);
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), rail.x - 1, rail.y + 3);
+            assert_eq!(app.sidebar.scroll.get(), 0, "{modal}");
+            assert!(!app.sidebar.resizing, "{modal}");
+            assert_eq!(app.sidebar.preferences, preferences, "{modal}");
+            if modal != "sidebar" {
+                press(&mut app, KeyCode::F(4)).await;
+                assert!(!app.sidebar.show_settings, "{modal} owns its keys");
+            }
         }
     }
 

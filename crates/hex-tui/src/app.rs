@@ -563,6 +563,7 @@ pub struct App {
     pub diff_scroll: usize,
 
     // Right Rail & Telemetry
+    pub sidebar: crate::sidebar::SidebarState,
     pub plan_steps: Vec<PlanStep>,
     pub changed_files: Vec<ChangedFile>,
     pub subagents: Vec<SubagentTelemetry>,
@@ -1205,6 +1206,11 @@ pub fn build_palette_items() -> Vec<PaletteItem> {
         title: "Switch session".to_string(),
         command: "session:switch".to_string(),
     });
+    items.push(PaletteItem {
+        category: "workspace".to_string(),
+        title: "Customize sidebar".to_string(),
+        command: "sidebar:settings".to_string(),
+    });
     items
 }
 
@@ -1377,6 +1383,7 @@ impl App {
             raw_diff: None,
             diff_scroll: 0,
 
+            sidebar: Default::default(),
             plan_steps,
             changed_files,
             subagents: Vec::new(),
@@ -2911,7 +2918,7 @@ mod tests {
         // Every entry maps to a real command or a real navigation action.
         for item in &app.palette_items {
             assert!(
-                item.command.starts_with('/') || item.command == "session:switch",
+                item.command.starts_with('/') || matches!(item.command.as_str(), "session:switch" | "sidebar:settings"),
                 "palette offers an unknown action: {}",
                 item.command
             );
