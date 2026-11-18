@@ -193,6 +193,7 @@ class HarnessOrchestrator:
                 "ram_gb": profile.ram_gb,
                 "sandbox": True,
                 "sandbox_backend": self.sandbox.backend_name,
+                "sandbox_confined": getattr(self.sandbox, "provides_confinement", False),
             },
             local_llm_models=[self.router.local_model_id],
             trust_level="trusted_local",

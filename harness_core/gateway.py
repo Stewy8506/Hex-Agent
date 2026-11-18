@@ -1749,6 +1749,7 @@ class ToolGateway(FileToolsMixin):
             "timed_out": result.timed_out,
             "violation_detected": result.violation_detected,
             "sandbox_backend": result.sandbox_backend,
+            "confined": result.confined,
             "output": redacted_out,
             "output_sha256": sha256_hex(redacted_out),
             "recipe": recipe.name if recipe else None,
@@ -1793,6 +1794,7 @@ class ToolGateway(FileToolsMixin):
             "stderr": stderr_redacted,
             "timed_out": result.timed_out,
             "sandbox_backend": result.sandbox_backend,
+            "confined": result.confined,
         }
 
     def _tool_start_process(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
