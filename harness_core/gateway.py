@@ -46,6 +46,7 @@ from harness_core.core.models import PolicyDecisionType, RiskClass
 from harness_core.runtime.process_registry import ProcessRegistry, get_process_registry
 from harness_core.storage.sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
 from harness_core.cognition.skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
+from harness_core.platform.shell import build_command_argv
 from harness_core.tools.filesystem import FileToolsMixin
 
 
@@ -1768,11 +1769,7 @@ class ToolGateway(FileToolsMixin):
         if isinstance(raw_cmd, list):
             cmd = [str(c) for c in raw_cmd]
         else:
-            cmd_str = str(raw_cmd).strip()
-            if any(op in cmd_str for op in ("|", ">", "<", ";", "&&", "||", "$")):
-                cmd = ["/bin/sh", "-c", cmd_str]
-            else:
-                cmd = shlex.split(cmd_str)
+            cmd = build_command_argv(str(raw_cmd))
 
         timeout = float(args.get("timeout", 30.0))
         env = dict(args.get("env") or {})
