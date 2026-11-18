@@ -404,6 +404,8 @@ class ACPServer:
         self._lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._persist_lock = threading.RLock()
+        self._tools_call_task_id: str | None = None
+        self._tools_call_seq = 0
 
     def _emit(self, obj: dict[str, Any]) -> None:
         """Serialize one JSON-RPC message to stdout (thread-safe)."""
@@ -1075,17 +1077,81 @@ class ACPServer:
         defs = ToolGateway.list_tool_definitions()
         return {"tools": defs}
 
+    def _ensure_tools_call_task(self) -> str:
+        """Ledger task backing direct tools/call so gateway policy always applies."""
+        with self._lock:
+            if self._tools_call_task_id is None:
+                record = self.orchestrator.ledger.submit_task({
+                    "goal": "ACP direct tools/call",
+                    "execution_mode": "standard",
+                    "workspace_root": str(self.workspace_root),
+                })
+                self._tools_call_task_id = record["task_id"]
+            return self._tools_call_task_id
+
     def _handle_tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
+        from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError
+
         name = params.get("name")
         args = params.get("arguments") or {}
         if not name:
             raise ValueError("Tool call missing 'name' parameter")
 
-        spec = self.orchestrator.gateway.tools.get(name)
-        if spec is None:
+        gateway = self.orchestrator.gateway
+        if name not in gateway.tools:
             raise KeyError(f"Unknown tool: {name}")
 
-        inv_res = spec.handler(self.workspace_root, args)
+        task_id = self._ensure_tools_call_task()
+        with self._lock:
+            self._tools_call_seq += 1
+            seq = self._tools_call_seq
+
+        # Mandatory gateway boundary (B02): policy, approval, and journaling
+        # run inside invoke(); handlers are never dispatched directly here.
+        try:
+            inv_res = gateway.invoke(
+                task_id=task_id,
+                attempt_id="att_acp_tools",
+                step_id="acp_tools_call",
+                sequence_in_step=seq,
+                tool_id=name,
+                args=args,
+                workspace_dir=self.workspace_root,
+            )
+        except PolicyBlockedError as exc:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {"ok": False, "error": f"Denied by gateway policy: {exc}"},
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+                "isError": True,
+            }
+        except ApprovalRequiredInterrupt as exc:
+            approval_id = exc.approval_record.get("approval_id", "unknown")
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "ok": False,
+                                "error": (
+                                    f"Tool '{name}' requires owner approval before execution "
+                                    f"(approval_id={approval_id}); no side effects were performed."
+                                ),
+                                "approvalId": approval_id,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+                "isError": True,
+            }
 
         return {
             "content": [

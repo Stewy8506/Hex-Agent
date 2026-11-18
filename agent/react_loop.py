@@ -225,6 +225,9 @@ class ReActLoop:
         self.friction_detected: bool = False
         self._friction_reasons: list[str] = []
         self._failed_tool_sig_counts: dict[str, int] = {}
+        self._gateway_task_ids: dict[str, str] = {}
+        self._current_turn_index: int = 0
+        self._current_tool_seq: int = 0
         if guardrails_manager is not None:
             self.guardrails_manager = guardrails_manager
         elif self.workspace_root:
@@ -771,6 +774,15 @@ class ReActLoop:
             if "owner" not in call.arguments and "session_id" not in call.arguments and self.session_id:
                 call.arguments["owner"] = self.session_id
 
+        # Mandatory gateway boundary (B02): the standard ToolGateway is the only
+        # execution path for registered tools — policy, approval, and journaling
+        # all live in invoke(). Direct handler dispatch below is reserved for
+        # non-standard gateway doubles that expose no policy engine.
+        from harness_core.gateway import ToolGateway
+
+        if isinstance(self.gateway, ToolGateway):
+            return self._invoke_via_gateway(call, workspace_dir, start_t)
+
         # Gateway with .tools dictionary (standard HEX ToolGateway)
         if hasattr(self.gateway, "tools") and isinstance(self.gateway.tools, dict):
             if call.name in self.gateway.tools:
@@ -920,6 +932,94 @@ class ReActLoop:
             output=f"Error: Tool '{call.name}' not found in gateway",
             is_error=True,
             duration_ms=duration_ms,
+        )
+
+    # -------------------------------------------------------------------------
+    # Mandatory Gateway Dispatch (B02)
+    # -------------------------------------------------------------------------
+
+    def _resolve_gateway_task_id(self, workspace_dir: Path) -> str:
+        """Map the active ReAct task onto a ledger task the gateway can policy-check."""
+        tid = getattr(self, "active_task_id", None) or self.session_id
+        cached = self._gateway_task_ids.get(tid)
+        if cached:
+            return cached
+        ledger = self.gateway.ledger
+        resolved = tid
+        if ledger.get_task(tid) is None:
+            record = ledger.submit_task({
+                "goal": getattr(self, "_active_prompt", None) or f"ReAct session {self.session_id}",
+                "execution_mode": "react_loop",
+                "workspace_root": str(workspace_dir),
+            })
+            resolved = record["task_id"]
+        self._gateway_task_ids[tid] = resolved
+        return resolved
+
+    def _invoke_via_gateway(
+        self, call: ToolCallRequest, workspace_dir: Path, start_t: float
+    ) -> ToolCallResult:
+        """Execute a tool call exclusively through ToolGateway.invoke."""
+        from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError
+
+        task_id = self._resolve_gateway_task_id(workspace_dir)
+        try:
+            result = self.gateway.invoke(
+                task_id=task_id,
+                attempt_id="att_react",
+                step_id=f"turn_{self._current_turn_index}",
+                sequence_in_step=self._current_tool_seq,
+                tool_id=call.name,
+                args=call.arguments,
+                workspace_dir=workspace_dir,
+            )
+        except PolicyBlockedError as exc:
+            return ToolCallResult(
+                call_id=call.call_id,
+                name=call.name,
+                output=f"Denied by gateway policy: {exc}",
+                is_error=True,
+                duration_ms=(time.perf_counter() - start_t) * 1000,
+            )
+        except ApprovalRequiredInterrupt as exc:
+            approval_id = exc.approval_record.get("approval_id", "unknown")
+            return ToolCallResult(
+                call_id=call.call_id,
+                name=call.name,
+                output=(
+                    f"Tool '{call.name}' requires owner approval before execution "
+                    f"(approval_id={approval_id}); no side effects were performed."
+                ),
+                is_error=True,
+                duration_ms=(time.perf_counter() - start_t) * 1000,
+            )
+        except Exception as exc:
+            return ToolCallResult(
+                call_id=call.call_id,
+                name=call.name,
+                output=f"Error: {exc}",
+                is_error=True,
+                duration_ms=(time.perf_counter() - start_t) * 1000,
+            )
+
+        is_error = False
+        if isinstance(result, dict):
+            if result.get("ok") is False:
+                is_error = True
+            elif "error" in result and bool(result["error"]):
+                is_error = True
+            elif result.get("status") in ("error", "DENIED"):
+                is_error = True
+            elif result.get("status") == "failed" and call.name not in (
+                "read_terminal", "start_process", "kill_process", "list_processes"
+            ):
+                is_error = True
+        return ToolCallResult(
+            call_id=call.call_id,
+            name=call.name,
+            output=result,
+            is_error=is_error,
+            duration_ms=(time.perf_counter() - start_t) * 1000,
         )
 
     # -------------------------------------------------------------------------
@@ -1533,6 +1633,8 @@ class ReActLoop:
                     self._record_tool_call_in_ledger(task_id, turn_index, seq, call)
 
                     # Execute tool
+                    self._current_turn_index = turn_index
+                    self._current_tool_seq = seq
                     tool_res = self._execute_tool_call(call)
 
                     # Ledger step seal
