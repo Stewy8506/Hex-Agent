@@ -63,12 +63,12 @@ fn approval_app() -> App {
 }
 
 #[test]
-fn chip_carries_the_command_and_the_working_directory() {
+fn command_and_working_directory_are_both_visible() {
     let app = approval_app();
     let buf = render(&app, 120, 36);
     let screen = rows(&buf);
-    let chip_row = row_of(&screen, "$ rm -rf ./dist");
-    assert!(screen[chip_row].contains("/tmp/project"), "cwd must ride along\n{}", screen[chip_row]);
+    let chip_row = row_of(&screen, "Parameters: rm -rf ./dist");
+    assert!(screen.iter().any(|row| row.contains("Cwd: /tmp/project")));
 
     let cmd_col = col(&screen[chip_row], "rm");
     assert_eq!(cell(&buf, cmd_col, chip_row).bg, theme().hover_bg, "chip sits on #151515");
@@ -76,15 +76,15 @@ fn chip_carries_the_command_and_the_working_directory() {
 }
 
 #[test]
-fn impact_line_prefers_the_blast_radius_over_the_generic_reason() {
+fn reason_and_blast_radius_are_both_reviewable() {
     let app = approval_app();
     let screen = rows(&render(&app, 120, 36));
     assert!(screen.iter().any(|r| r.contains("Deletes 214 build artifacts")));
-    assert!(!screen.iter().any(|r| r.contains("generic reason")));
+    assert!(screen.iter().any(|r| r.contains("Reason: generic reason")));
 }
 
 #[test]
-fn a_long_impact_sentence_is_clipped_inside_the_modal() {
+fn a_long_impact_sentence_wraps_without_losing_context() {
     let mut app = approval_app();
     if let Some(req) = app.active_approval.as_mut() {
         req.blast_radius = "x".repeat(300);
@@ -96,8 +96,13 @@ fn a_long_impact_sentence_is_clipped_inside_the_modal() {
     let right = col(&screen[border_row], "╮");
     let chars: Vec<char> = screen[impact_row].chars().collect();
     assert_eq!(chars[right], '│', "the modal border must survive the impact line");
-    assert_eq!(chars[right - 1], '…', "the cut must be marked just inside the border");
-    assert!(chars[left + 1..right - 1].iter().all(|c| *c == 'x'));
+    assert!(app.approval_can_allow.get());
+    assert!(chars[left + 1..right].iter().any(|c| *c == 'x'));
+    let impact: String = screen.iter().skip(impact_row)
+        .take_while(|row| !row.contains("Allow once"))
+        .flat_map(|row| row.chars().filter(|c| *c == 'x')).collect();
+    assert_eq!(impact.len(), 300);
+    assert!(!screen[impact_row].contains('…'));
 }
 
 #[test]
@@ -110,7 +115,7 @@ fn exactly_one_option_is_tinted_and_marked_in_blue() {
 
     for (label, selected) in [
         ("Allow once", false),
-        ("Allow rm in this project", true),
+        ("Allow matching calls in this task", true),
         ("Deny", false),
     ] {
         let y = row_of(&screen, label);
@@ -135,7 +140,7 @@ fn hotkeys_are_right_aligned_on_the_option_rows() {
     let screen = rows(&buf);
     let border_row = row_of(&screen, "Permission required") - 1;
     let right = col(&screen[border_row], "╮") - 1;
-    for (label, key) in [("Allow once", "y"), ("Allow rm in this project", "a"), ("Deny", "n")] {
+    for (label, key) in [("Allow once", "y"), ("Allow matching calls in this task", "a"), ("Deny", "n")] {
         let y = row_of(&screen, label);
         assert_eq!(cell(&buf, right, y).symbol(), key, "{label} hotkey must sit at the right edge");
         assert_eq!(cell(&buf, right, y).fg, theme().text_dim);
@@ -194,7 +199,10 @@ fn the_pending_tool_row_says_why_it_stalls() {
 fn rail_and_footer_name_the_blocker() {
     let mut app = approval_app();
     app.is_busy = true;
-    let screen = rows(&render(&app, 120, 36));
+    let area = Rect::new(0, 0, 120, 36);
+    let mut buf = Buffer::empty(area);
+    ui::screens::session::render(&app, &theme(), &AnimationState::new(), area, &mut buf);
+    let screen = rows(&buf);
     let joined = screen.join("\n");
     assert!(joined.contains("blocked / waiting on you"), "rail must name the blocker");
     assert!(joined.contains("Waiting for permission"), "composer must wait, not prompt");

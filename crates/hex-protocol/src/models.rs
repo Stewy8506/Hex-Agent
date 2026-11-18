@@ -660,8 +660,7 @@ pub struct ApprovalRequestNotification {
 
 /// Parameters for `session/approvalDecision` method request sent from client to server.
 ///
-/// `decision` is `approve` (this call only), `approve_scope` (also grant a
-/// project lease for the same command prefix), or `reject`.
+/// `approve_scope` grants only matching calls within the backend's task/session lease.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalDecisionParams {
@@ -699,6 +698,10 @@ pub struct SessionCommandResponse {
     pub output: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

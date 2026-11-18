@@ -294,12 +294,8 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                             if let Some(prov) = sess.provider {
                                 app.provider_name = prov;
                             }
-                            if let Some(tc) = sess.tools_count {
-                                app.tools_count = tc;
-                            }
-                            if let Some(sc) = sess.skills_count {
-                                app.skills_count = sc;
-                            }
+                            app.tools_count = sess.tools_count;
+                            app.skills_count = sess.skills_count;
                             if let Some(cow) = sess.cow_backend {
                                 app.cow_mode = cow;
                             }
@@ -420,6 +416,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         }
                         app.active_turn_has_streamed = false;
                         app.cancel_requested = false;
+                        app.pending_cancel = None;
                         app.close_running_tool_calls();
                         app.clear_approval_request();
                         app.is_busy = false;
@@ -442,30 +439,18 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     AppEvent::Ready => {
                         app.active_turn_has_streamed = false;
                         app.cancel_requested = false;
+                        app.pending_cancel = None;
                         app.close_running_tool_calls();
                         app.clear_approval_request();
                         app.is_busy = false;
                         app.busy_started_at = None;
                         app.status_message = "Ready".to_string();
                     }
-                    AppEvent::AcpMessage(msg) => {
-                        app.close_running_tool_calls();
-                        app.clear_approval_request();
-                        app.add_system_message(&msg);
-                        app.is_busy = false;
-                        app.busy_started_at = None;
-                        app.status_message = "Ready".to_string();
-                    }
+                    event @ (AppEvent::ApprovalDecision { .. }
+                        | AppEvent::CancelResult { .. }
+                        | AppEvent::CommandResult { .. }) => handle_control_result(&mut app, event),
                     AppEvent::TerminalError(err) => return Err(anyhow::anyhow!(err)),
-                    AppEvent::Error(err) => {
-                        app.close_running_tool_calls();
-                        app.clear_approval_request();
-                        app.add_system_message(&format!("Error: {}", err));
-                        app.cancel_requested = false;
-                        app.is_busy = false;
-                        app.busy_started_at = None;
-                        app.status_message = "Ready".to_string();
-                    }
+                    AppEvent::Error(err) => handle_backend_error(&mut app, &err),
                     AppEvent::Tick => {
                         let before_hover = hover_state(&app);
                         app.advance_animation();
@@ -489,7 +474,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         cursor = next_cursor;
                         placeholder = next_placeholder;
                     }
-                    AppEvent::Resize(_, _) => {}
+                    AppEvent::Resize(_, _) => app.approval_can_allow.set(false),
                 }
                 app.enforce_transcript_budget();
                 if !storage_was_failed {
@@ -513,15 +498,23 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
     result.and(archived)
 }
 
-/// Ask the server to stop the active turn. With a live connection the busy
-/// state is sealed only by the server's authoritative terminal event/response;
-/// standalone mode has no server, so it settles locally.
-fn request_turn_cancel(app: &mut App, acp_client: Option<&AcpClient>) {
+fn request_turn_cancel(
+    app: &mut App,
+    acp_client: Option<&AcpClient>,
+    event_tx: tokio::sync::mpsc::Sender<AppEvent>,
+) {
+    if app.pending_cancel.is_some() {
+        return;
+    }
     if let Some(client) = acp_client {
-        let client_clone = client.clone();
-        let sess_id = app.session_id.clone();
+        let client = client.clone();
+        let session_id = app.session_id.clone();
+        app.control_request_id += 1;
+        let request_id = app.control_request_id;
+        app.pending_cancel = Some(request_id);
         tokio::spawn(async move {
-            let _ = client_clone.session_cancel(&sess_id).await;
+            let result = client.session_cancel(&session_id).await.map_err(|e| e.to_string());
+            let _ = event_tx.send(AppEvent::CancelResult { session_id, request_id, result }).await;
         });
         app.status_message = "Cancelling...".to_string();
         app.add_system_message("Cancellation requested; waiting for the server to stop the turn.");
@@ -537,44 +530,150 @@ fn request_turn_cancel(app: &mut App, acp_client: Option<&AcpClient>) {
     }
 }
 
-/// Send the operator's approval choice and close the modal. The turn stays
-/// busy: only the server's terminal event seals it.
-fn submit_approval_decision(app: &mut App, acp_client: Option<&AcpClient>, option: usize) {
-    let req = match app.active_approval.take() {
-        Some(r) => r,
-        None => return,
+fn submit_approval_decision(
+    app: &mut App,
+    acp_client: Option<&AcpClient>,
+    option: usize,
+    event_tx: tokio::sync::mpsc::Sender<AppEvent>,
+) {
+    if app.approval_pending || app.active_approval.is_none() {
+        return;
+    }
+    if option < 2 && !app.approval_can_allow.get() {
+        app.approval_error = Some("Resize to review the full request before allowing; n/Esc denies.".into());
+        return;
+    }
+    let Some(client) = acp_client else {
+        app.approval_error = Some("Approval was not applied: no ACP connection. Retry after reconnecting.".into());
+        return;
     };
-    app.focus = Focus::Input;
-    let (decision, message, status) = match option {
-        0 => (
-            "approve",
-            format!("Approved execution of tool '{}'.", req.tool_name),
-            "Tool execution approved",
-        ),
-        1 => (
-            "approve_scope",
-            format!(
-                "Approved '{}' for this project; later calls skip the prompt.",
-                req.tool_name
-            ),
-            "Tool approved for this project",
-        ),
-        _ => (
-            "reject",
-            format!("Denied execution of tool '{}'.", req.tool_name),
-            "Tool execution denied",
-        ),
-    };
-    app.add_system_message(&message);
-    app.status_message = status.to_string();
-    if let Some(client) = acp_client {
-        let client_clone = client.clone();
-        let approval_id = req.id.clone();
-        tokio::spawn(async move {
-            let _ = client_clone
-                .session_approval_decision(&approval_id, decision, None)
-                .await;
-        });
+    let client = client.clone();
+    let approval_id = app.active_approval.as_ref().unwrap().id.clone();
+    let session_id = app.session_id.clone();
+    app.approval_generation += 1;
+    let generation = app.approval_generation;
+    let decision = match option { 0 => "approve", 1 => "approve_scope", _ => "reject" }.to_string();
+    app.approval_pending = true;
+    app.approval_error = None;
+    app.status_message = "Sending approval decision...".into();
+    tokio::spawn(async move {
+        let result = client.session_approval_decision(&approval_id, &decision, None)
+            .await.map_err(|e| e.to_string());
+        let _ = event_tx.send(AppEvent::ApprovalDecision {
+            session_id, approval_id, generation, decision, result,
+        }).await;
+    });
+}
+
+fn handle_backend_error(app: &mut App, error: &str) {
+    app.add_system_message(&format!("Error: {error}"));
+    app.pending_cancel = None;
+    app.cancel_requested = false;
+    if app.active_approval.is_some() {
+        if error == "ACP connection closed." {
+            app.approval_pending = false;
+        }
+        app.approval_error = Some(format!("Backend error: {error}. No decision confirmed; retry or cancel."));
+        app.focus = Focus::Approval;
+        app.status_message = "Approval unresolved; retry or cancel".into();
+    } else {
+        app.close_running_tool_calls();
+        app.pending_command = None;
+        app.is_busy = false;
+        app.busy_started_at = None;
+        app.status_message = "Ready".into();
+    }
+}
+
+fn handle_control_result(app: &mut App, event: AppEvent) {
+    match event {
+        AppEvent::ApprovalDecision { session_id, approval_id, generation, decision, result } => {
+            if session_id != app.session_id || generation != app.approval_generation
+                || !app.approval_pending
+                || !app.active_approval.as_ref().is_some_and(|req| req.id == approval_id)
+            {
+                return;
+            }
+            app.approval_pending = false;
+            match result {
+                Ok(response) if response.approval_id == approval_id
+                    && response.status == "applied" && response.decision == decision => {
+                    let tool = app.active_approval.as_ref().unwrap().tool_name.clone();
+                    app.clear_approval_request();
+                    let action = match decision.as_str() {
+                        "approve" => "Approved once",
+                        "approve_scope" => "Approved matching calls in this task",
+                        _ => "Denied",
+                    };
+                    app.add_system_message(&format!("{action}: '{tool}' (server confirmed)."));
+                    app.status_message = "Waiting for tool outcome...".into();
+                }
+                result => {
+                    let error = match result {
+                        Ok(response) => format!("Server did not apply this decision ({}; approval {}).", response.status, response.approval_id),
+                        Err(error) => error,
+                    };
+                    app.approval_error = Some(format!("Decision not confirmed: {error} Retry or cancel the turn."));
+                    app.focus = Focus::Approval;
+                    app.status_message = "Approval failed; retry or cancel".into();
+                }
+            }
+        }
+        AppEvent::CancelResult { session_id, request_id, result } => {
+            if session_id != app.session_id || app.pending_cancel != Some(request_id) {
+                return;
+            }
+            app.pending_cancel = None;
+            if !app.is_busy || !app.cancel_requested {
+                return;
+            }
+            match result {
+                Ok(response) if response.session_id == session_id && response.cancelled => {
+                    app.status_message = "Cancellation accepted; waiting for turn to stop...".into();
+                }
+                result => {
+                    let error = match result {
+                        Ok(_) => "server did not confirm cancellation".to_string(),
+                        Err(error) => error,
+                    };
+                    app.cancel_requested = false;
+                    app.status_message = "Cancellation failed; retry".into();
+                    let retry_key = if app.active_approval.is_some() { "Ctrl+C" } else { "Ctrl+C or Esc" };
+                    app.add_system_message(&format!("Cancellation failed: {error}. Press {retry_key} to retry."));
+                }
+            }
+        }
+        AppEvent::CommandResult { session_id, request_id, command, result } => {
+            if session_id != app.session_id || app.pending_command != Some(request_id) {
+                return;
+            }
+            app.pending_command = None;
+            app.pending_cancel = None;
+            app.cancel_requested = false;
+            app.is_busy = false;
+            app.busy_started_at = None;
+            app.status_message = "Ready".into();
+            match result {
+                Ok(response) if response.session_id == session_id && response.command == command => {
+                    if response.is_error == Some(true) {
+                        app.add_system_message(&format!("Command {command} failed: {}", response.output));
+                    } else {
+                        if command == "/model" {
+                            if let Some(model) = response.model.filter(|model| !model.is_empty()) {
+                                app.model_name = model;
+                                app.provider_name = response.provider.unwrap_or_default();
+                            } else {
+                                app.add_system_message("Model change was not confirmed by the backend; label unchanged.");
+                            }
+                        }
+                        app.add_system_message(&response.output);
+                    }
+                }
+                Ok(_) => app.add_system_message(&format!("Command {command} returned a mismatched response; state unchanged.")),
+                Err(error) => app.add_system_message(&format!("Command {command} failed: {error}")),
+            }
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -679,7 +778,7 @@ async fn handle_key_event(
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         if app.is_busy && !app.cancel_requested {
             app.cancel_requested = true;
-            request_turn_cancel(app, acp_client);
+            request_turn_cancel(app, acp_client, event_tx.clone());
         } else {
             app.should_quit = true;
         }
@@ -699,6 +798,22 @@ async fn handle_key_event(
     if key.code == KeyCode::F(3) {
         let next_mode = app.cycle_mode();
         app.status_message = format!("Switched mode to: {}", next_mode.to_uppercase());
+        return Ok(());
+    }
+
+    if app.active_approval.is_some() {
+        match key.code {
+            KeyCode::Up => app.move_permission_selection(-1),
+            KeyCode::Down => app.move_permission_selection(1),
+            KeyCode::Enter => {
+                submit_approval_decision(app, acp_client, app.selected_permission_index, event_tx.clone())
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => submit_approval_decision(app, acp_client, 0, event_tx.clone()),
+            KeyCode::Char('a') | KeyCode::Char('A') => submit_approval_decision(app, acp_client, 1, event_tx.clone()),
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => submit_approval_decision(app, acp_client, 2, event_tx.clone()),
+            KeyCode::Char('d') | KeyCode::Char('D') => app.show_diff = true,
+            _ => {}
+        }
         return Ok(());
     }
 
@@ -725,10 +840,6 @@ async fn handle_key_event(
             app.show_help = false;
             return Ok(());
         }
-        if app.active_approval.is_some() {
-            submit_approval_decision(app, acp_client, 2);
-            return Ok(());
-        }
         if app.sidebar.show_settings {
             app.sidebar.show_settings = false;
             return Ok(());
@@ -738,29 +849,9 @@ async fn handle_key_event(
         }
         if app.is_busy {
             app.cancel_requested = true;
-            request_turn_cancel(app, acp_client);
+            request_turn_cancel(app, acp_client, event_tx.clone());
             return Ok(());
         }
-    }
-
-    // Modal approval controls: arrows move the radio, Enter confirms it,
-    // y/a/n pick an option directly, d reveals the pending diff.
-    if app.active_approval.is_some() {
-        match key.code {
-            KeyCode::Up => app.move_permission_selection(-1),
-            KeyCode::Down => app.move_permission_selection(1),
-            KeyCode::Enter => {
-                submit_approval_decision(app, acp_client, app.selected_permission_index)
-            }
-            KeyCode::Char('y') | KeyCode::Char('Y') => submit_approval_decision(app, acp_client, 0),
-            KeyCode::Char('a') | KeyCode::Char('A') => submit_approval_decision(app, acp_client, 1),
-            KeyCode::Char('n') | KeyCode::Char('N') => submit_approval_decision(app, acp_client, 2),
-            KeyCode::Char('d') | KeyCode::Char('D') => {
-                app.show_diff = true;
-            }
-            _ => {}
-        }
-        return Ok(());
     }
 
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
@@ -1279,11 +1370,6 @@ async fn execute_submitted_text(
                 app.should_quit = true;
                 return Ok(());
             }
-            "/model" => {
-                if let Some(m) = arg {
-                    app.model_name = m.to_string();
-                }
-            }
             "/mode" => {
                 if let Some(m) = arg {
                     app.set_mode(m);
@@ -1321,28 +1407,20 @@ async fn execute_submitted_text(
             app.busy_started_at = Some(std::time::Instant::now());
             app.status_message = format!("Running {}...", cmd);
             let sess_id = app.session_id.clone();
-            let cmd_str = cmd.to_string();
+            let cmd_str = cmd.to_ascii_lowercase();
             let arg_str = arg.map(|s| s.to_string());
             let client_clone = client.clone();
             let tx = event_tx.clone();
 
+            app.control_request_id += 1;
+            let request_id = app.control_request_id;
+            app.pending_command = Some(request_id);
             tokio::spawn(async move {
-                match client_clone
-                    .session_command(&sess_id, &cmd_str, arg_str.as_deref())
-                    .await
-                {
-                    Ok(resp) => {
-                        let _ = tx.send(AppEvent::AcpMessage(resp.output)).await;
-                    }
-                    Err(err) => {
-                        let _ = tx
-                            .send(AppEvent::Error(format!(
-                                "Command {} failed: {}",
-                                cmd_str, err
-                            )))
-                            .await;
-                    }
-                }
+                let result = client_clone.session_command(&sess_id, &cmd_str, arg_str.as_deref())
+                    .await.map_err(|e| e.to_string());
+                let _ = tx.send(AppEvent::CommandResult {
+                    session_id: sess_id, request_id, command: cmd_str, result,
+                }).await;
             });
             return Ok(());
         }
@@ -1387,12 +1465,7 @@ async fn execute_submitted_text(
                 );
             }
             "/model" => {
-                if let Some(m) = arg {
-                    app.model_name = m.to_string();
-                    app.add_system_message(&format!("Model switched to {}", app.model_name));
-                } else {
-                    app.add_system_message(&format!("Active Model: {}", app.model_name));
-                }
+                app.add_system_message("/model requires an ACP connection; no model switch was made.");
             }
             "/budget" => {
                 app.add_system_message(
@@ -1532,6 +1605,7 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                 }
                 // Retain the streaming marker until the prompt response, even if the display prefix was archived.
                 if terminal {
+                    app.pending_cancel = None;
                     app.cancel_requested = false;
                     app.close_running_tool_calls();
                     app.clear_approval_request();
@@ -1555,6 +1629,9 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
             if let Ok(appr) =
                 serde_json::from_value::<hex_protocol::models::ApprovalRequestNotification>(params)
             {
+                if appr.session_id != app.session_id {
+                    return;
+                }
                 app.set_approval_request(ApprovalRequest {
                     id: appr.approval_id,
                     risk_level: if appr.risk_level.is_empty() {
@@ -2104,6 +2181,307 @@ mod session_lifecycle_tests {
 }
 
 #[cfg(test)]
+mod control_recovery_tests {
+    use super::*;
+    use hex_protocol::models::{ApprovalDecisionResponse, SessionCancelResponse, SessionCommandResponse};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    fn approval_app() -> App {
+        let mut app = App::new("p", "original", "cow");
+        app.is_busy = true;
+        app.set_approval_request(ApprovalRequest {
+            id: "approval-1".into(), risk_level: "high".into(), tool_name: "terminal".into(),
+            parameters: "git status".into(), reason: "inspect workspace".into(),
+            blast_radius: String::new(), cwd: String::new(),
+        });
+        app.approval_can_allow.set(true);
+        app
+    }
+
+    fn approval_result(app: &App, result: Result<ApprovalDecisionResponse, String>) -> AppEvent {
+        AppEvent::ApprovalDecision {
+            session_id: app.session_id.clone(), approval_id: "approval-1".into(),
+            generation: app.approval_generation, decision: "approve".into(), result,
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_approval_keeps_the_request_and_never_announces_success() {
+        let mut app = approval_app();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        submit_approval_decision(&mut app, None, 0, tx);
+        assert!(app.active_approval.is_some());
+        assert_eq!(app.focus, Focus::Approval);
+        assert!(app.approval_error.as_deref().unwrap().contains("no ACP connection"));
+        assert!(!app.dialogue_items.iter().any(|item| matches!(item,
+            hex_tui::app::DialogueItem::Message(m) if m.content.contains("Approved"))));
+    }
+
+    #[tokio::test]
+    async fn approval_rpc_failure_can_retry_and_only_applied_ack_closes_prompt() {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let (reader, writer) = tokio::io::split(client_io);
+        let client = AcpClient::from_streams(reader, writer);
+        let server = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server_io);
+            let mut reader = BufReader::new(reader);
+            for attempt in 0..2 {
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "session/approvalDecision");
+                let mut response = serde_json::json!({"jsonrpc":"2.0", "id":request["id"]});
+                if attempt == 0 {
+                    response["error"] = serde_json::json!({"code":-32603,"message":"temporary RPC failure"});
+                } else {
+                    response["result"] = serde_json::json!({"approvalId":"approval-1","status":"applied","decision":"approve"});
+                }
+                writer.write_all(format!("{response}\n").as_bytes()).await.unwrap();
+            }
+        });
+        let mut app = approval_app();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        submit_approval_decision(&mut app, Some(&client), 0, tx.clone());
+        assert!(app.active_approval.is_some() && app.approval_pending);
+        let generation = app.approval_generation;
+        submit_approval_decision(&mut app, Some(&client), 2, tx.clone());
+        assert_eq!(app.approval_generation, generation, "in-flight decision was sent twice");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        handle_control_result(&mut app, event);
+        assert!(app.active_approval.is_some() && !app.approval_pending);
+        assert!(app.approval_error.as_deref().unwrap().contains("temporary RPC failure"));
+        submit_approval_decision(&mut app, Some(&client), 0, tx);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        handle_control_result(&mut app, event);
+        assert!(app.active_approval.is_none());
+        assert!(app.is_busy, "acknowledgement is not a completed turn");
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn negative_and_mismatched_acknowledgements_leave_approval_retryable() {
+        for (id, status, decision) in [
+            ("approval-1", "acknowledged", "approve"),
+            ("other", "applied", "approve"),
+            ("approval-1", "applied", "reject"),
+        ] {
+            let mut app = approval_app();
+            app.approval_pending = true;
+            let event = approval_result(&app, Ok(ApprovalDecisionResponse {
+                approval_id: id.into(), status: status.into(), decision: decision.into(),
+            }));
+            handle_control_result(&mut app, event);
+            assert!(app.active_approval.is_some() && !app.approval_pending);
+            assert!(app.approval_error.is_some());
+        }
+    }
+
+    #[test]
+    fn stale_decision_cannot_clear_a_replacement_request() {
+        let mut app = approval_app();
+        app.approval_pending = true;
+        let event = approval_result(&app, Ok(ApprovalDecisionResponse {
+            approval_id: "approval-1".into(), status: "applied".into(), decision: "approve".into(),
+        }));
+        let req = app.active_approval.clone().unwrap();
+        app.set_approval_request(req);
+        handle_control_result(&mut app, event);
+        assert!(app.active_approval.is_some());
+        assert!(app.approval_error.is_none());
+    }
+
+    #[test]
+    fn prompt_timeout_or_disconnect_does_not_discard_an_unresolved_approval() {
+        for error in ["Prompt failed: request timed out", "ACP connection closed."] {
+            let mut app = approval_app();
+            handle_backend_error(&mut app, error);
+            assert!(app.active_approval.is_some() && app.is_busy);
+            assert_eq!(app.focus, Focus::Approval);
+            assert!(app.approval_error.as_deref().unwrap().contains(error));
+        }
+    }
+
+    #[test]
+    fn cancellation_failure_restores_retry_without_sealing_or_losing_approval() {
+        for has_approval in [true, false] {
+            for result in [Err("RPC failed".into()), Ok(SessionCancelResponse {
+                session_id: "ses_default".into(), cancelled: false,
+            })] {
+                let mut app = approval_app();
+                if !has_approval {
+                    app.clear_approval_request();
+                }
+                app.cancel_requested = true;
+                app.pending_cancel = Some(3);
+                let session_id = app.session_id.clone();
+                handle_control_result(&mut app, AppEvent::CancelResult { session_id, request_id: 3, result });
+                assert!(app.is_busy);
+                assert_eq!(app.active_approval.is_some(), has_approval);
+                assert!(!app.cancel_requested && app.pending_cancel.is_none());
+                assert!(app.status_message.contains("failed"));
+                let notice = app.dialogue_items.iter().find_map(|item| match item {
+                    hex_tui::app::DialogueItem::Message(message) if message.content.contains("Cancellation failed:") => {
+                        Some(message.content.as_str())
+                    }
+                    _ => None,
+                }).unwrap();
+                let hint = if has_approval { "Press Ctrl+C to retry." } else { "Press Ctrl+C or Esc to retry." };
+                assert!(notice.contains(hint), "{notice}");
+            }
+        }
+    }
+
+    #[test]
+    fn stale_cancel_cannot_change_a_newer_turn() {
+        let mut app = approval_app();
+        app.cancel_requested = true;
+        app.pending_cancel = Some(4);
+        let session_id = app.session_id.clone();
+        handle_control_result(&mut app, AppEvent::CancelResult {
+            session_id, request_id: 3, result: Err("late failure".into()),
+        });
+        assert!(app.cancel_requested && app.pending_cancel == Some(4));
+    }
+
+    #[tokio::test]
+    async fn standalone_model_does_not_fabricate_a_switch() {
+        let mut app = App::new("p", "original", "cow");
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        execute_submitted_text(&mut app, "/model imaginary".into(), None, tx).await.unwrap();
+        assert_eq!(app.model_name, "original");
+    }
+
+    #[tokio::test]
+    async fn connected_model_label_stays_unchanged_until_canonical_ack() {
+        for command in ["/model alias", "/MODEL alias"] {
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let (reader, writer) = tokio::io::split(client_io);
+            let client = AcpClient::from_streams(reader, writer);
+            let mut app = App::new("p", "original", "cow");
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            execute_submitted_text(&mut app, command.into(), Some(&client), tx).await.unwrap();
+            assert_eq!(app.model_name, "original");
+            assert!(app.is_busy);
+            let (reader, mut writer) = tokio::io::split(server_io);
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["params"]["command"], "/model");
+            assert_eq!(request["params"]["args"], "alias");
+            let response = serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{
+                "sessionId":"ses_default","command":"/model","output":"opaque output",
+                "isError":false,"model":"canonical","provider":"canonical-provider"
+            }});
+            writer.write_all(format!("{response}\n").as_bytes()).await.unwrap();
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+            handle_control_result(&mut app, event);
+            assert_eq!(app.model_name, "canonical");
+            assert_eq!(app.provider_name, "canonical-provider");
+            assert!(!app.is_busy);
+        }
+    }
+
+    #[tokio::test]
+    async fn invisible_allow_keys_cannot_submit_even_after_a_resize_event() {
+        for code in [KeyCode::Char('y'), KeyCode::Char('a'), KeyCode::Enter] {
+            let mut app = approval_app();
+            app.approval_can_allow.set(false);
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+            handle_key_event(&mut app, crossterm::event::KeyEvent::new(code, KeyModifiers::NONE), None, tx).await.unwrap();
+            assert!(app.active_approval.is_some());
+            assert!(app.approval_error.as_deref().unwrap().contains("Resize"));
+        }
+    }
+
+    #[tokio::test]
+    async fn topmost_approval_keys_are_not_intercepted_by_hidden_modals() {
+        for code in [KeyCode::Esc, KeyCode::Enter, KeyCode::Down] {
+            let mut app = approval_app();
+            app.show_help = true;
+            app.open_palette();
+            app.active_subagent_modal = Some(hex_tui::app::SubagentModalState {
+                name: "agent".into(), prompt: String::new(), is_expanded: false,
+                activity_lines: Vec::new(), elapsed_seconds: 0, status: "running".into(),
+                is_running: true, activity_scroll: 0,
+            });
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+            handle_key_event(&mut app, crossterm::event::KeyEvent::new(code, KeyModifiers::NONE), None, tx).await.unwrap();
+            assert!(app.active_subagent_modal.is_some());
+            assert!(app.show_help && app.show_palette);
+            if code == KeyCode::Down {
+                assert_eq!(app.selected_permission_index, 1);
+            } else {
+                assert!(app.approval_error.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn confirmed_model_with_unknown_provider_does_not_keep_a_stale_provider_label() {
+        let mut app = App::new("p", "original", "cow");
+        app.provider_name = "old-provider".into();
+        app.pending_command = Some(2);
+        let session_id = app.session_id.clone();
+        handle_control_result(&mut app, AppEvent::CommandResult {
+            session_id: session_id.clone(), request_id: 2, command: "/model".into(),
+            result: Ok(SessionCommandResponse {
+                session_id, command: "/model".into(), output: "opaque".into(),
+                is_error: Some(false), model: Some("canonical".into()), provider: None,
+            }),
+        });
+        assert_eq!(app.model_name, "canonical");
+        assert_eq!(app.provider_label(), "unknown provider");
+    }
+
+    #[test]
+    fn only_successful_current_model_response_updates_labels() {
+        for (failed, model, session, request, expected) in [
+            (false, Some("canonical"), "ses_default", 2, "canonical"),
+            (true, Some("canonical"), "ses_default", 2, "original"),
+            (false, None, "ses_default", 2, "original"),
+            (false, Some("canonical"), "other", 2, "original"),
+            (false, Some("canonical"), "ses_default", 1, "original"),
+        ] {
+            let mut app = App::new("p", "original", "cow");
+            app.pending_command = Some(2);
+            handle_control_result(&mut app, AppEvent::CommandResult {
+                session_id: session.into(), request_id: request, command: "/model".into(),
+                result: Ok(SessionCommandResponse {
+                    session_id: "ses_default".into(), command: "/model".into(), output: "opaque output".into(),
+                    is_error: Some(failed), model: model.map(str::to_string), provider: Some("canonical-provider".into()),
+                }),
+            });
+            assert_eq!(app.model_name, expected);
+            if expected == "canonical" { assert_eq!(app.provider_name, "canonical-provider"); }
+        }
+    }
+
+    #[test]
+    fn capability_counts_display_unknown_differently_from_zero() {
+        let mut app = App::new("p", "original", "cow");
+        let mut terminal = Terminal::new(TestBackend::new(120, 8)).unwrap();
+        terminal.draw(|frame| ui::header::render(frame, &app, frame.area())).unwrap();
+        let rendered = |terminal: &Terminal<TestBackend>| terminal.backend().buffer().content()
+            .iter().map(|cell| cell.symbol()).collect::<String>();
+        assert!(rendered(&terminal).contains("Tools: [?]"));
+        assert!(rendered(&terminal).contains("Skills: [?]"));
+        app.tools_count = Some(0);
+        app.skills_count = Some(0);
+        terminal.draw(|frame| ui::header::render(frame, &app, frame.area())).unwrap();
+        assert!(rendered(&terminal).contains("Tools: [0]"));
+        assert!(rendered(&terminal).contains("Skills: [0]"));
+    }
+
+    #[test]
+    fn capability_counts_remain_unknown_until_discovered() {
+        let app = App::new("p", "original", "cow");
+        assert_eq!(app.tools_count, None);
+        assert_eq!(app.skills_count, None);
+    }
+}
+
+#[cfg(test)]
 mod keymap_truth_tests {
     //! G06: every hint the UI prints must survive a real key press.
     use super::*;
@@ -2241,11 +2619,8 @@ mod keymap_truth_tests {
             | (Scope::Approval, "a")
             | (Scope::Approval, "n")
             | (Scope::Approval, "esc") => {
-                assert!(
-                    app.active_approval.is_none(),
-                    "{} left the modal open",
-                    b.label
-                )
+                assert!(app.active_approval.is_some(), "unconfirmed decision lost the prompt");
+                assert!(app.approval_error.is_some(), "unavailable approval needs actionable feedback");
             }
             (Scope::Approval, "d") => assert!(app.show_diff),
             (Scope::Agents, "up/down") => {

@@ -515,8 +515,8 @@ pub struct App {
     pub git_branch: String,
     pub git_sha: String,
     pub workspace_path: String,
-    pub tools_count: usize,
-    pub skills_count: usize,
+    pub tools_count: Option<usize>,
+    pub skills_count: Option<usize>,
     pub splash_text: Option<String>,
     pub fencing_token: u64,
     pub connection_status: String,
@@ -535,6 +535,9 @@ pub struct App {
     pub status_message: String,
     pub active_turn_has_streamed: bool,
     pub cancel_requested: bool,
+    pub control_request_id: u64,
+    pub pending_cancel: Option<u64>,
+    pub pending_command: Option<u64>,
 
     // Dialogue items and scrolling
     pub dialogue_items: Vec<DialogueItem>,
@@ -598,6 +601,10 @@ pub struct App {
 
     // Approval interrupt modal
     pub active_approval: Option<ApprovalRequest>,
+    pub approval_generation: u64,
+    pub approval_pending: bool,
+    pub approval_error: Option<String>,
+    pub approval_can_allow: std::cell::Cell<bool>,
 
     // Inline diagnostic failure card
     pub active_diagnostic: Option<DiagnosticFailure>,
@@ -1346,8 +1353,8 @@ impl App {
             git_branch: branch,
             git_sha: sha,
             workspace_path: ws.to_string_lossy().to_string(),
-            tools_count: 26,
-            skills_count: 83,
+            tools_count: None,
+            skills_count: None,
             splash_text: None,
             fencing_token: 1,
             connection_status: "Connecting".to_string(),
@@ -1365,6 +1372,9 @@ impl App {
             status_message: "Ready".to_string(),
             active_turn_has_streamed: false,
             cancel_requested: false,
+            control_request_id: 0,
+            pending_cancel: None,
+            pending_command: None,
 
             dialogue_items: Vec::new(),
             tool_result_refs: std::collections::HashMap::new(),
@@ -1415,6 +1425,10 @@ impl App {
             suggestion_index: 0,
 
             active_approval: None,
+            approval_generation: 0,
+            approval_pending: false,
+            approval_error: None,
+            approval_can_allow: std::cell::Cell::new(false),
             active_diagnostic: None,
             animation_frame: 0,
             session_started: Instant::now(),
@@ -2220,6 +2234,10 @@ impl App {
     /// Set active approval request modal.
     pub fn set_approval_request(&mut self, req: ApprovalRequest) {
         self.active_approval = Some(req);
+        self.approval_generation += 1;
+        self.approval_pending = false;
+        self.approval_error = None;
+        self.approval_can_allow.set(false);
         self.selected_permission_index = 0;
         self.focus = Focus::Approval;
     }
@@ -2233,6 +2251,10 @@ impl App {
     /// Clear active approval request.
     pub fn clear_approval_request(&mut self) {
         self.active_approval = None;
+        self.approval_generation += 1;
+        self.approval_pending = false;
+        self.approval_error = None;
+        self.approval_can_allow.set(false);
         if self.focus == Focus::Approval {
             self.focus = Focus::Input;
         }

@@ -28,26 +28,22 @@ use crate::app::{App, ScreenState};
 /// Primary render entrypoint called on each frame.
 pub fn draw(frame: &mut Frame, app: &App) {
     let size = frame.area();
+    app.approval_can_allow.set(false);
     app.sidebar.clear_geometry();
     let theme = style::HexTheme::detect();
     let anim = animation::AnimationState::with_start(app.session_started);
 
-    // Side-by-side dedicated diff inspection mode if toggled
+    // Diff is a primary view, not an escape from the modal overlay stack.
     if app.side_by_side && app.show_diff {
         diff::render(frame, app, size);
-        if app.sidebar.show_settings {
-            right_rail::render_settings(app, &theme, size, frame.buffer_mut());
-        }
-        return;
-    }
-
-    // 1. Render primary screen based on application screen state
-    match app.screen_state {
-        ScreenState::Start => {
-            screens::start::render(app, &theme, &anim, size, frame.buffer_mut());
-        }
-        ScreenState::Session => {
-            screens::session::render(app, &theme, &anim, size, frame.buffer_mut());
+    } else {
+        match app.screen_state {
+            ScreenState::Start => {
+                screens::start::render(app, &theme, &anim, size, frame.buffer_mut());
+            }
+            ScreenState::Session => {
+                screens::session::render(app, &theme, &anim, size, frame.buffer_mut());
+            }
         }
     }
 
@@ -65,14 +61,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
         screens::subagent::render(app, subagent_modal, &theme, &anim, size, frame.buffer_mut());
     }
 
-    // 4. Permission / Approval Dialog Overlay (highest modal z-index)
-    if app.active_approval.is_some() {
-        screens::permission::render(app, &theme, size, frame.buffer_mut());
-    }
-
-    // 5. Help Modal Overlay
+    // 4. Help Modal Overlay
     if app.show_help {
         render_help_overlay(frame, app, size);
+    }
+
+    // 5. Approval is always last, including over help and dedicated diff views.
+    if app.active_approval.is_some() {
+        screens::permission::render(app, &theme, size, frame.buffer_mut());
     }
 }
 

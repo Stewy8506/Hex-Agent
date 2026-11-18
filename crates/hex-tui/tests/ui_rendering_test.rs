@@ -134,7 +134,7 @@ fn test_screen_2_permission_modal_overlay() {
     assert!(content.contains("rm -rf dist/build"), "Must render command preview");
     assert!(content.contains("Deletes temporary build directory."), "Must render reason");
     assert!(content.contains("Allow once"), "Must render Allow once radio option");
-    assert!(content.contains("Allow rm in this project"), "Must render dynamic Allow option");
+    assert!(content.contains("Allow matching calls in this task"), "Must render task-scoped Allow option");
     assert!(content.contains("Deny"), "Must render Deny radio option");
 }
 

@@ -46,7 +46,7 @@ fn test_screen_2_permission_modal_rendering() {
     assert!(content.contains("cargo check --workspace"), "Content was:\n{}", content);
     assert!(content.contains("Validates syntax and types across crates."), "Content was:\n{}", content);
     assert!(content.contains("Allow once"), "Content was:\n{}", content);
-    assert!(content.contains("Allow cargo in this project"), "Content was:\n{}", content);
+    assert!(content.contains("Allow matching calls in this task"), "Content was:\n{}", content);
     assert!(content.contains("Deny"), "Content was:\n{}", content);
 }
 

@@ -87,13 +87,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(" "),
         Span::styled("Tools: ", Style::default().fg(s.muted)),
         Span::styled(
-            format!("[{}] ", app.tools_count),
+            format!("[{}] ", app.tools_count.map_or_else(|| "?".to_string(), |n| n.to_string())),
             Style::default().fg(s.category),
         ),
         Span::raw(" "),
         Span::styled("Skills: ", Style::default().fg(s.muted)),
         Span::styled(
-            format!("[{}] ", app.skills_count),
+            format!("[{}] ", app.skills_count.map_or_else(|| "?".to_string(), |n| n.to_string())),
             Style::default().fg(s.category),
         ),
         Span::raw(" "),

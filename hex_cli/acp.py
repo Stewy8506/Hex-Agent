@@ -1376,9 +1376,21 @@ class ACPServer:
                 "isError": True,
             }
 
+        metadata: dict[str, Any] = {}
         try:
-            output = handler(sess, args)
-            is_error = False
+            result = handler(sess, args)
+            if isinstance(result, dict):
+                output = result["output"]
+                is_error = bool(result.get("isError", False))
+                if not is_error:
+                    metadata = {
+                        key: result[key]
+                        for key in ("model", "provider")
+                        if result.get(key) is not None
+                    }
+            else:
+                output = result
+                is_error = False
         except Exception as exc:
             output = f"Command failed: {exc}"
             is_error = True
@@ -1388,6 +1400,7 @@ class ACPServer:
             "command": cmd,
             "output": output,
             "isError": is_error,
+            **metadata,
         }
 
     # ------------------------------------------------------------------
@@ -1531,16 +1544,25 @@ class ACPServer:
             lines.append(f"  Event chain: {state} ({report.verified_events} events verified)")
         return "\n".join(lines)
 
-    def _cmd_model(self, sess: ACPSession, args: str) -> str:
+    def _cmd_model(self, sess: ACPSession, args: str) -> dict[str, Any]:
         if not args:
             router = getattr(self.orchestrator, "router", None)
             current = getattr(router, "cloud_model_id", None) or sess.model
-            return f"Active model: {current} (session profile: {sess.model})"
+            provider = getattr(getattr(router, "cloud_provider", None), "provider_id", None)
+            return {
+                "output": f"Active model: {current} (session profile: {sess.model})",
+                "model": current,
+                "provider": provider,
+            }
         if not hasattr(self.orchestrator, "set_active_model"):
             raise ValueError("Model switching unavailable: orchestrator has no set_active_model.")
         prov, final_id, _saved = self.orchestrator.set_active_model(args, durable=False)
         sess.model = final_id
-        return f"Active model switched to: {final_id} (provider: {prov}; session-only)"
+        return {
+            "output": f"Active model switched to: {final_id} (provider: {prov}; session-only)",
+            "model": final_id,
+            "provider": prov,
+        }
 
     def _cmd_budget(self, sess: ACPSession, args: str) -> str:
         router = getattr(self.orchestrator, "router", None)

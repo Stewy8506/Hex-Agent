@@ -337,6 +337,45 @@ async fn test_session_subagents_wire_contract() {
 }
 
 #[test]
+fn test_session_command_model_metadata_roundtrip() {
+    let payload = serde_json::json!({
+        "sessionId": "s1",
+        "command": "/model",
+        "output": "Display text is not the model identity",
+        "isError": false,
+        "model": "canonical-model-y",
+        "provider": "fake-provider"
+    });
+    let response: hex_protocol::models::SessionCommandResponse =
+        serde_json::from_value(payload.clone()).unwrap();
+    assert_eq!(response.model.as_deref(), Some("canonical-model-y"));
+    assert_eq!(response.provider.as_deref(), Some("fake-provider"));
+    assert_eq!(response.is_error, Some(false));
+    assert_eq!(serde_json::to_value(response).unwrap(), payload);
+}
+
+#[test]
+fn test_session_command_metadata_is_optional() {
+    for payload in [
+        serde_json::json!({
+            "sessionId": "s1", "command": "/status", "output": "Ready"
+        }),
+        serde_json::json!({
+            "sessionId": "s1", "command": "/status", "output": "Ready", "isError": false
+        }),
+        serde_json::json!({
+            "sessionId": "s1", "command": "/model", "output": "Rejected", "isError": true
+        }),
+    ] {
+        let response: hex_protocol::models::SessionCommandResponse =
+            serde_json::from_value(payload.clone()).unwrap();
+        assert!(response.model.is_none());
+        assert!(response.provider.is_none());
+        assert_eq!(serde_json::to_value(response).unwrap(), payload);
+    }
+}
+
+#[test]
 fn test_subagent_record_tolerates_missing_optional_fields() {
     // list_active_subagents omits the result block entirely.
     let raw = r#"{"sessionId":"s","subagents":[{"subagentId":"sub_9"}]}"#;
