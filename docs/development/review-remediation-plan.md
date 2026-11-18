@@ -10,10 +10,10 @@ Status legend: `[DONE]` landed + verified + committed · `[WIP]` in progress · 
 
 - Phase 1 — Protect user work and authority: **8/8 sub-phases DONE** (B01, B02, B04, B45, B46, B52, B47, B48, B49, B12, B05, B56).
 - Phase 2 — Make completion and recovery truthful: **12/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55, B37, B36, B41/B44, B42/B40, B14/B15, B16).
-- Phase 3 — Finish primary user surfaces: not started.
+- Phase 3 — Finish primary user surfaces: **3.1 WIP**; Rust compilation and live TUI verification are blocked by the missing toolchain.
 - Phase 4 — Expand from real lifecycle integrations: not started.
 
-Last updated: 2026-11-18 (through B16, commit `6e33bca`).
+Last updated: 2026-11-18 (Phase 2 complete through `6e33bca`; 3.1 code committed as `c21bcfc`, verification pending).
 
 ## Phase 1 — Protect user work and authority (gate: zero later effects for denied/canceled work; publication preserves metadata/concurrent work)
 
@@ -43,7 +43,7 @@ Last updated: 2026-11-18 (through B16, commit `6e33bca`).
 
 ## Phase 3 — Finish primary user surfaces
 
-- **3.1** TUI: key-kind filter (B18), bracketed paste + multiline (B19), Unicode cursor indexing (B21).
+- **3.1** `[WIP c21bcfc]` — TUI key-kind filter (B18), bracketed paste + multiline (B19), Unicode cursor indexing (B21). Code and regression tests are written: only press events act, paste inserts literal text without submission, Shift+Enter adds a newline, active composers wrap/scroll around the real Unicode cursor, and recalled history uses character counts. `cargo test -p hex-tui` cannot run (`cargo`/`rustc` absent); compilation, old-code red tests and live terminal verification remain pending. Do not treat this sub-phase as DONE.
 - **3.2** TUI: approval RPC failure recovery (B20), short-terminal approval fallback (B25), truthful model/counts (B26).
 - **3.3** TUI: turn-associated final text (B22), resume handshake (B23), embedded SQLite (B24).
 - **3.4** Desktop: typed approval outcomes + real TTL (B27/B30), queued approvals (B29), lossless final text (B31).
@@ -65,3 +65,4 @@ Last updated: 2026-11-18 (through B16, commit `6e33bca`).
 - Python 3.14.9; test venv at `%LOCALAPPDATA%\hermes\cache\scratch\hex-venv` with `pip install -e .` (package aliasing: `storage` → `harness_core.storage`, `agent` → `harness_core.core`, `hex_cli` → `harness_core.client`, etc.).
 - Pre-existing baseline failure: `test_cow_providers.py::TestOrchestratorCowInjection::test_orchestrator_custom_provider_injection` — Windows `PermissionError` unlinking open `ledger.db` during tempdir cleanup (test teardown issue, tracked, not caused by remediation).
 - Rust toolchain unavailable on this host: Phase 3 Rust changes must be written carefully and compile-verified where possible; flagged in commits if unverified.
+- 2026-11-18 protection reverification: 63 tests pass; the symlink escape test is explicitly skipped only when Windows denies symlink creation (error 1314). `48bd1f4` closes the two older approval-test ledgers before temporary-directory cleanup. B16 and adjacent Phase 2 checks pass 105 tests plus four subtests; the new unexpected-exit cleanup regression also fails against the pre-B16 kernel.
