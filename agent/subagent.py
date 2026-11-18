@@ -205,6 +205,7 @@ class SubagentRecord:
     started_at: float
     workspace_path: Path
     context: Any = None
+    parent_workspace: Path | None = None
     thread: threading.Thread | None = None
     result: SubagentResult | None = None
     interrupted: bool = False
@@ -266,8 +267,10 @@ class SubagentManager:
         now = time.time()
 
         # Setup isolated branch workspace under .hex/subagents/<subagent_id>
+        resolved_parent_ws: Path | None = None
         if parent_ws is not None:
             parent_path = Path(parent_ws).resolve()
+            resolved_parent_ws = parent_path
             subagent_ws = parent_path / ".hex" / "subagents" / subagent_id
             subagent_ws.parent.mkdir(parents=True, exist_ok=True)
             try:
@@ -292,6 +295,7 @@ class SubagentManager:
             started_at=now,
             workspace_path=subagent_ws,
             context=context,
+            parent_workspace=resolved_parent_ws,
             budget=budget,
         )
 
@@ -612,8 +616,14 @@ class SubagentManager:
                 )
                 return
 
-            parent_ws_candidate = record.workspace_path.parent.parent.parent
-            if parent_ws_candidate.exists() and parent_ws_candidate != record.workspace_path:
+            # B17: diff against the explicit parent workspace recorded at spawn,
+            # never a directory inferred by walking up from the child path.
+            parent_ws_candidate = record.parent_workspace
+            if (
+                parent_ws_candidate is not None
+                and parent_ws_candidate.exists()
+                and parent_ws_candidate != record.workspace_path
+            ):
                 try:
                     diff_str = compute_workspace_diff(parent_ws_candidate, record.workspace_path)
                 except Exception:
