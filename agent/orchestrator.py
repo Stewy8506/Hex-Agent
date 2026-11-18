@@ -84,6 +84,73 @@ def _needs_workspace_scan(goal: str) -> bool:
     return any(re.search(rf"\b{re.escape(kw)}\b", g_lower) for kw in _WORKSPACE_SCAN_KEYWORDS)
 
 
+_ACTION_KEYWORDS = (
+    "implement",
+    "create",
+    "write",
+    "add",
+    "fix",
+    "build",
+    "refactor",
+    "modify",
+    "update",
+    "delete",
+    "remove",
+    "generate",
+    "install",
+    "deploy",
+    "rename",
+    "patch",
+    "edit",
+)
+
+
+def _goal_requires_action(goal: str) -> bool:
+    """True when a goal asks for implementation/mutation rather than conversation."""
+    g = (goal or "").lower()
+    return any(re.search(rf"\b{re.escape(k)}\b", g) for k in _ACTION_KEYWORDS)
+
+
+def _observation_indicates_failure(output: str) -> bool:
+    """Detect a failed tool observation (ok=false, nonzero exit, timeout, violation)."""
+    text = (output or "").strip()
+    if not text:
+        return False
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        if parsed.get("ok") is False:
+            return True
+        exit_code = parsed.get("exit_code")
+        if isinstance(exit_code, (int, float)) and exit_code != 0:
+            return True
+        return parsed.get("timed_out") is True or parsed.get("violation_detected") is True
+    low = text.lower()
+    if re.search(r'"ok"\s*:\s*false', low):
+        return True
+    m = re.search(r'"exit_code"\s*:\s*(-?\d+)', low)
+    return bool(m and int(m.group(1)) != 0)
+
+
+class ProviderUnavailableError(RuntimeError):
+    """Inference is unavailable (no router, no active provider, outage, or empty response).
+
+    Raised instead of silently fabricating completion so the ReAct loop reports
+    an explicit failure. The deterministic demo planner is only reachable when
+    demo mode is explicitly enabled (B03).
+    """
+
+
+class DemoGoalNotAchievedError(RuntimeError):
+    """The explicit demo planner could not perform the requested work.
+
+    Used for failed tool observations and unmatched implementation goals so a
+    zero-effect demo run never reports verified success (B03).
+    """
+
+
 class HarnessOrchestrator:
     """End-to-end orchestrator wiring Ledger, CoW, Gateway, Graphify, SkillSpector, and Proof services."""
 
@@ -98,6 +165,7 @@ class HarnessOrchestrator:
         library_root: Path | str | None = None,
         soul_manager: SoulManager | None = None,
         moa_config: Any | None = None,
+        demo_mode: bool = False,
     ):
         if str(data_dir) == ":memory:":
             self._temp_mem_dir = tempfile.TemporaryDirectory(prefix="harness_mem_")
@@ -146,6 +214,12 @@ class HarnessOrchestrator:
         self.memory = GovernedMemoryService(self.ledger, graphify=self.graphify)
         self.soul_manager = soul_manager or SoulManager()
         self.moa_config = moa_config
+        self.demo_mode = bool(demo_mode) or os.environ.get("HEX_DEMO_MODE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         self.prompt_builder = PromptBuilder(soul_manager=self.soul_manager)
         self.proof_service = VerificationAndProofService(
             self.ledger,
@@ -621,6 +695,7 @@ class HarnessOrchestrator:
         extra_rules: str = "",
         curated_memory: str = "",
         moa_config: Any | None = None,
+        demo_mode: bool | None = None,
     ) -> dict[str, Any]:
         """Execute an autonomous continuous multi-turn ReAct tool loop (Hermes Parity Pillar 1).
 
@@ -668,20 +743,25 @@ class HarnessOrchestrator:
                 pass
 
         # Build model caller with router and deterministic fallback
+        demo = bool(self.demo_mode if demo_mode is None else demo_mode)
+
         def _react_model_caller(messages: list[dict[str, Any]]) -> str:
-            # 1. Try router if available and configured with active provider
-            if hasattr(self, "router") and self.router is not None:
+            # 1. Try router if available and configured with active provider.
+            # Without explicit demo mode, inference unavailable/outage/empty must
+            # fail loudly rather than fabricate completion (B03).
+            router = getattr(self, "router", None)
+            if router is not None:
                 cloud_avail = False
-                if hasattr(self.router, "cloud_provider") and self.router.cloud_provider is not None:
-                    if hasattr(self.router.cloud_provider, "is_available"):
-                        try:
-                            cloud_avail = bool(self.router.cloud_provider.is_available())
-                        except Exception:
-                            cloud_avail = False
+                cloud_provider = getattr(router, "cloud_provider", None)
+                if cloud_provider is not None and hasattr(cloud_provider, "is_available"):
+                    try:
+                        cloud_avail = bool(cloud_provider.is_available())
+                    except Exception:
+                        cloud_avail = False
                 if cloud_avail:
                     try:
                         prompt_str = ReActLoop._format_messages_to_prompt(messages)
-                        decision, model_resp = self.router.execute_routed_request(
+                        decision, model_resp = router.execute_routed_request(
                             prompt=prompt_str,
                             task_class="agent_loop",
                             risk_class="R2",
@@ -689,14 +769,28 @@ class HarnessOrchestrator:
                             workspace_dir=effective_ws,
                             max_tokens=4096,
                         )
-                        if model_resp and getattr(model_resp, "text", None):
-                            resp_text = model_resp.text.strip()
-                            if resp_text:
-                                return resp_text
-                    except Exception:
-                        pass
+                        resp_text = (getattr(model_resp, "text", "") or "").strip() if model_resp else ""
+                        if resp_text:
+                            return resp_text
+                        if not demo:
+                            raise ProviderUnavailableError(
+                                "Provider returned an empty response; inference unavailable."
+                            )
+                    except ProviderUnavailableError:
+                        raise
+                    except Exception as exc:
+                        if not demo:
+                            raise ProviderUnavailableError(f"Provider request failed: {exc}") from exc
+                        logger.warning("Provider request failed; using deterministic demo fallback: %s", exc)
+                elif not demo:
+                    raise ProviderUnavailableError("No active cloud provider available for inference.")
+            elif not demo:
+                raise ProviderUnavailableError(
+                    "No model router configured; inference unavailable. "
+                    "Enable demo mode for the deterministic fallback planner."
+                )
 
-            # 2. Deterministic tool planner fallback
+            # 2. Deterministic tool planner fallback (explicit demo mode only)
             last_msg_content = ""
             for m in reversed(messages):
                 if m.get("role") in ("user", "observation", "tool"):
@@ -712,7 +806,12 @@ class HarnessOrchestrator:
                 )
                 if obs_m:
                     tool_n = obs_m.group("tool") or "tool"
-                    obs_snippet = obs_m.group("output")[:300].strip()
+                    obs_output = obs_m.group("output")
+                    if _observation_indicates_failure(obs_output):
+                        raise DemoGoalNotAchievedError(
+                            f"Tool '{tool_n}' reported failure; goal not achieved: {obs_output[:300].strip()}"
+                        )
+                    obs_snippet = obs_output[:300].strip()
                     return f"<finish>Goal '{goal}' completed successfully. Observation from {tool_n}: {obs_snippet}</finish>"
                 return f"<finish>Goal '{goal}' completed successfully based on tool observation.</finish>"
 
@@ -752,8 +851,16 @@ class HarnessOrchestrator:
                 if "run_tests" in tools_dict:
                     return '<thought>Executing test suite</thought>\n<tool_call>{"name": "run_tests", "arguments": {}}</tool_call>'
 
-            # Default conversational conclusion if no tool matched
-            return f"<finish>Completed goal: {goal}</finish>"
+            # No tool matched. Never fabricate completion for an implementation
+            # request; a zero-effect demo run must not report verified success (B03).
+            if _goal_requires_action(goal):
+                raise DemoGoalNotAchievedError(
+                    f"Deterministic demo planner mapped no tool to goal; no work performed: {goal}"
+                )
+            return (
+                "No available tool matched this request in demo mode, so no action was taken. "
+                f"Goal: {goal}"
+            )
 
         effective_moa_cfg = moa_config if moa_config is not None else getattr(self, "moa_config", None)
         react_cfg = ReActConfig(

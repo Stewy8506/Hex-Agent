@@ -185,6 +185,7 @@ class TestOrchestratorCancelFinalization(unittest.TestCase):
         # goal reliably selects the registered probe tool.
         self.orch.router = None
         self.orch.moa_config = None
+        self.orch.demo_mode = True
 
     def tearDown(self) -> None:
         self.orch.ledger.close()
