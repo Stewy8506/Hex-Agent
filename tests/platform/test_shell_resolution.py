@@ -27,11 +27,19 @@ from harness_core.storage.db import LedgerStore
 from harness_core.storage.sandbox import SandboxResult
 
 
+POSIX_SHELL_STEMS = {"sh", "bash", "dash", "zsh", "ash", "ksh"}
+
+
+def is_posix_shell(path: str) -> bool:
+    # $SHELL may point at Git Bash (bash.exe) when the POSIX branch is simulated on Windows.
+    return Path(path).stem.lower() in POSIX_SHELL_STEMS
+
+
 class TestShellResolver(unittest.TestCase):
     def test_posix_compound_uses_sh(self) -> None:
         argv = resolve_shell_argv("printf audit | cat", system="Linux")
         self.assertEqual(argv[-2:], ["-c", "printf audit | cat"])
-        self.assertTrue(argv[0].endswith("sh"))
+        self.assertTrue(is_posix_shell(argv[0]), argv[0])
         self.assertNotIn("/bin/sh", argv[1:])
 
     def test_windows_compound_uses_comspec_not_bin_sh(self) -> None:
@@ -137,7 +145,7 @@ class TestGatewayTerminalPlatform(unittest.TestCase):
         with patch.object(shell_mod.platform, "system", return_value="Linux"):
             self.gateway._tool_terminal(self.workspace, {"command": "printf audit | cat"})
         sent_cmd = self.sandbox.calls[-1]["cmd"]
-        self.assertTrue(sent_cmd[0].endswith("sh"))
+        self.assertTrue(is_posix_shell(sent_cmd[0]), sent_cmd[0])
         self.assertEqual(sent_cmd[-1], "printf audit | cat")
 
     def test_terminal_list_command_passthrough(self) -> None:

@@ -126,7 +126,7 @@ class TestSkillHookShellResolution(unittest.TestCase):
         with patch.object(shell_mod.platform, "system", return_value="Linux"):
             self.engine.run_skill_verification(hook=hook, workspace_root=self.ws, sandbox=sandbox)
         sent_cmd = sandbox.calls[-1]["cmd"]
-        self.assertTrue(sent_cmd[0].endswith("sh"))
+        self.assertIn(Path(sent_cmd[0]).stem.lower(), {"sh", "bash", "dash", "zsh", "ash", "ksh"}, sent_cmd[0])
         self.assertEqual(sent_cmd[-1], "printf x | cat")
 
 
