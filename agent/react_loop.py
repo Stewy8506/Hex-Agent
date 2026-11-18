@@ -1342,6 +1342,38 @@ class ReActLoop:
         rule = f"- [AVOID] Rolled back workspace from {snapshot_id}{desc}. Do not re-attempt identical modification."
         self.guardrails_manager.record_avoid_invariant(rule)
 
+    def _record_dialogue(
+        self,
+        task_id: str,
+        turn_index: int,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist one dialogue row so /rewind can rebuild from the ledger (B40).
+
+        The table and writers existed but no run ever called them, so rewinds
+        always started from an empty transcript.
+        """
+        ledger = self.ledger
+        if ledger is None or not content:
+            return
+        recorder = getattr(ledger, "record_dialogue_turn", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(
+                task_id=task_id,
+                turn_index=turn_index,
+                role=role,
+                content=content[:8000],
+                metadata=metadata or {},
+            )
+        except Exception as exc:
+            self._emit_event(
+                "dialogue_persist_failed", {"role": role, "turn_index": turn_index, "error": str(exc)}
+            )
+
     def rewind_to(self, turn_spec: int | str, task_id: str | None = None) -> list[dict[str, Any]]:
         """Rewind dialogue history, internal turn state, and ledger tracking to specified turn.
         
@@ -1459,6 +1491,7 @@ class ReActLoop:
         if initial_messages:
             self.messages.extend(initial_messages)
         self.messages.append({"role": "user", "content": prompt})
+        self._record_dialogue(task_id, 0, "user", prompt)
 
         # Pre-Flight Gateway Session Hygiene (Before Turn 1)
         budget = getattr(self.config, "budget_tokens", 100_000) or 100_000
@@ -1746,6 +1779,19 @@ class ReActLoop:
                 moa_result=turn_moa_res,
             )
             self.turns.append(turn)
+            self._record_dialogue(task_id, turn_index, "assistant", thought)
+            for result in tool_results:
+                self._record_dialogue(
+                    task_id,
+                    turn_index,
+                    "tool",
+                    str(getattr(result, "output", "")),
+                    {
+                        "tool": getattr(result, "name", ""),
+                        "call_id": getattr(result, "call_id", ""),
+                        "is_error": bool(getattr(result, "is_error", False)),
+                    },
+                )
             self._emit_event("turn_complete", {"turn_index": turn_index, "latency_ms": turn.latency_ms})
 
             if any(r.is_error for r in tool_results):
@@ -1772,6 +1818,15 @@ class ReActLoop:
             "reasons": list(self._friction_reasons),
             "consecutive_tool_failures": dict(self._consecutive_tool_failures),
         }
+
+        if final_answer:
+            self._record_dialogue(
+                task_id,
+                max(len(self.turns) - 1, 0),
+                "assistant",
+                final_answer,
+                {"final": True},
+            )
 
         return ReActSessionResult(
             success=success,

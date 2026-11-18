@@ -2179,11 +2179,15 @@ class HexConsole:
                 ]
 
         print(
-            f"{ANSI_GREEN}✔ Rewound {result.turns_rewound} turn(s) to turn {result.target_turn} "
-            f"(Branch: {result.branch_id}). {len(self.messages)} message(s) active.{ANSI_RESET}"
+            f"{ANSI_GREEN}✔ Rewound {result.turns_rewound} conversation turn(s) to turn "
+            f"{result.target_turn} (Branch: {result.branch_id}). {len(self.messages)} message(s) "
+            f"active; workspace files were not changed.{ANSI_RESET}"
         )
         if result.reverted_tool_count > 0:
-            print(f"{ANSI_DIM}  Reverted {result.reverted_tool_count} uncommitted/trailing tool execution(s).{ANSI_RESET}")
+            print(
+                f"{ANSI_DIM}  Reverted {result.reverted_tool_count} tool call record(s) from "
+                f"the superseded turns; no workspace files were rolled back.{ANSI_RESET}"
+            )
 
     def _cmd_lease(self, arg: str = "") -> None:
         """Inspect, grant, or revoke temporal auto-approval leases."""

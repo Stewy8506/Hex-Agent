@@ -136,6 +136,10 @@ def validate_dag_topology(dag_nodes: list[Any]) -> None:
             visit(sid, [])
 
 
+class ClaimTransactionError(RuntimeError):
+    """Raised when the claim transaction cannot be started (B42)."""
+
+
 class ConcurrencyFenceError(RuntimeError):
     """Raised when a stale worker fencing token or version mismatch attempts a commit."""
 
@@ -1913,10 +1917,23 @@ class LedgerStore:
             )
         self.reap_expired_leases()
         with self._lock:
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-            except sqlite3.OperationalError:
-                pass
+            # B42: a busy database must not fall through to an unprotected
+            # claim; retry briefly, then fail visibly.
+            begin_error: sqlite3.OperationalError | None = None
+            for begin_attempt in range(5):
+                try:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    begin_error = None
+                    break
+                except sqlite3.OperationalError as exc:
+                    begin_error = exc
+                    if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                        break
+                    time.sleep(0.02 * (begin_attempt + 1))
+            if begin_error is not None:
+                raise ClaimTransactionError(
+                    f"Could not start the claim transaction: {begin_error}"
+                ) from begin_error
 
             try:
                 row = self.conn.execute(self.CLAIM_TASK_SQLITE_SQL).fetchone()

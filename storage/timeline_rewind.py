@@ -33,6 +33,8 @@ class RewindResult:
     turns_rewound: int
     branch_id: str
     live_messages: list[dict[str, Any]]
+    # Tool messages archived with the superseded turns. No workspace files move:
+    # rewind is conversation-only, and callers must say so (B40).
     reverted_tool_count: int = 0
     superseded_messages: list[dict[str, Any]] = field(default_factory=list)
     event_id: str | None = None
@@ -199,7 +201,11 @@ class TimelineRewindManager:
                 superseded_messages.extend(t_msgs)
                 discarded_turn_indices.append(t_idx)
 
-        reverted_tool_count = 0
+        # Without a ledger, report the tool messages moved into the superseded
+        # branch; with one, the ledger reports the tool-call records it reverted.
+        reverted_tool_count = sum(
+            1 for message in superseded_messages if message.get("role") == "tool"
+        )
         event_id = None
 
         if self.ledger is not None:
@@ -210,7 +216,9 @@ class TimelineRewindManager:
                     superseded_turns=superseded_messages,
                     reason=f"Rewound {turns_rewound} turn(s) to turn {target_turn}",
                 )
-                reverted_tool_count = branch_record.get("reverted_tool_count", 0)
+                reverted_tool_count = int(
+                    branch_record.get("reverted_tool_count", reverted_tool_count)
+                )
                 event_id = branch_record.get("event_id")
             except Exception:
                 pass

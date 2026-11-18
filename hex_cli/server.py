@@ -25,7 +25,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from harness_core.client.dashboard import DASHBOARD_HTML
-from harness_core.storage.db import ConcurrencyFenceError
+from harness_core.storage.db import ClaimTransactionError, ConcurrencyFenceError
 from harness_core.core.models import TaskSubmitRequest
 from harness_core.core.orchestrator import HarnessOrchestrator
 
@@ -193,7 +193,17 @@ class HarnessAPIApp:
             if method == "POST" and route == "/v1/tasks/claim":
                 worker_id = str(body.get("worker_id", "worker-default"))
                 ttl_seconds = int(body.get("ttl_seconds", 300))
-                claimed = self.orch.ledger.claim_next_task(worker_id=worker_id, ttl_seconds=ttl_seconds)
+                try:
+                    claimed = self.orch.ledger.claim_next_task(
+                        worker_id=worker_id, ttl_seconds=ttl_seconds
+                    )
+                except ClaimTransactionError as exc:
+                    logger.warning("Task claim could not start a transaction: %s", exc)
+                    return (
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": "claim_unavailable", "detail": str(exc)},
+                        "application/json",
+                    )
                 if claimed:
                     return (HTTPStatus.OK, claimed, "application/json")
                 return (HTTPStatus.OK, {"task": None}, "application/json")
