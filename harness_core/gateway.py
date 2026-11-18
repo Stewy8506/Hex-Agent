@@ -631,6 +631,43 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 
+def sealed_effect_state(prior: dict[str, Any], workspace_dir: Path | str) -> str:
+    """Classify a sealed file-mutation against the current workspace (B36).
+
+    Returns ``"present"`` when the recorded effect is on disk (replay is safe),
+    ``"rolled_back"`` when the file matches the pre-call state or is missing
+    (the journal entry must be re-executed, not replayed as done), and
+    ``"diverged"`` when the file holds neither version, which means later work
+    changed it and replay must not clobber that work.
+    """
+    result = prior.get("result") or {}
+    if prior.get("tool_id") not in ("write_file", "patch"):
+        return "present"
+    rel_path = result.get("path")
+    after_sha = result.get("sha256")
+    if not rel_path or not after_sha:
+        return "present"
+    before_sha = result.get("_before_sha256")
+
+    ws = Path(workspace_dir).resolve()
+    try:
+        target = (ws / str(rel_path)).resolve()
+        target.relative_to(ws)
+    except (ValueError, OSError):
+        return "rolled_back"
+
+    current_sha = sha256_hex(target.read_bytes()) if target.is_file() else None
+    if current_sha == str(after_sha):
+        return "present"
+    if current_sha == before_sha:
+        # The file is back at (or still in) its pre-call state: a checkpoint
+        # rollback removed the sealed effect.
+        return "rolled_back"
+    if before_sha is None and current_sha is None:
+        return "rolled_back"
+    return "diverged"
+
+
 class ToolGateway(FileToolsMixin):
     """Policy-enforcing, call-journaling gateway for direct tools and Code Mode scripts."""
 
@@ -1160,6 +1197,17 @@ class ToolGateway(FileToolsMixin):
             canonical_args_hash=args_hash,
             idempotency_key=idem_key,
         )
+        replay_effect_state = "present"
+        if prior is not None and prior.get("result") is not None:
+            replay_effect_state = sealed_effect_state(prior, workspace_dir)
+            if replay_effect_state == "rolled_back":
+                logger.warning(
+                    "Sealed call %s (%s) was rolled back with the workspace; "
+                    "re-executing instead of replaying it as done.",
+                    prior.get("call_id"),
+                    tool_id,
+                )
+                prior = None
         if prior is not None and prior.get("result") is not None:
             replay_call_id = self.ledger.begin_tool_call(
                 task_id=task_id,
@@ -1179,6 +1227,10 @@ class ToolGateway(FileToolsMixin):
             replayed_result["_call_id"] = replay_call_id
             replayed_result["_replayed"] = True
             replayed_result["_replayed_from_call_id"] = prior["call_id"]
+            if replay_effect_state == "diverged":
+                # The sealed effect is not on disk, but later work changed the
+                # file: report the replay without overwriting that work.
+                replayed_result["_replay_effect_mismatch"] = True
             replayed_result["_replay_latency_ms"] = round((time.perf_counter() - t0) * 1000, 3)
             self.ledger.seal_tool_call(replay_call_id, replayed_result, status="SEALED", fencing_token=fencing_token)
             return replayed_result
@@ -1200,6 +1252,21 @@ class ToolGateway(FileToolsMixin):
 
         ws_path = Path(workspace_dir).resolve()
         before_sources: dict[str, str] = {}
+        # B36: record the pre-call content hash so a later replay can tell a
+        # checkpoint rollback apart from someone else's later edit.
+        before_effect_sha: str | None = None
+        effect_path_recorded = False
+        if spec.tool_id in ("write_file", "patch") and "path" in args:
+            rel_p = str(args["path"]).lstrip("./")
+            target_file = (ws_path / rel_p).resolve()
+            try:
+                target_file.relative_to(ws_path)
+            except ValueError:
+                target_file = None  # type: ignore[assignment]
+            if target_file is not None:
+                effect_path_recorded = True
+                if target_file.is_file():
+                    before_effect_sha = sha256_hex(target_file.read_bytes())
         if spec.tool_id == "write_file" and "path" in args:
             rel_p = str(args["path"]).lstrip("./")
             target_file = (ws_path / rel_p).resolve()
@@ -1223,6 +1290,8 @@ class ToolGateway(FileToolsMixin):
         sanitized_result["_call_id"] = call_id
         sanitized_result["_duration_ms"] = duration_ms
         sanitized_result["_result_sha256"] = sha256_hex(canonical_json(sanitized_result))
+        if effect_path_recorded:
+            sanitized_result["_before_sha256"] = before_effect_sha
 
         # 4. Active Graphify Blast-Radius Hook on R2 file modification (FR-036a)
         if spec.tool_id == "write_file" and "path" in args:
