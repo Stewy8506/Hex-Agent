@@ -185,8 +185,26 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["add", "list", "complete", "clear"], "description": "Todo action"},
-                "task": {"type": "string", "description": "Task description for add/complete"},
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "list", "complete", "update", "remove", "clear"],
+                    "description": "Todo action",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Task description, or match text for complete/update/remove",
+                },
+                "id": {"type": "string", "description": "Todo id for complete/update/remove"},
+                "index": {
+                    "type": "integer",
+                    "description": "Zero-based todo index for complete/update/remove",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "completed"],
+                    "description": "Target status for update",
+                },
+                "items": {"type": "array", "description": "Multiple todo items for add"},
             },
             "required": ["action"],
         },
@@ -1259,19 +1277,72 @@ class ToolGateway(FileToolsMixin):
         return full
 
     def _tool_todo(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
-        action = str(args.get("action", "read")).lower()
+        action = str(args.get("action", "read")).strip().lower()
+        supported_actions = (
+            "add", "list", "read", "complete", "update", "remove", "delete", "clear", "reset"
+        )
+        if action not in supported_actions:
+            return {
+                "ok": False,
+                "action": action,
+                "error": (
+                    f"Unsupported todo action '{action}'. Supported: {', '.join(supported_actions)}"
+                ),
+            }
+
         todo_file = workspace_dir / ".hex" / "todo.json"
+        valid_statuses = ("pending", "in_progress", "completed")
 
         todos: list[dict[str, Any]] = []
+        corrupt_error: str | None = None
         if todo_file.is_file():
             try:
                 loaded = json.loads(todo_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                corrupt_error = f"Todo state at {todo_file} is unreadable: {exc}"
+            else:
                 if isinstance(loaded, list):
-                    todos = loaded
-            except Exception:
-                todos = []
+                    todos = [td for td in loaded if isinstance(td, dict)]
+                else:
+                    corrupt_error = f"Todo state at {todo_file} is not a list"
+        if corrupt_error is not None and action not in ("clear", "reset"):
+            # Never silently reset a corrupt checklist to empty (B08).
+            return {"ok": False, "action": action, "error": corrupt_error, "todos": []}
 
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        def _fresh_id() -> int:
+            used = {str(td.get("id")) for td in todos}
+            numeric = [int(td["id"]) for td in todos if str(td.get("id", "")).isdigit()]
+            candidate = (max(numeric) if numeric else 0) + 1
+            while str(candidate) in used:
+                candidate += 1
+            return candidate
+
+        def _find_todo() -> tuple[int, dict[str, Any]] | None:
+            idx = args.get("index")
+            item_id = args.get("id")
+            wanted = args.get("task") or args.get("item")
+            if idx is not None:
+                try:
+                    position = int(idx)
+                except (TypeError, ValueError):
+                    position = -1
+                if 0 <= position < len(todos):
+                    return position, todos[position]
+            if item_id is not None:
+                for i, td in enumerate(todos):
+                    if str(td.get("id")) == str(item_id):
+                        return i, td
+            if wanted:
+                needle = str(wanted).strip().lower()
+                for i, td in enumerate(todos):
+                    if str(td.get("task", "")).strip().lower() == needle:
+                        return i, td
+                for i, td in enumerate(todos):
+                    if needle and needle in str(td.get("task", "")).lower():
+                        return i, td
+            return None
 
         if action in ("read", "list"):
             pass
@@ -1286,56 +1357,109 @@ class ToolGateway(FileToolsMixin):
 
             for item in to_add:
                 if isinstance(item, dict):
+                    raw_status = item.get("status") or "pending"
+                    status = str(raw_status).strip().lower()
+                    if status not in valid_statuses:
+                        return {
+                            "ok": False,
+                            "action": action,
+                            "error": (
+                                f"Invalid todo status '{raw_status}'. Supported: "
+                                f"{', '.join(valid_statuses)}"
+                            ),
+                            "todos": todos,
+                        }
+                    requested_id = item.get("id")
+                    used = {str(td.get("id")) for td in todos}
+                    item_id = (
+                        requested_id
+                        if requested_id is not None and str(requested_id) not in used
+                        else _fresh_id()
+                    )
                     todos.append({
-                        "id": item.get("id", len(todos) + 1),
+                        "id": item_id,
                         "task": str(item.get("task") or item.get("text", "")),
-                        "status": str(item.get("status", "pending")),
+                        "status": status,
                         "updated_at": now,
                     })
                 else:
                     todos.append({
-                        "id": len(todos) + 1,
+                        "id": _fresh_id(),
                         "task": str(item),
                         "status": "pending",
                         "updated_at": now,
                     })
+        elif action == "complete":
+            found = _find_todo()
+            if found is None:
+                return {
+                    "ok": False,
+                    "action": action,
+                    "error": "No matching todo item to complete; pass 'task', 'id' or 'index'",
+                    "todos": todos,
+                }
+            position, todo_item = found
+            todo_item["status"] = "completed"
+            todo_item["updated_at"] = now
+            todos[position] = todo_item
         elif action == "update":
-            idx = args.get("index")
-            item_id = args.get("id")
             new_status = args.get("status")
             new_task = args.get("task") or args.get("item")
-
-            updated = False
-            for i, td in enumerate(todos):
-                if (idx is not None and i == int(idx)) or (item_id is not None and str(td.get("id")) == str(item_id)):
-                    if new_status:
-                        td["status"] = str(new_status)
-                    if new_task:
-                        td["task"] = str(new_task)
-                    td["updated_at"] = now
-                    updated = True
-                    break
-            if not updated and idx is not None and 0 <= int(idx) < len(todos):
-                if new_status:
-                    todos[int(idx)]["status"] = str(new_status)
-                if new_task:
-                    todos[int(idx)]["task"] = str(new_task)
-                todos[int(idx)]["updated_at"] = now
+            found = _find_todo()
+            if found is None:
+                return {
+                    "ok": False,
+                    "action": action,
+                    "error": "No matching todo item to update; pass 'task', 'id' or 'index'",
+                    "todos": todos,
+                }
+            position, todo_item = found
+            if new_status:
+                status = str(new_status).strip().lower()
+                if status not in valid_statuses:
+                    return {
+                        "ok": False,
+                        "action": action,
+                        "error": (
+                            f"Invalid todo status '{new_status}'. Supported: "
+                            f"{', '.join(valid_statuses)}"
+                        ),
+                        "todos": todos,
+                    }
+                todo_item["status"] = status
+            if new_task:
+                todo_item["task"] = str(new_task)
+            todo_item["updated_at"] = now
+            todos[position] = todo_item
         elif action in ("clear", "reset"):
             todos = []
         elif action in ("remove", "delete"):
-            idx = args.get("index")
-            item_id = args.get("id")
-            if idx is not None and 0 <= int(idx) < len(todos):
-                todos.pop(int(idx))
-            elif item_id is not None:
-                todos = [td for td in todos if str(td.get("id")) != str(item_id)]
+            found = _find_todo()
+            if found is None:
+                return {
+                    "ok": False,
+                    "action": action,
+                    "error": "No matching todo item to remove; pass 'task', 'id' or 'index'",
+                    "todos": todos,
+                }
+            todos.pop(found[0])
 
+        tmp_file = todo_file.with_name(todo_file.name + ".tmp")
         try:
             todo_file.parent.mkdir(parents=True, exist_ok=True)
-            todo_file.write_text(json.dumps(todos, indent=2), encoding="utf-8")
-        except OSError:
-            pass
+            with open(tmp_file, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(todos, indent=2))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_file, todo_file)
+        except OSError as exc:
+            try:
+                if tmp_file.exists():
+                    tmp_file.unlink()
+            except OSError:
+                pass
+            # Never report success for a checklist that was not persisted (B08).
+            raise OSError(f"Failed to persist todo state at {todo_file}: {exc}") from exc
 
         return {
             "ok": True,
