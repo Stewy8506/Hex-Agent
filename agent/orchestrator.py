@@ -40,7 +40,13 @@ from harness_core.storage.db import LedgerStore, utcnow_iso
 from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
 from harness_core.graphify import ActiveGraphifyAdapter
 from harness_core.lsp.manager import LSPManager
-from harness_core.core.models import PlanNode, TaskBudget, TaskState, TaskSubmitRequest
+from harness_core.core.models import (
+    PlanNode,
+    TaskBudget,
+    TaskState,
+    TaskSubmitRequest,
+    select_runnable_step,
+)
 from harness_core.capabilities.proof import Harness2ControlledAdapter, VerificationAndProofService
 from harness_core.cognition.prompt_builder import PromptBuilder
 from harness_core.providers.base import BudgetExceededError
@@ -2122,28 +2128,48 @@ class HarnessOrchestrator:
 
         modified_files: list[str] = []
         replan_count = 0
-        max_replans = 20
+        try:
+            max_replans = max(0, int((task.get("constraints") or {}).get("max_replans", 20)))
+        except (TypeError, ValueError):
+            max_replans = 20
 
         try:
             while True:
                 if self.is_cancel_requested(task_id):
                     return self._finalize_canceled(task_id, attempt_id)
                 # Find the next runnable node: not yet completed, with all depends_on completed
-                runnable_node = None
-                for n in dag_nodes:
-                    sid = n.get("step_id")
-                    if sid in completed_step_ids and not n.get("has_unsealed_calls"):
-                        continue
-                    deps = n.get("depends_on") or []
-                    if all(d in completed_step_ids for d in deps):
-                        runnable_node = n
-                        break
+                runnable_node, unresolved_deps = select_runnable_step(
+                    dag_nodes, completed_step_ids
+                )
 
                 if runnable_node is None:
                     pending = [n for n in dag_nodes if n.get("step_id") not in completed_step_ids]
                     if not pending:
                         break  # All nodes executed successfully
-                    runnable_node = pending[0]
+                    # B06: every remaining node has an unsatisfied dependency.
+                    # Never run an out-of-order node; pause for attention.
+                    attention_snap = self.cow.create_snapshot(
+                        attempt_ws, label=f"{task_id}_dag_unsatisfied"
+                    )
+                    self.ledger.update_attempt(
+                        attempt_id,
+                        status="FAILED",
+                        head_tree_sha=attention_snap.workspace_tree_sha,
+                        failure_class="DAG_UNSATISFIED_DEPENDENCIES",
+                    )
+                    return self.ledger.transition_task(
+                        task_id,
+                        TaskState.NEEDS_ATTENTION,
+                        reason_code="DAG_UNSATISFIED_DEPENDENCIES",
+                        attempt_id=attempt_id,
+                        workspace_tree_sha=attention_snap.workspace_tree_sha,
+                        fencing_token=fencing_token,
+                        terminal_reason=(
+                            "DAG cannot make progress; unsatisfied dependencies: "
+                            f"{unresolved_deps}"
+                        ),
+                        payload={"unresolved_dependencies": unresolved_deps},
+                    )
 
                 node = runnable_node
                 step_id = node.get("step_id")
@@ -2233,6 +2259,38 @@ class HarnessOrchestrator:
                             completed_step_ids=completed_step_ids,
                         )
                         dag_nodes = list(plan.get("dag") or [])
+                    else:
+                        # B09: divergence persists after the replan budget is
+                        # exhausted. Stop and hand the task back for attention
+                        # instead of continuing to mutate unverified work.
+                        budget_snap = self.cow.create_snapshot(
+                            attempt_ws, label=f"{task_id}_replan_budget_exhausted"
+                        )
+                        self.ledger.update_attempt(
+                            attempt_id,
+                            status="FAILED",
+                            head_tree_sha=budget_snap.workspace_tree_sha,
+                            failure_class="REPLAN_BUDGET_EXHAUSTED",
+                        )
+                        return self.ledger.transition_task(
+                            task_id,
+                            TaskState.NEEDS_ATTENTION,
+                            reason_code="REPLAN_BUDGET_EXHAUSTED",
+                            attempt_id=attempt_id,
+                            workspace_tree_sha=budget_snap.workspace_tree_sha,
+                            fencing_token=fencing_token,
+                            terminal_reason=(
+                                f"Replan budget exhausted ({max_replans}) while divergence "
+                                f"persisted after step '{step_id}'"
+                            ),
+                            payload={
+                                "step_id": step_id,
+                                "replan_count": replan_count,
+                                "unexpected_side_effects": sorted(actual - declared),
+                                "explicit_replan": explicit_replan,
+                                "blast_radius_new_callers": blast_new_callers,
+                            },
+                        )
 
                 pending_ids = [n.get("step_id", "") for n in dag_nodes if n.get("step_id", "") not in completed_step_ids]
                 step_snap = self.cow.create_snapshot(attempt_ws, label=f"{task_id}_{step_id}")

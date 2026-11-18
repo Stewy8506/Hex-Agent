@@ -90,6 +90,52 @@ def normalize_param(val: Any) -> Any:
     return val
 
 
+def validate_dag_topology(dag_nodes: list[Any]) -> None:
+    """Reject cyclic, dangling, duplicate or empty DAG plans before persisting (B06).
+
+    A plan with an unsatisfiable dependency cannot make progress; saving it only
+    defers the failure to execution, where the old code silently ran an
+    out-of-order node. Validation belongs at the persistence boundary.
+    """
+    if not dag_nodes:
+        raise ValueError("DAG plan must contain at least one node")
+    nodes = [n.to_dict() if hasattr(n, "to_dict") else dict(n) for n in dag_nodes]
+    step_ids = [str(n.get("step_id") or "") for n in nodes]
+    if any(not sid for sid in step_ids):
+        raise ValueError("Every DAG node requires a non-empty step_id")
+    if len(set(step_ids)) != len(step_ids):
+        duplicates = sorted({sid for sid in step_ids if step_ids.count(sid) > 1})
+        raise ValueError(f"Duplicate DAG step_id(s): {duplicates}")
+
+    known = set(step_ids)
+    graph: dict[str, list[str]] = {}
+    for node, sid in zip(nodes, step_ids):
+        deps = [str(d) for d in (node.get("depends_on") or [])]
+        for dep in deps:
+            if dep == sid:
+                raise ValueError(f"DAG node '{sid}' depends on itself")
+            if dep not in known:
+                raise ValueError(f"DAG node '{sid}' depends on unknown step '{dep}'")
+        graph[sid] = deps
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {sid: WHITE for sid in graph}
+
+    def visit(sid: str, path: list[str]) -> None:
+        color[sid] = GRAY
+        for dep in graph[sid]:
+            if color[dep] == GRAY:
+                cycle = " -> ".join(path + [sid, dep])
+                raise ValueError(f"Cyclic DAG dependency detected: {cycle}")
+            if color[dep] == WHITE:
+                visit(dep, path + [sid])
+        color[sid] = BLACK
+
+    for sid in graph:
+        if color[sid] == WHITE:
+            visit(sid, [])
+
+
 class ConcurrencyFenceError(RuntimeError):
     """Raised when a stale worker fencing token or version mismatch attempts a commit."""
 
@@ -2414,6 +2460,7 @@ class LedgerStore:
         created_by: str = "orchestrator",
         rationale: str = "Initial DAG plan",
     ) -> dict[str, Any]:
+        validate_dag_topology(dag_nodes)
         if self.backend_type == "postgres":
             return self._run_sync(
                 self.save_plan_async,
@@ -2467,6 +2514,7 @@ class LedgerStore:
         created_by: str = "orchestrator",
         rationale: str = "Initial DAG plan",
     ) -> dict[str, Any]:
+        validate_dag_topology(dag_nodes)
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(
                 self.save_plan,

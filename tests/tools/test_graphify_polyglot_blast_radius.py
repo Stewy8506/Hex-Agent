@@ -318,7 +318,7 @@ class TestGraphifyPolyglotBlastRadius(unittest.TestCase):
 
         self.ledger.save_plan(
             task_id=task_id,
-            dag_nodes=[{"id": "step_1", "action": "Update service implementation"}],
+            dag_nodes=[{"step_id": "step_1", "action": "Update service implementation"}],
             blast_radius_checks=[],
         )
         self.ledger.transition_task(task_id, "RUNNING")

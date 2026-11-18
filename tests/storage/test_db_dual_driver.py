@@ -265,7 +265,7 @@ class TestSQLiteSyncAndAsyncParity(unittest.TestCase):
             # Plan save & fetch & append blast radius
             plan = await self.store.save_plan_async(
                 task_id=task_id,
-                dag_nodes=[{"id": "step_1", "action": "test"}],
+                dag_nodes=[{"step_id": "step_1", "action": "test"}],
                 blast_radius_checks=["tests/test_core.py"],
             )
             self.assertEqual(plan["revision"], 1)
