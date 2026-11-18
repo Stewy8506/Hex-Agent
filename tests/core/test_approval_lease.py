@@ -6,6 +6,7 @@ and HexConsole /lease slash command.
 
 from __future__ import annotations
 
+from contextlib import closing
 import os
 from pathlib import Path
 import tempfile
@@ -193,9 +194,7 @@ def test_explicit_lease_revocation() -> None:
 
 
 def test_ledger_store_approval_lease_persistence() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, "ledger.db")
-        ledger = LedgerStore(db_path=db_path)
+    with tempfile.TemporaryDirectory() as tmpdir, closing(LedgerStore(db_path=os.path.join(tmpdir, "ledger.db"))) as ledger:
 
         # Grant lease through manager wired to ledger
         mgr = ApprovalLeaseManager(ledger=ledger)
@@ -258,8 +257,7 @@ def test_react_loop_auto_approval_with_active_lease() -> None:
 
 
 def test_tool_gateway_policy_evaluation_with_lease() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ledger = LedgerStore(db_path=os.path.join(tmpdir, "ledger.db"))
+    with tempfile.TemporaryDirectory() as tmpdir, closing(LedgerStore(db_path=os.path.join(tmpdir, "ledger.db"))) as ledger:
         task = ledger.create_task(goal="Run gated deployment or tests", constraints={})
         task_id = task["task_id"]
 

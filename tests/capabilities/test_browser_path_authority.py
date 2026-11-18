@@ -47,7 +47,12 @@ class TestBrowserPathAuthority(unittest.TestCase):
 
     def test_gateway_refuses_symlink_escape(self) -> None:
         link = self.ws / "escape.html"
-        link.symlink_to(self.secret)
+        try:
+            link.symlink_to(self.secret)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows symlink privilege is unavailable")
+            raise
         with self.assertRaises(PolicyBlockedError):
             self._navigate(f"file://{link}")
 
