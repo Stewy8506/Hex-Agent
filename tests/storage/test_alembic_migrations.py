@@ -39,6 +39,8 @@ EXPECTED_TABLES = {
     "memories",
     "harness_revisions",
     "evaluations",
+    "dialogue_turns",
+    "approval_leases",
 }
 
 EXPECTED_COLUMNS = {
@@ -46,8 +48,8 @@ EXPECTED_COLUMNS = {
         "task_id", "parent_task_id", "project_id", "goal", "execution_mode",
         "status", "priority", "deadline_at", "budget_json", "constraints_json",
         "deliverable", "policy_snapshot_id", "idempotency_key",
-        "active_workspace_tree_sha", "version", "created_at", "updated_at",
-        "terminal_reason"
+        "active_workspace_tree_sha", "version", "pinned", "title_provenance",
+        "created_at", "updated_at", "terminal_reason"
     },
     "task_events": {
         "event_id", "task_id", "attempt_id", "sequence_no", "event_type",
@@ -126,6 +128,15 @@ EXPECTED_COLUMNS = {
         "evaluation_id", "revision_id", "suite_id", "dataset_version",
         "model_pins_json", "results_uri", "metrics_json", "gate_decision",
         "created_at", "reviewer_id"
+    },
+    "dialogue_turns": {
+        "turn_id", "task_id", "turn_index", "role", "content", "is_active",
+        "branch_id", "metadata_json", "created_at"
+    },
+    "approval_leases": {
+        "lease_id", "task_id", "command_prefix", "allowed_paths_json", "scope",
+        "ttl_seconds", "granted_at", "expires_at", "is_revoked", "created_at",
+        "bindings_json"
     },
 }
 
@@ -208,6 +219,32 @@ class AlembicMigrationsTestCase(unittest.TestCase):
         # Verify index creation
         tool_call_indexes = self._get_indexes("tool_calls")
         self.assertIn("idx_tool_calls_lookup", tool_call_indexes)
+
+    def test_head_covers_runtime_feature_tables(self) -> None:
+        """B37: the migration head must own the tables the runtime writes to."""
+        command.upgrade(self.cfg, "head")
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO tasks (task_id, goal, policy_snapshot_id, created_at, updated_at) "
+                "VALUES ('tsk_parity', 'goal', 'pol-v1.3', 'now', 'now');"
+            )
+            cur.execute(
+                "INSERT INTO dialogue_turns (turn_id, task_id, turn_index, role, content, created_at) "
+                "VALUES ('trn_parity', 'tsk_parity', 0, 'user', 'hello', 'now');"
+            )
+            cur.execute(
+                "INSERT INTO approval_leases (lease_id, granted_at, expires_at, created_at) "
+                "VALUES ('lse_parity', 0.0, 1.0, 'now');"
+            )
+            conn.commit()
+            cur.execute("SELECT pinned, title_provenance FROM tasks WHERE task_id='tsk_parity';")
+            row = cur.fetchone()
+            self.assertEqual(row, (0, "derived"))
+        finally:
+            conn.close()
 
     def test_downgrade_base_drops_all_tables(self) -> None:
         command.upgrade(self.cfg, "head")
