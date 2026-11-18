@@ -214,7 +214,15 @@ class DirectLedgerWorkerClient:
     def execute_task(self, task_id: str, worker_id: str | None = None) -> dict[str, Any]:
         if self.orch is not None:
             return self.orch.execute_task(task_id, worker_id=worker_id)
-        return self.transition_task(task_id, TaskState.SUCCEEDED, reason_code="WORKER_DIRECT_EXECUTION")
+        # B11: without an orchestrator there is no execution backend. Fail closed
+        # instead of manufacturing a SUCCEEDED record for work never performed.
+        return self.ledger.transition_task(
+            task_id,
+            TaskState.FAILED,
+            reason_code="WORKER_NO_EXECUTION_BACKEND",
+            actor="worker",
+            terminal_reason="No orchestrator available; task was not executed.",
+        )
 
     def list_artifacts(self, task_id: str) -> list[dict[str, Any]]:
         return self.ledger.list_artifacts(task_id)

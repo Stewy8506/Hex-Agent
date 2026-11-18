@@ -83,7 +83,7 @@ class TestSubagentDeadlines(unittest.TestCase):
         self.assertLess(elapsed, 2.0)
 
     def test_budget_tool_call_ceiling_enforced(self) -> None:
-        mgr = self._mgr(router=None)
+        mgr = self._mgr(SlowRouter(delay=0.0))
         record = SubagentRecord(
             subagent_id="sub_budget",
             parent_task_id="tsk_budget_calls",

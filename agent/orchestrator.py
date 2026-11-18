@@ -204,22 +204,23 @@ class HarnessOrchestrator:
         )
         self.scanner = SkillSpectorScanner(self.ledger)
         self.router = TwoTierModelRouter()
-        self.subagent_manager = SubagentManager(
-            ledger=self.ledger,
-            cow=self.cow,
-            router=self.router,
-            gateway=self.gateway,
-        )
-        self.gateway.subagent_manager = self.subagent_manager
-        self.memory = GovernedMemoryService(self.ledger, graphify=self.graphify)
-        self.soul_manager = soul_manager or SoulManager()
-        self.moa_config = moa_config
         self.demo_mode = bool(demo_mode) or os.environ.get("HEX_DEMO_MODE", "").strip().lower() in (
             "1",
             "true",
             "yes",
             "on",
         )
+        self.subagent_manager = SubagentManager(
+            ledger=self.ledger,
+            cow=self.cow,
+            router=self.router,
+            gateway=self.gateway,
+            demo_mode=self.demo_mode,
+        )
+        self.gateway.subagent_manager = self.subagent_manager
+        self.memory = GovernedMemoryService(self.ledger, graphify=self.graphify)
+        self.soul_manager = soul_manager or SoulManager()
+        self.moa_config = moa_config
         self.prompt_builder = PromptBuilder(soul_manager=self.soul_manager)
         self.proof_service = VerificationAndProofService(
             self.ledger,

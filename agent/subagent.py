@@ -148,6 +148,14 @@ class SubagentNotFoundError(KeyError):
     """Raised when querying or waiting for an unknown subagent."""
 
 
+class SubagentExecutionUnavailableError(RuntimeError):
+    """Raised when a subagent has no execution backend (router) and demo mode is off.
+
+    Missing inference must fail closed rather than manufacture a COMPLETED
+    summary (B11).
+    """
+
+
 @dataclass
 class SubagentResult:
     """Structured execution output produced by a completed subagent."""
@@ -217,12 +225,19 @@ class SubagentManager:
         router: Any | None = None,
         gateway: Any | None = None,
         max_depth: int = 2,
+        demo_mode: bool = False,
     ) -> None:
         self.ledger = ledger
         self.cow = cow or get_default_snapshot_provider()
         self.router = router
         self.gateway = gateway
         self.max_depth = max_depth
+        self.demo_mode = bool(demo_mode) or os.environ.get("HEX_DEMO_MODE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
         self._active_subagents: dict[str, SubagentRecord] = {}
         self._lock = threading.Lock()
@@ -450,7 +465,12 @@ class SubagentManager:
         return None
 
     def _reasoning_call(self, record: SubagentRecord, allowed_tools: frozenset[str]) -> str:
-        """Produce the child's summary via the router, or a deterministic fallback."""
+        """Produce the child's summary via the router; fail closed without a backend.
+
+        B11: a missing router (or an empty model response) must not manufacture a
+        COMPLETED summary. The deterministic stand-in is only used in explicit
+        demo mode and is labeled as such.
+        """
         if self.router is not None and hasattr(self.router, "execute_routed_request"):
             tools_str = ", ".join(sorted(allowed_tools))
             system_prompt = (
@@ -466,8 +486,20 @@ class SubagentManager:
                 risk_class="R1" if record.role in (SubagentRole.RESEARCHER, SubagentRole.REVIEWER, SubagentRole.PLANNER) else "R2",
                 system_prompt=system_prompt,
             )
-            return model_resp.content if model_resp and hasattr(model_resp, "content") else "Completed successfully"
-        return f"Subagent [{record.role.value}] processed goal: {record.goal}"
+            content = getattr(model_resp, "content", None) if model_resp else None
+            if content:
+                return content
+            if not self.demo_mode:
+                raise SubagentExecutionUnavailableError(
+                    "Subagent router returned no content; execution backend unavailable."
+                )
+            return f"[demo] Subagent [{record.role.value}] processed goal: {record.goal}"
+        if not self.demo_mode:
+            raise SubagentExecutionUnavailableError(
+                "No router configured for subagent execution; failing closed. "
+                "Enable demo mode for the deterministic stand-in."
+            )
+        return f"[demo] Subagent [{record.role.value}] processed goal: {record.goal}"
 
     def _run_reasoning_bounded(
         self,

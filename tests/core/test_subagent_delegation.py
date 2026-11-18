@@ -53,6 +53,7 @@ class TestSubagentDelegation(unittest.TestCase):
             cow=self.cow,
             gateway=self.gateway,
             max_depth=2,
+            demo_mode=True,
         )
         self.gateway.subagent_manager = self.subagent_manager
 
