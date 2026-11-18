@@ -999,7 +999,12 @@ class ToolGateway(FileToolsMixin):
             )
 
         if getattr(self, "approval_lease_manager", None) is not None:
-            has_lease, lease_id = self.approval_lease_manager.check_lease(spec.tool_id, args)
+            has_lease, lease_id = self.approval_lease_manager.check_lease(
+                spec.tool_id,
+                args,
+                task_id=task.get("task_id"),
+                session_id=getattr(self, "_active_session_key", "") or None,
+            )
             if has_lease:
                 return (PolicyDecisionType.ALLOW, f"LEASE_APPROVED:{lease_id}")
 

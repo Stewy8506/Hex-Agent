@@ -748,7 +748,11 @@ class ReActLoop:
         )
         if lease_mgr is not None and hasattr(lease_mgr, "check_lease"):
             try:
-                has_lease, lease_id = lease_mgr.check_lease(call.name, call.arguments)
+                tid = getattr(self, "active_task_id", None) or self.session_id
+                tid = self._gateway_task_ids.get(tid, tid)
+                has_lease, lease_id = lease_mgr.check_lease(
+                    call.name, call.arguments, task_id=tid, session_id=self.session_id
+                )
                 if has_lease:
                     setattr(call, "policy_decision", "LEASE_APPROVED")
             except Exception:
@@ -1066,7 +1070,9 @@ class ReActLoop:
             )
             if lease_mgr is not None and hasattr(lease_mgr, "check_lease"):
                 try:
-                    has_lease, lease_id = lease_mgr.check_lease(call.name, call.arguments)
+                    has_lease, lease_id = lease_mgr.check_lease(
+                        call.name, call.arguments, task_id=task_id, session_id=self.session_id
+                    )
                     if has_lease:
                         policy_decision = "LEASE_APPROVED"
                 except Exception:

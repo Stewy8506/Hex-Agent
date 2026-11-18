@@ -212,9 +212,13 @@ def test_ledger_store_approval_lease_persistence() -> None:
         # Hydrate a new manager from the same ledger
         mgr2 = ApprovalLeaseManager(ledger=ledger)
         assert len(mgr2.list_active_leases()) == 1
-        matched, lid = mgr2.check_lease("run_command", {"command": "pytest -k unit"})
+        # Task-bound lease only matches inside its task (B45).
+        matched, lid = mgr2.check_lease("run_command", {"command": "pytest -k unit"}, task_id="task_audit")
         assert matched
         assert lid == lease.lease_id
+        matched, lid = mgr2.check_lease("run_command", {"command": "pytest -k unit"}, task_id="task_other")
+        assert not matched
+        assert lid is None
 
         # Revoke through ledger
         ledger.revoke_approval_lease(lease.lease_id)

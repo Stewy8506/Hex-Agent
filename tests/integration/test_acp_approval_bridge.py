@@ -127,7 +127,7 @@ def test_unknown_approval_id_is_not_applied(tmp_path: Path) -> None:
     assert bridge.resolve("appr_missing", "approve") is False
 
 
-def test_scope_decision_grants_lease_that_skips_the_next_prompt(tmp_path: Path) -> None:
+def test_scope_decision_grants_narrow_lease_for_the_exact_action(tmp_path: Path) -> None:
     ledger, gateway, task_id = make_gateway(tmp_path)
     try:
         leases = ApprovalLeaseManager(ledger)
@@ -146,17 +146,35 @@ def test_scope_decision_grants_lease_that_skips_the_next_prompt(tmp_path: Path) 
 
         granted = leases.list_active_leases()
         assert len(granted) == 1
-        assert granted[0].command_prefix == "rm"
+        # B45: the grant binds to the full command, tool, and task — not the
+        # binary basename, and not the whole workspace.
+        assert granted[0].command_prefix == "rm -rf ./dist"
+        assert granted[0].match_mode == "exact"
+        assert granted[0].tool_name == "deploy"
+        assert granted[0].task_id == task_id
+        assert granted[0].allowed_paths == []
 
-        # A later turn running the same binary is auto-approved by the lease.
-        next_task = ledger.submit_task(
-            TaskSubmitRequest(goal="Clean another build", workspace_root=str(tmp_path))
-        )["task_id"]
+        # The identical action in the same task is auto-approved.
         decision, reason = gateway.evaluate_policy(
-            ledger.get_task(next_task), gateway.tools["deploy"], {"command": "rm -rf ./build"}
+            ledger.get_task(task_id), gateway.tools["deploy"], {"command": "rm -rf ./dist"}
         )
         assert decision == PolicyDecisionType.ALLOW
         assert reason.startswith("LEASE_APPROVED:")
+
+        # A different command with the same binary is NOT covered.
+        decision, _ = gateway.evaluate_policy(
+            ledger.get_task(task_id), gateway.tools["deploy"], {"command": "rm -rf ./build"}
+        )
+        assert decision == PolicyDecisionType.REQUIRE_APPROVAL
+
+        # The same command in a different task is NOT covered.
+        next_task = ledger.submit_task(
+            TaskSubmitRequest(goal="Clean another build", workspace_root=str(tmp_path))
+        )["task_id"]
+        decision, _ = gateway.evaluate_policy(
+            ledger.get_task(next_task), gateway.tools["deploy"], {"command": "rm -rf ./dist"}
+        )
+        assert decision == PolicyDecisionType.REQUIRE_APPROVAL
     finally:
         ledger.close()
 

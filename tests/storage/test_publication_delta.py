@@ -37,7 +37,9 @@ def _make_repo(root: Path) -> None:
 
 class TestPublishDeltaProvider(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="b01_pub_"))
+        # Resolve: macOS tempdirs live under /var -> /private/var symlinks, and
+        # publish_delta resolves its paths before copying.
+        self.tmp = Path(tempfile.mkdtemp(prefix="b01_pub_")).resolve()
         self.source = self.tmp / "repo"
         _make_repo(self.source)
         self.provider = APFSAndPortableCoWProvider(self.tmp / "snaps")

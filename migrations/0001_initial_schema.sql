@@ -263,7 +263,8 @@ CREATE TABLE IF NOT EXISTS approval_leases (
     granted_at REAL NOT NULL,
     expires_at REAL NOT NULL,
     is_revoked INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    bindings_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_approval_leases_lookup ON approval_leases (is_revoked, expires_at);
 

@@ -7,6 +7,8 @@ prompts while strictly enforcing time-to-live (TTL) expiration and explicit revo
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 import shlex
@@ -31,6 +33,10 @@ class ApprovalLease:
     expires_at: float = 0.0
     scope: str = "temporal"  # "session" | "temporal"
     is_revoked: bool = False
+    session_id: str | None = None
+    tool_name: str | None = None
+    args_fingerprint: str | None = None
+    match_mode: str = "prefix"  # "prefix" | "exact"
 
     def __post_init__(self) -> None:
         if self.expires_at == 0.0:
@@ -52,6 +58,10 @@ class ApprovalLease:
             "expires_at": self.expires_at,
             "scope": self.scope,
             "is_revoked": self.is_revoked,
+            "session_id": self.session_id,
+            "tool_name": self.tool_name,
+            "args_fingerprint": self.args_fingerprint,
+            "match_mode": self.match_mode,
         }
 
     @classmethod
@@ -60,10 +70,18 @@ class ApprovalLease:
         paths = data.get("allowed_paths", [])
         if isinstance(paths, str):
             try:
-                import json
                 paths = json.loads(paths)
             except Exception:
                 paths = [paths]
+        bindings: dict[str, Any] = {}
+        raw_bindings = data.get("bindings_json") or data.get("bindings")
+        if isinstance(raw_bindings, str):
+            try:
+                raw_bindings = json.loads(raw_bindings)
+            except Exception:
+                raw_bindings = None
+        if isinstance(raw_bindings, dict):
+            bindings = raw_bindings
         return cls(
             lease_id=data["lease_id"],
             task_id=data.get("task_id"),
@@ -74,6 +92,10 @@ class ApprovalLease:
             expires_at=float(data.get("expires_at", 0.0)),
             scope=data.get("scope", "temporal"),
             is_revoked=bool(data.get("is_revoked", False)),
+            session_id=data.get("session_id") or bindings.get("session_id"),
+            tool_name=data.get("tool_name") or bindings.get("tool_name"),
+            args_fingerprint=data.get("args_fingerprint") or bindings.get("args_fingerprint"),
+            match_mode=data.get("match_mode") or bindings.get("match_mode") or "prefix",
         )
 
 
@@ -109,6 +131,10 @@ class ApprovalLeaseManager:
         ttl_seconds: int = 900,
         task_id: str | None = None,
         scope: str = "temporal",
+        session_id: str | None = None,
+        tool_name: str | None = None,
+        args_fingerprint: str | None = None,
+        match_mode: str = "prefix",
     ) -> ApprovalLease:
         """Grant and register a new temporal or session approval lease."""
         lease_id = f"lease_{uuid.uuid4().hex[:12]}"
@@ -131,6 +157,10 @@ class ApprovalLeaseManager:
             expires_at=now + float(ttl_seconds),
             scope=scope,
             is_revoked=False,
+            session_id=session_id,
+            tool_name=tool_name,
+            args_fingerprint=args_fingerprint,
+            match_mode=match_mode if match_mode in ("prefix", "exact") else "prefix",
         )
 
         with self._lock:
@@ -148,14 +178,36 @@ class ApprovalLeaseManager:
                     granted_at=lease.granted_at,
                     expires_at=lease.expires_at,
                     is_revoked=lease.is_revoked,
+                    bindings={
+                        "session_id": lease.session_id,
+                        "tool_name": lease.tool_name,
+                        "args_fingerprint": lease.args_fingerprint,
+                        "match_mode": lease.match_mode,
+                    },
                 )
             except Exception:
                 pass
 
         return lease
 
-    def check_lease(self, tool_name: str, arguments: dict[str, Any]) -> tuple[bool, str | None]:
+    @staticmethod
+    def fingerprint_args(arguments: dict[str, Any]) -> str:
+        """Stable fingerprint of exact tool arguments for narrowly bound leases."""
+        payload = json.dumps(arguments or {}, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def check_lease(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        task_id: str | None = None,
+        session_id: str | None = None,
+    ) -> tuple[bool, str | None]:
         """Check if an active, unexpired lease covers the given tool invocation.
+
+        Leases bound to a task, session, tool, or exact argument fingerprint
+        only match invocations inside that binding; an unscoped caller context
+        never satisfies a bound lease.
 
         Returns:
             (True, lease_id) if an active valid lease matches.
@@ -163,11 +215,20 @@ class ApprovalLeaseManager:
         """
         extracted_cmd = self._extract_command(tool_name, arguments)
         extracted_paths = self._extract_paths(tool_name, arguments)
+        args_fp = self.fingerprint_args(arguments) if isinstance(arguments, dict) else None
 
         with self._lock:
             # Check all active leases
             for lease in self._leases.values():
                 if not lease.is_valid():
+                    continue
+                if lease.task_id and lease.task_id != task_id:
+                    continue
+                if lease.session_id and lease.session_id != session_id:
+                    continue
+                if lease.tool_name and lease.tool_name != tool_name:
+                    continue
+                if lease.args_fingerprint and lease.args_fingerprint != args_fp:
                     continue
 
                 if self._matches_lease(lease, extracted_cmd, extracted_paths):
@@ -191,7 +252,10 @@ class ApprovalLeaseManager:
 
         cmd_matched = False
         if has_prefix_constraint and cmd is not None:
-            cmd_matched = self._match_command(lease.command_prefix, cmd)  # type: ignore[arg-type]
+            if lease.match_mode == "exact":
+                cmd_matched = cmd.strip() == lease.command_prefix.strip()  # type: ignore[union-attr]
+            else:
+                cmd_matched = self._match_command(lease.command_prefix, cmd)  # type: ignore[arg-type]
 
         paths_matched = False
         if has_paths_constraint and paths:
@@ -323,6 +387,8 @@ class ApprovalLeaseManager:
             return []
 
         paths: list[str] = []
+        # cwd is deliberately excluded: a working directory is not authority
+        # over the arbitrary effects a command may perform (B45).
         for key in (
             "path",
             "Path",
@@ -335,7 +401,6 @@ class ApprovalLeaseManager:
             "destination",
             "directory",
             "dir",
-            "cwd",
         ):
             val = arguments.get(key)
             if isinstance(val, (str, Path)) and str(val).strip():

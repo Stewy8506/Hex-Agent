@@ -367,10 +367,15 @@ class LedgerStore:
                             granted_at REAL NOT NULL,
                             expires_at REAL NOT NULL,
                             is_revoked INTEGER NOT NULL DEFAULT 0,
-                            created_at TEXT NOT NULL
+                            created_at TEXT NOT NULL,
+                            bindings_json TEXT NOT NULL DEFAULT '{}'
                         );
                         """)
                         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_leases_lookup ON approval_leases (is_revoked, expires_at);")
+                    except sqlite3.OperationalError:
+                        pass
+                    try:
+                        self.conn.execute("ALTER TABLE approval_leases ADD COLUMN bindings_json TEXT NOT NULL DEFAULT '{}';")
                     except sqlite3.OperationalError:
                         pass
                     self.conn.commit()
@@ -4526,6 +4531,7 @@ class LedgerStore:
         expires_at: float | None = None,
         task_id: str | None = None,
         is_revoked: bool = False,
+        bindings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.backend_type == "postgres":
             return self._run_sync(
@@ -4539,6 +4545,7 @@ class LedgerStore:
                 expires_at=expires_at,
                 task_id=task_id,
                 is_revoked=is_revoked,
+                bindings=bindings,
             )
         now_f = time.time()
         g_at = granted_at if granted_at is not None else now_f
@@ -4555,8 +4562,9 @@ class LedgerStore:
                 """
                 INSERT OR REPLACE INTO approval_leases (
                     lease_id, task_id, command_prefix, allowed_paths_json,
-                    scope, ttl_seconds, granted_at, expires_at, is_revoked, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    scope, ttl_seconds, granted_at, expires_at, is_revoked, created_at,
+                    bindings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lease_id,
@@ -4569,6 +4577,7 @@ class LedgerStore:
                     exp_at,
                     1 if is_revoked else 0,
                     now_iso,
+                    canonical_json(bindings or {}),
                 ),
             )
             self.conn.commit()
@@ -4601,6 +4610,7 @@ class LedgerStore:
         expires_at: float | None = None,
         task_id: str | None = None,
         is_revoked: bool = False,
+        bindings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(
@@ -4614,6 +4624,7 @@ class LedgerStore:
                 expires_at=expires_at,
                 task_id=task_id,
                 is_revoked=is_revoked,
+                bindings=bindings,
             )
         now_f = time.time()
         g_at = granted_at if granted_at is not None else now_f
@@ -4631,14 +4642,16 @@ class LedgerStore:
                 """
                 INSERT INTO approval_leases (
                     lease_id, task_id, command_prefix, allowed_paths_json,
-                    scope, ttl_seconds, granted_at, expires_at, is_revoked, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    scope, ttl_seconds, granted_at, expires_at, is_revoked, created_at,
+                    bindings_json
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (lease_id) DO UPDATE SET
                     is_revoked = EXCLUDED.is_revoked,
                     expires_at = EXCLUDED.expires_at
                 """,
                 lease_id, task_id, command_prefix, canonical_json(paths),
                 scope, ttl_seconds, g_at, exp_at, 1 if is_revoked else 0, now_iso,
+                canonical_json(bindings or {}),
             )
             if task_id:
                 try:
@@ -4660,6 +4673,7 @@ class LedgerStore:
                 "expires_at": exp_at,
                 "is_revoked": is_revoked,
                 "created_at": now_iso,
+                "bindings_json": canonical_json(bindings or {}),
             }
 
     def revoke_approval_lease(self, lease_id: str) -> bool:

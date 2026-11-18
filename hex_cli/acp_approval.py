@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import threading
 import time
 from pathlib import Path
@@ -125,27 +124,34 @@ class AcpApprovalBridge:
         return True
 
     def _grant_scope_lease(self, request: ApprovalRequest) -> str | None:
-        """Persist an 'allow in this project' grant so later turns skip the prompt."""
+        """Persist a narrowly bound 'allow again' grant for this exact action.
+
+        B45: the grant binds to the full command (exact match) or, for
+        no-command tools, to the tool name plus exact argument fingerprint.
+        It is scoped to the requesting task/session; a binary basename or
+        the workspace cwd never grants broader authority.
+        """
         if self.lease_manager is None:
             return None
+        session_id = self._session_for_task(request.task_id)
         command = self.command_text(request.arguments)
         if command:
-            try:
-                tokens = shlex.split(command)
-            except ValueError:
-                tokens = command.split()
-            prefix = os.path.basename(tokens[0]) if tokens else request.tool_name
             lease = self.lease_manager.grant_lease(
-                command_prefix=prefix,
+                command_prefix=command,
+                match_mode="exact",
+                tool_name=request.tool_name,
                 ttl_seconds=self.scope_ttl_seconds,
                 task_id=request.task_id,
+                session_id=session_id,
                 scope="session",
             )
         else:
             lease = self.lease_manager.grant_lease(
-                allowed_paths=[self._cwd_for(request)],
+                tool_name=request.tool_name,
+                args_fingerprint=self.lease_manager.fingerprint_args(request.arguments),
                 ttl_seconds=self.scope_ttl_seconds,
                 task_id=request.task_id,
+                session_id=session_id,
                 scope="session",
             )
         return lease.lease_id
