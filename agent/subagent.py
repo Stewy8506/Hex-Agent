@@ -1,8 +1,12 @@
 """Subagent Manager for HEX Agent.
 
 Implements in-flight sub-agent delegation parity with role-constrained sandboxing:
-- Strict recursion depth cap (default max_depth = 2) to eliminate uncontrolled agent forks.
-- Least-privilege role gating across RESEARCHER, CODER, TESTER, REVIEWER, PLANNER, and GENERAL.
+- Strict, server-owned recursion depth cap (default max_depth = 2).
+- Least-privilege role gating across RESEARCHER, CODER, TESTER, REVIEWER, PLANNER, and GENERAL,
+  enforced before dispatch (not only described in the prompt).
+- A bounded child tool loop that executes role-permitted tools through the shared
+  gateway, so policy, journaling and replay still apply.
+- Bounded spawn concurrency, deadlines and tool-call budgets.
 - Copy-on-Write (CoW) workspace branching per child agent (.hex/subagents/<subagent_id>).
 - Threaded execution with synchronous (wait=True) or asynchronous (wait=False) execution.
 - Deterministic diff computation and structured SubagentResult reporting.
@@ -11,6 +15,7 @@ Implements in-flight sub-agent delegation parity with role-constrained sandboxin
 from __future__ import annotations
 
 import enum
+import json
 import logging
 import os
 import shutil
@@ -156,6 +161,18 @@ class SubagentExecutionUnavailableError(RuntimeError):
     """
 
 
+class SubagentConcurrencyError(RuntimeError):
+    """Raised when the bounded subagent concurrency limit cannot be acquired (B13)."""
+
+
+class SubagentBudgetExceededError(RuntimeError):
+    """Raised when a child exceeds its bounded tool-call budget (B10)."""
+
+
+class SubagentToolTurnLimitError(RuntimeError):
+    """Raised when a child exhausts its bounded tool-loop turns without finishing (B10)."""
+
+
 @dataclass
 class SubagentResult:
     """Structured execution output produced by a completed subagent."""
@@ -213,6 +230,9 @@ class SubagentRecord:
     tool_calls_count: int = 0
     error: str | None = None
     budget: Any = None
+    gateway_task_id: str | None = None
+    tool_sequence: int = 0
+    slot_acquired: bool = False
     event_done: threading.Event = field(default_factory=threading.Event)
 
 
@@ -227,6 +247,9 @@ class SubagentManager:
         gateway: Any | None = None,
         max_depth: int = 2,
         demo_mode: bool = False,
+        max_concurrent: int = 4,
+        spawn_wait_seconds: float = 60.0,
+        max_child_tool_turns: int = 8,
     ) -> None:
         self.ledger = ledger
         self.cow = cow or get_default_snapshot_provider()
@@ -239,6 +262,10 @@ class SubagentManager:
             "yes",
             "on",
         )
+        self.max_concurrent = max(1, int(max_concurrent))
+        self.spawn_wait_seconds = float(spawn_wait_seconds)
+        self.max_child_tool_turns = max(1, int(max_child_tool_turns))
+        self._spawn_slots = threading.Semaphore(self.max_concurrent)
 
         self._active_subagents: dict[str, SubagentRecord] = {}
         self._lock = threading.Lock()
@@ -256,77 +283,102 @@ class SubagentManager:
         timeout: float = 120.0,
         wait: bool = True,
     ) -> SubagentResult | str:
-        """Spawn a child subagent with an isolated CoW workspace and role-gated tools."""
-        if current_depth >= self.max_depth:
+        """Spawn a child subagent with an isolated CoW workspace and role-gated tools.
+
+        Depth is server-owned (B13): it is derived from the trusted parent
+        subagent record, not the caller-supplied ``current_depth`` (which is
+        accepted for API compatibility but ignored for the recursion cap).
+        """
+        with self._lock:
+            parent_record = self._active_subagents.get(parent_task_id)
+        parent_depth = parent_record.depth if parent_record is not None else 0
+        if parent_depth >= self.max_depth:
             raise MaxRecursionDepthExceededError(
-                f"Spawn depth {current_depth} exceeds maximum permitted depth {self.max_depth}"
+                f"Spawn depth {parent_depth} exceeds maximum permitted depth {self.max_depth}"
             )
 
-        norm_role = normalize_role(role)
-        subagent_id = f"sub_{uuid.uuid4().hex[:12]}"
-        now = time.time()
+        # B13: bounded spawn concurrency. A spawn that cannot obtain a slot is
+        # refused instead of silently creating another unbounded daemon thread.
+        if not self._spawn_slots.acquire(timeout=self.spawn_wait_seconds):
+            raise SubagentConcurrencyError(
+                f"Subagent concurrency limit ({self.max_concurrent}) reached; "
+                f"no spawn slot became available within {self.spawn_wait_seconds}s"
+            )
 
-        # Setup isolated branch workspace under .hex/subagents/<subagent_id>
-        resolved_parent_ws: Path | None = None
-        if parent_ws is not None:
-            parent_path = Path(parent_ws).resolve()
-            resolved_parent_ws = parent_path
-            subagent_ws = parent_path / ".hex" / "subagents" / subagent_id
-            subagent_ws.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                snap = self.cow.create_snapshot(parent_path, label=f"sub_{subagent_id}")
-                self.cow.clone_to_workspace(snap.snapshot_path, subagent_ws)
-            except Exception as exc:
-                logger.warning(
-                    "CoW snapshot creation failed for subagent workspace, falling back to copy: %s",
-                    exc,
-                )
-                self._fallback_clone_workspace(parent_path, subagent_ws)
-        else:
-            subagent_ws = Path(tempfile.mkdtemp(prefix=f"subagent_{subagent_id}_"))
+        try:
+            norm_role = normalize_role(role)
+            subagent_id = f"sub_{uuid.uuid4().hex[:12]}"
+            now = time.time()
 
-        record = SubagentRecord(
-            subagent_id=subagent_id,
-            parent_task_id=parent_task_id,
-            role=norm_role,
-            goal=goal,
-            depth=current_depth + 1,
-            status=SubagentStatus.PENDING,
-            started_at=now,
-            workspace_path=subagent_ws,
-            context=context,
-            parent_workspace=resolved_parent_ws,
-            budget=budget,
-        )
+            # Setup isolated branch workspace under .hex/subagents/<subagent_id>
+            resolved_parent_ws: Path | None = None
+            if parent_ws is not None:
+                parent_path = Path(parent_ws).resolve()
+                resolved_parent_ws = parent_path
+                subagent_ws = parent_path / ".hex" / "subagents" / subagent_id
+                subagent_ws.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    snap = self.cow.create_snapshot(parent_path, label=f"sub_{subagent_id}")
+                    self.cow.clone_to_workspace(snap.snapshot_path, subagent_ws)
+                except Exception as exc:
+                    logger.warning(
+                        "CoW snapshot creation failed for subagent workspace, falling back to copy: %s",
+                        exc,
+                    )
+                    self._fallback_clone_workspace(parent_path, subagent_ws)
+            else:
+                subagent_ws = Path(tempfile.mkdtemp(prefix=f"subagent_{subagent_id}_"))
 
-        with self._lock:
-            self._active_subagents[subagent_id] = record
-
-        # Dispatch execution
-        if wait:
-            self._run_subagent_sync(record, timeout=timeout)
-            if record.result is not None:
-                return record.result
-            return SubagentResult(
+            record = SubagentRecord(
                 subagent_id=subagent_id,
                 parent_task_id=parent_task_id,
-                role=norm_role.value,
-                status=record.status.value,
-                summary="Execution completed without structured result",
+                role=norm_role,
+                goal=goal,
+                depth=parent_depth + 1,
+                status=SubagentStatus.PENDING,
                 started_at=now,
-                ended_at=time.time(),
-                duration_seconds=time.time() - now,
+                workspace_path=subagent_ws,
+                context=context,
+                parent_workspace=resolved_parent_ws,
+                budget=budget,
+                slot_acquired=True,
             )
-        else:
-            worker = threading.Thread(
-                target=self._run_subagent_sync,
-                args=(record, timeout),
-                daemon=True,
-                name=f"SubagentWorker-{subagent_id}",
-            )
-            record.thread = worker
-            worker.start()
-            return subagent_id
+
+            with self._lock:
+                self._active_subagents[subagent_id] = record
+        except BaseException:
+            self._spawn_slots.release()
+            raise
+
+        # Dispatch execution
+        try:
+            if wait:
+                self._run_subagent_sync(record, timeout=timeout)
+                if record.result is not None:
+                    return record.result
+                return SubagentResult(
+                    subagent_id=subagent_id,
+                    parent_task_id=parent_task_id,
+                    role=norm_role.value,
+                    status=record.status.value,
+                    summary="Execution completed without structured result",
+                    started_at=now,
+                    ended_at=time.time(),
+                    duration_seconds=time.time() - now,
+                )
+            else:
+                worker = threading.Thread(
+                    target=self._run_subagent_sync,
+                    args=(record, timeout),
+                    daemon=True,
+                    name=f"SubagentWorker-{subagent_id}",
+                )
+                record.thread = worker
+                worker.start()
+                return subagent_id
+        except BaseException:
+            self._release_slot(record)
+            raise
 
     def get_subagent_status(self, subagent_id: str) -> dict[str, Any]:
         """Retrieve status dictionary for a subagent."""
@@ -468,12 +520,208 @@ class SubagentManager:
                 return int(val)
         return None
 
-    def _reasoning_call(self, record: SubagentRecord, allowed_tools: frozenset[str]) -> str:
-        """Produce the child's summary via the router; fail closed without a backend.
+    def _release_slot(self, record: SubagentRecord) -> None:
+        """Release the bounded spawn slot exactly once for this child (B13)."""
+        with self._lock:
+            if not record.slot_acquired:
+                return
+            record.slot_acquired = False
+        self._spawn_slots.release()
+
+    def _resolve_child_task_id(self, record: SubagentRecord) -> str | None:
+        """Return a ledger task the child's tool calls can be policy-checked against.
+
+        The child reuses its parent's task when the parent is a real ledger task;
+        otherwise it gets its own ledger task so gateway policy, journaling and
+        replay still apply (B10) rather than dispatching handlers directly.
+        """
+        if record.gateway_task_id:
+            return record.gateway_task_id
+        ledger = self.ledger
+        if ledger is None or not hasattr(ledger, "get_task"):
+            return None
+        if ledger.get_task(record.parent_task_id) is not None:
+            record.gateway_task_id = record.parent_task_id
+            return record.gateway_task_id
+        try:
+            created = ledger.submit_task(
+                {
+                    "goal": f"Subagent {record.subagent_id}: {record.goal}",
+                    "execution_mode": "subagent",
+                    "workspace_root": str(record.workspace_path),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced as a tool error below
+            logger.warning("Could not create ledger task for subagent %s: %s", record.subagent_id, exc)
+            return None
+        record.gateway_task_id = created.get("task_id")
+        return record.gateway_task_id
+
+    @staticmethod
+    def _collect_artifacts(
+        tool_id: str,
+        args: dict[str, Any],
+        record: SubagentRecord,
+        artifacts: list[str],
+    ) -> None:
+        """Record files a successful child write touched (B10 artifact reporting)."""
+        if tool_id not in ("write_file", "patch"):
+            return
+        raw = args.get("path") or args.get("file_path")
+        if not raw:
+            return
+        try:
+            rel = str(Path(str(raw)).resolve().relative_to(record.workspace_path.resolve()))
+        except Exception:
+            rel = str(raw)
+        if rel not in artifacts:
+            artifacts.append(rel)
+
+    def _invoke_child_tool(
+        self,
+        record: SubagentRecord,
+        allowed_tools: frozenset[str],
+        tool_id: str,
+        args: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Invoke one child tool call through the shared gateway (B10).
+
+        The role subset is enforced here, before dispatch, so a RESEARCHER or
+        TESTER child cannot mutate the workspace even though the gateway itself
+        would allow the tool. All execution still passes through
+        ``ToolGateway.invoke`` so policy, journaling and replay apply; a denied or
+        approval-gated call produces no side effects.
+        """
+        record.tool_calls_count += 1
+        if tool_id not in allowed_tools:
+            return (
+                {
+                    "ok": False,
+                    "error": (
+                        f"Denied: tool '{tool_id}' is outside the {record.role.value} role "
+                        "tool subset; no side effects were performed"
+                    ),
+                },
+                False,
+            )
+        if self.gateway is None or not hasattr(self.gateway, "invoke"):
+            return (
+                {"ok": False, "error": "Denied: no tool gateway is attached to subagent execution"},
+                False,
+            )
+        task_id = self._resolve_child_task_id(record)
+        if task_id is None:
+            return (
+                {
+                    "ok": False,
+                    "error": "Denied: no ledger task is available for policy-checked execution",
+                },
+                False,
+            )
+
+        from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError
+
+        sequence = record.tool_sequence
+        record.tool_sequence += 1
+        try:
+            result = self.gateway.invoke(
+                task_id=task_id,
+                attempt_id=f"att_{record.subagent_id}",
+                step_id=f"subagent_step_{record.subagent_id}",
+                sequence_in_step=sequence,
+                tool_id=tool_id,
+                args=args or {},
+                workspace_dir=record.workspace_path,
+            )
+        except PolicyBlockedError as exc:
+            return ({"ok": False, "error": f"Denied by gateway policy: {exc}"}, False)
+        except ApprovalRequiredInterrupt as exc:
+            approval_id = exc.approval_record.get("approval_id", "unknown")
+            return (
+                {
+                    "ok": False,
+                    "error": (
+                        f"Tool '{tool_id}' requires owner approval (approval_id={approval_id}); "
+                        "no side effects were performed"
+                    ),
+                },
+                False,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the child, never swallowed
+            return ({"ok": False, "error": str(exc)}, False)
+
+        if not isinstance(result, dict):
+            return ({"ok": True, "result": result}, True)
+        ok = not (result.get("ok") is False or result.get("error"))
+        return (result, ok)
+
+    def _run_tool_loop(
+        self,
+        record: SubagentRecord,
+        allowed_tools: frozenset[str],
+        deadline: float | None,
+        max_tool_calls: int | None,
+        findings: list[str],
+        artifacts: list[str],
+    ) -> str:
+        """Run the child's bounded tool loop through the shared gateway (B10).
+
+        The child reasons, executes role-permitted tools, and receives each
+        result until it replies without a tool call. Turns, deadline and
+        tool-call budget all bound the loop.
+        """
+        from harness_core.core.react_loop import ReActLoop
+
+        transcript_parts: list[str] = []
+        summary = ""
+        for _turn in range(self.max_child_tool_turns):
+            if record.interrupted:
+                return summary
+            if max_tool_calls is not None and record.tool_calls_count > max_tool_calls:
+                raise SubagentBudgetExceededError(
+                    f"Subagent tool-call budget exceeded "
+                    f"({record.tool_calls_count} > {max_tool_calls})"
+                )
+            content = self._run_reasoning_bounded(
+                record, allowed_tools, deadline, "\n".join(transcript_parts)
+            )
+            summary = content or ""
+            _thought, calls = ReActLoop.parse_tool_calls(summary)
+            if not calls or record.interrupted:
+                return summary
+            for call in calls:
+                if max_tool_calls is not None and record.tool_calls_count >= max_tool_calls:
+                    raise SubagentBudgetExceededError(
+                        f"Subagent tool-call budget exceeded "
+                        f"({record.tool_calls_count} >= {max_tool_calls})"
+                    )
+                result, ok = self._invoke_child_tool(
+                    record, allowed_tools, call.name, call.arguments
+                )
+                if ok:
+                    self._collect_artifacts(call.name, call.arguments, record, artifacts)
+                findings.append(f"{call.name}: {'ok' if ok else 'error'}")
+                transcript_parts.append(
+                    f"Tool result ({call.name}, {'ok' if ok else 'error'}): "
+                    f"{json.dumps(result, default=str)[:2000]}"
+                )
+        raise SubagentToolTurnLimitError(
+            f"Subagent exceeded {self.max_child_tool_turns} tool-loop turns without a final answer"
+        )
+
+    def _reasoning_call(
+        self,
+        record: SubagentRecord,
+        allowed_tools: frozenset[str],
+        transcript: str = "",
+    ) -> str:
+        """Produce the child's next turn via the router; fail closed without a backend.
 
         B11: a missing router (or an empty model response) must not manufacture a
         COMPLETED summary. The deterministic stand-in is only used in explicit
-        demo mode and is labeled as such.
+        demo mode and is labeled as such. B10: the child is told which tools it
+        may call and how to call them, so a CODER/TESTER child can act rather
+        than only describe.
         """
         if self.router is not None and hasattr(self.router, "execute_routed_request"):
             tools_str = ", ".join(sorted(allowed_tools))
@@ -484,8 +732,24 @@ class SubagentManager:
                 f"Context: {record.context or 'None'}\n"
                 f"Execute with strict focus and return your final findings, artifacts produced, and summary."
             )
+            tool_instructions = ""
+            if self.gateway is not None and allowed_tools:
+                tool_instructions = (
+                    f"You may use only these tools: {tools_str}.\n"
+                    "To act, emit one or more tool calls in exactly this form and nothing else:\n"
+                    '<tool_call>{"name": "<tool>", "arguments": {...}}</tool_call>\n'
+                    "Each result comes back as a 'Tool result' line. When the goal is "
+                    "complete, reply with your final findings as plain text and no tool calls.\n"
+                )
+            work_so_far = f"\nWork so far:\n{transcript}" if transcript else ""
+            prompt = (
+                f"Subagent Goal: {record.goal}\n"
+                f"{tool_instructions}"
+                f"{work_so_far}\n"
+                "Provide your next action or final answer."
+            )
             decision, model_resp = self.router.execute_routed_request(
-                prompt=f"Subagent Goal: {record.goal}\nProvide your technical analysis or plan.",
+                prompt=prompt,
                 task_class="coding" if record.role in (SubagentRole.CODER, SubagentRole.TESTER) else "research",
                 risk_class="R1" if record.role in (SubagentRole.RESEARCHER, SubagentRole.REVIEWER, SubagentRole.PLANNER) else "R2",
                 system_prompt=system_prompt,
@@ -510,6 +774,7 @@ class SubagentManager:
         record: SubagentRecord,
         allowed_tools: frozenset[str],
         deadline: float | None,
+        transcript: str = "",
     ) -> str:
         """Run the reasoning call bounded by the deadline and responsive to interrupt.
 
@@ -522,7 +787,7 @@ class SubagentManager:
 
         def _call() -> None:
             try:
-                box["summary"] = self._reasoning_call(record, allowed_tools)
+                box["summary"] = self._reasoning_call(record, allowed_tools, transcript)
             except BaseException as exc:  # noqa: BLE001 - re-raised on the waiting thread
                 box["error"] = exc
 
@@ -592,28 +857,12 @@ class SubagentManager:
                 record.status = SubagentStatus.INTERRUPTED
                 return
 
-            summary = self._run_reasoning_bounded(record, allowed_tools, deadline)
+            summary = self._run_tool_loop(
+                record, allowed_tools, deadline, max_tool_calls, findings, artifacts
+            )
 
             # A cancel may have landed while reasoning ran: keep INTERRUPTED.
             if record.interrupted or record.status in (SubagentStatus.INTERRUPTED, SubagentStatus.TIMED_OUT):
-                return
-
-            if max_tool_calls is not None and record.tool_calls_count > max_tool_calls:
-                record.status = SubagentStatus.FAILED
-                record.ended_at = time.time()
-                record.error = f"Tool-call budget exceeded ({record.tool_calls_count} > {max_tool_calls})"
-                record.result = SubagentResult(
-                    subagent_id=record.subagent_id,
-                    parent_task_id=record.parent_task_id,
-                    role=record.role.value,
-                    status=SubagentStatus.FAILED.value,
-                    summary=record.error,
-                    started_at=start_t,
-                    ended_at=record.ended_at,
-                    duration_seconds=record.ended_at - start_t,
-                    tool_calls_count=record.tool_calls_count,
-                    error=record.error,
-                )
                 return
 
             # B17: diff against the explicit parent workspace recorded at spawn,
@@ -676,3 +925,4 @@ class SubagentManager:
             )
         finally:
             record.event_done.set()
+            self._release_slot(record)
