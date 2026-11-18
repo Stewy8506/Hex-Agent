@@ -210,6 +210,9 @@ class HarnessOrchestrator:
         )
         self.scanner = SkillSpectorScanner(self.ledger)
         self.router = TwoTierModelRouter()
+        # The gateway needs the router for multimodal vision and delegated
+        # child execution; it is constructed before the router exists.
+        self.gateway.router = self.router
         self.demo_mode = bool(demo_mode) or os.environ.get("HEX_DEMO_MODE", "").strip().lower() in (
             "1",
             "true",

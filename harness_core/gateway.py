@@ -497,22 +497,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "id": "browser",
         "name": "browser",
-        "description": "Interactive headless browser for navigating web pages, clicking elements, extracting accessibility trees, and taking screenshots.",
+        "description": (
+            "Fetch an HTML page and parse it into readable text plus interactive elements. "
+            "This is not a rendering browser: no JavaScript runs, so click/type/screenshot/"
+            "evaluate return an explicit unsupported error instead of pretending to act."
+        ),
         "risk_class": "R2",
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["navigate", "snapshot", "click", "type", "screenshot", "evaluate", "close"],
-                    "description": "Browser action to perform",
+                    "enum": ["navigate", "snapshot", "close"],
+                    "description": "HTML fetch (navigate), parse current page (snapshot), or close the session",
                     "default": "snapshot",
                 },
-                "url": {"type": "string", "description": "URL to navigate to"},
-                "selector": {"type": "string", "description": "Element ref (@e1, @e2) or CSS selector"},
-                "text": {"type": "string", "description": "Text to type into input element"},
-                "script": {"type": "string", "description": "Expression or regex to evaluate in DOM"},
-                "output_path": {"type": "string", "description": "File path to save screenshot/snapshot"},
+                "url": {"type": "string", "description": "URL or workspace file:// path to fetch"},
+                "selector": {
+                    "type": "string",
+                    "description": "Accepted for compatibility; click is unsupported (no JS engine)",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Accepted for compatibility; type is unsupported (no JS engine)",
+                },
+                "script": {
+                    "type": "string",
+                    "description": "Accepted for compatibility; evaluate is unsupported (no JS engine)",
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "Accepted for compatibility; screenshot is unsupported (no renderer)",
+                },
             },
             "required": ["action"],
         },
@@ -632,6 +648,7 @@ class ToolGateway(FileToolsMixin):
         kernel_registry: KernelRegistry | None = None,
         approval_lease_manager: Any | None = None,
         approval_bridge: Any | None = None,
+        router: Any | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
@@ -646,6 +663,7 @@ class ToolGateway(FileToolsMixin):
         self.kernel_registry = kernel_registry or get_kernel_registry()
         self.approval_lease_manager = approval_lease_manager
         self.approval_bridge = approval_bridge
+        self.router = router
         self._active_session_key: str = ""
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
@@ -921,7 +939,7 @@ class ToolGateway(FileToolsMixin):
         self.register_tool(
             ToolSpec(
                 tool_id="browser",
-                description="Interactive headless browser for navigation, DOM inspection, element interaction, and screenshots (R2).",
+                description="Fetch and parse HTML pages into text and interactive elements (R2; no JavaScript execution or rendering).",
                 risk_class=RiskClass.R2,
                 handler=self._tool_browser,
             )
@@ -2088,6 +2106,7 @@ class ToolGateway(FileToolsMixin):
             self.subagent_manager = SubagentManager(
                 ledger=self.ledger,
                 gateway=self,
+                router=getattr(self, "router", None),
             )
         return self.subagent_manager
 
@@ -2199,11 +2218,16 @@ class ToolGateway(FileToolsMixin):
             if out_p and not Path(out_p).is_absolute():
                 out_p = str(workspace_dir / out_p)
             res = session.screenshot(out_p)
-            return {"ok": res.ok, "result": res.to_dict(), "screenshot_path": res.screenshot_path}
+            return {
+                "ok": res.ok,
+                "result": res.to_dict(),
+                "screenshot_path": res.screenshot_path,
+                "error": res.error,
+            }
         elif action == "evaluate":
             script = args.get("script", "")
             res = session.evaluate(script)
-            return {"ok": res.ok, "result": res.to_dict()}
+            return {"ok": res.ok, "result": res.to_dict(), "error": res.error}
         elif action == "close":
             session.close()
             mgr.close_session(task_id)
@@ -2214,7 +2238,7 @@ class ToolGateway(FileToolsMixin):
     def _get_vision_engine(self) -> Any:
         if self.vision_engine is None:
             from harness_core.capabilities.vision import VisionEngine
-            self.vision_engine = VisionEngine()
+            self.vision_engine = VisionEngine(router=getattr(self, "router", None))
         return self.vision_engine
 
     def _tool_image_inspect(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:

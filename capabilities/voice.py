@@ -1,12 +1,14 @@
 """HEX Real-Time Hands-Free Voice & Speech Engine.
 
-Provides platform-agnostic, zero-dependency audio capture, Speech-to-Text (STT),
-and asynchronous Text-to-Speech (TTS) synthesis with graceful fallback to pure-Python
-mock transports in headless environments and CI sandboxes.
+Asynchronous Text-to-Speech (TTS) on macOS/Linux and a platform-agnostic STT
+interface. Unsupported platforms report that limitation explicitly instead of
+pretending to speak or transcribe (B55); mock providers exist only for tests
+and must be requested by name.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import queue
@@ -18,6 +20,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
+
+
+class VoiceUnsupportedError(RuntimeError):
+    """Raised when no real speech backend exists for the requested operation (B55)."""
 
 
 @dataclass
@@ -300,6 +308,23 @@ class LinuxTTSProvider(BaseTTSProvider):
                 self._current_process = None
 
 
+class UnsupportedTTSProvider(BaseTTSProvider):
+    """Explicit No-Op provider for platforms without a real synthesizer (B55).
+
+    It never reports availability and never reports speech as produced, so a
+    missing backend cannot masquerade as working voice output.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def is_available(self) -> bool:
+        return False
+
+    def speak(self, text: str, config: VoiceConfig) -> bool:
+        raise VoiceUnsupportedError(self.reason)
+
+
 class MockTTSProvider(BaseTTSProvider):
     """Deterministic in-memory Text-to-Speech provider for tests and headless CI."""
 
@@ -328,19 +353,30 @@ def get_tts_provider(backend: str = "auto") -> BaseTTSProvider:
     if backend_key == "linux_espeak":
         return LinuxTTSProvider()
 
+    host = platform.system()
+
+    if host == "Windows":
+        # No Windows synthesizer branch exists; do not fall back to a silent mock.
+        return UnsupportedTTSProvider(
+            "Text-to-speech is not implemented on Windows; no audio was produced. "
+            "Select backend='mock' explicitly only in tests."
+        )
+
     # "auto" detection
-    if platform.system() == "Darwin":
+    if host == "Darwin":
         macos = MacOSTTSProvider()
         if macos.is_available():
             return macos
 
-    if platform.system() == "Linux":
+    if host == "Linux":
         linux = LinuxTTSProvider()
         if linux.is_available():
             return linux
 
-    # Fallback for headless environments or unsupported platforms
-    return MockTTSProvider()
+    # Explicitly unavailable rather than silently simulated.
+    return UnsupportedTTSProvider(
+        f"No speech synthesizer is available on {host or 'this host'}; no audio was produced."
+    )
 
 
 class SpeechToTextProvider(ABC):
@@ -376,22 +412,27 @@ class NativeSTTProvider(SpeechToTextProvider):
         return bool(self._hardware.get("mic_available"))
 
     def listen_once(self, timeout: float = 5.0) -> str | None:
-        """Capture a single audio utterance. In non-interactive/CLI contexts, returns None gracefully."""
+        """Report that native capture/transcription is unavailable (B55).
+
+        Returning ``None`` looked like an empty utterance even when a
+        microphone was present, which made hands-free input appear to work.
+        """
         if not self.is_available():
-            return None
-        return None
+            raise VoiceUnsupportedError(
+                "Speech-to-text is unavailable: no microphone or recorder was detected on this host."
+            )
+        raise VoiceUnsupportedError(
+            "Speech-to-text capture is not implemented: a microphone was detected but no "
+            "transcription backend is wired, so no transcript was produced."
+        )
 
     def start_continuous_listening(
         self,
         callback: Callable[[str], None],
         stop_event: threading.Event,
     ) -> None:
-        """Listen continuously in background until stop_event is set."""
-        while not stop_event.is_set():
-            val = self.listen_once(timeout=0.5)
-            if val:
-                callback(val)
-            stop_event.wait(0.2)
+        """Report the unsupported posture instead of looping on empty captures."""
+        self.listen_once(timeout=0.0)
 
 
 class MockSTTProvider(SpeechToTextProvider):
@@ -435,13 +476,9 @@ def get_stt_provider(backend: str = "auto") -> SpeechToTextProvider:
     backend_key = backend.lower().strip()
     if backend_key == "mock":
         return MockSTTProvider()
-    if backend_key == "native":
-        return NativeSTTProvider()
-
-    native = NativeSTTProvider()
-    if native.is_available():
-        return native
-    return MockSTTProvider()
+    # "auto" and "native" both resolve to the native provider, which raises an
+    # explicit VoiceUnsupportedError on use rather than silently returning None.
+    return NativeSTTProvider()
 
 
 class VoiceEngine:
@@ -485,19 +522,31 @@ class VoiceEngine:
 
             self._queue.task_done()
 
-    def speak(self, text: str, clean: bool = True, priority: bool = False) -> None:
-        """Enqueue an utterance to be spoken asynchronously."""
+    def speak(self, text: str, clean: bool = True, priority: bool = False) -> bool:
+        """Enqueue an utterance to be spoken asynchronously.
+
+        Returns False when no real synthesizer is available instead of
+        pretending the text was spoken (B55).
+        """
         if not self.config.tts_enabled or self.config.muted:
-            return
+            return False
+
+        if not self.tts_provider.is_available():
+            logger.warning(
+                "Speech synthesis unavailable on this host (%s); no audio was produced.",
+                type(self.tts_provider).__name__,
+            )
+            return False
 
         utterance = clean_text_for_speech(text) if clean else text.strip()
         if not utterance:
-            return
+            return False
 
         if priority:
             self.stop()
 
         self._queue.put(utterance)
+        return True
 
     def listen_once(self, timeout: float = 5.0) -> str | None:
         """Capture a single utterance via the active STT provider."""
