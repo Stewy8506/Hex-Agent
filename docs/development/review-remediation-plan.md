@@ -9,11 +9,11 @@ Every fix ships with a regression test that fails against the old behavior.
 Status legend: `[DONE]` landed + verified + committed · `[WIP]` in progress · `[TODO]` not started.
 
 - Phase 1 — Protect user work and authority: **8/8 sub-phases DONE** (B01, B02, B04, B45, B46, B52, B47, B48, B49, B12, B05, B56).
-- Phase 2 — Make completion and recovery truthful: **9/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55, B37, B36, B41/B44); B42/B40 next.
+- Phase 2 — Make completion and recovery truthful: **10/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55, B37, B36, B41/B44, B42/B40); B14/B15 next.
 - Phase 3 — Finish primary user surfaces: not started.
 - Phase 4 — Expand from real lifecycle integrations: not started.
 
-Last updated: 2026-11-18 (through B41/B44, commit `60dddd0`).
+Last updated: 2026-11-18 (through B42/B40, commit `04bb2b5`).
 
 ## Phase 1 — Protect user work and authority (gate: zero later effects for denied/canceled work; publication preserves metadata/concurrent work)
 
@@ -37,7 +37,7 @@ Last updated: 2026-11-18 (through B41/B44, commit `60dddd0`).
 - **2.7 B37** `[DONE 30e46dd]` — Alembic revision `0002_feature_schema_parity` adds `tasks.pinned`, `tasks.title_provenance`, `dialogue_turns` (+ index) and `approval_leases` (+ index); the SQLite bootstrap SQL mirrors the same shape; migration tests assert the head covers the runtime feature tables and that they accept rows after a clean upgrade. PostgreSQL was not available on this host: parity is established from the migration source, not a live PostgreSQL install. Legacy SQLite files still get idempotent `IF NOT EXISTS`/`ALTER` compatibility DDL in `_init_schema`.
 - **2.8 B36** `[DONE 13232b9]` — Journal replay bound to the restored workspace: sealed file mutations record the pre-call content hash, replay only when the recorded effect is still on disk, re-execute when a rollback restored the pre-call state (file absent or byte-identical to before), and flag `_replay_effect_mismatch` without clobbering files that later work changed.
 - **2.9 B41/B44** `[DONE 60dddd0]` — Durable ACP turns carry bounded tool rows (name, outcome, payload) and reasoning; follow-up context rebuild keeps them paired with each turn and the fast-path prompt renders `Tool name (status)`/`Reasoning` rows; `session/load` withdraws that session's pending approvals (the bridge records the session when the request is made). `execute_task`/`resume_task` raise `TerminalTaskReentryError` for SUCCEEDED/FAILED/EXPIRED/REJECTED tasks while cancellation stays idempotent; startup reconciles RUNNING/SPECULATING tasks whose lease is missing, released or expired (`ORPHANED_TASK_RECONCILED`) and leaves live leases alone.
-- **2.10 B42/B40** `[TODO]` — Claim transaction failure fails/retries; `/rewind` honest conversation-only semantics or real file rollback; dialogue turn persistence wired.
+- **2.10 B42/B40** `[DONE 04bb2b5]` — `claim_next_task` retries `BEGIN IMMEDIATE` on a busy database and raises `ClaimTransactionError` instead of claiming outside a transaction; `POST /v1/tasks/claim` answers 503 with the failure. ReAct runs persist dialogue turns (prompt, per-turn thought, tool outputs, final answer) through the existing `dialogue_turns` writers, so `/rewind` rebuilds from the ledger; rewind counts the tool-call records the ledger actually reverted and the TUI states that workspace files were not changed.
 - **2.11 B14/B15** `[TODO]` — MoA typed caller passing route diversity settings, deadline-aware cancellation; fenced worker stops claiming and cancels execution.
 - **2.12 B16** `[TODO]` — Windows process-tree teardown via Job Objects.
 
