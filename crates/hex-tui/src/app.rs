@@ -2498,7 +2498,7 @@ impl App {
         if let Some(cmd) = self.command_history.get(next_idx) {
             self.input_buffer = cmd.clone();
             self.cursor_pos = self.input_buffer.chars().count();
-            }
+        }
     }
 
     pub fn history_down(&mut self) {
@@ -2509,12 +2509,12 @@ impl App {
                 if let Some(cmd) = self.command_history.get(next_idx) {
                     self.input_buffer = cmd.clone();
                     self.cursor_pos = self.input_buffer.chars().count();
-                            }
+                }
             } else {
                 self.history_index = None;
                 self.input_buffer.clear();
                 self.cursor_pos = 0;
-                    }
+            }
         }
     }
 

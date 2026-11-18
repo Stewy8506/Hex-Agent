@@ -327,7 +327,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
         ));
     }
     app.enforce_transcript_budget();
-    let mut events = EventHandler::new(50);
+    let mut events = EventHandler::new(50)?;
     let event_tx = events.sender();
 
     let notification_task = if let Some(client) = &acp_client {
@@ -456,6 +456,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         app.busy_started_at = None;
                         app.status_message = "Ready".to_string();
                     }
+                    AppEvent::TerminalError(err) => return Err(anyhow::anyhow!(err)),
                     AppEvent::Error(err) => {
                         app.close_running_tool_calls();
                         app.clear_approval_request();

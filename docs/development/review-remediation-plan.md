@@ -10,10 +10,10 @@ Status legend: `[DONE]` landed + verified + committed · `[WIP]` in progress · 
 
 - Phase 1 — Protect user work and authority: **8/8 sub-phases DONE** (B01, B02, B04, B45, B46, B52, B47, B48, B49, B12, B05, B56).
 - Phase 2 — Make completion and recovery truthful: **12/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55, B37, B36, B41/B44, B42/B40, B14/B15, B16).
-- Phase 3 — Finish primary user surfaces: **3.1 WIP**; Rust compilation and live TUI verification are blocked by the missing toolchain.
+- Phase 3 — Finish primary user surfaces: **3.1 DONE**; native Rust compilation, old-behavior regressions and live modern-Windows input verification pass. 3.2 is next.
 - Phase 4 — Expand from real lifecycle integrations: not started.
 
-Last updated: 2026-11-18 (Phase 2 complete through `6e33bca`; 3.1 code committed as `c21bcfc`, verification pending).
+Last updated: 2026-11-18 (Phase 2 complete through `6e33bca`; Phase 3.1 native input verified and completed; original input fixes `c21bcfc`, Windows storage compatibility `a308dea`).
 
 ## Phase 1 — Protect user work and authority (gate: zero later effects for denied/canceled work; publication preserves metadata/concurrent work)
 
@@ -43,7 +43,7 @@ Last updated: 2026-11-18 (Phase 2 complete through `6e33bca`; 3.1 code committed
 
 ## Phase 3 — Finish primary user surfaces
 
-- **3.1** `[WIP c21bcfc]` — TUI key-kind filter (B18), bracketed paste + multiline (B19), Unicode cursor indexing (B21). Code and regression tests are written: only press events act, paste inserts literal text without submission, Shift+Enter adds a newline, active composers wrap/scroll around the real Unicode cursor, and recalled history uses character counts. `cargo test -p hex-tui` cannot run (`cargo`/`rustc` absent); compilation, old-code red tests and live terminal verification remain pending. Do not treat this sub-phase as DONE.
+- **3.1 B18/B19/B21** `[DONE]` — Original key-kind, multiline composer and character-indexed cursor fixes (`c21bcfc`) are compile-verified. Windows now has one stoppable native console reader: VT input preserves paste delimiters, DEC9001 preserves key metadata, and a separate transport decoder unwraps Win32 packets before bounded paste framing. Paste remains editable, including fragmented/encapsulated Unicode input; release/repeat events cannot submit or trigger hotkeys. The 8MiB paste limit discards oversized input through its closing delimiter, and reader shutdown restores owned terminal modes. All 24 native decoder/lifecycle tests pass; final adjacent checks pass 58 library, 30 binary, 10 active-screen and 18 durable-transcript tests, plus 31 protocol tests. The shipped offline ConPTY regression passes live F1/modal quarantine, multiline paste, Shift+Enter, release filtering, single submission, CJK/emoji editing/history, sidebar mouse controls, resize and clean Ctrl-C exit. It fails at the pasted-control safety assertion against a separately compiled `a308dea` checkout; the four original key/Shift+Enter/history/composer regressions also fail with old behavior restored. Clippy completes with existing warnings. Unix retains Crossterm EventStream; live Unix and legacy WinPTY behavior were not verified. Seven external-`sqlite3` resume tests remain B24, not input failures.
 - **3.2** TUI: approval RPC failure recovery (B20), short-terminal approval fallback (B25), truthful model/counts (B26).
 - **3.3** TUI: turn-associated final text (B22), resume handshake (B23), embedded SQLite (B24).
 - **3.4** Desktop: typed approval outcomes + real TTL (B27/B30), queued approvals (B29), lossless final text (B31).
@@ -64,5 +64,5 @@ Last updated: 2026-11-18 (Phase 2 complete through `6e33bca`; 3.1 code committed
 
 - Python 3.14.9; test venv at `%LOCALAPPDATA%\hermes\cache\scratch\hex-venv` with `pip install -e .` (package aliasing: `storage` → `harness_core.storage`, `agent` → `harness_core.core`, `hex_cli` → `harness_core.client`, etc.).
 - Pre-existing baseline failure: `test_cow_providers.py::TestOrchestratorCowInjection::test_orchestrator_custom_provider_injection` — Windows `PermissionError` unlinking open `ledger.db` during tempdir cleanup (test teardown issue, tracked, not caused by remediation).
-- Rust toolchain unavailable on this host: Phase 3 Rust changes must be written carefully and compile-verified where possible; flagged in commits if unverified.
+- Rust 1.100.0 stable, Cargo, rustfmt and Clippy installed on 2026-11-18; existing Visual Studio Build Tools 2026 provide native MSVC compilation. Use `%USERPROFILE%\.cargo\bin` until a restarted shell picks up PATH. `a308dea` fixes Windows transcript initialization/recovery by retaining writable file flushes without POSIX directory fsync; parent-directory power-loss durability is not promised on Windows. All 18 active transcript tests and 31 protocol tests pass. Seven resume-integrity tests still require the external `sqlite3` CLI (B24, scheduled for 3.3), so the full TUI suite is not yet green.
 - 2026-11-18 protection reverification: 63 tests pass; the symlink escape test is explicitly skipped only when Windows denies symlink creation (error 1314). `48bd1f4` closes the two older approval-test ledgers before temporary-directory cleanup. B16 and adjacent Phase 2 checks pass 105 tests plus four subtests; the new unexpected-exit cleanup regression also fails against the pre-B16 kernel.
