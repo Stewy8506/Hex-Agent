@@ -4,31 +4,42 @@ Source: `HEX_VS_HERMES_REVIEW.md` (revision f4ebae9). Order follows §14.
 Each sub-phase lands as its own commit on `remediation/phased-fixes`; nothing merges to `main`.
 Every fix ships with a regression test that fails against the old behavior.
 
+## Progress
+
+Status legend: `[DONE]` landed + verified + committed · `[WIP]` in progress · `[TODO]` not started.
+
+- Phase 1 — Protect user work and authority: **8/8 sub-phases DONE** (B01, B02, B04, B45, B46, B52, B47, B48, B49, B12, B05, B56).
+- Phase 2 — Make completion and recovery truthful: **1/12 DONE** (B03); B11 in progress.
+- Phase 3 — Finish primary user surfaces: not started.
+- Phase 4 — Expand from real lifecycle integrations: not started.
+
+Last updated: 2026-11-18 (through B03, commit `9926fca`).
+
 ## Phase 1 — Protect user work and authority (gate: zero later effects for denied/canceled work; publication preserves metadata/concurrent work)
 
-- **1.1 B01** — Conflict-aware delta publication. New `publish_delta(base, attempt, target)` in `storage/cow.py`: preserve `.git/.hex/.venv`, detect concurrent edits against base snapshot, stop on conflict, recoverable apply. Wire `orchestrator` publication call site to it.
-- **1.2 B02** — Mandatory gateway boundary: ReAct dispatch (`agent/react_loop.py`) and ACP `tools/call` (`hex_cli/acp.py`) route through `ToolGateway.invoke`; denied tool ⇒ zero side effects on every entry point.
-- **1.3 B04** — Sandbox honesty + fail-closed confined mode: `restricted_subprocess` explicitly labeled trusted local execution; `require_confinement` refuses to fall back; policy surface distinguishes trusted-local vs confined.
-- **1.4 B45/B46** — Narrow approval leases (bind command+args, task/session scope, cwd is not path authority; no-command approval no longer grants whole workspace) and POST-only approval decide with required explicit decision.
-- **1.5 B52** — Browser navigation path authority: reject `file://` outside workspace containment (same resolved-path checks as `read_file`).
-- **1.6 B47/B48/B49** — Effective cancellation: ReAct loop checks cancel between model/tool waits; terminal-state CAS so finalization cannot overwrite CANCELED; ACP cancel wakes pending approval waits; headless Ctrl-C/EOF orderly shutdown.
-- **1.7 B12** — Delegation deadlines/budgets enforced, parent cancel fans out to children, late results cannot overwrite INTERRUPTED.
-- **1.8 B05/B56** — Platform-aware shell resolution for gateway terminal + skill executor on Windows (shared resolver; no hardcoded `/bin/sh`).
+- **1.1 B01** `[DONE 97afc70]` — Conflict-aware delta publication. New `publish_delta(base, attempt, target)` in `storage/cow.py`: preserve `.git/.hex/.venv`, detect concurrent edits against base snapshot, stop on conflict, recoverable apply. Wire `orchestrator` publication call site to it.
+- **1.2 B02** `[DONE e8f1001]` — Mandatory gateway boundary: ReAct dispatch (`agent/react_loop.py`) and ACP `tools/call` (`hex_cli/acp.py`) route through `ToolGateway.invoke`; denied tool ⇒ zero side effects on every entry point.
+- **1.3 B04** `[DONE 2f6c432]` — Sandbox honesty + fail-closed confined mode: `restricted_subprocess` explicitly labeled trusted local execution; `require_confinement` refuses to fall back; policy surface distinguishes trusted-local vs confined.
+- **1.4 B45/B46** `[DONE 5e82d29, 238e54b]` — Narrow approval leases (bind command+args, task/session scope, cwd is not path authority; no-command approval no longer grants whole workspace) and POST-only approval decide with required explicit decision.
+- **1.5 B52** `[DONE d9819fa]` — Browser navigation path authority: reject `file://` outside workspace containment (same resolved-path checks as `read_file`).
+- **1.6 B47/B48/B49** `[DONE 4e00016, 76e3258, 4dca725]` — Effective cancellation: ReAct loop checks cancel between model/tool waits; terminal-state CAS so finalization cannot overwrite CANCELED; ACP cancel wakes pending approval waits; headless Ctrl-C/EOF orderly shutdown.
+- **1.7 B12** `[DONE 347ab16]` — Delegation deadlines/budgets enforced, parent cancel fans out to children, late results cannot overwrite INTERRUPTED.
+- **1.8 B05/B56** `[DONE 1d66488, 8cc585f]` — Platform-aware shell resolution for gateway terminal + skill executor on Windows (shared resolver; no hardcoded `/bin/sh`).
 
 ## Phase 2 — Make completion and recovery truthful (gate: no success without effects/evidence; crash-resume reproduces tree+transcript; schema parity)
 
-- **2.1 B03** — Provider outage/failed observation ⇒ explicit failure; deterministic fallback only under explicit demo mode.
-- **2.2 B11** — Fail closed: no-router delegation and no-orchestrator worker must fail, never manufacture COMPLETED/SUCCEEDED.
-- **2.3 B10/B13/B17** — Real child tool loop through shared gateway with enforced role tool subset; server-owned depth; bounded spawn concurrency; explicit parent workspace for diffs.
-- **2.4 B51/B53/B55** — Vision sends real pixels or fails; browser exposed as honest HTML-fetch/parse capability (or real engine); voice STT/TTS return explicit unsupported instead of mock success.
-- **2.5 B06/B09** — DAG topology validation at save (cycles/dangling deps rejected); replan budget exhaustion pauses for attention.
-- **2.6 B07/B08** — Todo `complete` action implemented; atomic writes, propagated errors, unique IDs, finite statuses.
-- **2.7 B37** — Single migration source: Alembic head matches runtime schema on SQLite and PostgreSQL; clean-install feature-table test.
-- **2.8 B36** — Journal replay bound to restored tree/version (checkpoint/reapply sealed side effects consistently).
-- **2.9 B41/B44** — Structured ACP context restore (tool rows/pairing); terminal-task reentry guard + startup orphan reconciliation.
-- **2.10 B42/B40** — Claim transaction failure fails/retries; `/rewind` honest conversation-only semantics or real file rollback; dialogue turn persistence wired.
-- **2.11 B14/B15** — MoA typed caller passing route diversity settings, deadline-aware cancellation; fenced worker stops claiming and cancels execution.
-- **2.12 B16** — Windows process-tree teardown via Job Objects.
+- **2.1 B03** `[DONE 9926fca]` — Provider outage/failed observation ⇒ explicit failure; deterministic fallback only under explicit demo mode.
+- **2.2 B11** `[WIP]` — Fail closed: no-router delegation and no-orchestrator worker must fail, never manufacture COMPLETED/SUCCEEDED.
+- **2.3 B10/B13/B17** `[TODO]` — Real child tool loop through shared gateway with enforced role tool subset; server-owned depth; bounded spawn concurrency; explicit parent workspace for diffs.
+- **2.4 B51/B53/B55** `[TODO]` — Vision sends real pixels or fails; browser exposed as honest HTML-fetch/parse capability (or real engine); voice STT/TTS return explicit unsupported instead of mock success.
+- **2.5 B06/B09** `[TODO]` — DAG topology validation at save (cycles/dangling deps rejected); replan budget exhaustion pauses for attention.
+- **2.6 B07/B08** `[TODO]` — Todo `complete` action implemented; atomic writes, propagated errors, unique IDs, finite statuses.
+- **2.7 B37** `[TODO]` — Single migration source: Alembic head matches runtime schema on SQLite and PostgreSQL; clean-install feature-table test.
+- **2.8 B36** `[TODO]` — Journal replay bound to restored tree/version (checkpoint/reapply sealed side effects consistently).
+- **2.9 B41/B44** `[TODO]` — Structured ACP context restore (tool rows/pairing); terminal-task reentry guard + startup orphan reconciliation.
+- **2.10 B42/B40** `[TODO]` — Claim transaction failure fails/retries; `/rewind` honest conversation-only semantics or real file rollback; dialogue turn persistence wired.
+- **2.11 B14/B15** `[TODO]` — MoA typed caller passing route diversity settings, deadline-aware cancellation; fenced worker stops claiming and cancels execution.
+- **2.12 B16** `[TODO]` — Windows process-tree teardown via Job Objects.
 
 ## Phase 3 — Finish primary user surfaces
 
