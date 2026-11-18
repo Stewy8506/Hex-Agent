@@ -203,6 +203,7 @@ class SubagentRecord:
     ended_at: float | None = None
     tool_calls_count: int = 0
     error: str | None = None
+    budget: Any = None
     event_done: threading.Event = field(default_factory=threading.Event)
 
 
@@ -276,6 +277,7 @@ class SubagentManager:
             started_at=now,
             workspace_path=subagent_ws,
             context=context,
+            budget=budget,
         )
 
         with self._lock:
@@ -370,6 +372,26 @@ class SubagentManager:
         record.event_done.set()
         return True
 
+    def interrupt_children_of(self, parent_task_id: str) -> int:
+        """B12: fan a parent cancellation out to every live child subagent.
+
+        Interrupts all PENDING/RUNNING children spawned under ``parent_task_id``
+        so a canceled parent does not leave orphaned children running. Returns
+        the number of children interrupted.
+        """
+        with self._lock:
+            child_ids = [
+                r.subagent_id
+                for r in self._active_subagents.values()
+                if r.parent_task_id == parent_task_id
+                and r.status in (SubagentStatus.PENDING, SubagentStatus.RUNNING)
+            ]
+        count = 0
+        for sid in child_ids:
+            if self.interrupt_subagent(sid):
+                count += 1
+        return count
+
     def list_active_subagents(self) -> list[dict[str, Any]]:
         """Return snapshot of all registered subagents."""
         with self._lock:
@@ -404,45 +426,160 @@ class SubagentManager:
             elif item.is_file():
                 shutil.copy2(item, dest_item)
 
+    @staticmethod
+    def _budget_timeout(budget: Any) -> float | None:
+        """Extract a deadline cap (seconds) from a budget, if one is specified."""
+        if isinstance(budget, dict):
+            for key in ("timeout", "max_duration", "deadline_seconds"):
+                val = budget.get(key)
+                if isinstance(val, (int, float)) and val > 0:
+                    return float(val)
+        return None
+
+    @staticmethod
+    def _budget_max_tool_calls(budget: Any) -> int | None:
+        """Extract a tool-call ceiling from a budget (numeric or dict form)."""
+        if isinstance(budget, bool):
+            return None
+        if isinstance(budget, (int, float)) and budget > 0:
+            return int(budget)
+        if isinstance(budget, dict):
+            val = budget.get("max_tool_calls")
+            if isinstance(val, (int, float)) and val > 0:
+                return int(val)
+        return None
+
+    def _reasoning_call(self, record: SubagentRecord, allowed_tools: frozenset[str]) -> str:
+        """Produce the child's summary via the router, or a deterministic fallback."""
+        if self.router is not None and hasattr(self.router, "execute_routed_request"):
+            tools_str = ", ".join(sorted(allowed_tools))
+            system_prompt = (
+                f"You are a specialized {record.role.value.upper()} subagent in HEX Agent.\n"
+                f"Goal: {record.goal}\n"
+                f"Permitted tools: {tools_str}\n"
+                f"Context: {record.context or 'None'}\n"
+                f"Execute with strict focus and return your final findings, artifacts produced, and summary."
+            )
+            decision, model_resp = self.router.execute_routed_request(
+                prompt=f"Subagent Goal: {record.goal}\nProvide your technical analysis or plan.",
+                task_class="coding" if record.role in (SubagentRole.CODER, SubagentRole.TESTER) else "research",
+                risk_class="R1" if record.role in (SubagentRole.RESEARCHER, SubagentRole.REVIEWER, SubagentRole.PLANNER) else "R2",
+                system_prompt=system_prompt,
+            )
+            return model_resp.content if model_resp and hasattr(model_resp, "content") else "Completed successfully"
+        return f"Subagent [{record.role.value}] processed goal: {record.goal}"
+
+    def _run_reasoning_bounded(
+        self,
+        record: SubagentRecord,
+        allowed_tools: frozenset[str],
+        deadline: float | None,
+    ) -> str:
+        """Run the reasoning call bounded by the deadline and responsive to interrupt.
+
+        B12: the timeout is enforced, not merely accepted. The blocking reasoning
+        call runs on a daemon thread; this wait polls for interruption and the
+        deadline so a cancel or expiry stops the child promptly instead of
+        blocking indefinitely.
+        """
+        box: dict[str, Any] = {}
+
+        def _call() -> None:
+            try:
+                box["summary"] = self._reasoning_call(record, allowed_tools)
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the waiting thread
+                box["error"] = exc
+
+        worker = threading.Thread(target=_call, daemon=True, name=f"SubagentReason-{record.subagent_id}")
+        worker.start()
+        while worker.is_alive():
+            if record.interrupted:
+                break
+            if deadline is not None:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise SubagentTimeoutError(
+                        f"Subagent '{record.subagent_id}' exceeded its deadline"
+                    )
+                worker.join(timeout=min(0.05, remaining))
+            else:
+                worker.join(timeout=0.05)
+        if "error" in box:
+            raise box["error"]
+        return box.get("summary", "")
+
+    def _finalize_timed_out(self, record: SubagentRecord, start_t: float) -> None:
+        if record.status == SubagentStatus.INTERRUPTED:
+            return
+        record.status = SubagentStatus.TIMED_OUT
+        record.ended_at = time.time()
+        record.error = record.error or "Subagent exceeded its deadline"
+        record.result = SubagentResult(
+            subagent_id=record.subagent_id,
+            parent_task_id=record.parent_task_id,
+            role=record.role.value,
+            status=SubagentStatus.TIMED_OUT.value,
+            summary="Subagent timed out before completing its goal",
+            started_at=start_t,
+            ended_at=record.ended_at,
+            duration_seconds=record.ended_at - start_t,
+            tool_calls_count=record.tool_calls_count,
+            error=record.error,
+        )
+
     def _run_subagent_sync(self, record: SubagentRecord, timeout: float) -> None:
-        """Synchronously execute the child subagent reasoning loop."""
+        """Synchronously execute the child subagent reasoning loop.
+
+        B12: enforces the deadline and tool-call budget, honors interruption
+        throughout (not just before the call), and never lets a late result
+        overwrite an INTERRUPTED/TIMED_OUT terminal state.
+        """
         record.status = SubagentStatus.RUNNING
         start_t = time.time()
         allowed_tools = ROLE_ALLOWED_TOOLS.get(record.role, ROLE_ALLOWED_TOOLS[SubagentRole.GENERAL])
 
+        deadline: float | None = None
+        if timeout and float(timeout) > 0:
+            deadline = start_t + float(timeout)
+        budget_deadline = self._budget_timeout(record.budget)
+        if budget_deadline is not None:
+            cap = start_t + budget_deadline
+            deadline = cap if deadline is None else min(deadline, cap)
+        max_tool_calls = self._budget_max_tool_calls(record.budget)
+
         findings: list[str] = []
         artifacts: list[str] = []
-        summary = ""
         diff_str = ""
 
         try:
-            # Check for early interruption
             if record.interrupted:
                 record.status = SubagentStatus.INTERRUPTED
                 return
 
-            # If router is available, execute structured subagent prompt
-            if self.router is not None and hasattr(self.router, "execute_routed_request"):
-                tools_str = ", ".join(sorted(allowed_tools))
-                system_prompt = (
-                    f"You are a specialized {record.role.value.upper()} subagent in HEX Agent.\n"
-                    f"Goal: {record.goal}\n"
-                    f"Permitted tools: {tools_str}\n"
-                    f"Context: {record.context or 'None'}\n"
-                    f"Execute with strict focus and return your final findings, artifacts produced, and summary."
-                )
+            summary = self._run_reasoning_bounded(record, allowed_tools, deadline)
 
-                decision, model_resp = self.router.execute_routed_request(
-                    prompt=f"Subagent Goal: {record.goal}\nProvide your technical analysis or plan.",
-                    task_class="coding" if record.role in (SubagentRole.CODER, SubagentRole.TESTER) else "research",
-                    risk_class="R1" if record.role in (SubagentRole.RESEARCHER, SubagentRole.REVIEWER, SubagentRole.PLANNER) else "R2",
-                    system_prompt=system_prompt,
-                )
-                summary = model_resp.content if model_resp and hasattr(model_resp, "content") else "Completed successfully"
-            else:
-                summary = f"Subagent [{record.role.value}] processed goal: {record.goal}"
+            # A cancel may have landed while reasoning ran: keep INTERRUPTED.
+            if record.interrupted or record.status in (SubagentStatus.INTERRUPTED, SubagentStatus.TIMED_OUT):
+                return
 
-            # Compute workspace diff if CoW and parent workspace exist
+            if max_tool_calls is not None and record.tool_calls_count > max_tool_calls:
+                record.status = SubagentStatus.FAILED
+                record.ended_at = time.time()
+                record.error = f"Tool-call budget exceeded ({record.tool_calls_count} > {max_tool_calls})"
+                record.result = SubagentResult(
+                    subagent_id=record.subagent_id,
+                    parent_task_id=record.parent_task_id,
+                    role=record.role.value,
+                    status=SubagentStatus.FAILED.value,
+                    summary=record.error,
+                    started_at=start_t,
+                    ended_at=record.ended_at,
+                    duration_seconds=record.ended_at - start_t,
+                    tool_calls_count=record.tool_calls_count,
+                    error=record.error,
+                )
+                return
+
             parent_ws_candidate = record.workspace_path.parent.parent.parent
             if parent_ws_candidate.exists() and parent_ws_candidate != record.workspace_path:
                 try:
@@ -450,10 +587,17 @@ class SubagentManager:
                 except Exception:
                     diff_str = ""
 
+            # Recheck terminal state before publishing: a late result must not
+            # overwrite INTERRUPTED, and an expired deadline yields TIMED_OUT.
+            if record.interrupted or record.status in (SubagentStatus.INTERRUPTED, SubagentStatus.TIMED_OUT):
+                return
+            if deadline is not None and time.time() > deadline:
+                self._finalize_timed_out(record, start_t)
+                return
+
             record.status = SubagentStatus.COMPLETED
             record.ended_at = time.time()
-
-            result = SubagentResult(
+            record.result = SubagentResult(
                 subagent_id=record.subagent_id,
                 parent_task_id=record.parent_task_id,
                 role=record.role.value,
@@ -467,9 +611,12 @@ class SubagentManager:
                 tool_calls_count=record.tool_calls_count,
                 findings=findings,
             )
-            record.result = result
 
+        except SubagentTimeoutError:
+            self._finalize_timed_out(record, start_t)
         except Exception as exc:
+            if record.interrupted or record.status == SubagentStatus.INTERRUPTED:
+                return
             logger.exception("Subagent execution failed: %s", exc)
             record.status = SubagentStatus.FAILED
             record.error = str(exc)

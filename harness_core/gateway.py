@@ -1979,6 +1979,7 @@ class ToolGateway(FileToolsMixin):
         context = args.get("context")
         wait = args.get("wait", True)
         timeout = float(args.get("timeout", 120.0))
+        budget = args.get("budget")
         parent_task_id = args.get("task_id", "current_task")
 
         try:
@@ -1989,6 +1990,7 @@ class ToolGateway(FileToolsMixin):
                 context=context,
                 parent_ws=workspace_dir,
                 current_depth=int(args.get("current_depth", 0)),
+                budget=budget,
                 timeout=timeout,
                 wait=wait,
             )

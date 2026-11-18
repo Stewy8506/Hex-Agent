@@ -2704,6 +2704,14 @@ class HarnessOrchestrator:
         if not task:
             raise KeyError(f"Task not found: {task_id}")
         self._cancel_event(task_id).set()
+        # B12: fan cancellation out to live child subagents so a canceled parent
+        # does not leave orphaned children running.
+        mgr = getattr(self, "subagent_manager", None)
+        if mgr is not None and hasattr(mgr, "interrupt_children_of"):
+            try:
+                mgr.interrupt_children_of(task_id)
+            except Exception as exc:
+                logger.debug("Cancel fan-out to subagents of %s failed: %s", task_id, exc)
         if task["status"] == TaskState.CANCELED.value:
             return task
         chk = self.ledger.get_latest_checkpoint(task_id)
