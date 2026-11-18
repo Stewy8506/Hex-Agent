@@ -19,6 +19,7 @@ import time
 from typing import Any, Callable
 import uuid
 
+from harness_core.core.moa import MoACancelledError
 from harness_core.cognition.context_compressor import (
     CHARS_PER_TOKEN,
     CompactionConfig,
@@ -127,7 +128,7 @@ class ReActSessionResult:
     final_answer: str
     total_turns: int
     turns: list[ReActTurn] = field(default_factory=list)
-    termination_reason: str = "finish"  # "finish", "max_turns", "error", "no_tool_calls"
+    termination_reason: str = "finish"  # "finish", "max_turns", "error", "no_tool_calls", "canceled"
     compaction_result: Any | None = None
     retry_count: int = 0
     friction_info: dict[str, Any] = field(default_factory=dict)
@@ -199,9 +200,12 @@ class ReActLoop:
         guardrails_manager: Any | None = None,
         title_synthesizer: Any | None = None,
         approval_lease_manager: Any | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+        moa_caller: Callable[..., Any] | None = None,
     ) -> None:
         self.model_caller = model_caller
         self.gateway = gateway
+        self._cancel_check = cancel_check
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self.config = config or ReActConfig()
         self.ledger = ledger
@@ -225,6 +229,9 @@ class ReActLoop:
         self.friction_detected: bool = False
         self._friction_reasons: list[str] = []
         self._failed_tool_sig_counts: dict[str, int] = {}
+        self._gateway_task_ids: dict[str, str] = {}
+        self._current_turn_index: int = 0
+        self._current_tool_seq: int = 0
         if guardrails_manager is not None:
             self.guardrails_manager = guardrails_manager
         elif self.workspace_root:
@@ -243,11 +250,8 @@ class ReActLoop:
         self.moa_config = getattr(self.config, "moa_config", None)
         self.moa = None
         if self.moa_config is not None and getattr(self.moa_config, "enabled", True):
-            try:
-                from harness_core.core.moa import MixtureOfAgents
-                self.moa = MixtureOfAgents(self.moa_config, model_caller=self.model_caller)
-            except Exception:
-                self.moa = None
+            from harness_core.core.moa import MixtureOfAgents
+            self.moa = MixtureOfAgents(self.moa_config, model_caller=moa_caller or self.model_caller)
         if approval_lease_manager is not None:
             self.approval_lease_manager = approval_lease_manager
         elif hasattr(self.gateway, "approval_lease_manager") and getattr(self.gateway, "approval_lease_manager", None):
@@ -259,6 +263,20 @@ class ReActLoop:
             except Exception:
                 self.approval_lease_manager = None
 
+
+    def _is_cancelled(self) -> bool:
+        """Cooperative cancellation probe checked at turn/tool execution boundaries.
+
+        B47: a canceled task must stop producing side effects. The check is
+        consulted before each model turn and before each tool invocation so a
+        cancel raised mid-run halts the loop instead of running to completion.
+        """
+        if self._cancel_check is None:
+            return False
+        try:
+            return bool(self._cancel_check())
+        except Exception:
+            return False
 
     def _check_and_trigger_friction(
         self, reason: str, details: dict[str, Any] | None = None
@@ -745,7 +763,11 @@ class ReActLoop:
         )
         if lease_mgr is not None and hasattr(lease_mgr, "check_lease"):
             try:
-                has_lease, lease_id = lease_mgr.check_lease(call.name, call.arguments)
+                tid = getattr(self, "active_task_id", None) or self.session_id
+                tid = self._gateway_task_ids.get(tid, tid)
+                has_lease, lease_id = lease_mgr.check_lease(
+                    call.name, call.arguments, task_id=tid, session_id=self.session_id
+                )
                 if has_lease:
                     setattr(call, "policy_decision", "LEASE_APPROVED")
             except Exception:
@@ -770,6 +792,15 @@ class ReActLoop:
         if call.name == "code_kernel" and isinstance(call.arguments, dict):
             if "owner" not in call.arguments and "session_id" not in call.arguments and self.session_id:
                 call.arguments["owner"] = self.session_id
+
+        # Mandatory gateway boundary (B02): the standard ToolGateway is the only
+        # execution path for registered tools — policy, approval, and journaling
+        # all live in invoke(). Direct handler dispatch below is reserved for
+        # non-standard gateway doubles that expose no policy engine.
+        from harness_core.gateway import ToolGateway
+
+        if isinstance(self.gateway, ToolGateway):
+            return self._invoke_via_gateway(call, workspace_dir, start_t)
 
         # Gateway with .tools dictionary (standard HEX ToolGateway)
         if hasattr(self.gateway, "tools") and isinstance(self.gateway.tools, dict):
@@ -923,6 +954,94 @@ class ReActLoop:
         )
 
     # -------------------------------------------------------------------------
+    # Mandatory Gateway Dispatch (B02)
+    # -------------------------------------------------------------------------
+
+    def _resolve_gateway_task_id(self, workspace_dir: Path) -> str:
+        """Map the active ReAct task onto a ledger task the gateway can policy-check."""
+        tid = getattr(self, "active_task_id", None) or self.session_id
+        cached = self._gateway_task_ids.get(tid)
+        if cached:
+            return cached
+        ledger = self.gateway.ledger
+        resolved = tid
+        if ledger.get_task(tid) is None:
+            record = ledger.submit_task({
+                "goal": getattr(self, "_active_prompt", None) or f"ReAct session {self.session_id}",
+                "execution_mode": "react_loop",
+                "workspace_root": str(workspace_dir),
+            })
+            resolved = record["task_id"]
+        self._gateway_task_ids[tid] = resolved
+        return resolved
+
+    def _invoke_via_gateway(
+        self, call: ToolCallRequest, workspace_dir: Path, start_t: float
+    ) -> ToolCallResult:
+        """Execute a tool call exclusively through ToolGateway.invoke."""
+        from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError
+
+        task_id = self._resolve_gateway_task_id(workspace_dir)
+        try:
+            result = self.gateway.invoke(
+                task_id=task_id,
+                attempt_id="att_react",
+                step_id=f"turn_{self._current_turn_index}",
+                sequence_in_step=self._current_tool_seq,
+                tool_id=call.name,
+                args=call.arguments,
+                workspace_dir=workspace_dir,
+            )
+        except PolicyBlockedError as exc:
+            return ToolCallResult(
+                call_id=call.call_id,
+                name=call.name,
+                output=f"Denied by gateway policy: {exc}",
+                is_error=True,
+                duration_ms=(time.perf_counter() - start_t) * 1000,
+            )
+        except ApprovalRequiredInterrupt as exc:
+            approval_id = exc.approval_record.get("approval_id", "unknown")
+            return ToolCallResult(
+                call_id=call.call_id,
+                name=call.name,
+                output=(
+                    f"Tool '{call.name}' requires owner approval before execution "
+                    f"(approval_id={approval_id}); no side effects were performed."
+                ),
+                is_error=True,
+                duration_ms=(time.perf_counter() - start_t) * 1000,
+            )
+        except Exception as exc:
+            return ToolCallResult(
+                call_id=call.call_id,
+                name=call.name,
+                output=f"Error: {exc}",
+                is_error=True,
+                duration_ms=(time.perf_counter() - start_t) * 1000,
+            )
+
+        is_error = False
+        if isinstance(result, dict):
+            if result.get("ok") is False:
+                is_error = True
+            elif "error" in result and bool(result["error"]):
+                is_error = True
+            elif result.get("status") in ("error", "DENIED"):
+                is_error = True
+            elif result.get("status") == "failed" and call.name not in (
+                "read_terminal", "start_process", "kill_process", "list_processes"
+            ):
+                is_error = True
+        return ToolCallResult(
+            call_id=call.call_id,
+            name=call.name,
+            output=result,
+            is_error=is_error,
+            duration_ms=(time.perf_counter() - start_t) * 1000,
+        )
+
+    # -------------------------------------------------------------------------
     # Ledger Step Recording
     # -------------------------------------------------------------------------
 
@@ -966,7 +1085,9 @@ class ReActLoop:
             )
             if lease_mgr is not None and hasattr(lease_mgr, "check_lease"):
                 try:
-                    has_lease, lease_id = lease_mgr.check_lease(call.name, call.arguments)
+                    has_lease, lease_id = lease_mgr.check_lease(
+                        call.name, call.arguments, task_id=task_id, session_id=self.session_id
+                    )
                     if has_lease:
                         policy_decision = "LEASE_APPROVED"
                 except Exception:
@@ -1220,6 +1341,38 @@ class ReActLoop:
         rule = f"- [AVOID] Rolled back workspace from {snapshot_id}{desc}. Do not re-attempt identical modification."
         self.guardrails_manager.record_avoid_invariant(rule)
 
+    def _record_dialogue(
+        self,
+        task_id: str,
+        turn_index: int,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist one dialogue row so /rewind can rebuild from the ledger (B40).
+
+        The table and writers existed but no run ever called them, so rewinds
+        always started from an empty transcript.
+        """
+        ledger = self.ledger
+        if ledger is None or not content:
+            return
+        recorder = getattr(ledger, "record_dialogue_turn", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(
+                task_id=task_id,
+                turn_index=turn_index,
+                role=role,
+                content=content[:8000],
+                metadata=metadata or {},
+            )
+        except Exception as exc:
+            self._emit_event(
+                "dialogue_persist_failed", {"role": role, "turn_index": turn_index, "error": str(exc)}
+            )
+
     def rewind_to(self, turn_spec: int | str, task_id: str | None = None) -> list[dict[str, Any]]:
         """Rewind dialogue history, internal turn state, and ledger tracking to specified turn.
         
@@ -1337,6 +1490,7 @@ class ReActLoop:
         if initial_messages:
             self.messages.extend(initial_messages)
         self.messages.append({"role": "user", "content": prompt})
+        self._record_dialogue(task_id, 0, "user", prompt)
 
         # Pre-Flight Gateway Session Hygiene (Before Turn 1)
         budget = getattr(self.config, "budget_tokens", 100_000) or 100_000
@@ -1357,6 +1511,10 @@ class ReActLoop:
         termination_reason = "max_turns"
 
         for turn_index in range(1, self.config.max_turns + 1):
+            if self._is_cancelled():
+                termination_reason = "canceled"
+                self._emit_event("session_canceled", {"turn_index": turn_index})
+                break
             turn_start = time.perf_counter()
             self._emit_event("turn_start", {"turn_index": turn_index})
 
@@ -1385,15 +1543,20 @@ class ReActLoop:
             turn_moa_res = None
             try:
                 if self.moa is not None and getattr(self.moa.config, "enabled", True):
-                    self.moa.model_caller = self.model_caller
                     current_prompt = self._format_messages_to_prompt(self.messages)
-                    turn_moa_res = self.moa.synthesize(current_prompt, messages=self.messages)
+                    turn_moa_res = self.moa.synthesize(
+                        current_prompt, messages=self.messages, cancel_check=self._is_cancelled,
+                    )
                     raw_text = turn_moa_res.synthesized_text
                     response = raw_text
                     self._record_moa_in_ledger(task_id, turn_index, turn_moa_res)
                 else:
                     response = self._call_model(self.messages)
                     raw_text = self._extract_response_text(response)
+            except MoACancelledError:
+                termination_reason = "canceled"
+                self._emit_event("session_canceled", {"turn_index": turn_index})
+                break
             except Exception as e:
                 turn_latency = (time.perf_counter() - turn_start) * 1000
                 self.turns.append(
@@ -1496,6 +1659,10 @@ class ReActLoop:
             tool_results: list[ToolCallResult] = []
 
             for seq, call in enumerate(tool_calls):
+                if self._is_cancelled():
+                    termination_reason = "canceled"
+                    self._emit_event("session_canceled", {"turn_index": turn_index, "call_id": call.call_id})
+                    break
                 # Emit tool_start event
                 self._emit_event("tool_start", {
                     "call_id": call.call_id,
@@ -1533,6 +1700,8 @@ class ReActLoop:
                     self._record_tool_call_in_ledger(task_id, turn_index, seq, call)
 
                     # Execute tool
+                    self._current_turn_index = turn_index
+                    self._current_tool_seq = seq
                     tool_res = self._execute_tool_call(call)
 
                     # Ledger step seal
@@ -1614,6 +1783,19 @@ class ReActLoop:
                 moa_result=turn_moa_res,
             )
             self.turns.append(turn)
+            self._record_dialogue(task_id, turn_index, "assistant", thought)
+            for result in tool_results:
+                self._record_dialogue(
+                    task_id,
+                    turn_index,
+                    "tool",
+                    str(getattr(result, "output", "")),
+                    {
+                        "tool": getattr(result, "name", ""),
+                        "call_id": getattr(result, "call_id", ""),
+                        "is_error": bool(getattr(result, "is_error", False)),
+                    },
+                )
             self._emit_event("turn_complete", {"turn_index": turn_index, "latency_ms": turn.latency_ms})
 
             if any(r.is_error for r in tool_results):
@@ -1640,6 +1822,15 @@ class ReActLoop:
             "reasons": list(self._friction_reasons),
             "consecutive_tool_failures": dict(self._consecutive_tool_failures),
         }
+
+        if final_answer:
+            self._record_dialogue(
+                task_id,
+                max(len(self.turns) - 1, 0),
+                "assistant",
+                final_answer,
+                {"final": True},
+            )
 
         return ReActSessionResult(
             success=success,

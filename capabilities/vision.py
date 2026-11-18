@@ -1,6 +1,8 @@
 """Multimodal Vision Engine for HEX Agent.
 
-Provides visual image analysis, diagram inspection, UI mockup validation, and screenshot diagnosis.
+Sends the real image bytes as a base64 multimodal content block through the
+model router. When no multimodal route is available the engine fails explicitly
+with the image metadata it did read, rather than inventing an analysis (B51).
 Supports local image files (PNG, JPG, WEBP, GIF, SVG) and remote HTTP/HTTPS image URLs.
 """
 
@@ -117,47 +119,79 @@ class VisionEngine:
             dimensions = get_image_metadata(data_bytes, ext)
             dim_str = f"{dimensions[0]}x{dimensions[1]}" if dimensions else "unknown"
 
-            # Convert to base64
-            b64_data = base64.b64encode(data_bytes).decode("ascii")
-            data_uri = f"data:{mime_type};base64,{b64_data[:64]}...[truncated]"
-
-            # Execute reasoning via model router if multimodal provider available
-            analysis_text = ""
-            if self.router is not None and hasattr(self.router, "execute_routed_request"):
-                try:
-                    multimodal_prompt = (
-                        f"Image: {source_label} ({mime_type}, {size_bytes} bytes, resolution {dim_str})\n"
-                        f"User Inquiry: {prompt}\n\n"
-                        f"Please provide a precise technical visual analysis."
-                    )
-                    decision, model_resp = self.router.execute_routed_request(
-                        prompt=multimodal_prompt,
-                        task_class="research",
-                        risk_class="R1",
-                    )
-                    if model_resp and hasattr(model_resp, "content"):
-                        analysis_text = model_resp.content
-                except Exception as exc:
-                    logger.warning("Router execution for vision failed, falling back to local digest: %s", exc)
-
-            if not analysis_text:
-                analysis_text = (
-                    f"Visual Inspection Summary for {source_label}:\n"
-                    f"• Format: {mime_type}\n"
-                    f"• Size: {size_bytes} bytes\n"
-                    f"• Resolution: {dim_str}\n"
-                    f"• Query: '{prompt}'\n"
-                    f"Visual structure processed cleanly."
-                )
-
-            return {
-                "ok": True,
+            metadata = {
                 "source": source_label,
                 "mime_type": mime_type,
                 "size_bytes": size_bytes,
                 "dimensions": dimensions,
                 "detail": detail,
+                "pixels_sent": False,
+                "resolution": dim_str,
+            }
+
+            def _unavailable(reason: str) -> dict[str, Any]:
+                # B51: never invent an analysis when no multimodal route ran.
+                return {
+                    "ok": False,
+                    "error": f"Vision backend unavailable: {reason}",
+                    **metadata,
+                }
+
+            if self.router is None or not hasattr(self.router, "execute_routed_request"):
+                return _unavailable(
+                    "no multimodal model router is configured; the image was not analysed"
+                )
+
+            # Send the actual pixels as a base64 data URI content block.
+            b64_data = base64.b64encode(data_bytes).decode("ascii")
+            data_uri = f"data:{mime_type};base64,{b64_data}"
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_uri, "detail": detail},
+                        },
+                    ],
+                }
+            ]
+            try:
+                decision, model_resp = self.router.execute_routed_request(
+                    prompt=f"Analyse the attached image. {prompt}",
+                    task_class="research",
+                    risk_class="R1",
+                    messages=messages,
+                )
+            except TypeError as exc:
+                return _unavailable(
+                    f"the configured router does not accept multimodal content blocks ({exc})"
+                )
+            except Exception as exc:
+                logger.warning("Multimodal vision request failed for %s: %s", source_label, exc)
+                return _unavailable(str(exc))
+
+            tier = str(getattr(decision, "tier", "") or "")
+            if tier != "tier2_cloud_reasoner":
+                return _unavailable(
+                    f"request routed to '{tier or 'unknown'}', a text-only tier that cannot receive image pixels"
+                )
+
+            analysis_text = (
+                getattr(model_resp, "content", None)
+                or getattr(model_resp, "text", None)
+                if model_resp is not None
+                else None
+            )
+            if not analysis_text:
+                return _unavailable("the multimodal model returned no analysis")
+
+            return {
+                "ok": True,
                 "analysis": analysis_text,
+                **metadata,
+                "pixels_sent": True,
             }
 
         except Exception as exc:

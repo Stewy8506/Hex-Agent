@@ -125,30 +125,6 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
     prompt_block.render(prompt_area, buf);
 
     if p_inner.height >= 3 {
-        let input_focused = app.focus == Focus::Input && !app.show_palette && !app.show_help;
-        // Cursor logic
-        let cursor_span = if input_focused && anim.cursor_visible() {
-            Span::styled("█", Style::default().fg(theme.accent_blue))
-        } else {
-            Span::raw(" ")
-        };
-
-        // Top line: Prompt text + placeholder or active text
-        let input_line = if app.input_buffer.is_empty() {
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled("> ", Style::default().fg(Color::Rgb(140, 140, 140))),
-                Span::styled(anim.placeholder_prompt(), Style::default().fg(Color::Rgb(140, 140, 140))),
-            ])
-        } else {
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled("> ", Style::default().fg(Color::Rgb(242, 242, 242))),
-                Span::styled(&app.input_buffer, Style::default().fg(Color::Rgb(242, 242, 242))),
-                cursor_span,
-            ])
-        };
-
         let mut bottom_spans = vec![
             Span::raw("  "),
             Span::styled(&app.mode, Style::default().fg(match app.mode.as_str() {
@@ -161,7 +137,7 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
         ];
 
         let left_len = 2 + app.mode.chars().count() + 3 + app.model_label().chars().count();
-        let right_label = if app.focus == Focus::Input { "enter send  " } else { "" };
+        let right_label = if app.focus == Focus::Input { "enter send · shift+enter newline  " } else { "" };
         let spaces_needed = (p_inner.width as usize)
             .saturating_sub(left_len + right_label.len());
         bottom_spans.push(Span::raw(" ".repeat(spaces_needed)));
@@ -169,13 +145,10 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
 
         let bottom_line = Line::from(bottom_spans);
 
-        // Render input on top row of inner card
-        buf.set_line(p_inner.x, p_inner.y, &input_line, p_inner.width);
-        if input_focused && app.input_buffer.is_empty() && anim.cursor_visible() && p_inner.width > 4 {
-            buf[(p_inner.x + 4, p_inner.y)]
-                .set_fg(Color::Rgb(12, 12, 12))
-                .set_bg(theme.accent_blue);
-        }
+        let input_area = Rect::new(
+            p_inner.x + 2, p_inner.y, p_inner.width.saturating_sub(2), p_inner.height - 1,
+        );
+        crate::ui::input::render_composer(app, theme, anim, input_area, anim.placeholder_prompt(), buf);
         // Render footer on bottom row of inner card
         buf.set_line(p_inner.x, p_inner.y + p_inner.height - 1, &bottom_line, p_inner.width);
     }

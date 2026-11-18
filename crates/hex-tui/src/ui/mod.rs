@@ -115,6 +115,10 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
     lines.push(Line::from(Span::styled(
+        "Shift+Enter inserts a newline; bracketed paste stays editable until Enter sends.",
+        Style::default().fg(s.muted),
+    )));
+    lines.push(Line::from(Span::styled(
         "Wheel scrolls the pane under the pointer; drag the sidebar divider to resize.",
         Style::default().fg(s.muted),
     )));

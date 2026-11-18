@@ -538,6 +538,9 @@ class TestOrchestratorAgentLoop(unittest.TestCase):
         self.orch = HarnessOrchestrator(data_dir=self.data_dir, default_workspace=self.ws)
         if hasattr(self.orch, "router") and self.orch.router:
             self.orch.router.cloud_provider = None
+        # These cases exercise the deterministic demo planner (B03): it is only
+        # reachable under explicit demo mode now.
+        self.orch.demo_mode = True
 
     def tearDown(self) -> None:
         if hasattr(self.orch, "ledger") and self.orch.ledger:

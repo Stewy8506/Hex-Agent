@@ -5,7 +5,10 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -84,7 +87,7 @@ async fn main() -> Result<()> {
     setup_panic_hook();
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -324,7 +327,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
         ));
     }
     app.enforce_transcript_budget();
-    let mut events = EventHandler::new(50);
+    let mut events = EventHandler::new(50)?;
     let event_tx = events.sender();
 
     let notification_task = if let Some(client) = &acp_client {
@@ -380,6 +383,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         handle_key_event(&mut app, key, acp_client.as_ref(), event_tx.clone())
                             .await?;
                     }
+                    AppEvent::Paste(text) => handle_paste_event(&mut app, &text),
                     AppEvent::Mouse(mouse) => {
                         let term_rect = terminal.size()
                             .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))?;
@@ -452,6 +456,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         app.busy_started_at = None;
                         app.status_message = "Ready".to_string();
                     }
+                    AppEvent::TerminalError(err) => return Err(anyhow::anyhow!(err)),
                     AppEvent::Error(err) => {
                         app.close_running_tool_calls();
                         app.clear_approval_request();
@@ -641,6 +646,23 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent, area: 
     }
 }
 
+fn handle_paste_event(app: &mut App, text: &str) {
+    if app.active_approval.is_some() || app.active_subagent_modal.is_some()
+        || app.show_help || app.sidebar.show_settings
+    {
+        return;
+    }
+    let text: String = text.replace("\r\n", "\n").replace('\r', "\n")
+        .chars().filter(|c| !c.is_control() || matches!(*c, '\n' | '\t')).collect();
+    if app.show_palette {
+        for c in text.chars() {
+            app.palette_push_char(if c == '\n' || c == '\t' { ' ' } else { c });
+        }
+    } else if app.focus == Focus::Input {
+        app.insert_text(&text);
+    }
+}
+
 /// Process keyboard inputs.
 async fn handle_key_event(
     app: &mut App,
@@ -648,6 +670,10 @@ async fn handle_key_event(
     acp_client: Option<&AcpClient>,
     event_tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<()> {
+    if key.kind != KeyEventKind::Press {
+        return Ok(());
+    }
+
     // Global hotkeys: Ctrl+C cancels an in-flight turn first; a second
     // Ctrl+C while cancelling (or Ctrl+C when idle) quits the application.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -829,6 +855,7 @@ async fn handle_key_event(
     // Focus-specific key actions
     match app.focus {
         Focus::Input => match key.code {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => app.insert_char('\n'),
             KeyCode::Enter => {
                 if app.is_busy {
                     app.status_message = "Agent busy - please wait... (Esc to cancel)".to_string();
@@ -1550,7 +1577,7 @@ fn setup_panic_hook() {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste);
         original_hook(panic_info);
     }));
 }
@@ -1560,7 +1587,8 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
     Ok(())
@@ -1583,6 +1611,70 @@ mod wire_contract_tests {
     use super::*;
     use hex_protocol::models::Role;
     use hex_tui::app::DialogueItem;
+
+    #[tokio::test]
+    async fn release_and_repeat_keys_never_edit_submit_or_trigger_hotkeys() {
+        for kind in [KeyEventKind::Release, KeyEventKind::Repeat] {
+            for (code, modifiers) in [
+                (KeyCode::Char('x'), KeyModifiers::NONE),
+                (KeyCode::Enter, KeyModifiers::NONE),
+                (KeyCode::Char('c'), KeyModifiers::CONTROL),
+                (KeyCode::Char('p'), KeyModifiers::CONTROL),
+                (KeyCode::F(3), KeyModifiers::NONE),
+            ] {
+                let mut app = App::new("p", "m", "cow");
+                app.insert_text("世界");
+                let (tx, _) = tokio::sync::mpsc::channel(8);
+                handle_key_event(&mut app, crossterm::event::KeyEvent::new_with_kind(code, modifiers, kind), None, tx)
+                    .await.unwrap();
+                assert_eq!(app.input_buffer, "世界");
+                assert_eq!(app.cursor_pos, 2);
+                assert!(app.command_history.is_empty());
+                assert!(!app.should_quit && !app.show_palette && !app.cancel_requested);
+                assert_eq!(app.mode, "agent");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn paste_and_shift_enter_remain_editable_until_plain_enter() {
+        let mut app = App::new("p", "m", "cow");
+        let (tx, _) = tokio::sync::mpsc::channel(8);
+        handle_paste_event(&mut app, "first\r\n世界");
+        handle_key_event(&mut app, crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), None, tx.clone())
+            .await.unwrap();
+        handle_paste_event(&mut app, "third");
+        assert_eq!(app.input_buffer, "first\n世界\nthird");
+        assert_eq!(app.cursor_pos, app.input_buffer.chars().count());
+        assert!(app.command_history.is_empty());
+        assert!(!app.is_busy);
+        handle_key_event(&mut app, crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), None, tx)
+            .await.unwrap();
+        assert_eq!(app.command_history, vec!["first\n世界\nthird"]);
+        assert!(app.input_buffer.is_empty());
+    }
+
+    #[test]
+    fn paste_respects_cursor_focus_and_modal_boundaries() {
+        let mut app = App::new("p", "m", "cow");
+        app.insert_text("left-right");
+        app.cursor_pos = 5;
+        handle_paste_event(&mut app, "世\r\n界\t\0\u{1b}");
+        assert_eq!(app.input_buffer, "left-世\n界\tright");
+        assert_eq!(app.cursor_pos, 9);
+        app.show_help = true;
+        handle_paste_event(&mut app, "ignored");
+        app.show_help = false;
+        app.focus = Focus::Resume;
+        handle_paste_event(&mut app, "ignored");
+        assert_eq!(app.input_buffer, "left-世\n界\tright");
+        app.open_palette();
+        handle_paste_event(&mut app, "/diff\n/help");
+        assert_eq!(app.palette_query, "/diff /help");
+        assert!(app.show_palette);
+        assert!(!app.show_diff);
+        assert!(app.command_history.is_empty());
+    }
 
     #[test]
     fn history_summary_preserves_unicode_lengths_and_navigation() {

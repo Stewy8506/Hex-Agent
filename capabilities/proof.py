@@ -10,12 +10,14 @@ Implements:
 
 from __future__ import annotations
 
+import os
 import platform
+import shutil
 import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from harness_core.storage.cow import IGNORE_DIRS, WorkspaceSnapshotProvider
 from harness_core.storage.db import LedgerStore, canonical_json, sha256_hex, utcnow_iso
@@ -55,18 +57,73 @@ class VerificationAndProofService:
         if b_path == h_path:
             return sha256_hex(""), ""
 
-        cmd = ["/usr/bin/diff", "-ruN"]
-        for ign in sorted(IGNORE_DIRS):
-            cmd.extend(["-x", ign])
-        cmd.extend(["-x", ".DS_Store", "-x", "*.pyc", str(b_path), str(h_path)])
-        res = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        diff_text = res.stdout[:64_000]
+        diff_bin = shutil.which("diff")
+        if diff_bin is None and sys.platform != "win32":
+            posix_diff = Path("/usr/bin/diff")
+            if posix_diff.is_file():
+                diff_bin = str(posix_diff)
+        if diff_bin is not None:
+            cmd = [diff_bin, "-ruN"]
+            for ign in sorted(IGNORE_DIRS):
+                cmd.extend(["-x", ign])
+            cmd.extend(["-x", ".DS_Store", "-x", "*.pyc", str(b_path), str(h_path)])
+            try:
+                res = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=15,
+                )
+                diff_text = res.stdout[:64_000]
+                return sha256_hex(diff_text), diff_text
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+        # Portable fallback: deterministic in-process unified diff (no external
+        # binary required; keeps proof generation working on Windows/macOS-min).
+        diff_text = self._python_tree_diff(b_path, h_path)[:64_000]
         return sha256_hex(diff_text), diff_text
+
+    @staticmethod
+    def _python_tree_diff(base: Path, head: Path) -> str:
+        import difflib
+
+        def _walk(root: Path) -> dict[str, Path]:
+            entries: dict[str, Path] = {}
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
+                for fname in sorted(filenames):
+                    if fname == ".DS_Store" or fname.startswith(".DS_Store") or fname.endswith((".pyc", ".db-wal", ".db-shm")):
+                        continue
+                    p = Path(dirpath) / fname
+                    entries[p.relative_to(root).as_posix()] = p
+            return entries
+
+        def _read_lines(p: Path) -> list[str]:
+            try:
+                return p.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+            except OSError:
+                return []
+
+        base_files = _walk(base)
+        head_files = _walk(head)
+        chunks: list[str] = []
+        for rel in sorted(set(base_files) | set(head_files)):
+            a_lines = _read_lines(base_files[rel]) if rel in base_files else []
+            b_lines = _read_lines(head_files[rel]) if rel in head_files else []
+            if a_lines == b_lines:
+                continue
+            chunks.extend(
+                difflib.unified_diff(
+                    a_lines,
+                    b_lines,
+                    fromfile=f"a/{rel}" if rel in base_files else "/dev/null",
+                    tofile=f"b/{rel}" if rel in head_files else "/dev/null",
+                )
+            )
+        return "".join(chunks)
 
     def run_verification_and_build_proof(
         self,
@@ -77,7 +134,10 @@ class VerificationAndProofService:
         workspace_dir: Path | str,
         modified_files: list[str] | None = None,
         run_tests: bool = True,
+        authority_check: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        if authority_check:
+            authority_check()
         ws = Path(workspace_dir).resolve()
         base = Path(base_snapshot_path).resolve()
         if not modified_files and base == ws:
@@ -151,6 +211,8 @@ class VerificationAndProofService:
             f"python:{platform.python_version()}|arch:{platform.machine()}|cow:{self.cow.backend_name}"
         )
 
+        if authority_check:
+            authority_check()
         proof = self.ledger.save_proof_bundle(
             task_id=task_id,
             attempt_id=attempt_id,

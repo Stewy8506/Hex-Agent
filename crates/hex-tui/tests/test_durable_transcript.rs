@@ -201,15 +201,16 @@ fn metadata_failure_does_not_shorten_and_stream_failure_keeps_new_delta() {
     let mut app = workspace.app("delta_failure");
     app.add_assistant_message(&original);
     let root = app.transcript_store.as_ref().unwrap().path().to_path_buf();
-    let moved = workspace.0.join("saved_archive");
-    std::fs::rename(&root, &moved).unwrap();
+    let moved = workspace.0.join("saved_archive.txt");
+    std::fs::rename(root.join("0.txt"), &moved).unwrap();
+    std::fs::create_dir(root.join("0.txt")).unwrap();
     let delta = "not lost 𐐷".repeat(20_000);
     app.append_assistant_delta(&delta);
     assert!(app.transcript_error.is_some());
     assert!(displayed(&app).ends_with(&delta));
     assert!(displayed(&app).len() > MESSAGE_DISPLAY_BYTES);
     assert_eq!(
-        std::fs::read_to_string(moved.join("0.txt")).unwrap(),
+        std::fs::read_to_string(moved).unwrap(),
         original
     );
 }

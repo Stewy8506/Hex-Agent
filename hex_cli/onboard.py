@@ -148,7 +148,12 @@ def run_onboard_wizard(
     print(f"  Hardware Model:     {profile.machine_model}")
     print(f"  System Memory:      {profile.ram_gb} GB RAM")
     print(f"  CoW Snapshot Mode:  {profile.cow_backend}")
-    print(f"  Execution Sandbox:  {profile.sandbox_backend}")
+    sandbox_mode = (
+        "trusted local execution — no filesystem confinement"
+        if profile.sandbox_backend == "restricted_subprocess"
+        else "confined"
+    )
+    print(f"  Execution Sandbox:  {profile.sandbox_backend} ({sandbox_mode})")
     if profile.is_apple_silicon:
         print("  Local Acceleration: Metal (Apple Silicon)")
     elif profile.has_cuda:

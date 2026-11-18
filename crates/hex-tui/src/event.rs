@@ -1,9 +1,13 @@
 //! Event handling and asynchronous multiplexing for terminal and backend protocol events.
 
-use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, MouseEvent};
+#[cfg(not(windows))]
+use crossterm::event::{Event as CrosstermEvent, EventStream};
+use crossterm::event::{KeyEvent, MouseEvent};
+#[cfg(not(windows))]
 use futures::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+#[cfg(not(windows))]
 use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
 
@@ -13,6 +17,7 @@ use hex_protocol::models::SubagentInfo;
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    Paste(String),
     Mouse(MouseEvent),
     Resize(u16, u16),
     Tick,
@@ -23,29 +28,37 @@ pub enum AppEvent {
     Subagents(Result<Vec<SubagentInfo>, String>),
     Ready,
     Error(String),
+    TerminalError(String),
 }
 
 pub struct EventHandler {
     rx: mpsc::Receiver<AppEvent>,
     tx: mpsc::Sender<AppEvent>,
     input: mpsc::Receiver<AppEvent>,
+    #[cfg(not(windows))]
     input_task: JoinHandle<()>,
+    #[cfg(windows)]
+    input_reader: Option<crate::windows_input::WindowsInput>,
     ticks: Interval,
 }
 
 impl EventHandler {
-    pub fn new(tick_rate_ms: u64) -> Self {
+    pub fn new(tick_rate_ms: u64) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel(128);
         let (input_tx, input) = mpsc::channel(32);
+        #[cfg(windows)]
+        let input_reader = Some(crate::windows_input::WindowsInput::spawn(input_tx)?);
+        #[cfg(not(windows))]
         let input_task = tokio::spawn(async move {
             let mut reader = EventStream::new();
             while let Some(event) = reader.next().await {
                 let event = match event {
                     Ok(CrosstermEvent::Key(key)) => Some(AppEvent::Key(key)),
+                    Ok(CrosstermEvent::Paste(text)) => Some(AppEvent::Paste(text)),
                     Ok(CrosstermEvent::Mouse(mouse)) => Some(AppEvent::Mouse(mouse)),
                     Ok(CrosstermEvent::Resize(w, h)) => Some(AppEvent::Resize(w, h)),
                     Ok(_) => None,
-                    Err(err) => Some(AppEvent::Error(err.to_string())),
+                    Err(err) => Some(AppEvent::TerminalError(err.to_string())),
                 };
                 if let Some(event) = event {
                     if input_tx.send(event).await.is_err() {
@@ -56,13 +69,16 @@ impl EventHandler {
         });
         let mut ticks = tokio::time::interval(Duration::from_millis(tick_rate_ms));
         ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        Self {
+        Ok(Self {
             rx,
             tx,
             input,
+            #[cfg(not(windows))]
             input_task,
+            #[cfg(windows)]
+            input_reader,
             ticks,
-        }
+        })
     }
 
     pub fn sender(&self) -> mpsc::Sender<AppEvent> {
@@ -81,7 +97,11 @@ impl EventHandler {
 
 impl Drop for EventHandler {
     fn drop(&mut self) {
+        self.input.close();
+        #[cfg(not(windows))]
         self.input_task.abort();
+        #[cfg(windows)]
+        self.input_reader.take();
     }
 }
 
@@ -137,12 +157,16 @@ mod tests {
             )))
             .await
             .unwrap();
+        #[cfg(not(windows))]
         let input_task = tokio::spawn(std::future::pending());
         let mut events = EventHandler {
             rx,
             tx,
             input,
+            #[cfg(not(windows))]
             input_task,
+            #[cfg(windows)]
+            input_reader: None,
             ticks: tokio::time::interval(Duration::from_millis(50)),
         };
         assert!(matches!(events.next().await, Some(AppEvent::Key(_))));

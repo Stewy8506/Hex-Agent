@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from harness_core.storage.cow import get_default_snapshot_provider
 from harness_core.storage.db import ConcurrencyFenceError, LedgerStore
@@ -141,7 +141,10 @@ class WorkerClient(Protocol):
         fencing_token: int | None = None,
     ) -> dict[str, Any]: ...
 
-    def execute_task(self, task_id: str, worker_id: str | None = None) -> dict[str, Any]: ...
+    def execute_task(
+        self, task_id: str, worker_id: str | None = None,
+        fence_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]: ...
 
     def list_artifacts(self, task_id: str) -> list[dict[str, Any]]: ...
 
@@ -211,10 +214,23 @@ class DirectLedgerWorkerClient:
             fencing_token=fencing_token,
         )
 
-    def execute_task(self, task_id: str, worker_id: str | None = None) -> dict[str, Any]:
+    def execute_task(
+        self, task_id: str, worker_id: str | None = None,
+        fence_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        if fence_check and fence_check():
+            raise ConcurrencyFenceError("Worker execution fenced")
         if self.orch is not None:
-            return self.orch.execute_task(task_id, worker_id=worker_id)
-        return self.transition_task(task_id, TaskState.SUCCEEDED, reason_code="WORKER_DIRECT_EXECUTION")
+            return self.orch.execute_task(task_id, worker_id=worker_id, fence_check=fence_check)
+        # B11: without an orchestrator there is no execution backend. Fail closed
+        # instead of manufacturing a SUCCEEDED record for work never performed.
+        return self.ledger.transition_task(
+            task_id,
+            TaskState.FAILED,
+            reason_code="WORKER_NO_EXECUTION_BACKEND",
+            actor="worker",
+            terminal_reason="No orchestrator available; task was not executed.",
+        )
 
     def list_artifacts(self, task_id: str) -> list[dict[str, Any]]:
         return self.ledger.list_artifacts(task_id)
@@ -379,8 +395,12 @@ class RestWorkerClient:
             req_body["fencing_token"] = fencing_token
         return self._request("POST", f"/v1/tasks/{task_id}:transition", req_body)
 
-    def execute_task(self, task_id: str, worker_id: str | None = None) -> dict[str, Any]:
-        # For remote REST workers, check task status
+    def execute_task(
+        self, task_id: str, worker_id: str | None = None,
+        fence_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        if fence_check and fence_check():
+            raise ConcurrencyFenceError("Worker execution fenced")
         return self.get_task(task_id) or {}
 
     def list_artifacts(self, task_id: str) -> list[dict[str, Any]]:
@@ -440,6 +460,7 @@ class WorkerDaemon:
         self.orchestrator = orchestrator or getattr(client, "orch", None)
 
         self._stop_event = threading.Event()
+        self._state_lock = threading.Lock()
         self._heartbeat_thread: threading.Thread | None = None
         self.current_task_id: str | None = None
         self.current_lease_id: str | None = None
@@ -449,6 +470,8 @@ class WorkerDaemon:
 
     def start(self) -> None:
         """Registers with the control plane and starts the background heartbeat loop."""
+        if self.fenced:
+            raise ConcurrencyFenceError("Fenced worker cannot restart")
         if self._is_started:
             return
         self.client.register_worker(
@@ -474,44 +497,50 @@ class WorkerDaemon:
         while not self._stop_event.is_set():
             if self._stop_event.wait(timeout=beat_interval):
                 break
+            with self._state_lock:
+                lease_id = self.current_lease_id
+                token = self.current_fencing_token
             try:
                 self.client.heartbeat(self.worker_id)
-                if self.current_lease_id is not None and self.current_fencing_token is not None:
+                if lease_id is not None and token is not None:
                     self.client.renew_lease(
-                        lease_id=self.current_lease_id,
-                        fencing_token=self.current_fencing_token,
+                        lease_id=lease_id,
+                        fencing_token=token,
                         ttl_seconds=self.lease_ttl,
                     )
             except (ConcurrencyFenceError, KeyError) as exc:
-                self.fenced = True
+                with self._state_lock:
+                    if (lease_id, token) != (self.current_lease_id, self.current_fencing_token):
+                        continue
+                    self.fenced = True
+                    self._stop_event.set()
                 logger.warning(
                     "Worker %s was fenced out on lease %s (token %s): %s",
-                    self.worker_id,
-                    self.current_lease_id,
-                    self.current_fencing_token,
-                    exc,
+                    self.worker_id, lease_id, token, exc,
                 )
             except Exception as exc:
                 logger.error("Heartbeat error on worker %s: %s", self.worker_id, exc)
 
     def _claim_loop(self, once: bool = False) -> None:
         """Continuously claims tasks from the queue and executes them."""
-        while not self._stop_event.is_set():
+        while not self._stop_event.is_set() and not self.fenced:
             try:
                 claimed = self.client.claim_task(self.worker_id, ttl_seconds=self.lease_ttl)
                 if claimed:
-                    task_id = claimed["task_id"]
-                    self.current_task_id = task_id
-                    self.current_lease_id = claimed.get("lease_id")
-                    self.current_fencing_token = claimed.get("fencing_token")
-                    self.fenced = False
+                    with self._state_lock:
+                        if self.fenced or self._stop_event.is_set():
+                            break
+                        self.current_task_id = claimed["task_id"]
+                        self.current_lease_id = claimed.get("lease_id")
+                        self.current_fencing_token = claimed.get("fencing_token")
 
                     try:
                         self.execute_claimed_task(claimed)
                     finally:
-                        self.current_task_id = None
-                        self.current_lease_id = None
-                        self.current_fencing_token = None
+                        with self._state_lock:
+                            self.current_task_id = None
+                            self.current_lease_id = None
+                            self.current_fencing_token = None
 
                     if once:
                         break
@@ -520,6 +549,11 @@ class WorkerDaemon:
                         break
                     self._maybe_run_idle_gc()
                     self._stop_event.wait(timeout=self.poll_interval)
+            except ConcurrencyFenceError as exc:
+                self.fenced = True
+                self._stop_event.set()
+                logger.warning("Worker %s execution fenced: %s", self.worker_id, exc)
+                break
             except Exception as exc:
                 logger.error("Task claim loop error on %s: %s", self.worker_id, exc)
                 if once:
@@ -529,13 +563,17 @@ class WorkerDaemon:
     def execute_claimed_task(self, task: dict[str, Any]) -> dict[str, Any]:
         """Executes a claimed task using local orchestrator or delegated client."""
         task_id = task["task_id"]
+        fence_check = lambda: self.fenced or self._stop_event.is_set()
+        if fence_check():
+            raise ConcurrencyFenceError("Worker execution fenced")
         if self.orchestrator is not None:
             return self.orchestrator.execute_task(
                 task_id,
                 worker_id=self.worker_id,
                 lease_info=task if "attempt_id" in task else None,
+                fence_check=fence_check,
             )
-        return self.client.execute_task(task_id, worker_id=self.worker_id)
+        return self.client.execute_task(task_id, worker_id=self.worker_id, fence_check=fence_check)
 
     def _maybe_run_idle_gc(self) -> None:
         """Throttled non-blocking GC sweep during worker idle window."""

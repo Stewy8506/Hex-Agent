@@ -3,9 +3,12 @@
 Provides containment for untrusted tool invocations and code evaluation:
 - BubblewrapSandbox: Linux unprivileged user namespace containment (bwrap) with network isolation.
 - DockerPodmanSandbox: OCI container containment with read-only root and network isolation.
-- RestrictedSubprocessSandbox: Portable POSIX/macOS fallback enforcing workspace boundaries,
-  environment credential stripping, process group management, and resource limits.
-- get_default_sandbox: Platform detection factory with safe fallback.
+- RestrictedSubprocessSandbox: TRUSTED LOCAL EXECUTION, not a containment boundary.
+  It validates cwd, strips credential environment variables, and applies process-group
+  and resource limits, but the child keeps the host user's full filesystem authority.
+- get_default_sandbox: Platform detection factory. Falls back to trusted local
+  execution unless require_confinement (or HEX_REQUIRE_CONFINEMENT=1) demands a
+  real containment backend, in which case it fails closed.
 """
 
 from __future__ import annotations
@@ -24,6 +27,11 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
+
+
+class ConfinementUnavailableError(RuntimeError):
+    """Raised when confinement is required but no containment backend is available."""
+
 
 SENSITIVE_ENV_PATTERN: re.Pattern[str] = re.compile(
     r"(?i)(API_KEY|SECRET|TOKEN|PASS|PASSWORD|AUTH|CREDENTIAL|PRIVATE|AWS_|GITHUB_|GH_|HARNESS_)"
@@ -82,6 +90,7 @@ class SandboxResult:
     violation_reason: str | None = None
     sandbox_backend: str = "restricted_subprocess"
     duration_ms: float = 0.0
+    confined: bool = False
 
 
 @runtime_checkable
@@ -107,6 +116,7 @@ def _run_confined_subprocess(
     env: dict[str, str],
     timeout: float,
     backend_name: str,
+    confined: bool = False,
 ) -> SandboxResult:
     """Runs a subprocess inside a dedicated process group with POSIX resource limits and clean timeouts."""
     t0 = time.perf_counter()
@@ -172,6 +182,7 @@ def _run_confined_subprocess(
             violation_reason=None,
             sandbox_backend=backend_name,
             duration_ms=duration_ms,
+            confined=confined,
         )
     except Exception as exc:
         duration_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -188,9 +199,18 @@ def _run_confined_subprocess(
 
 
 class RestrictedSubprocessSandbox:
-    """Safe, portable fallback sandbox for macOS and environments without container tools."""
+    """Trusted local execution for macOS and environments without container tools.
+
+    NOT a containment boundary: the child process retains the host user's
+    filesystem authority and can read/write outside the workspace even with a
+    valid cwd. Provides cwd validation, credential environment stripping,
+    process-group management, and resource limits only. Callers that require
+    real confinement must use Bubblewrap/Docker or fail closed via
+    get_default_sandbox(require_confinement=True).
+    """
 
     backend_name: str = "restricted_subprocess"
+    provides_confinement: bool = False
 
     def __init__(self, allowed_root: Path | str | None = None) -> None:
         self.allowed_root = Path(allowed_root).resolve() if allowed_root is not None else None
@@ -260,6 +280,7 @@ class BubblewrapSandbox:
     """Linux Bubblewrap (bwrap) unprivileged user namespace container sandbox."""
 
     backend_name: str = "bubblewrap"
+    provides_confinement: bool = True
 
     def __init__(
         self,
@@ -388,6 +409,7 @@ class BubblewrapSandbox:
             env=sanitized_env,
             timeout=timeout,
             backend_name=self.backend_name,
+            confined=True,
         )
 
 
@@ -395,6 +417,7 @@ class DockerPodmanSandbox:
     """OCI container sandbox using Docker or Podman with network isolation and read-only root."""
 
     backend_name: str = "docker"
+    provides_confinement: bool = True
 
     def __init__(
         self,
@@ -501,17 +524,30 @@ class DockerPodmanSandbox:
             env=sanitized_env,
             timeout=timeout,
             backend_name=self.backend_name,
+            confined=True,
         )
 
 
-def get_default_sandbox(workspace_dir: Path | str | None = None) -> ExecutionSandbox:
+def get_default_sandbox(
+    workspace_dir: Path | str | None = None,
+    require_confinement: bool = False,
+) -> ExecutionSandbox:
     """Auto-detects and instantiates the strongest available execution sandbox.
 
     Priority:
-    1. BubblewrapSandbox (Linux with bwrap installed)
-    2. DockerPodmanSandbox (functional Docker or Podman daemon)
-    3. RestrictedSubprocessSandbox (portable POSIX/macOS fallback)
+    1. BubblewrapSandbox (Linux with bwrap installed) — confined
+    2. DockerPodmanSandbox (functional Docker or Podman daemon) — confined
+    3. RestrictedSubprocessSandbox — trusted local execution, NOT confined
+
+    When require_confinement is True (or HEX_REQUIRE_CONFINEMENT=1 is set),
+    fails closed with ConfinementUnavailableError instead of falling back to
+    trusted local execution.
     """
+    if not require_confinement:
+        require_confinement = os.environ.get("HEX_REQUIRE_CONFINEMENT", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
     if BubblewrapSandbox.is_available():
         logger.info("Selected BubblewrapSandbox for container isolation")
         return BubblewrapSandbox(allowed_root=workspace_dir)
@@ -520,5 +556,14 @@ def get_default_sandbox(workspace_dir: Path | str | None = None) -> ExecutionSan
         logger.info("Selected DockerPodmanSandbox for container isolation")
         return DockerPodmanSandbox(allowed_root=workspace_dir)
 
-    logger.info("Selected RestrictedSubprocessSandbox fallback for execution isolation")
+    if require_confinement:
+        raise ConfinementUnavailableError(
+            "Confinement is required (require_confinement/HEX_REQUIRE_CONFINEMENT) but no "
+            "containment backend is available: install bubblewrap (Linux) or a working "
+            "Docker/Podman daemon. Refusing to fall back to trusted local execution."
+        )
+
+    logger.info(
+        "Selected RestrictedSubprocessSandbox: trusted local execution without filesystem confinement"
+    )
     return RestrictedSubprocessSandbox(allowed_root=workspace_dir)

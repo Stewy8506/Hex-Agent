@@ -30,16 +30,28 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 from harness_core.cognition.context_compressor import CHARS_PER_TOKEN, elide_middle, estimate_messages_tokens
-from harness_core.storage.cow import APFSAndPortableCoWProvider, WorkspaceSnapshotProvider, get_default_snapshot_provider
-from harness_core.storage.db import LedgerStore, utcnow_iso
+from harness_core.storage.cow import (
+    APFSAndPortableCoWProvider,
+    PublicationConflictError,
+    WorkspaceSnapshotProvider,
+    get_default_snapshot_provider,
+)
+from harness_core.storage.db import ConcurrencyFenceError, LedgerStore, utcnow_iso
 from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
 from harness_core.graphify import ActiveGraphifyAdapter
 from harness_core.lsp.manager import LSPManager
-from harness_core.core.models import PlanNode, TaskBudget, TaskState, TaskSubmitRequest
+from harness_core.core.models import (
+    PlanNode,
+    TaskBudget,
+    TaskState,
+    TaskSubmitRequest,
+    select_runnable_step,
+)
 from harness_core.capabilities.proof import Harness2ControlledAdapter, VerificationAndProofService
 from harness_core.cognition.prompt_builder import PromptBuilder
 from harness_core.providers.base import BudgetExceededError
 from harness_core.core.react_loop import ReActConfig, ReActLoop, ReActSessionResult, ReActTurn
+from harness_core.core.moa import ProposerConfig
 from harness_core.core.router import GovernedMemoryService, TwoTierModelRouter
 from harness_core.storage.sandbox import ExecutionSandbox, get_default_sandbox
 from harness_core.skills.executor import SecurityError, SkillExecutionEngine
@@ -79,6 +91,108 @@ def _needs_workspace_scan(goal: str) -> bool:
     return any(re.search(rf"\b{re.escape(kw)}\b", g_lower) for kw in _WORKSPACE_SCAN_KEYWORDS)
 
 
+_ACTION_KEYWORDS = (
+    "implement",
+    "create",
+    "write",
+    "add",
+    "fix",
+    "build",
+    "refactor",
+    "modify",
+    "update",
+    "delete",
+    "remove",
+    "generate",
+    "install",
+    "deploy",
+    "rename",
+    "patch",
+    "edit",
+)
+
+
+def _goal_requires_action(goal: str) -> bool:
+    """True when a goal asks for implementation/mutation rather than conversation."""
+    g = (goal or "").lower()
+    return any(re.search(rf"\b{re.escape(k)}\b", g) for k in _ACTION_KEYWORDS)
+
+
+def _observation_indicates_failure(output: str) -> bool:
+    """Detect a failed tool observation (ok=false, nonzero exit, timeout, violation)."""
+    text = (output or "").strip()
+    if not text:
+        return False
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        if parsed.get("ok") is False:
+            return True
+        exit_code = parsed.get("exit_code")
+        if isinstance(exit_code, (int, float)) and exit_code != 0:
+            return True
+        return parsed.get("timed_out") is True or parsed.get("violation_detected") is True
+    low = text.lower()
+    if re.search(r'"ok"\s*:\s*false', low):
+        return True
+    m = re.search(r'"exit_code"\s*:\s*(-?\d+)', low)
+    return bool(m and int(m.group(1)) != 0)
+
+
+class ProviderUnavailableError(RuntimeError):
+    """Inference is unavailable (no router, no active provider, outage, or empty response).
+
+    Raised instead of silently fabricating completion so the ReAct loop reports
+    an explicit failure. The deterministic demo planner is only reachable when
+    demo mode is explicitly enabled (B03).
+    """
+
+
+class TerminalTaskReentryError(RuntimeError):
+    """Raised when execution is requested for a task that already reached a terminal state (B44)."""
+
+
+def format_conversation_history(conv_history: list[Any], limit: int = 10) -> str:
+    """Render prior turns, including structured tool rows, for the model prompt (B41).
+
+    Flattening turns to plain user/assistant text dropped tool results and
+    reasoning; tool rows are rendered explicitly instead.
+    """
+    turns: list[str] = []
+    for turn in conv_history[-limit:]:
+        if not isinstance(turn, dict):
+            continue
+        role = str(turn.get("role") or "user").strip().lower()
+        content = str(turn.get("content") or "").strip()
+        if role == "tool":
+            if not content:
+                continue
+            name = str(turn.get("tool") or "tool")
+            status = str(turn.get("status") or "complete")
+            turns.append(f"Tool {name} ({status}): {content[:1200]}")
+            continue
+        if role == "reasoning":
+            if content:
+                turns.append(f"Reasoning: {content[:1200]}")
+            continue
+        if not content:
+            continue
+        turns.append(f"{role.capitalize()}: {content[:1500]}")
+    if not turns:
+        return ""
+    return "Conversation so far:\n" + "\n".join(turns) + "\n\n"
+
+
+class DemoGoalNotAchievedError(RuntimeError):
+    """The explicit demo planner could not perform the requested work.
+
+    Used for failed tool observations and unmatched implementation goals so a
+    zero-effect demo run never reports verified success (B03).
+    """
+
+
 class HarnessOrchestrator:
     """End-to-end orchestrator wiring Ledger, CoW, Gateway, Graphify, SkillSpector, and Proof services."""
 
@@ -93,6 +207,7 @@ class HarnessOrchestrator:
         library_root: Path | str | None = None,
         soul_manager: SoulManager | None = None,
         moa_config: Any | None = None,
+        demo_mode: bool = False,
     ):
         if str(data_dir) == ":memory:":
             self._temp_mem_dir = tempfile.TemporaryDirectory(prefix="harness_mem_")
@@ -131,11 +246,21 @@ class HarnessOrchestrator:
         )
         self.scanner = SkillSpectorScanner(self.ledger)
         self.router = TwoTierModelRouter()
+        # The gateway needs the router for multimodal vision and delegated
+        # child execution; it is constructed before the router exists.
+        self.gateway.router = self.router
+        self.demo_mode = bool(demo_mode) or os.environ.get("HEX_DEMO_MODE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         self.subagent_manager = SubagentManager(
             ledger=self.ledger,
             cow=self.cow,
             router=self.router,
             gateway=self.gateway,
+            demo_mode=self.demo_mode,
         )
         self.gateway.subagent_manager = self.subagent_manager
         self.memory = GovernedMemoryService(self.ledger, graphify=self.graphify)
@@ -188,6 +313,7 @@ class HarnessOrchestrator:
                 "ram_gb": profile.ram_gb,
                 "sandbox": True,
                 "sandbox_backend": self.sandbox.backend_name,
+                "sandbox_confined": getattr(self.sandbox, "provides_confinement", False),
             },
             local_llm_models=[self.router.local_model_id],
             trust_level="trusted_local",
@@ -195,6 +321,76 @@ class HarnessOrchestrator:
 
         self._cancel_events: dict[str, threading.Event] = {}
         self._cancel_events_lock = threading.Lock()
+
+        # B44: a task left RUNNING by a crashed process has no live worker.
+        try:
+            self.reconcile_orphaned_tasks()
+        except Exception as exc:
+            logger.warning("Startup orphan reconciliation failed: %s", exc)
+
+    @staticmethod
+    def _is_terminal_status(status: Any) -> bool:
+        try:
+            return TaskState(str(status)).is_terminal
+        except ValueError:
+            return False
+
+    def reconcile_orphaned_tasks(self) -> list[str]:
+        """Settle tasks left RUNNING/SPECULATING without a live worker lease (B44).
+
+        Orphan recovery previously relied on a later worker claim; startup now
+        reconciles them explicitly so a terminal re-entry cannot follow.
+        """
+        reconciled: list[str] = []
+        now = utcnow_iso()
+        for status_value, target in (
+            (TaskState.RUNNING.value, TaskState.RETRY_WAIT),
+            (TaskState.SPECULATING.value, TaskState.NEEDS_ATTENTION),
+        ):
+            try:
+                tasks = self.ledger.list_tasks(status=status_value, limit=500)
+            except Exception as exc:
+                logger.warning("Could not list %s tasks for reconciliation: %s", status_value, exc)
+                continue
+            for task in tasks:
+                task_id = task.get("task_id")
+                if not task_id:
+                    continue
+                lease: dict[str, Any] | None = None
+                try:
+                    for attempt in reversed(self.ledger.list_attempts(task_id)):
+                        lease_id = attempt.get("lease_id")
+                        if not lease_id:
+                            continue
+                        lease = self.ledger.get_lease(lease_id)
+                        if lease is not None:
+                            break
+                except Exception as exc:
+                    logger.debug("Lease lookup failed for %s: %s", task_id, exc)
+                lease_live = bool(
+                    lease
+                    and not lease.get("released_at")
+                    and str(lease.get("expires_at") or "") > now
+                )
+                if lease_live:
+                    continue
+                try:
+                    self.ledger.transition_task(
+                        task_id,
+                        target,
+                        reason_code="ORPHANED_TASK_RECONCILED",
+                        terminal_reason=(
+                            "Task was left without a live worker lease and was reconciled at startup"
+                        ),
+                        payload={
+                            "prior_status": status_value,
+                            "lease_id": lease.get("lease_id") if lease else None,
+                        },
+                    )
+                    reconciled.append(task_id)
+                except Exception as exc:
+                    logger.warning("Could not reconcile orphaned task %s: %s", task_id, exc)
+        return reconciled
 
     def _cancel_event(self, task_id: str) -> threading.Event:
         with self._cancel_events_lock:
@@ -615,6 +811,7 @@ class HarnessOrchestrator:
         extra_rules: str = "",
         curated_memory: str = "",
         moa_config: Any | None = None,
+        demo_mode: bool | None = None,
     ) -> dict[str, Any]:
         """Execute an autonomous continuous multi-turn ReAct tool loop (Hermes Parity Pillar 1).
 
@@ -662,20 +859,25 @@ class HarnessOrchestrator:
                 pass
 
         # Build model caller with router and deterministic fallback
+        demo = bool(self.demo_mode if demo_mode is None else demo_mode)
+
         def _react_model_caller(messages: list[dict[str, Any]]) -> str:
-            # 1. Try router if available and configured with active provider
-            if hasattr(self, "router") and self.router is not None:
+            # 1. Try router if available and configured with active provider.
+            # Without explicit demo mode, inference unavailable/outage/empty must
+            # fail loudly rather than fabricate completion (B03).
+            router = getattr(self, "router", None)
+            if router is not None:
                 cloud_avail = False
-                if hasattr(self.router, "cloud_provider") and self.router.cloud_provider is not None:
-                    if hasattr(self.router.cloud_provider, "is_available"):
-                        try:
-                            cloud_avail = bool(self.router.cloud_provider.is_available())
-                        except Exception:
-                            cloud_avail = False
+                cloud_provider = getattr(router, "cloud_provider", None)
+                if cloud_provider is not None and hasattr(cloud_provider, "is_available"):
+                    try:
+                        cloud_avail = bool(cloud_provider.is_available())
+                    except Exception:
+                        cloud_avail = False
                 if cloud_avail:
                     try:
                         prompt_str = ReActLoop._format_messages_to_prompt(messages)
-                        decision, model_resp = self.router.execute_routed_request(
+                        decision, model_resp = router.execute_routed_request(
                             prompt=prompt_str,
                             task_class="agent_loop",
                             risk_class="R2",
@@ -683,14 +885,28 @@ class HarnessOrchestrator:
                             workspace_dir=effective_ws,
                             max_tokens=4096,
                         )
-                        if model_resp and getattr(model_resp, "text", None):
-                            resp_text = model_resp.text.strip()
-                            if resp_text:
-                                return resp_text
-                    except Exception:
-                        pass
+                        resp_text = (getattr(model_resp, "text", "") or "").strip() if model_resp else ""
+                        if resp_text:
+                            return resp_text
+                        if not demo:
+                            raise ProviderUnavailableError(
+                                "Provider returned an empty response; inference unavailable."
+                            )
+                    except ProviderUnavailableError:
+                        raise
+                    except Exception as exc:
+                        if not demo:
+                            raise ProviderUnavailableError(f"Provider request failed: {exc}") from exc
+                        logger.warning("Provider request failed; using deterministic demo fallback: %s", exc)
+                elif not demo:
+                    raise ProviderUnavailableError("No active cloud provider available for inference.")
+            elif not demo:
+                raise ProviderUnavailableError(
+                    "No model router configured; inference unavailable. "
+                    "Enable demo mode for the deterministic fallback planner."
+                )
 
-            # 2. Deterministic tool planner fallback
+            # 2. Deterministic tool planner fallback (explicit demo mode only)
             last_msg_content = ""
             for m in reversed(messages):
                 if m.get("role") in ("user", "observation", "tool"):
@@ -706,7 +922,12 @@ class HarnessOrchestrator:
                 )
                 if obs_m:
                     tool_n = obs_m.group("tool") or "tool"
-                    obs_snippet = obs_m.group("output")[:300].strip()
+                    obs_output = obs_m.group("output")
+                    if _observation_indicates_failure(obs_output):
+                        raise DemoGoalNotAchievedError(
+                            f"Tool '{tool_n}' reported failure; goal not achieved: {obs_output[:300].strip()}"
+                        )
+                    obs_snippet = obs_output[:300].strip()
                     return f"<finish>Goal '{goal}' completed successfully. Observation from {tool_n}: {obs_snippet}</finish>"
                 return f"<finish>Goal '{goal}' completed successfully based on tool observation.</finish>"
 
@@ -746,8 +967,35 @@ class HarnessOrchestrator:
                 if "run_tests" in tools_dict:
                     return '<thought>Executing test suite</thought>\n<tool_call>{"name": "run_tests", "arguments": {}}</tool_call>'
 
-            # Default conversational conclusion if no tool matched
-            return f"<finish>Completed goal: {goal}</finish>"
+            # No tool matched. Never fabricate completion for an implementation
+            # request; a zero-effect demo run must not report verified success (B03).
+            if _goal_requires_action(goal):
+                raise DemoGoalNotAchievedError(
+                    f"Deterministic demo planner mapped no tool to goal; no work performed: {goal}"
+                )
+            return (
+                "No available tool matched this request in demo mode, so no action was taken. "
+                f"Goal: {goal}"
+            )
+
+        def _moa_route_caller(messages: list[dict[str, Any]], proposer: ProposerConfig) -> Any:
+            router = getattr(self, "router", None)
+            if router is not None:
+                try:
+                    return router.generate_for_route(
+                        prompt=ReActLoop._format_messages_to_prompt(messages),
+                        model=proposer.model or None,
+                        provider=proposer.provider,
+                        temperature=proposer.temperature,
+                        max_tokens=proposer.max_tokens,
+                        timeout_seconds=proposer.timeout_seconds,
+                        system_prompt=system_directive,
+                        workspace_dir=effective_ws,
+                    )
+                except ProviderUnavailableError:
+                    if not demo:
+                        raise
+            return _react_model_caller(messages)
 
         effective_moa_cfg = moa_config if moa_config is not None else getattr(self, "moa_config", None)
         react_cfg = ReActConfig(
@@ -775,11 +1023,13 @@ class HarnessOrchestrator:
 
         loop = ReActLoop(
             model_caller=_react_model_caller,
+            moa_caller=_moa_route_caller,
             gateway=self.gateway,
             workspace_root=effective_ws,
             config=react_cfg,
             ledger=self.ledger,
             context_compactor=compactor,
+            cancel_check=lambda: self.is_cancel_requested(active_task_id),
         )
 
         session_res = loop.run(prompt=goal, task_id=active_task_id)
@@ -787,9 +1037,22 @@ class HarnessOrchestrator:
         # Record completion in ledger
         if hasattr(self, "ledger") and self.ledger is not None:
             try:
-                final_state = TaskState.SUCCEEDED if session_res.success else TaskState.FAILED
-                reason = "REACT_LOOP_SUCCESS" if session_res.success else "REACT_LOOP_TERMINATED"
-                if hasattr(self.ledger, "transition_task"):
+                # B47: terminal-state CAS. A canceled (or otherwise already-terminal)
+                # task must not be overwritten with a manufactured SUCCEEDED/FAILED
+                # outcome by late finalization. Read the authoritative status first.
+                current = self.ledger.get_task(active_task_id) if hasattr(self.ledger, "get_task") else None
+                terminal_states = {
+                    TaskState.SUCCEEDED.value,
+                    TaskState.FAILED.value,
+                    TaskState.CANCELED.value,
+                    TaskState.REJECTED.value,
+                    TaskState.EXPIRED.value,
+                }
+                already_terminal = bool(current and current.get("status") in terminal_states)
+                canceled = session_res.termination_reason == "canceled" or (
+                    bool(current) and current.get("status") == TaskState.CANCELED.value
+                )
+                if not already_terminal and not canceled and hasattr(self.ledger, "transition_task"):
                     if session_res.success:
                         self.ledger.transition_task(
                             active_task_id,
@@ -814,9 +1077,9 @@ class HarnessOrchestrator:
                         task_id=active_task_id,
                         event_type="REACT_SESSION_COMPLETED",
                         payload={
-                            "success": session_res.success,
+                            "success": session_res.success and not canceled,
                             "turns_count": session_res.total_turns,
-                            "termination_reason": session_res.termination_reason,
+                            "termination_reason": "canceled" if canceled else session_res.termination_reason,
                             "final_answer": session_res.final_answer,
                         },
                     )
@@ -935,19 +1198,33 @@ class HarnessOrchestrator:
             return self.execute_task(task_id)
         return self.ledger.get_task(task_id)  # type: ignore[return-value]
 
+    @staticmethod
+    def _check_execution_fence(fence_check: Callable[[], bool] | None) -> None:
+        if fence_check and fence_check():
+            raise ConcurrencyFenceError("Worker execution fenced; attempt must stop")
+
     def execute_task(
         self,
         task_id: str,
         worker_id: str | None = None,
         lease_info: dict[str, Any] | None = None,
+        fence_check: Callable[[], bool] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        self._check_execution_fence(fence_check)
         task = self.ledger.get_task(task_id)
         if not task:
             raise KeyError(f"Task not found: {task_id}")
-
+        if str(task.get("status")) == TaskState.CANCELED.value:
+            # Cancellation is idempotent: replaying it never re-enters the task.
+            return task
         if self.is_cancel_requested(task_id):
             return self._finalize_canceled(task_id, attempt_id=None)
+        if self._is_terminal_status(task.get("status")):
+            raise TerminalTaskReentryError(
+                f"Task {task_id} is {task['status']} and will not be executed again; "
+                "submit a new task instead."
+            )
 
         wrk = worker_id or self.default_worker_id
         constraints = task.get("constraints") or {}
@@ -956,9 +1233,11 @@ class HarnessOrchestrator:
 
         # Fast-Path Express Lane (FR-001a): bypasses DAG planning ceremony for R0/R1 tasks
         if task["execution_mode"] == "fast_path":
-            return self._execute_fast_path(task, source_ws, wrk, lease_info=lease_info, **kwargs)
+            return self._execute_fast_path(
+                task, source_ws, wrk, lease_info=lease_info, fence_check=fence_check, **kwargs,
+            )
 
-        return self._execute_standard_dag(task, source_ws, wrk, lease_info=lease_info)
+        return self._execute_standard_dag(task, source_ws, wrk, lease_info=lease_info, fence_check=fence_check)
 
     def _execute_fast_path(
         self,
@@ -966,8 +1245,10 @@ class HarnessOrchestrator:
         source_ws: Path,
         worker_id: str,
         lease_info: dict[str, Any] | None = None,
+        fence_check: Callable[[], bool] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        self._check_execution_fence(fence_check)
         task_id = task["task_id"]
         base_tree_sha = ""
         try:
@@ -1017,23 +1298,13 @@ class HarnessOrchestrator:
             steps = []
 
         conv_history = (task.get("constraints") or {}).get("conversation_history") or []
-        history_block = ""
-        if conv_history:
-            turns = []
-            for turn in conv_history[-10:]:
-                if not isinstance(turn, dict):
-                    continue
-                role = str(turn.get("role") or "user").capitalize()
-                content = str(turn.get("content") or "")[:1500]
-                if content:
-                    turns.append(f"{role}: {content}")
-            if turns:
-                history_block = "Conversation so far:\n" + "\n".join(turns) + "\n\n"
+        history_block = format_conversation_history(conv_history)
 
         tool_results: list[dict[str, Any]] = []
         tool_cb = kwargs.get("tool_callback")
         try:
             for idx, st in enumerate(steps, start=1):
+                self._check_execution_fence(fence_check)
                 if self.is_cancel_requested(task_id):
                     return self._finalize_canceled(task_id, attempt_id)
                 tid = st["tool_id"]
@@ -1049,8 +1320,10 @@ class HarnessOrchestrator:
                         tool_id=tid,
                         args=st.get("args", {}),
                         workspace_dir=source_ws,
+                        fencing_token=fencing_token,
                     )
-                except (PolicyBlockedError, ApprovalRequiredInterrupt):
+                    self._check_execution_fence(fence_check)
+                except (PolicyBlockedError, ApprovalRequiredInterrupt, ConcurrencyFenceError):
                     # Operator-facing policy outcomes are reported by the
                     # approval flow, not as a tool diagnostic.
                     raise
@@ -1068,6 +1341,7 @@ class HarnessOrchestrator:
                     "result": inv_res,
                 })
         except PolicyBlockedError as exc:
+            self._check_execution_fence(fence_check)
             self.ledger.update_attempt(attempt_id, status="FAILED", failure_class="POLICY_BLOCKED")
             return self.ledger.transition_task(
                 task_id,
@@ -1094,6 +1368,7 @@ class HarnessOrchestrator:
 
         # Synthesize model response using active LLM / router if available
         synthesized_text = ""
+        self._check_execution_fence(fence_check)
         if self.is_cancel_requested(task_id):
             return self._finalize_canceled(task_id, attempt_id)
         if hasattr(self, "router") and self.router is not None:
@@ -1166,9 +1441,12 @@ class HarnessOrchestrator:
                     if model_resp and getattr(model_resp, "text", None):
                         from harness_core.cognition.memory import sanitize_context
                         synthesized_text = sanitize_context(model_resp.text).strip()
+                except ConcurrencyFenceError:
+                    raise
                 except Exception as synth_exc:
                     synthesized_text = f"I completed task execution, but encountered an error synthesizing the response: {synth_exc}"
 
+        self._check_execution_fence(fence_check)
         self.ledger.transition_task(
             task_id,
             TaskState.VERIFYING,
@@ -1183,7 +1461,9 @@ class HarnessOrchestrator:
             workspace_dir=source_ws,
             modified_files=[],
             run_tests=False,
+            authority_check=lambda: self._check_execution_fence(fence_check),
         )
+        self._check_execution_fence(fence_check)
         self.ledger.update_attempt(
             attempt_id,
             status="SUCCEEDED",
@@ -1200,6 +1480,7 @@ class HarnessOrchestrator:
             except Exception:
                 pass
 
+        self._check_execution_fence(fence_check)
         return self.ledger.transition_task(
             task_id,
             TaskState.SUCCEEDED,
@@ -1888,7 +2169,9 @@ class HarnessOrchestrator:
         source_ws: Path,
         worker_id: str,
         lease_info: dict[str, Any] | None = None,
+        fence_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
+        self._check_execution_fence(fence_check)
         task_id = task["task_id"]
         constraints = task.get("constraints") or {}
 
@@ -1922,6 +2205,7 @@ class HarnessOrchestrator:
             completed_step_ids = set()
             self.cow.clone_to_workspace(base_snap_path, attempt_ws)
 
+        self._check_execution_fence(fence_check)
         # Auto-detect workspace recipe and inject into task context
         from harness_core.capabilities.recipes import detect_recipe
         detected_recipe = detect_recipe(attempt_ws)
@@ -1955,6 +2239,7 @@ class HarnessOrchestrator:
                     risk_class="R1",
                 ).to_dict(),
             ]
+            self._check_execution_fence(fence_check)
             plan = self.ledger.save_plan(task_id, req_steps, rationale=f"DAG plan for: {task['goal']}")
             self.ledger.transition_task(
                 task_id,
@@ -1994,28 +2279,49 @@ class HarnessOrchestrator:
 
         modified_files: list[str] = []
         replan_count = 0
-        max_replans = 20
+        try:
+            max_replans = max(0, int((task.get("constraints") or {}).get("max_replans", 20)))
+        except (TypeError, ValueError):
+            max_replans = 20
 
         try:
             while True:
+                self._check_execution_fence(fence_check)
                 if self.is_cancel_requested(task_id):
                     return self._finalize_canceled(task_id, attempt_id)
                 # Find the next runnable node: not yet completed, with all depends_on completed
-                runnable_node = None
-                for n in dag_nodes:
-                    sid = n.get("step_id")
-                    if sid in completed_step_ids and not n.get("has_unsealed_calls"):
-                        continue
-                    deps = n.get("depends_on") or []
-                    if all(d in completed_step_ids for d in deps):
-                        runnable_node = n
-                        break
+                runnable_node, unresolved_deps = select_runnable_step(
+                    dag_nodes, completed_step_ids
+                )
 
                 if runnable_node is None:
                     pending = [n for n in dag_nodes if n.get("step_id") not in completed_step_ids]
                     if not pending:
                         break  # All nodes executed successfully
-                    runnable_node = pending[0]
+                    # B06: every remaining node has an unsatisfied dependency.
+                    # Never run an out-of-order node; pause for attention.
+                    attention_snap = self.cow.create_snapshot(
+                        attempt_ws, label=f"{task_id}_dag_unsatisfied"
+                    )
+                    self.ledger.update_attempt(
+                        attempt_id,
+                        status="FAILED",
+                        head_tree_sha=attention_snap.workspace_tree_sha,
+                        failure_class="DAG_UNSATISFIED_DEPENDENCIES",
+                    )
+                    return self.ledger.transition_task(
+                        task_id,
+                        TaskState.NEEDS_ATTENTION,
+                        reason_code="DAG_UNSATISFIED_DEPENDENCIES",
+                        attempt_id=attempt_id,
+                        workspace_tree_sha=attention_snap.workspace_tree_sha,
+                        fencing_token=fencing_token,
+                        terminal_reason=(
+                            "DAG cannot make progress; unsatisfied dependencies: "
+                            f"{unresolved_deps}"
+                        ),
+                        payload={"unresolved_dependencies": unresolved_deps},
+                    )
 
                 node = runnable_node
                 step_id = node.get("step_id")
@@ -2055,6 +2361,7 @@ class HarnessOrchestrator:
                         if p not in modified_files:
                             modified_files.append(p)
 
+                self._check_execution_fence(fence_check)
                 if "actual_modified_files" in node:
                     for f in node["actual_modified_files"]:
                         p = str(f)
@@ -2093,6 +2400,7 @@ class HarnessOrchestrator:
                     except Exception:
                         pass
 
+                self._check_execution_fence(fence_check)
                 if unexpected_side_effects or explicit_replan or blast_new_callers:
                     if replan_count < max_replans:
                         replan_count += 1
@@ -2105,7 +2413,40 @@ class HarnessOrchestrator:
                             completed_step_ids=completed_step_ids,
                         )
                         dag_nodes = list(plan.get("dag") or [])
+                    else:
+                        # B09: divergence persists after the replan budget is
+                        # exhausted. Stop and hand the task back for attention
+                        # instead of continuing to mutate unverified work.
+                        budget_snap = self.cow.create_snapshot(
+                            attempt_ws, label=f"{task_id}_replan_budget_exhausted"
+                        )
+                        self.ledger.update_attempt(
+                            attempt_id,
+                            status="FAILED",
+                            head_tree_sha=budget_snap.workspace_tree_sha,
+                            failure_class="REPLAN_BUDGET_EXHAUSTED",
+                        )
+                        return self.ledger.transition_task(
+                            task_id,
+                            TaskState.NEEDS_ATTENTION,
+                            reason_code="REPLAN_BUDGET_EXHAUSTED",
+                            attempt_id=attempt_id,
+                            workspace_tree_sha=budget_snap.workspace_tree_sha,
+                            fencing_token=fencing_token,
+                            terminal_reason=(
+                                f"Replan budget exhausted ({max_replans}) while divergence "
+                                f"persisted after step '{step_id}'"
+                            ),
+                            payload={
+                                "step_id": step_id,
+                                "replan_count": replan_count,
+                                "unexpected_side_effects": sorted(actual - declared),
+                                "explicit_replan": explicit_replan,
+                                "blast_radius_new_callers": blast_new_callers,
+                            },
+                        )
 
+                self._check_execution_fence(fence_check)
                 pending_ids = [n.get("step_id", "") for n in dag_nodes if n.get("step_id", "") not in completed_step_ids]
                 step_snap = self.cow.create_snapshot(attempt_ws, label=f"{task_id}_{step_id}")
                 delta_info = self.export_workspace_delta(task_id, attempt_ws)
@@ -2121,6 +2462,7 @@ class HarnessOrchestrator:
                 )
 
         except ApprovalRequiredInterrupt as apr_int:
+            self._check_execution_fence(fence_check)
             # Seal CoW checkpoint and pause in WAITING_APPROVAL
             chk_snap = self.cow.create_snapshot(attempt_ws, label=f"{task_id}_wait_approval")
             delta_info = self.export_workspace_delta(task_id, attempt_ws)
@@ -2150,6 +2492,7 @@ class HarnessOrchestrator:
             )
 
         except PolicyBlockedError as pol_err:
+            self._check_execution_fence(fence_check)
             # Roll back uncommitted CoW changes to last valid snapshot
             reverted_sha = self.cow.rollback_workspace(attempt_ws, base_snap_path)
             self.ledger.update_attempt(
@@ -2169,6 +2512,7 @@ class HarnessOrchestrator:
             )
 
         except BudgetExceededError as budget_err:
+            self._check_execution_fence(fence_check)
             forensic_snap = self.cow.create_snapshot(
                 attempt_ws, label=f"{task_id}_budget_exhausted"
             )
@@ -2194,7 +2538,10 @@ class HarnessOrchestrator:
                 },
             )
 
+        except ConcurrencyFenceError:
+            raise
         except Exception as crash_exc:
+            self._check_execution_fence(fence_check)
             logger.error("Step execution crash in _execute_standard_dag: %s", crash_exc, exc_info=True)
             # Roll back dirty uncommitted files in attempt_ws to latest valid snapshot (FR-012a)
             latest_valid = self.ledger.get_latest_checkpoint(task_id)
@@ -2217,6 +2564,7 @@ class HarnessOrchestrator:
                 payload={"error": str(crash_exc), "restored_snapshot": str(snap_to_restore)},
             )
 
+        self._check_execution_fence(fence_check)
         # Transition to VERIFYING and generate Proof-Carrying Artifact Bundle (FR-018, FR-022)
         head_sha = self.cow.compute_tree_sha(attempt_ws)
         self.ledger.transition_task(
@@ -2229,6 +2577,7 @@ class HarnessOrchestrator:
         )
 
         preflight = self._run_compiler_preflight(attempt_ws, modified_files)
+        self._check_execution_fence(fence_check)
         if not preflight["passed"]:
             failure_digest = (
                 f"Compiler Diagnostic Pre-Flight Failed ({preflight['error_count']} compiler/syntax error(s)):\n"
@@ -2261,9 +2610,11 @@ class HarnessOrchestrator:
                 workspace_dir=attempt_ws,
                 modified_files=modified_files,
                 run_tests=True,
+                authority_check=lambda: self._check_execution_fence(fence_check),
             )
 
         # Post-edit deterministic skill verification hooks (FR-039 / F-01)
+        self._check_execution_fence(fence_check)
         if ver_outcome["passed"]:
             skill_ver = self._run_skill_verifications(
                 task_id=task_id,
@@ -2299,6 +2650,7 @@ class HarnessOrchestrator:
         budget_exceeded = False
 
         while not ver_outcome["passed"] and repair_attempt < max_repair_retries:
+            self._check_execution_fence(fence_check)
             # Check budget limits
             tracker = getattr(self.router.cloud_provider, "budget_tracker", None)
             if tracker is not None:
@@ -2348,6 +2700,7 @@ class HarnessOrchestrator:
                 budget_exceeded = True
                 break
 
+            self._check_execution_fence(fence_check)
             # Apply repair patch operations to attempt_ws
             if patch_ops:
                 repair_step_id = f"repair_{repair_attempt}"
@@ -2377,6 +2730,7 @@ class HarnessOrchestrator:
                             step_id=repair_step_id,
                             workspace_dir=attempt_ws,
                             operations=normalized_ops,
+                            fencing_token=fencing_token,
                         )
                         for op in normalized_ops:
                             if op.get("tool_id") == "write_file" and "path" in op.get("args", {}):
@@ -2387,6 +2741,7 @@ class HarnessOrchestrator:
                         budget_exceeded = True
                         break
 
+            self._check_execution_fence(fence_check)
             # Transition state machine: RUNNING -> VERIFYING
             curr_sha = self.cow.compute_tree_sha(attempt_ws)
             self.ledger.transition_task(
@@ -2401,6 +2756,7 @@ class HarnessOrchestrator:
 
             # Re-execute verification
             preflight = self._run_compiler_preflight(attempt_ws, modified_files)
+            self._check_execution_fence(fence_check)
             if not preflight["passed"]:
                 failure_digest = (
                     f"Compiler Diagnostic Pre-Flight Failed ({preflight['error_count']} compiler/syntax error(s)):\n"
@@ -2433,8 +2789,10 @@ class HarnessOrchestrator:
                     workspace_dir=attempt_ws,
                     modified_files=modified_files,
                     run_tests=True,
+                    authority_check=lambda: self._check_execution_fence(fence_check),
                 )
 
+            self._check_execution_fence(fence_check)
             # Re-execute skill verification in repair loop
             if ver_outcome["passed"]:
                 skill_ver = self._run_skill_verifications(
@@ -2460,6 +2818,7 @@ class HarnessOrchestrator:
                         },
                     }
 
+        self._check_execution_fence(fence_check)
         if not ver_outcome["passed"]:
             forensic_snap = self.cow.create_snapshot(
                 attempt_ws, label=f"{task_id}_repair_exhausted_att{repair_attempt}"
@@ -2514,10 +2873,38 @@ class HarnessOrchestrator:
                 },
             )
 
-        # Sync verified workspace back to source_ws if R2 modifications succeeded
+        # Publish only the verified delta into source_ws (B01): preserve Git metadata,
+        # local Hex state, venvs, and concurrent user work; stop on conflict.
         if modified_files:
-            self.cow.clone_to_workspace(attempt_ws, source_ws)
+            try:
+                self._check_execution_fence(fence_check)
+                self.cow.publish_delta(base_snap_path, attempt_ws, source_ws)
+            except PublicationConflictError as conflict:
+                forensic_snap = self.cow.create_snapshot(
+                    attempt_ws, label=f"{task_id}_publication_conflict"
+                )
+                self.ledger.update_attempt(
+                    attempt_id,
+                    status="FAILED",
+                    head_tree_sha=forensic_snap.workspace_tree_sha,
+                    failure_class="PUBLICATION_CONFLICT",
+                )
+                return self.ledger.transition_task(
+                    task_id,
+                    TaskState.NEEDS_ATTENTION,
+                    reason_code="PUBLICATION_CONFLICT",
+                    attempt_id=attempt_id,
+                    workspace_tree_sha=forensic_snap.workspace_tree_sha,
+                    fencing_token=fencing_token,
+                    terminal_reason=str(conflict),
+                    payload={
+                        "conflicting_paths": conflict.conflicts,
+                        "forensic_snapshot_path": str(forensic_snap.snapshot_path),
+                        "modified_files": modified_files,
+                    },
+                )
 
+        self._check_execution_fence(fence_check)
         head_sha = self.cow.compute_tree_sha(attempt_ws)
         self.ledger.update_attempt(attempt_id, status="SUCCEEDED", head_tree_sha=head_sha)
         ast_impact_dict = ver_outcome.get("ast_impact") or {}
@@ -2607,6 +2994,7 @@ class HarnessOrchestrator:
         except Exception as e:
             logger.warning("Post-task memory promotion check failed: %s", e)
 
+        self._check_execution_fence(fence_check)
         return self.ledger.transition_task(
             task_id,
             TaskState.SUCCEEDED,
@@ -2639,6 +3027,12 @@ class HarnessOrchestrator:
         task = self.ledger.get_task(task_id)
         if not task:
             raise KeyError(f"Task not found: {task_id}")
+        if str(task.get("status")) == TaskState.CANCELED.value:
+            return task
+        if self._is_terminal_status(task.get("status")):
+            raise TerminalTaskReentryError(
+                f"Task {task_id} is {task['status']} and cannot be resumed; submit a new task instead."
+            )
         if task["status"] in (
             TaskState.PAUSED.value,
             TaskState.RETRY_WAIT.value,
@@ -2658,6 +3052,14 @@ class HarnessOrchestrator:
         if not task:
             raise KeyError(f"Task not found: {task_id}")
         self._cancel_event(task_id).set()
+        # B12: fan cancellation out to live child subagents so a canceled parent
+        # does not leave orphaned children running.
+        mgr = getattr(self, "subagent_manager", None)
+        if mgr is not None and hasattr(mgr, "interrupt_children_of"):
+            try:
+                mgr.interrupt_children_of(task_id)
+            except Exception as exc:
+                logger.debug("Cancel fan-out to subagents of %s failed: %s", task_id, exc)
         if task["status"] == TaskState.CANCELED.value:
             return task
         chk = self.ledger.get_latest_checkpoint(task_id)
@@ -2784,7 +3186,28 @@ class HarnessOrchestrator:
         reflected_experience: dict[str, str] | None = None
         experience_entry_path: Path | None = None
         if winner:
-            self.cow.clone_to_workspace(winner["workspace_path"], source_ws)
+            try:
+                self.cow.publish_delta(base_snap_path, winner["workspace_path"], source_ws)
+            except PublicationConflictError as conflict:
+                return {
+                    "task": self.ledger.transition_task(
+                        task_id,
+                        TaskState.NEEDS_ATTENTION,
+                        reason_code="PUBLICATION_CONFLICT",
+                        attempt_id=winner["attempt_id"],
+                        workspace_tree_sha=winner["head_tree_sha"],
+                        terminal_reason=str(conflict),
+                        payload={
+                            "conflicting_paths": conflict.conflicts,
+                            "winning_branch": winner["branch_label"],
+                        },
+                    ),
+                    "winning_branch": winner["branch_label"],
+                    "branches": outcomes,
+                    "discarded_branches": discarded,
+                    "experience": None,
+                    "experience_entry_path": None,
+                }
             # Automatically distill contrastive speculative branch lesson into Harness2 Experience Library
             if discarded:
                 exp_domain = task.get("domain") or constraints.get("domain") or "general"

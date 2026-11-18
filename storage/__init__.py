@@ -12,6 +12,7 @@ _SYMBOL_MAP: dict[str, str] = {
     'compute_event_hash': 'db',
     'normalize_query': 'db',
     'normalize_param': 'db',
+    'ClaimTransactionError': 'db',
     'ConcurrencyFenceError': 'db',
     'InvalidTransitionError': 'db',
     'ChainIntegrityReport': 'db',

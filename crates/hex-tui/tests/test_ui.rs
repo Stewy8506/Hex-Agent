@@ -7,6 +7,48 @@ use hex_tui::app::{App, Focus};
 use hex_tui::ui;
 
 #[test]
+fn recalled_unicode_history_keeps_character_cursor_indices() {
+    let mut app = App::new("p", "m", "cow");
+    app.command_history = vec!["first世".into(), "🙂e\u{301}界".into()];
+    app.history_up();
+    assert_eq!(app.cursor_pos, 4);
+    app.delete_char();
+    assert_eq!(app.input_buffer, "🙂e\u{301}");
+    assert_eq!(app.cursor_pos, 3);
+    app.move_cursor_start();
+    app.delete_char_forward();
+    app.insert_text("世界");
+    assert_eq!(app.input_buffer, "世界e\u{301}");
+    assert_eq!(app.cursor_pos, 2);
+    app.move_cursor_end();
+    assert_eq!(app.cursor_pos, 4);
+    app.history_up();
+    assert_eq!(app.input_buffer, "first世");
+    assert_eq!(app.cursor_pos, 6);
+    app.history_down();
+    assert_eq!(app.input_buffer, "🙂e\u{301}界");
+    assert_eq!(app.cursor_pos, 4);
+}
+
+#[test]
+fn multiline_composer_renders_on_both_active_screens() {
+    for screen in [hex_tui::app::ScreenState::Start, hex_tui::app::ScreenState::Session] {
+        let mut app = App::new("p", "m", "cow");
+        app.switch_screen(screen);
+        app.insert_text("line-one\n世界line-two");
+        let mut terminal = Terminal::new(TestBackend::new(100, 36)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buffer.area.height)
+            .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let first = rows.iter().position(|row| row.contains("line-one")).unwrap();
+        let second = rows.iter().position(|row| row.contains("line-two")).unwrap();
+        assert_eq!(second, first + 1);
+    }
+}
+
+#[test]
 fn test_cockpit_full_layout_rendering() {
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).expect("Failed to create TestBackend");

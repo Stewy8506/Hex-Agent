@@ -242,10 +242,11 @@ class TestInteractiveDecisionEndpoint(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def test_get_decision_approve_html(self) -> None:
+    def test_post_decision_approve_html(self) -> None:
         status, body, ct = self.app.handle_request(
-            "GET",
-            f"/v1/approvals/{self.apr_id}:decide?decision=approve&comment=All+tests+green",
+            "POST",
+            f"/v1/approvals/{self.apr_id}:decide",
+            body={"decision": "approve", "comment": "All tests green"},
             headers={"Accept": "text/html"},
         )
         self.assertEqual(status, 200)
@@ -261,10 +262,11 @@ class TestInteractiveDecisionEndpoint(unittest.TestCase):
         self.assertEqual(record["decision"], "APPROVED")
         self.assertEqual(record["comment"], "All tests green")
 
-    def test_get_decision_reject_html(self) -> None:
+    def test_post_decision_reject_html(self) -> None:
         status, body, ct = self.app.handle_request(
-            "GET",
-            f"/v1/approvals/{self.apr_id}:decide?decision=reject&comment=Security+audit+required",
+            "POST",
+            f"/v1/approvals/{self.apr_id}:decide",
+            body={"decision": "reject", "comment": "Security audit required"},
             headers={"Accept": "text/html"},
         )
         self.assertEqual(status, 200)
@@ -275,6 +277,42 @@ class TestInteractiveDecisionEndpoint(unittest.TestCase):
 
         record = self.orch.ledger.list_approvals(task_id=self.task_id)[0]
         self.assertEqual(record["decision"], "REJECTED")
+
+    def test_get_renders_confirmation_without_deciding(self) -> None:
+        """B46: GET never records a decision, even with decision in the query."""
+        status, body, ct = self.app.handle_request(
+            "GET",
+            f"/v1/approvals/{self.apr_id}:decide?decision=approve",
+            headers={"Accept": "text/html"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", ct)
+        self.assertIn("Confirm authorization decision", str(body))
+        self.assertIn('method="POST"', str(body))
+
+        record = self.orch.ledger.list_approvals(task_id=self.task_id)[0]
+        self.assertEqual(record["decision"], "PENDING")
+
+    def test_get_json_client_gets_405(self) -> None:
+        status, body, _ = self.app.handle_request(
+            "GET",
+            f"/v1/approvals/{self.apr_id}:decide?decision=approve",
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(status, 405)
+        record = self.orch.ledger.list_approvals(task_id=self.task_id)[0]
+        self.assertEqual(record["decision"], "PENDING")
+
+    def test_post_without_decision_is_rejected_not_approved(self) -> None:
+        """B46: an omitted decision must never default to APPROVED."""
+        status, body, _ = self.app.handle_request(
+            "POST",
+            f"/v1/approvals/{self.apr_id}:decide",
+            body={},
+        )
+        self.assertEqual(status, 400)
+        record = self.orch.ledger.list_approvals(task_id=self.task_id)[0]
+        self.assertEqual(record["decision"], "PENDING")
 
     def test_post_decision_json(self) -> None:
         status, body, ct = self.app.handle_request(
@@ -356,10 +394,23 @@ class TestEndToEndApprovalWorkflow(unittest.TestCase):
         self.assertEqual(len(approvals), 1)
         apr_id = approvals[0]["approval_id"]
 
-        # Simulate user clicking Approve from Telegram/Discord link
-        status, html_page, ct = self.app.handle_request(
+        # Simulate user clicking the link from Telegram/Discord: GET lands on a
+        # confirmation page (no decision), then the operator explicitly POSTs.
+        status, confirm_page, ct = self.app.handle_request(
             "GET",
-            f"/v1/approvals/{apr_id}:decide?decision=approve&comment=Approved+by+oncall",
+            f"/v1/approvals/{apr_id}:decide",
+            headers={"Accept": "text/html"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", ct)
+        self.assertIn("Confirm authorization decision", str(confirm_page))
+        still_pending = self.orch.ledger.list_approvals(task_id=task["task_id"], decision="PENDING")
+        self.assertEqual(len(still_pending), 1)
+
+        status, html_page, ct = self.app.handle_request(
+            "POST",
+            f"/v1/approvals/{apr_id}:decide",
+            body={"decision": "approve", "comment": "Approved by oncall"},
             headers={"Accept": "text/html"},
         )
         self.assertEqual(status, 200)

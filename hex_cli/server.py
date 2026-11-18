@@ -25,7 +25,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from harness_core.client.dashboard import DASHBOARD_HTML
-from harness_core.storage.db import ConcurrencyFenceError
+from harness_core.storage.db import ClaimTransactionError, ConcurrencyFenceError
 from harness_core.core.models import TaskSubmitRequest
 from harness_core.core.orchestrator import HarnessOrchestrator
 
@@ -193,7 +193,17 @@ class HarnessAPIApp:
             if method == "POST" and route == "/v1/tasks/claim":
                 worker_id = str(body.get("worker_id", "worker-default"))
                 ttl_seconds = int(body.get("ttl_seconds", 300))
-                claimed = self.orch.ledger.claim_next_task(worker_id=worker_id, ttl_seconds=ttl_seconds)
+                try:
+                    claimed = self.orch.ledger.claim_next_task(
+                        worker_id=worker_id, ttl_seconds=ttl_seconds
+                    )
+                except ClaimTransactionError as exc:
+                    logger.warning("Task claim could not start a transaction: %s", exc)
+                    return (
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": "claim_unavailable", "detail": str(exc)},
+                        "application/json",
+                    )
                 if claimed:
                     return (HTTPStatus.OK, claimed, "application/json")
                 return (HTTPStatus.OK, {"task": None}, "application/json")
@@ -261,14 +271,87 @@ class HarnessAPIApp:
             m_apr = re.fullmatch(r"/v1/approvals/([^/:]+):decide", route)
             if method in ("GET", "POST") and m_apr:
                 apr_id = m_apr.group(1)
-                raw_decision = body.get("decision") or query.get("decision", [None])[0] or "APPROVED"
+                approval_rec = self.orch.ledger.get_approval(apr_id)
+                if not approval_rec:
+                    raise KeyError(f"Approval not found: {apr_id}")
+
+                accept_header = headers.get("Accept", "") or headers.get("accept", "")
+
+                if method == "GET":
+                    # B46: GET never decides. It renders an explicit confirmation
+                    # form; recording a decision requires POST with operator intent.
+                    if "application/json" in accept_header:
+                        return (
+                            HTTPStatus.METHOD_NOT_ALLOWED,
+                            {"error": "Approval decisions require POST with an explicit decision"},
+                            "application/json",
+                        )
+                    action_desc = html.escape(str(approval_rec.get("action_type") or "privileged action"))
+                    blast = html.escape(str(approval_rec.get("blast_radius_summary") or ""))
+                    task_ref = html.escape(str(approval_rec.get("task_id") or ""))
+                    prior_decision = str(approval_rec.get("decision") or "PENDING")
+                    prior_note = (
+                        f'<p class="lead">This approval was already decided: <strong>{html.escape(prior_decision)}</strong>.</p>'
+                        if prior_decision not in ("PENDING", "")
+                        else ""
+                    )
+                    confirm_page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HEX Authorization - Confirm Decision</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }}
+    .card {{ background: #1e293b; border: 1px solid #334155; border-radius: 12px; max-width: 520px; width: 100%; padding: 32px; }}
+    h1 {{ font-size: 1.4rem; margin: 0 0 12px 0; }}
+    p.lead {{ color: #94a3b8; font-size: 0.95rem; line-height: 1.5; margin: 0 0 16px 0; }}
+    .details {{ background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 0.875rem; word-break: break-word; }}
+    .btn {{ display: block; width: 100%; padding: 12px 0; border-radius: 8px; border: none; font-weight: 600; font-size: 0.95rem; cursor: pointer; margin-bottom: 12px; }}
+    .btn-approve {{ background: #065f46; color: #34d399; border: 1px solid #059669; }}
+    .btn-reject {{ background: #7f1d1d; color: #f87171; border: 1px solid #dc2626; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Confirm authorization decision</h1>
+    {prior_note}
+    <p class="lead">Review the requested action, then explicitly approve or reject it. Nothing is decided until you submit.</p>
+    <div class="details">
+      <div><strong>Approval ID:</strong> {html.escape(apr_id)}</div>
+      <div><strong>Task:</strong> {task_ref}</div>
+      <div><strong>Action:</strong> {action_desc}</div>
+      <div><strong>Blast radius:</strong> {blast}</div>
+    </div>
+    <form method="POST" action="/v1/approvals/{html.escape(apr_id)}:decide?decision=approve">
+      <button type="submit" class="btn btn-approve">Approve this action</button>
+    </form>
+    <form method="POST" action="/v1/approvals/{html.escape(apr_id)}:decide?decision=reject">
+      <button type="submit" class="btn btn-reject">Reject this action</button>
+    </form>
+  </div>
+</body>
+</html>"""
+                    return (HTTPStatus.OK, confirm_page, "text/html; charset=utf-8")
+
+                raw_decision = body.get("decision") or query.get("decision", [None])[0]
+                if raw_decision is None or not str(raw_decision).strip():
+                    return (
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "An explicit decision is required (approve or reject); omitted decisions are never approved"},
+                        "application/json",
+                    )
                 dec_str = str(raw_decision).strip().lower()
                 if dec_str in ("approve", "approved", "allow", "yes"):
                     norm_decision = "APPROVED"
                 elif dec_str in ("reject", "rejected", "deny", "denied", "no"):
                     norm_decision = "REJECTED"
                 else:
-                    norm_decision = str(raw_decision).strip().upper()
+                    return (
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": f"Invalid decision: {raw_decision}. Use approve or reject."},
+                        "application/json",
+                    )
 
                 raw_comment = body.get("comment") or query.get("comment", [None])[0] or ""
                 comment = str(raw_comment).strip()
@@ -298,7 +381,7 @@ class HarnessAPIApp:
                         logger.warning("Failed to broadcast decision: %s", bcast_err)
 
                 accept_header = headers.get("Accept", "") or headers.get("accept", "")
-                wants_html = ("text/html" in accept_header) or (method == "GET" and "application/json" not in accept_header)
+                wants_html = "text/html" in accept_header
 
                 if wants_html:
                     badge_class = "badge-approved" if norm_decision == "APPROVED" else "badge-rejected"

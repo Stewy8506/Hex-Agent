@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import threading
 import time
 from pathlib import Path
@@ -54,6 +53,49 @@ class AcpApprovalBridge:
         with self._lock:
             return approval_id in self._pending
 
+    def cancel_pending(
+        self,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        reason: str | None = None,
+    ) -> int:
+        """Withdraw pending approvals bound to a task/session, waking waiters now.
+
+        B48: a canceled turn must not block until the default approval timeout.
+        Every matching pending request is resolved as DENY and its waiting thread
+        signaled immediately. Silence is still a denial; cancellation just makes
+        that denial prompt. Returns the number of waiters woken.
+        """
+        if task_id is None and session_id is None:
+            return 0
+        deny_reason = reason or "Canceled by operator; approval withdrawn."
+        woken = 0
+        with self._lock:
+            for approval_id in list(self._pending.keys()):
+                entry = self._pending.get(approval_id)
+                if entry is None:
+                    continue
+                request = entry["request"]
+                req_task = getattr(request, "task_id", None)
+                # Prefer the session captured with the request: after a reload
+                # the task→session map may no longer resolve (B41).
+                req_session = entry.get("session_id") or self._session_for_task(req_task)
+                matches_task = task_id is not None and req_task == task_id
+                matches_session = session_id is not None and req_session == session_id
+                if not (matches_task or matches_session):
+                    continue
+                entry["decision"] = ApprovalDecision(
+                    decision="DENY",
+                    responder_id="operator",
+                    platform="acp",
+                    timestamp=time.time(),
+                    reason=deny_reason,
+                )
+                entry["event"].set()
+                self._pending.pop(approval_id, None)
+                woken += 1
+        return woken
+
     def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
         """Notify the client and block until it decides or the timeout expires."""
         timeout = (
@@ -61,7 +103,12 @@ class AcpApprovalBridge:
             if request.timeout_seconds is not None and request.timeout_seconds > 0
             else self.default_timeout
         )
-        entry: dict[str, Any] = {"request": request, "event": threading.Event(), "decision": None}
+        entry: dict[str, Any] = {
+            "request": request,
+            "event": threading.Event(),
+            "decision": None,
+            "session_id": self._session_for_task(request.task_id),
+        }
         with self._lock:
             self._pending[request.request_id] = entry
 
@@ -125,27 +172,34 @@ class AcpApprovalBridge:
         return True
 
     def _grant_scope_lease(self, request: ApprovalRequest) -> str | None:
-        """Persist an 'allow in this project' grant so later turns skip the prompt."""
+        """Persist a narrowly bound 'allow again' grant for this exact action.
+
+        B45: the grant binds to the full command (exact match) or, for
+        no-command tools, to the tool name plus exact argument fingerprint.
+        It is scoped to the requesting task/session; a binary basename or
+        the workspace cwd never grants broader authority.
+        """
         if self.lease_manager is None:
             return None
+        session_id = self._session_for_task(request.task_id)
         command = self.command_text(request.arguments)
         if command:
-            try:
-                tokens = shlex.split(command)
-            except ValueError:
-                tokens = command.split()
-            prefix = os.path.basename(tokens[0]) if tokens else request.tool_name
             lease = self.lease_manager.grant_lease(
-                command_prefix=prefix,
+                command_prefix=command,
+                match_mode="exact",
+                tool_name=request.tool_name,
                 ttl_seconds=self.scope_ttl_seconds,
                 task_id=request.task_id,
+                session_id=session_id,
                 scope="session",
             )
         else:
             lease = self.lease_manager.grant_lease(
-                allowed_paths=[self._cwd_for(request)],
+                tool_name=request.tool_name,
+                args_fingerprint=self.lease_manager.fingerprint_args(request.arguments),
                 ttl_seconds=self.scope_ttl_seconds,
                 task_id=request.task_id,
+                session_id=session_id,
                 scope="session",
             )
         return lease.lease_id

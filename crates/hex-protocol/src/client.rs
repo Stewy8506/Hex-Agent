@@ -787,9 +787,11 @@ mod tests {
 
     #[tokio::test]
     async fn closing_client_reaps_owned_backend() {
-        let client = AcpClient::spawn("/bin/sh", &["-c", "read line"], None)
-            .await
-            .unwrap();
+        #[cfg(windows)]
+        let client = AcpClient::spawn("cmd.exe", &["/D", "/C", "set /p line="], None);
+        #[cfg(not(windows))]
+        let client = AcpClient::spawn("/bin/sh", &["-c", "read line"], None);
+        let client = client.await.unwrap();
         client.close().await.unwrap();
         let mut child = client.child.as_ref().unwrap().lock().await;
         assert!(child.try_wait().unwrap().is_some());

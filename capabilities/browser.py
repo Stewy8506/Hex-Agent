@@ -1,7 +1,10 @@
-"""Headless Browser Automation Engine for HEX Agent.
+"""HTML fetch and parse capability for HEX Agent.
 
-Provides interactive headless browsing capabilities with accessibility snapshots (ariaSnapshot),
-element interaction via selectors (@e1, @e2, CSS), screenshot captures, and per-task session isolation.
+Fetches pages over HTTP(S) or reads workspace-scoped file:// documents, then
+parses them into readable text and an accessibility-style list of interactive
+elements. There is no JavaScript execution, DOM event dispatch, or rendering:
+click/type/screenshot/evaluate report that limitation instead of simulating
+success (B53).
 """
 
 from __future__ import annotations
@@ -118,9 +121,10 @@ class _AriaHTMLParser(HTMLParser):
 class HeadlessBrowserSession:
     """Manages an isolated browser session for a single task."""
 
-    def __init__(self, task_id: str, timeout: float = 30.0) -> None:
+    def __init__(self, task_id: str, timeout: float = 30.0, workspace_root: Path | str | None = None) -> None:
         self.task_id = task_id
         self.timeout = timeout
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root is not None else None
         self.current_url = "about:blank"
         self.title = ""
         self.raw_html = ""
@@ -141,8 +145,24 @@ class HeadlessBrowserSession:
 
             try:
                 if target_url.startswith("file://"):
+                    # B52: file:// navigation obeys the same resolved-path
+                    # workspace containment as read_file; without a workspace
+                    # scope it is refused outright.
                     file_p = Path(urllib.parse.unquote(target_url[7:]))
-                    content = file_p.read_text(encoding="utf-8", errors="replace")
+                    if self.workspace_root is None:
+                        raise PermissionError(
+                            "file:// navigation is disabled without a workspace-scoped browser session"
+                        )
+                    if ".." in file_p.parts or ".." in str(file_p):
+                        raise PermissionError(f"Path escapes workspace boundary: {file_p}")
+                    resolved_file = file_p.resolve()
+                    try:
+                        resolved_file.relative_to(self.workspace_root)
+                    except ValueError:
+                        raise PermissionError(
+                            f"file:// path outside workspace containment: {file_p}"
+                        )
+                    content = resolved_file.read_text(encoding="utf-8", errors="replace")
                 else:
                     req = urllib.request.Request(
                         target_url,
@@ -188,119 +208,39 @@ class HeadlessBrowserSession:
                 ok=True,
             )
 
+    def _unsupported(self, action: BrowserAction, detail: str) -> BrowserActionResult:
+        """B53: this capability fetches and parses HTML; it is not a browser engine."""
+        return BrowserActionResult(
+            action=action.value,
+            url=self.current_url,
+            title=self.title,
+            ok=False,
+            error=(
+                f"Unsupported: the '{action.value}' action needs a JavaScript-capable "
+                "rendering engine. This capability only fetches and parses HTML "
+                f"({detail}); nothing was executed or reported as successful."
+            ),
+        )
+
     def click(self, selector: str) -> BrowserActionResult:
-        """Click an element specified by ref (@e1, @e2) or CSS selector."""
-        with self._lock:
-            sel = selector.strip()
-            target_el = None
-            if sel.startswith("@e"):
-                target_el = next((e for e in self.elements if e["ref"] == sel), None)
-            else:
-                target_el = next(
-                    (e for e in self.elements if e.get("id") == sel.lstrip("#") or e.get("name") == sel),
-                    None,
-                )
-
-            if target_el is None:
-                return BrowserActionResult(
-                    action=BrowserAction.CLICK.value,
-                    url=self.current_url,
-                    title=self.title,
-                    ok=False,
-                    error=f"Element '{selector}' not found in current page snapshot",
-                )
-
-            # If it's a link with href, perform navigation
-            href = target_el.get("href")
-            if href and not href.startswith("javascript:"):
-                dest = urllib.parse.urljoin(self.current_url, href)
-                return self.navigate(dest)
-
-            return BrowserActionResult(
-                action=BrowserAction.CLICK.value,
-                url=self.current_url,
-                title=self.title,
-                content=f"Clicked element {target_el['ref']} ({target_el['tag']})",
-                elements=[target_el],
-                ok=True,
-            )
+        """Clicks require a rendering engine; report the limitation instead of faking it."""
+        return self._unsupported(BrowserAction.CLICK, f"selector '{selector}' was not dispatched")
 
     def type(self, selector: str, text: str) -> BrowserActionResult:
-        """Type text into an input or textarea element."""
-        with self._lock:
-            sel = selector.strip()
-            target_el = None
-            if sel.startswith("@e"):
-                target_el = next((e for e in self.elements if e["ref"] == sel), None)
-            else:
-                target_el = next(
-                    (e for e in self.elements if e.get("id") == sel.lstrip("#") or e.get("name") == sel),
-                    None,
-                )
-
-            if target_el is None:
-                return BrowserActionResult(
-                    action=BrowserAction.TYPE.value,
-                    url=self.current_url,
-                    title=self.title,
-                    ok=False,
-                    error=f"Input element '{selector}' not found in current page snapshot",
-                )
-
-            target_el["value"] = text
-            return BrowserActionResult(
-                action=BrowserAction.TYPE.value,
-                url=self.current_url,
-                title=self.title,
-                content=f"Typed text into {target_el['ref']}: {text}",
-                elements=[target_el],
-                ok=True,
-            )
+        """Typing requires a rendering engine; no input state is mutated."""
+        return self._unsupported(BrowserAction.TYPE, f"no text was entered into '{selector}'")
 
     def screenshot(self, output_path: Path | str | None = None) -> BrowserActionResult:
-        """Capture rendered HTML or save DOM snapshot file."""
-        with self._lock:
-            if output_path is not None:
-                out_p = Path(output_path).resolve()
-            else:
-                temp_f = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
-                out_p = Path(temp_f.name)
-                temp_f.close()
-
-            out_p.parent.mkdir(parents=True, exist_ok=True)
-            out_p.write_text(self.raw_html or "<html><body>Empty</body></html>", encoding="utf-8")
-            return BrowserActionResult(
-                action=BrowserAction.SCREENSHOT.value,
-                url=self.current_url,
-                title=self.title,
-                screenshot_path=str(out_p),
-                content=f"Captured page snapshot at {out_p}",
-                ok=True,
-            )
+        """No image can be captured without a renderer; use snapshot for page text."""
+        return self._unsupported(
+            BrowserAction.SCREENSHOT, "use action='snapshot' for the parsed page text instead"
+        )
 
     def evaluate(self, script: str) -> BrowserActionResult:
-        """Evaluate expression or query elements in page."""
-        with self._lock:
-            # Simple expression evaluator over parsed DOM
-            expr = script.strip().lower()
-            if "title" in expr:
-                res = self.title
-            elif "url" in expr:
-                res = self.current_url
-            elif "elements" in expr:
-                res = str(len(self.elements))
-            else:
-                # Regex search in raw HTML
-                matches = re.findall(script, self.raw_html, re.I)
-                res = f"Found {len(matches)} match(es): {matches[:5]}"
-
-            return BrowserActionResult(
-                action=BrowserAction.EVALUATE.value,
-                url=self.current_url,
-                title=self.title,
-                content=str(res),
-                ok=True,
-            )
+        """Arbitrary JavaScript is not executed by this capability."""
+        return self._unsupported(
+            BrowserAction.EVALUATE, f"script was not executed: {str(script)[:80]}"
+        )
 
     def close(self) -> None:
         """Terminate the browser session."""
@@ -348,11 +288,15 @@ class BrowserManager:
         self._sessions: dict[str, HeadlessBrowserSession] = {}
         self._lock = threading.Lock()
 
-    def get_or_create_session(self, task_id: str) -> HeadlessBrowserSession:
+    def get_or_create_session(
+        self, task_id: str, workspace_root: Path | str | None = None
+    ) -> HeadlessBrowserSession:
         """Retrieve existing session or spawn a fresh one for the task."""
         with self._lock:
             if task_id not in self._sessions:
-                self._sessions[task_id] = HeadlessBrowserSession(task_id)
+                self._sessions[task_id] = HeadlessBrowserSession(task_id, workspace_root=workspace_root)
+            elif workspace_root is not None and self._sessions[task_id].workspace_root is None:
+                self._sessions[task_id].workspace_root = Path(workspace_root).resolve()
             return self._sessions[task_id]
 
     def close_session(self, task_id: str) -> None:

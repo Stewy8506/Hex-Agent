@@ -206,6 +206,32 @@ class PlanNode:
         return asdict(self)
 
 
+def select_runnable_step(
+    dag_nodes: list[dict[str, Any]], completed_step_ids: set[str]
+) -> tuple[dict[str, Any] | None, dict[str, list[str]]]:
+    """Return the next runnable DAG node, or the unsatisfied-dependency map (B06).
+
+    A node is runnable when every dependency is completed. When no node is
+    runnable the caller must stop and surface the unresolved graph: falling back
+    to an arbitrary pending node violates dependency ordering.
+    """
+    pending = [n for n in dag_nodes if n.get("step_id") not in completed_step_ids]
+    for node in dag_nodes:
+        sid = node.get("step_id")
+        if sid in completed_step_ids and not node.get("has_unsealed_calls"):
+            continue
+        deps = node.get("depends_on") or []
+        if all(dep in completed_step_ids for dep in deps):
+            return node, {}
+    unresolved = {
+        str(n.get("step_id")): [
+            str(dep) for dep in (n.get("depends_on") or []) if dep not in completed_step_ids
+        ]
+        for n in pending
+    }
+    return None, {sid: deps for sid, deps in unresolved.items() if deps}
+
+
 @dataclass
 class TaskSubmitRequest:
     goal: str

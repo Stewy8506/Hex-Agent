@@ -90,6 +90,56 @@ def normalize_param(val: Any) -> Any:
     return val
 
 
+def validate_dag_topology(dag_nodes: list[Any]) -> None:
+    """Reject cyclic, dangling, duplicate or empty DAG plans before persisting (B06).
+
+    A plan with an unsatisfiable dependency cannot make progress; saving it only
+    defers the failure to execution, where the old code silently ran an
+    out-of-order node. Validation belongs at the persistence boundary.
+    """
+    if not dag_nodes:
+        raise ValueError("DAG plan must contain at least one node")
+    nodes = [n.to_dict() if hasattr(n, "to_dict") else dict(n) for n in dag_nodes]
+    step_ids = [str(n.get("step_id") or "") for n in nodes]
+    if any(not sid for sid in step_ids):
+        raise ValueError("Every DAG node requires a non-empty step_id")
+    if len(set(step_ids)) != len(step_ids):
+        duplicates = sorted({sid for sid in step_ids if step_ids.count(sid) > 1})
+        raise ValueError(f"Duplicate DAG step_id(s): {duplicates}")
+
+    known = set(step_ids)
+    graph: dict[str, list[str]] = {}
+    for node, sid in zip(nodes, step_ids):
+        deps = [str(d) for d in (node.get("depends_on") or [])]
+        for dep in deps:
+            if dep == sid:
+                raise ValueError(f"DAG node '{sid}' depends on itself")
+            if dep not in known:
+                raise ValueError(f"DAG node '{sid}' depends on unknown step '{dep}'")
+        graph[sid] = deps
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {sid: WHITE for sid in graph}
+
+    def visit(sid: str, path: list[str]) -> None:
+        color[sid] = GRAY
+        for dep in graph[sid]:
+            if color[dep] == GRAY:
+                cycle = " -> ".join(path + [sid, dep])
+                raise ValueError(f"Cyclic DAG dependency detected: {cycle}")
+            if color[dep] == WHITE:
+                visit(dep, path + [sid])
+        color[sid] = BLACK
+
+    for sid in graph:
+        if color[sid] == WHITE:
+            visit(sid, [])
+
+
+class ClaimTransactionError(RuntimeError):
+    """Raised when the claim transaction cannot be started (B42)."""
+
+
 class ConcurrencyFenceError(RuntimeError):
     """Raised when a stale worker fencing token or version mismatch attempts a commit."""
 
@@ -367,10 +417,15 @@ class LedgerStore:
                             granted_at REAL NOT NULL,
                             expires_at REAL NOT NULL,
                             is_revoked INTEGER NOT NULL DEFAULT 0,
-                            created_at TEXT NOT NULL
+                            created_at TEXT NOT NULL,
+                            bindings_json TEXT NOT NULL DEFAULT '{}'
                         );
                         """)
                         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_leases_lookup ON approval_leases (is_revoked, expires_at);")
+                    except sqlite3.OperationalError:
+                        pass
+                    try:
+                        self.conn.execute("ALTER TABLE approval_leases ADD COLUMN bindings_json TEXT NOT NULL DEFAULT '{}';")
                     except sqlite3.OperationalError:
                         pass
                     self.conn.commit()
@@ -1862,10 +1917,23 @@ class LedgerStore:
             )
         self.reap_expired_leases()
         with self._lock:
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-            except sqlite3.OperationalError:
-                pass
+            # B42: a busy database must not fall through to an unprotected
+            # claim; retry briefly, then fail visibly.
+            begin_error: sqlite3.OperationalError | None = None
+            for begin_attempt in range(5):
+                try:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    begin_error = None
+                    break
+                except sqlite3.OperationalError as exc:
+                    begin_error = exc
+                    if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                        break
+                    time.sleep(0.02 * (begin_attempt + 1))
+            if begin_error is not None:
+                raise ClaimTransactionError(
+                    f"Could not start the claim transaction: {begin_error}"
+                ) from begin_error
 
             try:
                 row = self.conn.execute(self.CLAIM_TASK_SQLITE_SQL).fetchone()
@@ -2409,6 +2477,7 @@ class LedgerStore:
         created_by: str = "orchestrator",
         rationale: str = "Initial DAG plan",
     ) -> dict[str, Any]:
+        validate_dag_topology(dag_nodes)
         if self.backend_type == "postgres":
             return self._run_sync(
                 self.save_plan_async,
@@ -2462,6 +2531,7 @@ class LedgerStore:
         created_by: str = "orchestrator",
         rationale: str = "Initial DAG plan",
     ) -> dict[str, Any]:
+        validate_dag_topology(dag_nodes)
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(
                 self.save_plan,
@@ -4526,6 +4596,7 @@ class LedgerStore:
         expires_at: float | None = None,
         task_id: str | None = None,
         is_revoked: bool = False,
+        bindings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.backend_type == "postgres":
             return self._run_sync(
@@ -4539,6 +4610,7 @@ class LedgerStore:
                 expires_at=expires_at,
                 task_id=task_id,
                 is_revoked=is_revoked,
+                bindings=bindings,
             )
         now_f = time.time()
         g_at = granted_at if granted_at is not None else now_f
@@ -4555,8 +4627,9 @@ class LedgerStore:
                 """
                 INSERT OR REPLACE INTO approval_leases (
                     lease_id, task_id, command_prefix, allowed_paths_json,
-                    scope, ttl_seconds, granted_at, expires_at, is_revoked, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    scope, ttl_seconds, granted_at, expires_at, is_revoked, created_at,
+                    bindings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lease_id,
@@ -4569,6 +4642,7 @@ class LedgerStore:
                     exp_at,
                     1 if is_revoked else 0,
                     now_iso,
+                    canonical_json(bindings or {}),
                 ),
             )
             self.conn.commit()
@@ -4601,6 +4675,7 @@ class LedgerStore:
         expires_at: float | None = None,
         task_id: str | None = None,
         is_revoked: bool = False,
+        bindings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(
@@ -4614,6 +4689,7 @@ class LedgerStore:
                 expires_at=expires_at,
                 task_id=task_id,
                 is_revoked=is_revoked,
+                bindings=bindings,
             )
         now_f = time.time()
         g_at = granted_at if granted_at is not None else now_f
@@ -4631,14 +4707,16 @@ class LedgerStore:
                 """
                 INSERT INTO approval_leases (
                     lease_id, task_id, command_prefix, allowed_paths_json,
-                    scope, ttl_seconds, granted_at, expires_at, is_revoked, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    scope, ttl_seconds, granted_at, expires_at, is_revoked, created_at,
+                    bindings_json
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (lease_id) DO UPDATE SET
                     is_revoked = EXCLUDED.is_revoked,
                     expires_at = EXCLUDED.expires_at
                 """,
                 lease_id, task_id, command_prefix, canonical_json(paths),
                 scope, ttl_seconds, g_at, exp_at, 1 if is_revoked else 0, now_iso,
+                canonical_json(bindings or {}),
             )
             if task_id:
                 try:
@@ -4660,6 +4738,7 @@ class LedgerStore:
                 "expires_at": exp_at,
                 "is_revoked": is_revoked,
                 "created_at": now_iso,
+                "bindings_json": canonical_json(bindings or {}),
             }
 
     def revoke_approval_lease(self, lease_id: str) -> bool:

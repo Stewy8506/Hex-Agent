@@ -2444,6 +2444,13 @@ impl App {
         self.cursor_pos += 1;
     }
 
+    pub fn insert_text(&mut self, text: &str) {
+        self.pending_delete_index = None;
+        let byte = char_to_byte(&self.input_buffer, self.cursor_pos);
+        self.input_buffer.insert_str(byte, text);
+        self.cursor_pos += text.chars().count();
+    }
+
     pub fn delete_char(&mut self) {
         if self.cursor_pos > 0 && !self.input_buffer.is_empty() {
             let byte = char_to_byte(&self.input_buffer, self.cursor_pos - 1);
@@ -2490,8 +2497,8 @@ impl App {
         self.history_index = Some(next_idx);
         if let Some(cmd) = self.command_history.get(next_idx) {
             self.input_buffer = cmd.clone();
-            self.cursor_pos = self.input_buffer.len();
-            }
+            self.cursor_pos = self.input_buffer.chars().count();
+        }
     }
 
     pub fn history_down(&mut self) {
@@ -2501,13 +2508,13 @@ impl App {
                 self.history_index = Some(next_idx);
                 if let Some(cmd) = self.command_history.get(next_idx) {
                     self.input_buffer = cmd.clone();
-                    self.cursor_pos = self.input_buffer.len();
-                            }
+                    self.cursor_pos = self.input_buffer.chars().count();
+                }
             } else {
                 self.history_index = None;
                 self.input_buffer.clear();
                 self.cursor_pos = 0;
-                    }
+            }
         }
     }
 

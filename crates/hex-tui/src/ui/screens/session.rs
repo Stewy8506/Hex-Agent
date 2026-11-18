@@ -251,42 +251,20 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, reveal
     let comp_inner = comp_block.inner(composer_area);
     comp_block.render(composer_area, buf);
 
-    let cursor_span = if anim.cursor_visible() {
-        Span::styled("█", Style::default().fg(theme.accent_blue))
+    let multiline = app.input_buffer.contains('\n');
+    let text_area = Rect::new(
+        comp_inner.x + 2,
+        comp_inner.y + if multiline { 0 } else { comp_inner.height / 2 },
+        comp_inner.width.saturating_sub(4),
+        if multiline { comp_inner.height } else { comp_inner.height.min(1) },
+    );
+    if app.active_approval.is_some() {
+        let line = Line::from(Span::styled("> Waiting for permission", Style::default().fg(theme.text_dim)));
+        if text_area.height > 0 {
+            buf.set_line(text_area.x, text_area.y, &line, text_area.width);
+        }
     } else {
-        Span::raw(" ")
-    };
-
-    let prompt_line = if app.active_approval.is_some() {
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.text_dim)),
-            Span::styled("Waiting for permission", Style::default().fg(theme.text_dim)),
-        ])
-    } else if app.input_buffer.is_empty() {
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.text_dim)),
-            Span::styled("Message hex", Style::default().fg(theme.text_extra_dim)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.text_bright)),
-            Span::styled(&app.input_buffer, Style::default().fg(theme.text_bright)),
-            cursor_span,
-        ])
-    };
-    // Content sits on the middle row with a 2-column inner left pad.
-    let text_x = comp_inner.x + 2;
-    let text_y = comp_inner.y + comp_inner.height / 2;
-    let text_w = comp_inner.width.saturating_sub(4);
-    buf.set_line(text_x, text_y, &prompt_line, text_w);
-    if app.active_approval.is_none()
-        && app.input_buffer.is_empty()
-        && anim.cursor_visible()
-        && text_w > 2
-    {
-        buf[(text_x + 2, text_y)]
-            .set_fg(theme.card_bg)
-            .set_bg(theme.accent_blue);
+        crate::ui::input::render_composer(app, theme, anim, text_area, "Message hex", buf);
     }
 
     // ─────────────────────────────────────────────
@@ -316,7 +294,11 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, reveal
     } else {
         keymap::Scope::Session
     };
-    let footer_right = keymap::footer_hints(hint_scope);
+    let footer_right = if app.active_approval.is_some() {
+        keymap::footer_hints(hint_scope)
+    } else {
+        format!("{} · shift+enter newline", keymap::footer_hints(hint_scope))
+    };
     let footer_pad = CANVAS_PAD_X.min(footer_area.width / 4);
     let footer_width = footer_area.width.saturating_sub(footer_pad * 2) as usize;
     let left_len: usize = footer_left.iter().map(|s| s.content.chars().count()).sum();

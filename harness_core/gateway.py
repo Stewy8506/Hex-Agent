@@ -46,6 +46,7 @@ from harness_core.core.models import PolicyDecisionType, RiskClass
 from harness_core.runtime.process_registry import ProcessRegistry, get_process_registry
 from harness_core.storage.sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
 from harness_core.cognition.skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
+from harness_core.platform.shell import build_command_argv
 from harness_core.tools.filesystem import FileToolsMixin
 
 
@@ -184,8 +185,26 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["add", "list", "complete", "clear"], "description": "Todo action"},
-                "task": {"type": "string", "description": "Task description for add/complete"},
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "list", "complete", "update", "remove", "clear"],
+                    "description": "Todo action",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Task description, or match text for complete/update/remove",
+                },
+                "id": {"type": "string", "description": "Todo id for complete/update/remove"},
+                "index": {
+                    "type": "integer",
+                    "description": "Zero-based todo index for complete/update/remove",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "completed"],
+                    "description": "Target status for update",
+                },
+                "items": {"type": "array", "description": "Multiple todo items for add"},
             },
             "required": ["action"],
         },
@@ -478,22 +497,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "id": "browser",
         "name": "browser",
-        "description": "Interactive headless browser for navigating web pages, clicking elements, extracting accessibility trees, and taking screenshots.",
+        "description": (
+            "Fetch an HTML page and parse it into readable text plus interactive elements. "
+            "This is not a rendering browser: no JavaScript runs, so click/type/screenshot/"
+            "evaluate return an explicit unsupported error instead of pretending to act."
+        ),
         "risk_class": "R2",
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["navigate", "snapshot", "click", "type", "screenshot", "evaluate", "close"],
-                    "description": "Browser action to perform",
+                    "enum": ["navigate", "snapshot", "close"],
+                    "description": "HTML fetch (navigate), parse current page (snapshot), or close the session",
                     "default": "snapshot",
                 },
-                "url": {"type": "string", "description": "URL to navigate to"},
-                "selector": {"type": "string", "description": "Element ref (@e1, @e2) or CSS selector"},
-                "text": {"type": "string", "description": "Text to type into input element"},
-                "script": {"type": "string", "description": "Expression or regex to evaluate in DOM"},
-                "output_path": {"type": "string", "description": "File path to save screenshot/snapshot"},
+                "url": {"type": "string", "description": "URL or workspace file:// path to fetch"},
+                "selector": {
+                    "type": "string",
+                    "description": "Accepted for compatibility; click is unsupported (no JS engine)",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Accepted for compatibility; type is unsupported (no JS engine)",
+                },
+                "script": {
+                    "type": "string",
+                    "description": "Accepted for compatibility; evaluate is unsupported (no JS engine)",
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "Accepted for compatibility; screenshot is unsupported (no renderer)",
+                },
             },
             "required": ["action"],
         },
@@ -596,6 +631,43 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 
+def sealed_effect_state(prior: dict[str, Any], workspace_dir: Path | str) -> str:
+    """Classify a sealed file-mutation against the current workspace (B36).
+
+    Returns ``"present"`` when the recorded effect is on disk (replay is safe),
+    ``"rolled_back"`` when the file matches the pre-call state or is missing
+    (the journal entry must be re-executed, not replayed as done), and
+    ``"diverged"`` when the file holds neither version, which means later work
+    changed it and replay must not clobber that work.
+    """
+    result = prior.get("result") or {}
+    if prior.get("tool_id") not in ("write_file", "patch"):
+        return "present"
+    rel_path = result.get("path")
+    after_sha = result.get("sha256")
+    if not rel_path or not after_sha:
+        return "present"
+    before_sha = result.get("_before_sha256")
+
+    ws = Path(workspace_dir).resolve()
+    try:
+        target = (ws / str(rel_path)).resolve()
+        target.relative_to(ws)
+    except (ValueError, OSError):
+        return "rolled_back"
+
+    current_sha = sha256_hex(target.read_bytes()) if target.is_file() else None
+    if current_sha == str(after_sha):
+        return "present"
+    if current_sha == before_sha:
+        # The file is back at (or still in) its pre-call state: a checkpoint
+        # rollback removed the sealed effect.
+        return "rolled_back"
+    if before_sha is None and current_sha is None:
+        return "rolled_back"
+    return "diverged"
+
+
 class ToolGateway(FileToolsMixin):
     """Policy-enforcing, call-journaling gateway for direct tools and Code Mode scripts."""
 
@@ -613,6 +685,7 @@ class ToolGateway(FileToolsMixin):
         kernel_registry: KernelRegistry | None = None,
         approval_lease_manager: Any | None = None,
         approval_bridge: Any | None = None,
+        router: Any | None = None,
     ):
         self.ledger = ledger
         self.graphify = graphify
@@ -627,6 +700,7 @@ class ToolGateway(FileToolsMixin):
         self.kernel_registry = kernel_registry or get_kernel_registry()
         self.approval_lease_manager = approval_lease_manager
         self.approval_bridge = approval_bridge
+        self.router = router
         self._active_session_key: str = ""
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
@@ -902,7 +976,7 @@ class ToolGateway(FileToolsMixin):
         self.register_tool(
             ToolSpec(
                 tool_id="browser",
-                description="Interactive headless browser for navigation, DOM inspection, element interaction, and screenshots (R2).",
+                description="Fetch and parse HTML pages into text and interactive elements (R2; no JavaScript execution or rendering).",
                 risk_class=RiskClass.R2,
                 handler=self._tool_browser,
             )
@@ -999,7 +1073,12 @@ class ToolGateway(FileToolsMixin):
             )
 
         if getattr(self, "approval_lease_manager", None) is not None:
-            has_lease, lease_id = self.approval_lease_manager.check_lease(spec.tool_id, args)
+            has_lease, lease_id = self.approval_lease_manager.check_lease(
+                spec.tool_id,
+                args,
+                task_id=task.get("task_id"),
+                session_id=getattr(self, "_active_session_key", "") or None,
+            )
             if has_lease:
                 return (PolicyDecisionType.ALLOW, f"LEASE_APPROVED:{lease_id}")
 
@@ -1118,6 +1197,17 @@ class ToolGateway(FileToolsMixin):
             canonical_args_hash=args_hash,
             idempotency_key=idem_key,
         )
+        replay_effect_state = "present"
+        if prior is not None and prior.get("result") is not None:
+            replay_effect_state = sealed_effect_state(prior, workspace_dir)
+            if replay_effect_state == "rolled_back":
+                logger.warning(
+                    "Sealed call %s (%s) was rolled back with the workspace; "
+                    "re-executing instead of replaying it as done.",
+                    prior.get("call_id"),
+                    tool_id,
+                )
+                prior = None
         if prior is not None and prior.get("result") is not None:
             replay_call_id = self.ledger.begin_tool_call(
                 task_id=task_id,
@@ -1137,6 +1227,10 @@ class ToolGateway(FileToolsMixin):
             replayed_result["_call_id"] = replay_call_id
             replayed_result["_replayed"] = True
             replayed_result["_replayed_from_call_id"] = prior["call_id"]
+            if replay_effect_state == "diverged":
+                # The sealed effect is not on disk, but later work changed the
+                # file: report the replay without overwriting that work.
+                replayed_result["_replay_effect_mismatch"] = True
             replayed_result["_replay_latency_ms"] = round((time.perf_counter() - t0) * 1000, 3)
             self.ledger.seal_tool_call(replay_call_id, replayed_result, status="SEALED", fencing_token=fencing_token)
             return replayed_result
@@ -1158,6 +1252,21 @@ class ToolGateway(FileToolsMixin):
 
         ws_path = Path(workspace_dir).resolve()
         before_sources: dict[str, str] = {}
+        # B36: record the pre-call content hash so a later replay can tell a
+        # checkpoint rollback apart from someone else's later edit.
+        before_effect_sha: str | None = None
+        effect_path_recorded = False
+        if spec.tool_id in ("write_file", "patch") and "path" in args:
+            rel_p = str(args["path"]).lstrip("./")
+            target_file = (ws_path / rel_p).resolve()
+            try:
+                target_file.relative_to(ws_path)
+            except ValueError:
+                target_file = None  # type: ignore[assignment]
+            if target_file is not None:
+                effect_path_recorded = True
+                if target_file.is_file():
+                    before_effect_sha = sha256_hex(target_file.read_bytes())
         if spec.tool_id == "write_file" and "path" in args:
             rel_p = str(args["path"]).lstrip("./")
             target_file = (ws_path / rel_p).resolve()
@@ -1181,6 +1290,8 @@ class ToolGateway(FileToolsMixin):
         sanitized_result["_call_id"] = call_id
         sanitized_result["_duration_ms"] = duration_ms
         sanitized_result["_result_sha256"] = sha256_hex(canonical_json(sanitized_result))
+        if effect_path_recorded:
+            sanitized_result["_before_sha256"] = before_effect_sha
 
         # 4. Active Graphify Blast-Radius Hook on R2 file modification (FR-036a)
         if spec.tool_id == "write_file" and "path" in args:
@@ -1253,19 +1364,72 @@ class ToolGateway(FileToolsMixin):
         return full
 
     def _tool_todo(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
-        action = str(args.get("action", "read")).lower()
+        action = str(args.get("action", "read")).strip().lower()
+        supported_actions = (
+            "add", "list", "read", "complete", "update", "remove", "delete", "clear", "reset"
+        )
+        if action not in supported_actions:
+            return {
+                "ok": False,
+                "action": action,
+                "error": (
+                    f"Unsupported todo action '{action}'. Supported: {', '.join(supported_actions)}"
+                ),
+            }
+
         todo_file = workspace_dir / ".hex" / "todo.json"
+        valid_statuses = ("pending", "in_progress", "completed")
 
         todos: list[dict[str, Any]] = []
+        corrupt_error: str | None = None
         if todo_file.is_file():
             try:
                 loaded = json.loads(todo_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                corrupt_error = f"Todo state at {todo_file} is unreadable: {exc}"
+            else:
                 if isinstance(loaded, list):
-                    todos = loaded
-            except Exception:
-                todos = []
+                    todos = [td for td in loaded if isinstance(td, dict)]
+                else:
+                    corrupt_error = f"Todo state at {todo_file} is not a list"
+        if corrupt_error is not None and action not in ("clear", "reset"):
+            # Never silently reset a corrupt checklist to empty (B08).
+            return {"ok": False, "action": action, "error": corrupt_error, "todos": []}
 
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        def _fresh_id() -> int:
+            used = {str(td.get("id")) for td in todos}
+            numeric = [int(td["id"]) for td in todos if str(td.get("id", "")).isdigit()]
+            candidate = (max(numeric) if numeric else 0) + 1
+            while str(candidate) in used:
+                candidate += 1
+            return candidate
+
+        def _find_todo() -> tuple[int, dict[str, Any]] | None:
+            idx = args.get("index")
+            item_id = args.get("id")
+            wanted = args.get("task") or args.get("item")
+            if idx is not None:
+                try:
+                    position = int(idx)
+                except (TypeError, ValueError):
+                    position = -1
+                if 0 <= position < len(todos):
+                    return position, todos[position]
+            if item_id is not None:
+                for i, td in enumerate(todos):
+                    if str(td.get("id")) == str(item_id):
+                        return i, td
+            if wanted:
+                needle = str(wanted).strip().lower()
+                for i, td in enumerate(todos):
+                    if str(td.get("task", "")).strip().lower() == needle:
+                        return i, td
+                for i, td in enumerate(todos):
+                    if needle and needle in str(td.get("task", "")).lower():
+                        return i, td
+            return None
 
         if action in ("read", "list"):
             pass
@@ -1280,56 +1444,109 @@ class ToolGateway(FileToolsMixin):
 
             for item in to_add:
                 if isinstance(item, dict):
+                    raw_status = item.get("status") or "pending"
+                    status = str(raw_status).strip().lower()
+                    if status not in valid_statuses:
+                        return {
+                            "ok": False,
+                            "action": action,
+                            "error": (
+                                f"Invalid todo status '{raw_status}'. Supported: "
+                                f"{', '.join(valid_statuses)}"
+                            ),
+                            "todos": todos,
+                        }
+                    requested_id = item.get("id")
+                    used = {str(td.get("id")) for td in todos}
+                    item_id = (
+                        requested_id
+                        if requested_id is not None and str(requested_id) not in used
+                        else _fresh_id()
+                    )
                     todos.append({
-                        "id": item.get("id", len(todos) + 1),
+                        "id": item_id,
                         "task": str(item.get("task") or item.get("text", "")),
-                        "status": str(item.get("status", "pending")),
+                        "status": status,
                         "updated_at": now,
                     })
                 else:
                     todos.append({
-                        "id": len(todos) + 1,
+                        "id": _fresh_id(),
                         "task": str(item),
                         "status": "pending",
                         "updated_at": now,
                     })
+        elif action == "complete":
+            found = _find_todo()
+            if found is None:
+                return {
+                    "ok": False,
+                    "action": action,
+                    "error": "No matching todo item to complete; pass 'task', 'id' or 'index'",
+                    "todos": todos,
+                }
+            position, todo_item = found
+            todo_item["status"] = "completed"
+            todo_item["updated_at"] = now
+            todos[position] = todo_item
         elif action == "update":
-            idx = args.get("index")
-            item_id = args.get("id")
             new_status = args.get("status")
             new_task = args.get("task") or args.get("item")
-
-            updated = False
-            for i, td in enumerate(todos):
-                if (idx is not None and i == int(idx)) or (item_id is not None and str(td.get("id")) == str(item_id)):
-                    if new_status:
-                        td["status"] = str(new_status)
-                    if new_task:
-                        td["task"] = str(new_task)
-                    td["updated_at"] = now
-                    updated = True
-                    break
-            if not updated and idx is not None and 0 <= int(idx) < len(todos):
-                if new_status:
-                    todos[int(idx)]["status"] = str(new_status)
-                if new_task:
-                    todos[int(idx)]["task"] = str(new_task)
-                todos[int(idx)]["updated_at"] = now
+            found = _find_todo()
+            if found is None:
+                return {
+                    "ok": False,
+                    "action": action,
+                    "error": "No matching todo item to update; pass 'task', 'id' or 'index'",
+                    "todos": todos,
+                }
+            position, todo_item = found
+            if new_status:
+                status = str(new_status).strip().lower()
+                if status not in valid_statuses:
+                    return {
+                        "ok": False,
+                        "action": action,
+                        "error": (
+                            f"Invalid todo status '{new_status}'. Supported: "
+                            f"{', '.join(valid_statuses)}"
+                        ),
+                        "todos": todos,
+                    }
+                todo_item["status"] = status
+            if new_task:
+                todo_item["task"] = str(new_task)
+            todo_item["updated_at"] = now
+            todos[position] = todo_item
         elif action in ("clear", "reset"):
             todos = []
         elif action in ("remove", "delete"):
-            idx = args.get("index")
-            item_id = args.get("id")
-            if idx is not None and 0 <= int(idx) < len(todos):
-                todos.pop(int(idx))
-            elif item_id is not None:
-                todos = [td for td in todos if str(td.get("id")) != str(item_id)]
+            found = _find_todo()
+            if found is None:
+                return {
+                    "ok": False,
+                    "action": action,
+                    "error": "No matching todo item to remove; pass 'task', 'id' or 'index'",
+                    "todos": todos,
+                }
+            todos.pop(found[0])
 
+        tmp_file = todo_file.with_name(todo_file.name + ".tmp")
         try:
             todo_file.parent.mkdir(parents=True, exist_ok=True)
-            todo_file.write_text(json.dumps(todos, indent=2), encoding="utf-8")
-        except OSError:
-            pass
+            with open(tmp_file, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(todos, indent=2))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_file, todo_file)
+        except OSError as exc:
+            try:
+                if tmp_file.exists():
+                    tmp_file.unlink()
+            except OSError:
+                pass
+            # Never report success for a checklist that was not persisted (B08).
+            raise OSError(f"Failed to persist todo state at {todo_file}: {exc}") from exc
 
         return {
             "ok": True,
@@ -1749,6 +1966,7 @@ class ToolGateway(FileToolsMixin):
             "timed_out": result.timed_out,
             "violation_detected": result.violation_detected,
             "sandbox_backend": result.sandbox_backend,
+            "confined": result.confined,
             "output": redacted_out,
             "output_sha256": sha256_hex(redacted_out),
             "recipe": recipe.name if recipe else None,
@@ -1762,11 +1980,7 @@ class ToolGateway(FileToolsMixin):
         if isinstance(raw_cmd, list):
             cmd = [str(c) for c in raw_cmd]
         else:
-            cmd_str = str(raw_cmd).strip()
-            if any(op in cmd_str for op in ("|", ">", "<", ";", "&&", "||", "$")):
-                cmd = ["/bin/sh", "-c", cmd_str]
-            else:
-                cmd = shlex.split(cmd_str)
+            cmd = build_command_argv(str(raw_cmd))
 
         timeout = float(args.get("timeout", 30.0))
         env = dict(args.get("env") or {})
@@ -1793,6 +2007,7 @@ class ToolGateway(FileToolsMixin):
             "stderr": stderr_redacted,
             "timed_out": result.timed_out,
             "sandbox_backend": result.sandbox_backend,
+            "confined": result.confined,
         }
 
     def _tool_start_process(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
@@ -1960,6 +2175,7 @@ class ToolGateway(FileToolsMixin):
             self.subagent_manager = SubagentManager(
                 ledger=self.ledger,
                 gateway=self,
+                router=getattr(self, "router", None),
             )
         return self.subagent_manager
 
@@ -1972,6 +2188,7 @@ class ToolGateway(FileToolsMixin):
         context = args.get("context")
         wait = args.get("wait", True)
         timeout = float(args.get("timeout", 120.0))
+        budget = args.get("budget")
         parent_task_id = args.get("task_id", "current_task")
 
         try:
@@ -1982,6 +2199,7 @@ class ToolGateway(FileToolsMixin):
                 context=context,
                 parent_ws=workspace_dir,
                 current_depth=int(args.get("current_depth", 0)),
+                budget=budget,
                 timeout=timeout,
                 wait=wait,
             )
@@ -2023,14 +2241,30 @@ class ToolGateway(FileToolsMixin):
     def _tool_browser(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         mgr = self._get_browser_manager()
         task_id = args.get("task_id", "default_browser_session")
-        session = mgr.get_or_create_session(task_id)
+        session = mgr.get_or_create_session(task_id, workspace_root=workspace_dir)
         action = args.get("action", "snapshot").lower().strip()
 
         if action == "navigate":
             url = args.get("url")
             if not url:
                 return {"ok": False, "error": "Missing 'url' for browser navigate"}
-            res = session.navigate(url)
+            url_str = str(url).strip()
+            if url_str.startswith("file://"):
+                # B52: same resolved-path authority as read_file — refuse any
+                # file:// target outside the workspace before any read occurs.
+                from urllib.parse import unquote
+
+                file_p = Path(unquote(url_str[7:]))
+                if ".." in file_p.parts or ".." in str(file_p):
+                    raise PolicyBlockedError(f"Path escapes CoW workspace boundary: {url_str}")
+                resolved_file = file_p.resolve()
+                try:
+                    resolved_file.relative_to(Path(workspace_dir).resolve())
+                except ValueError:
+                    raise PolicyBlockedError(
+                        f"file:// navigation outside CoW workspace containment: {url_str}"
+                    )
+            res = session.navigate(url_str)
             return {"ok": res.ok, "result": res.to_dict(), "error": res.error}
         elif action == "snapshot":
             res = session.snapshot()
@@ -2053,11 +2287,16 @@ class ToolGateway(FileToolsMixin):
             if out_p and not Path(out_p).is_absolute():
                 out_p = str(workspace_dir / out_p)
             res = session.screenshot(out_p)
-            return {"ok": res.ok, "result": res.to_dict(), "screenshot_path": res.screenshot_path}
+            return {
+                "ok": res.ok,
+                "result": res.to_dict(),
+                "screenshot_path": res.screenshot_path,
+                "error": res.error,
+            }
         elif action == "evaluate":
             script = args.get("script", "")
             res = session.evaluate(script)
-            return {"ok": res.ok, "result": res.to_dict()}
+            return {"ok": res.ok, "result": res.to_dict(), "error": res.error}
         elif action == "close":
             session.close()
             mgr.close_session(task_id)
@@ -2068,7 +2307,7 @@ class ToolGateway(FileToolsMixin):
     def _get_vision_engine(self) -> Any:
         if self.vision_engine is None:
             from harness_core.capabilities.vision import VisionEngine
-            self.vision_engine = VisionEngine()
+            self.vision_engine = VisionEngine(router=getattr(self, "router", None))
         return self.vision_engine
 
     def _tool_image_inspect(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:

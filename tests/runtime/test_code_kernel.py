@@ -1,5 +1,7 @@
 """Comprehensive unit and integration test suite for persistent REPL CodeKernel and KernelRegistry."""
 
+import ctypes
+from ctypes import wintypes
 import os
 from pathlib import Path
 import shutil
@@ -7,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from harness_core.runtime.code_kernel import (
     CodeKernel,
@@ -195,6 +198,75 @@ while True:
         res = self.kernel.execute("import sys; sys.exit(42)")
         self.assertEqual(res["status"], "exit")
         self.assertIn("SystemExit: 42", res["traceback"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows pipe teardown")
+    def test_broken_stdin_cleanup_closes_remaining_streams(self):
+        self.assertEqual(self.kernel.execute("persisted = 1")["status"], "ok")
+        process = self.kernel.proc
+        close = process.stdin.close
+
+        def failed_close():
+            try:
+                close()
+            finally:
+                raise OSError(22, "Invalid argument")
+
+        with patch.object(process.stdin, "flush", side_effect=OSError(22, "Invalid argument")), patch.object(process.stdin, "close", side_effect=failed_close):
+            result = self.kernel.execute("print('cannot write')")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Child process closed stdin", result["traceback"])
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        self.assertTrue(process._handle.closed)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows pipe teardown")
+    def test_unexpected_exit_closes_streams_before_recovery(self):
+        self.kernel.execute("persisted = 1")
+        process = self.kernel.proc
+        self.assertEqual(self.kernel.execute("import os; os._exit(7)")["status"], "error")
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        self.assertTrue(process._handle.closed)
+        self.assertEqual(self.kernel.execute("print('fresh')")["status"], "ok")
+        self.assertIsNot(self.kernel.proc, process)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows Job Object integration")
+    def test_reset_and_timeout_kill_kernel_descendants(self):
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        api.OpenProcess.restype = wintypes.HANDLE
+        api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        api.WaitForSingleObject.restype = wintypes.DWORD
+        api.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        api.CloseHandle.argtypes = [wintypes.HANDLE]
+        for operation in ("reset", "timeout"):
+            with self.subTest(operation=operation):
+                result = self.kernel.execute(
+                    "import subprocess, sys\n"
+                    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                    "print(child.pid)"
+                )
+                self.assertEqual(result["status"], "ok")
+                handle = api.OpenProcess(0x100001, False, int(result["stdout"].strip()))
+                self.assertTrue(handle)
+                process = self.kernel.proc
+                try:
+                    if operation == "reset":
+                        self.kernel.reset()
+                    else:
+                        self.assertEqual(self.kernel.execute("import time; time.sleep(60)", timeout=0.05)["status"], "timeout")
+                    self.assertEqual(api.WaitForSingleObject(handle, 3000), 0)
+                    self.assertIsNone(process._hex_job._handle)
+                    self.assertTrue(process._handle.closed)
+                    self.assertTrue(process.stdin.closed)
+                    self.assertTrue(process.stdout.closed)
+                    self.assertTrue(process.stderr.closed)
+                finally:
+                    api.TerminateProcess(handle, 1)
+                    api.WaitForSingleObject(handle, 3000)
+                    api.CloseHandle(handle)
 
 
 class TestKernelRegistry(unittest.TestCase):

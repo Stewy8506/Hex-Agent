@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     idempotency_key TEXT UNIQUE,
     active_workspace_tree_sha TEXT,
     version INTEGER NOT NULL DEFAULT 1,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    title_provenance TEXT NOT NULL DEFAULT 'derived',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     terminal_reason TEXT
@@ -263,7 +265,21 @@ CREATE TABLE IF NOT EXISTS approval_leases (
     granted_at REAL NOT NULL,
     expires_at REAL NOT NULL,
     is_revoked INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    bindings_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_approval_leases_lookup ON approval_leases (is_revoked, expires_at);
+
+CREATE TABLE IF NOT EXISTS dialogue_turns (
+    turn_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    turn_index INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    branch_id TEXT NOT NULL DEFAULT 'main',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dialogue_turns_lookup ON dialogue_turns (task_id, is_active, turn_index);
 

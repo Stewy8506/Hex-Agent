@@ -132,6 +132,42 @@ def _bounded_tool_preview(payload: Any, *, error: bool = False) -> str:
     return visit(payload, limit, 0)[0]
 
 
+def build_conversation_history(
+    records: Sequence[dict[str, Any]], limit: int = 10
+) -> list[dict[str, Any]]:
+    """Rebuild model context from durable turns without dropping tool work (B41).
+
+    Previously only prompt/response text survived, so tool results and reasoning
+    vanished from follow-up turns. Structured rows keep each turn's tool calls
+    paired with their outcomes.
+    """
+    history: list[dict[str, Any]] = []
+    for turn in list(records)[-limit:]:
+        if not isinstance(turn, dict):
+            continue
+        if turn.get("prompt"):
+            history.append({"role": "user", "content": str(turn["prompt"])})
+        for event in (turn.get("tool_calls") or [])[-20:]:
+            if not isinstance(event, dict):
+                continue
+            payload = event.get("payload", "")
+            if isinstance(payload, str):
+                content = payload[:1500]
+            else:
+                content = json.dumps(payload, default=str)[:1500]
+            history.append({
+                "role": "tool",
+                "tool": str(event.get("tool") or event.get("toolId") or "tool"),
+                "status": str(event.get("event") or event.get("eventType") or "complete"),
+                "content": content,
+            })
+        if turn.get("reasoning"):
+            history.append({"role": "reasoning", "content": str(turn["reasoning"])[:1200]})
+        if turn.get("response"):
+            history.append({"role": "assistant", "content": str(turn["response"])})
+    return history
+
+
 class SQLiteHistory(Sequence[dict[str, Any]]):
     """Append-only transcript handle. No connections or records are retained."""
 
@@ -404,6 +440,10 @@ class ACPServer:
         self._lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._persist_lock = threading.RLock()
+        self._tools_call_task_id: str | None = None
+        self._tools_call_seq = 0
+        self._turn_threads: list[threading.Thread] = []
+        self._shutting_down = False
 
     def _emit(self, obj: dict[str, Any]) -> None:
         """Serialize one JSON-RPC message to stdout (thread-safe)."""
@@ -715,10 +755,25 @@ class ACPServer:
         sess = self._existing_session(params["sessionId"])
         with self._lock:
             self.sessions[sess.session_id] = sess
+        # B41: approvals live only in memory, so a reloaded session must not
+        # leave the client waiting on a request no turn is listening for.
+        withdrawn = 0
+        bridge = getattr(self, "approval_bridge", None)
+        if bridge is not None and hasattr(bridge, "cancel_pending"):
+            try:
+                withdrawn = bridge.cancel_pending(
+                    session_id=sess.session_id,
+                    reason="Session reloaded; pending approval withdrawn and denied.",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not withdraw pending approvals for %s: %s", sess.session_id, exc
+                )
         result = {
             "sessionId": sess.session_id,
             "cwd": str(sess.workspace_root),
             "model": sess.model,
+            "pendingApprovalsWithdrawn": withdrawn,
         }
         if paged:
             history = self._durable_history(sess)
@@ -807,13 +862,8 @@ class ACPServer:
         if not isinstance(sess.history, SQLiteHistory):
             self._persist_session(sess)
 
-        # Carry prior dialogue so follow-up turns keep conversation context.
-        conversation_history: list[dict[str, str]] = []
-        for turn in sess.history[-10:]:
-            if turn.get("prompt"):
-                conversation_history.append({"role": "user", "content": str(turn["prompt"])})
-            if turn.get("response"):
-                conversation_history.append({"role": "assistant", "content": str(turn["response"])})
+        # Carry prior dialogue, including tool rows and reasoning (B41).
+        conversation_history = build_conversation_history(sess.history)
 
         from harness_core.core.models import TaskSubmitRequest
         exec_mode = str(params.get("execution_mode") or "fast_path")
@@ -856,6 +906,7 @@ class ACPServer:
                 })
 
         active_tool_calls: dict[str, str] = {}
+        turn_tool_events: list[dict[str, Any]] = []
 
         def tool_cb(event_type: str, tool_id: str, payload: Any, dur_ms: int = 0) -> None:
             if sess.cancelled:
@@ -873,6 +924,15 @@ class ACPServer:
                 "durationMs": dur_ms,
                 "payload": _bounded_tool_preview(payload, error=event_type == "error"),
             }
+            if event_type != "start":
+                # Durable, bounded record of the call outcome for later turns (B41).
+                turn_tool_events.append({
+                    "tool": tool_id,
+                    "event": event_type,
+                    "payload": tool["payload"],
+                    "durationMs": dur_ms,
+                })
+                del turn_tool_events[:-30]
             if event_type != "start":
                 tool["taskId"] = task_id
                 ledger_call_id = payload.get("_call_id") if isinstance(payload, dict) else None
@@ -919,6 +979,7 @@ class ACPServer:
                 "status": status_str,
                 "response": terminal_reason,
                 "duration": time.time() - start_t,
+                "tool_calls": list(turn_tool_events),
             })
             self._emit({
                 "jsonrpc": "2.0",
@@ -979,6 +1040,7 @@ class ACPServer:
             "status": status_str,
             "response": terminal_reason,
             "duration": time.time() - start_t,
+            "tool_calls": list(turn_tool_events),
         })
 
         terminal_text = str(terminal_reason)
@@ -1024,6 +1086,15 @@ class ACPServer:
         if sess is None:
             raise KeyError(f"Session not found: {sid}")
         sess.cancelled = True
+
+        # B48: wake any blocking approval wait bound to this session/task so the
+        # turn stops promptly instead of blocking until the approval timeout.
+        bridge = getattr(self, "approval_bridge", None)
+        if bridge is not None and hasattr(bridge, "cancel_pending"):
+            try:
+                bridge.cancel_pending(task_id=sess.last_task_id, session_id=sid)
+            except Exception as exc:
+                logger.debug("ACP cancel could not withdraw approvals for %s: %s", sid, exc)
 
         # Reach the active execution: cooperative cancel flag + ledger
         # transition + CoW rollback of the uncommitted workspace layer.
@@ -1075,17 +1146,81 @@ class ACPServer:
         defs = ToolGateway.list_tool_definitions()
         return {"tools": defs}
 
+    def _ensure_tools_call_task(self) -> str:
+        """Ledger task backing direct tools/call so gateway policy always applies."""
+        with self._lock:
+            if self._tools_call_task_id is None:
+                record = self.orchestrator.ledger.submit_task({
+                    "goal": "ACP direct tools/call",
+                    "execution_mode": "standard",
+                    "workspace_root": str(self.workspace_root),
+                })
+                self._tools_call_task_id = record["task_id"]
+            return self._tools_call_task_id
+
     def _handle_tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
+        from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError
+
         name = params.get("name")
         args = params.get("arguments") or {}
         if not name:
             raise ValueError("Tool call missing 'name' parameter")
 
-        spec = self.orchestrator.gateway.tools.get(name)
-        if spec is None:
+        gateway = self.orchestrator.gateway
+        if name not in gateway.tools:
             raise KeyError(f"Unknown tool: {name}")
 
-        inv_res = spec.handler(self.workspace_root, args)
+        task_id = self._ensure_tools_call_task()
+        with self._lock:
+            self._tools_call_seq += 1
+            seq = self._tools_call_seq
+
+        # Mandatory gateway boundary (B02): policy, approval, and journaling
+        # run inside invoke(); handlers are never dispatched directly here.
+        try:
+            inv_res = gateway.invoke(
+                task_id=task_id,
+                attempt_id="att_acp_tools",
+                step_id="acp_tools_call",
+                sequence_in_step=seq,
+                tool_id=name,
+                args=args,
+                workspace_dir=self.workspace_root,
+            )
+        except PolicyBlockedError as exc:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {"ok": False, "error": f"Denied by gateway policy: {exc}"},
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+                "isError": True,
+            }
+        except ApprovalRequiredInterrupt as exc:
+            approval_id = exc.approval_record.get("approval_id", "unknown")
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "ok": False,
+                                "error": (
+                                    f"Tool '{name}' requires owner approval before execution "
+                                    f"(approval_id={approval_id}); no side effects were performed."
+                                ),
+                                "approvalId": approval_id,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+                "isError": True,
+            }
 
         return {
             "content": [
@@ -1677,6 +1812,71 @@ class ACPServer:
         status = res.get("status") if isinstance(res, dict) else "CANCELED"
         return f"Task {tid} canceled (status: {status}); uncommitted CoW workspace layer rolled back."
 
+    def _shutdown_orderly(self, reason: str = "eof", join_timeout: float = 5.0) -> dict[str, Any]:
+        """B49: orderly shutdown on EOF/interrupt instead of abandoning workers.
+
+        Withdraws pending approvals so blocked turn threads wake, cancels each
+        session's in-flight task (cooperative flag + CoW rollback), revokes
+        active approval leases, and joins worker threads within a bounded
+        timeout. Records an explicit interrupted state.
+        """
+        summary: dict[str, Any] = {
+            "interrupted": True,
+            "reason": reason,
+            "canceled_tasks": [],
+            "leases_revoked": 0,
+        }
+        if self._shutting_down:
+            return summary
+        self._shutting_down = True
+
+        with self._lock:
+            sessions = list(self.sessions.values())
+        bridge = getattr(self, "approval_bridge", None)
+        orch = self._orchestrator
+
+        for sess in sessions:
+            sess.cancelled = True
+            tid = sess.last_task_id
+            if bridge is not None and hasattr(bridge, "cancel_pending"):
+                try:
+                    bridge.cancel_pending(task_id=tid, session_id=sess.session_id)
+                except Exception as exc:
+                    logger.debug("ACP shutdown approval withdraw failed for %s: %s", sess.session_id, exc)
+            if tid and orch is not None and hasattr(orch, "cancel_task"):
+                try:
+                    from harness_core.core.models import TaskState
+
+                    ledger = getattr(orch, "ledger", None)
+                    task = ledger.get_task(tid) if ledger is not None else None
+                    terminal = task is not None and TaskState(task["status"]).is_terminal
+                    if not terminal:
+                        orch.cancel_task(tid, actor="acp-shutdown")
+                        summary["canceled_tasks"].append(tid)
+                except Exception as exc:
+                    logger.debug("ACP shutdown could not cancel task %s: %s", tid, exc)
+            try:
+                self._persist_session(sess)
+            except Exception:
+                pass
+
+        gateway = getattr(orch, "gateway", None)
+        leases = getattr(gateway, "approval_lease_manager", None)
+        if leases is not None and hasattr(leases, "list_active_leases"):
+            try:
+                for lease in leases.list_active_leases():
+                    if leases.revoke_lease(lease.lease_id):
+                        summary["leases_revoked"] += 1
+            except Exception as exc:
+                logger.debug("ACP shutdown lease cleanup failed: %s", exc)
+
+        for t in list(self._turn_threads):
+            try:
+                t.join(timeout=join_timeout)
+            except Exception:
+                pass
+        return summary
+
     def run_stdio(self) -> None:
         """Run stdio JSON-RPC loop reading lines or Content-Length framing.
 
@@ -1698,6 +1898,7 @@ class ACPServer:
                 }
             self._emit(resp)
 
+        shutdown_reason = "eof"
         while True:
             try:
                 line = sys.stdin.readline()
@@ -1719,7 +1920,9 @@ class ACPServer:
                     req = json.loads(line_str)
 
                 if req.get("method") == "session/prompt":
-                    threading.Thread(target=_respond_async, args=(req,), daemon=True).start()
+                    worker = threading.Thread(target=_respond_async, args=(req,), daemon=True)
+                    self._turn_threads.append(worker)
+                    worker.start()
                 else:
                     resp = self.handle_request(req)
                     self._emit(resp)
@@ -1729,6 +1932,7 @@ class ACPServer:
                         if sess is not None:
                             sess.cancel_ack.set()
             except (KeyboardInterrupt, BrokenPipeError):
+                shutdown_reason = "interrupt"
                 break
             except Exception as exc:
                 err_resp = {
@@ -1737,3 +1941,7 @@ class ACPServer:
                     "error": {"code": -32700, "message": f"Parse error: {exc}"},
                 }
                 self._emit(err_resp)
+
+        # B49: EOF or interrupt — quiesce workers, cancel/roll back in-flight
+        # turns, withdraw approvals, and clean leases before exiting.
+        self._shutdown_orderly(shutdown_reason)

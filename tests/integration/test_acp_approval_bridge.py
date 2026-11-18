@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from harness_core.capabilities.gateways.reaction_listener import ApprovalRequest
-from harness_core.client.acp import ACPServer
+from harness_core.client.acp import ACPServer, ACPSession
 from harness_core.client.acp_approval import AcpApprovalBridge
 from harness_core.core.approval_lease import ApprovalLeaseManager
 from harness_core.core.models import RiskClass, TaskSubmitRequest
@@ -127,7 +128,7 @@ def test_unknown_approval_id_is_not_applied(tmp_path: Path) -> None:
     assert bridge.resolve("appr_missing", "approve") is False
 
 
-def test_scope_decision_grants_lease_that_skips_the_next_prompt(tmp_path: Path) -> None:
+def test_scope_decision_grants_narrow_lease_for_the_exact_action(tmp_path: Path) -> None:
     ledger, gateway, task_id = make_gateway(tmp_path)
     try:
         leases = ApprovalLeaseManager(ledger)
@@ -146,17 +147,35 @@ def test_scope_decision_grants_lease_that_skips_the_next_prompt(tmp_path: Path) 
 
         granted = leases.list_active_leases()
         assert len(granted) == 1
-        assert granted[0].command_prefix == "rm"
+        # B45: the grant binds to the full command, tool, and task — not the
+        # binary basename, and not the whole workspace.
+        assert granted[0].command_prefix == "rm -rf ./dist"
+        assert granted[0].match_mode == "exact"
+        assert granted[0].tool_name == "deploy"
+        assert granted[0].task_id == task_id
+        assert granted[0].allowed_paths == []
 
-        # A later turn running the same binary is auto-approved by the lease.
-        next_task = ledger.submit_task(
-            TaskSubmitRequest(goal="Clean another build", workspace_root=str(tmp_path))
-        )["task_id"]
+        # The identical action in the same task is auto-approved.
         decision, reason = gateway.evaluate_policy(
-            ledger.get_task(next_task), gateway.tools["deploy"], {"command": "rm -rf ./build"}
+            ledger.get_task(task_id), gateway.tools["deploy"], {"command": "rm -rf ./dist"}
         )
         assert decision == PolicyDecisionType.ALLOW
         assert reason.startswith("LEASE_APPROVED:")
+
+        # A different command with the same binary is NOT covered.
+        decision, _ = gateway.evaluate_policy(
+            ledger.get_task(task_id), gateway.tools["deploy"], {"command": "rm -rf ./build"}
+        )
+        assert decision == PolicyDecisionType.REQUIRE_APPROVAL
+
+        # The same command in a different task is NOT covered.
+        next_task = ledger.submit_task(
+            TaskSubmitRequest(goal="Clean another build", workspace_root=str(tmp_path))
+        )["task_id"]
+        decision, _ = gateway.evaluate_policy(
+            ledger.get_task(next_task), gateway.tools["deploy"], {"command": "rm -rf ./dist"}
+        )
+        assert decision == PolicyDecisionType.REQUIRE_APPROVAL
     finally:
         ledger.close()
 
@@ -230,5 +249,102 @@ def test_decision_for_an_already_finished_request_is_acknowledged(tmp_path: Path
         })
         assert response["result"]["status"] == "acknowledged"
         assert server.pending_approvals["appr_gone"]["decision"] == "approve"
+    finally:
+        ledger.close()
+
+
+def test_cancel_pending_wakes_blocking_approval_promptly(tmp_path: Path) -> None:
+    """B48: cancel_pending denies and wakes a waiting turn well before the timeout."""
+    capture = EmitCapture()
+    bridge = AcpApprovalBridge(capture, lambda tid: "sess_1", tmp_path, timeout_seconds=30.0)
+    request = ApprovalRequest(
+        request_id="appr_cancel",
+        task_id="task_1",
+        tool_name="terminal",
+        arguments={"command": "rm -rf ./dist"},
+        risk_class="R3",
+    )
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        outcome["decision"] = bridge.request_approval(request)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    capture.wait_for_request()
+    assert bridge.has_pending("appr_cancel")
+
+    start = time.monotonic()
+    woken = bridge.cancel_pending(task_id="task_1")
+    thread.join(timeout=2.0)
+    elapsed = time.monotonic() - start
+
+    assert woken == 1
+    assert not thread.is_alive(), "cancel must wake the waiter immediately, not after the timeout"
+    assert elapsed < 2.0
+    assert outcome["decision"].decision == "DENY"
+    assert "Canceled" in (outcome["decision"].reason or "")
+    assert not bridge.has_pending("appr_cancel")
+
+
+def test_cancel_pending_ignores_unrelated_tasks(tmp_path: Path) -> None:
+    bridge = AcpApprovalBridge(EmitCapture(), lambda tid: "sess_1", tmp_path, timeout_seconds=30.0)
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        outcome["decision"] = bridge.request_approval(
+            ApprovalRequest(request_id="appr_other", task_id="task_other", tool_name="terminal")
+        )
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert bridge.has_pending("appr_other") or thread.is_alive()
+    # Wait until the request is actually registered.
+    for _ in range(100):
+        if bridge.has_pending("appr_other"):
+            break
+        time.sleep(0.01)
+
+    assert bridge.cancel_pending(task_id="task_unrelated") == 0
+    assert bridge.has_pending("appr_other")
+    # Clean up the waiter so it does not linger.
+    bridge.resolve("appr_other", "reject")
+    thread.join(timeout=2.0)
+
+
+def test_acp_session_cancel_withdraws_pending_approval(tmp_path: Path) -> None:
+    """B48: session/cancel wakes a turn blocked on approval instead of a 60s wait."""
+    ledger, gateway, task_id = make_gateway(tmp_path)
+    try:
+        server = ACPServer(orchestrator=SimpleNamespace(gateway=gateway, ledger=ledger), workspace_root=tmp_path)
+        capture = EmitCapture()
+        server._emit = capture  # type: ignore[method-assign]
+        assert server.orchestrator.gateway is gateway  # wires the approval bridge
+
+        sess = ACPSession(session_id="sess_cancel", workspace_root=tmp_path)
+        sess.last_task_id = task_id
+        sess.running = True
+        server.sessions["sess_cancel"] = sess
+
+        outcome: dict[str, Any] = {}
+        thread = invoke_in_thread(gateway, task_id, {"target": "staging"}, outcome, tmp_path)
+        capture.wait_for_request()
+        assert thread.is_alive()
+
+        start = time.monotonic()
+        response = server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "session/cancel",
+            "params": {"sessionId": "sess_cancel"},
+        })
+        thread.join(timeout=2.0)
+        elapsed = time.monotonic() - start
+
+        assert response["result"]["cancelled"] is True
+        assert not thread.is_alive(), "canceled turn must not block until the approval timeout"
+        assert elapsed < 2.0
+        assert isinstance(outcome.get("error"), PolicyBlockedError)
+        assert sess.cancelled is True
     finally:
         ledger.close()

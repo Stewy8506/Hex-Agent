@@ -25,6 +25,8 @@ import time
 from typing import Any
 import uuid
 
+from harness_core.runtime.windows_job import close_windows_job, close_windows_process, spawn_windows_process
+
 logger = logging.getLogger(__name__)
 
 ANSI_REGEX = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -216,7 +218,7 @@ class ProcessRegistry:
         pty_enabled = False
         proc: subprocess.Popen | None = None
 
-        if use_pty:
+        if use_pty and os.name != "nt":
             try:
                 import pty
                 master_fd, slave_fd = pty.openpty()
@@ -232,10 +234,7 @@ class ProcessRegistry:
                 popen_kwargs: dict[str, Any] = {
                     "close_fds": True,
                 }
-                if hasattr(os, "setsid"):
-                    popen_kwargs["preexec_fn"] = os.setsid
-                else:
-                    popen_kwargs["start_new_session"] = True
+                popen_kwargs["start_new_session"] = True
 
                 proc = subprocess.Popen(
                     command,
@@ -268,12 +267,11 @@ class ProcessRegistry:
 
         if not pty_enabled:
             popen_kwargs = {"close_fds": True}
-            if hasattr(os, "setsid"):
-                popen_kwargs["preexec_fn"] = os.setsid
-            else:
+            if os.name != "nt":
                 popen_kwargs["start_new_session"] = True
 
-            proc = subprocess.Popen(
+            spawn_process = spawn_windows_process if os.name == "nt" else subprocess.Popen
+            proc = spawn_process(
                 command,
                 shell=True,
                 stdin=subprocess.DEVNULL,
@@ -323,7 +321,13 @@ class ProcessRegistry:
             return
 
         try:
-            while not session._stop_event.is_set():
+            while os.name == "nt" or not session._stop_event.is_set():
+                if os.name == "nt":
+                    chunk = session.process.stdout.read1(4096)
+                    if not chunk:
+                        break
+                    session.buffer.append(decoder.decode(chunk, final=False))
+                    continue
                 try:
                     rlist, _, _ = select.select([fd], [], [], 0.1)
                 except (ValueError, OSError):
@@ -347,7 +351,7 @@ class ProcessRegistry:
 
             # Final drain of any remaining buffered bytes
             try:
-                for _ in range(50):
+                for _ in range(50 if os.name != "nt" else 0):
                     rlist, _, _ = select.select([fd], [], [], 0.02)
                     if not rlist:
                         break
@@ -373,6 +377,9 @@ class ProcessRegistry:
                     exit_code = session.process.wait()
                 except Exception:
                     exit_code = session.process.poll() or 0
+
+            if os.name == "nt" and session.process is not None:
+                close_windows_process(session.process)
 
             # Close master file descriptor
             if session.pty_master_fd is not None:
@@ -473,7 +480,11 @@ class ProcessRegistry:
             return session.to_dict()
 
         pid = session.pid
-        if pid is not None and session.process is not None:
+        if os.name == "nt" and session.process is not None:
+            session.status = ProcessStatus.KILLED
+            close_windows_job(session.process)
+            session.process.wait(timeout=3.0)
+        elif pid is not None and session.process is not None:
             sig = signal.SIGKILL if force else signal.SIGTERM
             try:
                 if hasattr(os, "killpg") and hasattr(os, "getpgid"):
@@ -559,6 +570,8 @@ class ProcessRegistry:
                 except Exception as exc:
                     logger.debug("Error killing process %s during cleanup: %s", session.id, exc)
 
+            if os.name == "nt" and session.process is not None:
+                close_windows_process(session.process)
             if session.pty_master_fd is not None:
                 try:
                     os.close(session.pty_master_fd)

@@ -39,6 +39,59 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_DIR = Path.home() / ".hex" / "data"
 
+_active_orchestrator: Any | None = None
+
+
+def _register_active_orchestrator(orch: Any) -> None:
+    global _active_orchestrator
+    _active_orchestrator = orch
+
+
+def _orderly_headless_shutdown(orch: Any | None) -> dict[str, Any]:
+    """B49: on headless interrupt, cancel in-flight work and clean up state.
+
+    Cancels non-terminal tasks (cooperative flag + CoW rollback), revokes
+    active approval leases so they cannot auto-approve after an interrupt,
+    and reports an explicit interrupted state instead of exiting silently.
+    """
+    summary: dict[str, Any] = {"interrupted": True, "canceled_tasks": [], "leases_revoked": 0}
+    if orch is None:
+        return summary
+    from harness_core.core.models import TaskState
+
+    ledger = getattr(orch, "ledger", None)
+    if ledger is not None and hasattr(orch, "cancel_task") and hasattr(ledger, "list_tasks"):
+        try:
+            tasks = ledger.list_tasks()
+        except Exception:
+            tasks = []
+        for t in tasks:
+            tid = t.get("task_id")
+            status = t.get("status")
+            if not tid or not status:
+                continue
+            try:
+                if TaskState(status).is_terminal:
+                    continue
+            except ValueError:
+                continue
+            try:
+                orch.cancel_task(tid, actor="headless-interrupt")
+                summary["canceled_tasks"].append(tid)
+            except Exception as exc:
+                logger.debug("Headless interrupt could not cancel %s: %s", tid, exc)
+
+    gateway = getattr(orch, "gateway", None)
+    leases = getattr(gateway, "approval_lease_manager", None)
+    if leases is not None and hasattr(leases, "list_active_leases"):
+        try:
+            for lease in leases.list_active_leases():
+                if leases.revoke_lease(lease.lease_id):
+                    summary["leases_revoked"] += 1
+        except Exception as exc:
+            logger.debug("Headless interrupt lease cleanup failed: %s", exc)
+    return summary
+
 
 def seed_default_skills(orch: HarnessOrchestrator, repo_root: Path) -> list[dict]:
     skills_root = repo_root / "skills"
@@ -64,7 +117,16 @@ def _run_main(argv: list[str] | None, *, process_handoff: bool) -> int:
     try:
         return _main_impl(argv, process_handoff=process_handoff)
     except KeyboardInterrupt:
+        summary = _orderly_headless_shutdown(_active_orchestrator)
         print("\n\x1b[90m[Interrupted by user]\x1b[0m")
+        if summary["canceled_tasks"] or summary["leases_revoked"]:
+            print(
+                "\x1b[90m"
+                f"Canceled {len(summary['canceled_tasks'])} in-flight task(s), "
+                f"revoked {summary['leases_revoked']} approval lease(s); "
+                "uncommitted workspace layer rolled back."
+                "\x1b[0m"
+            )
         return 130
 
 
@@ -849,6 +911,7 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
     from harness_core.core.orchestrator import HarnessOrchestrator
 
     orch = HarnessOrchestrator(bound_data_dir, default_workspace=ws_root)
+    _register_active_orchestrator(orch)
 
     if getattr(args, "base_url", None):
         os.environ["HEX_CLOUD_BASE_URL"] = str(args.base_url).strip().rstrip("/")

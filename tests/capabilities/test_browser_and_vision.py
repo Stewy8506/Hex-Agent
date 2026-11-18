@@ -81,7 +81,7 @@ class TestBrowserAndVision(unittest.TestCase):
 
     def test_browser_navigation_and_aria_snapshot(self) -> None:
         """Verify browser navigates to file URL and generates ariaSnapshot with element refs."""
-        session = self.browser_manager.get_or_create_session("task_nav_01")
+        session = self.browser_manager.get_or_create_session("task_nav_01", workspace_root=self.workspace_dir)
         file_url = f"file://{self.html_file.resolve()}"
         res = session.navigate(file_url)
 
@@ -96,42 +96,34 @@ class TestBrowserAndVision(unittest.TestCase):
         self.assertIn("@e2", refs)
         self.assertTrue(len(res.elements) >= 4)  # 2 links, 1 input, 1 button, 1 form
 
-    def test_browser_element_interaction_and_type(self) -> None:
-        """Verify clicking elements and typing into inputs."""
-        session = self.browser_manager.get_or_create_session("task_interact_01")
+    def test_browser_interaction_reports_unsupported_instead_of_faking(self) -> None:
+        """B53: click/type require a JS engine and must report that limitation."""
+        session = self.browser_manager.get_or_create_session("task_interact_01", workspace_root=self.workspace_dir)
         session.navigate(f"file://{self.html_file.resolve()}")
 
-        # Type into search input
         type_res = session.type("@e3", "autonomous reasoning")
-        self.assertTrue(type_res.ok)
-        self.assertIn("Typed text", type_res.content)
-        self.assertEqual(type_res.elements[0].get("value"), "autonomous reasoning")
+        self.assertFalse(type_res.ok)
+        self.assertIn("JavaScript", type_res.error)
+        self.assertFalse(any(e.get("value") for e in session.elements))
 
-        # Click button
         click_res = session.click("@e4")
-        self.assertTrue(click_res.ok)
-        self.assertIn("Clicked element", click_res.content)
+        self.assertFalse(click_res.ok)
+        self.assertIn("JavaScript", click_res.error)
 
-    def test_browser_screenshot_and_evaluate(self) -> None:
-        """Verify DOM screenshot artifact creation and expression evaluation."""
-        session = self.browser_manager.get_or_create_session("task_shot_01")
+    def test_browser_screenshot_and_evaluate_are_explicitly_unsupported(self) -> None:
+        """B53: no renderer, so a screenshot must not silently save HTML."""
+        session = self.browser_manager.get_or_create_session("task_shot_01", workspace_root=self.workspace_dir)
         session.navigate(f"file://{self.html_file.resolve()}")
 
-        # Screenshot capture
         shot_path = self.workspace_dir / "capture.html"
         shot_res = session.screenshot(shot_path)
-        self.assertTrue(shot_res.ok)
-        self.assertTrue(shot_path.exists())
-        self.assertIn("HEX Workbench Test App", shot_path.read_text(encoding="utf-8"))
+        self.assertFalse(shot_res.ok)
+        self.assertIn("screenshot", shot_res.error)
+        self.assertFalse(shot_path.exists())
 
-        # Evaluate expression
-        eval_title = session.evaluate("title")
-        self.assertTrue(eval_title.ok)
-        self.assertEqual(eval_title.content, "HEX Workbench Test App")
-
-        eval_elems = session.evaluate("elements")
-        self.assertTrue(eval_elems.ok)
-        self.assertTrue(int(eval_elems.content) >= 4)
+        eval_res = session.evaluate("title")
+        self.assertFalse(eval_res.ok)
+        self.assertIn("not executed", eval_res.error)
 
     def test_vision_engine_metadata_and_inspection(self) -> None:
         """Verify VisionEngine parses PNG dimensions and generates visual report."""
@@ -139,16 +131,17 @@ class TestBrowserAndVision(unittest.TestCase):
         self.assertIsNotNone(meta)
         self.assertEqual(meta, (1, 1))
 
-        # Inspect local image
+        # Without a multimodal router the engine must fail explicitly (B51).
         inspect_res = self.vision_engine.inspect_image(
             str(self.png_file),
             prompt="Describe this image",
             workspace_dir=self.workspace_dir,
         )
-        self.assertTrue(inspect_res["ok"])
+        self.assertFalse(inspect_res["ok"])
+        self.assertIn("Vision backend unavailable", inspect_res["error"])
+        self.assertFalse(inspect_res["pixels_sent"])
         self.assertEqual(inspect_res["mime_type"], "image/png")
         self.assertEqual(inspect_res["dimensions"], (1, 1))
-        self.assertIn("Visual Inspection Summary", inspect_res["analysis"])
 
     def test_vision_engine_nonexistent_or_unsupported_file(self) -> None:
         """Verify VisionEngine gracefully rejects invalid or non-image files."""
@@ -180,13 +173,14 @@ class TestBrowserAndVision(unittest.TestCase):
         self.assertTrue(snap_res["ok"])
         self.assertIn("Accessibility", snap_res["result"]["content"])
 
-        # 3. Gateway browser tool screenshot
+        # 3. Gateway browser screenshot is explicitly unsupported (B53).
         shot_res = self.gateway._tool_browser(
             self.workspace_dir,
             {"action": "screenshot", "output_path": "shot.html", "task_id": "gw_browser_01"},
         )
-        self.assertTrue(shot_res["ok"])
-        self.assertTrue((self.workspace_dir / "shot.html").exists())
+        self.assertFalse(shot_res["ok"])
+        self.assertIn("screenshot", shot_res["error"])
+        self.assertFalse((self.workspace_dir / "shot.html").exists())
 
         # 4. Gateway browser close
         close_res = self.gateway._tool_browser(
@@ -195,14 +189,14 @@ class TestBrowserAndVision(unittest.TestCase):
         )
         self.assertTrue(close_res["ok"])
 
-        # 5. Gateway image_inspect tool
+        # 5. Gateway image_inspect without a multimodal router fails explicitly.
         vision_res = self.gateway._tool_image_inspect(
             self.workspace_dir,
             {"image_path": str(self.png_file), "prompt": "Check UI color balance"},
         )
-        self.assertTrue(vision_res["ok"])
+        self.assertFalse(vision_res["ok"])
+        self.assertIn("Vision backend unavailable", vision_res["error"])
         self.assertEqual(vision_res["mime_type"], "image/png")
-        self.assertIn("Visual Inspection Summary", vision_res["analysis"])
 
 
 if __name__ == "__main__":

@@ -24,7 +24,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+import threading
 
 from harness_core.storage.db import ConcurrencyFenceError, LedgerStore
 from harness_core.core.models import TaskState, TaskSubmitRequest
@@ -101,13 +102,14 @@ class TestWorkerDaemon(unittest.TestCase):
         self.orch = HarnessOrchestrator(self.data_dir)
 
     def tearDown(self) -> None:
+        self.orch.ledger.close()
         self.temp_dir.cleanup()
 
     def test_machine_profiling_and_registration(self) -> None:
         """Verifies host profiling detects CPU/RAM/OS/CoW and registers worker in ledger."""
         prof = inspect_machine_profile()
         self.assertIn(prof["machine_class"], ("m4_air", "desktop_gpu", "server"))
-        self.assertIn(prof["cow_backend"], ("apfs_clone", "btrfs_subvolume", "overlayfs", "linux_overlayfs", "fuse_overlayfs", "portable_copy"))
+        self.assertIn(prof["cow_backend"], ("apfs_clone", "btrfs_subvolume", "overlayfs", "linux_overlayfs", "fuse_overlayfs", "portable_copy", "portable_cow_copy"))
         self.assertIn("cpu_cores", prof["capabilities"])
         self.assertIn("memory_bytes", prof["capabilities"])
         self.assertGreaterEqual(prof["capabilities"]["cpu_cores"], 1)
@@ -325,6 +327,128 @@ class TestWorkerDaemon(unittest.TestCase):
             self.assertTrue(daemon.fenced)
         finally:
             daemon.stop()
+
+    def test_fenced_worker_never_claims_again(self):
+        client = Mock()
+        client.claim_task.return_value = None
+        daemon = WorkerDaemon(client, orchestrator=self.orch)
+        daemon.fenced = True
+        daemon._claim_loop(once=True)
+        client.claim_task.assert_not_called()
+        with self.assertRaises(ConcurrencyFenceError):
+            daemon.start()
+
+    def test_execution_fence_latches_and_stops_claims(self):
+        client = Mock()
+        daemon = WorkerDaemon(client, orchestrator=self.orch)
+
+        def claim(*args, **kwargs):
+            if client.claim_task.call_count > 1:
+                daemon._stop_event.set()
+                return None
+            return {"task_id": "task", "lease_id": "lease", "fencing_token": 1}
+
+        client.claim_task.side_effect = claim
+        with patch.object(self.orch, "execute_task", side_effect=ConcurrencyFenceError("preempted")):
+            daemon._claim_loop()
+        self.assertTrue(daemon.fenced)
+        self.assertTrue(daemon._stop_event.is_set())
+        self.assertEqual(client.claim_task.call_count, 1)
+
+    def test_heartbeat_fence_cancels_only_active_execution(self):
+        client = Mock()
+        client.claim_task.return_value = {"task_id": "task", "lease_id": "lease", "fencing_token": 1}
+        client.renew_lease.side_effect = ConcurrencyFenceError("preempted")
+        daemon = WorkerDaemon(client, orchestrator=self.orch)
+
+        def execute(task_id, *, worker_id, lease_info, fence_check):
+            self.assertFalse(fence_check())
+            with patch.object(daemon._stop_event, "wait", return_value=False):
+                daemon._heartbeat_loop()
+            self.assertTrue(fence_check())
+            raise ConcurrencyFenceError("execution canceled")
+
+        with patch.object(self.orch, "execute_task", side_effect=execute), patch.object(self.orch, "cancel_task") as cancel:
+            daemon._claim_loop()
+            cancel.assert_not_called()
+        self.assertTrue(daemon.fenced)
+        self.assertEqual(client.claim_task.call_count, 1)
+
+    def test_delayed_renewal_failure_does_not_fence_new_attempt(self):
+        client = Mock()
+        daemon = WorkerDaemon(client, orchestrator=self.orch)
+        daemon.current_lease_id = "old"
+        daemon.current_fencing_token = 1
+
+        def renew(**kwargs):
+            daemon.current_lease_id = "new"
+            daemon.current_fencing_token = 2
+            raise ConcurrencyFenceError("old renewal failed")
+
+        client.renew_lease.side_effect = renew
+        with patch.object(daemon._stop_event, "wait", side_effect=[False, True]):
+            daemon._heartbeat_loop()
+        self.assertFalse(daemon.fenced)
+        self.assertFalse(daemon._stop_event.is_set())
+
+    def test_fence_after_tool_stops_dag_before_checkpoint_and_publication(self):
+        source = self.data_dir / "source"
+        source.mkdir()
+        task = self.orch.submit_task(TaskSubmitRequest(
+            goal="write a file", workspace_root=str(source), execution_mode="standard_dag",
+            constraints={"requested_steps": [{
+                "step_id": "write", "title": "write", "tool_id": "write_file",
+                "args": {"path": "result.txt", "content": "attempt data"},
+                "risk_class": "R1", "side_effects": ["result.txt"],
+            }]},
+        ), auto_execute=False)
+        fenced = threading.Event()
+        original = self.orch.gateway.invoke
+
+        def invoke(**kwargs):
+            result = original(**kwargs)
+            fenced.set()
+            return result
+
+        with patch.object(self.orch.gateway, "invoke", side_effect=invoke), patch.object(self.orch.cow, "publish_delta") as publish:
+            with self.assertRaises(ConcurrencyFenceError):
+                self.orch.execute_task(task["task_id"], fence_check=fenced.is_set)
+            publish.assert_not_called()
+        self.assertFalse((source / "result.txt").exists())
+        self.assertIsNone(self.orch.ledger.get_latest_checkpoint(task["task_id"]))
+        self.assertEqual(self.orch.ledger.get_task(task["task_id"])["status"], "RUNNING")
+
+    def test_fence_before_entry_does_not_cancel_successor_task(self):
+        task = self.orch.submit_task(TaskSubmitRequest(goal="read", execution_mode="fast_path"), auto_execute=False)
+        before = self.orch.ledger.get_task(task["task_id"])
+        with self.assertRaises(ConcurrencyFenceError):
+            self.orch.execute_task(task["task_id"], fence_check=lambda: True)
+        self.assertEqual(self.orch.ledger.get_task(task["task_id"]), before)
+        self.assertFalse(self.orch.is_cancel_requested(task["task_id"]))
+
+    def test_fence_during_verification_prevents_proof_and_publication(self):
+        source = self.data_dir / "source"
+        source.mkdir()
+        task = self.orch.submit_task(TaskSubmitRequest(
+            goal="verify", workspace_root=str(source), execution_mode="standard_dag",
+            constraints={"requested_steps": [{
+                "step_id": "write", "title": "write", "tool_id": "write_file",
+                "args": {"path": "result.txt", "content": "attempt data"},
+                "risk_class": "R1", "side_effects": ["result.txt"],
+            }]},
+        ), auto_execute=False)
+        fenced = threading.Event()
+
+        def run_tests(*args, **kwargs):
+            fenced.set()
+            return {"ok": True, "exit_code": 0, "output": "", "output_sha256": "sha"}
+
+        with patch.object(self.orch.gateway, "_tool_run_tests", side_effect=run_tests), patch.object(self.orch.ledger, "save_proof_bundle") as proof:
+            with self.assertRaises(ConcurrencyFenceError):
+                self.orch.execute_task(task["task_id"], fence_check=fenced.is_set)
+            proof.assert_not_called()
+        self.assertFalse((source / "result.txt").exists())
+        self.assertEqual(self.orch.ledger.get_task(task["task_id"])["status"], "VERIFYING")
 
 
 if __name__ == "__main__":

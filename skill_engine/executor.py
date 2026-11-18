@@ -11,7 +11,6 @@ import ast
 import json
 import os
 import re
-import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -24,6 +23,7 @@ from harness_core.cognition.skillspector import (
     get_approved_skill_hash,
     parse_skill_frontmatter,
 )
+from harness_core.platform.shell import build_command_argv, default_path_env
 
 
 class SecurityError(PermissionError):
@@ -50,6 +50,48 @@ BLOCKED_ENV_KEY_PATTERNS: re.Pattern[str] = re.compile(
     r"(?i)(API_KEY|SECRET|TOKEN|PASS|PASSWORD|AUTH|CREDENTIAL|PRIVATE|AWS_|GITHUB_|GH_|HARNESS_|SSH_|OPENAI|ANTHROPIC|GEMINI|DATABASE_URL|POSTGRES|AZURE|GCP|GOOGLE)"
 )
 
+# Dynamic-loader, interpreter-startup, and shell-init variables that can hijack
+# execution even though they carry no secret. Frontmatter env overrides must not
+# reintroduce these into the claimed clean environment (B56).
+BLOCKED_LOADER_ENV_VARS: frozenset[str] = frozenset(
+    {
+        "LD_PRELOAD",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_DEBUG",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "BASH_ENV",
+        "ENV",
+        "SHELLOPTS",
+        "BASHOPTS",
+        "PS4",
+        "IFS",
+        "CDPATH",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "PYTHONSTARTUP",
+        "PYTHONINSPECT",
+        "PYTHONHOME",
+        "PERL5OPT",
+        "PERLLIB",
+        "RUBYOPT",
+        "RUBYLIB",
+        "JAVA_TOOL_OPTIONS",
+        "_JAVA_OPTIONS",
+        "JDK_JAVA_OPTIONS",
+        "GIT_SSH_COMMAND",
+        "GIT_EXEC_PATH",
+    }
+)
+
+
+def _is_blocked_env_key(key: str) -> bool:
+    """True for secret-bearing keys and loader/startup injection vectors."""
+    return bool(BLOCKED_ENV_KEY_PATTERNS.search(key)) or key.upper() in BLOCKED_LOADER_ENV_VARS
+
 
 def build_minimal_skill_env(
     base_env: Optional[dict[str, str]] = None,
@@ -63,16 +105,16 @@ def build_minimal_skill_env(
     for k in SAFE_SKILL_ENV_VARS:
         if k in source:
             val = source[k]
-            if not BLOCKED_ENV_KEY_PATTERNS.search(k):
+            if not _is_blocked_env_key(k):
                 sanitized[k] = str(val)
 
     if "PATH" not in sanitized:
-        sanitized["PATH"] = "/usr/bin:/bin:/usr/local/bin"
+        sanitized["PATH"] = default_path_env()
 
     for extra in (env_vars, env_overrides):
         if extra:
             for k, v in extra.items():
-                if not BLOCKED_ENV_KEY_PATTERNS.search(k):
+                if not _is_blocked_env_key(k):
                     sanitized[k] = str(v)
 
     return sanitized
@@ -318,11 +360,7 @@ class SkillExecutionEngine:
             if isinstance(cmd, list):
                 cmd_list = [str(c) for c in cmd]
             else:
-                cmd_str = str(cmd).strip()
-                if any(op in cmd_str for op in ("|", ">", "<", ";", "&&", "||", "$")):
-                    cmd_list = ["/bin/sh", "-c", cmd_str]
-                else:
-                    cmd_list = shlex.split(cmd_str)
+                cmd_list = build_command_argv(str(cmd))
 
             try:
                 if hasattr(sandbox, "execute"):
