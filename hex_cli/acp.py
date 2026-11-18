@@ -1027,6 +1027,15 @@ class ACPServer:
             raise KeyError(f"Session not found: {sid}")
         sess.cancelled = True
 
+        # B48: wake any blocking approval wait bound to this session/task so the
+        # turn stops promptly instead of blocking until the approval timeout.
+        bridge = getattr(self, "approval_bridge", None)
+        if bridge is not None and hasattr(bridge, "cancel_pending"):
+            try:
+                bridge.cancel_pending(task_id=sess.last_task_id, session_id=sid)
+            except Exception as exc:
+                logger.debug("ACP cancel could not withdraw approvals for %s: %s", sid, exc)
+
         # Reach the active execution: cooperative cancel flag + ledger
         # transition + CoW rollback of the uncommitted workspace layer.
         tid = sess.last_task_id

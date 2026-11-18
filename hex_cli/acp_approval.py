@@ -53,6 +53,47 @@ class AcpApprovalBridge:
         with self._lock:
             return approval_id in self._pending
 
+    def cancel_pending(
+        self,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        reason: str | None = None,
+    ) -> int:
+        """Withdraw pending approvals bound to a task/session, waking waiters now.
+
+        B48: a canceled turn must not block until the default approval timeout.
+        Every matching pending request is resolved as DENY and its waiting thread
+        signaled immediately. Silence is still a denial; cancellation just makes
+        that denial prompt. Returns the number of waiters woken.
+        """
+        if task_id is None and session_id is None:
+            return 0
+        deny_reason = reason or "Canceled by operator; approval withdrawn."
+        woken = 0
+        with self._lock:
+            for approval_id in list(self._pending.keys()):
+                entry = self._pending.get(approval_id)
+                if entry is None:
+                    continue
+                request = entry["request"]
+                req_task = getattr(request, "task_id", None)
+                req_session = self._session_for_task(req_task)
+                matches_task = task_id is not None and req_task == task_id
+                matches_session = session_id is not None and req_session == session_id
+                if not (matches_task or matches_session):
+                    continue
+                entry["decision"] = ApprovalDecision(
+                    decision="DENY",
+                    responder_id="operator",
+                    platform="acp",
+                    timestamp=time.time(),
+                    reason=deny_reason,
+                )
+                entry["event"].set()
+                self._pending.pop(approval_id, None)
+                woken += 1
+        return woken
+
     def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
         """Notify the client and block until it decides or the timeout expires."""
         timeout = (
