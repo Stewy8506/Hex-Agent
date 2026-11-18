@@ -9,11 +9,11 @@ Every fix ships with a regression test that fails against the old behavior.
 Status legend: `[DONE]` landed + verified + committed · `[WIP]` in progress · `[TODO]` not started.
 
 - Phase 1 — Protect user work and authority: **8/8 sub-phases DONE** (B01, B02, B04, B45, B46, B52, B47, B48, B49, B12, B05, B56).
-- Phase 2 — Make completion and recovery truthful: **6/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55); B37 next.
+- Phase 2 — Make completion and recovery truthful: **7/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55, B37); B36 next.
 - Phase 3 — Finish primary user surfaces: not started.
 - Phase 4 — Expand from real lifecycle integrations: not started.
 
-Last updated: 2026-11-18 (through B51/B53/B55, commit `a9e3d49`).
+Last updated: 2026-11-18 (through B37, commit `30e46dd`).
 
 ## Phase 1 — Protect user work and authority (gate: zero later effects for denied/canceled work; publication preserves metadata/concurrent work)
 
@@ -34,7 +34,7 @@ Last updated: 2026-11-18 (through B51/B53/B55, commit `a9e3d49`).
 - **2.4 B51/B53/B55** `[DONE a9e3d49]` — Vision transmits the full image as a base64 multimodal content block and accepts only a multimodal route; browser is documented and enforced as HTML fetch/parse with click/type/screenshot/evaluate returning explicit unsupported errors; voice has no silent mock fallback and STT/TTS report the missing backend.
 - **2.5 B06/B09** `[DONE 0e69543]` — `save_plan` rejects empty/cyclic/dangling/duplicate topologies; execution pauses in `NEEDS_ATTENTION` with the unresolved dependency map instead of running `pending[0]`; an exhausted replan budget pauses for attention (`max_replans` readable from task constraints).
 - **2.6 B07/B08** `[DONE 5eb03dc]` — Todo `complete` implemented and matched by task/id/index; unsupported actions and non-finite statuses rejected; atomic writes, propagated `OSError`, corrupt state reported instead of silently reset, unique ids after deletion.
-- **2.7 B37** `[TODO]` — Single migration source: Alembic head matches runtime schema on SQLite and PostgreSQL; clean-install feature-table test.
+- **2.7 B37** `[DONE 30e46dd]` — Alembic revision `0002_feature_schema_parity` adds `tasks.pinned`, `tasks.title_provenance`, `dialogue_turns` (+ index) and `approval_leases` (+ index); the SQLite bootstrap SQL mirrors the same shape; migration tests assert the head covers the runtime feature tables and that they accept rows after a clean upgrade. PostgreSQL was not available on this host: parity is established from the migration source, not a live PostgreSQL install. Legacy SQLite files still get idempotent `IF NOT EXISTS`/`ALTER` compatibility DDL in `_init_schema`.
 - **2.8 B36** `[TODO]` — Journal replay bound to restored tree/version (checkpoint/reapply sealed side effects consistently).
 - **2.9 B41/B44** `[TODO]` — Structured ACP context restore (tool rows/pairing); terminal-task reentry guard + startup orphan reconciliation.
 - **2.10 B42/B40** `[TODO]` — Claim transaction failure fails/retries; `/rewind` honest conversation-only semantics or real file rollback; dialogue turn persistence wired.
