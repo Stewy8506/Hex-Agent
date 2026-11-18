@@ -13,6 +13,7 @@ use hex_protocol::models::SubagentInfo;
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    Paste(String),
     Mouse(MouseEvent),
     Resize(u16, u16),
     Tick,
@@ -42,6 +43,7 @@ impl EventHandler {
             while let Some(event) = reader.next().await {
                 let event = match event {
                     Ok(CrosstermEvent::Key(key)) => Some(AppEvent::Key(key)),
+                    Ok(CrosstermEvent::Paste(text)) => Some(AppEvent::Paste(text)),
                     Ok(CrosstermEvent::Mouse(mouse)) => Some(AppEvent::Mouse(mouse)),
                     Ok(CrosstermEvent::Resize(w, h)) => Some(AppEvent::Resize(w, h)),
                     Ok(_) => None,
