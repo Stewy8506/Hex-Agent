@@ -9,11 +9,11 @@ Every fix ships with a regression test that fails against the old behavior.
 Status legend: `[DONE]` landed + verified + committed · `[WIP]` in progress · `[TODO]` not started.
 
 - Phase 1 — Protect user work and authority: **8/8 sub-phases DONE** (B01, B02, B04, B45, B46, B52, B47, B48, B49, B12, B05, B56).
-- Phase 2 — Make completion and recovery truthful: **7/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55, B37); B36 next.
+- Phase 2 — Make completion and recovery truthful: **9/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55, B37, B36, B41/B44); B42/B40 next.
 - Phase 3 — Finish primary user surfaces: not started.
 - Phase 4 — Expand from real lifecycle integrations: not started.
 
-Last updated: 2026-11-18 (through B37, commit `30e46dd`).
+Last updated: 2026-11-18 (through B41/B44, commit `60dddd0`).
 
 ## Phase 1 — Protect user work and authority (gate: zero later effects for denied/canceled work; publication preserves metadata/concurrent work)
 
@@ -35,8 +35,8 @@ Last updated: 2026-11-18 (through B37, commit `30e46dd`).
 - **2.5 B06/B09** `[DONE 0e69543]` — `save_plan` rejects empty/cyclic/dangling/duplicate topologies; execution pauses in `NEEDS_ATTENTION` with the unresolved dependency map instead of running `pending[0]`; an exhausted replan budget pauses for attention (`max_replans` readable from task constraints).
 - **2.6 B07/B08** `[DONE 5eb03dc]` — Todo `complete` implemented and matched by task/id/index; unsupported actions and non-finite statuses rejected; atomic writes, propagated `OSError`, corrupt state reported instead of silently reset, unique ids after deletion.
 - **2.7 B37** `[DONE 30e46dd]` — Alembic revision `0002_feature_schema_parity` adds `tasks.pinned`, `tasks.title_provenance`, `dialogue_turns` (+ index) and `approval_leases` (+ index); the SQLite bootstrap SQL mirrors the same shape; migration tests assert the head covers the runtime feature tables and that they accept rows after a clean upgrade. PostgreSQL was not available on this host: parity is established from the migration source, not a live PostgreSQL install. Legacy SQLite files still get idempotent `IF NOT EXISTS`/`ALTER` compatibility DDL in `_init_schema`.
-- **2.8 B36** `[TODO]` — Journal replay bound to restored tree/version (checkpoint/reapply sealed side effects consistently).
-- **2.9 B41/B44** `[TODO]` — Structured ACP context restore (tool rows/pairing); terminal-task reentry guard + startup orphan reconciliation.
+- **2.8 B36** `[DONE 13232b9]` — Journal replay bound to the restored workspace: sealed file mutations record the pre-call content hash, replay only when the recorded effect is still on disk, re-execute when a rollback restored the pre-call state (file absent or byte-identical to before), and flag `_replay_effect_mismatch` without clobbering files that later work changed.
+- **2.9 B41/B44** `[DONE 60dddd0]` — Durable ACP turns carry bounded tool rows (name, outcome, payload) and reasoning; follow-up context rebuild keeps them paired with each turn and the fast-path prompt renders `Tool name (status)`/`Reasoning` rows; `session/load` withdraws that session's pending approvals (the bridge records the session when the request is made). `execute_task`/`resume_task` raise `TerminalTaskReentryError` for SUCCEEDED/FAILED/EXPIRED/REJECTED tasks while cancellation stays idempotent; startup reconciles RUNNING/SPECULATING tasks whose lease is missing, released or expired (`ORPHANED_TASK_RECONCILED`) and leaves live leases alone.
 - **2.10 B42/B40** `[TODO]` — Claim transaction failure fails/retries; `/rewind` honest conversation-only semantics or real file rollback; dialogue turn persistence wired.
 - **2.11 B14/B15** `[TODO]` — MoA typed caller passing route diversity settings, deadline-aware cancellation; fenced worker stops claiming and cancels execution.
 - **2.12 B16** `[TODO]` — Windows process-tree teardown via Job Objects.
