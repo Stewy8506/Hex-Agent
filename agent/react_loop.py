@@ -127,7 +127,7 @@ class ReActSessionResult:
     final_answer: str
     total_turns: int
     turns: list[ReActTurn] = field(default_factory=list)
-    termination_reason: str = "finish"  # "finish", "max_turns", "error", "no_tool_calls"
+    termination_reason: str = "finish"  # "finish", "max_turns", "error", "no_tool_calls", "canceled"
     compaction_result: Any | None = None
     retry_count: int = 0
     friction_info: dict[str, Any] = field(default_factory=dict)
@@ -199,9 +199,11 @@ class ReActLoop:
         guardrails_manager: Any | None = None,
         title_synthesizer: Any | None = None,
         approval_lease_manager: Any | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> None:
         self.model_caller = model_caller
         self.gateway = gateway
+        self._cancel_check = cancel_check
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self.config = config or ReActConfig()
         self.ledger = ledger
@@ -262,6 +264,20 @@ class ReActLoop:
             except Exception:
                 self.approval_lease_manager = None
 
+
+    def _is_cancelled(self) -> bool:
+        """Cooperative cancellation probe checked at turn/tool execution boundaries.
+
+        B47: a canceled task must stop producing side effects. The check is
+        consulted before each model turn and before each tool invocation so a
+        cancel raised mid-run halts the loop instead of running to completion.
+        """
+        if self._cancel_check is None:
+            return False
+        try:
+            return bool(self._cancel_check())
+        except Exception:
+            return False
 
     def _check_and_trigger_friction(
         self, reason: str, details: dict[str, Any] | None = None
@@ -1463,6 +1479,10 @@ class ReActLoop:
         termination_reason = "max_turns"
 
         for turn_index in range(1, self.config.max_turns + 1):
+            if self._is_cancelled():
+                termination_reason = "canceled"
+                self._emit_event("session_canceled", {"turn_index": turn_index})
+                break
             turn_start = time.perf_counter()
             self._emit_event("turn_start", {"turn_index": turn_index})
 
@@ -1602,6 +1622,10 @@ class ReActLoop:
             tool_results: list[ToolCallResult] = []
 
             for seq, call in enumerate(tool_calls):
+                if self._is_cancelled():
+                    termination_reason = "canceled"
+                    self._emit_event("session_canceled", {"turn_index": turn_index, "call_id": call.call_id})
+                    break
                 # Emit tool_start event
                 self._emit_event("tool_start", {
                     "call_id": call.call_id,

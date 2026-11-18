@@ -786,6 +786,7 @@ class HarnessOrchestrator:
             config=react_cfg,
             ledger=self.ledger,
             context_compactor=compactor,
+            cancel_check=lambda: self.is_cancel_requested(active_task_id),
         )
 
         session_res = loop.run(prompt=goal, task_id=active_task_id)
@@ -793,9 +794,22 @@ class HarnessOrchestrator:
         # Record completion in ledger
         if hasattr(self, "ledger") and self.ledger is not None:
             try:
-                final_state = TaskState.SUCCEEDED if session_res.success else TaskState.FAILED
-                reason = "REACT_LOOP_SUCCESS" if session_res.success else "REACT_LOOP_TERMINATED"
-                if hasattr(self.ledger, "transition_task"):
+                # B47: terminal-state CAS. A canceled (or otherwise already-terminal)
+                # task must not be overwritten with a manufactured SUCCEEDED/FAILED
+                # outcome by late finalization. Read the authoritative status first.
+                current = self.ledger.get_task(active_task_id) if hasattr(self.ledger, "get_task") else None
+                terminal_states = {
+                    TaskState.SUCCEEDED.value,
+                    TaskState.FAILED.value,
+                    TaskState.CANCELED.value,
+                    TaskState.REJECTED.value,
+                    TaskState.EXPIRED.value,
+                }
+                already_terminal = bool(current and current.get("status") in terminal_states)
+                canceled = session_res.termination_reason == "canceled" or (
+                    bool(current) and current.get("status") == TaskState.CANCELED.value
+                )
+                if not already_terminal and not canceled and hasattr(self.ledger, "transition_task"):
                     if session_res.success:
                         self.ledger.transition_task(
                             active_task_id,
@@ -820,9 +834,9 @@ class HarnessOrchestrator:
                         task_id=active_task_id,
                         event_type="REACT_SESSION_COMPLETED",
                         payload={
-                            "success": session_res.success,
+                            "success": session_res.success and not canceled,
                             "turns_count": session_res.total_turns,
-                            "termination_reason": session_res.termination_reason,
+                            "termination_reason": "canceled" if canceled else session_res.termination_reason,
                             "final_answer": session_res.final_answer,
                         },
                     )
