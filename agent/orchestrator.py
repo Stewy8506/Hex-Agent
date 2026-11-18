@@ -30,7 +30,12 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 from harness_core.cognition.context_compressor import CHARS_PER_TOKEN, elide_middle, estimate_messages_tokens
-from harness_core.storage.cow import APFSAndPortableCoWProvider, WorkspaceSnapshotProvider, get_default_snapshot_provider
+from harness_core.storage.cow import (
+    APFSAndPortableCoWProvider,
+    PublicationConflictError,
+    WorkspaceSnapshotProvider,
+    get_default_snapshot_provider,
+)
 from harness_core.storage.db import LedgerStore, utcnow_iso
 from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
 from harness_core.graphify import ActiveGraphifyAdapter
@@ -2514,9 +2519,35 @@ class HarnessOrchestrator:
                 },
             )
 
-        # Sync verified workspace back to source_ws if R2 modifications succeeded
+        # Publish only the verified delta into source_ws (B01): preserve Git metadata,
+        # local Hex state, venvs, and concurrent user work; stop on conflict.
         if modified_files:
-            self.cow.clone_to_workspace(attempt_ws, source_ws)
+            try:
+                self.cow.publish_delta(base_snap_path, attempt_ws, source_ws)
+            except PublicationConflictError as conflict:
+                forensic_snap = self.cow.create_snapshot(
+                    attempt_ws, label=f"{task_id}_publication_conflict"
+                )
+                self.ledger.update_attempt(
+                    attempt_id,
+                    status="FAILED",
+                    head_tree_sha=forensic_snap.workspace_tree_sha,
+                    failure_class="PUBLICATION_CONFLICT",
+                )
+                return self.ledger.transition_task(
+                    task_id,
+                    TaskState.NEEDS_ATTENTION,
+                    reason_code="PUBLICATION_CONFLICT",
+                    attempt_id=attempt_id,
+                    workspace_tree_sha=forensic_snap.workspace_tree_sha,
+                    fencing_token=fencing_token,
+                    terminal_reason=str(conflict),
+                    payload={
+                        "conflicting_paths": conflict.conflicts,
+                        "forensic_snapshot_path": str(forensic_snap.snapshot_path),
+                        "modified_files": modified_files,
+                    },
+                )
 
         head_sha = self.cow.compute_tree_sha(attempt_ws)
         self.ledger.update_attempt(attempt_id, status="SUCCEEDED", head_tree_sha=head_sha)
@@ -2784,7 +2815,28 @@ class HarnessOrchestrator:
         reflected_experience: dict[str, str] | None = None
         experience_entry_path: Path | None = None
         if winner:
-            self.cow.clone_to_workspace(winner["workspace_path"], source_ws)
+            try:
+                self.cow.publish_delta(base_snap_path, winner["workspace_path"], source_ws)
+            except PublicationConflictError as conflict:
+                return {
+                    "task": self.ledger.transition_task(
+                        task_id,
+                        TaskState.NEEDS_ATTENTION,
+                        reason_code="PUBLICATION_CONFLICT",
+                        attempt_id=winner["attempt_id"],
+                        workspace_tree_sha=winner["head_tree_sha"],
+                        terminal_reason=str(conflict),
+                        payload={
+                            "conflicting_paths": conflict.conflicts,
+                            "winning_branch": winner["branch_label"],
+                        },
+                    ),
+                    "winning_branch": winner["branch_label"],
+                    "branches": outcomes,
+                    "discarded_branches": discarded,
+                    "experience": None,
+                    "experience_entry_path": None,
+                }
             # Automatically distill contrastive speculative branch lesson into Harness2 Experience Library
             if discarded:
                 exp_domain = task.get("domain") or constraints.get("domain") or "general"

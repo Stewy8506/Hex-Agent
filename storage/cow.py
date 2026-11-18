@@ -36,6 +36,20 @@ IGNORE_DIRS = frozenset({
 })
 
 
+class PublicationConflictError(RuntimeError):
+    """Raised when verified-delta publication would overwrite concurrent user work.
+
+    Carries the conflicting relative paths; the target workspace is left untouched.
+    """
+
+    def __init__(self, conflicts: list[str]):
+        self.conflicts = list(conflicts)
+        super().__init__(
+            "Publication stopped: concurrent changes detected in target workspace for: "
+            + ", ".join(self.conflicts)
+        )
+
+
 @dataclass(frozen=True)
 class SnapshotMetadata:
     snapshot_id: str
@@ -51,6 +65,7 @@ class WorkspaceSnapshotProvider(Protocol):
     def compute_tree_sha(self, directory: Path | str) -> str: ...
     def create_snapshot(self, source_dir: Path | str, label: str = "chk") -> SnapshotMetadata: ...
     def clone_to_workspace(self, snapshot_path: Path | str, target_dir: Path | str) -> str: ...
+    def publish_delta(self, base_dir: Path | str, verified_dir: Path | str, target_dir: Path | str) -> str: ...
     def rollback_workspace(self, workspace_dir: Path | str, snapshot_path: Path | str) -> str: ...
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str: ...
     def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str: ...
@@ -239,10 +254,159 @@ def compute_workspace_diff(base_dir: Path | str, target_dir: Path | str) -> str:
     return "".join(diff_chunks)
 
 
+def _iter_tree_entries(root: Path) -> dict[str, Path]:
+    """Relative POSIX paths -> absolute paths for all non-ignored files under root."""
+    entries: dict[str, Path] = {}
+    if not root.is_dir():
+        return entries
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
+        rel_dir = Path(dirpath).relative_to(root)
+        for fname in sorted(filenames):
+            if fname.startswith(".DS_Store") or fname.endswith((".pyc", ".db-wal", ".db-shm")):
+                continue
+            fpath = Path(dirpath) / fname
+            rel = str(rel_dir / fname) if str(rel_dir) != "." else fname
+            entries[rel.replace("\\", "/")] = fpath
+    return entries
+
+
+def _entry_state(path: Path) -> tuple[str, str] | None:
+    """(kind, identity) for a tree entry; None when absent. Symlinks compare by target."""
+    if path.is_symlink():
+        try:
+            return ("link", os.readlink(path))
+        except OSError:
+            return ("link", "<unreadable>")
+    if path.is_file():
+        return ("file", hashlib.sha256(path.read_bytes()).hexdigest())
+    if path.exists():
+        return ("other", "")
+    return None
+
+
+def publish_delta(
+    base_dir: Path | str,
+    verified_dir: Path | str,
+    target_dir: Path | str,
+) -> str:
+    """Publish only the verified delta (base -> verified) into an existing workspace.
+
+    B01 contract, distinct from clone_to_workspace (fresh-directory replacement):
+    - IGNORE_DIRS metadata (.git, .hex, .venv, ...) in target is never touched.
+    - Files the task did not change are never touched, including concurrent user work.
+    - A changed/deleted file whose current target content diverges from the base
+      snapshot is a conflict: publication stops BEFORE any mutation
+      (PublicationConflictError) so concurrent user work is never overwritten.
+    - Applied changes are journaled to an undo log; an apply-time failure rolls back
+      already-applied changes so publication is recoverable.
+
+    Returns the target tree SHA after publication.
+    """
+    base = Path(base_dir).resolve()
+    verified = Path(verified_dir).resolve()
+    target = Path(target_dir).resolve()
+    if not verified.is_dir():
+        raise FileNotFoundError(f"Verified workspace does not exist: {verified}")
+    if not base.is_dir():
+        raise FileNotFoundError(f"Base snapshot does not exist: {base}")
+    target.mkdir(parents=True, exist_ok=True)
+
+    base_entries = _iter_tree_entries(base)
+    verified_entries = _iter_tree_entries(verified)
+    target_entries = _iter_tree_entries(target)
+
+    changes: dict[str, str] = {}  # rel -> "upsert" | "delete"
+    for rel in sorted(set(base_entries) | set(verified_entries)):
+        b_state = _entry_state(base_entries[rel]) if rel in base_entries else None
+        v_state = _entry_state(verified_entries[rel]) if rel in verified_entries else None
+        if b_state != v_state:
+            changes[rel] = "upsert" if v_state is not None else "delete"
+
+    if not changes:
+        return compute_tree_sha(target)
+
+    # Conflict pre-check: target must still match the base for every changed path.
+    conflicts: list[str] = []
+    for rel in sorted(changes):
+        b_state = _entry_state(base_entries[rel]) if rel in base_entries else None
+        t_state = _entry_state(target_entries[rel]) if rel in target_entries else None
+        if t_state != b_state:
+            conflicts.append(rel)
+    if conflicts:
+        raise PublicationConflictError(conflicts)
+
+    # Recoverable apply: back up displaced target entries, journal each action.
+    backup_root = target.parent / f".hex_publish_backup_{uuid.uuid4().hex[:10]}"
+    undo: list[tuple[str, str, Path | None]] = []  # (rel, action, backup_path)
+    try:
+        for rel, action in changes.items():
+            dest = target / rel
+            backup_path: Path | None = None
+            if rel in target_entries:
+                backup_path = backup_root / rel
+                backup_path.parent.mkdir(parents=True, exist_ok=True)
+                src_existing = target_entries[rel]
+                if src_existing.is_symlink():
+                    os.symlink(os.readlink(src_existing), backup_path)
+                else:
+                    shutil.copy2(src_existing, backup_path)
+            undo.append((rel, action, backup_path))
+            if action == "delete":
+                dest.unlink(missing_ok=True)
+            else:
+                src_file = verified_entries[rel]
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if src_file.is_symlink():
+                    if dest.exists() or dest.is_symlink():
+                        dest.unlink()
+                    os.symlink(os.readlink(src_file), dest)
+                else:
+                    if dest.is_symlink():
+                        dest.unlink()
+                    shutil.copy2(src_file, dest)
+    except Exception:
+        # Roll back applied changes in reverse order.
+        for rel, action, backup_path in reversed(undo):
+            dest = target / rel
+            try:
+                if action == "upsert" and backup_path is None:
+                    dest.unlink(missing_ok=True)
+                elif backup_path is not None:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if dest.exists() or dest.is_symlink():
+                        if dest.is_symlink() or dest.is_file():
+                            dest.unlink()
+                        else:
+                            shutil.rmtree(dest, ignore_errors=True)
+                    if backup_path.is_symlink():
+                        os.symlink(os.readlink(backup_path), dest)
+                    else:
+                        shutil.copy2(backup_path, dest)
+            except Exception:
+                pass  # best-effort restore; backup dir retained for manual recovery
+        raise
+
+    shutil.rmtree(backup_root, ignore_errors=True)
+    # Prune directories left empty by deletions (never into ignored metadata).
+    for rel in changes:
+        parent = (target / rel).parent
+        while parent != target and parent.is_dir():
+            if any(parent.iterdir()):
+                break
+            if parent.name in IGNORE_DIRS:
+                break
+            parent.rmdir()
+            parent = parent.parent
+    return compute_tree_sha(target)
+
+
 def _cow_copy_tree(src: Path, dst: Path, apfs_supported: bool = False) -> None:
     """Copies directory tree using APFS clone if supported, or standard recursive copy.
 
     Excludes IGNORE_DIRS upfront so nested .hex / .venv / .git are never cloned into snapshots.
+    Fresh-directory clone contract: the destination tree is replaced. For publication
+    into a live workspace use publish_delta() instead (B01).
     """
     src = src.resolve()
     dst = dst.resolve()
@@ -367,6 +531,10 @@ class APFSAndPortableCoWProvider:
         target = Path(target_dir).resolve()
         self._cow_copy_tree(snap, target)
         return self.compute_tree_sha(target)
+
+    def publish_delta(self, base_dir: Path | str, verified_dir: Path | str, target_dir: Path | str) -> str:
+        """Conflict-aware verified-delta publication into a live workspace (B01)."""
+        return publish_delta(base_dir, verified_dir, target_dir)
 
     def rollback_workspace(self, workspace_dir: Path | str, snapshot_path: Path | str) -> str:
         """Instantly restores workspace_dir to exact state of snapshot_path, removing dirty files."""
@@ -579,6 +747,10 @@ class OverlayFSSnapshotProvider:
 
         return self.compute_tree_sha(target)
 
+    def publish_delta(self, base_dir: Path | str, verified_dir: Path | str, target_dir: Path | str) -> str:
+        """Conflict-aware verified-delta publication into a live workspace (B01)."""
+        return publish_delta(base_dir, verified_dir, target_dir)
+
     def rollback_workspace(self, workspace_dir: Path | str, snapshot_path: Path | str) -> str:
         """Instantly reverts workspace_dir by unmounting, purging upper/work dirs, and remounting."""
         ws = Path(workspace_dir).resolve()
@@ -754,6 +926,10 @@ class BtrfsSnapshotProvider:
             _cow_copy_tree(snap, target)
         return self.compute_tree_sha(target)
 
+    def publish_delta(self, base_dir: Path | str, verified_dir: Path | str, target_dir: Path | str) -> str:
+        """Conflict-aware verified-delta publication into a live workspace (B01)."""
+        return publish_delta(base_dir, verified_dir, target_dir)
+
     def rollback_workspace(self, workspace_dir: Path | str, snapshot_path: Path | str) -> str:
         ws = Path(workspace_dir).resolve()
         snap = Path(snapshot_path).resolve()
@@ -831,11 +1007,13 @@ ApfsSnapshotProvider = APFSAndPortableCoWProvider
 
 __all__ = [
     "IGNORE_DIRS",
+    "PublicationConflictError",
     "SnapshotMetadata",
     "WorkspaceSnapshotProvider",
     "compute_tree_sha",
     "export_delta_archive",
     "import_delta_archive",
+    "publish_delta",
     "APFSAndPortableCoWProvider",
     "ApfsSnapshotProvider",
     "OverlayFSSnapshotProvider",
