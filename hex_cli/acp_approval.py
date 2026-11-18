@@ -77,7 +77,9 @@ class AcpApprovalBridge:
                     continue
                 request = entry["request"]
                 req_task = getattr(request, "task_id", None)
-                req_session = self._session_for_task(req_task)
+                # Prefer the session captured with the request: after a reload
+                # the task→session map may no longer resolve (B41).
+                req_session = entry.get("session_id") or self._session_for_task(req_task)
                 matches_task = task_id is not None and req_task == task_id
                 matches_session = session_id is not None and req_session == session_id
                 if not (matches_task or matches_session):
@@ -101,7 +103,12 @@ class AcpApprovalBridge:
             if request.timeout_seconds is not None and request.timeout_seconds > 0
             else self.default_timeout
         )
-        entry: dict[str, Any] = {"request": request, "event": threading.Event(), "decision": None}
+        entry: dict[str, Any] = {
+            "request": request,
+            "event": threading.Event(),
+            "decision": None,
+            "session_id": self._session_for_task(request.task_id),
+        }
         with self._lock:
             self._pending[request.request_id] = entry
 

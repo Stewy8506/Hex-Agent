@@ -149,6 +149,41 @@ class ProviderUnavailableError(RuntimeError):
     """
 
 
+class TerminalTaskReentryError(RuntimeError):
+    """Raised when execution is requested for a task that already reached a terminal state (B44)."""
+
+
+def format_conversation_history(conv_history: list[Any], limit: int = 10) -> str:
+    """Render prior turns, including structured tool rows, for the model prompt (B41).
+
+    Flattening turns to plain user/assistant text dropped tool results and
+    reasoning; tool rows are rendered explicitly instead.
+    """
+    turns: list[str] = []
+    for turn in conv_history[-limit:]:
+        if not isinstance(turn, dict):
+            continue
+        role = str(turn.get("role") or "user").strip().lower()
+        content = str(turn.get("content") or "").strip()
+        if role == "tool":
+            if not content:
+                continue
+            name = str(turn.get("tool") or "tool")
+            status = str(turn.get("status") or "complete")
+            turns.append(f"Tool {name} ({status}): {content[:1200]}")
+            continue
+        if role == "reasoning":
+            if content:
+                turns.append(f"Reasoning: {content[:1200]}")
+            continue
+        if not content:
+            continue
+        turns.append(f"{role.capitalize()}: {content[:1500]}")
+    if not turns:
+        return ""
+    return "Conversation so far:\n" + "\n".join(turns) + "\n\n"
+
+
 class DemoGoalNotAchievedError(RuntimeError):
     """The explicit demo planner could not perform the requested work.
 
@@ -285,6 +320,76 @@ class HarnessOrchestrator:
 
         self._cancel_events: dict[str, threading.Event] = {}
         self._cancel_events_lock = threading.Lock()
+
+        # B44: a task left RUNNING by a crashed process has no live worker.
+        try:
+            self.reconcile_orphaned_tasks()
+        except Exception as exc:
+            logger.warning("Startup orphan reconciliation failed: %s", exc)
+
+    @staticmethod
+    def _is_terminal_status(status: Any) -> bool:
+        try:
+            return TaskState(str(status)).is_terminal
+        except ValueError:
+            return False
+
+    def reconcile_orphaned_tasks(self) -> list[str]:
+        """Settle tasks left RUNNING/SPECULATING without a live worker lease (B44).
+
+        Orphan recovery previously relied on a later worker claim; startup now
+        reconciles them explicitly so a terminal re-entry cannot follow.
+        """
+        reconciled: list[str] = []
+        now = utcnow_iso()
+        for status_value, target in (
+            (TaskState.RUNNING.value, TaskState.RETRY_WAIT),
+            (TaskState.SPECULATING.value, TaskState.NEEDS_ATTENTION),
+        ):
+            try:
+                tasks = self.ledger.list_tasks(status=status_value, limit=500)
+            except Exception as exc:
+                logger.warning("Could not list %s tasks for reconciliation: %s", status_value, exc)
+                continue
+            for task in tasks:
+                task_id = task.get("task_id")
+                if not task_id:
+                    continue
+                lease: dict[str, Any] | None = None
+                try:
+                    for attempt in reversed(self.ledger.list_attempts(task_id)):
+                        lease_id = attempt.get("lease_id")
+                        if not lease_id:
+                            continue
+                        lease = self.ledger.get_lease(lease_id)
+                        if lease is not None:
+                            break
+                except Exception as exc:
+                    logger.debug("Lease lookup failed for %s: %s", task_id, exc)
+                lease_live = bool(
+                    lease
+                    and not lease.get("released_at")
+                    and str(lease.get("expires_at") or "") > now
+                )
+                if lease_live:
+                    continue
+                try:
+                    self.ledger.transition_task(
+                        task_id,
+                        target,
+                        reason_code="ORPHANED_TASK_RECONCILED",
+                        terminal_reason=(
+                            "Task was left without a live worker lease and was reconciled at startup"
+                        ),
+                        payload={
+                            "prior_status": status_value,
+                            "lease_id": lease.get("lease_id") if lease else None,
+                        },
+                    )
+                    reconciled.append(task_id)
+                except Exception as exc:
+                    logger.warning("Could not reconcile orphaned task %s: %s", task_id, exc)
+        return reconciled
 
     def _cancel_event(self, task_id: str) -> threading.Event:
         with self._cancel_events_lock:
@@ -1082,9 +1187,16 @@ class HarnessOrchestrator:
         task = self.ledger.get_task(task_id)
         if not task:
             raise KeyError(f"Task not found: {task_id}")
-
+        if str(task.get("status")) == TaskState.CANCELED.value:
+            # Cancellation is idempotent: replaying it never re-enters the task.
+            return task
         if self.is_cancel_requested(task_id):
             return self._finalize_canceled(task_id, attempt_id=None)
+        if self._is_terminal_status(task.get("status")):
+            raise TerminalTaskReentryError(
+                f"Task {task_id} is {task['status']} and will not be executed again; "
+                "submit a new task instead."
+            )
 
         wrk = worker_id or self.default_worker_id
         constraints = task.get("constraints") or {}
@@ -1154,18 +1266,7 @@ class HarnessOrchestrator:
             steps = []
 
         conv_history = (task.get("constraints") or {}).get("conversation_history") or []
-        history_block = ""
-        if conv_history:
-            turns = []
-            for turn in conv_history[-10:]:
-                if not isinstance(turn, dict):
-                    continue
-                role = str(turn.get("role") or "user").capitalize()
-                content = str(turn.get("content") or "")[:1500]
-                if content:
-                    turns.append(f"{role}: {content}")
-            if turns:
-                history_block = "Conversation so far:\n" + "\n".join(turns) + "\n\n"
+        history_block = format_conversation_history(conv_history)
 
         tool_results: list[dict[str, Any]] = []
         tool_cb = kwargs.get("tool_callback")
@@ -2854,6 +2955,12 @@ class HarnessOrchestrator:
         task = self.ledger.get_task(task_id)
         if not task:
             raise KeyError(f"Task not found: {task_id}")
+        if str(task.get("status")) == TaskState.CANCELED.value:
+            return task
+        if self._is_terminal_status(task.get("status")):
+            raise TerminalTaskReentryError(
+                f"Task {task_id} is {task['status']} and cannot be resumed; submit a new task instead."
+            )
         if task["status"] in (
             TaskState.PAUSED.value,
             TaskState.RETRY_WAIT.value,

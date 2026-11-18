@@ -132,6 +132,42 @@ def _bounded_tool_preview(payload: Any, *, error: bool = False) -> str:
     return visit(payload, limit, 0)[0]
 
 
+def build_conversation_history(
+    records: Sequence[dict[str, Any]], limit: int = 10
+) -> list[dict[str, Any]]:
+    """Rebuild model context from durable turns without dropping tool work (B41).
+
+    Previously only prompt/response text survived, so tool results and reasoning
+    vanished from follow-up turns. Structured rows keep each turn's tool calls
+    paired with their outcomes.
+    """
+    history: list[dict[str, Any]] = []
+    for turn in list(records)[-limit:]:
+        if not isinstance(turn, dict):
+            continue
+        if turn.get("prompt"):
+            history.append({"role": "user", "content": str(turn["prompt"])})
+        for event in (turn.get("tool_calls") or [])[-20:]:
+            if not isinstance(event, dict):
+                continue
+            payload = event.get("payload", "")
+            if isinstance(payload, str):
+                content = payload[:1500]
+            else:
+                content = json.dumps(payload, default=str)[:1500]
+            history.append({
+                "role": "tool",
+                "tool": str(event.get("tool") or event.get("toolId") or "tool"),
+                "status": str(event.get("event") or event.get("eventType") or "complete"),
+                "content": content,
+            })
+        if turn.get("reasoning"):
+            history.append({"role": "reasoning", "content": str(turn["reasoning"])[:1200]})
+        if turn.get("response"):
+            history.append({"role": "assistant", "content": str(turn["response"])})
+    return history
+
+
 class SQLiteHistory(Sequence[dict[str, Any]]):
     """Append-only transcript handle. No connections or records are retained."""
 
@@ -719,10 +755,25 @@ class ACPServer:
         sess = self._existing_session(params["sessionId"])
         with self._lock:
             self.sessions[sess.session_id] = sess
+        # B41: approvals live only in memory, so a reloaded session must not
+        # leave the client waiting on a request no turn is listening for.
+        withdrawn = 0
+        bridge = getattr(self, "approval_bridge", None)
+        if bridge is not None and hasattr(bridge, "cancel_pending"):
+            try:
+                withdrawn = bridge.cancel_pending(
+                    session_id=sess.session_id,
+                    reason="Session reloaded; pending approval withdrawn and denied.",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not withdraw pending approvals for %s: %s", sess.session_id, exc
+                )
         result = {
             "sessionId": sess.session_id,
             "cwd": str(sess.workspace_root),
             "model": sess.model,
+            "pendingApprovalsWithdrawn": withdrawn,
         }
         if paged:
             history = self._durable_history(sess)
@@ -811,13 +862,8 @@ class ACPServer:
         if not isinstance(sess.history, SQLiteHistory):
             self._persist_session(sess)
 
-        # Carry prior dialogue so follow-up turns keep conversation context.
-        conversation_history: list[dict[str, str]] = []
-        for turn in sess.history[-10:]:
-            if turn.get("prompt"):
-                conversation_history.append({"role": "user", "content": str(turn["prompt"])})
-            if turn.get("response"):
-                conversation_history.append({"role": "assistant", "content": str(turn["response"])})
+        # Carry prior dialogue, including tool rows and reasoning (B41).
+        conversation_history = build_conversation_history(sess.history)
 
         from harness_core.core.models import TaskSubmitRequest
         exec_mode = str(params.get("execution_mode") or "fast_path")
@@ -860,6 +906,7 @@ class ACPServer:
                 })
 
         active_tool_calls: dict[str, str] = {}
+        turn_tool_events: list[dict[str, Any]] = []
 
         def tool_cb(event_type: str, tool_id: str, payload: Any, dur_ms: int = 0) -> None:
             if sess.cancelled:
@@ -877,6 +924,15 @@ class ACPServer:
                 "durationMs": dur_ms,
                 "payload": _bounded_tool_preview(payload, error=event_type == "error"),
             }
+            if event_type != "start":
+                # Durable, bounded record of the call outcome for later turns (B41).
+                turn_tool_events.append({
+                    "tool": tool_id,
+                    "event": event_type,
+                    "payload": tool["payload"],
+                    "durationMs": dur_ms,
+                })
+                del turn_tool_events[:-30]
             if event_type != "start":
                 tool["taskId"] = task_id
                 ledger_call_id = payload.get("_call_id") if isinstance(payload, dict) else None
@@ -923,6 +979,7 @@ class ACPServer:
                 "status": status_str,
                 "response": terminal_reason,
                 "duration": time.time() - start_t,
+                "tool_calls": list(turn_tool_events),
             })
             self._emit({
                 "jsonrpc": "2.0",
@@ -983,6 +1040,7 @@ class ACPServer:
             "status": status_str,
             "response": terminal_reason,
             "duration": time.time() - start_t,
+            "tool_calls": list(turn_tool_events),
         })
 
         terminal_text = str(terminal_reason)
