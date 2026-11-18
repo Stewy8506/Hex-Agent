@@ -118,9 +118,10 @@ class _AriaHTMLParser(HTMLParser):
 class HeadlessBrowserSession:
     """Manages an isolated browser session for a single task."""
 
-    def __init__(self, task_id: str, timeout: float = 30.0) -> None:
+    def __init__(self, task_id: str, timeout: float = 30.0, workspace_root: Path | str | None = None) -> None:
         self.task_id = task_id
         self.timeout = timeout
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root is not None else None
         self.current_url = "about:blank"
         self.title = ""
         self.raw_html = ""
@@ -141,8 +142,24 @@ class HeadlessBrowserSession:
 
             try:
                 if target_url.startswith("file://"):
+                    # B52: file:// navigation obeys the same resolved-path
+                    # workspace containment as read_file; without a workspace
+                    # scope it is refused outright.
                     file_p = Path(urllib.parse.unquote(target_url[7:]))
-                    content = file_p.read_text(encoding="utf-8", errors="replace")
+                    if self.workspace_root is None:
+                        raise PermissionError(
+                            "file:// navigation is disabled without a workspace-scoped browser session"
+                        )
+                    if ".." in file_p.parts or ".." in str(file_p):
+                        raise PermissionError(f"Path escapes workspace boundary: {file_p}")
+                    resolved_file = file_p.resolve()
+                    try:
+                        resolved_file.relative_to(self.workspace_root)
+                    except ValueError:
+                        raise PermissionError(
+                            f"file:// path outside workspace containment: {file_p}"
+                        )
+                    content = resolved_file.read_text(encoding="utf-8", errors="replace")
                 else:
                     req = urllib.request.Request(
                         target_url,
@@ -348,11 +365,15 @@ class BrowserManager:
         self._sessions: dict[str, HeadlessBrowserSession] = {}
         self._lock = threading.Lock()
 
-    def get_or_create_session(self, task_id: str) -> HeadlessBrowserSession:
+    def get_or_create_session(
+        self, task_id: str, workspace_root: Path | str | None = None
+    ) -> HeadlessBrowserSession:
         """Retrieve existing session or spawn a fresh one for the task."""
         with self._lock:
             if task_id not in self._sessions:
-                self._sessions[task_id] = HeadlessBrowserSession(task_id)
+                self._sessions[task_id] = HeadlessBrowserSession(task_id, workspace_root=workspace_root)
+            elif workspace_root is not None and self._sessions[task_id].workspace_root is None:
+                self._sessions[task_id].workspace_root = Path(workspace_root).resolve()
             return self._sessions[task_id]
 
     def close_session(self, task_id: str) -> None:

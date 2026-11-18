@@ -81,7 +81,7 @@ class TestBrowserAndVision(unittest.TestCase):
 
     def test_browser_navigation_and_aria_snapshot(self) -> None:
         """Verify browser navigates to file URL and generates ariaSnapshot with element refs."""
-        session = self.browser_manager.get_or_create_session("task_nav_01")
+        session = self.browser_manager.get_or_create_session("task_nav_01", workspace_root=self.workspace_dir)
         file_url = f"file://{self.html_file.resolve()}"
         res = session.navigate(file_url)
 
@@ -98,7 +98,7 @@ class TestBrowserAndVision(unittest.TestCase):
 
     def test_browser_element_interaction_and_type(self) -> None:
         """Verify clicking elements and typing into inputs."""
-        session = self.browser_manager.get_or_create_session("task_interact_01")
+        session = self.browser_manager.get_or_create_session("task_interact_01", workspace_root=self.workspace_dir)
         session.navigate(f"file://{self.html_file.resolve()}")
 
         # Type into search input
@@ -114,7 +114,7 @@ class TestBrowserAndVision(unittest.TestCase):
 
     def test_browser_screenshot_and_evaluate(self) -> None:
         """Verify DOM screenshot artifact creation and expression evaluation."""
-        session = self.browser_manager.get_or_create_session("task_shot_01")
+        session = self.browser_manager.get_or_create_session("task_shot_01", workspace_root=self.workspace_dir)
         session.navigate(f"file://{self.html_file.resolve()}")
 
         # Screenshot capture

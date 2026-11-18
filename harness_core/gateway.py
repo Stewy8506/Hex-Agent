@@ -2030,14 +2030,30 @@ class ToolGateway(FileToolsMixin):
     def _tool_browser(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         mgr = self._get_browser_manager()
         task_id = args.get("task_id", "default_browser_session")
-        session = mgr.get_or_create_session(task_id)
+        session = mgr.get_or_create_session(task_id, workspace_root=workspace_dir)
         action = args.get("action", "snapshot").lower().strip()
 
         if action == "navigate":
             url = args.get("url")
             if not url:
                 return {"ok": False, "error": "Missing 'url' for browser navigate"}
-            res = session.navigate(url)
+            url_str = str(url).strip()
+            if url_str.startswith("file://"):
+                # B52: same resolved-path authority as read_file — refuse any
+                # file:// target outside the workspace before any read occurs.
+                from urllib.parse import unquote
+
+                file_p = Path(unquote(url_str[7:]))
+                if ".." in file_p.parts or ".." in str(file_p):
+                    raise PolicyBlockedError(f"Path escapes CoW workspace boundary: {url_str}")
+                resolved_file = file_p.resolve()
+                try:
+                    resolved_file.relative_to(Path(workspace_dir).resolve())
+                except ValueError:
+                    raise PolicyBlockedError(
+                        f"file:// navigation outside CoW workspace containment: {url_str}"
+                    )
+            res = session.navigate(url_str)
             return {"ok": res.ok, "result": res.to_dict(), "error": res.error}
         elif action == "snapshot":
             res = session.snapshot()
