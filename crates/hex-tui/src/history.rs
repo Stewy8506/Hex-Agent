@@ -89,6 +89,17 @@ fn regular_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn sync_directory(path: &Path) -> Result<(), String> {
+    #[cfg(not(windows))]
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| e.to_string())?;
+    // Windows flushes writable files, but has no portable directory-fsync guarantee.
+    #[cfg(windows)]
+    let _ = path;
+    Ok(())
+}
+
 fn private_directory(path: &Path) -> Result<(), String> {
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
@@ -112,9 +123,7 @@ fn private_directory(path: &Path) -> Result<(), String> {
         ));
     }
     if created {
-        File::open(path.parent().ok_or("Transcript directory has no parent")?)
-            .and_then(|file| file.sync_all())
-            .map_err(|e| e.to_string())?;
+        sync_directory(path.parent().ok_or("Transcript directory has no parent")?)?;
     }
     Ok(())
 }
@@ -159,9 +168,7 @@ impl TranscriptStore {
         store.with_count_lock(|file| {
             if file.metadata().map_err(|e| e.to_string())?.len() == 0 {
                 write_count(file, 0)?;
-                File::open(&store.path)
-                    .and_then(|f| f.sync_all())
-                    .map_err(|e| e.to_string())?;
+                sync_directory(&store.path)?;
             }
             read_count(file).map(|_| ())
         })?;
@@ -235,15 +242,13 @@ impl TranscriptStore {
                 self.metadata(id)?;
                 let raw_path = self.path.join(format!("{id}.txt"));
                 regular_file(&raw_path)?;
-                File::open(raw_path)
+                OpenOptions::new().read(true).write(true).open(raw_path)
                     .and_then(|file| file.sync_all())
                     .map_err(|e| e.to_string())?;
-                File::open(self.path.join(format!("{id}.json")))
+                OpenOptions::new().read(true).write(true).open(self.path.join(format!("{id}.json")))
                     .and_then(|file| file.sync_all())
                     .map_err(|e| e.to_string())?;
-                File::open(&self.path)
-                    .and_then(|file| file.sync_all())
-                    .map_err(|e| e.to_string())?;
+                sync_directory(&self.path)?;
                 id = id.checked_add(1).ok_or("Transcript record ID exhausted")?;
                 write_count(count, id)?;
             }
@@ -258,9 +263,7 @@ impl TranscriptStore {
             meta.write_all(&json)
                 .and_then(|_| meta.sync_all())
                 .map_err(|e| e.to_string())?;
-            File::open(&self.path)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| e.to_string())?;
+            sync_directory(&self.path)?;
             write_count(count, next)?;
             Ok(id)
         })
