@@ -9,11 +9,11 @@ Every fix ships with a regression test that fails against the old behavior.
 Status legend: `[DONE]` landed + verified + committed · `[WIP]` in progress · `[TODO]` not started.
 
 - Phase 1 — Protect user work and authority: **8/8 sub-phases DONE** (B01, B02, B04, B45, B46, B52, B47, B48, B49, B12, B05, B56).
-- Phase 2 — Make completion and recovery truthful: **11/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55, B37, B36, B41/B44, B42/B40, B14/B15); B16 next.
+- Phase 2 — Make completion and recovery truthful: **12/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55, B37, B36, B41/B44, B42/B40, B14/B15, B16).
 - Phase 3 — Finish primary user surfaces: not started.
 - Phase 4 — Expand from real lifecycle integrations: not started.
 
-Last updated: 2026-11-18 (through B14/B15, commit `8bd087a`).
+Last updated: 2026-11-18 (through B16, commit `6e33bca`).
 
 ## Phase 1 — Protect user work and authority (gate: zero later effects for denied/canceled work; publication preserves metadata/concurrent work)
 
@@ -39,7 +39,7 @@ Last updated: 2026-11-18 (through B14/B15, commit `8bd087a`).
 - **2.9 B41/B44** `[DONE 60dddd0]` — Durable ACP turns carry bounded tool rows (name, outcome, payload) and reasoning; follow-up context rebuild keeps them paired with each turn and the fast-path prompt renders `Tool name (status)`/`Reasoning` rows; `session/load` withdraws that session's pending approvals (the bridge records the session when the request is made). `execute_task`/`resume_task` raise `TerminalTaskReentryError` for SUCCEEDED/FAILED/EXPIRED/REJECTED tasks while cancellation stays idempotent; startup reconciles RUNNING/SPECULATING tasks whose lease is missing, released or expired (`ORPHANED_TASK_RECONCILED`) and leaves live leases alone.
 - **2.10 B42/B40** `[DONE 04bb2b5]` — `claim_next_task` retries `BEGIN IMMEDIATE` on a busy database and raises `ClaimTransactionError` instead of claiming outside a transaction; `POST /v1/tasks/claim` answers 503 with the failure. ReAct runs persist dialogue turns (prompt, per-turn thought, tool outputs, final answer) through the existing `dialogue_turns` writers, so `/rewind` rebuilds from the ledger; rewind counts the tool-call records the ledger actually reverted and the TUI states that workspace files were not changed.
 - **2.11 B14/B15** `[DONE 8bd087a]` — MoA route-aware caller forwards model/provider/temperature/token settings, identifies route-blind adapters, preserves the tool protocol and reports aggregator failures explicitly. Fan-out and aggregation share an overall deadline; cancellation stops queued calls and ignores late replies without waiting for running callers. Worker fencing is latched, stops claims, and interrupts only the current attempt at tool/verification/publication boundaries (never task-scoped successor cancellation). Proof persistence checks authority after verification. 72 targeted tests pass; duplicate-call, timeout and fenced-claim regressions also fail against the previous implementation. In-flight Python/provider/tool calls remain cooperative and cannot be forcibly interrupted.
-- **2.12 B16** `[TODO]` — Windows process-tree teardown via Job Objects.
+- **2.12 B16** `[DONE 6e33bca]` — Windows subprocesses start suspended and enter kill-on-close Job Objects before executing; reset, timeout, kill, cleanup and natural parent exit reap descendants. Failed assignment never executes an unowned command. Windows pipe output uses blocking reads instead of socket-only `select`; POSIX keeps process groups with `start_new_session`. Cleanup closes native process handles only after concurrent waits finish, isolates stream-close failures, and closes exited kernel streams before recovery. 105 targeted tests and four subtests pass natively on Windows; descendant/force-kill regressions fail against the previous supervisor.
 
 ## Phase 3 — Finish primary user surfaces
 
