@@ -17,7 +17,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from harness_core.storage.cow import IGNORE_DIRS, WorkspaceSnapshotProvider
 from harness_core.storage.db import LedgerStore, canonical_json, sha256_hex, utcnow_iso
@@ -134,7 +134,10 @@ class VerificationAndProofService:
         workspace_dir: Path | str,
         modified_files: list[str] | None = None,
         run_tests: bool = True,
+        authority_check: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        if authority_check:
+            authority_check()
         ws = Path(workspace_dir).resolve()
         base = Path(base_snapshot_path).resolve()
         if not modified_files and base == ws:
@@ -208,6 +211,8 @@ class VerificationAndProofService:
             f"python:{platform.python_version()}|arch:{platform.machine()}|cow:{self.cow.backend_name}"
         )
 
+        if authority_check:
+            authority_check()
         proof = self.ledger.save_proof_bundle(
             task_id=task_id,
             attempt_id=attempt_id,

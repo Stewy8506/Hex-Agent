@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import platform
@@ -717,6 +718,49 @@ class TwoTierModelRouter:
         decision.provider_metadata = dict(response.raw)
 
         return decision, response
+
+    def generate_for_route(
+        self,
+        *,
+        prompt: str,
+        model: str | None = None,
+        provider: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        system_prompt: str | None = None,
+        data_classification: str = "internal",
+        **kwargs: Any,
+    ) -> ModelResponse:
+        local = self.local_provider
+        cloud = self.cloud_provider
+        if provider is None:
+            selected = cloud
+        elif provider in ("local", getattr(local, "provider_id", None)):
+            selected = local
+        elif provider in (getattr(cloud, "provider_id", None), getattr(cloud, "provider_type", None)):
+            selected = cloud
+        else:
+            raise ProviderUnavailableError(f"MoA route provider '{provider}' is not configured")
+        if selected is None or not selected.is_available():
+            raise ProviderUnavailableError(f"MoA route provider '{provider}' is unavailable")
+        if selected is cloud and data_classification in ("sensitive", "secret"):
+            raise PolicyBlockedError(f"Cloud egress forbidden for data classification '{data_classification}'")
+        if selected is local and model and model != selected.model_id and getattr(selected, "_loaded_model", None) is not None:
+            raise ProviderUnavailableError(f"Local route model '{model}' is not loaded")
+        routed = copy.copy(selected)
+        if model:
+            routed.model_id = model
+        delegate = getattr(selected, "_antigravity_delegate", None)
+        if delegate is not None:
+            routed._antigravity_delegate = copy.copy(delegate)
+        return routed.generate(
+            prompt=prompt,
+            system_prompt=system_prompt or PONYTAIL_YAGNI_DIRECTIVE,
+            temperature=temperature,
+            max_tokens=max_tokens if max_tokens is not None else 4096,
+            data_classification=data_classification,
+            **kwargs,
+        )
 
     def get_context_compactor(
         self,

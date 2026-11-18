@@ -19,6 +19,7 @@ import time
 from typing import Any, Callable
 import uuid
 
+from harness_core.core.moa import MoACancelledError
 from harness_core.cognition.context_compressor import (
     CHARS_PER_TOKEN,
     CompactionConfig,
@@ -200,6 +201,7 @@ class ReActLoop:
         title_synthesizer: Any | None = None,
         approval_lease_manager: Any | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        moa_caller: Callable[..., Any] | None = None,
     ) -> None:
         self.model_caller = model_caller
         self.gateway = gateway
@@ -248,11 +250,8 @@ class ReActLoop:
         self.moa_config = getattr(self.config, "moa_config", None)
         self.moa = None
         if self.moa_config is not None and getattr(self.moa_config, "enabled", True):
-            try:
-                from harness_core.core.moa import MixtureOfAgents
-                self.moa = MixtureOfAgents(self.moa_config, model_caller=self.model_caller)
-            except Exception:
-                self.moa = None
+            from harness_core.core.moa import MixtureOfAgents
+            self.moa = MixtureOfAgents(self.moa_config, model_caller=moa_caller or self.model_caller)
         if approval_lease_manager is not None:
             self.approval_lease_manager = approval_lease_manager
         elif hasattr(self.gateway, "approval_lease_manager") and getattr(self.gateway, "approval_lease_manager", None):
@@ -1544,15 +1543,20 @@ class ReActLoop:
             turn_moa_res = None
             try:
                 if self.moa is not None and getattr(self.moa.config, "enabled", True):
-                    self.moa.model_caller = self.model_caller
                     current_prompt = self._format_messages_to_prompt(self.messages)
-                    turn_moa_res = self.moa.synthesize(current_prompt, messages=self.messages)
+                    turn_moa_res = self.moa.synthesize(
+                        current_prompt, messages=self.messages, cancel_check=self._is_cancelled,
+                    )
                     raw_text = turn_moa_res.synthesized_text
                     response = raw_text
                     self._record_moa_in_ledger(task_id, turn_index, turn_moa_res)
                 else:
                     response = self._call_model(self.messages)
                     raw_text = self._extract_response_text(response)
+            except MoACancelledError:
+                termination_reason = "canceled"
+                self._emit_event("session_canceled", {"turn_index": turn_index})
+                break
             except Exception as e:
                 turn_latency = (time.perf_counter() - turn_start) * 1000
                 self.turns.append(

@@ -36,7 +36,7 @@ from harness_core.storage.cow import (
     WorkspaceSnapshotProvider,
     get_default_snapshot_provider,
 )
-from harness_core.storage.db import LedgerStore, utcnow_iso
+from harness_core.storage.db import ConcurrencyFenceError, LedgerStore, utcnow_iso
 from harness_core.gateway import ApprovalRequiredInterrupt, PolicyBlockedError, ToolGateway
 from harness_core.graphify import ActiveGraphifyAdapter
 from harness_core.lsp.manager import LSPManager
@@ -51,6 +51,7 @@ from harness_core.capabilities.proof import Harness2ControlledAdapter, Verificat
 from harness_core.cognition.prompt_builder import PromptBuilder
 from harness_core.providers.base import BudgetExceededError
 from harness_core.core.react_loop import ReActConfig, ReActLoop, ReActSessionResult, ReActTurn
+from harness_core.core.moa import ProposerConfig
 from harness_core.core.router import GovernedMemoryService, TwoTierModelRouter
 from harness_core.storage.sandbox import ExecutionSandbox, get_default_sandbox
 from harness_core.skills.executor import SecurityError, SkillExecutionEngine
@@ -977,6 +978,25 @@ class HarnessOrchestrator:
                 f"Goal: {goal}"
             )
 
+        def _moa_route_caller(messages: list[dict[str, Any]], proposer: ProposerConfig) -> Any:
+            router = getattr(self, "router", None)
+            if router is not None:
+                try:
+                    return router.generate_for_route(
+                        prompt=ReActLoop._format_messages_to_prompt(messages),
+                        model=proposer.model or None,
+                        provider=proposer.provider,
+                        temperature=proposer.temperature,
+                        max_tokens=proposer.max_tokens,
+                        timeout_seconds=proposer.timeout_seconds,
+                        system_prompt=system_directive,
+                        workspace_dir=effective_ws,
+                    )
+                except ProviderUnavailableError:
+                    if not demo:
+                        raise
+            return _react_model_caller(messages)
+
         effective_moa_cfg = moa_config if moa_config is not None else getattr(self, "moa_config", None)
         react_cfg = ReActConfig(
             max_turns=max_turns,
@@ -1003,6 +1023,7 @@ class HarnessOrchestrator:
 
         loop = ReActLoop(
             model_caller=_react_model_caller,
+            moa_caller=_moa_route_caller,
             gateway=self.gateway,
             workspace_root=effective_ws,
             config=react_cfg,
@@ -1177,13 +1198,20 @@ class HarnessOrchestrator:
             return self.execute_task(task_id)
         return self.ledger.get_task(task_id)  # type: ignore[return-value]
 
+    @staticmethod
+    def _check_execution_fence(fence_check: Callable[[], bool] | None) -> None:
+        if fence_check and fence_check():
+            raise ConcurrencyFenceError("Worker execution fenced; attempt must stop")
+
     def execute_task(
         self,
         task_id: str,
         worker_id: str | None = None,
         lease_info: dict[str, Any] | None = None,
+        fence_check: Callable[[], bool] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        self._check_execution_fence(fence_check)
         task = self.ledger.get_task(task_id)
         if not task:
             raise KeyError(f"Task not found: {task_id}")
@@ -1205,9 +1233,11 @@ class HarnessOrchestrator:
 
         # Fast-Path Express Lane (FR-001a): bypasses DAG planning ceremony for R0/R1 tasks
         if task["execution_mode"] == "fast_path":
-            return self._execute_fast_path(task, source_ws, wrk, lease_info=lease_info, **kwargs)
+            return self._execute_fast_path(
+                task, source_ws, wrk, lease_info=lease_info, fence_check=fence_check, **kwargs,
+            )
 
-        return self._execute_standard_dag(task, source_ws, wrk, lease_info=lease_info)
+        return self._execute_standard_dag(task, source_ws, wrk, lease_info=lease_info, fence_check=fence_check)
 
     def _execute_fast_path(
         self,
@@ -1215,8 +1245,10 @@ class HarnessOrchestrator:
         source_ws: Path,
         worker_id: str,
         lease_info: dict[str, Any] | None = None,
+        fence_check: Callable[[], bool] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        self._check_execution_fence(fence_check)
         task_id = task["task_id"]
         base_tree_sha = ""
         try:
@@ -1272,6 +1304,7 @@ class HarnessOrchestrator:
         tool_cb = kwargs.get("tool_callback")
         try:
             for idx, st in enumerate(steps, start=1):
+                self._check_execution_fence(fence_check)
                 if self.is_cancel_requested(task_id):
                     return self._finalize_canceled(task_id, attempt_id)
                 tid = st["tool_id"]
@@ -1287,8 +1320,10 @@ class HarnessOrchestrator:
                         tool_id=tid,
                         args=st.get("args", {}),
                         workspace_dir=source_ws,
+                        fencing_token=fencing_token,
                     )
-                except (PolicyBlockedError, ApprovalRequiredInterrupt):
+                    self._check_execution_fence(fence_check)
+                except (PolicyBlockedError, ApprovalRequiredInterrupt, ConcurrencyFenceError):
                     # Operator-facing policy outcomes are reported by the
                     # approval flow, not as a tool diagnostic.
                     raise
@@ -1306,6 +1341,7 @@ class HarnessOrchestrator:
                     "result": inv_res,
                 })
         except PolicyBlockedError as exc:
+            self._check_execution_fence(fence_check)
             self.ledger.update_attempt(attempt_id, status="FAILED", failure_class="POLICY_BLOCKED")
             return self.ledger.transition_task(
                 task_id,
@@ -1332,6 +1368,7 @@ class HarnessOrchestrator:
 
         # Synthesize model response using active LLM / router if available
         synthesized_text = ""
+        self._check_execution_fence(fence_check)
         if self.is_cancel_requested(task_id):
             return self._finalize_canceled(task_id, attempt_id)
         if hasattr(self, "router") and self.router is not None:
@@ -1404,9 +1441,12 @@ class HarnessOrchestrator:
                     if model_resp and getattr(model_resp, "text", None):
                         from harness_core.cognition.memory import sanitize_context
                         synthesized_text = sanitize_context(model_resp.text).strip()
+                except ConcurrencyFenceError:
+                    raise
                 except Exception as synth_exc:
                     synthesized_text = f"I completed task execution, but encountered an error synthesizing the response: {synth_exc}"
 
+        self._check_execution_fence(fence_check)
         self.ledger.transition_task(
             task_id,
             TaskState.VERIFYING,
@@ -1421,7 +1461,9 @@ class HarnessOrchestrator:
             workspace_dir=source_ws,
             modified_files=[],
             run_tests=False,
+            authority_check=lambda: self._check_execution_fence(fence_check),
         )
+        self._check_execution_fence(fence_check)
         self.ledger.update_attempt(
             attempt_id,
             status="SUCCEEDED",
@@ -1438,6 +1480,7 @@ class HarnessOrchestrator:
             except Exception:
                 pass
 
+        self._check_execution_fence(fence_check)
         return self.ledger.transition_task(
             task_id,
             TaskState.SUCCEEDED,
@@ -2126,7 +2169,9 @@ class HarnessOrchestrator:
         source_ws: Path,
         worker_id: str,
         lease_info: dict[str, Any] | None = None,
+        fence_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
+        self._check_execution_fence(fence_check)
         task_id = task["task_id"]
         constraints = task.get("constraints") or {}
 
@@ -2160,6 +2205,7 @@ class HarnessOrchestrator:
             completed_step_ids = set()
             self.cow.clone_to_workspace(base_snap_path, attempt_ws)
 
+        self._check_execution_fence(fence_check)
         # Auto-detect workspace recipe and inject into task context
         from harness_core.capabilities.recipes import detect_recipe
         detected_recipe = detect_recipe(attempt_ws)
@@ -2193,6 +2239,7 @@ class HarnessOrchestrator:
                     risk_class="R1",
                 ).to_dict(),
             ]
+            self._check_execution_fence(fence_check)
             plan = self.ledger.save_plan(task_id, req_steps, rationale=f"DAG plan for: {task['goal']}")
             self.ledger.transition_task(
                 task_id,
@@ -2239,6 +2286,7 @@ class HarnessOrchestrator:
 
         try:
             while True:
+                self._check_execution_fence(fence_check)
                 if self.is_cancel_requested(task_id):
                     return self._finalize_canceled(task_id, attempt_id)
                 # Find the next runnable node: not yet completed, with all depends_on completed
@@ -2313,6 +2361,7 @@ class HarnessOrchestrator:
                         if p not in modified_files:
                             modified_files.append(p)
 
+                self._check_execution_fence(fence_check)
                 if "actual_modified_files" in node:
                     for f in node["actual_modified_files"]:
                         p = str(f)
@@ -2351,6 +2400,7 @@ class HarnessOrchestrator:
                     except Exception:
                         pass
 
+                self._check_execution_fence(fence_check)
                 if unexpected_side_effects or explicit_replan or blast_new_callers:
                     if replan_count < max_replans:
                         replan_count += 1
@@ -2396,6 +2446,7 @@ class HarnessOrchestrator:
                             },
                         )
 
+                self._check_execution_fence(fence_check)
                 pending_ids = [n.get("step_id", "") for n in dag_nodes if n.get("step_id", "") not in completed_step_ids]
                 step_snap = self.cow.create_snapshot(attempt_ws, label=f"{task_id}_{step_id}")
                 delta_info = self.export_workspace_delta(task_id, attempt_ws)
@@ -2411,6 +2462,7 @@ class HarnessOrchestrator:
                 )
 
         except ApprovalRequiredInterrupt as apr_int:
+            self._check_execution_fence(fence_check)
             # Seal CoW checkpoint and pause in WAITING_APPROVAL
             chk_snap = self.cow.create_snapshot(attempt_ws, label=f"{task_id}_wait_approval")
             delta_info = self.export_workspace_delta(task_id, attempt_ws)
@@ -2440,6 +2492,7 @@ class HarnessOrchestrator:
             )
 
         except PolicyBlockedError as pol_err:
+            self._check_execution_fence(fence_check)
             # Roll back uncommitted CoW changes to last valid snapshot
             reverted_sha = self.cow.rollback_workspace(attempt_ws, base_snap_path)
             self.ledger.update_attempt(
@@ -2459,6 +2512,7 @@ class HarnessOrchestrator:
             )
 
         except BudgetExceededError as budget_err:
+            self._check_execution_fence(fence_check)
             forensic_snap = self.cow.create_snapshot(
                 attempt_ws, label=f"{task_id}_budget_exhausted"
             )
@@ -2484,7 +2538,10 @@ class HarnessOrchestrator:
                 },
             )
 
+        except ConcurrencyFenceError:
+            raise
         except Exception as crash_exc:
+            self._check_execution_fence(fence_check)
             logger.error("Step execution crash in _execute_standard_dag: %s", crash_exc, exc_info=True)
             # Roll back dirty uncommitted files in attempt_ws to latest valid snapshot (FR-012a)
             latest_valid = self.ledger.get_latest_checkpoint(task_id)
@@ -2507,6 +2564,7 @@ class HarnessOrchestrator:
                 payload={"error": str(crash_exc), "restored_snapshot": str(snap_to_restore)},
             )
 
+        self._check_execution_fence(fence_check)
         # Transition to VERIFYING and generate Proof-Carrying Artifact Bundle (FR-018, FR-022)
         head_sha = self.cow.compute_tree_sha(attempt_ws)
         self.ledger.transition_task(
@@ -2519,6 +2577,7 @@ class HarnessOrchestrator:
         )
 
         preflight = self._run_compiler_preflight(attempt_ws, modified_files)
+        self._check_execution_fence(fence_check)
         if not preflight["passed"]:
             failure_digest = (
                 f"Compiler Diagnostic Pre-Flight Failed ({preflight['error_count']} compiler/syntax error(s)):\n"
@@ -2551,9 +2610,11 @@ class HarnessOrchestrator:
                 workspace_dir=attempt_ws,
                 modified_files=modified_files,
                 run_tests=True,
+                authority_check=lambda: self._check_execution_fence(fence_check),
             )
 
         # Post-edit deterministic skill verification hooks (FR-039 / F-01)
+        self._check_execution_fence(fence_check)
         if ver_outcome["passed"]:
             skill_ver = self._run_skill_verifications(
                 task_id=task_id,
@@ -2589,6 +2650,7 @@ class HarnessOrchestrator:
         budget_exceeded = False
 
         while not ver_outcome["passed"] and repair_attempt < max_repair_retries:
+            self._check_execution_fence(fence_check)
             # Check budget limits
             tracker = getattr(self.router.cloud_provider, "budget_tracker", None)
             if tracker is not None:
@@ -2638,6 +2700,7 @@ class HarnessOrchestrator:
                 budget_exceeded = True
                 break
 
+            self._check_execution_fence(fence_check)
             # Apply repair patch operations to attempt_ws
             if patch_ops:
                 repair_step_id = f"repair_{repair_attempt}"
@@ -2667,6 +2730,7 @@ class HarnessOrchestrator:
                             step_id=repair_step_id,
                             workspace_dir=attempt_ws,
                             operations=normalized_ops,
+                            fencing_token=fencing_token,
                         )
                         for op in normalized_ops:
                             if op.get("tool_id") == "write_file" and "path" in op.get("args", {}):
@@ -2677,6 +2741,7 @@ class HarnessOrchestrator:
                         budget_exceeded = True
                         break
 
+            self._check_execution_fence(fence_check)
             # Transition state machine: RUNNING -> VERIFYING
             curr_sha = self.cow.compute_tree_sha(attempt_ws)
             self.ledger.transition_task(
@@ -2691,6 +2756,7 @@ class HarnessOrchestrator:
 
             # Re-execute verification
             preflight = self._run_compiler_preflight(attempt_ws, modified_files)
+            self._check_execution_fence(fence_check)
             if not preflight["passed"]:
                 failure_digest = (
                     f"Compiler Diagnostic Pre-Flight Failed ({preflight['error_count']} compiler/syntax error(s)):\n"
@@ -2723,8 +2789,10 @@ class HarnessOrchestrator:
                     workspace_dir=attempt_ws,
                     modified_files=modified_files,
                     run_tests=True,
+                    authority_check=lambda: self._check_execution_fence(fence_check),
                 )
 
+            self._check_execution_fence(fence_check)
             # Re-execute skill verification in repair loop
             if ver_outcome["passed"]:
                 skill_ver = self._run_skill_verifications(
@@ -2750,6 +2818,7 @@ class HarnessOrchestrator:
                         },
                     }
 
+        self._check_execution_fence(fence_check)
         if not ver_outcome["passed"]:
             forensic_snap = self.cow.create_snapshot(
                 attempt_ws, label=f"{task_id}_repair_exhausted_att{repair_attempt}"
@@ -2808,6 +2877,7 @@ class HarnessOrchestrator:
         # local Hex state, venvs, and concurrent user work; stop on conflict.
         if modified_files:
             try:
+                self._check_execution_fence(fence_check)
                 self.cow.publish_delta(base_snap_path, attempt_ws, source_ws)
             except PublicationConflictError as conflict:
                 forensic_snap = self.cow.create_snapshot(
@@ -2834,6 +2904,7 @@ class HarnessOrchestrator:
                     },
                 )
 
+        self._check_execution_fence(fence_check)
         head_sha = self.cow.compute_tree_sha(attempt_ws)
         self.ledger.update_attempt(attempt_id, status="SUCCEEDED", head_tree_sha=head_sha)
         ast_impact_dict = ver_outcome.get("ast_impact") or {}
@@ -2923,6 +2994,7 @@ class HarnessOrchestrator:
         except Exception as e:
             logger.warning("Post-task memory promotion check failed: %s", e)
 
+        self._check_execution_fence(fence_check)
         return self.ledger.transition_task(
             task_id,
             TaskState.SUCCEEDED,
