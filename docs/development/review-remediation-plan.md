@@ -9,11 +9,11 @@ Every fix ships with a regression test that fails against the old behavior.
 Status legend: `[DONE]` landed + verified + committed · `[WIP]` in progress · `[TODO]` not started.
 
 - Phase 1 — Protect user work and authority: **8/8 sub-phases DONE** (B01, B02, B04, B45, B46, B52, B47, B48, B49, B12, B05, B56).
-- Phase 2 — Make completion and recovery truthful: **1/12 DONE** (B03); B11 in progress.
+- Phase 2 — Make completion and recovery truthful: **2/12 DONE** (B03, B11); B10/B13/B17 next.
 - Phase 3 — Finish primary user surfaces: not started.
 - Phase 4 — Expand from real lifecycle integrations: not started.
 
-Last updated: 2026-11-18 (through B03, commit `9926fca`).
+Last updated: 2026-11-18 (through B11, commit `d7de074`).
 
 ## Phase 1 — Protect user work and authority (gate: zero later effects for denied/canceled work; publication preserves metadata/concurrent work)
 
@@ -29,7 +29,7 @@ Last updated: 2026-11-18 (through B03, commit `9926fca`).
 ## Phase 2 — Make completion and recovery truthful (gate: no success without effects/evidence; crash-resume reproduces tree+transcript; schema parity)
 
 - **2.1 B03** `[DONE 9926fca]` — Provider outage/failed observation ⇒ explicit failure; deterministic fallback only under explicit demo mode.
-- **2.2 B11** `[WIP]` — Fail closed: no-router delegation and no-orchestrator worker must fail, never manufacture COMPLETED/SUCCEEDED.
+- **2.2 B11** `[DONE d7de074]` — Fail closed: no-router delegation and no-orchestrator worker must fail, never manufacture COMPLETED/SUCCEEDED.
 - **2.3 B10/B13/B17** `[TODO]` — Real child tool loop through shared gateway with enforced role tool subset; server-owned depth; bounded spawn concurrency; explicit parent workspace for diffs.
 - **2.4 B51/B53/B55** `[TODO]` — Vision sends real pixels or fails; browser exposed as honest HTML-fetch/parse capability (or real engine); voice STT/TTS return explicit unsupported instead of mock success.
 - **2.5 B06/B09** `[TODO]` — DAG topology validation at save (cycles/dangling deps rejected); replan budget exhaustion pauses for attention.
