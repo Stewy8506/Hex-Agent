@@ -9,11 +9,11 @@ Every fix ships with a regression test that fails against the old behavior.
 Status legend: `[DONE]` landed + verified + committed · `[WIP]` in progress · `[TODO]` not started.
 
 - Phase 1 — Protect user work and authority: **8/8 sub-phases DONE** (B01, B02, B04, B45, B46, B52, B47, B48, B49, B12, B05, B56).
-- Phase 2 — Make completion and recovery truthful: **3/12 DONE** (B03, B11, B10/B13/B17); B06/B09 next.
+- Phase 2 — Make completion and recovery truthful: **6/12 DONE** (B03, B11, B10/B13/B17, B06/B09, B07/B08, B51/B53/B55); B37 next.
 - Phase 3 — Finish primary user surfaces: not started.
 - Phase 4 — Expand from real lifecycle integrations: not started.
 
-Last updated: 2026-11-18 (through B10/B13/B17, commit `165dbd0`).
+Last updated: 2026-11-18 (through B51/B53/B55, commit `a9e3d49`).
 
 ## Phase 1 — Protect user work and authority (gate: zero later effects for denied/canceled work; publication preserves metadata/concurrent work)
 
@@ -31,9 +31,9 @@ Last updated: 2026-11-18 (through B10/B13/B17, commit `165dbd0`).
 - **2.1 B03** `[DONE 9926fca]` — Provider outage/failed observation ⇒ explicit failure; deterministic fallback only under explicit demo mode.
 - **2.2 B11** `[DONE d7de074]` — Fail closed: no-router delegation and no-orchestrator worker must fail, never manufacture COMPLETED/SUCCEEDED.
 - **2.3 B10/B13/B17** `[DONE 165dbd0]` — Real child tool loop through shared gateway with enforced role tool subset; server-owned depth; bounded spawn concurrency; explicit parent workspace for diffs. Child edits/tests stay in the isolated CoW branch; role-denied and policy-denied calls perform zero side effects; turn/tool-call budgets fail closed.
-- **2.4 B51/B53/B55** `[TODO]` — Vision sends real pixels or fails; browser exposed as honest HTML-fetch/parse capability (or real engine); voice STT/TTS return explicit unsupported instead of mock success.
-- **2.5 B06/B09** `[TODO]` — DAG topology validation at save (cycles/dangling deps rejected); replan budget exhaustion pauses for attention.
-- **2.6 B07/B08** `[TODO]` — Todo `complete` action implemented; atomic writes, propagated errors, unique IDs, finite statuses.
+- **2.4 B51/B53/B55** `[DONE a9e3d49]` — Vision transmits the full image as a base64 multimodal content block and accepts only a multimodal route; browser is documented and enforced as HTML fetch/parse with click/type/screenshot/evaluate returning explicit unsupported errors; voice has no silent mock fallback and STT/TTS report the missing backend.
+- **2.5 B06/B09** `[DONE 0e69543]` — `save_plan` rejects empty/cyclic/dangling/duplicate topologies; execution pauses in `NEEDS_ATTENTION` with the unresolved dependency map instead of running `pending[0]`; an exhausted replan budget pauses for attention (`max_replans` readable from task constraints).
+- **2.6 B07/B08** `[DONE 5eb03dc]` — Todo `complete` implemented and matched by task/id/index; unsupported actions and non-finite statuses rejected; atomic writes, propagated `OSError`, corrupt state reported instead of silently reset, unique ids after deletion.
 - **2.7 B37** `[TODO]` — Single migration source: Alembic head matches runtime schema on SQLite and PostgreSQL; clean-install feature-table test.
 - **2.8 B36** `[TODO]` — Journal replay bound to restored tree/version (checkpoint/reapply sealed side effects consistently).
 - **2.9 B41/B44** `[TODO]` — Structured ACP context restore (tool rows/pairing); terminal-task reentry guard + startup orphan reconciliation.
