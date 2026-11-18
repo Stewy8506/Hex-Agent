@@ -406,6 +406,8 @@ class ACPServer:
         self._persist_lock = threading.RLock()
         self._tools_call_task_id: str | None = None
         self._tools_call_seq = 0
+        self._turn_threads: list[threading.Thread] = []
+        self._shutting_down = False
 
     def _emit(self, obj: dict[str, Any]) -> None:
         """Serialize one JSON-RPC message to stdout (thread-safe)."""
@@ -1752,6 +1754,71 @@ class ACPServer:
         status = res.get("status") if isinstance(res, dict) else "CANCELED"
         return f"Task {tid} canceled (status: {status}); uncommitted CoW workspace layer rolled back."
 
+    def _shutdown_orderly(self, reason: str = "eof", join_timeout: float = 5.0) -> dict[str, Any]:
+        """B49: orderly shutdown on EOF/interrupt instead of abandoning workers.
+
+        Withdraws pending approvals so blocked turn threads wake, cancels each
+        session's in-flight task (cooperative flag + CoW rollback), revokes
+        active approval leases, and joins worker threads within a bounded
+        timeout. Records an explicit interrupted state.
+        """
+        summary: dict[str, Any] = {
+            "interrupted": True,
+            "reason": reason,
+            "canceled_tasks": [],
+            "leases_revoked": 0,
+        }
+        if self._shutting_down:
+            return summary
+        self._shutting_down = True
+
+        with self._lock:
+            sessions = list(self.sessions.values())
+        bridge = getattr(self, "approval_bridge", None)
+        orch = self._orchestrator
+
+        for sess in sessions:
+            sess.cancelled = True
+            tid = sess.last_task_id
+            if bridge is not None and hasattr(bridge, "cancel_pending"):
+                try:
+                    bridge.cancel_pending(task_id=tid, session_id=sess.session_id)
+                except Exception as exc:
+                    logger.debug("ACP shutdown approval withdraw failed for %s: %s", sess.session_id, exc)
+            if tid and orch is not None and hasattr(orch, "cancel_task"):
+                try:
+                    from harness_core.core.models import TaskState
+
+                    ledger = getattr(orch, "ledger", None)
+                    task = ledger.get_task(tid) if ledger is not None else None
+                    terminal = task is not None and TaskState(task["status"]).is_terminal
+                    if not terminal:
+                        orch.cancel_task(tid, actor="acp-shutdown")
+                        summary["canceled_tasks"].append(tid)
+                except Exception as exc:
+                    logger.debug("ACP shutdown could not cancel task %s: %s", tid, exc)
+            try:
+                self._persist_session(sess)
+            except Exception:
+                pass
+
+        gateway = getattr(orch, "gateway", None)
+        leases = getattr(gateway, "approval_lease_manager", None)
+        if leases is not None and hasattr(leases, "list_active_leases"):
+            try:
+                for lease in leases.list_active_leases():
+                    if leases.revoke_lease(lease.lease_id):
+                        summary["leases_revoked"] += 1
+            except Exception as exc:
+                logger.debug("ACP shutdown lease cleanup failed: %s", exc)
+
+        for t in list(self._turn_threads):
+            try:
+                t.join(timeout=join_timeout)
+            except Exception:
+                pass
+        return summary
+
     def run_stdio(self) -> None:
         """Run stdio JSON-RPC loop reading lines or Content-Length framing.
 
@@ -1773,6 +1840,7 @@ class ACPServer:
                 }
             self._emit(resp)
 
+        shutdown_reason = "eof"
         while True:
             try:
                 line = sys.stdin.readline()
@@ -1794,7 +1862,9 @@ class ACPServer:
                     req = json.loads(line_str)
 
                 if req.get("method") == "session/prompt":
-                    threading.Thread(target=_respond_async, args=(req,), daemon=True).start()
+                    worker = threading.Thread(target=_respond_async, args=(req,), daemon=True)
+                    self._turn_threads.append(worker)
+                    worker.start()
                 else:
                     resp = self.handle_request(req)
                     self._emit(resp)
@@ -1804,6 +1874,7 @@ class ACPServer:
                         if sess is not None:
                             sess.cancel_ack.set()
             except (KeyboardInterrupt, BrokenPipeError):
+                shutdown_reason = "interrupt"
                 break
             except Exception as exc:
                 err_resp = {
@@ -1812,3 +1883,7 @@ class ACPServer:
                     "error": {"code": -32700, "message": f"Parse error: {exc}"},
                 }
                 self._emit(err_resp)
+
+        # B49: EOF or interrupt — quiesce workers, cancel/roll back in-flight
+        # turns, withdraw approvals, and clean leases before exiting.
+        self._shutdown_orderly(shutdown_reason)
