@@ -1,9 +1,19 @@
 """Unit and integration tests for PTY ProcessRegistry and CircularOutputBuffer."""
 
+import ctypes
+from ctypes import wintypes
+import json
 import os
+from pathlib import Path
+import subprocess
 import sys
+import tempfile
+import threading
 import time
 import unittest
+from unittest.mock import patch
+
+from harness_core.runtime.windows_job import WindowsJob, _WindowsProcess, spawn_windows_process
 
 from harness_core.runtime.process_registry import (
     CircularOutputBuffer,
@@ -117,7 +127,7 @@ class TestProcessRegistry(unittest.TestCase):
 
     def test_failing_command(self) -> None:
         """Verify failing command updates status to failed and preserves nonzero exit code."""
-        session = self.registry.spawn("sh -c 'exit 42'", use_pty=True)
+        session = self.registry.spawn("exit 42", use_pty=True)
         result = self.registry.wait(session.id, timeout=5.0)
 
         self.assertEqual(result["status"], "failed")
@@ -125,7 +135,7 @@ class TestProcessRegistry(unittest.TestCase):
 
     def test_streaming_background_command(self) -> None:
         """Verify background process streams output incrementally into ring buffer."""
-        cmd = f'{sys.executable} -u -c "import time; print(\'chunk_one\'); time.sleep(0.3); print(\'chunk_two\')"'
+        cmd = f'"{sys.executable}" -u -c "import time; print(\'chunk_one\'); time.sleep(0.3); print(\'chunk_two\')"'
         session = self.registry.spawn(cmd, use_pty=True)
 
         # Wait briefly for first chunk
@@ -143,7 +153,7 @@ class TestProcessRegistry(unittest.TestCase):
     def test_kill_process_graceful_and_force(self) -> None:
         """Verify killing running process sets status to killed and terminates child tree."""
         # Spawn long-running process
-        cmd = f'{sys.executable} -c "import time; time.sleep(60)"'
+        cmd = f'"{sys.executable}" -c "import time; time.sleep(60)"'
         session = self.registry.spawn(cmd, use_pty=True)
         self.assertEqual(session.status, ProcessStatus.RUNNING)
 
@@ -160,7 +170,7 @@ class TestProcessRegistry(unittest.TestCase):
     def test_list_processes_and_filtering(self) -> None:
         """Verify list_processes lists tracked sessions and applies status filter."""
         s1 = self.registry.spawn('echo "p1"', use_pty=False)
-        s2 = self.registry.spawn(f'{sys.executable} -c "import time; time.sleep(30)"', use_pty=False)
+        s2 = self.registry.spawn(f'"{sys.executable}" -c "import time; time.sleep(30)"', use_pty=False)
 
         self.registry.wait(s1.id, timeout=3.0)
 
@@ -179,8 +189,8 @@ class TestProcessRegistry(unittest.TestCase):
 
     def test_cleanup_all(self) -> None:
         """Verify cleanup_all terminates all running processes safely."""
-        s1 = self.registry.spawn(f'{sys.executable} -c "import time; time.sleep(30)"')
-        s2 = self.registry.spawn(f'{sys.executable} -c "import time; time.sleep(30)"')
+        s1 = self.registry.spawn(f'"{sys.executable}" -c "import time; time.sleep(30)"')
+        s2 = self.registry.spawn(f'"{sys.executable}" -c "import time; time.sleep(30)"')
 
         self.registry.cleanup_all()
 
@@ -210,6 +220,132 @@ class TestProcessRegistry(unittest.TestCase):
 
         with self.assertRaises(KeyError):
             self.registry.get("proc_nonexistent")
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows Job Object integration")
+class TestWindowsProcessTrees(unittest.TestCase):
+    def _check_tree_shutdown(self, action):
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        api.OpenProcess.restype = wintypes.HANDLE
+        api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        api.WaitForSingleObject.restype = wintypes.DWORD
+        api.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        api.CloseHandle.argtypes = [wintypes.HANDLE]
+        handles = []
+        registry = ProcessRegistry()
+        session = None
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            pids = root / "pids.json"
+            exit_flag = root / "exit.flag"
+            script = root / "parent.py"
+            child_code = (
+                "import json, os, subprocess, sys, time; from pathlib import Path; "
+                "leaf = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                f"Path({str(pids)!r}).write_text(json.dumps([os.getpid(), leaf.pid])); "
+                "time.sleep(60)"
+            )
+            script.write_text(
+                "import subprocess, sys, time\nfrom pathlib import Path\n"
+                f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+                f"while not Path({str(exit_flag)!r}).exists():\n    time.sleep(0.01)\n",
+                encoding="utf-8",
+            )
+            try:
+                session = registry.spawn(subprocess.list2cmdline([sys.executable, str(script)]), use_pty=False)
+                deadline = time.monotonic() + 5
+                while not pids.exists() and time.monotonic() < deadline:
+                    threading.Event().wait(0.01)
+                self.assertTrue(pids.exists(), "Descendants did not start")
+                for pid in json.loads(pids.read_text()):
+                    handle = api.OpenProcess(0x100001, False, pid)
+                    self.assertTrue(handle)
+                    handles.append(handle)
+                action(registry, session, exit_flag)
+                for handle in handles:
+                    self.assertEqual(api.WaitForSingleObject(handle, 3000), 0, "Descendant survived tree teardown")
+                self.assertIsNotNone(session.process.poll())
+                self.assertIsNone(session.process._hex_job._handle)
+                registry.close()
+                self.assertTrue(session.process._handle.closed)
+            finally:
+                for handle in handles:
+                    api.TerminateProcess(handle, 1)
+                    api.WaitForSingleObject(handle, 3000)
+                    api.CloseHandle(handle)
+                if session and session.process.poll() is None:
+                    session.process.kill()
+                    session.process.wait(timeout=3)
+                registry.close()
+
+    def test_graceful_and_force_kill_stop_descendants(self):
+        for force in (False, True):
+            with self.subTest(force=force):
+                def kill(registry, session, exit_flag):
+                    result = registry.kill(session.id, force=force)
+                    self.assertEqual(result["status"], "killed")
+                    self.assertEqual(registry.kill(session.id, force=True)["status"], "killed")
+                self._check_tree_shutdown(kill)
+
+    def test_cleanup_stops_descendants(self):
+        self._check_tree_shutdown(lambda registry, session, flag: registry.cleanup_all())
+
+    def test_parent_exit_reaps_descendants_and_closes_pipes(self):
+        def finish(registry, session, flag):
+            flag.write_text("exit")
+            self.assertEqual(registry.wait(session.id, timeout=5)["status"], "completed")
+            self.assertTrue(session.process.stdout.closed)
+        self._check_tree_shutdown(finish)
+
+    def test_native_handle_close_waits_for_concurrent_waiters(self):
+        process = spawn_windows_process([sys.executable, "-c", "import time; time.sleep(0.2)"])
+        results = []
+        errors = []
+
+        def wait():
+            try:
+                results.append(process.wait(timeout=3))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=wait) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        try:
+            process.close_handle()
+            for thread in threads:
+                thread.join(timeout=3)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(results, [0] * 8)
+            self.assertTrue(process._handle.closed)
+            self.assertEqual(process.poll(), 0)
+            self.assertEqual(process.wait(), 0)
+        finally:
+            process.wait(timeout=3)
+            process._hex_job.close()
+            process.close_handle()
+
+    def test_job_assignment_failure_never_runs_unowned_command(self):
+        processes = []
+        popen = _WindowsProcess
+
+        def capture(*args, **kwargs):
+            process = popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with tempfile.TemporaryDirectory() as root:
+            marker = Path(root) / "executed.txt"
+            command = [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).write_text('unsafe')"]
+            with patch.object(WindowsJob, "assign", side_effect=OSError("job assignment denied")), patch("harness_core.runtime.windows_job._WindowsProcess", side_effect=capture):
+                with self.assertRaisesRegex(OSError, "job assignment denied"):
+                    spawn_windows_process(command, stdout=subprocess.PIPE)
+            self.assertFalse(marker.exists())
+            self.assertEqual(len(processes), 1)
+            self.assertIsNotNone(processes[0].poll())
+            self.assertTrue(processes[0].stdout.closed)
 
 
 if __name__ == "__main__":

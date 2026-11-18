@@ -31,6 +31,8 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import uuid
 
+from harness_core.runtime.windows_job import close_windows_process, spawn_windows_process
+
 logger = logging.getLogger(__name__)
 
 # Output capture limits
@@ -244,23 +246,31 @@ class _BoundedBuffer:
 
 def _kill_process_tree(proc: subprocess.Popen, force: bool = False) -> None:
     """Terminate a process and its whole process group cleanly."""
+    if sys.platform == "win32":
+        if getattr(proc, "_hex_job", None) is not None:
+            close_windows_process(proc)
+        else:
+            if proc.poll() is None:
+                proc.kill() if force else proc.terminate()
+            proc.wait(timeout=3.0)
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        return
     if proc.poll() is not None:
         return
     pid = proc.pid
     sig = signal.SIGKILL if force else signal.SIGTERM
-    if sys.platform != "win32":
+    try:
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, OSError):
         try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, sig)
+            os.kill(pid, sig)
         except (ProcessLookupError, OSError):
-            try:
-                os.kill(pid, sig)
-            except (ProcessLookupError, OSError):
-                pass
-    else:
-        try:
-            proc.kill() if force else proc.terminate()
-        except OSError:
             pass
 
     try:
@@ -390,6 +400,8 @@ class CodeKernel:
         """Spawn the child runner process in an isolated environment."""
         if self.alive():
             return
+        if self.proc is not None:
+            _kill_process_tree(self.proc, force=True)
 
         self.tmpdir = tempfile.mkdtemp(prefix="hex_kernel_")
         runner_path = os.path.join(self.tmpdir, "hex_kernel_runner.py")
@@ -420,7 +432,8 @@ class CodeKernel:
         self.raw_buffer.drain()
         self.stderr_buffer.drain()
 
-        self.proc = subprocess.Popen([sys.executable, runner_path], **popen_kwargs)
+        spawn_process = spawn_windows_process if sys.platform == "win32" else subprocess.Popen
+        self.proc = spawn_process([sys.executable, runner_path], **popen_kwargs)
 
         threading.Thread(target=_stdout_reader, args=(self,), daemon=True, name=f"hex-k-out-{self.kernel_id[:6]}").start()
         threading.Thread(target=_stderr_reader, args=(self,), daemon=True, name=f"hex-k-err-{self.kernel_id[:6]}").start()
@@ -476,6 +489,8 @@ class CodeKernel:
                         if self.proc.poll() is not None:
                             status = "error"
                             payload = {"status": "error", "traceback": "Child process exited unexpectedly."}
+                            _kill_process_tree(self.proc, force=True)
+                            self.stop_event.set()
                             break
                         continue
 
@@ -483,6 +498,8 @@ class CodeKernel:
                     if resp_status in ("kernel-eof", "protocol-error"):
                         status = "error"
                         payload = resp
+                        _kill_process_tree(self.proc, force=True)
+                        self.stop_event.set()
                         break
 
                     if resp.get("id") == req_id or not resp.get("id"):
