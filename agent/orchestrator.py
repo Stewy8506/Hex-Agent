@@ -1232,12 +1232,28 @@ class HarnessOrchestrator:
         source_ws.mkdir(parents=True, exist_ok=True)
 
         # Fast-Path Express Lane (FR-001a): bypasses DAG planning ceremony for R0/R1 tasks
-        if task["execution_mode"] == "fast_path":
-            return self._execute_fast_path(
-                task, source_ws, wrk, lease_info=lease_info, fence_check=fence_check, **kwargs,
-            )
+        try:
+            if task["execution_mode"] == "fast_path":
+                return self._execute_fast_path(
+                    task, source_ws, wrk, lease_info=lease_info, fence_check=fence_check, **kwargs,
+                )
 
-        return self._execute_standard_dag(task, source_ws, wrk, lease_info=lease_info, fence_check=fence_check)
+            return self._execute_standard_dag(task, source_ws, wrk, lease_info=lease_info, fence_check=fence_check)
+        except ConcurrencyFenceError:
+            # A preempted attempt abandons its CoW workspace. Release the mount/dir so the
+            # workspace root can be reclaimed; a live Linux overlay mount otherwise leaks and
+            # blocks removal of the attempt directory.
+            self._release_fenced_workspace(task_id)
+            raise
+
+    def _release_fenced_workspace(self, task_id: str) -> None:
+        try:
+            attempts = self.ledger.list_attempts(task_id)
+            ws_path = attempts[-1].get("workspace_path") if attempts else None
+            if ws_path:
+                self.cow.release_workspace(ws_path)
+        except Exception as e:
+            logger.warning("Failed to release fenced workspace for %s: %s", task_id, e)
 
     def _execute_fast_path(
         self,

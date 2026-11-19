@@ -17,12 +17,12 @@ use tokio::time::timeout;
 use crate::error::AcpError;
 use crate::models::{
     ApprovalDecisionParams, ApprovalDecisionResponse, ClientInfo, InitializeParams,
-    InitializeResponse, JsonRpcNotification, JsonRpcRequest, RequestId, SessionCancelParams,
-    SessionCancelResponse, SessionCommandParams, SessionCommandResponse, SessionListItem,
-    SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
-    SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionSubagentsParams,
-    SessionSubagentsResponse, SubagentInfo, ToolCallParams, ToolCallResponse, ToolDefinition,
-    ToolsListResponse,
+    InitializeResponse, JsonRpcNotification, JsonRpcRequest, ModelCatalog, RequestId,
+    SessionCancelParams, SessionCancelResponse, SessionCommandParams, SessionCommandResponse,
+    SessionListItem, SessionListResponse, SessionLoadParams, SessionLoadResponse,
+    SessionNewParams, SessionNewResponse, SessionPromptParams, SessionPromptResponse,
+    SessionSubagentsParams, SessionSubagentsResponse, SubagentInfo, ToolCallParams,
+    ToolCallResponse, ToolDefinition, ToolsListResponse,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -69,6 +69,7 @@ pub struct AcpClient {
     writer_tx: mpsc::Sender<String>,
     pending: PendingMap,
     notifications_tx: broadcast::Sender<JsonRpcNotification>,
+    closed_tx: broadcast::Sender<()>,
     lossless_tx: LosslessSender,
     child: Option<Arc<Mutex<tokio::process::Child>>>,
     default_timeout: Duration,
@@ -85,6 +86,7 @@ impl AcpClient {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let (writer_tx, mut writer_rx) = mpsc::channel::<String>(128);
         let (notifications_tx, _) = broadcast::channel::<JsonRpcNotification>(256);
+        let (closed_tx, _) = broadcast::channel::<()>(4);
         let lossless_tx: LosslessSender = Arc::new(Mutex::new(None));
         let notification_bytes = Arc::new(Semaphore::new(NOTIFICATION_BUFFER_BYTES));
 
@@ -103,6 +105,7 @@ impl AcpClient {
         // Background reader task
         let pending_clone = Arc::clone(&pending);
         let notif_tx = notifications_tx.clone();
+        let reader_closed_tx = closed_tx.clone();
         let lossless = lossless_tx.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(reader);
@@ -211,6 +214,10 @@ impl AcpClient {
             for (_, sender) in map.drain() {
                 let _ = sender.send(Err(AcpError::ConnectionClosed));
             }
+            drop(map);
+            // Authoritative transport-loss signal: the notification channel stays
+            // open (the client retains its sender), so closure is announced here.
+            let _ = reader_closed_tx.send(());
         });
 
         Self {
@@ -218,6 +225,7 @@ impl AcpClient {
             writer_tx,
             pending,
             notifications_tx,
+            closed_tx,
             lossless_tx,
             child: None,
             default_timeout: Duration::from_secs(60),
@@ -404,6 +412,12 @@ impl AcpClient {
     /// Subscribe to server notifications (e.g. streaming tokens, tool progress).
     pub fn subscribe(&self) -> broadcast::Receiver<JsonRpcNotification> {
         self.notifications_tx.subscribe()
+    }
+
+    /// Subscribe to the authoritative transport-loss signal. Fires once when the
+    /// reader task ends (EOF/error), independent of the notification channel.
+    pub fn subscribe_closed(&self) -> broadcast::Receiver<()> {
+        self.closed_tx.subscribe()
     }
 
     pub async fn subscribe_lossless(&self) -> mpsc::Receiver<NotificationPacket> {
@@ -598,6 +612,15 @@ impl AcpClient {
             .send_request("session/list", serde_json::json!({}))
             .await?;
         Ok(resp.sessions)
+    }
+
+    /// Query the live model catalog from the backend's configured providers.
+    pub async fn session_models(&self, session_id: &str) -> Result<ModelCatalog, AcpError> {
+        self.send_request(
+            "session/models",
+            serde_json::json!({ "sessionId": session_id }),
+        )
+        .await
     }
 
     /// Query available tools from the ACP server.
@@ -1115,5 +1138,45 @@ mod tests {
             .unwrap();
         assert_eq!(res.command, "/doctor");
         assert!(res.output.contains("Doctor check complete"));
+    }
+
+    #[tokio::test]
+    async fn test_client_session_models_rpc() {
+        let (client_read, mut server_write) = tokio::io::duplex(4096);
+        let (server_read, client_write) = tokio::io::duplex(4096);
+
+        let client = AcpClient::from_streams(client_read, client_write);
+
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            if let Ok(Some(line)) = lines.next_line().await {
+                let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+                assert_eq!(req.method, "session/models");
+                assert_eq!(req.params.unwrap()["sessionId"], "ses_1");
+
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "result": {
+                        "sessionId": "ses_1",
+                        "activeModel": "gpt-4o",
+                        "provider": "openai",
+                        "models": [
+                            {"id": "gpt-4o", "displayName": "GPT-4o", "provider": "openai", "isLocal": false},
+                            {"id": "qwen2.5-coder-32b", "displayName": "Qwen (Ollama)", "provider": "Local", "isLocal": true}
+                        ],
+                        "error": "anthropic: offline"
+                    }
+                });
+                let resp_str = serde_json::to_string(&resp).unwrap() + "\n";
+                server_write.write_all(resp_str.as_bytes()).await.unwrap();
+            }
+        });
+
+        let catalog = client.session_models("ses_1").await.unwrap();
+        assert_eq!(catalog.active_model, "gpt-4o");
+        assert_eq!(catalog.models.len(), 2);
+        assert!(catalog.models[1].is_local);
+        assert_eq!(catalog.error.as_deref(), Some("anthropic: offline"));
     }
 }

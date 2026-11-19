@@ -140,6 +140,7 @@ impl AcpBridge {
             *lock = Some(client.clone());
         }
         let mut notif_rx = client.subscribe();
+        let mut closed_rx = client.subscribe_closed();
         let event_tx = bridge.event_tx.clone();
         let is_connected = Arc::clone(&bridge.is_connected);
         is_connected.store(true, Ordering::SeqCst);
@@ -147,14 +148,25 @@ impl AcpBridge {
             server_name: "HEX Runtime".to_string(),
             server_version: "unknown".to_string(),
         });
+        let demux_tx = event_tx.clone();
         tokio::spawn(async move {
-            while let Ok(notif) = notif_rx.recv().await {
-                Self::dispatch_notification(&notif, &event_tx);
+            loop {
+                match notif_rx.recv().await {
+                    Ok(notif) => Self::dispatch_notification(&notif, &demux_tx),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
-            is_connected.store(false, Ordering::SeqCst);
-            let _ = event_tx.send(AcpEvent::Disconnected {
-                reason: "ACP connection closed".to_string(),
-            });
+        });
+        let close_tx = event_tx.clone();
+        let close_connected = Arc::clone(&is_connected);
+        tokio::spawn(async move {
+            if closed_rx.recv().await.is_ok() {
+                close_connected.store(false, Ordering::SeqCst);
+                let _ = close_tx.send(AcpEvent::Disconnected {
+                    reason: "ACP connection closed".to_string(),
+                });
+            }
         });
         bridge
     }
@@ -233,6 +245,7 @@ impl AcpBridge {
     /// Attach active client and spawn notification subscriber task.
     async fn attach_client(&self, client: AcpClient, server_name: &str, server_version: &str) {
         let mut notif_rx = client.subscribe();
+        let mut closed_rx = client.subscribe_closed();
         let event_tx = self.event_tx.clone();
         let is_connected = Arc::clone(&self.is_connected);
 
@@ -247,15 +260,29 @@ impl AcpBridge {
             server_version: server_version.to_string(),
         });
 
-        // Spawn background listener task demuxing JSON-RPC notifications into AcpEvent
+        // Demux JSON-RPC notifications into AcpEvent. A lagged broadcast is not a
+        // disconnect; keep demuxing. Transport loss is announced by closed_rx.
+        let demux_tx = event_tx.clone();
         tokio::spawn(async move {
-            while let Ok(notif) = notif_rx.recv().await {
-                Self::dispatch_notification(&notif, &event_tx);
+            loop {
+                match notif_rx.recv().await {
+                    Ok(notif) => Self::dispatch_notification(&notif, &demux_tx),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
-            is_connected.store(false, Ordering::SeqCst);
-            let _ = event_tx.send(AcpEvent::Disconnected {
-                reason: "ACP connection closed".to_string(),
-            });
+        });
+
+        // Authoritative disconnect: fires once when the transport reader ends.
+        let close_tx = event_tx.clone();
+        let close_connected = Arc::clone(&is_connected);
+        tokio::spawn(async move {
+            if closed_rx.recv().await.is_ok() {
+                close_connected.store(false, Ordering::SeqCst);
+                let _ = close_tx.send(AcpEvent::Disconnected {
+                    reason: "ACP connection closed".to_string(),
+                });
+            }
         });
     }
 
@@ -364,6 +391,73 @@ impl AcpBridge {
         Ok(self.new_session_full(cwd, model).await?.session_id)
     }
 
+    /// Load a durable session with its paged history (B28 recovery, resume).
+    pub async fn load_session_paged(
+        &self,
+        session_id: &str,
+    ) -> Result<hex_protocol::models::PagedSessionLoad, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_load_paged(session_id).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// List durable backend sessions, including inactive on-disk ones.
+    pub async fn list_sessions(&self) -> Result<Vec<hex_protocol::models::SessionListItem>, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_list().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Fetch the live model catalog from the backend's configured providers (B32).
+    pub async fn list_models(
+        &self,
+        session_id: &str,
+    ) -> Result<hex_protocol::models::ModelCatalog, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_models(session_id).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Apply a model selection to the session via the backend `/model` command.
+    /// Success carries the confirmed canonical model/provider identity.
+    pub async fn set_session_model(
+        &self,
+        session_id: &str,
+        model_id: &str,
+    ) -> Result<hex_protocol::models::SessionCommandResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_command(session_id, "model", Some(model_id)).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Fetch one validated history page for a turn field ("prompt"/"response").
+    pub async fn history_content_page(
+        &self,
+        session_id: &str,
+        turn_index: usize,
+        field: &str,
+        offset: usize,
+    ) -> Result<hex_protocol::models::ToolResultPage, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_history_content(session_id, turn_index, field, offset).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Send a user prompt to the active session and return the authoritative
     /// final result (status, content, taskId) once the turn completes.
     pub async fn send_prompt(
@@ -468,19 +562,23 @@ impl AcpBridge {
         }
     }
 
-    /// Spawns a background reconnect loop that retries connecting with exponential backoff.
-    pub fn spawn_reconnect_loop(&self, max_delay: Duration) {
-        let bridge = self.clone();
-        tokio::spawn(async move {
-            let mut delay = Duration::from_millis(500);
-            while !bridge.is_connected() {
-                tokio::time::sleep(delay).await;
-                if bridge.connect_auto().await.is_ok() {
-                    break;
-                }
-                delay = (delay * 2).min(max_delay);
+    /// Retry connecting with exponential backoff until the transport is up.
+    ///
+    /// B28: the caller supervises this loop and re-arms it on every later
+    /// disconnect; session recovery happens after it returns.
+    pub async fn reconnect_with_backoff(&self, max_delay: Duration) {
+        let mut delay = Duration::from_millis(500);
+        while !self.is_connected() {
+            tokio::time::sleep(delay).await;
+            // Another path may have reconnected while we slept; never clobber it.
+            if self.is_connected() {
+                return;
             }
-        });
+            if self.connect_auto().await.is_ok() {
+                return;
+            }
+            delay = (delay * 2).min(max_delay);
+        }
     }
 }
 

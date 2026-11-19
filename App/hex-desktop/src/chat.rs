@@ -17,13 +17,16 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use gpui::*;
 use tokio::runtime::{Handle, Runtime};
 use unicode_segmentation::UnicodeSegmentation;
 
 use hex_protocol::error::AcpError;
-use hex_protocol::models::{ApprovalDecisionResponse, SessionNewResponse, SessionPromptResponse};
+use hex_protocol::models::{
+    ApprovalDecisionResponse, PagedSessionLoad, SessionNewResponse, SessionPromptResponse,
+};
 
 use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::menu::init_menus;
@@ -32,7 +35,7 @@ use crate::theme::HermesTheme;
 use crate::ui::feed::{MessageFeed, MessageItem};
 use crate::ui::message::AssistantMessageView;
 use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
-use crate::ui::modals::{render_modal_container, ActiveModal, PaletteAction, ToolApprovalModal};
+use crate::ui::modals::{render_modal_container, ActiveModal, ModelEntry, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
 use crate::ui::session_list::SessionItem;
 use crate::ui::shell::AppShell;
@@ -158,6 +161,81 @@ fn apply_authoritative_final(
     }
 }
 
+/// Rebuild a feed from durable history, fetching canonical pages for any
+/// turn whose inline preview was truncated (B28 recovery / resume).
+async fn build_restored_feed(bridge: &AcpBridge, rt: &Handle, load: &PagedSessionLoad) -> MessageFeed {
+    let mut feed = MessageFeed::new();
+    let mut incomplete = false;
+    for paged in &load.page.history {
+        let prompt = match full_history_field(
+            bridge, rt, &load.session_id, paged.turn_index, "prompt",
+            paged.prompt_chars, &paged.turn.prompt,
+        ).await {
+            Some(text) => text,
+            None => { incomplete = true; paged.turn.prompt.clone() }
+        };
+        if !prompt.is_empty() {
+            feed.add_user_message(prompt);
+        }
+        let response = match full_history_field(
+            bridge, rt, &load.session_id, paged.turn_index, "response",
+            paged.response_chars, &paged.turn.response,
+        ).await {
+            Some(text) => text,
+            None => { incomplete = true; paged.turn.response.clone() }
+        };
+        if !response.is_empty() {
+            feed.add_assistant_message(response);
+        }
+    }
+    if incomplete {
+        feed.add_system_notice(
+            "Some restored turns may be incomplete: canonical history pages could not be validated.",
+        );
+    }
+    feed
+}
+
+/// Fetch and validate every page of one turn field; None on any inconsistency.
+async fn full_history_field(
+    bridge: &AcpBridge,
+    rt: &Handle,
+    session_id: &str,
+    turn_index: usize,
+    field: &str,
+    total: usize,
+    preview: &str,
+) -> Option<String> {
+    if preview.chars().count() >= total {
+        return Some(preview.to_string());
+    }
+    let mut text = String::new();
+    let mut offset = 0usize;
+    loop {
+        let b = bridge.clone();
+        let sid = session_id.to_string();
+        let fld = field.to_string();
+        let page = rt
+            .spawn(async move { b.history_content_page(&sid, turn_index, &fld, offset).await })
+            .await
+            .ok()?
+            .ok()?;
+        let end = offset.checked_add(page.content.chars().count())?;
+        if page.total_chars != total
+            || end > total
+            || (end < total && end == offset)
+            || page.next_offset != (end < total).then_some(end)
+        {
+            return None;
+        }
+        text.push_str(&page.content);
+        if end == total {
+            return Some(text);
+        }
+        offset = end;
+    }
+}
+
 /// The interactive desktop root: sidebar + feed + composer wired to ACP.
 pub struct ChatView {
     pub shell: AppShell,
@@ -188,6 +266,8 @@ pub struct ChatView {
     current_model: String,
     current_provider: String,
     model_id: Option<String>,
+    /// B28: one supervised reconnect loop at a time; re-armed on every loss.
+    supervisor_active: bool,
 }
 
 impl Focusable for ChatView {
@@ -245,6 +325,7 @@ impl ChatView {
             current_model: String::new(),
             current_provider: "HEX".to_string(),
             model_id: None,
+            supervisor_active: false,
         };
         view.start_event_pump(cx);
         view.start_backend(cx);
@@ -265,15 +346,14 @@ impl ChatView {
                 let res = rt.spawn(async move { b.connect_auto().await }).await;
                 if !matches!(res, Ok(Ok(()))) {
                     this.update(cx, |view, cx| {
-                        view.shell.sidebar.provider_status.state = ProviderState::Offline;
                         view.shell
                             .composer
                             .model_pill
                             .set_model("HEX", "not connected");
                         view.shell.feed.add_system_notice(
-                            "Could not connect to the HEX runtime. Install it (install.sh) or start `hex acp`, then relaunch.",
+                            "Could not connect to the HEX runtime. Install it (install.sh) or start `hex acp`; retrying automatically.",
                         );
-                        cx.notify();
+                        view.begin_supervision(cx);
                     })
                     .ok();
                     return;
@@ -284,7 +364,10 @@ impl ChatView {
                 .spawn(async move { b.new_session_full(Some(&cwd), None).await })
                 .await;
             this.update(cx, |view, cx| match res {
-                Ok(Ok(resp)) => view.adopt_session(resp, cx),
+                Ok(Ok(resp)) => {
+                    view.adopt_session(resp, cx);
+                    view.refresh_session_list(cx);
+                }
                 Ok(Err(err)) => {
                     view.shell.composer.model_pill.set_model("HEX", "no session");
                     view.shell
@@ -301,6 +384,137 @@ impl ChatView {
                 }
             })
             .ok();
+        })
+        .detach();
+    }
+
+    /// B28: supervise the transport after any loss. One loop at a time;
+    /// exponential backoff until connected, then explicit session recovery.
+    fn begin_supervision(&mut self, cx: &mut Context<Self>) {
+        if self.supervisor_active {
+            return;
+        }
+        self.supervisor_active = true;
+        self.shell.sidebar.provider_status.state = ProviderState::Reconnecting;
+        cx.notify();
+
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let b = bridge.clone();
+            let reconnected = rt
+                .spawn(async move {
+                    b.reconnect_with_backoff(Duration::from_secs(30)).await;
+                })
+                .await
+                .is_ok();
+            if !reconnected {
+                return;
+            }
+            this.update(cx, |view, cx| {
+                view.supervisor_active = false;
+                view.shell
+                    .feed
+                    .add_system_notice("Reconnected to the HEX runtime.");
+                view.recover_session(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// After a reconnect the backend may be a fresh process: restore the
+    /// previous session from durable history, or start a new one honestly.
+    fn recover_session(&mut self, cx: &mut Context<Self>) {
+        let previous = self.shell.active_session_id.clone();
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        let cwd = self.workspace.to_string_lossy().to_string();
+        let model = self.model_id.clone();
+        cx.spawn(async move |this, cx| {
+            let mut restored = None;
+            if let Some(sid) = previous {
+                let b = bridge.clone();
+                if let Ok(Ok(load)) = rt
+                    .spawn(async move { b.load_session_paged(&sid).await })
+                    .await
+                {
+                    let feed = build_restored_feed(&bridge, &rt, &load).await;
+                    restored = Some((load, feed));
+                }
+            }
+            let fresh = if restored.is_none() {
+                let b = bridge.clone();
+                rt.spawn(async move { b.new_session_full(Some(&cwd), model.as_deref()).await })
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+            } else {
+                None
+            };
+            this.update(cx, |view, cx| {
+                match restored {
+                    Some((load, feed)) => view.adopt_loaded_session(load, feed, cx),
+                    None => match fresh {
+                        Some(resp) => {
+                            view.adopt_session(resp, cx);
+                            view.shell.feed.add_system_notice(
+                                "Started a new session; the previous conversation was not recoverable.",
+                            );
+                        }
+                        None => {
+                            view.shell.sidebar.provider_status.state = ProviderState::Offline;
+                            view.shell
+                                .feed
+                                .add_system_notice("Reconnected, but no session could be established.");
+                        }
+                    },
+                }
+                view.refresh_session_list(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Populate the sidebar with durable backend sessions (including inactive
+    /// on-disk ones) so they can be resumed. Never adopts or loads transcripts.
+    fn refresh_session_list(&mut self, cx: &mut Context<Self>) {
+        if !self.bridge.is_connected() {
+            return;
+        }
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt.spawn(async move { bridge.list_sessions().await }).await;
+            if let Ok(Ok(items)) = res {
+                this.update(cx, |view, cx| {
+                    for item in items {
+                        if view
+                            .shell
+                            .sidebar
+                            .session_list
+                            .sessions
+                            .iter()
+                            .any(|s| s.id == item.session_id)
+                        {
+                            continue;
+                        }
+                        let tail: String = item
+                            .session_id
+                            .chars()
+                            .skip(item.session_id.chars().count().saturating_sub(6))
+                            .collect();
+                        view.shell.sidebar.add_session(
+                            SessionItem::new(item.session_id.clone(), format!("Chat …{tail}"))
+                                .with_model(item.model.clone()),
+                        );
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
         })
         .detach();
     }
@@ -342,10 +556,14 @@ impl ChatView {
         };
 
         let Some(sid) = session_id else {
-            if matches!(event, AcpEvent::Disconnected { .. }) {
-                self.shell
-                    .feed
-                    .add_system_notice("Connection to the HEX runtime was lost.");
+            if let AcpEvent::Disconnected { reason } = &event {
+                self.shell.feed.add_system_notice(format!(
+                    "Connection to the HEX runtime was lost ({reason}); reconnecting…"
+                ));
+                self.shell.handle_acp_event(event);
+                self.begin_supervision(cx);
+                cx.notify();
+                return;
             }
             self.shell.handle_acp_event(event);
             self.sync_transport_state();
@@ -451,7 +669,9 @@ impl ChatView {
     fn sync_transport_state(&mut self) {
         let running = self.active_turn_running();
         self.shell.composer.set_streaming(running);
-        self.shell.sidebar.provider_status.state = if !self.bridge.is_connected() {
+        self.shell.sidebar.provider_status.state = if self.supervisor_active {
+            ProviderState::Reconnecting
+        } else if !self.bridge.is_connected() {
             ProviderState::Offline
         } else if running {
             ProviderState::Generating
@@ -502,6 +722,45 @@ impl ChatView {
         cx.notify();
     }
 
+    /// Adopt a session restored from durable backend history (B28 / resume).
+    fn adopt_loaded_session(
+        &mut self,
+        load: PagedSessionLoad,
+        feed: MessageFeed,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_active_session();
+        let id = load.session_id.clone();
+        self.running_turns.remove(&id);
+        self.turn_assistants.remove(&id);
+        self.shell.feed = feed;
+        self.reset_editor(cx);
+        let title = self
+            .shell
+            .feed
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                MessageItem::User(u) => Some(u.content.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "Resumed Chat".to_string());
+        let title: String = title.chars().take(48).collect();
+        self.shell
+            .sidebar
+            .add_session(SessionItem::new(id.clone(), title).with_model(load.model.clone()));
+        self.shell.select_session(id);
+        self.current_model = load.model.clone();
+        self.model_id = Some(load.model.clone());
+        self.shell
+            .composer
+            .model_pill
+            .set_model(self.current_provider.clone(), load.model.clone());
+        self.shell.sidebar.provider_status.model_name = load.model;
+        self.sync_transport_state();
+        cx.notify();
+    }
+
     fn switch_session(&mut self, id: String, cx: &mut Context<Self>) {
         if self.shell.active_session_id.as_deref() == Some(id.as_str()) {
             return;
@@ -516,13 +775,48 @@ impl ChatView {
         {
             return;
         }
-        self.save_active_session();
-        let state = self.sessions.remove(&id).unwrap_or_default();
-        self.shell.feed = state.feed;
-        self.set_editor_content(state.draft, cx);
-        self.shell.select_session(id);
-        self.sync_transport_state();
-        cx.notify();
+        if let Some(state) = self.sessions.remove(&id) {
+            self.save_active_session();
+            self.shell.feed = state.feed;
+            self.set_editor_content(state.draft, cx);
+            self.shell.select_session(id);
+            self.sync_transport_state();
+            cx.notify();
+            return;
+        }
+        // Never hydrated in this process: resume from durable backend history.
+        if !self.bridge.is_connected() {
+            self.shell.feed.add_system_notice(
+                "Not connected to the HEX runtime — cannot resume that session.",
+            );
+            cx.notify();
+            return;
+        }
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        let sid = id.clone();
+        cx.spawn(async move |this, cx| {
+            let b = bridge.clone();
+            let loaded = rt.spawn(async move { b.load_session_paged(&sid).await }).await;
+            let restored = match loaded {
+                Ok(Ok(load)) => {
+                    let feed = build_restored_feed(&bridge, &rt, &load).await;
+                    Some((load, feed))
+                }
+                _ => None,
+            };
+            this.update(cx, |view, cx| match restored {
+                Some((load, feed)) => view.adopt_loaded_session(load, feed, cx),
+                None => {
+                    view.shell.feed.add_system_notice(format!(
+                        "Could not resume session {id}: durable history was unavailable."
+                    ));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
@@ -909,6 +1203,7 @@ impl ChatView {
         match action {
             PaletteAction::NewChat => self.request_new_chat(cx),
             PaletteAction::SelectSession(id) => self.switch_session(id, cx),
+            PaletteAction::SwitchModel => self.request_model_picker(cx),
             PaletteAction::ToggleSidebar => {
                 self.shell.toggle_sidebar();
                 cx.notify();
@@ -926,15 +1221,132 @@ impl ChatView {
         }
     }
 
+    /// B32: open the picker over the live backend catalog, never a hardcoded list.
+    fn request_model_picker(&mut self, cx: &mut Context<Self>) {
+        if !self.bridge.is_connected() {
+            self.shell.feed.add_system_notice(
+                "Not connected to the HEX runtime — cannot load the model catalog.",
+            );
+            cx.notify();
+            return;
+        }
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        let sid = self
+            .shell
+            .active_session_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        cx.spawn(async move |this, cx| {
+            let res = rt.spawn(async move { bridge.list_models(&sid).await }).await;
+            this.update(cx, |view, cx| {
+                match res {
+                    Ok(Ok(catalog)) => {
+                        if let Some(err) = &catalog.error {
+                            view.shell.feed.add_system_notice(format!(
+                                "Some providers could not be queried: {err}"
+                            ));
+                        }
+                        if catalog.models.is_empty() {
+                            view.shell
+                                .feed
+                                .add_system_notice("The backend reported no available models.");
+                        } else {
+                            let entries =
+                                catalog.models.iter().map(ModelEntry::from_catalog).collect();
+                            view.shell.open_model_picker(entries);
+                        }
+                    }
+                    Ok(Err(err)) => view
+                        .shell
+                        .feed
+                        .add_system_notice(format!("Could not load the model catalog: {err}")),
+                    Err(err) => view
+                        .shell
+                        .feed
+                        .add_system_notice(format!("Model catalog task aborted: {err}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// B32: apply a model choice only once the backend confirms the switch.
     fn apply_model_choice(&mut self, model_id: String, cx: &mut Context<Self>) {
-        self.model_id = Some(model_id.clone());
-        self.current_model = model_id.clone();
-        self.shell
-            .composer
-            .model_pill
-            .set_model(self.current_provider.clone(), model_id.clone());
-        self.shell.sidebar.provider_status.model_name = model_id;
-        cx.notify();
+        let Some(sid) = self.shell.active_session_id.clone() else {
+            self.shell
+                .feed
+                .add_system_notice("No active session — cannot switch model.");
+            cx.notify();
+            return;
+        };
+        if !self.bridge.is_connected() {
+            self.shell.feed.add_system_notice(
+                "Not connected to the HEX runtime — cannot switch model.",
+            );
+            cx.notify();
+            return;
+        }
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        let spawn_sid = sid.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move { bridge.set_session_model(&spawn_sid, &model_id).await })
+                .await;
+            this.update(cx, |view, cx| {
+                match res {
+                    Ok(Ok(resp)) if resp.is_error != Some(true) => {
+                        if let Some(confirmed) = resp.model {
+                            view.model_id = Some(confirmed.clone());
+                            view.current_model = confirmed.clone();
+                            if let Some(prov) = resp.provider {
+                                view.current_provider = prov;
+                            }
+                            view.shell.composer.model_pill.set_model(
+                                view.current_provider.clone(),
+                                confirmed.clone(),
+                            );
+                            view.shell.sidebar.provider_status.provider_name =
+                                view.current_provider.clone();
+                            view.shell.sidebar.provider_status.model_name = confirmed.clone();
+                            if let Some(item) = view
+                                .shell
+                                .sidebar
+                                .session_list
+                                .sessions
+                                .iter_mut()
+                                .find(|s| s.id == sid)
+                            {
+                                item.model_name = Some(confirmed);
+                            }
+                        } else {
+                            view.shell.feed.add_system_notice(format!(
+                                "Model switch was not confirmed: {}",
+                                resp.output
+                            ));
+                        }
+                    }
+                    Ok(Ok(resp)) => view
+                        .shell
+                        .feed
+                        .add_system_notice(format!("Model switch failed: {}", resp.output)),
+                    Ok(Err(err)) => view
+                        .shell
+                        .feed
+                        .add_system_notice(format!("Model switch failed: {err}")),
+                    Err(err) => view
+                        .shell
+                        .feed
+                        .add_system_notice(format!("Model switch task aborted: {err}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Route a key to the open modal. Returns true when the modal consumed it.
@@ -1530,8 +1942,7 @@ impl ChatView {
                                 div()
                                     .id("model_pill_button")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.shell.open_model_picker();
-                                        cx.notify();
+                                        this.request_model_picker(cx);
                                     }))
                                     .child(self.shell.composer.model_pill.render(theme)),
                             )

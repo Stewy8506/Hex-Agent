@@ -600,6 +600,8 @@ class ACPServer:
                 res = self._handle_session_cancel(params)
             elif method == "session/list":
                 res = self._handle_session_list(params)
+            elif method == "session/models":
+                res = self._handle_session_models(params)
             elif method == "tools/list":
                 res = self._handle_tools_list(params)
             elif method == "tools/call":
@@ -1175,6 +1177,68 @@ class ACPServer:
                         sess_list.append(summary(sess))
                     del sess
         return {"sessions": sess_list}
+
+    def _handle_session_models(self, params: dict[str, Any]) -> dict[str, Any]:
+        """B32: live model catalog from the configured providers, never a hardcoded list."""
+        from harness_core.providers.cloud_provider import fetch_available_models
+
+        sid = params.get("sessionId") or params.get("session_id", "default")
+        with self._lock:
+            sess = self.sessions.get(sid)
+        router = getattr(self.orchestrator, "router", None)
+        cp = getattr(router, "cloud_provider", None)
+
+        provider_type = "antigravity"
+        api_key: str | None = None
+        if cp is not None:
+            if getattr(cp, "provider_id", "") == "google_antigravity":
+                api_key = getattr(cp, "access_token", None)
+            elif hasattr(cp, "provider_type"):
+                pt = cp.provider_type
+                provider_type = str(getattr(pt, "value", pt)).lower()
+                api_key = getattr(cp, "api_key", None)
+        if provider_type not in ("antigravity", "anthropic", "openai", "gemini", "local"):
+            provider_type = (os.getenv("HEX_CLOUD_PROVIDER") or "antigravity").lower()
+        provider_label = getattr(cp, "provider_id", None) or provider_type
+
+        models: list[dict[str, Any]] = []
+        errors: list[str] = []
+        try:
+            for mid, disp in fetch_available_models(provider_type, api_key=api_key):
+                models.append({
+                    "id": mid, "displayName": disp,
+                    "provider": provider_label, "isLocal": False,
+                })
+        except Exception as exc:
+            errors.append(f"{provider_label}: {exc}")
+
+        if getattr(router, "local_model_id", None):
+            try:
+                for mid, disp in fetch_available_models("local"):
+                    models.append({
+                        "id": mid, "displayName": disp,
+                        "provider": "Local", "isLocal": True,
+                    })
+            except Exception as exc:
+                errors.append(f"local: {exc}")
+
+        if not models:
+            detail = "; ".join(errors) or (
+                "No cloud credentials and no local runtime models found "
+                "(Ollama / LM Studio / HuggingFace cache)."
+            )
+            raise ValueError(f"No models discovered from the configured providers. {detail}")
+
+        active = getattr(router, "cloud_model_id", None) or getattr(sess, "model", None) or ""
+        result: dict[str, Any] = {
+            "sessionId": sid,
+            "activeModel": active,
+            "provider": provider_label,
+            "models": models,
+        }
+        if errors:
+            result["error"] = "; ".join(errors)
+        return result
 
     def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
         from harness_core.gateway import ToolGateway

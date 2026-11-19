@@ -15,7 +15,7 @@ use hex_desktop::menu::{application_menus, init_menus};
 use hex_desktop::shortcuts::{desktop_keybindings, init_shortcuts};
 use hex_desktop::theme::HermesTheme;
 use hex_desktop::ui::modals::{
-    ActiveModal, CommandPaletteModal, ModelPickerModal, PaletteAction, ToolApprovalChoice,
+    ActiveModal, CommandPaletteModal, ModelEntry, ModelPickerModal, PaletteAction, ToolApprovalChoice,
 };
 use hex_desktop::ui::session_list::SessionItem;
 use hex_desktop::ui::shell::AppShell;
@@ -315,7 +315,14 @@ fn test_command_palette_fuzzy_search_and_actions() {
 
 #[test]
 fn test_model_picker_workflow() {
-    let mut picker = ModelPickerModal::new("claude-3-7-sonnet");
+    // B32: the picker is built from the live backend catalog, not a hardcoded list.
+    let catalog = vec![
+        ModelEntry::new("claude-3-7-sonnet", "Claude 3.7 Sonnet", "Anthropic", false),
+        ModelEntry::new("gpt-4o", "GPT-4o", "OpenAI", false),
+        ModelEntry::new("o3-mini", "o3-mini", "OpenAI", false),
+        ModelEntry::new("qwen2.5-coder-32b", "Qwen (Ollama)", "Local", true),
+    ];
+    let mut picker = ModelPickerModal::new("claude-3-7-sonnet", catalog);
     assert_eq!(picker.selected_model_id, "claude-3-7-sonnet");
 
     // Filter by provider ("openai")
@@ -331,12 +338,11 @@ fn test_model_picker_workflow() {
     assert_eq!(selected, "o3-mini");
     assert_eq!(picker.selected_model_id, "o3-mini");
 
-    // Verify context limits and local tags
+    // Local origin tag comes from the catalog entry
     picker.set_search("qwen");
     let local = picker.filtered_models();
     assert_eq!(local.len(), 1);
     assert!(local[0].is_local);
-    assert_eq!(local[0].context_limit, "32k");
 }
 
 #[gpui::test]

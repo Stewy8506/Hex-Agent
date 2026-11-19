@@ -38,6 +38,7 @@ pub enum PaletteAction {
     ClearHistory,
     ExportTranscript,
     CompactContext,
+    SwitchModel,
     OpenSettings,
     SwitchWorkspace,
     ToggleSidebar,
@@ -157,6 +158,10 @@ impl CommandPaletteModal {
         items.push(
             PaletteItem::new("act_compact", "Compact Context", PaletteCategory::Actions, "⚡", PaletteAction::CompactContext)
                 .with_subtitle("Trigger 4-phase context compaction and cache lock"),
+        );
+        items.push(
+            PaletteItem::new("act_model", "Switch Model", PaletteCategory::Actions, "🧠", PaletteAction::SwitchModel)
+                .with_subtitle("Pick the active model from the live backend catalog"),
         );
 
         // Navigation

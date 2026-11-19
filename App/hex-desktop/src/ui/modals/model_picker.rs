@@ -1,9 +1,9 @@
-//! Model picker modal overlay with provider grouping, context length badges, and instant search.
+//! Model picker modal overlay backed by the live backend catalog (B32).
 //!
-//! Conforms to Hermes Desktop model selection paradigms:
-//! - Searchable catalog of models grouped by provider: Anthropic, OpenAI, Local MLX/Ollama, OpenRouter
-//! - Context limit pill badges (128k, 200k, 32k)
-//! - Latency and capability tier tags (Reasoning, Fast, Flagship, Local)
+//! Entries come from `session/models` — the models the configured providers
+//! actually serve. No hardcoded catalog, no invented context limits or tiers:
+//! - Searchable list grouped by provider
+//! - Honest Local / Cloud origin tag per entry
 //! - Selection checkmark and keyboard navigation (Up, Down, Enter, Esc)
 
 use gpui::prelude::FluentBuilder;
@@ -19,8 +19,6 @@ pub struct ModelEntry {
     pub id: String,
     pub display_name: String,
     pub provider: String,
-    pub context_limit: String,
-    pub tier_badge: String,
     pub is_local: bool,
 }
 
@@ -29,18 +27,18 @@ impl ModelEntry {
         id: impl Into<String>,
         display_name: impl Into<String>,
         provider: impl Into<String>,
-        context_limit: impl Into<String>,
-        tier_badge: impl Into<String>,
         is_local: bool,
     ) -> Self {
         Self {
             id: id.into(),
             display_name: display_name.into(),
             provider: provider.into(),
-            context_limit: context_limit.into(),
-            tier_badge: tier_badge.into(),
             is_local,
         }
+    }
+
+    pub fn from_catalog(m: &hex_protocol::models::CatalogModel) -> Self {
+        Self::new(m.id.clone(), m.display_name.clone(), m.provider.clone(), m.is_local)
     }
 
     /// Check if model matches a search query.
@@ -53,7 +51,6 @@ impl ModelEntry {
         self.id.to_lowercase().contains(&q)
             || self.display_name.to_lowercase().contains(&q)
             || self.provider.to_lowercase().contains(&q)
-            || self.tier_badge.to_lowercase().contains(&q)
     }
 }
 
@@ -66,86 +63,18 @@ pub struct ModelPickerModal {
     pub search_query: String,
 }
 
-impl Default for ModelPickerModal {
-    fn default() -> Self {
-        Self::new("claude-3-7-sonnet")
-    }
-}
-
 impl ModelPickerModal {
-    /// Create a new model picker with standard curated models catalog.
-    pub fn new(current_model: impl Into<String>) -> Self {
+    /// Create a picker over the live backend catalog, highlighting the active model.
+    pub fn new(current_model: impl Into<String>, models: Vec<ModelEntry>) -> Self {
         let selected_model_id = current_model.into();
-        let mut models = Vec::new();
-
-        // Anthropic
-        models.push(ModelEntry::new(
-            "claude-3-7-sonnet",
-            "Claude 3.7 Sonnet",
-            "Anthropic",
-            "200k",
-            "Hybrid Reasoning",
-            false,
-        ));
-        models.push(ModelEntry::new(
-            "claude-3-5-haiku",
-            "Claude 3.5 Haiku",
-            "Anthropic",
-            "200k",
-            "Ultra-Fast",
-            false,
-        ));
-
-        // OpenAI
-        models.push(ModelEntry::new(
-            "gpt-4o",
-            "GPT-4o",
-            "OpenAI",
-            "128k",
-            "Flagship Multimodal",
-            false,
-        ));
-        models.push(ModelEntry::new(
-            "o3-mini",
-            "o3-mini",
-            "OpenAI",
-            "200k",
-            "Reasoning High",
-            false,
-        ));
-
-        // Local MLX / Ollama
-        models.push(ModelEntry::new(
-            "qwen2.5-coder-32b",
-            "Qwen 2.5 Coder 32B",
-            "Local MLX / Ollama",
-            "32k",
-            "Local 0ms Metal",
-            true,
-        ));
-        models.push(ModelEntry::new(
-            "llama-3.3-70b",
-            "Llama 3.3 70B",
-            "Local MLX / Ollama",
-            "128k",
-            "Local High Capacity",
-            true,
-        ));
-
-        // OpenRouter
-        models.push(ModelEntry::new(
-            "deepseek-r1",
-            "DeepSeek R1",
-            "OpenRouter",
-            "64k",
-            "Open Reasoning",
-            false,
-        ));
-
+        let highlighted_index = models
+            .iter()
+            .position(|m| m.id == selected_model_id)
+            .unwrap_or(0);
         Self {
             models,
             selected_model_id,
-            highlighted_index: 0,
+            highlighted_index,
             search_query: String::new(),
         }
     }
@@ -382,7 +311,7 @@ impl ModelPickerModal {
                                             .items_center()
                                             .gap_2()
                                             .child(
-                                                // Tier badge
+                                                // Honest origin tag: where the model actually runs
                                                 div()
                                                     .px_1p5()
                                                     .py_0p5()
@@ -398,19 +327,7 @@ impl ModelPickerModal {
                                                     } else {
                                                         theme.text_dim()
                                                     })
-                                                    .child(model.tier_badge.clone()),
-                                            )
-                                            .child(
-                                                // Context limit badge
-                                                div()
-                                                    .px_1p5()
-                                                    .py_0p5()
-                                                    .rounded(px(3.0))
-                                                    .bg(theme.border_subtle())
-                                                    .font_family(theme.typography.font_mono[0].clone())
-                                                    .text_size(px(10.0))
-                                                    .text_color(theme.text_dim())
-                                                    .child(model.context_limit.clone()),
+                                                    .child(if model.is_local { "Local" } else { "Cloud" }),
                                             )
                                             .child(
                                                 // Selection checkmark
@@ -438,16 +355,25 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
 
+    fn catalog() -> Vec<ModelEntry> {
+        vec![
+            ModelEntry::new("gpt-4o", "GPT-4o", "OpenAI", false),
+            ModelEntry::new("o3-mini", "o3-mini", "OpenAI", false),
+            ModelEntry::new("qwen2.5-coder-32b", "Qwen (Ollama)", "Local", true),
+        ]
+    }
+
     #[test]
-    fn test_model_picker_initialization_and_filtering() {
-        let mut picker = ModelPickerModal::new("claude-3-7-sonnet");
-        assert_eq!(picker.selected_model_id, "claude-3-7-sonnet");
-        assert!(picker.models.len() >= 5);
+    fn test_model_picker_uses_backend_catalog_and_filtering() {
+        let mut picker = ModelPickerModal::new("gpt-4o", catalog());
+        assert_eq!(picker.selected_model_id, "gpt-4o");
+        assert_eq!(picker.highlighted_index, 0);
+        assert_eq!(picker.models.len(), 3);
 
         // Filter for local
         picker.set_search("local");
         let filtered = picker.filtered_models();
-        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered.len(), 1);
         assert!(filtered.iter().all(|m| m.is_local));
 
         // Filter for gpt
@@ -459,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_model_picker_selection_and_shortcuts() {
-        let mut picker = ModelPickerModal::new("claude-3-7-sonnet");
+        let mut picker = ModelPickerModal::new("gpt-4o", catalog());
         picker.set_search("");
 
         // Move down
@@ -468,7 +394,21 @@ mod tests {
 
         // Enter to select
         let selected = picker.handle_key("enter");
-        assert_eq!(selected, Some("claude-3-5-haiku".to_string()));
-        assert_eq!(picker.selected_model_id, "claude-3-5-haiku");
+        assert_eq!(selected, Some("o3-mini".to_string()));
+        assert_eq!(picker.selected_model_id, "o3-mini");
+    }
+
+    #[test]
+    fn test_model_picker_highlights_active_model_wherever_it_sits() {
+        let picker = ModelPickerModal::new("qwen2.5-coder-32b", catalog());
+        assert_eq!(picker.highlighted_index, 2);
+        assert_eq!(picker.highlighted_model().unwrap().id, "qwen2.5-coder-32b");
+    }
+
+    #[test]
+    fn test_model_picker_empty_catalog_selects_nothing() {
+        let mut picker = ModelPickerModal::new("gpt-4o", Vec::new());
+        assert_eq!(picker.handle_key("enter"), None);
+        assert_eq!(picker.selected_model_id, "gpt-4o");
     }
 }
