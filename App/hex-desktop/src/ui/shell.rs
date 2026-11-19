@@ -103,10 +103,10 @@ impl AppShell {
         self.push_modal(ActiveModal::Palette(palette));
     }
 
-    /// Open Model Picker.
-    pub fn open_model_picker(&mut self) {
+    /// Open Model Picker over the live backend catalog (B32).
+    pub fn open_model_picker(&mut self, models: Vec<crate::ui::modals::ModelEntry>) {
         let current_model = self.composer.model_pill.model_name.clone();
-        self.push_modal(ActiveModal::ModelPicker(ModelPickerModal::new(current_model)));
+        self.push_modal(ActiveModal::ModelPicker(ModelPickerModal::new(current_model, models)));
     }
 
     /// Open Tool Approval modal.
@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(shell.active_modal, ActiveModal::None);
 
         // Open Model Picker
-        shell.open_model_picker();
+        shell.open_model_picker(vec![crate::ui::modals::ModelEntry::new("gpt-4o", "GPT-4o", "OpenAI", false)]);
         assert!(matches!(shell.active_modal, ActiveModal::ModelPicker(_)));
 
         shell.dismiss_modal();
@@ -500,7 +500,7 @@ mod tests {
         shell.open_approval(ToolApprovalModal::new("appr_1", "bash", "cargo build", "R3"));
 
         shell.open_command_palette();
-        shell.open_model_picker();
+        shell.open_model_picker(vec![crate::ui::modals::ModelEntry::new("gpt-4o", "GPT-4o", "OpenAI", false)]);
         assert!(matches!(shell.active_modal, ActiveModal::Approval(_)));
         assert_eq!(shell.modal_queue.len(), 2);
 

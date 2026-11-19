@@ -25,6 +25,8 @@ pub enum ProviderState {
     Generating,
     /// Connection severed, rate limited, or error state (Red dot #c98b8b).
     Offline,
+    /// Transport lost; supervised reconnect with backoff is in progress.
+    Reconnecting,
 }
 
 impl ProviderState {
@@ -33,6 +35,7 @@ impl ProviderState {
             ProviderState::Connected => theme.sage_fg(),
             ProviderState::Generating => theme.warning_amber(),
             ProviderState::Offline => theme.rose_fg(),
+            ProviderState::Reconnecting => theme.warning_amber(),
         }
     }
 
@@ -41,6 +44,7 @@ impl ProviderState {
             ProviderState::Connected => "Connected",
             ProviderState::Generating => "Generating",
             ProviderState::Offline => "Offline",
+            ProviderState::Reconnecting => "Reconnecting",
         }
     }
 }

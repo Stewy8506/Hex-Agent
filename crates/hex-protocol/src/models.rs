@@ -542,6 +542,29 @@ pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
 }
 
+/// One model in the live backend catalog (`session/models`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogModel {
+    pub id: String,
+    pub display_name: String,
+    pub provider: String,
+    pub is_local: bool,
+}
+
+/// Result returned from `session/models`: live discovery, never a hardcoded list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalog {
+    pub session_id: String,
+    pub active_model: String,
+    pub provider: String,
+    pub models: Vec<CatalogModel>,
+    /// Partial discovery failure: some providers could not be queried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Tool definition in `tools/list`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
