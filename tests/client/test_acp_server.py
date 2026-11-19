@@ -66,6 +66,34 @@ class TestACPServer(unittest.TestCase):
         self.assertTrue(res["capabilities"]["session"]["streaming"])
         self.assertTrue(res["capabilities"]["session"]["cancel"])
 
+    def test_acp_initialize_labels_private_dialect(self) -> None:
+        """3.7: initialize honestly labels the private dialect (no certified
+        standard-ACP claim) while staying wire-compatible with the HEX client."""
+        resp = self.server.handle_request({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {},
+        })
+        res = resp["result"]
+        self.assertEqual(res["protocolDialect"], "hex-private-acp/1")
+        self.assertEqual(res["protocolVersion"], "2024-11-05")
+        self.assertEqual(res["serverInfo"]["name"], "HEX")
+        desc = res["serverInfo"]["description"].lower()
+        self.assertIn("private", desc)
+        self.assertIn("not a certified", desc)
+
+    def test_acp_unknown_method_error_is_actionable(self) -> None:
+        """3.7: an unknown method lists supported methods so a client can
+        recover, and identifies the private dialect."""
+        resp = self.server.handle_request({
+            "jsonrpc": "2.0", "id": 9, "method": "session/bogus", "params": {},
+        })
+        self.assertEqual(resp["error"]["code"], -32601)
+        msg = resp["error"]["message"]
+        self.assertIn("session/bogus", msg)
+        self.assertIn("Supported methods:", msg)
+        self.assertIn("initialize", msg)
+        self.assertIn("session/prompt", msg)
+        self.assertIn("hex-private-acp/1", msg)
+
     def test_acp_session_new_load_and_list(self) -> None:
         """Verify creating, inspecting, loading, and listing ACP sessions."""
         # 1. session/new

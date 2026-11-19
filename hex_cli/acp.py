@@ -1,15 +1,21 @@
-"""Agent Client Protocol (ACP) Server for HEX Agent.
+"""HEX private ACP-style JSON-RPC 2.0 stdio server.
 
-Implements the ACP JSON-RPC 2.0 protocol over stdio for IDE integration with Zed, Neovim, VSCode, and Cursor.
-Standardized methods:
-- initialize
-- session/new
-- session/load
-- session/prompt
-- session/cancel
-- session/list
-- tools/list
-- tools/call
+This is HEX's *internal* Agent Client Protocol dialect, spoken by HEX's own Rust
+desktop/TUI clients. It is NOT a certified implementation of the standard Agent
+Client Protocol: it uses an MCP-style ``protocolVersion`` string, custom
+approval/update payloads, and does not expose the standard
+authenticate/permission/fs/terminal/mode surfaces. Compatibility with standard
+ACP editors (Zed, VSCode, Neovim, Cursor) is unverified — the matching HEX Rust
+client is not proof of third-party editor interop. The ``initialize`` result
+advertises ``protocolDialect`` so a client can detect this explicitly.
+
+Dispatched methods:
+- initialize, ping
+- session/new, session/load, session/list, session/models
+- session/prompt, session/cancel, session/command
+- session/history, session/historyContent, session/toolResult, session/subagents
+- session/approvalDecision
+- tools/list, tools/call
 """
 
 from __future__ import annotations
@@ -459,8 +465,18 @@ class ACPSession:
         return {str(turn["task_id"]) for turn in self.history if turn.get("task_id")}
 
 
+_SUPPORTED_METHODS = (
+    "initialize", "ping",
+    "session/new", "session/load", "session/list", "session/models",
+    "session/prompt", "session/cancel", "session/command",
+    "session/history", "session/historyContent", "session/toolResult",
+    "session/subagents", "session/approvalDecision",
+    "tools/list", "tools/call",
+)
+
+
 class ACPServer:
-    """Agent Client Protocol (ACP) JSON-RPC 2.0 stdio server."""
+    """HEX private ACP-style JSON-RPC 2.0 stdio server (not certified standard ACP)."""
 
     def __init__(
         self,
@@ -657,7 +673,14 @@ class ACPServer:
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
-                    "error": {"code": -32601, "message": f"Method not found: {method}"},
+                    "error": {
+                        "code": -32601,
+                        "message": (
+                            f"Method not found: {method}. This is HEX's private "
+                            "ACP dialect (hex-private-acp/1). Supported methods: "
+                            + ", ".join(_SUPPORTED_METHODS)
+                        ),
+                    },
                 }
 
             return {
@@ -682,6 +705,7 @@ class ACPServer:
     def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         return {
             "protocolVersion": "2024-11-05",
+            "protocolDialect": "hex-private-acp/1",
             "capabilities": {
                 "session": {
                     "streaming": True,
@@ -697,6 +721,11 @@ class ACPServer:
             "serverInfo": {
                 "name": "HEX",
                 "version": __version__,
+                "description": (
+                    "HEX internal ACP-style dialect (hex-private-acp/1); not a "
+                    "certified standard Agent Client Protocol implementation. "
+                    "Zed/VSCode/Neovim/Cursor interop is unverified."
+                ),
             },
         }
 

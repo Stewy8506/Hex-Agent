@@ -547,9 +547,9 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_grph_tree.add_argument("--workspace", default=None, help="Workspace directory")
     p_grph_tree.add_argument("--json", action="store_true", help="Output JSON")
 
-    p_acp = sub.add_parser("acp", help="Start Agent Client Protocol (ACP) stdio JSON-RPC server for Zed, Neovim & VSCode")
+    p_acp = sub.add_parser("acp", help="Start HEX's private ACP-style stdio JSON-RPC server (internal dialect; standard Zed/VSCode ACP interop not certified)")
     p_acp.add_argument("--check", action="store_true", help="Validate ACP runtime readiness and environment health")
-    p_acp.add_argument("--setup", action="store_true", help="Print editor configuration snippets for Zed (.zed/settings.json) and Neovim")
+    p_acp.add_argument("--setup", action="store_true", help="Print experimental editor snippets for HEX's private dialect (Zed/Neovim compatibility unverified)")
     p_acp.add_argument("--workspace", default=None, help="Root workspace directory path")
 
     p_ps = sub.add_parser("ps", help="List and manage background processes managed by ProcessRegistry")
@@ -767,7 +767,8 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
             print("  ✓ Python Runtime:    OK")
             print("  ✓ Stdio Transport:   Ready")
             print(f"  ✓ Workspace Root:    {ws}")
-            print("  ✓ Compatible with:   Zed, Neovim (avante.nvim/codecompanion), VSCode\n")
+            print("  ℹ Protocol:          HEX private ACP dialect (hex-private-acp/1)")
+            print("  ⚠ Standard ACP editors (Zed/VSCode/Neovim/Cursor): interop not certified\n")
             return 0
 
         if getattr(args, "setup", False):
@@ -779,9 +780,12 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
                     "protocol": "acp",
                 }
             }
-            print("\n⚙️  HEX Editor Integration Snippets")
+            print("\n⚙️  HEX Editor Integration Snippets (experimental)")
             print("=" * 60)
-            print("Add to your Zed editor configuration (.zed/settings.json):")
+            print("NOTE: HEX speaks a private ACP dialect, not certified standard")
+            print("ACP. These snippets are unverified against Zed/Neovim/VSCode and")
+            print("may not work without a standard-ACP adapter.")
+            print("\nAdd to your Zed editor configuration (.zed/settings.json):")
             print(json.dumps(zed_config, indent=2))
             print("\nFor Neovim (avante.nvim / codecompanion):")
             print('  provider = "acp",')
