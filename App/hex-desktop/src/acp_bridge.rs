@@ -182,9 +182,20 @@ impl AcpBridge {
 
     /// Connect to local ACP Unix domain socket (e.g. `/tmp/hex-acp.sock`).
     pub async fn connect_socket(&self, socket_path: &Path) -> Result<(), AcpError> {
-        let stream = tokio::net::UnixStream::connect(socket_path).await?;
-        let (reader, writer) = stream.into_split();
-        self.connect_streams(reader, writer).await
+        #[cfg(unix)]
+        {
+            let stream = tokio::net::UnixStream::connect(socket_path).await?;
+            let (reader, writer) = stream.into_split();
+            self.connect_streams(reader, writer).await
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = socket_path;
+            Err(AcpError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Unix domain sockets are not available on this platform",
+            )))
+        }
     }
 
     /// Spawn the Python backend ACP server via stdio (`python -m harness_core.client.cli acp`).
@@ -207,10 +218,13 @@ impl AcpBridge {
     /// Automatically connect: tries Unix domain socket `/tmp/hex-acp.sock` first,
     /// falling back to spawning the ACP child process if unavailable.
     pub async fn connect_auto(&self) -> Result<(), AcpError> {
-        let sock = Path::new("/tmp/hex-acp.sock");
-        if sock.exists() {
-            if let Ok(()) = self.connect_socket(sock).await {
-                return Ok(());
+        #[cfg(unix)]
+        {
+            let sock = Path::new("/tmp/hex-acp.sock");
+            if sock.exists() {
+                if let Ok(()) = self.connect_socket(sock).await {
+                    return Ok(());
+                }
             }
         }
         self.connect_server().await
