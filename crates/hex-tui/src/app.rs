@@ -475,26 +475,17 @@ pub fn load_tool_result_page(
     if offset >= i64::MAX as usize {
         return Err("Invalid tool result offset".to_string());
     }
-    let db = workspace.join(".hex/data/ledger.db");
-    if !db.is_file() {
-        return Err("No stored ledger in this workspace".to_string());
-    }
-    let sql = format!(
-        "SELECT substr(result_json, {}, 4096) AS content, length(result_json) AS totalChars FROM tool_calls WHERE task_id = '{task_id}' AND call_id = '{call_id}' AND result_json IS NOT NULL;",
-        offset.saturating_add(1)
-    );
-    let output = get_sqlite_command()
-        .args([db.to_str().ok_or("Invalid workspace path")?, "-json", &sql])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err("Could not read stored tool result".to_string());
-    }
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-    let row = rows.first().ok_or("Tool result not found in this task")?;
-    let content = row["content"].as_str().unwrap_or("").to_string();
-    let total_chars = row["totalChars"].as_u64().unwrap_or(0) as usize;
+    use rusqlite::OptionalExtension;
+    let conn = open_ledger(workspace, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?
+        .ok_or("No stored ledger in this workspace")?;
+    let row = conn.query_row(
+        "SELECT substr(result_json, ?3, 4096), length(result_json) FROM tool_calls WHERE task_id = ?1 AND call_id = ?2 AND result_json IS NOT NULL;",
+        rusqlite::params![task_id, call_id, offset as i64 + 1],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+    ).optional().map_err(|e| format!("Could not read stored tool result: {e}"))?
+        .ok_or("Tool result not found in this task")?;
+    let (content, total_chars) = row;
+    let total_chars = usize::try_from(total_chars).map_err(|_| "Invalid stored tool result length")?;
     let next = offset.saturating_add(content.chars().count());
     Ok(hex_protocol::models::ToolResultPage {
         content,
@@ -515,8 +506,8 @@ pub struct App {
     pub git_branch: String,
     pub git_sha: String,
     pub workspace_path: String,
-    pub tools_count: usize,
-    pub skills_count: usize,
+    pub tools_count: Option<usize>,
+    pub skills_count: Option<usize>,
     pub splash_text: Option<String>,
     pub fencing_token: u64,
     pub connection_status: String,
@@ -534,7 +525,15 @@ pub struct App {
     pub busy_started_at: Option<std::time::Instant>,
     pub status_message: String,
     pub active_turn_has_streamed: bool,
+    pub active_prompt_id: Option<u64>,
+    pub active_assistant_index: Option<usize>,
+    pub final_response_started: bool,
+    pub pending_resume: Option<u64>,
+    pub requested_resume: Option<String>,
     pub cancel_requested: bool,
+    pub control_request_id: u64,
+    pub pending_cancel: Option<u64>,
+    pub pending_command: Option<u64>,
 
     // Dialogue items and scrolling
     pub dialogue_items: Vec<DialogueItem>,
@@ -598,6 +597,10 @@ pub struct App {
 
     // Approval interrupt modal
     pub active_approval: Option<ApprovalRequest>,
+    pub approval_generation: u64,
+    pub approval_pending: bool,
+    pub approval_error: Option<String>,
+    pub approval_can_allow: std::cell::Cell<bool>,
 
     // Inline diagnostic failure card
     pub active_diagnostic: Option<DiagnosticFailure>,
@@ -839,55 +842,56 @@ pub fn fmt_relative_time(created_at_str: &str) -> String {
     }
 }
 
-pub fn get_sqlite_command() -> std::process::Command {
-    // Prefer native system binaries with complete FTS5 extension support over stripped SDK binaries
-    for candidate in &["/usr/bin/sqlite3", "/opt/homebrew/bin/sqlite3", "/usr/local/bin/sqlite3"] {
-        if std::path::Path::new(candidate).exists() {
-            return std::process::Command::new(candidate);
-        }
+fn open_ledger(
+    dir: &std::path::Path,
+    flags: rusqlite::OpenFlags,
+) -> Result<Option<rusqlite::Connection>, String> {
+    let db_path = dir.join(".hex/data/ledger.db");
+    match std::fs::metadata(&db_path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Err(format!("Could not open ledger {}: not a file", db_path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Could not open ledger {}: {e}", db_path.display())),
     }
-    std::process::Command::new("sqlite3")
+    // Excluding CREATE also protects against the ledger disappearing after metadata lookup.
+    rusqlite::Connection::open_with_flags(&db_path, flags)
+        .map(Some)
+        .map_err(|e| format!("Could not open ledger {}: {e}", db_path.display()))
 }
 
-pub fn load_real_resume_sessions(dir: &std::path::Path) -> Vec<ResumeSession> {
-    let db_path = dir.join(".hex").join("data").join("ledger.db");
-    if !db_path.exists() {
-        return Vec::new();
-    }
+fn ledger_has_table(conn: &rusqlite::Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?1)",
+        [name],
+        |row| row.get(0),
+    )
+}
 
-    let mut cmd = get_sqlite_command();
-    let output = cmd
-        .args([
-            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
-            "-separator",
-            "\u{1f}",
-            "SELECT task_id, replace(replace(replace(goal, char(10), ' '), char(13), ' '), char(31), ' '), created_at FROM tasks ORDER BY created_at DESC;",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default();
-
-    let mut sessions = Vec::new();
-    for line in output.lines() {
-        let parts: Vec<&str> = line.split('\u{1f}').collect();
-        if parts.len() == 3 {
-            let session_id = parts[0].trim().to_string();
-            let title = parts[1].trim().to_string();
-            let created_at = parts[2].trim();
-            let relative_time = fmt_relative_time(created_at);
+pub fn load_real_resume_sessions(dir: &std::path::Path) -> Result<Vec<ResumeSession>, String> {
+    let Some(conn) = open_ledger(dir, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)? else {
+        return Ok(Vec::new());
+    };
+    let read = || -> rusqlite::Result<Vec<ResumeSession>> {
+        let mut stmt = conn.prepare("SELECT task_id, goal, created_at FROM tasks ORDER BY created_at DESC;")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(2)?.unwrap_or_default()))
+        })?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            let (session_id, goal, created_at) = row?;
+            let title = goal.replace(['\n', '\r', '\u{1f}'], " ").trim().to_string();
             if !title.is_empty() {
                 sessions.push(ResumeSession {
                     title,
-                    relative_time,
-                    session_id,
+                    relative_time: fmt_relative_time(created_at.trim()),
+                    session_id: session_id.trim().to_string(),
                 });
             }
         }
-    }
-    sessions
+        Ok(sessions)
+    };
+    read().map_err(|e| format!("Could not load resume history: {e}"))
 }
 
 pub(crate) fn ellipsize(text: &str, max: usize) -> String {
@@ -899,270 +903,166 @@ pub(crate) fn ellipsize(text: &str, max: usize) -> String {
 }
 
 pub fn delete_session_from_db(dir: &std::path::Path, task_id: &str) -> bool {
-    let db_path = dir.join(".hex").join("data").join("ledger.db");
-    if !db_path.exists() {
+    let Ok(Some(mut conn)) = open_ledger(dir, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE) else {
         return false;
-    }
-
-    let clean_id = task_id.replace('\'', "''");
-    let path_arg = db_path.to_str().unwrap_or(".hex/data/ledger.db");
-    let run_sql = |sql: &str| -> String {
-        let mut cmd = get_sqlite_command();
-        cmd.args([path_arg, sql])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .unwrap_or_default()
-            .trim()
-            .to_string()
     };
-
-    let count_sql = format!("SELECT COUNT(*) FROM tasks WHERE task_id = '{clean_id}';");
-    // Nothing to delete is not a successful deletion.
-    if run_sql(&count_sql) != "1" {
-        return false;
-    }
-
-    // A statement naming an absent table aborts the whole sqlite3 batch, so only
-    // reference tables this ledger actually has (older ledgers lack newer ones).
-    let present = run_sql("SELECT name FROM sqlite_master WHERE type IN ('table', 'view');");
-    let has = |name: &str| present.lines().any(|l| l.trim() == name);
-
-    let scoped = [
-        "dialogue_turns",
-        "tool_calls",
-        "task_events",
-        "attempts",
-        "plans",
-        "checkpoints",
-        "approvals",
-        "artifacts",
-        "proof_bundles",
-        "leases",
-        "approval_leases",
-        "task_search_fts",
-        "tasks",
-    ];
-
-    let mut batch = String::from("BEGIN IMMEDIATE; ");
-    for table in scoped.iter().filter(|t| has(t)) {
-        batch.push_str(&format!(
-            "DELETE FROM {table} WHERE task_id = '{clean_id}'; "
-        ));
-    }
-    batch.push_str("COMMIT;");
-    run_sql(&batch);
-
-    // Only claim success when the task row is actually gone.
-    run_sql(&count_sql) == "0"
+    let mut delete = || -> rusqlite::Result<bool> {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let count_sql = "SELECT COUNT(*) FROM tasks WHERE task_id = ?1;";
+        if tx.query_row(count_sql, [task_id], |row| row.get::<_, i64>(0))? != 1 {
+            return Ok(false);
+        }
+        let scoped = [
+            "dialogue_turns",
+            "tool_calls",
+            "task_events",
+            "attempts",
+            "plans",
+            "checkpoints",
+            "approvals",
+            "artifacts",
+            "proof_bundles",
+            "leases",
+            "approval_leases",
+            "task_search_fts",
+            "tasks",
+        ];
+        for table in scoped {
+            if ledger_has_table(&tx, table)? {
+                tx.execute(&format!("DELETE FROM {table} WHERE task_id = ?1;"), [task_id])?;
+                // Ignored deletions must roll back instead of leaving orphaned task rows.
+                if tx.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE task_id = ?1;"),
+                    [task_id], |row| row.get::<_, i64>(0))? != 0 {
+                    return Ok(false);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(true)
+    };
+    delete().unwrap_or(false)
 }
 
-pub fn load_session_dialogue_from_db(dir: &std::path::Path, task_id: &str) -> Vec<DialogueItem> {
-    let db_path = dir.join(".hex").join("data").join("ledger.db");
-    if !db_path.exists() {
-        return Vec::new();
-    }
-
-    let mut items = Vec::new();
-    let clean_id = task_id.replace('\'', "''");
-
-    // 1. Fetch user goal from tasks table
-    let task_sql = format!(
-        "SELECT goal, created_at FROM tasks WHERE task_id = '{}';",
-        clean_id
-    );
-    let mut cmd_task = get_sqlite_command();
-    let task_out = cmd_task
-        .args([
-            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
-            "-json",
-            &task_sql,
-        ])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default();
-
-    let mut task_goal = String::new();
-    let mut task_time = String::new();
-    if let Ok(records) = serde_json::from_str::<Vec<serde_json::Value>>(&task_out) {
-        if let Some(first) = records.first() {
-            task_goal = first.get("goal").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            task_time = first.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        }
-    }
-
-    if !task_goal.is_empty() {
-        items.push(DialogueItem::Message(MessageItem {
-            role: Role::User,
-            content: task_goal,
-            timestamp: fmt_relative_time(&task_time),
-        }));
-    }
-
-    // 2. Fetch tool calls
-    let tc_sql = format!(
-        "SELECT call_id, tool_id, substr(arguments_redacted_json, 1, 1000) AS arguments_redacted_json, substr(result_json, 1, CASE WHEN status = 'FAILED' THEN 4000 ELSE 300 END) AS result_json, length(result_json) > CASE WHEN status = 'FAILED' THEN 4000 ELSE 300 END AS result_truncated, status FROM tool_calls WHERE task_id = '{}' ORDER BY started_at;",
-        clean_id
-    );
-    let mut cmd_tc = get_sqlite_command();
-    let tc_out = cmd_tc
-        .args([
-            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
-            "-json",
-            &tc_sql,
-        ])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default();
-
-    if let Ok(tc_records) = serde_json::from_str::<Vec<serde_json::Value>>(&tc_out) {
-        for r in tc_records {
-            let id = r.get("call_id").and_then(|v| v.as_str()).unwrap_or("tc").to_string();
-            let tool = r.get("tool_id").and_then(|v| v.as_str()).unwrap_or("tool").to_string();
-            let args_raw = r.get("arguments_redacted_json").and_then(|v| v.as_str()).unwrap_or("{}");
-            let res_raw = r.get("result_json").and_then(|v| v.as_str()).unwrap_or("");
-            let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("COMPLETED");
-
-            let args_display = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(args_raw) {
-                if let Some(p) = parsed.get("path").and_then(|v| v.as_str()) {
-                    p.to_string()
-                } else if let Some(c) = parsed.get("command").and_then(|v| v.as_str()) {
-                    c.to_string()
-                } else {
-                    args_raw.to_string()
-                }
-            } else {
-                args_raw.to_string()
-            };
-
-            items.push(DialogueItem::ToolCall(ToolCallItem {
-                id: id.clone(),
-                tool,
-                args: args_display,
-                result: if res_raw.is_empty() { None } else if r["result_truncated"].as_i64() == Some(1) {
-                    Some(format!("{res_raw}… [full result: /tool-result {id}]"))
-                } else { Some(res_raw.to_string()) },
-                duration_ms: Some(120),
-                exit_status: Some(format!("exit {}", if status == "FAILED" { "1" } else { "0" })),
-                collapsed: true,
-                started_at: None,
-            }));
-        }
-    }
-
-    // 3. Fetch assistant output from task_events
-    let ev_sql = format!(
-        "SELECT event_type, payload_json, occurred_at FROM task_events WHERE task_id = '{}' AND event_type IN ('STATE_SUCCEEDED', 'STATE_FAILED') ORDER BY sequence_no DESC LIMIT 1;",
-        clean_id
-    );
-    let mut cmd_ev = get_sqlite_command();
-    let ev_out = cmd_ev
-        .args([
-            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
-            "-json",
-            &ev_sql,
-        ])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default();
-
-    if let Ok(ev_records) = serde_json::from_str::<Vec<serde_json::Value>>(&ev_out) {
-        if let Some(ev) = ev_records.first() {
-            let ev_type = ev.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
-            let payload_str = ev.get("payload_json").and_then(|v| v.as_str()).unwrap_or("{}");
-            let occurred_at = ev.get("occurred_at").and_then(|v| v.as_str()).unwrap_or("");
-
-            let mut assistant_text = String::new();
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload_str) {
-                if let Some(r) = parsed.get("result").and_then(|v| v.as_str()) {
-                    assistant_text = r.to_string();
-                } else if let Some(e) = parsed.get("error").and_then(|v| v.as_str()) {
-                    assistant_text = format!("Error: {}", e);
-                }
+pub fn load_session_dialogue_from_db(dir: &std::path::Path, task_id: &str) -> Result<Vec<DialogueItem>, String> {
+    use rusqlite::OptionalExtension;
+    let Some(conn) = open_ledger(dir, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)? else {
+        return Ok(Vec::new());
+    };
+    let read = || -> rusqlite::Result<Vec<DialogueItem>> {
+        let mut items = Vec::new();
+        let task = conn.query_row(
+            "SELECT goal, created_at FROM tasks WHERE task_id = ?1;",
+            [task_id],
+            |row| Ok((row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(1)?.unwrap_or_default())),
+        ).optional()?;
+        if let Some((goal, created_at)) = task {
+            if !goal.is_empty() {
+                items.push(DialogueItem::Message(MessageItem {
+                    role: Role::User,
+                    content: goal,
+                    timestamp: fmt_relative_time(&created_at),
+                }));
             }
-
-            if assistant_text.is_empty() {
-                assistant_text = if ev_type == "STATE_SUCCEEDED" {
-                    "Task execution completed successfully.".to_string()
-                } else {
-                    "Task execution ended with an error.".to_string()
-                };
-            }
-
-            items.push(DialogueItem::Message(MessageItem {
-                role: Role::Assistant,
-                content: assistant_text,
-                timestamp: fmt_relative_time(occurred_at),
-            }));
         }
-    }
-
-    items
+        if ledger_has_table(&conn, "tool_calls")? {
+            let mut stmt = conn.prepare(
+                "SELECT call_id, tool_id, substr(arguments_redacted_json, 1, 1000), substr(result_json, 1, CASE WHEN status = 'FAILED' THEN 4000 ELSE 300 END), length(result_json) > CASE WHEN status = 'FAILED' THEN 4000 ELSE 300 END, status FROM tool_calls WHERE task_id = ?1 ORDER BY started_at;"
+            )?;
+            let rows = stmt.query_map([task_id], |row| {
+                Ok((row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "tc".to_string()),
+                    row.get::<_, Option<String>>(1)?.unwrap_or_else(|| "tool".to_string()),
+                    row.get::<_, Option<String>>(2)?.unwrap_or_else(|| "{}".to_string()),
+                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    row.get::<_, Option<bool>>(4)?.unwrap_or(false),
+                    row.get::<_, Option<String>>(5)?.unwrap_or_else(|| "COMPLETED".to_string())))
+            })?;
+            for row in rows {
+                let (id, tool, args_raw, res_raw, truncated, status) = row?;
+                let args_display = serde_json::from_str::<serde_json::Value>(&args_raw).ok()
+                    .and_then(|parsed| parsed.get("path").and_then(|v| v.as_str())
+                        .or_else(|| parsed.get("command").and_then(|v| v.as_str()))
+                        .map(str::to_string))
+                    .unwrap_or(args_raw);
+                items.push(DialogueItem::ToolCall(ToolCallItem {
+                    id: id.clone(),
+                    tool,
+                    args: args_display,
+                    result: if res_raw.is_empty() { None } else if truncated {
+                        Some(format!("{res_raw}… [full result: /tool-result {id}]"))
+                    } else { Some(res_raw) },
+                    duration_ms: Some(120),
+                    exit_status: Some(format!("exit {}", if status == "FAILED" { "1" } else { "0" })),
+                    collapsed: true,
+                    started_at: None,
+                }));
+            }
+        }
+        if ledger_has_table(&conn, "task_events")? {
+            let event = conn.query_row(
+                "SELECT event_type, payload_json, occurred_at FROM task_events WHERE task_id = ?1 AND event_type IN ('STATE_SUCCEEDED', 'STATE_FAILED') ORDER BY sequence_no DESC LIMIT 1;",
+                [task_id],
+                |row| Ok((row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?.unwrap_or_else(|| "{}".to_string()),
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default())),
+            ).optional()?;
+            if let Some((event_type, payload, occurred_at)) = event {
+                let mut assistant_text = String::new();
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&payload) {
+                    if let Some(result) = parsed.get("result").and_then(|v| v.as_str()) {
+                        assistant_text = result.to_string();
+                    } else if let Some(error) = parsed.get("error").and_then(|v| v.as_str()) {
+                        assistant_text = format!("Error: {error}");
+                    }
+                }
+                if assistant_text.is_empty() {
+                    assistant_text = if event_type == "STATE_SUCCEEDED" {
+                        "Task execution completed successfully.".to_string()
+                    } else {
+                        "Task execution ended with an error.".to_string()
+                    };
+                }
+                items.push(DialogueItem::Message(MessageItem {
+                    role: Role::Assistant,
+                    content: assistant_text,
+                    timestamp: fmt_relative_time(&occurred_at),
+                }));
+            }
+        }
+        Ok(items)
+    };
+    read().map_err(|e| format!("Could not load session dialogue: {e}"))
 }
 
-pub fn load_session_plan_from_db(dir: &std::path::Path, task_id: &str) -> Vec<PlanStep> {
-    let db_path = dir.join(".hex").join("data").join("ledger.db");
-    if !db_path.exists() {
-        return Vec::new();
-    }
-
-    let clean_id = task_id.replace('\'', "''");
-    let sql = format!(
-        "SELECT dag_json FROM plans WHERE task_id = '{}' ORDER BY revision DESC LIMIT 1;",
-        clean_id
-    );
-    let mut cmd_plan = get_sqlite_command();
-    let out = cmd_plan
-        .args([
-            db_path.to_str().unwrap_or(".hex/data/ledger.db"),
-            "-json",
-            &sql,
-        ])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default();
-
-    if let Ok(records) = serde_json::from_str::<Vec<serde_json::Value>>(&out) {
-        if let Some(first) = records.first() {
-            if let Some(dag_raw) = first.get("dag_json").and_then(|v| v.as_str()) {
-                if let Ok(steps) = serde_json::from_str::<Vec<serde_json::Value>>(dag_raw) {
-                    return steps
-                        .into_iter()
-                        .filter_map(|s| {
-                            let title = s.get("title").and_then(|v| v.as_str())?.to_string();
-                            let st = match s
-                                .get("status")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("PENDING")
-                            {
-                                "COMPLETED" | "SUCCEEDED" => StepStatus::Completed,
-                                "RUNNING" | "ACTIVE" => StepStatus::Active,
-                                _ => StepStatus::Pending,
-                            };
-                            Some(PlanStep { title, status: st })
-                        })
-                        .collect();
-                }
-            }
+pub fn load_session_plan_from_db(dir: &std::path::Path, task_id: &str) -> Result<Vec<PlanStep>, String> {
+    use rusqlite::OptionalExtension;
+    let Some(conn) = open_ledger(dir, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)? else {
+        return Ok(Vec::new());
+    };
+    let read = || -> rusqlite::Result<Option<String>> {
+        if !ledger_has_table(&conn, "plans")? {
+            return Ok(None);
         }
-    }
-
-    Vec::new()
+        conn.query_row(
+            "SELECT dag_json FROM plans WHERE task_id = ?1 ORDER BY revision DESC LIMIT 1;",
+            [task_id],
+            |row| row.get::<_, Option<String>>(0),
+        ).optional().map(Option::flatten)
+    };
+    let Some(dag_raw) = read().map_err(|e| format!("Could not load session plan: {e}"))? else {
+        return Ok(Vec::new());
+    };
+    let steps = serde_json::from_str::<Vec<serde_json::Value>>(&dag_raw)
+        .map_err(|e| format!("Could not load session plan: {e}"))?;
+    Ok(steps.into_iter().filter_map(|step| {
+        let title = step.get("title").and_then(|v| v.as_str())?.to_string();
+        let status = match step.get("status").and_then(|v| v.as_str()).unwrap_or("PENDING") {
+            "COMPLETED" | "SUCCEEDED" => StepStatus::Completed,
+            "RUNNING" | "ACTIVE" => StepStatus::Active,
+            _ => StepStatus::Pending,
+        };
+        Some(PlanStep { title, status })
+    }).collect())
 }
 
 pub fn format_workspace_display(workspace_path: &str, project_id: &str) -> (String, String) {
@@ -1324,7 +1224,10 @@ impl App {
         let (modified_files_count, indexed_files_count) = detect_git_status_counts(&ws);
         let changed_files = detect_changed_files_from_git(&ws);
         let plan_steps = Vec::new(); // Starts empty; populated dynamically during session
-        let resume_sessions = load_real_resume_sessions(&ws);
+        let (resume_sessions, resume_status) = match load_real_resume_sessions(&ws) {
+            Ok(sessions) => (sessions, "Ready".to_string()),
+            Err(error) => (Vec::new(), error),
+        };
 
         let model_str = model_name.into();
         // Unknown until the runtime reports it; never invent a model.
@@ -1346,8 +1249,8 @@ impl App {
             git_branch: branch,
             git_sha: sha,
             workspace_path: ws.to_string_lossy().to_string(),
-            tools_count: 26,
-            skills_count: 83,
+            tools_count: None,
+            skills_count: None,
             splash_text: None,
             fencing_token: 1,
             connection_status: "Connecting".to_string(),
@@ -1362,9 +1265,17 @@ impl App {
             should_quit: false,
             is_busy: false,
             busy_started_at: None,
-            status_message: "Ready".to_string(),
+            status_message: resume_status,
             active_turn_has_streamed: false,
+            active_prompt_id: None,
+            active_assistant_index: None,
+            final_response_started: false,
+            pending_resume: None,
+            requested_resume: None,
             cancel_requested: false,
+            control_request_id: 0,
+            pending_cancel: None,
+            pending_command: None,
 
             dialogue_items: Vec::new(),
             tool_result_refs: std::collections::HashMap::new(),
@@ -1415,6 +1326,10 @@ impl App {
             suggestion_index: 0,
 
             active_approval: None,
+            approval_generation: 0,
+            approval_pending: false,
+            approval_error: None,
+            approval_can_allow: std::cell::Cell::new(false),
             active_diagnostic: None,
             animation_frame: 0,
             session_started: Instant::now(),
@@ -1445,6 +1360,7 @@ impl App {
 
     /// Add a user message to dialogue history.
     pub fn add_user_message(&mut self, content: &str) {
+        self.active_assistant_index = None;
         self.switch_screen(ScreenState::Session);
         self.dialogue_items.push(DialogueItem::Message(MessageItem {
             role: Role::User,
@@ -1467,6 +1383,7 @@ impl App {
         if !detected.is_empty() {
             self.plan_steps = detected;
         }
+        self.active_assistant_index = Some(self.dialogue_items.len());
         self.dialogue_items.push(DialogueItem::Message(MessageItem {
             role: Role::Assistant,
             content: content.to_string(),
@@ -1490,8 +1407,7 @@ impl App {
     /// Append a streaming token delta to the active Assistant message, or create one if none exists.
     pub fn append_assistant_delta(&mut self, delta: &str) {
         self.active_turn_has_streamed = true;
-        let index = self.dialogue_items.len().saturating_sub(1);
-        if matches!(self.dialogue_items.last(), Some(DialogueItem::Message(msg)) if msg.role == Role::Assistant) {
+        if let Some(index) = self.active_assistant_index {
             let stored = self.stored_message_id(index);
             let durable = if self.transcript_error.is_none() {
                 if let (Some(id), Some(store)) = (stored, self.transcript_store.as_mut()) {
@@ -1511,7 +1427,36 @@ impl App {
             self.enforce_transcript_budget();
             return;
         }
+        self.active_assistant_index = Some(self.dialogue_items.len());
         self.add_assistant_message(delta);
+    }
+
+    pub fn replace_active_response(&mut self, content: &str) {
+        let Some(index) = self.active_assistant_index else {
+            self.active_assistant_index = Some(self.dialogue_items.len());
+            self.add_assistant_message(content);
+            return;
+        };
+        let item = DialogueItem::Message(MessageItem {
+            role: Role::Assistant,
+            content: content.to_string(),
+            timestamp: chrono_now(),
+        });
+        if self.stored_message_id(index).is_some() && self.transcript_error.is_none() {
+            // Final corrections get a fresh archive record; streamed source remains recoverable.
+            match self.transcript_store.as_mut().unwrap().append(&item, None) {
+                Ok(id) => {
+                    self.transcript_ids.retain(|&(resident, _)| resident != index);
+                    self.transcript_ids.push((index, id));
+                }
+                Err(error) => self.transcript_error = Some(error),
+            }
+        }
+        self.dialogue_items[index] = item;
+        *self.transcript_layout.borrow_mut() = Default::default();
+        let detected = extract_plan_steps_from_text(content);
+        if !detected.is_empty() { self.plan_steps = detected; }
+        self.enforce_transcript_budget();
     }
 
     /// Add a system notification message to dialogue history.
@@ -1716,13 +1661,89 @@ impl App {
         }
     }
 
-    /// Resume an existing session by loading its conversation history, tool calls, and plan from the local database.
-    ///
-    /// The ledger stores one task per turn, not an ACP conversation. The stored
-    /// transcript is shown as history; the next prompt starts a new turn on the
-    /// runtime, which has no memory of it.
+    pub fn adopt_loaded_session(
+        &mut self,
+        loaded: &hex_protocol::models::PagedSessionLoad,
+    ) -> Result<(), String> {
+        if loaded.session_id.is_empty() || loaded.cwd.is_empty() {
+            return Err("Runtime returned an incomplete session identity".to_string());
+        }
+        let workspace = std::path::Path::new(&loaded.cwd);
+        let store = TranscriptStore::new(workspace, &loaded.session_id)?;
+        self.flush_transcript()?;
+        self.dialogue_items.clear();
+        self.transcript_ids.clear();
+        self.tool_result_refs.clear();
+        self.transcript_store = Some(store);
+        self.transcript_error = None;
+        self.transcript_history_stored = false;
+        self.command_history.clear();
+        self.history_index = None;
+        self.clear_diff();
+        self.plan_steps.clear();
+        self.subagents.clear();
+        self.current_thought = None;
+        self.thinking_status = None;
+        self.active_prompt_id = None;
+        self.active_assistant_index = None;
+        self.active_turn_has_streamed = false;
+        self.final_response_started = false;
+        self.pending_command = None;
+        self.pending_cancel = None;
+        self.cancel_requested = false;
+        self.clear_approval_request();
+        self.active_diagnostic = None;
+        self.session_id = loaded.session_id.clone();
+        self.workspace_path = loaded.cwd.clone();
+        (self.git_branch, self.git_sha) = detect_git_info(workspace);
+        (self.modified_files_count, self.indexed_files_count) = detect_git_status_counts(workspace);
+        self.changed_files = detect_changed_files_from_git(workspace);
+        self.model_name = loaded.model.clone();
+        self.provider_name.clear();
+        self.tools_count = None;
+        self.skills_count = None;
+        self.max_tokens = resolve_fallback_model_context(&self.model_name);
+        *self.transcript_layout.borrow_mut() = Default::default();
+        self.dialogue_view_offset.set(0);
+        self.dialogue_scroll = 0;
+        self.dialogue_metrics.set((0, 0));
+        self.dialogue_entrance.set((0, None));
+        for entry in &loaded.page.history {
+            if !entry.turn.prompt.is_empty() { self.add_user_message(&entry.turn.prompt); }
+            if entry.prompt_chars > entry.turn.prompt.chars().count() {
+                self.add_system_message(&format!("Full prompt: /history-turn {} prompt", entry.turn_index));
+            }
+            if !entry.turn.response.is_empty() { self.add_assistant_message(&entry.turn.response); }
+            if entry.response_chars > entry.turn.response.chars().count() {
+                self.add_system_message(&format!("Full response: /history-turn {} response", entry.turn_index));
+            }
+        }
+        self.add_system_message(&format!(
+            "Resumed session {} ({} prior turns). Runtime context restored. Older turns: /session-history",
+            loaded.session_id, loaded.page.history_count,
+        ));
+        self.switch_screen(ScreenState::Session);
+        self.focus = Focus::Input;
+        self.pending_delete_index = None;
+        self.input_buffer.clear();
+        self.cursor_pos = 0;
+        self.recalculate_tokens();
+        self.scroll_dialogue_to_bottom();
+        self.status_message = format!("Resumed session {}", loaded.session_id);
+        self.enforce_transcript_budget();
+        Ok(())
+    }
+
     pub fn resume_session(&mut self, session_id: &str) -> bool {
         let ws = std::path::PathBuf::from(&self.workspace_path);
+        let items = match load_session_dialogue_from_db(&ws, session_id) {
+            Ok(items) => items,
+            Err(error) => { self.status_message = error; return false; }
+        };
+        let plan_steps = match load_session_plan_from_db(&ws, session_id) {
+            Ok(steps) => steps,
+            Err(error) => { self.status_message = error; return false; }
+        };
         let next_store = if self.transcript_store.is_some() {
             match TranscriptStore::new(&ws, session_id) {
                 Ok(store) => Some(store),
@@ -1747,7 +1768,6 @@ impl App {
             self.history_index = None;
             self.clear_diff();
         }
-        let items = load_session_dialogue_from_db(&ws, session_id);
         self.transcript_store = next_store;
         self.transcript_ids = Vec::new();
         self.transcript_history_stored = false;
@@ -1757,6 +1777,7 @@ impl App {
         self.dialogue_metrics.set((0, 0));
         self.dialogue_entrance.set((0, None));
         self.session_id = session_id.to_string();
+        self.active_assistant_index = None;
         self.switch_screen(ScreenState::Session);
         self.focus = Focus::Input;
         self.pending_delete_index = None;
@@ -1781,7 +1802,7 @@ impl App {
                 }))
             } else { None }
         }).collect();
-        self.plan_steps = load_session_plan_from_db(&ws, session_id);
+        self.plan_steps = plan_steps;
         self.input_buffer.clear();
         self.cursor_pos = 0;
         self.recalculate_tokens();
@@ -2032,7 +2053,8 @@ impl App {
                 } else {
                     self.selected_resume_index = absolute_row;
                     let sid = self.resume_sessions[absolute_row].session_id.clone();
-                    self.resume_session(&sid);
+                    self.set_start_focus(Focus::Resume);
+                    self.requested_resume = Some(sid);
                     return true;
                 }
             } else if relative_row == visible_count && has_toggle {
@@ -2220,6 +2242,10 @@ impl App {
     /// Set active approval request modal.
     pub fn set_approval_request(&mut self, req: ApprovalRequest) {
         self.active_approval = Some(req);
+        self.approval_generation += 1;
+        self.approval_pending = false;
+        self.approval_error = None;
+        self.approval_can_allow.set(false);
         self.selected_permission_index = 0;
         self.focus = Focus::Approval;
     }
@@ -2233,6 +2259,10 @@ impl App {
     /// Clear active approval request.
     pub fn clear_approval_request(&mut self) {
         self.active_approval = None;
+        self.approval_generation += 1;
+        self.approval_pending = false;
+        self.approval_error = None;
+        self.approval_can_allow.set(false);
         if self.focus == Focus::Approval {
             self.focus = Focus::Input;
         }

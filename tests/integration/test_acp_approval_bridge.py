@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from harness_core.capabilities.gateways.reaction_listener import ApprovalRequest
 from harness_core.client.acp import ACPServer, ACPSession
 from harness_core.client.acp_approval import AcpApprovalBridge
@@ -107,7 +109,7 @@ def test_bridge_emits_request_and_blocks_until_decision(tmp_path: Path) -> None:
     assert thread.is_alive(), "turn must stay suspended while the operator decides"
     assert bridge.has_pending("appr_1")
 
-    assert bridge.resolve("appr_1", "approve")
+    assert bridge.resolve("appr_1", "approve")["applied"] is True
     thread.join(timeout=5.0)
     assert not thread.is_alive()
     assert outcome["decision"].decision == "APPROVE"
@@ -125,7 +127,7 @@ def test_bridge_timeout_denies(tmp_path: Path) -> None:
 
 def test_unknown_approval_id_is_not_applied(tmp_path: Path) -> None:
     bridge = AcpApprovalBridge(EmitCapture(), lambda tid: None, tmp_path)
-    assert bridge.resolve("appr_missing", "approve") is False
+    assert bridge.resolve("appr_missing", "approve")["applied"] is False
 
 
 def test_scope_decision_grants_narrow_lease_for_the_exact_action(tmp_path: Path) -> None:
@@ -140,7 +142,7 @@ def test_scope_decision_grants_narrow_lease_for_the_exact_action(tmp_path: Path)
         outcome: dict[str, Any] = {}
         thread = invoke_in_thread(gateway, task_id, {"command": "rm -rf ./dist"}, outcome, tmp_path)
         params = capture.wait_for_request()
-        assert bridge.resolve(params["approvalId"], "approve_scope")
+        assert bridge.resolve(params["approvalId"], "approve_scope")["applied"] is True
         thread.join(timeout=5.0)
         assert outcome.get("error") is None, outcome.get("error")
         assert outcome["result"]["ok"] is True
@@ -346,5 +348,186 @@ def test_acp_session_cancel_withdraws_pending_approval(tmp_path: Path) -> None:
         assert elapsed < 2.0
         assert isinstance(outcome.get("error"), PolicyBlockedError)
         assert sess.cancelled is True
+    finally:
+        ledger.close()
+
+
+def test_once_approval_never_grants_a_lease_even_with_ttl(tmp_path: Path) -> None:
+    """B30: 'Once' is a single execution; a TTL must not silently widen it."""
+    ledger, gateway, task_id = make_gateway(tmp_path)
+    try:
+        leases = ApprovalLeaseManager(ledger)
+        gateway.approval_lease_manager = leases
+        capture = EmitCapture()
+        bridge = AcpApprovalBridge(capture, lambda tid: None, tmp_path, leases, timeout_seconds=5.0)
+        gateway.approval_bridge = bridge
+
+        outcome: dict[str, Any] = {}
+        thread = invoke_in_thread(gateway, task_id, {"command": "rm -rf ./dist"}, outcome, tmp_path)
+        params = capture.wait_for_request()
+        result = bridge.resolve(params["approvalId"], "approve", lease_ttl_seconds=900)
+        thread.join(timeout=5.0)
+        assert result == {
+            "applied": True,
+            "outcome": "APPROVE",
+            "lease_id": None,
+            "lease_ttl_seconds": None,
+        }
+        assert leases.list_active_leases() == []
+    finally:
+        ledger.close()
+
+
+def test_scope_lease_honors_a_validated_ttl(tmp_path: Path) -> None:
+    """B30: the operator-visible 15-minute lease is the lease the server grants."""
+    ledger, gateway, task_id = make_gateway(tmp_path)
+    try:
+        leases = ApprovalLeaseManager(ledger)
+        gateway.approval_lease_manager = leases
+        capture = EmitCapture()
+        bridge = AcpApprovalBridge(capture, lambda tid: None, tmp_path, leases, timeout_seconds=5.0)
+        gateway.approval_bridge = bridge
+
+        outcome: dict[str, Any] = {}
+        thread = invoke_in_thread(gateway, task_id, {"command": "rm -rf ./dist"}, outcome, tmp_path)
+        params = capture.wait_for_request()
+        result = bridge.resolve(params["approvalId"], "approve_scope", lease_ttl_seconds=900)
+        thread.join(timeout=5.0)
+        assert result["applied"] is True
+        assert result["outcome"] == "APPROVE"
+        assert result["lease_ttl_seconds"] == 900
+        granted = leases.list_active_leases()
+        assert len(granted) == 1
+        assert granted[0].ttl_seconds == 900
+        assert granted[0].lease_id == result["lease_id"]
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("bad_ttl", [0, 59, 86401, -1, "900", 1.5, True])
+def test_invalid_ttl_is_rejected_and_leaves_the_turn_waiting(tmp_path: Path, bad_ttl: Any) -> None:
+    ledger, gateway, task_id = make_gateway(tmp_path)
+    try:
+        leases = ApprovalLeaseManager(ledger)
+        gateway.approval_lease_manager = leases
+        capture = EmitCapture()
+        bridge = AcpApprovalBridge(capture, lambda tid: None, tmp_path, leases, timeout_seconds=5.0)
+        gateway.approval_bridge = bridge
+
+        outcome: dict[str, Any] = {}
+        thread = invoke_in_thread(gateway, task_id, {"command": "rm -rf ./dist"}, outcome, tmp_path)
+        params = capture.wait_for_request()
+        with pytest.raises(ValueError):
+            bridge.resolve(params["approvalId"], "approve_scope", lease_ttl_seconds=bad_ttl)
+        assert thread.is_alive(), "an invalid decision must not resolve the waiting turn"
+        assert leases.list_active_leases() == []
+        assert bridge.resolve(params["approvalId"], "deny")["applied"] is True
+        thread.join(timeout=5.0)
+        assert isinstance(outcome.get("error"), PolicyBlockedError)
+    finally:
+        ledger.close()
+
+
+def test_unknown_decision_is_a_parameter_error_not_a_silent_denial(tmp_path: Path) -> None:
+    """B27: the legacy 'allow_session' string must not masquerade as a denial."""
+    ledger, gateway, task_id = make_gateway(tmp_path)
+    try:
+        capture = EmitCapture()
+        bridge = AcpApprovalBridge(capture, lambda tid: None, tmp_path, timeout_seconds=5.0)
+        gateway.approval_bridge = bridge
+
+        outcome: dict[str, Any] = {}
+        thread = invoke_in_thread(gateway, task_id, {"command": "rm -rf ./dist"}, outcome, tmp_path)
+        params = capture.wait_for_request()
+        with pytest.raises(ValueError):
+            bridge.resolve(params["approvalId"], "allow_session")
+        assert thread.is_alive()
+        assert bridge.resolve(params["approvalId"], "approve_scope")["outcome"] == "APPROVE"
+        thread.join(timeout=5.0)
+        assert outcome.get("error") is None, outcome.get("error")
+    finally:
+        ledger.close()
+
+
+def test_server_reports_typed_outcome_and_real_lease_ttl(tmp_path: Path) -> None:
+    ledger, gateway, task_id = make_gateway(tmp_path)
+    try:
+        server = ACPServer(orchestrator=SimpleNamespace(gateway=gateway, ledger=ledger), workspace_root=tmp_path)
+        capture = EmitCapture()
+        server._emit = capture  # type: ignore[method-assign]
+        assert server.orchestrator.gateway is gateway
+
+        outcome: dict[str, Any] = {}
+        thread = invoke_in_thread(gateway, task_id, {"command": "rm -rf ./dist"}, outcome, tmp_path)
+        params = capture.wait_for_request()
+        response = server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "session/approvalDecision",
+            "params": {
+                "approvalId": params["approvalId"],
+                "decision": "approve_scope",
+                "leaseTtlSeconds": 900,
+            },
+        })
+        result = response["result"]
+        assert result["status"] == "applied"
+        assert result["applied"] is True
+        assert result["outcome"] == "APPROVE"
+        assert result["leaseTtlSeconds"] == 900
+        assert result["leaseId"]
+        thread.join(timeout=5.0)
+        assert outcome.get("error") is None, outcome.get("error")
+    finally:
+        ledger.close()
+
+
+def test_server_rejects_invalid_ttl_and_unknown_decision_as_invalid_params(tmp_path: Path) -> None:
+    ledger, gateway, task_id = make_gateway(tmp_path)
+    try:
+        server = ACPServer(orchestrator=SimpleNamespace(gateway=gateway, ledger=ledger), workspace_root=tmp_path)
+        capture = EmitCapture()
+        server._emit = capture  # type: ignore[method-assign]
+        assert server.orchestrator.gateway is gateway
+
+        outcome: dict[str, Any] = {}
+        thread = invoke_in_thread(gateway, task_id, {"command": "rm -rf ./dist"}, outcome, tmp_path)
+        params = capture.wait_for_request()
+        for bad_params in (
+            {"approvalId": params["approvalId"], "decision": "approve_scope", "leaseTtlSeconds": 5},
+            {"approvalId": params["approvalId"], "decision": "allow_session"},
+        ):
+            response = server.handle_request({
+                "jsonrpc": "2.0",
+                "id": 21,
+                "method": "session/approvalDecision",
+                "params": bad_params,
+            })
+            assert response["error"]["code"] == -32602, response
+        assert thread.is_alive()
+        bridge = server.approval_bridge
+        assert bridge is not None
+        bridge.resolve(params["approvalId"], "deny")
+        thread.join(timeout=5.0)
+    finally:
+        ledger.close()
+
+
+def test_acknowledged_decision_reports_no_outcome(tmp_path: Path) -> None:
+    ledger, gateway, task_id = make_gateway(tmp_path)
+    try:
+        server = ACPServer(orchestrator=SimpleNamespace(gateway=gateway, ledger=ledger), workspace_root=tmp_path)
+        response = server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "session/approvalDecision",
+            "params": {"approvalId": "appr_gone", "decision": "approve"},
+        })
+        result = response["result"]
+        assert result["status"] == "acknowledged"
+        assert result["applied"] is False
+        assert result["outcome"] is None
+        assert result["leaseId"] is None
+        assert result["leaseTtlSeconds"] is None
     finally:
         ledger.close()

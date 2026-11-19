@@ -1,13 +1,17 @@
 //! Empirical validation for Session click-to-resume, top-3 toggle, cascading delete, and title truncation.
 
-use hex_tui::app::{App, Focus, ResumeSession, ScreenState};
+use hex_protocol::models::Role;
+use hex_tui::app::{
+    load_session_dialogue_from_db, load_session_plan_from_db, App, DialogueItem, Focus,
+    ResumeSession, ScreenState, StepStatus,
+};
 use hex_tui::ui::animation::AnimationState;
 use hex_tui::ui::screens::start;
 use hex_tui::ui::style::HexTheme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use std::fs;
-use std::process::Command;
+use rusqlite::Connection;
 
 #[test]
 fn test_top_3_sessions_default_and_toggle_expand_collapse() {
@@ -77,7 +81,7 @@ fn test_top_3_sessions_default_and_toggle_expand_collapse() {
 }
 
 #[test]
-fn test_session_click_to_resume_and_token_recalculation() {
+fn test_session_click_requests_resume_without_adopting_a_ledger_task() {
     let mut app = App::new("test-project", "sonnet", "sandbox");
     app.resume_sessions = vec![
         ResumeSession {
@@ -99,15 +103,12 @@ fn test_session_click_to_resume_and_token_recalculation() {
     let handled = app.handle_start_mouse_click(click_x, click_y, resume_area);
     assert!(handled, "Clicking session row must be handled");
 
-    // Screen transitions to Session
-    assert_eq!(app.screen_state, ScreenState::Session);
-    assert_eq!(app.focus, Focus::Input);
-    assert_eq!(app.session_id, "tsk_demo_resume");
-    assert!(!app.dialogue_items.is_empty(), "Dialogue history must be populated");
-    assert!(app.status_message.contains("Resumed session tsk_demo_resume"));
-
-    // Tokens used is dynamically recalculated from loaded dialogue content
-    assert!(app.tokens_used > 0, "Tokens used must be greater than 0 after resume recalculation");
+    assert_eq!(app.requested_resume.as_deref(), Some("tsk_demo_resume"));
+    assert_eq!(app.screen_state, ScreenState::Start);
+    assert_eq!(app.focus, Focus::Resume);
+    assert_eq!(app.session_id, "ses_default");
+    assert!(!app.status_message.contains("Resumed session"));
+    assert_eq!(app.tokens_used, 0);
 }
 
 #[test]
@@ -171,14 +172,11 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
         CREATE TABLE leases (lease_id TEXT PRIMARY KEY, task_id TEXT);
         CREATE TABLE approval_leases (lease_id TEXT PRIMARY KEY, task_id TEXT);
         CREATE TABLE dialogue_turns (turn_id TEXT PRIMARY KEY, task_id TEXT, turn_index INTEGER, role TEXT, content TEXT);
-        CREATE TABLE task_search_fts (task_id TEXT, goal TEXT);
+        CREATE VIRTUAL TABLE task_search_fts USING fts5(task_id UNINDEXED, goal);
     ";
 
-    let status = Command::new("sqlite3")
-        .args([db_path.to_str().unwrap(), init_sql])
-        .status()
-        .expect("init db");
-    assert!(status.success(), "SQLite schema creation failed");
+    let conn = Connection::open(&db_path).expect("open fixture");
+    conn.execute_batch(init_sql).expect("SQLite schema creation failed");
 
     // Insert records for task 'test_target_task' across all 11 tables
     let target_id = "test_target_task";
@@ -199,11 +197,7 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
         INSERT INTO task_search_fts VALUES ('{id}', 'Target task goal');
     ", id = target_id);
 
-    let status = Command::new("sqlite3")
-        .args([db_path.to_str().unwrap(), &insert_sql])
-        .status()
-        .expect("insert records");
-    assert!(status.success(), "Seed insertion failed");
+    conn.execute_batch(&insert_sql).expect("Seed insertion failed");
 
     // 2. Test App deletion UI logic
     let mut app = App::new("test-project", "sonnet", "sandbox");
@@ -258,14 +252,11 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
     ];
 
     for tbl in tables {
-        let count_out = Command::new("sqlite3")
-            .args([
-                db_path.to_str().unwrap(),
-                &format!("SELECT count(*) FROM {} WHERE task_id = '{}';", tbl, target_id),
-            ])
-            .output()
-            .expect("query count");
-        let count_str = String::from_utf8(count_out.stdout).unwrap().trim().to_string();
+        let count_str = conn.query_row(
+            &format!("SELECT count(*) FROM {tbl} WHERE task_id = ?1;"),
+            [target_id],
+            |row| row.get::<_, i64>(0),
+        ).expect("query count").to_string();
         assert_eq!(
             count_str, "0",
             "Table '{}' must have 0 rows for deleted task '{}'",
@@ -278,10 +269,7 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
         title: "Last task".to_string(),
         relative_time: "1m".to_string(),
     }];
-    let status = Command::new("sqlite3")
-        .args([db_path.to_str().unwrap(), "INSERT INTO tasks VALUES ('last_task', 'Last task', '2026-11-16T10:00:00Z');"])
-        .status().unwrap();
-    assert!(status.success());
+    conn.execute_batch("INSERT INTO tasks VALUES ('last_task', 'Last task', '2026-11-16T10:00:00Z');").unwrap();
     app.input_buffer = "preserved draft".to_string();
     app.cursor_pos = 3;
     app.request_delete_resume_session(0);
@@ -291,6 +279,42 @@ fn test_delete_session_ui_and_sqlite_cascading_deletion() {
     assert_eq!(app.input_buffer, "preserved draft");
     assert_eq!(app.cursor_pos, 3);
 
-    // Clean up temp dir
+    // Closing the fixture releases Windows file handles before cleanup.
+    drop(conn);
     let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn resumed_dialogue_and_plan_use_only_the_latest_task_scoped_records() {
+    let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("hex_latest_resume_{unique}"));
+    fs::create_dir_all(dir.join(".hex/data")).unwrap();
+    let conn = Connection::open(dir.join(".hex/data/ledger.db")).unwrap();
+    conn.execute_batch(r#"CREATE TABLE tasks(task_id TEXT PRIMARY KEY, goal TEXT, created_at TEXT);
+        CREATE TABLE task_events(task_id TEXT, event_type TEXT, payload_json TEXT, sequence_no INTEGER, occurred_at TEXT);
+        CREATE TABLE plans(task_id TEXT, revision INTEGER, dag_json TEXT);
+        INSERT INTO tasks VALUES('tsk_latest', 'Original goal', '2026-11-01T10:00:00Z');
+        INSERT INTO task_events VALUES('tsk_latest', 'STATE_SUCCEEDED', '{"result":"old success"}', 1, '2026-11-03T10:00:00Z');
+        INSERT INTO task_events VALUES('tsk_latest', 'STATE_FAILED', '{"error":"世界😀\nfailed\u001fend"}', 3, '2026-11-01T10:00:00Z');
+        INSERT INTO task_events VALUES('tsk_latest', 'STATE_RUNNING', '{"result":"not terminal"}', 4, '2026-11-04T10:00:00Z');
+        INSERT INTO task_events VALUES('tsk_neighbor', 'STATE_SUCCEEDED', '{"result":"wrong task"}', 999, 'now');
+        INSERT INTO plans VALUES('tsk_latest', 1, '[{"title":"old","status":"PENDING"}]');
+        INSERT INTO plans VALUES('tsk_latest', 3, '[{"title":"世界😀 done","status":"SUCCEEDED"},{"title":"active","status":"ACTIVE"},{"title":"pending"}]');
+        INSERT INTO plans VALUES('tsk_neighbor', 999, '[{"title":"wrong task"}]');"#).unwrap();
+    let items = load_session_dialogue_from_db(&dir, "tsk_latest").unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(matches!(&items[0], DialogueItem::Message(m) if m.role == Role::User && m.content == "Original goal"));
+    assert!(matches!(&items[1], DialogueItem::Message(m) if m.role == Role::Assistant && m.content == "Error: 世界😀\nfailed\u{1f}end"));
+    let steps = load_session_plan_from_db(&dir, "tsk_latest").unwrap();
+    assert_eq!(steps.len(), 3);
+    assert_eq!(steps[0].title, "世界😀 done");
+    assert_eq!(steps[0].status, StepStatus::Completed);
+    assert_eq!(steps[1].status, StepStatus::Active);
+    assert_eq!(steps[2].status, StepStatus::Pending);
+    let mut app = App::with_workspace("test", "", "none", Some(&dir));
+    assert!(app.resume_session("tsk_latest"));
+    assert_eq!(app.plan_steps, steps);
+    assert_eq!(&app.dialogue_items[..items.len()], items.as_slice());
+    drop(conn);
+    fs::remove_dir_all(dir).unwrap();
 }

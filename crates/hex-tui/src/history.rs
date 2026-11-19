@@ -554,6 +554,7 @@ impl App {
     pub fn clear_transcript(&mut self) -> Result<(), String> {
         self.flush_transcript()?;
         self.dialogue_items = Vec::new();
+        self.active_assistant_index = None;
         self.tool_result_refs = Default::default();
         self.transcript_ids = Vec::new();
         *self.transcript_layout.borrow_mut() = Default::default();
@@ -692,7 +693,7 @@ impl App {
         if bytes <= TRANSCRIPT_BUDGET {
             return Ok(());
         }
-        let protected = if self.is_busy {
+        let protected = if self.is_busy || self.active_prompt_id.is_some() {
             self.dialogue_items
                 .iter()
                 .rposition(|item| {
@@ -762,6 +763,7 @@ impl App {
             );
             let eligible = |index: usize, item: &DialogueItem| {
                 Some(index) != prompt
+                    && Some(index) != self.active_assistant_index
                     && index + 1 < self.dialogue_items.len()
                     && !matches!(item, DialogueItem::ToolCall(tool) if tool.exit_status.as_deref() == Some("RUNNING"))
             };
@@ -822,6 +824,11 @@ impl App {
                 self.tool_result_refs.remove(&tool.id);
             }
         }
+        self.active_assistant_index = self.active_assistant_index.and_then(|index| {
+            if (start..end).contains(&index) { None }
+            else if index >= end { Some(index - count) }
+            else { Some(index) }
+        });
         self.dialogue_items.drain(start..end);
         self.dialogue_items.shrink_to_fit();
         self.tool_result_refs.shrink_to_fit();

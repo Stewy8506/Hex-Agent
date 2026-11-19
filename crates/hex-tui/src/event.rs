@@ -12,7 +12,9 @@ use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
 
 use hex_protocol::client::NotificationPacket;
-use hex_protocol::models::SubagentInfo;
+use hex_protocol::models::{
+    ApprovalDecisionResponse, SessionCancelResponse, SessionCommandResponse, SubagentInfo,
+};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -23,8 +25,40 @@ pub enum AppEvent {
     Tick,
     Notification(NotificationPacket),
     Notice(String),
-    AcpMessage(String),
-    AssistantResponse(String),
+    ApprovalDecision {
+        session_id: String,
+        approval_id: String,
+        generation: u64,
+        decision: String,
+        result: Result<ApprovalDecisionResponse, String>,
+    },
+    CancelResult {
+        session_id: String,
+        request_id: u64,
+        result: Result<SessionCancelResponse, String>,
+    },
+    CommandResult {
+        session_id: String,
+        request_id: u64,
+        command: String,
+        result: Result<SessionCommandResponse, String>,
+    },
+    PromptText {
+        session_id: String,
+        request_id: u64,
+        text: String,
+        first: bool,
+    },
+    PromptFinished {
+        session_id: String,
+        request_id: u64,
+        result: Result<(), String>,
+    },
+    ResumeResult {
+        session_id: String,
+        request_id: u64,
+        result: Result<hex_protocol::models::PagedSessionLoad, String>,
+    },
     Subagents(Result<Vec<SubagentInfo>, String>),
     Ready,
     Error(String),

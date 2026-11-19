@@ -44,6 +44,8 @@ pub struct AppShell {
     pub active_view: ShellView,
     /// Currently displayed modal overlay (Command Palette, Tool Approval, Model Picker).
     pub active_modal: ActiveModal,
+    /// Modals waiting behind the active one; unresolved approvals are never dropped.
+    pub modal_queue: std::collections::VecDeque<ActiveModal>,
     /// ACP communication bridge connecting to harness_core runtime.
     pub acp_bridge: Option<AcpBridge>,
 }
@@ -65,6 +67,7 @@ impl AppShell {
             active_session_id: None,
             active_view: ShellView::Chat,
             active_modal: ActiveModal::None,
+            modal_queue: std::collections::VecDeque::new(),
             acp_bridge: None,
         }
     }
@@ -82,6 +85,7 @@ impl AppShell {
             active_session_id: None,
             active_view: ShellView::Chat,
             active_modal: ActiveModal::None,
+            modal_queue: std::collections::VecDeque::new(),
             acp_bridge: None,
         }
     }
@@ -96,23 +100,47 @@ impl AppShell {
     pub fn open_command_palette(&mut self) {
         let mut palette = CommandPaletteModal::new();
         palette.populate_sessions(&self.sidebar.session_list.sessions);
-        self.active_modal = ActiveModal::Palette(palette);
+        self.push_modal(ActiveModal::Palette(palette));
     }
 
     /// Open Model Picker.
     pub fn open_model_picker(&mut self) {
         let current_model = self.composer.model_pill.model_name.clone();
-        self.active_modal = ActiveModal::ModelPicker(ModelPickerModal::new(current_model));
+        self.push_modal(ActiveModal::ModelPicker(ModelPickerModal::new(current_model)));
     }
 
     /// Open Tool Approval modal.
+    ///
+    /// B29: a second approval (or any modal opened over an unresolved one) is
+    /// queued, never substituted; duplicate deliveries of the same request are
+    /// ignored so the operator cannot decide the same request twice.
     pub fn open_approval(&mut self, modal: ToolApprovalModal) {
-        self.active_modal = ActiveModal::Approval(modal);
+        let already_present = match &self.active_modal {
+            ActiveModal::Approval(active) => active.request_id == modal.request_id,
+            _ => false,
+        } || self.modal_queue.iter().any(|queued| match queued {
+            ActiveModal::Approval(active) => active.request_id == modal.request_id,
+            _ => false,
+        });
+        if already_present {
+            return;
+        }
+        self.push_modal(ActiveModal::Approval(modal));
     }
 
-    /// Dismiss any currently active modal dialog.
+    /// Show a modal now, or queue it behind the active one.
+    fn push_modal(&mut self, modal: ActiveModal) {
+        if matches!(self.active_modal, ActiveModal::None) {
+            self.active_modal = modal;
+        } else {
+            self.modal_queue.push_back(modal);
+        }
+    }
+
+    /// Dismiss the active modal and promote the next queued one, if any.
     pub fn dismiss_modal(&mut self) {
         self.active_modal.close();
+        self.active_modal = self.modal_queue.pop_front().unwrap_or(ActiveModal::None);
     }
 
     /// Handle high-level events incoming from ACP bridge.
@@ -420,5 +448,67 @@ mod tests {
             description: Some("Dangerous root deletion".to_string()),
         });
         assert!(matches!(shell.active_modal, ActiveModal::Approval(_)));
+    }
+
+    #[test]
+    fn test_second_approval_is_queued_never_substituted() {
+        let mut shell = AppShell::new();
+        shell.open_approval(ToolApprovalModal::new("appr_1", "bash", "cargo build", "R3"));
+        shell.open_approval(ToolApprovalModal::new("appr_2", "rm", "rm file", "R4"));
+
+        match &shell.active_modal {
+            ActiveModal::Approval(active) => assert_eq!(active.request_id, "appr_1"),
+            _ => panic!("first approval must stay active"),
+        }
+        assert_eq!(shell.modal_queue.len(), 1);
+
+        // Dismissing the first promotes the queued second approval.
+        shell.dismiss_modal();
+        match &shell.active_modal {
+            ActiveModal::Approval(active) => assert_eq!(active.request_id, "appr_2"),
+            _ => panic!("queued approval must be promoted"),
+        }
+        assert!(shell.modal_queue.is_empty());
+
+        shell.dismiss_modal();
+        assert_eq!(shell.active_modal, ActiveModal::None);
+    }
+
+    #[test]
+    fn test_duplicate_approval_deliveries_are_ignored() {
+        let mut shell = AppShell::new();
+        shell.open_approval(ToolApprovalModal::new("appr_1", "bash", "cargo build", "R3"));
+        shell.open_approval(ToolApprovalModal::new("appr_2", "rm", "rm file", "R4"));
+
+        // Redelivery of the active request and of the queued request.
+        shell.open_approval(ToolApprovalModal::new("appr_1", "bash", "cargo build", "R3"));
+        shell.open_approval(ToolApprovalModal::new("appr_2", "rm", "rm file", "R4"));
+
+        assert_eq!(shell.modal_queue.len(), 1);
+        shell.dismiss_modal();
+        match &shell.active_modal {
+            ActiveModal::Approval(active) => assert_eq!(active.request_id, "appr_2"),
+            _ => panic!("expected queued approval"),
+        }
+        shell.dismiss_modal();
+        assert_eq!(shell.active_modal, ActiveModal::None);
+    }
+
+    #[test]
+    fn test_palette_and_picker_queue_behind_unresolved_approval() {
+        let mut shell = AppShell::new();
+        shell.open_approval(ToolApprovalModal::new("appr_1", "bash", "cargo build", "R3"));
+
+        shell.open_command_palette();
+        shell.open_model_picker();
+        assert!(matches!(shell.active_modal, ActiveModal::Approval(_)));
+        assert_eq!(shell.modal_queue.len(), 2);
+
+        shell.dismiss_modal();
+        assert!(matches!(shell.active_modal, ActiveModal::Palette(_)));
+        shell.dismiss_modal();
+        assert!(matches!(shell.active_modal, ActiveModal::ModelPicker(_)));
+        shell.dismiss_modal();
+        assert_eq!(shell.active_modal, ActiveModal::None);
     }
 }

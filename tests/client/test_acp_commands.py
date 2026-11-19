@@ -106,6 +106,7 @@ class FakeOrchestrator:
         self.router = SimpleNamespace(
             compressor_mode="deterministic",
             cloud_model_id="model-x",
+            cloud_provider=SimpleNamespace(provider_id="fake-provider", model_id="model-x"),
             budget_tracker=SimpleNamespace(total_usd_spent=0.25),
         )
         self.subagent_manager = SimpleNamespace(list_active_subagents=lambda: [])
@@ -123,8 +124,12 @@ class FakeOrchestrator:
         return {"winner_branch_id": "br_a"}
 
     def set_active_model(self, model_id, durable=True):
+        assert durable is False, "ACP model switches must remain session-only"
         self.model_switches.append(model_id)
-        return ("fake-provider", model_id, None)
+        canonical_id = "canonical-model-y" if model_id == "friendly-alias" else model_id
+        self.router.cloud_model_id = canonical_id
+        self.router.cloud_provider.model_id = canonical_id
+        return (self.router.cloud_provider.provider_id, canonical_id, None)
 
     def submit_task(self, req):
         return {"task_id": "tsk_prompt_1"}
@@ -280,8 +285,120 @@ def test_compressor_validates_and_sets_mode(server):
 def test_model_switch_reaches_orchestrator(server):
     res = run_cmd(server, "/model", "model-y")
     assert res["isError"] is False
+    assert res["model"] == "model-y"
+    assert res["provider"] == "fake-provider"
     assert server.orchestrator.model_switches == ["model-y"]
     assert server.sessions["s1"].model == "model-y"
+    assert server.orchestrator.router.cloud_model_id == res["model"]
+
+
+@pytest.mark.parametrize("command,args", [
+    ("/model", "friendly-alias"),
+    ("/MODEL friendly-alias", ""),
+])
+def test_model_alias_switch_returns_canonical_identity(server, command, args):
+    res = run_cmd(server, command, args)
+    assert res["isError"] is False
+    assert res["command"] == "/model"
+    assert res["model"] == "canonical-model-y"
+    assert res["provider"] == "fake-provider"
+    assert server.orchestrator.model_switches == ["friendly-alias"]
+    assert server.sessions["s1"].model == res["model"]
+    assert server.orchestrator.router.cloud_model_id == res["model"]
+    assert server.orchestrator.router.cloud_provider.model_id == res["model"]
+
+    query = run_cmd(server, "/model")
+    assert query["isError"] is False
+    assert query["model"] == res["model"]
+    assert query["provider"] == res["provider"]
+    assert server.orchestrator.model_switches == ["friendly-alias"]
+
+
+@pytest.mark.parametrize("router_model", ["model-x", None])
+def test_model_query_reads_effective_identity_without_mutation(server, router_model):
+    sess = server.sessions["s1"]
+    sess.model = "session-model"
+    router = server.orchestrator.router
+    router.cloud_model_id = router_model
+    res = run_cmd(server, "/model")
+    assert res["isError"] is False
+    assert res["model"] == (router_model or "session-model")
+    assert res["provider"] == router.cloud_provider.provider_id
+    assert server.orchestrator.model_switches == []
+    assert sess.model == "session-model"
+    assert router.cloud_model_id == router_model
+
+
+def test_model_query_does_not_invent_provider_metadata(server):
+    server.orchestrator.router.cloud_provider = None
+    res = run_cmd(server, "/model")
+    assert res["isError"] is False
+    assert res["model"] == "model-x"
+    assert "provider" not in res
+    assert server.orchestrator.model_switches == []
+
+
+@pytest.mark.parametrize("error_type", [ValueError, PermissionError, RuntimeError])
+def test_model_switch_failure_preserves_session_and_omits_identity(server, monkeypatch, error_type):
+    run_cmd(server, "/model", "friendly-alias")
+    sess = server.sessions["s1"]
+    previous_model = sess.model
+    router = server.orchestrator.router
+    previous_provider = router.cloud_provider.provider_id
+    attempts = []
+
+    def reject_switch(model_id, durable=True):
+        assert durable is False
+        attempts.append(model_id)
+        raise error_type("requested model unavailable")
+
+    monkeypatch.setattr(server.orchestrator, "set_active_model", reject_switch)
+    res = run_cmd(server, "/model", "rejected-alias")
+    assert res == {
+        "sessionId": "s1",
+        "command": "/model",
+        "output": "Command failed: requested model unavailable",
+        "isError": True,
+    }
+    assert attempts == ["rejected-alias"]
+    assert sess.model == previous_model
+    assert router.cloud_model_id == previous_model
+    assert router.cloud_provider.provider_id == previous_provider
+    query = run_cmd(server, "/model")
+    assert query["model"] == previous_model
+    assert query["provider"] == previous_provider
+
+
+def test_model_error_return_drops_success_metadata_without_parsing_output(server, monkeypatch):
+    previous_model = server.sessions["s1"].model
+    monkeypatch.setattr(server, "_cmd_model", lambda sess, args: {
+        "output": "Active model switched to: misleading prose",
+        "isError": True,
+        "model": "misleading-model",
+        "provider": "misleading-provider",
+    })
+    res = run_cmd(server, "/model", "rejected-alias")
+    assert res == {
+        "sessionId": "s1",
+        "command": "/model",
+        "output": "Active model switched to: misleading prose",
+        "isError": True,
+    }
+    assert server.sessions["s1"].model == previous_model
+    assert server.orchestrator.router.cloud_model_id == "model-x"
+    assert server.orchestrator.model_switches == []
+
+
+@pytest.mark.parametrize("command,args,is_error", [
+    ("/status", "", False),
+    ("/remember", "invalid", True),
+    ("/definitely-not-real", "", True),
+])
+def test_non_model_commands_keep_existing_response_shape(server, command, args, is_error):
+    res = run_cmd(server, command, args)
+    assert set(res) == {"sessionId", "command", "output", "isError"}
+    assert isinstance(res["output"], str)
+    assert res["isError"] is is_error
 
 
 def test_proof_reports_real_bundle_and_chain(server):
@@ -391,6 +508,8 @@ def test_bare_orchestrator_never_fabricates_success(tmp_path, command, args):
     srv.sessions["s1"] = ACPSession(session_id="s1", workspace_root=tmp_path)
     res = run_cmd(srv, command, args)
     assert res["isError"] is True, f"{command} reported success without a backend: {res['output']}"
+    assert set(res) == {"sessionId", "command", "output", "isError"}
+    assert srv.sessions["s1"].model == "default"
     for marker in SUCCESS_MARKERS:
         assert marker.lower() not in res["output"].lower(), (
             f"{command} fabricated '{marker}' without performing the operation"

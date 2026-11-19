@@ -17,6 +17,7 @@ futures = "0.3"
 unicode-width = "0.1"
 unicode-segmentation = "1.12"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 termwiz = { version = "=0.23.3", default-features = false }

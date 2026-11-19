@@ -652,7 +652,9 @@ fn render_hex_intro_fallback(app: &App, width: u16) -> Vec<Line<'static>> {
             Span::styled(app.provider_label().to_string(), Style::default().fg(s.category)),
         ]));
         out.push(Line::from(Span::styled(
-            format!("{} tools · {} skills", app.tools_count, app.skills_count),
+            format!("{} tools · {} skills",
+            app.tools_count.map_or_else(|| "?".to_string(), |n| n.to_string()),
+            app.skills_count.map_or_else(|| "?".to_string(), |n| n.to_string())),
             Style::default().fg(s.category).add_modifier(Modifier::BOLD),
         )));
         out.push(Line::raw(""));
@@ -742,7 +744,9 @@ fn render_hex_intro_fallback(app: &App, width: u16) -> Vec<Line<'static>> {
     right_lines.push(Line::from(Span::styled("  +1 more categories", Style::default().fg(s.muted))));
     right_lines.push(Line::raw(""));
     right_lines.push(Line::from(Span::styled(
-        format!("{} tools · {} skills", app.tools_count, app.skills_count),
+        format!("{} tools · {} skills",
+            app.tools_count.map_or_else(|| "?".to_string(), |n| n.to_string()),
+            app.skills_count.map_or_else(|| "?".to_string(), |n| n.to_string())),
         Style::default().fg(s.category).add_modifier(Modifier::BOLD),
     )));
     right_lines.push(Line::raw(""));

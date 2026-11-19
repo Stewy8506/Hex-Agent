@@ -3,8 +3,9 @@
 //! Conforms to Hermes Desktop approval cards and Phase 37 temporal lease architecture:
 //! - Warning/shield header with tool name badge and risk classification tag (R3/R4)
 //! - Command / script preview box
-//! - 3-Way Radio: [1] Allow once (y), [2] Allow all in session (a), [3] Deny (n)
-//! - 15-minute lease toggle ("Grant 15m auto-approval lease for matching commands")
+//! - 3-Way Radio: [1] Allow once (y), [2] Allow again for this session (a), [3] Deny (n)
+//! - 15-minute lease toggle, valid only for the scoped choice: the grant binds
+//!   to this exact action (B45) and carries a real server-validated TTL (B30)
 //! - Primary Approve and Danger Deny actions
 
 use gpui::*;
@@ -17,7 +18,7 @@ use crate::theme::HermesTheme;
 pub enum ToolApprovalChoice {
     /// Allow this single execution only (hotkey `y` / `1`).
     Once,
-    /// Allow all invocations of this tool for the remainder of the active session (hotkey `a` / `2`).
+    /// Allow this exact action again for the remainder of the active session's lease (hotkey `a` / `2`).
     Session,
     /// Deny tool invocation and halt execution (hotkey `n` / `3`).
     Deny,
@@ -27,7 +28,7 @@ impl ToolApprovalChoice {
     pub fn label(&self) -> &'static str {
         match self {
             ToolApprovalChoice::Once => "Allow once",
-            ToolApprovalChoice::Session => "Allow all in session",
+            ToolApprovalChoice::Session => "Allow again for this session",
             ToolApprovalChoice::Deny => "Deny",
         }
     }
@@ -59,9 +60,9 @@ pub struct ToolApprovalResult {
 }
 
 impl ToolApprovalResult {
-    /// Returns the lease duration in seconds if lease was requested.
+    /// Returns the lease duration in seconds if a scoped lease was requested.
     pub fn lease_seconds(&self) -> Option<u64> {
-        if self.lease_15m {
+        if self.lease_15m && self.choice == ToolApprovalChoice::Session {
             Some(self.lease_duration_seconds.unwrap_or(900))
         } else {
             None
@@ -155,15 +156,12 @@ impl ToolApprovalModal {
 
     /// Confirm and produce the final approval decision result.
     pub fn confirm(&self) -> ToolApprovalResult {
+        let scoped_lease = self.lease_15m && self.choice == ToolApprovalChoice::Session;
         ToolApprovalResult {
             request_id: self.request_id.clone(),
             choice: self.choice,
-            lease_15m: self.lease_15m && self.choice != ToolApprovalChoice::Deny,
-            lease_duration_seconds: if self.lease_15m && self.choice != ToolApprovalChoice::Deny {
-                Some(900)
-            } else {
-                None
-            },
+            lease_15m: scoped_lease,
+            lease_duration_seconds: if scoped_lease { Some(900) } else { None },
         }
     }
 
@@ -280,6 +278,7 @@ impl ToolApprovalModal {
     }
 
     fn render_lease_box(&self, theme: &HermesTheme) -> Div {
+        let lease_active = self.lease_15m && self.choice == ToolApprovalChoice::Session;
         div()
             .flex()
             .items_center()
@@ -287,13 +286,13 @@ impl ToolApprovalModal {
             .px_3()
             .py_2()
             .rounded(px(6.0))
-            .bg(if self.lease_15m {
+            .bg(if lease_active {
                 rgba(0x7aa7ff1a)
             } else {
                 theme.card_hover()
             })
             .border_1()
-            .border_color(if self.lease_15m {
+            .border_color(if lease_active {
                 rgba(0x7aa7ff59)
             } else {
                 theme.border_subtle()
@@ -309,12 +308,12 @@ impl ToolApprovalModal {
                             .h(px(16.0))
                             .rounded(px(4.0))
                             .border_1()
-                            .border_color(if self.lease_15m {
+                            .border_color(if lease_active {
                                 theme.accent_blue()
                             } else {
                                 theme.border_structural()
                             })
-                            .bg(if self.lease_15m {
+                            .bg(if lease_active {
                                 theme.accent_blue()
                             } else {
                                 theme.canvas_bg()
@@ -323,12 +322,12 @@ impl ToolApprovalModal {
                             .items_center()
                             .justify_center()
                             .text_size(px(10.0))
-                            .text_color(if self.lease_15m {
+                            .text_color(if lease_active {
                                 theme.canvas_bg()
                             } else {
                                 theme.text_dim()
                             })
-                            .child(if self.lease_15m { "✓" } else { "" }),
+                            .child(if lease_active { "✓" } else { "" }),
                     )
                     .child(
                         div()
@@ -339,13 +338,13 @@ impl ToolApprovalModal {
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.text_primary())
-                                    .child("Grant 15m auto-approval lease for matching commands"),
+                                    .child("Grant a 15-minute lease for this exact action"),
                             )
                             .child(
                                 div()
                                     .text_size(px(10.5))
                                     .text_color(theme.text_dim())
-                                    .child("Subsequent matching commands will execute with 0ms delay (hotkey: l)"),
+                                    .child("Applies only to \"Allow again for this session\"; the identical command skips approval until the lease expires (hotkey: l)"),
                             ),
                     ),
             )
@@ -591,5 +590,23 @@ mod tests {
         // Deny should not grant temporal lease
         assert!(!res.lease_15m);
         assert_eq!(res.lease_seconds(), None);
+    }
+
+    #[test]
+    fn test_once_choice_never_grants_lease_even_when_toggled() {
+        let mut modal = ToolApprovalModal::new("req_once", "bash", "cargo build", "R3");
+        modal.toggle_lease();
+        assert!(modal.lease_15m);
+
+        let res = modal.confirm();
+        assert_eq!(res.choice, ToolApprovalChoice::Once);
+        assert!(!res.lease_15m);
+        assert_eq!(res.lease_seconds(), None);
+
+        // Switching to the scoped choice makes the toggled lease real.
+        modal.set_choice(ToolApprovalChoice::Session);
+        let res = modal.confirm();
+        assert!(res.lease_15m);
+        assert_eq!(res.lease_seconds(), Some(900));
     }
 }

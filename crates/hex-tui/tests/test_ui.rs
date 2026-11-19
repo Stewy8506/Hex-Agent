@@ -3,7 +3,7 @@
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
-use hex_tui::app::{App, Focus};
+use hex_tui::app::{App, ApprovalRequest, Focus};
 use hex_tui::ui;
 
 #[test]
@@ -386,4 +386,328 @@ fn test_side_by_side_diff_mode_toggle_and_rendering() {
         !content_unified.contains("Diff Viewer (Old)"),
         "Must not render Old header in unified mode"
     );
+}
+
+fn approval_app() -> App {
+    let mut app = App::new("p", "m", "cow");
+    app.set_approval_request(ApprovalRequest {
+        id: "b25".into(),
+        risk_level: "R3".into(),
+        tool_name: "bash".into(),
+        parameters: "echo ok".into(),
+        reason: "Run command".into(),
+        blast_radius: "Read only".into(),
+        cwd: "/work".into(),
+    });
+    app
+}
+
+fn paint_approval(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    // Offset bounds catch renderers that accidentally assume a (0, 0) origin.
+    let area = ratatui::layout::Rect::new(3, 4, width, height);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    ui::screens::permission::render(app, &ui::style::HexTheme::detect(), area, &mut buffer);
+    buffer
+}
+
+fn approval_rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+    (buffer.area.top()..buffer.area.bottom())
+        .map(|y| {
+            let mut row = String::new();
+            let mut x = buffer.area.left();
+            while x < buffer.area.right() {
+                let symbol = buffer[(x, y)].symbol();
+                row.push_str(symbol);
+                // Wide graphemes own the following blank continuation cells.
+                x += ratatui::text::Span::raw(symbol).width().max(1) as u16;
+            }
+            row
+        })
+        .collect()
+}
+
+#[test]
+fn approval_compact_short_layout_keeps_all_context_and_controls() {
+    let app = approval_app();
+    for (width, height) in [(40, 10), (60, 10), (36, 11), (39, 11)] {
+        let text = approval_rows(&paint_approval(&app, width, height)).join("\n");
+        assert!(app.approval_can_allow.get(), "{width}x{height}: {text}");
+        for required in [
+            "Permission required (b25)",
+            "Tool: bash  Risk: R3",
+            "Cwd: /work",
+            "Parameters: echo ok",
+            "Reason: Run command",
+            "Impact: Read only",
+            "Allow once",
+            "Allow matching calls in this task",
+            "Deny",
+            "Enter confirm; Esc deny",
+        ] {
+            assert!(
+                text.contains(required),
+                "{width}x{height} missing {required}: {text}"
+            );
+        }
+        assert!(!text.contains("in this project"));
+        let rows = approval_rows(&paint_approval(&app, width, height));
+        for (label, key) in [
+            ("Allow once", 'y'),
+            ("Allow matching calls in this task", 'a'),
+            ("Deny", 'n'),
+        ] {
+            let index = rows.iter().position(|row| row.contains(label)).unwrap();
+            assert!(
+                rows[index].trim_end().ends_with(key)
+                    || rows
+                        .get(index + 1)
+                        .is_some_and(|row| row.trim() == key.to_string()),
+                "{width}x{height} lost {label}'s hotkey: {}",
+                rows.join("\n")
+            );
+        }
+    }
+}
+
+#[test]
+fn approval_tiny_bounds_always_reset_allow_and_advertise_deny() {
+    let app = approval_app();
+    for (width, height) in [
+        (0, 0),
+        (0, 5),
+        (5, 0),
+        (1, 1),
+        (4, 1),
+        (12, 2),
+        (20, 2),
+        (35, 3),
+        (80, 6),
+        (39, 9),
+    ] {
+        app.approval_can_allow.set(true);
+        let text = approval_rows(&paint_approval(&app, width, height)).join("\n");
+        assert!(!app.approval_can_allow.get(), "{width}x{height}: {text}");
+        assert!(!text.contains("Allow once"));
+        assert!(!text.contains("Allow matching"));
+        if width > 0 && height > 0 {
+            assert!(
+                text.contains('n'),
+                "deny hint missing at {width}x{height}: {text}"
+            );
+        }
+        if width >= 14 && height >= 2 {
+            assert!(
+                text.to_lowercase().contains("resize"),
+                "{width}x{height}: {text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn approval_unicode_columns_and_multiline_parameters_are_not_silently_clipped() {
+    let mut app = approval_app();
+    // Twelve prefix columns plus fourteen double-width characters fit exactly.
+    app.active_approval.as_mut().unwrap().parameters = "界".repeat(14);
+    let text = approval_rows(&paint_approval(&app, 40, 10)).join("\n");
+    assert!(app.approval_can_allow.get(), "{text}");
+    assert!(text.contains(&format!("Parameters: {}", "界".repeat(14))));
+    app.active_approval.as_mut().unwrap().parameters.push('界');
+    let text = approval_rows(&paint_approval(&app, 40, 10)).join("\n");
+    assert!(
+        !app.approval_can_allow.get(),
+        "a width-overflowing request must not allow: {text}"
+    );
+    assert!(text.contains("Resize"));
+
+    app.active_approval.as_mut().unwrap().parameters = "e\u{301}👩‍💻界\nrm -rf /".into();
+    paint_approval(&app, 40, 10);
+    assert!(
+        !app.approval_can_allow.get(),
+        "hard newline needs another row"
+    );
+    let text = approval_rows(&paint_approval(&app, 40, 11)).join("\n");
+    assert!(app.approval_can_allow.get(), "{text}");
+    assert!(text.contains("e\u{301}👩‍💻界"));
+    assert!(text.contains("rm -rf /"));
+
+    app.active_approval.as_mut().unwrap().parameters = "first\n\nlast\n".into();
+    let rows = approval_rows(&paint_approval(&app, 40, 13));
+    assert!(app.approval_can_allow.get());
+    let first = rows
+        .iter()
+        .position(|row| row.contains("Parameters: first"))
+        .unwrap();
+    assert!(rows[first + 1].trim().is_empty());
+    assert_eq!(rows[first + 2].trim(), "last");
+    assert!(rows[first + 3].trim().is_empty());
+}
+
+#[test]
+fn approval_every_oversized_context_field_and_unrenderable_control_fails_closed() {
+    for field in [
+        "id",
+        "tool",
+        "risk",
+        "cwd",
+        "parameters",
+        "reason",
+        "impact",
+    ] {
+        let mut app = approval_app();
+        let request = app.active_approval.as_mut().unwrap();
+        let value = "界".repeat(2_000);
+        match field {
+            "id" => request.id = value,
+            "tool" => request.tool_name = value,
+            "risk" => request.risk_level = value,
+            "cwd" => request.cwd = value,
+            "parameters" => request.parameters = value,
+            "reason" => request.reason = value,
+            "impact" => request.blast_radius = value,
+            _ => unreachable!(),
+        }
+        let text = approval_rows(&paint_approval(&app, 120, 36)).join("\n");
+        assert!(
+            !app.approval_can_allow.get(),
+            "{field} was clipped but allow remained enabled"
+        );
+        assert!(text.contains("Resize"));
+        assert!(text.contains("Deny"));
+        assert!(!text.contains("Allow once"));
+    }
+    for parameters in [
+        "echo safe\t; rm -rf /",
+        "echo safe\rmalicious",
+        "echo \u{1b}[2J",
+        "\u{200b}hidden",
+    ] {
+        let mut app = approval_app();
+        app.active_approval.as_mut().unwrap().parameters = parameters.into();
+        paint_approval(&app, 120, 36);
+        assert!(
+            !app.approval_can_allow.get(),
+            "invisible context must not allow: {parameters:?}"
+        );
+    }
+}
+
+#[test]
+fn approval_pending_error_and_retry_states_are_visible_and_gate_allow() {
+    let mut app = approval_app();
+    paint_approval(&app, 100, 24);
+    assert!(app.approval_can_allow.get());
+    app.approval_pending = true;
+    let text = approval_rows(&paint_approval(&app, 100, 24)).join("\n");
+    assert!(!app.approval_can_allow.get());
+    assert!(text.contains("Submitting decision; please wait"));
+    assert!(text.contains("controls disabled while pending"));
+    assert!(!text.contains("Allow once"));
+
+    app.approval_pending = false;
+    app.approval_error = Some("Backend offline".into());
+    let text = approval_rows(&paint_approval(&app, 100, 24)).join("\n");
+    assert!(app.approval_can_allow.get());
+    assert!(text.contains("Error: Backend offline"));
+    assert!(text.contains("Retry: choose a decision below"));
+    assert!(text.contains("Allow matching calls in this task"));
+
+    let text = approval_rows(&paint_approval(&app, 40, 4)).join("\n");
+    assert!(!app.approval_can_allow.get());
+    assert!(text.contains("Approval failed"));
+    assert!(text.contains("Error: Backend offline"));
+    assert!(text.contains("Resize to review and retry"));
+    assert!(text.contains("Deny"));
+
+    app.approval_error = Some("backend error ".repeat(1_000));
+    let text = approval_rows(&paint_approval(&app, 100, 24)).join("\n");
+    assert!(
+        !app.approval_can_allow.get(),
+        "a clipped error must not hide retry context"
+    );
+    assert!(text.contains("Approval failed"));
+    assert!(!text.contains("Allow once"));
+    app.approval_error = Some("Backend offline".into());
+
+    app.approval_pending = true;
+    let text = approval_rows(&paint_approval(&app, 100, 24)).join("\n");
+    assert!(!app.approval_can_allow.get());
+    assert!(text.contains("Error: Backend offline"));
+    assert!(text.contains("Submitting decision"));
+    assert!(!text.contains("Retry:"));
+    let text = approval_rows(&paint_approval(&app, 40, 3)).join("\n");
+    assert!(text.contains("Approval pending"));
+    assert!(text.contains("Wait"));
+    assert!(!text.contains("Deny"));
+    assert!(!app.approval_can_allow.get());
+}
+
+#[test]
+fn approval_is_topmost_over_diff_help_palette_and_settings() {
+    for diff in [false, true] {
+        let mut app = approval_app();
+        app.switch_screen(hex_tui::app::ScreenState::Session);
+        app.load_diff("--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new");
+        app.side_by_side = diff;
+        app.show_help = true;
+        app.show_palette = true;
+        app.sidebar.show_settings = true;
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+        assert!(app.approval_can_allow.get());
+        let actual = terminal.backend().buffer();
+        let mut expected = ratatui::buffer::Buffer::empty(actual.area);
+        ui::screens::permission::render(
+            &app,
+            &ui::style::HexTheme::detect(),
+            actual.area,
+            &mut expected,
+        );
+        // Every modal cell must survive lower-priority overlays.
+        for y in 12..24 {
+            for x in 20..100 {
+                assert_eq!(
+                    actual[(x, y)].symbol(),
+                    expected[(x, y)].symbol(),
+                    "diff={diff} at ({x}, {y})"
+                );
+            }
+        }
+        for (width, height, can_allow) in [(40, 10, true), (20, 5, false)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+            let text = approval_rows(terminal.backend().buffer()).join("\n");
+            assert_eq!(
+                app.approval_can_allow.get(),
+                can_allow,
+                "diff={diff}: {text}"
+            );
+            assert!(text.contains("Permission required"));
+            assert!(text.contains("Deny"));
+            assert_eq!(text.contains("Allow once"), can_allow);
+        }
+    }
+}
+
+#[test]
+fn approval_allow_gate_is_recomputed_after_resize_and_without_an_approval() {
+    let mut app = approval_app();
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+    assert!(app.approval_can_allow.get());
+    let mut tiny = Terminal::new(TestBackend::new(20, 5)).unwrap();
+    tiny.draw(|frame| ui::draw(frame, &app)).unwrap();
+    assert!(!app.approval_can_allow.get());
+    let text = approval_rows(tiny.backend().buffer()).join("\n");
+    assert!(text.contains("Deny"));
+    terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+    assert!(app.approval_can_allow.get());
+
+    app.active_approval = None;
+    // Exercise draw's reset independently of App's clear-approval method.
+    app.approval_can_allow.set(true);
+    app.side_by_side = true;
+    app.show_diff = true;
+    terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+    assert!(!app.approval_can_allow.get());
 }

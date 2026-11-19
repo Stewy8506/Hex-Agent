@@ -633,7 +633,8 @@ class ACPServer:
                 "id": req_id,
                 "error": {
                     "code": -32602 if method in {
-                        "session/toolResult", "session/load", "session/history", "session/historyContent"
+                        "session/toolResult", "session/load", "session/history", "session/historyContent",
+                        "session/approvalDecision"
                     } and isinstance(exc, (ValueError, TypeError)) else -32000,
                     "message": str(exc),
                 },
@@ -716,14 +717,14 @@ class ACPServer:
             "splashText": splash_text,
         }
 
-    def _validate_history_params(self, params: Any, allowed: set[str]) -> None:
+    def _validate_history_params(self, params: Any, allowed: set[str], *, identifier: str = "sessionId") -> None:
         if not isinstance(params, dict):
             raise ValueError("Session history params must be an object")
         if params.keys() - allowed:
             raise ValueError("Unknown session history parameter")
-        sid = params.get("sessionId")
+        sid = params.get(identifier)
         if not isinstance(sid, str) or len(sid) > 256 or self._session_path(sid) is None:
-            raise ValueError("sessionId must be a valid session identifier")
+            raise ValueError(f"{identifier} must be a valid session identifier")
 
     @staticmethod
     def _history_integer(params: dict[str, Any], name: str, default: int, minimum: int, maximum: int) -> int:
@@ -747,12 +748,42 @@ class ACPServer:
                 raise OSError("Session history persistence unavailable; source retained")
         return sess.history
 
+    def _session_id_for_task(self, task_id: str) -> str:
+        matches: set[str] = set()
+        db_path = self._sessions_dir / "history.db"
+        if db_path.is_file():
+            # Read-only lookup cannot create storage when a resume entry is stale.
+            conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+            try:
+                matches.update(row[0] for row in conn.execute(
+                    "SELECT DISTINCT session_id FROM history WHERE task_id = ? LIMIT 2",
+                    (task_id,),
+                ))
+            finally:
+                conn.close()
+        with self._lock:
+            matches.update(sess.session_id for sess in self.sessions.values()
+                           if not isinstance(sess.history, SQLiteHistory) and sess.has_task(task_id))
+        if not matches:
+            raise KeyError(f"Task not found in ACP session history: {task_id}")
+        if len(matches) != 1:
+            raise ValueError(f"Task maps to multiple ACP sessions: {task_id}")
+        sid = matches.pop()
+        self._validate_history_params({"sessionId": sid}, {"sessionId"})
+        return sid
+
     def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
-        self._validate_history_params(params, {"sessionId", "paged"})
+        if not isinstance(params, dict):
+            raise ValueError("Session history params must be an object")
+        if ("sessionId" in params) == ("taskId" in params):
+            raise ValueError("Exactly one of sessionId or taskId is required")
+        identifier = "taskId" if "taskId" in params else "sessionId"
+        self._validate_history_params(params, {"sessionId", "taskId", "paged"}, identifier=identifier)
         paged = params.get("paged", False)
         if type(paged) is not bool:
             raise ValueError("paged must be a boolean")
-        sess = self._existing_session(params["sessionId"])
+        sid = self._session_id_for_task(params["taskId"]) if identifier == "taskId" else params["sessionId"]
+        sess = self._existing_session(sid)
         with self._lock:
             self.sessions[sess.session_id] = sess
         # B41: approvals live only in memory, so a reloaded session must not
@@ -1044,7 +1075,9 @@ class ACPServer:
         })
 
         terminal_text = str(terminal_reason)
-        paged_final = paged_response and not streamed and len(terminal_text) > 4096
+        response_chars = len(terminal_text)
+        turn_index = len(sess.history) - 1
+        paged_final = paged_response and not streamed and response_chars > 4096
         if paged_final:
             # The complete original is committed before these synthetic deltas.
             stream_cb(terminal_text)
@@ -1063,8 +1096,9 @@ class ACPServer:
             update_notif["params"]["delta"] = terminal_text
         self._emit(update_notif)
 
-        if paged_response and len(terminal_text) > 4096:
-            turn_index = len(sess.history) - 1
+        response_metadata: dict[str, Any] = {}
+        if paged_response and response_chars > 4096:
+            response_metadata = {"responseChars": response_chars, "turnIndex": turn_index}
             terminal_text = terminal_text[:4096] + f"\n[Full response: /history-turn {turn_index} response]"
 
         return {
@@ -1077,6 +1111,7 @@ class ACPServer:
                 }
             ],
             "taskId": task_id,
+            **response_metadata,
         }
 
     def _handle_session_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1235,6 +1270,7 @@ class ACPServer:
         approval_id = params.get("approvalId") or params.get("approval_id")
         decision = (params.get("decision") or "reject").lower()
         reason = params.get("reason", "")
+        ttl = params.get("leaseTtlSeconds", params.get("lease_ttl_seconds"))
         if not approval_id:
             raise ValueError("approvalId is required")
 
@@ -1246,14 +1282,23 @@ class ACPServer:
                 "status": "decided",
             }
 
-        applied = False
         if self.approval_bridge is not None:
-            applied = self.approval_bridge.resolve(approval_id, decision, reason or None)
+            outcome = self.approval_bridge.resolve(approval_id, decision, reason or None, ttl)
+        else:
+            from harness_core.client.acp_approval import _APPROVE_ONCE, _APPROVE_SCOPE, _DENY
+
+            if decision not in _APPROVE_ONCE | _APPROVE_SCOPE | _DENY:
+                raise ValueError(f"Unknown approval decision: {decision!r}")
+            outcome = {"applied": False, "outcome": None, "lease_id": None, "lease_ttl_seconds": None}
 
         return {
             "approvalId": approval_id,
             "decision": decision,
-            "status": "applied" if applied else "acknowledged",
+            "status": "applied" if outcome["applied"] else "acknowledged",
+            "applied": outcome["applied"],
+            "outcome": outcome["outcome"],
+            "leaseId": outcome["lease_id"],
+            "leaseTtlSeconds": outcome["lease_ttl_seconds"],
         }
 
     def _handle_session_tool_result(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1376,9 +1421,21 @@ class ACPServer:
                 "isError": True,
             }
 
+        metadata: dict[str, Any] = {}
         try:
-            output = handler(sess, args)
-            is_error = False
+            result = handler(sess, args)
+            if isinstance(result, dict):
+                output = result["output"]
+                is_error = bool(result.get("isError", False))
+                if not is_error:
+                    metadata = {
+                        key: result[key]
+                        for key in ("model", "provider")
+                        if result.get(key) is not None
+                    }
+            else:
+                output = result
+                is_error = False
         except Exception as exc:
             output = f"Command failed: {exc}"
             is_error = True
@@ -1388,6 +1445,7 @@ class ACPServer:
             "command": cmd,
             "output": output,
             "isError": is_error,
+            **metadata,
         }
 
     # ------------------------------------------------------------------
@@ -1531,16 +1589,25 @@ class ACPServer:
             lines.append(f"  Event chain: {state} ({report.verified_events} events verified)")
         return "\n".join(lines)
 
-    def _cmd_model(self, sess: ACPSession, args: str) -> str:
+    def _cmd_model(self, sess: ACPSession, args: str) -> dict[str, Any]:
         if not args:
             router = getattr(self.orchestrator, "router", None)
             current = getattr(router, "cloud_model_id", None) or sess.model
-            return f"Active model: {current} (session profile: {sess.model})"
+            provider = getattr(getattr(router, "cloud_provider", None), "provider_id", None)
+            return {
+                "output": f"Active model: {current} (session profile: {sess.model})",
+                "model": current,
+                "provider": provider,
+            }
         if not hasattr(self.orchestrator, "set_active_model"):
             raise ValueError("Model switching unavailable: orchestrator has no set_active_model.")
         prov, final_id, _saved = self.orchestrator.set_active_model(args, durable=False)
         sess.model = final_id
-        return f"Active model switched to: {final_id} (provider: {prov}; session-only)"
+        return {
+            "output": f"Active model switched to: {final_id} (provider: {prov}; session-only)",
+            "model": final_id,
+            "provider": prov,
+        }
 
     def _cmd_budget(self, sess: ACPSession, args: str) -> str:
         router = getattr(self.orchestrator, "router", None)

@@ -23,7 +23,7 @@ use tokio::runtime::{Handle, Runtime};
 use unicode_segmentation::UnicodeSegmentation;
 
 use hex_protocol::error::AcpError;
-use hex_protocol::models::{SessionNewResponse, SessionPromptResponse};
+use hex_protocol::models::{ApprovalDecisionResponse, SessionNewResponse, SessionPromptResponse};
 
 use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::menu::init_menus;
@@ -31,7 +31,7 @@ use crate::shortcuts::{self, init_shortcuts};
 use crate::theme::HermesTheme;
 use crate::ui::feed::{MessageFeed, MessageItem};
 use crate::ui::message::AssistantMessageView;
-use crate::ui::modals::approval::ToolApprovalResult;
+use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
 use crate::ui::modals::{render_modal_container, ActiveModal, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
 use crate::ui::session_list::SessionItem;
@@ -127,6 +127,35 @@ fn find_assistant_mut<'a>(feed: &'a mut MessageFeed, id: &str) -> Option<&'a mut
         MessageItem::Assistant(a) if a.id == id => Some(a),
         _ => None,
     })
+}
+
+/// Replace the turn's streamed preview with the authoritative final text (B31).
+///
+/// The final answer wins even when the preview is non-empty: lost or truncated
+/// deltas must never be presented as the completed answer.
+fn apply_authoritative_final(
+    feed: &mut MessageFeed,
+    assistant_id: Option<&str>,
+    text: &str,
+    model_name: &str,
+) {
+    if text.is_empty() {
+        return;
+    }
+    match assistant_id.and_then(|id| find_assistant_mut(feed, id)) {
+        Some(assistant) => {
+            assistant.content = text.to_string();
+            assistant.is_streaming = false;
+            assistant.model_name = model_name.to_string();
+        }
+        None => {
+            feed.add_assistant_message(text.to_string());
+            if let Some(MessageItem::Assistant(a)) = feed.messages.last_mut() {
+                a.is_streaming = false;
+                a.model_name = model_name.to_string();
+            }
+        }
+    }
 }
 
 /// The interactive desktop root: sidebar + feed + composer wired to ACP.
@@ -288,7 +317,14 @@ impl ChatView {
                         break;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
+                    if this
+                        .update(cx, |view, cx| view.note_stream_lag(dropped, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         })
@@ -618,25 +654,23 @@ impl ChatView {
             Ok(Ok(resp)) => {
                 if resp.is_completed() {
                     let text = resp.text_content();
-                    match turn_assistant
-                        .as_deref()
-                        .and_then(|id| find_assistant_mut(feed, id))
-                    {
-                        Some(assistant) => {
-                            if assistant.content.is_empty() && !text.is_empty() {
-                                assistant.content = text;
-                            }
-                            assistant.is_streaming = false;
-                            assistant.model_name = self.current_model.clone();
-                        }
-                        None => {
-                            if !text.is_empty() {
-                                feed.add_assistant_message(text);
-                                if let Some(MessageItem::Assistant(a)) = feed.messages.last_mut() {
-                                    a.model_name = self.current_model.clone();
-                                }
-                            }
-                        }
+                    apply_authoritative_final(feed, turn_assistant.as_deref(), &text, &self.current_model);
+                    if resp.turn_index.is_some() && resp.response_chars.is_some() {
+                        let bridge = self.bridge.clone();
+                        let rt = self.rt.clone();
+                        let sid = session_id.to_string();
+                        let assistant_id = turn_assistant.clone();
+                        cx.spawn(async move |this, cx| {
+                            let sid2 = sid.clone();
+                            let res = rt
+                                .spawn(async move { bridge.fetch_canonical_final(&sid2, &resp).await })
+                                .await;
+                            this.update(cx, |view, cx| {
+                                view.reconcile_canonical_final(&sid, assistant_id.as_deref(), res, cx);
+                            })
+                            .ok();
+                        })
+                        .detach();
                     }
                 } else if resp.status.eq_ignore_ascii_case("cancelled") {
                     feed.add_system_notice("Turn cancelled.");
@@ -663,6 +697,59 @@ impl ChatView {
             }
         }
         self.sync_transport_state();
+        cx.notify();
+    }
+
+    /// Replace the turn's preview with the authoritative paged final (B31).
+    fn reconcile_canonical_final(
+        &mut self,
+        session_id: &str,
+        assistant_id: Option<&str>,
+        res: Result<Result<String, AcpError>, tokio::task::JoinError>,
+        cx: &mut Context<Self>,
+    ) {
+        let text = match res {
+            Ok(Ok(text)) => text,
+            Ok(Err(err)) => {
+                self.shell.feed.add_system_notice(format!(
+                    "Could not fetch the full final answer: {err}. The preview may be incomplete."
+                ));
+                cx.notify();
+                return;
+            }
+            Err(err) => {
+                self.shell.feed.add_system_notice(format!(
+                    "Final-answer task aborted: {err}. The preview may be incomplete."
+                ));
+                cx.notify();
+                return;
+            }
+        };
+        if text.is_empty() {
+            return;
+        }
+        let is_active = self.shell.active_session_id.as_deref() == Some(session_id);
+        let feed: &mut MessageFeed = if is_active {
+            &mut self.shell.feed
+        } else {
+            match self.sessions.get_mut(session_id) {
+                Some(state) => &mut state.feed,
+                None => {
+                    cx.notify();
+                    return;
+                }
+            }
+        };
+        apply_authoritative_final(feed, assistant_id, &text, &self.current_model);
+        cx.notify();
+    }
+
+    /// A lagged broadcast means deltas were dropped; say so instead of silently
+    /// presenting a truncated preview as the answer (B31).
+    fn note_stream_lag(&mut self, dropped: u64, cx: &mut Context<Self>) {
+        self.shell.feed.add_system_notice(format!(
+            "Live stream lagged ({dropped} events dropped); the authoritative final answer will replace the preview."
+        ));
         cx.notify();
     }
 
@@ -741,40 +828,81 @@ impl ChatView {
     // ------------------------------------------------------------------
 
     fn send_approval_result(&mut self, result: ToolApprovalResult, cx: &mut Context<Self>) {
-        let decision = match result.choice {
-            crate::ui::modals::approval::ToolApprovalChoice::Once => "approve",
-            crate::ui::modals::approval::ToolApprovalChoice::Session => "allow_session",
-            crate::ui::modals::approval::ToolApprovalChoice::Deny => "deny",
-        };
-        self.shell
-            .feed
-            .add_system_notice(format!("Approval decision sent: {decision}."));
-        cx.notify();
-
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         let approval_id = result.request_id.clone();
         let choice = result.choice;
-        let lease = result.lease_15m;
+        let ttl = result.lease_seconds();
         cx.spawn(async move |this, cx| {
+            let id = approval_id.clone();
             let res = rt
                 .spawn(async move {
                     bridge
-                        .send_approval_decision(&approval_id, choice, lease)
+                        .send_approval_decision(&approval_id, choice, ttl)
                         .await
                 })
                 .await;
             this.update(cx, |view, cx| {
-                if !matches!(res, Ok(Ok(_))) {
-                    view.shell
-                        .feed
-                        .add_system_notice("Approval decision failed to reach the runtime.");
-                    cx.notify();
-                }
+                view.apply_approval_outcome(&id, choice, res, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Apply the server's typed approval outcome (B27).
+    ///
+    /// Nothing is announced before the runtime confirms it. An unapplied or
+    /// failed decision leaves the modal open and retryable instead of claiming
+    /// an approval that never happened.
+    fn apply_approval_outcome(
+        &mut self,
+        approval_id: &str,
+        choice: ToolApprovalChoice,
+        res: Result<Result<ApprovalDecisionResponse, AcpError>, tokio::task::JoinError>,
+        cx: &mut Context<Self>,
+    ) {
+        if let ActiveModal::Approval(modal) = &mut self.shell.active_modal {
+            if modal.request_id == approval_id {
+                modal.is_submitting = false;
+            }
+        }
+        match res {
+            Ok(Ok(resp)) if resp.status == "applied" && resp.applied != Some(false) => {
+                self.shell.dismiss_modal();
+                let outcome = resp.outcome.clone().unwrap_or_else(|| match choice {
+                    ToolApprovalChoice::Deny => "DENY".to_string(),
+                    _ => "APPROVE".to_string(),
+                });
+                let notice = if outcome == "DENY" {
+                    "Approval denied; the runtime blocked the action.".to_string()
+                } else if let (Some(lease_id), Some(ttl)) = (&resp.lease_id, resp.lease_ttl_seconds) {
+                    format!("Approved for this session; lease {lease_id} expires in {ttl}s.")
+                } else if choice == ToolApprovalChoice::Session {
+                    "Approved for this session with the default scoped lease.".to_string()
+                } else {
+                    "Approved once; the runtime executed the action.".to_string()
+                };
+                self.shell.feed.add_system_notice(notice);
+            }
+            Ok(Ok(resp)) => {
+                self.shell.feed.add_system_notice(format!(
+                    "The runtime did not apply this decision ({}; approval {}); no pending request matched. Retry or deny.",
+                    resp.status, resp.approval_id
+                ));
+            }
+            Ok(Err(err)) => {
+                self.shell.feed.add_system_notice(format!(
+                    "Approval decision failed: {err}. No decision confirmed; retry or deny."
+                ));
+            }
+            Err(err) => {
+                self.shell.feed.add_system_notice(format!(
+                    "Approval task aborted: {err}. No decision confirmed; retry or deny."
+                ));
+            }
+        }
+        cx.notify();
     }
 
     fn execute_palette_action(&mut self, action: PaletteAction, cx: &mut Context<Self>) {
@@ -813,8 +941,12 @@ impl ChatView {
     fn handle_modal_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
         match &mut self.shell.active_modal {
             ActiveModal::Approval(modal) => {
-                if let Some(result) = modal.handle_key(key) {
-                    self.shell.dismiss_modal();
+                if modal.is_submitting {
+                    return true;
+                }
+                let result = modal.handle_key(key);
+                if let Some(result) = result {
+                    modal.is_submitting = true;
                     self.send_approval_result(result, cx);
                     true
                 } else {
@@ -1957,5 +2089,124 @@ impl Element for ComposerElement {
             view.last_bounds = Some(bounds);
             view.last_line_height = line_height;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    #[test]
+    fn authoritative_final_replaces_nonempty_truncated_preview() {
+        let mut feed = MessageFeed::new();
+        let id = feed.start_assistant_streaming();
+        feed.append_streaming_chunk("The quick brown f");
+        feed.finish_streaming();
+
+        apply_authoritative_final(
+            &mut feed,
+            Some(&id),
+            "The quick brown fox jumps over the lazy dog.",
+            "claude-3-7-sonnet",
+        );
+
+        assert_eq!(feed.len(), 1);
+        match &feed.messages[0] {
+            MessageItem::Assistant(a) => {
+                assert_eq!(a.content, "The quick brown fox jumps over the lazy dog.");
+                assert!(!a.is_streaming);
+                assert_eq!(a.model_name, "claude-3-7-sonnet");
+            }
+            _ => panic!("expected assistant row"),
+        }
+    }
+
+    #[test]
+    fn authoritative_final_targets_only_its_turn_row() {
+        let mut feed = MessageFeed::new();
+        let older_id = feed.add_assistant_message("Earlier completed answer.");
+        let current_id = feed.start_assistant_streaming();
+        feed.append_streaming_chunk("partial");
+        feed.finish_streaming();
+
+        apply_authoritative_final(&mut feed, Some(&current_id), "Full current answer.", "m1");
+
+        assert_eq!(feed.len(), 2);
+        match &feed.messages[0] {
+            MessageItem::Assistant(a) => {
+                assert_eq!(a.id, older_id);
+                assert_eq!(a.content, "Earlier completed answer.");
+            }
+            _ => panic!("expected assistant row"),
+        }
+        match &feed.messages[1] {
+            MessageItem::Assistant(a) => {
+                assert_eq!(a.id, current_id);
+                assert_eq!(a.content, "Full current answer.");
+                assert!(!a.is_streaming);
+            }
+            _ => panic!("expected assistant row"),
+        }
+    }
+
+    #[test]
+    fn authoritative_final_adds_row_when_preview_missing() {
+        let mut feed = MessageFeed::new();
+        feed.add_user_message("Question?");
+
+        apply_authoritative_final(&mut feed, Some("missing_id"), "Recovered final.", "m1");
+
+        assert_eq!(feed.len(), 2);
+        match &feed.messages[1] {
+            MessageItem::Assistant(a) => {
+                assert_eq!(a.content, "Recovered final.");
+                assert!(!a.is_streaming);
+                assert_eq!(a.model_name, "m1");
+            }
+            _ => panic!("expected assistant row"),
+        }
+    }
+
+    #[test]
+    fn authoritative_final_without_id_appends_new_row() {
+        let mut feed = MessageFeed::new();
+        let orphan_id = feed.start_assistant_streaming();
+        feed.append_streaming_chunk("orphan preview");
+        feed.finish_streaming();
+
+        apply_authoritative_final(&mut feed, None, "Final without correlation.", "m1");
+
+        assert_eq!(feed.len(), 2);
+        match &feed.messages[0] {
+            MessageItem::Assistant(a) => {
+                assert_eq!(a.id, orphan_id);
+                assert_eq!(a.content, "orphan preview");
+            }
+            _ => panic!("expected assistant row"),
+        }
+        match &feed.messages[1] {
+            MessageItem::Assistant(a) => {
+                assert_eq!(a.content, "Final without correlation.");
+                assert!(!a.is_streaming);
+            }
+            _ => panic!("expected assistant row"),
+        }
+    }
+
+    #[test]
+    fn empty_authoritative_final_is_noop() {
+        let mut feed = MessageFeed::new();
+        let id = feed.start_assistant_streaming();
+        feed.append_streaming_chunk("preview");
+        feed.finish_streaming();
+
+        apply_authoritative_final(&mut feed, Some(&id), "", "m1");
+
+        assert_eq!(feed.len(), 1);
+        match &feed.messages[0] {
+            MessageItem::Assistant(a) => assert_eq!(a.content, "preview"),
+            _ => panic!("expected assistant row"),
+        }
     }
 }

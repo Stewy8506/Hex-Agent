@@ -20,7 +20,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from harness_core.client.acp import ACPServer
+from harness_core.client.acp import ACPSession, ACPServer
 
 from tests import REPO_ROOT
 FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "acp_wire"
@@ -142,6 +142,100 @@ class TestAcpWireContract(unittest.TestCase):
                 {"jsonrpc": "2.0", "id": 2, "method": "session/cancel", "params": {"sessionId": sid}}
             )
             self.assertEqual(resp["result"], {"sessionId": sid, "cancelled": True})
+
+
+class TestPagedFinalResponse(unittest.TestCase):
+    def _turn(self, workspace, answer, *, paged=True, draft=None, cancelled=False):
+        class FinalOrchestrator(WireFakeOrchestrator):
+            def execute_task(self, task_id, stream_callback=None, tool_callback=None):
+                if draft is not None:
+                    stream_callback(draft)
+                return {"status": "CANCELED" if cancelled else "SUCCEEDED",
+                        "payload": {"result": answer}}
+
+        server = ACPServer(orchestrator=FinalOrchestrator(stream=False, tools=False),
+                           workspace_root=workspace)
+        sess = ACPSession("final_session", Path(workspace), model="saved-model",
+                          history=[{"prompt": f"prior {i}", "response": "old"} for i in range(3)])
+        server.sessions[sess.session_id] = sess
+        self.assertTrue(server._persist_session(sess))
+        updates = []
+        server._emit = updates.append
+        response = server.handle_request({
+            "id": 23, "method": "session/prompt",
+            "params": {"sessionId": sess.session_id, "prompt": "finish", "pagedResponse": paged},
+        })
+        self.assertIn("result", response)
+        return response["result"], updates
+
+    def test_paged_final_metadata_reconstructs_canonical_response_after_restart(self) -> None:
+        canonical = "é😀中\x00\n" * 1300 + "authoritative corrected ending"
+        for draft in (None, canonical[:4096] + "stale streamed ending" * 300):
+            with self.subTest(streamed=draft is not None), tempfile.TemporaryDirectory() as tmp:
+                final, updates = self._turn(tmp, canonical, draft=draft)
+                self.assertEqual(final["responseChars"], len(canonical))
+                self.assertEqual(final["turnIndex"], 3)
+                self.assertEqual(final["sessionId"], "final_session")
+                self.assertEqual(final["taskId"], "tsk_fixture")
+                self.assertEqual(final["status"], "completed")
+                self.assertEqual(final["content"][0]["text"],
+                                 canonical[:4096] + "\n[Full response: /history-turn 3 response]")
+                deltas = [update["params"]["delta"] for update in updates
+                          if update["params"].get("updateType") == "agent_response"]
+                self.assertTrue(deltas)
+                self.assertTrue(all(len(delta) <= 4096 for delta in deltas))
+                self.assertEqual("".join(deltas), canonical if draft is None else draft)
+                if draft is not None:
+                    self.assertNotEqual("".join(deltas), canonical)
+                restarted = ACPServer(workspace_root=tmp)
+                parts, offset = [], 0
+                while True:
+                    response = restarted.handle_request({
+                        "id": 24, "method": "session/historyContent",
+                        "params": {"sessionId": final["sessionId"], "turnIndex": final["turnIndex"],
+                                   "field": "response", "offset": offset, "limit": 4096},
+                    })
+                    self.assertIn("result", response)
+                    page = response["result"]
+                    self.assertEqual(page["totalChars"], final["responseChars"])
+                    parts.append(page["content"])
+                    if "nextOffset" not in page:
+                        break
+                    self.assertEqual(page["nextOffset"], offset + len(page["content"]))
+                    offset = page["nextOffset"]
+                self.assertEqual("".join(parts), canonical)
+                self.assertEqual(len("".join(parts)), final["responseChars"])
+
+    def test_metadata_only_present_when_final_is_truncated(self) -> None:
+        for length, paged in ((5, True), (4096, True), (4097, True), (5000, False)):
+            for streamed in (False, True):
+                with self.subTest(length=length, paged=paged, streamed=streamed), \
+                     tempfile.TemporaryDirectory() as tmp:
+                    answer = "😀" * length
+                    final, _ = self._turn(tmp, answer, paged=paged, draft="draft" if streamed else None)
+                    truncated = paged and length > 4096
+                    self.assertEqual("responseChars" in final, truncated)
+                    self.assertEqual("turnIndex" in final, truncated)
+                    if truncated:
+                        self.assertEqual(final["responseChars"], length)
+                        self.assertEqual(final["turnIndex"], 3)
+                    else:
+                        self.assertEqual(final, {
+                            "sessionId": "final_session", "status": "completed",
+                            "content": [{"type": "text", "text": answer}], "taskId": "tsk_fixture",
+                        })
+
+    def test_cancelled_short_response_has_no_paging_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            final, _ = self._turn(tmp, "discarded" * 1000, cancelled=True, draft="partial draft")
+            self.assertEqual(final, {
+                "sessionId": "final_session", "status": "cancelled",
+                "content": [{"type": "text", "text": "Session execution was cancelled."}],
+                "taskId": "tsk_fixture",
+            })
+            restarted = ACPServer(workspace_root=tmp)
+            history = restarted._existing_session("final_session").history
+            self.assertEqual(history[3]["response"], final["content"][0]["text"])
 
 
 if __name__ == "__main__":
