@@ -481,6 +481,137 @@ class TestDaemonInstaller(unittest.TestCase):
         self.assertIn("installed", status)
         self.assertIn("active", status)
 
+    # --- B39: one-shot interval contracts (no keep-alive/restart loops) ---
+
+    def test_launchd_one_shot_has_no_keep_alive(self):
+        plist = self.installer.generate_launchd_plist()
+        # KeepAlive restarts a one-shot immediately on exit; StartInterval must
+        # drive the cadence instead.
+        self.assertNotIn("<key>KeepAlive</key>", plist)
+        self.assertIn("<key>StartInterval</key>", plist)
+        self.assertIn("<integer>120</integer>", plist)
+
+    def test_launchd_keep_alive_is_opt_in_for_persistent_services(self):
+        cfg = DaemonConfig(service_name="ai.hex.persistent", keep_alive=True)
+        plist = DaemonInstaller(cfg).generate_launchd_plist()
+        self.assertIn("<key>KeepAlive</key>", plist)
+        self.assertIn("<true/>", plist)
+
+    def test_systemd_one_shot_has_no_restart_loop(self):
+        unit = self.installer.generate_systemd_unit(user=True)
+        self.assertIn("Type=oneshot", unit)
+        self.assertNotIn("Restart=always", unit)
+        self.assertNotIn("RestartSec=", unit)
+        self.assertNotIn("Type=simple", unit)
+
+    def test_systemd_timer_drives_interval(self):
+        timer = self.installer.generate_systemd_timer()
+        self.assertIn("[Timer]", timer)
+        self.assertIn("Unit=ai.hex.testdaemon.service", timer)
+        self.assertIn("OnBootSec=120", timer)
+        self.assertIn("OnUnitActiveSec=120", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("WantedBy=timers.target", timer)
+
+    def test_install_systemd_dry_run_includes_timer(self):
+        res = self.installer.install_systemd(user=True, dry_run=True)
+        self.assertIn("timer_path", res)
+        self.assertIn("timer_content", res)
+        self.assertTrue(res["timer_path"].endswith(".timer"))
+        self.assertIn("OnUnitActiveSec=120", res["timer_content"])
+
+    def test_install_systemd_writes_service_and_timer(self):
+        target = Path(self.tmp_dir) / "ai.hex.testdaemon.service"
+        res = self.installer.install_systemd(user=True, target_path=target, dry_run=False)
+        self.assertEqual(res["status"], "installed")
+        self.assertTrue(target.is_file())
+        timer_target = target.with_suffix(".timer")
+        self.assertTrue(timer_target.is_file())
+        self.assertIn("OnUnitActiveSec=120", timer_target.read_text(encoding="utf-8"))
+        self.assertEqual(res["timer_path"], str(timer_target))
+
+    # --- B39: Windows Task Scheduler backend ---
+
+    def test_generate_task_scheduler_xml(self):
+        xml = self.installer.generate_task_scheduler_xml()
+        self.assertIn("<Task version=\"1.2\"", xml)
+        self.assertIn("<TimeTrigger>", xml)
+        self.assertIn("<Repetition>", xml)
+        self.assertIn("<Interval>PT120S</Interval>", xml)
+        self.assertIn("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>", xml)
+        self.assertIn("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>", xml)
+        self.assertIn("<Command>/usr/bin/python3</Command>", xml)
+        self.assertIn("schedule run-due", xml)
+        self.assertIn("--data-dir", xml)
+
+    def test_task_scheduler_xml_escapes_special_chars(self):
+        cfg = DaemonConfig(
+            service_name="ai.hex.amp",
+            description="A & B <test>",
+            python_path="C:\\Python\\python.exe",
+            data_dir="C:\\Users\\a&b\\data",
+        )
+        xml = DaemonInstaller(cfg).generate_task_scheduler_xml()
+        self.assertIn("A &amp; B &lt;test&gt;", xml)
+        self.assertNotIn("A & B <test>", xml)
+
+    def test_install_windows_task_dry_run(self):
+        res = self.installer.install_windows_task(dry_run=True)
+        self.assertEqual(res["status"], "dry_run")
+        self.assertEqual(res["platform"], "schtasks")
+        self.assertEqual(res["task_name"], "ai.hex.testdaemon")
+        self.assertIn("<Task version=\"1.2\"", res["content"])
+
+    def test_windows_status_is_platform_aware(self):
+        with patch("harness_core.runtime.daemon.platform.system", return_value="Windows"), \
+             patch("harness_core.runtime.daemon.subprocess.run") as run:
+            run.return_value = MagicMock(
+                returncode=0,
+                stdout="Status: Ready\nScheduled Task State: Enabled\n",
+                stderr="",
+            )
+            status = self.installer.get_daemon_status()
+        self.assertEqual(status["platform"], "schtasks")
+        self.assertTrue(status["installed"])
+        self.assertTrue(status["active"])
+        self.assertEqual(status["task_name"], "ai.hex.testdaemon")
+
+    def test_windows_status_disabled_is_not_active(self):
+        with patch("harness_core.runtime.daemon.platform.system", return_value="Windows"), \
+             patch("harness_core.runtime.daemon.subprocess.run") as run:
+            run.return_value = MagicMock(
+                returncode=0,
+                stdout="Scheduled Task State: Disabled\n",
+                stderr="",
+            )
+            status = self.installer.get_daemon_status()
+        self.assertTrue(status["installed"])
+        self.assertFalse(status["active"])
+
+    def test_uninstall_windows_deletes_task(self):
+        with patch("harness_core.runtime.daemon.platform.system", return_value="Windows"), \
+             patch("harness_core.runtime.daemon.subprocess.run") as run:
+            run.side_effect = [
+                MagicMock(returncode=0, stdout="Status: Ready\n", stderr=""),
+                MagicMock(returncode=0, stdout="SUCCESS", stderr=""),
+            ]
+            res = self.installer.uninstall_daemon()
+        self.assertEqual(res["status"], "uninstalled")
+        self.assertEqual(res["platform"], "schtasks")
+        self.assertTrue(res["removed"])
+        delete_cmd = run.call_args_list[1][0][0]
+        self.assertEqual(delete_cmd[:2], ["schtasks", "/Delete"])
+        self.assertIn("/F", delete_cmd)
+
+    def test_uninstall_windows_dry_run(self):
+        with patch("harness_core.runtime.daemon.platform.system", return_value="Windows"), \
+             patch("harness_core.runtime.daemon.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stdout="Status: Ready\n", stderr="")
+            res = self.installer.uninstall_daemon(dry_run=True)
+        self.assertEqual(res["status"], "dry_run")
+        self.assertEqual(res["platform"], "schtasks")
+        self.assertTrue(res["removed"])
+
 
 class TestCliScheduleAndDaemon(unittest.TestCase):
     """Integration tests for CLI 'hex schedule' and 'hex daemon' subcommands."""
@@ -598,6 +729,36 @@ class TestCliScheduleAndDaemon(unittest.TestCase):
         resp = json.loads(out.getvalue())
         self.assertIn("platform", resp)
         self.assertIn("installed", resp)
+
+    def test_cli_daemon_install_schtasks_dry_run(self):
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            code = main([
+                "--data-dir", str(self.data_dir),
+                "daemon",
+                "install",
+                "--schtasks",
+                "--dry-run",
+            ])
+        self.assertEqual(code, 0)
+        resp = json.loads(out.getvalue())
+        self.assertEqual(resp["status"], "dry_run")
+        self.assertEqual(resp["platform"], "schtasks")
+        self.assertIn("<Task version=\"1.2\"", resp["content"])
+
+    def test_cli_daemon_install_auto_detects_windows(self):
+        out = io.StringIO()
+        with patch("platform.system", return_value="Windows"), patch("sys.stdout", out):
+            code = main([
+                "--data-dir", str(self.data_dir),
+                "daemon",
+                "install",
+                "--dry-run",
+            ])
+        self.assertEqual(code, 0)
+        resp = json.loads(out.getvalue())
+        self.assertEqual(resp["platform"], "schtasks")
+        self.assertIn("content", resp)
 
 
 if __name__ == "__main__":

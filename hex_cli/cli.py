@@ -385,12 +385,13 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_sch_run.add_argument("--once", action="store_true", help="Run due jobs once and exit")
     p_sch_run.add_argument("--storage-path", default=None, help="Custom schedules.json path")
 
-    p_dmn = sub.add_parser("daemon", help="Manage background OS service daemon (launchd/systemd)")
+    p_dmn = sub.add_parser("daemon", help="Manage background OS service daemon (launchd/systemd/Task Scheduler)")
     p_dmn_sub = p_dmn.add_subparsers(dest="daemon_cmd", required=True)
 
     p_dmn_inst = p_dmn_sub.add_parser("install", help="Generate and install OS service configuration")
     p_dmn_inst.add_argument("--launchd", action="store_true", help="Target macOS LaunchAgent")
     p_dmn_inst.add_argument("--systemd", action="store_true", help="Target Linux systemd")
+    p_dmn_inst.add_argument("--schtasks", action="store_true", help="Target Windows Task Scheduler")
     p_dmn_inst.add_argument("--user", action="store_true", default=True, help="Install as user service (default: True)")
     p_dmn_inst.add_argument("--system", dest="user", action="store_false", help="Install as system-wide service")
     p_dmn_inst.add_argument("--dry-run", action="store_true", help="Dry run: print generated configuration without writing files")
@@ -1405,15 +1406,21 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
             dry_run = getattr(args, "dry_run", False)
             target_launchd = getattr(args, "launchd", False)
             target_systemd = getattr(args, "systemd", False)
+            target_schtasks = getattr(args, "schtasks", False)
 
-            if not target_launchd and not target_systemd:
-                if platform.system() == "Darwin":
+            if not target_launchd and not target_systemd and not target_schtasks:
+                system = platform.system()
+                if system == "Darwin":
                     target_launchd = True
+                elif system == "Windows":
+                    target_schtasks = True
                 else:
                     target_systemd = True
 
             if target_launchd:
                 res = installer.install_launchd(target_path=target_path, dry_run=dry_run)
+            elif target_schtasks:
+                res = installer.install_windows_task(target_path=target_path, dry_run=dry_run)
             else:
                 user_service = getattr(args, "user", True)
                 res = installer.install_systemd(user=user_service, target_path=target_path, dry_run=dry_run)
