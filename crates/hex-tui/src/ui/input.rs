@@ -141,8 +141,18 @@ pub fn render_composer(
         buf.set_line(area.x, area.y + row as u16, &line, area.width);
     }
     if app.focus == Focus::Input && !app.show_palette && !app.show_help && anim.cursor_visible() {
-        buf[(area.x + 2 + cursor_col as u16, area.y + (cursor_row - first) as u16)]
-            .set_fg(theme.card_bg).set_bg(theme.accent_blue);
+        let cx = area.x + 2 + cursor_col as u16;
+        let cy = area.y + (cursor_row - first) as u16;
+        if cx < area.right() && cy < area.bottom() {
+            let cell = &mut buf[(cx, cy)];
+            if cell.symbol() == " " {
+                // End of the draft: no glyph to invert, so draw a block caret.
+                cell.set_symbol("█").set_fg(theme.accent_blue).set_bg(theme.card_bg);
+            } else {
+                // Over a character (or the placeholder): inverse-video caret.
+                cell.set_fg(theme.card_bg).set_bg(theme.accent_blue);
+            }
+        }
     }
 }
 
