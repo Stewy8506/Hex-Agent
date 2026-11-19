@@ -34,6 +34,43 @@ from harness_core import __version__
 logger = logging.getLogger(__name__)
 
 
+_SECRET_TEXT_NAMES = (
+    "key", "api_key", "apikey", "api-key", "token", "access_token",
+    "auth_token", "refresh_token", "id_token", "secret", "client_secret",
+    "password", "passwd", "authorization", "x-api-key", "x-auth-token",
+)
+
+
+def _redact_sensitive_text(text: object) -> str:
+    """Mask credentials embedded in arbitrary text before it reaches a client.
+
+    Provider discovery errors can echo the request URL (e.g. Gemini's
+    ``?key=...``) or an Authorization header; returning that raw would leak the
+    configured API key/token to any ACP client consuming ``session/models``.
+    """
+    s = str(text)
+    names = "|".join(re.escape(n) for n in _SECRET_TEXT_NAMES)
+    s = re.sub(
+        rf"([?&](?:{names})=)[^&\s\"'<>]+",
+        r"\1[REDACTED]",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"(Bearer\s+)[A-Za-z0-9._\-+/=]+",
+        r"\1[REDACTED]",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        rf"\b((?:{names})\s*[=:]\s*)[\"']?[^\s\"',;}}\[\]]+",
+        r"\1[REDACTED]",
+        s,
+        flags=re.IGNORECASE,
+    )
+    return s
+
+
 def _bounded_tool_preview(payload: Any, *, error: bool = False) -> str:
     """Display-only JSON preview; never traverse or serialize the full result."""
     limit = 4000 if error else 300
@@ -1210,7 +1247,7 @@ class ACPServer:
                     "provider": provider_label, "isLocal": False,
                 })
         except Exception as exc:
-            errors.append(f"{provider_label}: {exc}")
+            errors.append(f"{provider_label}: {_redact_sensitive_text(exc)}")
 
         if getattr(router, "local_model_id", None):
             try:
@@ -1220,7 +1257,7 @@ class ACPServer:
                         "provider": "Local", "isLocal": True,
                     })
             except Exception as exc:
-                errors.append(f"local: {exc}")
+                errors.append(f"local: {_redact_sensitive_text(exc)}")
 
         if not models:
             detail = "; ".join(errors) or (

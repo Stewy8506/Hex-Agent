@@ -132,3 +132,49 @@ def test_catalog_active_model_follows_confirmed_switch(server, discovery):
     res = query(server)["result"]
     assert res["activeModel"] == "o3-mini"
     assert server.orchestrator.model_switches == ["o3-mini"]
+
+
+def test_discovery_error_redacts_url_api_key(server, monkeypatch):
+    secret = "AIzaSyD-EXAMPLE-SECRET-KEY-1234567890"
+
+    def fake_fetch(provider_type, api_key=None, base_url=None, timeout=3.0):
+        if str(provider_type) == "local":
+            return [("llama-3.3-70b", "llama-3.3-70b (Ollama)")]
+        raise ProviderUnavailableError(
+            "HTTP Error 400 for url: "
+            f"https://generativelanguage.googleapis.com/v1beta/models?key={secret}"
+        )
+
+    monkeypatch.setattr(cp_mod, "fetch_available_models", fake_fetch)
+    res = query(server)["result"]
+    assert secret not in res["error"]
+    assert "key=[REDACTED]" in res["error"]
+    assert "llama-3.3-70b" in [m["id"] for m in res["models"]]
+
+
+def test_total_failure_error_redacts_bearer_token(server, monkeypatch):
+    secret = "sk-super-secret-bearer-token-abcdef"
+
+    def fake_fetch(provider_type, api_key=None, base_url=None, timeout=3.0):
+        raise ProviderUnavailableError(f"request failed: Authorization: Bearer {secret}")
+
+    monkeypatch.setattr(cp_mod, "fetch_available_models", fake_fetch)
+    resp = query(server)
+    assert "result" not in resp
+    msg = resp["error"]["message"]
+    assert secret not in msg
+    assert "[REDACTED]" in msg
+
+
+def test_redact_sensitive_text_masks_common_secret_patterns():
+    from harness_core.client.acp import _redact_sensitive_text
+
+    out = _redact_sensitive_text(
+        "https://x/models?key=ABC123&access_token=DEF456&normal=text"
+    )
+    assert "ABC123" not in out
+    assert "DEF456" not in out
+    assert "normal=text" in out
+    assert "tok_abc" not in _redact_sensitive_text("Authorization: Bearer tok_abc")
+    assert "shhh" not in _redact_sensitive_text("api_key=shhh")
+    assert _redact_sensitive_text("No OpenAI API key found.") == "No OpenAI API key found."
