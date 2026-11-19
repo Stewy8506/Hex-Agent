@@ -67,6 +67,7 @@ class WorkspaceSnapshotProvider(Protocol):
     def clone_to_workspace(self, snapshot_path: Path | str, target_dir: Path | str) -> str: ...
     def publish_delta(self, base_dir: Path | str, verified_dir: Path | str, target_dir: Path | str) -> str: ...
     def rollback_workspace(self, workspace_dir: Path | str, snapshot_path: Path | str) -> str: ...
+    def release_workspace(self, workspace_dir: Path | str) -> None: ...
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str: ...
     def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str: ...
     def discard_snapshot(self, snapshot_path: Path | str) -> None: ...
@@ -557,6 +558,12 @@ class APFSAndPortableCoWProvider:
 
         return self.compute_tree_sha(ws)
 
+    def release_workspace(self, workspace_dir: Path | str) -> None:
+        """Releases an abandoned attempt workspace (no mount on APFS/portable copy)."""
+        ws = Path(workspace_dir).resolve()
+        if ws.is_dir():
+            shutil.rmtree(ws, ignore_errors=True)
+
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str:
         """Exports CoW snapshot to a deterministic tar.gz CAS bundle for remote worker handoff."""
         return export_delta_archive(snapshot_path, archive_dest)
@@ -823,6 +830,19 @@ class OverlayFSSnapshotProvider:
                 subprocess.run(["umount", "-l", ws_str], capture_output=True, text=True)
         self._active_mounts.pop(ws_str, None)
 
+    def release_workspace(self, workspace_dir: Path | str) -> None:
+        """Unmounts and removes an abandoned attempt workspace so its mount point is freed."""
+        ws = Path(workspace_dir).resolve()
+        ws_str = str(ws)
+        info = self._active_mounts.get(ws_str)
+        if ws_str in self._active_mounts:
+            self._unmount(ws)
+        base = info.get("base") if info else self.get_layer_paths(ws)["base"]
+        if isinstance(base, Path) and base.is_dir():
+            shutil.rmtree(base, ignore_errors=True)
+        if ws.is_dir():
+            shutil.rmtree(ws, ignore_errors=True)
+
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str:
         return export_delta_archive(snapshot_path, archive_dest)
 
@@ -962,6 +982,16 @@ class BtrfsSnapshotProvider:
             shutil.rmtree(git_backup, ignore_errors=True)
 
         return self.compute_tree_sha(ws)
+
+    def release_workspace(self, workspace_dir: Path | str) -> None:
+        """Deletes an abandoned attempt subvolume and removes its directory."""
+        ws = Path(workspace_dir).resolve()
+        del_cmd = ["btrfs", "subvolume", "delete", str(ws)]
+        self.command_history.append(del_cmd)
+        if not self.simulate:
+            subprocess.run(del_cmd, capture_output=True)
+        if ws.is_dir():
+            shutil.rmtree(ws, ignore_errors=True)
 
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str:
         return export_delta_archive(snapshot_path, archive_dest)

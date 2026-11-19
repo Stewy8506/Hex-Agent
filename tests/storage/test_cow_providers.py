@@ -130,6 +130,34 @@ class TestWorkspaceSnapshotProviderContract(unittest.TestCase):
         self.assertEqual(provider.backend_name, "btrfs_subvolume")
         self._execute_provider_contract(provider)
 
+    def test_release_workspace_frees_active_overlay_mount(self):
+        """A fenced/preempted attempt must release its mount so the workspace dir can be removed."""
+        provider = OverlayFSSnapshotProvider(self.test_root / "release_snaps", simulate=True)
+        snap = provider.create_snapshot(self.source_ws, label="base")
+        target_ws = self.test_root / "fenced_attempt_ws"
+        provider.clone_to_workspace(snap.snapshot_path, target_ws)
+        self.assertIn(str(target_ws.resolve()), provider._active_mounts)
+
+        provider.release_workspace(target_ws)
+
+        self.assertFalse(target_ws.exists())
+        self.assertNotIn(str(target_ws.resolve()), provider._active_mounts)
+        self.assertFalse(provider.get_layer_paths(target_ws)["base"].exists())
+        # The base snapshot survives for resume; only the abandoned attempt workspace is released.
+        self.assertTrue(snap.snapshot_path.is_dir())
+
+    def test_release_workspace_across_all_providers(self):
+        for provider in (
+            APFSAndPortableCoWProvider(self.test_root / "rel_apfs"),
+            OverlayFSSnapshotProvider(self.test_root / "rel_overlay", simulate=True),
+            BtrfsSnapshotProvider(self.test_root / "rel_btrfs", simulate=True),
+        ):
+            snap = provider.create_snapshot(self.source_ws, label="base")
+            target_ws = self.test_root / f"rel_ws_{provider.backend_name}"
+            provider.clone_to_workspace(snap.snapshot_path, target_ws)
+            provider.release_workspace(target_ws)
+            self.assertFalse(target_ws.exists(), provider.backend_name)
+
 
 class TestSnapshotProviderAutoDetection(unittest.TestCase):
     """Verifies get_default_snapshot_provider auto-detects host platforms and file systems."""
