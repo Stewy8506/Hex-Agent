@@ -43,7 +43,22 @@ pub enum AppEvent {
         command: String,
         result: Result<SessionCommandResponse, String>,
     },
-    AssistantResponse(String),
+    PromptText {
+        session_id: String,
+        request_id: u64,
+        text: String,
+        first: bool,
+    },
+    PromptFinished {
+        session_id: String,
+        request_id: u64,
+        result: Result<(), String>,
+    },
+    ResumeResult {
+        session_id: String,
+        request_id: u64,
+        result: Result<hex_protocol::models::PagedSessionLoad, String>,
+    },
     Subagents(Result<Vec<SubagentInfo>, String>),
     Ready,
     Error(String),

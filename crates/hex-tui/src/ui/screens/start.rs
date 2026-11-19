@@ -221,7 +221,11 @@ pub fn render(app: &App, theme: &HexTheme, anim: &AnimationState, area: Rect, bu
     let resume_area = center_horizontally(v_chunks[8], content_width);
     let header_line = Line::from(vec![
         Span::raw("  "),
-        Span::styled("resume", theme.apfel_header_style()),
+        Span::styled(
+            if app.status_message == "Ready" { "resume".to_string() }
+            else { format!("resume · {}", app.status_message.replace(['\r', '\n'], " ")) },
+            theme.apfel_header_style(),
+        ),
     ]);
     buf.set_line(resume_area.x, resume_area.y, &header_line, resume_area.width);
 

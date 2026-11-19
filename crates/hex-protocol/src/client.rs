@@ -527,6 +527,17 @@ impl AcpClient {
         .await
     }
 
+    pub async fn session_load_task_paged(
+        &self,
+        task_id: &str,
+    ) -> Result<crate::models::PagedSessionLoad, AcpError> {
+        self.send_request(
+            "session/load",
+            serde_json::json!({"taskId": task_id, "paged": true}),
+        )
+        .await
+    }
+
     pub async fn session_history(
         &self,
         session_id: &str,

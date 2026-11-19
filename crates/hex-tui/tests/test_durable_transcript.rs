@@ -121,6 +121,64 @@ fn giant_unicode_and_streaming_reconstruct_exactly_without_display_markers() {
 }
 
 #[test]
+fn canonical_final_replaces_only_current_turn_and_retains_both_full_archive_versions() {
+    let workspace = Workspace::new();
+    let mut app = workspace.app("canonical");
+    for _ in 0..600 { app.add_assistant_message(&"old".repeat(1400)); }
+    app.active_prompt_id = Some(1);
+    app.is_busy = true;
+    app.add_user_message("current prompt");
+    let draft = "draft 世界😀".repeat(16_000);
+    let draft_id = app.transcript_store.as_ref().unwrap().total_count().unwrap();
+    app.append_assistant_delta(&draft);
+    for _ in 0..600 { app.add_system_message(&"interleaved".repeat(420)); }
+    app.append_assistant_delta("draft ending");
+    assert_eq!(reconstruct(app.transcript_store.as_ref().unwrap(), draft_id), format!("{draft}draft ending"));
+    let canonical = "correct 世界😀".repeat(20_000);
+    let first: String = canonical.chars().take(4096).collect();
+    let final_id = app.transcript_store.as_ref().unwrap().total_count().unwrap();
+    app.replace_active_response(&first);
+    assert_ne!(draft_id, final_id);
+    let mut offset = first.len();
+    while offset < canonical.len() {
+        let mut end = (offset + 4096).min(canonical.len());
+        while !canonical.is_char_boundary(end) { end -= 1; }
+        app.append_assistant_delta(&canonical[offset..end]);
+        offset = end;
+        assert!(app.transcript_error.is_none());
+        assert!(app.resident_transcript_bytes() <= TRANSCRIPT_BUDGET);
+    }
+    let index = app.active_assistant_index.unwrap();
+    assert!(matches!(&app.dialogue_items[index], DialogueItem::Message(m) if m.content.ends_with("世界😀") && m.content.len() <= MESSAGE_DISPLAY_BYTES));
+    app.active_prompt_id = None;
+    app.active_assistant_index = None;
+    app.is_busy = false;
+    app.flush_transcript().unwrap();
+    let store = app.transcript_store.as_ref().unwrap();
+    assert_eq!(reconstruct(store, final_id), canonical);
+    assert_eq!(reconstruct(store, draft_id), format!("{draft}draft ending"));
+}
+
+#[test]
+fn failed_final_archive_keeps_canonical_text_resident_and_original_stream_recoverable() {
+    let workspace = Workspace::new();
+    let mut app = workspace.app("final_failure");
+    app.active_prompt_id = Some(1);
+    app.add_user_message("prompt");
+    let draft = "draft 世界".repeat(20_000);
+    app.append_assistant_delta(&draft);
+    let store = app.transcript_store.as_ref().unwrap();
+    let next = store.total_count().unwrap();
+    std::fs::create_dir(store.path().join(format!("{next}.txt"))).unwrap();
+    let canonical = "canonical 😀".repeat(20_000);
+    app.replace_active_response(&canonical);
+    assert!(app.transcript_error.is_some());
+    assert_eq!(displayed(&app), canonical);
+    assert_eq!(reconstruct(app.transcript_store.as_ref().unwrap(), next - 1), draft);
+    assert!(app.flush_transcript().is_err());
+}
+
+#[test]
 fn flush_preserves_recent_items_and_does_not_duplicate_settled_tools() {
     let workspace = Workspace::new();
     let mut app = workspace.app("flush");

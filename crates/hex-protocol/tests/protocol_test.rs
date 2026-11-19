@@ -375,6 +375,109 @@ fn test_session_command_metadata_is_optional() {
     }
 }
 
+#[tokio::test]
+async fn test_session_load_task_paged_wire_contract() {
+    let (client_read, mut server_write) = tokio::io::duplex(8192);
+    let (server_read, client_write) = tokio::io::duplex(8192);
+    let client = AcpClient::from_streams(client_read, client_write);
+    let payload = serde_json::json!({
+        "sessionId": "saved_session", "cwd": "/saved/workspace", "model": "saved-model",
+        "pendingApprovalsWithdrawn": 1, "historyCount": 40, "nextBefore": 8,
+        "history": [{"task_id": "ledger_task", "prompt": "resume", "response": "prefix",
+            "status": "completed", "turnIndex": 8, "promptChars": 6, "responseChars": 9000}]
+    });
+    let expected = payload.clone();
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        for params in [
+            serde_json::json!({"taskId": "ledger_task", "paged": true}),
+            serde_json::json!({"sessionId": "saved_session", "paged": true}),
+        ] {
+            let line = lines.next_line().await.unwrap().unwrap();
+            let request: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+            assert_eq!(request.method, "session/load");
+            assert_eq!(request.params, Some(params));
+            let response = serde_json::json!({"jsonrpc": "2.0", "id": request.id, "result": payload});
+            server_write
+                .write_all((response.to_string() + "\n").as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+    let loaded = client.session_load_task_paged("ledger_task").await.unwrap();
+    assert_eq!(loaded.session_id, "saved_session");
+    assert_eq!(loaded.cwd, expected["cwd"].as_str().unwrap());
+    assert_eq!(loaded.model, "saved-model");
+    assert_eq!(loaded.page.history_count, 40);
+    assert_eq!(loaded.page.next_before, Some(8));
+    assert_eq!(
+        loaded.page.history[0].turn.task_id.as_deref(),
+        Some("ledger_task")
+    );
+    assert_eq!(loaded.page.history[0].turn_index, 8);
+    assert_eq!(loaded.page.history[0].response_chars, 9000);
+    assert_eq!(
+        client.session_load_paged("saved_session").await.unwrap(),
+        loaded
+    );
+    server.await.unwrap();
+}
+
+#[test]
+fn test_session_prompt_paging_metadata_roundtrip() {
+    for turn_index in [0, 3] {
+        let payload = serde_json::json!({
+            "sessionId": "saved_session", "status": "completed", "taskId": "ledger_task",
+            "content": [{"type": "text", "text": "preview"}],
+            "responseChars": 9000, "turnIndex": turn_index
+        });
+        let response: SessionPromptResponse = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(response.response_chars, Some(9000));
+        assert_eq!(response.turn_index, Some(turn_index));
+        assert_eq!(response.text_content(), "preview");
+        assert_eq!(serde_json::to_value(response).unwrap(), payload);
+    }
+}
+
+#[test]
+fn test_session_prompt_paging_metadata_is_optional() {
+    for status in ["completed", "cancelled"] {
+        let legacy = serde_json::json!({
+            "sessionId": "saved_session", "status": status, "taskId": "ledger_task",
+            "content": [{"type": "text", "text": "short final"}]
+        });
+        for explicit_null in [false, true] {
+            let mut payload = legacy.clone();
+            if explicit_null {
+                payload["responseChars"] = serde_json::Value::Null;
+                payload["turnIndex"] = serde_json::Value::Null;
+            }
+            let response: SessionPromptResponse = serde_json::from_value(payload).unwrap();
+            assert_eq!(response.response_chars, None);
+            assert_eq!(response.turn_index, None);
+            assert_eq!(serde_json::to_value(response).unwrap(), legacy);
+        }
+    }
+}
+
+#[test]
+fn test_session_prompt_paging_metadata_rejects_invalid_ordinals() {
+    for field in ["responseChars", "turnIndex"] {
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(true),
+            serde_json::json!("3"),
+            serde_json::json!(1.5),
+        ] {
+            let mut payload = serde_json::json!({
+                "sessionId": "saved_session", "status": "completed", "content": []
+            });
+            payload[field] = value;
+            assert!(serde_json::from_value::<SessionPromptResponse>(payload).is_err());
+        }
+    }
+}
+
 #[test]
 fn test_subagent_record_tolerates_missing_optional_fields() {
     // list_active_subagents omits the result block entirely.

@@ -489,6 +489,10 @@ pub struct SessionPromptResponse {
     pub content: Vec<ContentBlock>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_chars: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_index: Option<usize>,
 }
 
 impl SessionPromptResponse {

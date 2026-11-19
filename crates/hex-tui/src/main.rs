@@ -242,38 +242,10 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                 let mut resumed = false;
                 if let Some(requested) = args.session.as_deref() {
                     match client.session_load_paged(requested).await {
-                        Ok(loaded) => {
-                            app.session_id = loaded.session_id.clone();
-                            app.model_name = loaded.model.clone();
-                            for entry in &loaded.page.history {
-                                let turn = &entry.turn;
-                                if !turn.prompt.is_empty() {
-                                    app.add_user_message(&turn.prompt);
-                                }
-                                if entry.prompt_chars > turn.prompt.chars().count() {
-                                    app.add_system_message(&format!(
-                                        "Full prompt: /history-turn {} prompt",
-                                        entry.turn_index
-                                    ));
-                                }
-                                if !turn.response.is_empty() {
-                                    app.add_assistant_message(&turn.response);
-                                }
-                                if entry.response_chars > turn.response.chars().count() {
-                                    app.add_system_message(&format!(
-                                        "Full response: /history-turn {} response",
-                                        entry.turn_index
-                                    ));
-                                }
-                            }
-                            app.add_system_message(&format!(
-                            "Resumed session {} ({} prior turn{}). Older turns: /session-history",
-                            loaded.session_id,
-                            loaded.page.history_count,
-                            if loaded.page.history_count == 1 { "" } else { "s" }
-                        ));
-                            resumed = true;
-                        }
+                        Ok(loaded) => match app.adopt_loaded_session(&loaded) {
+                            Ok(()) => resumed = true,
+                            Err(error) => app.add_system_message(&format!("Could not adopt resumed session: {error}. Starting a new session.")),
+                        },
                         Err(e) => {
                             app.add_system_message(&format!(
                                 "Could not resume session {}: {}. Starting a new session.",
@@ -389,40 +361,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                         handle_notification(&mut app, packet.notification);
                     }
                     AppEvent::Notice(msg) => app.add_system_message(&msg),
-                    AppEvent::AssistantResponse(msg) => {
-                        let mut plan_end = msg.len().min(64 * 1024);
-                        while !msg.is_char_boundary(plan_end) { plan_end -= 1; }
-                        let detected_plan = hex_tui::app::extract_plan_steps_from_text(&msg[..plan_end]);
-                        if !detected_plan.is_empty() {
-                            app.plan_steps = detected_plan;
-                        }
-                        let already_populated = app.active_turn_has_streamed
-                            || app.dialogue_items.iter().rev().any(|item| {
-                                if let hex_tui::app::DialogueItem::Message(m) = item {
-                                    if m.role == hex_protocol::models::Role::Assistant {
-                                        let check_len = msg
-                                            .char_indices()
-                                            .nth(40)
-                                            .map_or(msg.len(), |(byte, _)| byte);
-                                        return check_len > 0
-                                            && (m.content == msg
-                                                || m.content.contains(&msg[..check_len]));
-                                    }
-                                }
-                                false
-                            });
-                        if !already_populated {
-                            app.add_assistant_message(&msg);
-                        }
-                        app.active_turn_has_streamed = false;
-                        app.cancel_requested = false;
-                        app.pending_cancel = None;
-                        app.close_running_tool_calls();
-                        app.clear_approval_request();
-                        app.is_busy = false;
-                        app.busy_started_at = None;
-                        app.status_message = "Ready".to_string();
-                    }
+                    event @ (AppEvent::PromptText { .. }
+                        | AppEvent::PromptFinished { .. }
+                        | AppEvent::ResumeResult { .. }) => handle_session_result(&mut app, event),
                     AppEvent::Subagents(Ok(agents)) => {
                         app.set_subagent_telemetry(&agents);
                         app.open_subagent_modal(&agents);
@@ -476,6 +417,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
                     }
                     AppEvent::Resize(_, _) => app.approval_can_allow.set(false),
                 }
+                if let Some(task_id) = app.requested_resume.take() {
+                    request_session_resume(&mut app, acp_client.as_ref(), event_tx.clone(), &task_id);
+                }
                 app.enforce_transcript_budget();
                 if !storage_was_failed {
                     if let Some(error) = app.transcript_error.clone() {
@@ -496,6 +440,79 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, args: Args) 
         let _ = client.close().await;
     }
     result.and(archived)
+}
+
+fn request_session_resume(
+    app: &mut App,
+    acp_client: Option<&AcpClient>,
+    event_tx: tokio::sync::mpsc::Sender<AppEvent>,
+    task_id: &str,
+) {
+    if app.pending_resume.is_some() || app.is_busy || app.active_prompt_id.is_some() {
+        return;
+    }
+    let Some(client) = acp_client else {
+        app.status_message = "Resume unavailable without an ACP runtime; stored history is not restored context.".to_string();
+        return;
+    };
+    app.control_request_id = app.control_request_id.wrapping_add(1);
+    let request_id = app.control_request_id;
+    app.pending_resume = Some(request_id);
+    app.is_busy = true;
+    app.status_message = "Loading session context...".to_string();
+    let session_id = app.session_id.clone();
+    let task_id = task_id.to_string();
+    let client = client.clone();
+    tokio::spawn(async move {
+        let result = client.session_load_task_paged(&task_id).await.map_err(|e| e.to_string());
+        let _ = event_tx.send(AppEvent::ResumeResult { session_id, request_id, result }).await;
+    });
+}
+
+fn handle_session_result(app: &mut App, event: AppEvent) {
+    match event {
+        AppEvent::ResumeResult { session_id, request_id, result } => {
+            if session_id != app.session_id || app.pending_resume != Some(request_id) { return; }
+            app.pending_resume = None;
+            app.is_busy = false;
+            match result.and_then(|loaded| app.adopt_loaded_session(&loaded)) {
+                Ok(()) => {},
+                Err(error) => {
+                    app.status_message = format!("Resume failed: {error}. Press Enter to retry.");
+                }
+            }
+        }
+        AppEvent::PromptText { session_id, request_id, text, first } => {
+            if session_id != app.session_id || app.active_prompt_id != Some(request_id) { return; }
+            app.final_response_started = true;
+            if first { app.replace_active_response(&text); }
+            else { app.append_assistant_delta(&text); }
+        }
+        AppEvent::PromptFinished { session_id, request_id, result } => {
+            if session_id != app.session_id || app.active_prompt_id != Some(request_id) { return; }
+            app.active_prompt_id = None;
+            if let Err(error) = &result {
+                if app.active_approval.is_some() && !app.final_response_started {
+                    handle_backend_error(app, error);
+                    return;
+                }
+            }
+            app.active_assistant_index = None;
+            app.active_turn_has_streamed = false;
+            app.final_response_started = false;
+            app.cancel_requested = false;
+            app.pending_cancel = None;
+            app.close_running_tool_calls();
+            app.clear_approval_request();
+            app.is_busy = false;
+            app.busy_started_at = None;
+            app.status_message = "Ready".to_string();
+            if let Err(error) = result {
+                app.add_system_message(&format!("Prompt completion failed: {error}. Streamed text may be incomplete."));
+            }
+        }
+        _ => unreachable!("not a session result"),
+    }
 }
 
 fn request_turn_cancel(
@@ -991,7 +1008,7 @@ async fn handle_key_event(
             KeyCode::Enter => {
                 if let Some(session) = app.resume_sessions.get(app.selected_resume_index) {
                     let session_id = session.session_id.clone();
-                    app.resume_session(&session_id);
+                    request_session_resume(app, acp_client, event_tx.clone(), &session_id);
                 } else if Some(app.selected_resume_index) == app.resume_toggle_index() {
                     app.toggle_show_all_resume();
                 }
@@ -1492,7 +1509,11 @@ async fn execute_submitted_text(
 
     // Regular conversation message
     app.active_turn_has_streamed = false;
+    app.final_response_started = false;
     app.cancel_requested = false;
+    app.control_request_id = app.control_request_id.wrapping_add(1);
+    let request_id = app.control_request_id;
+    app.active_prompt_id = Some(request_id);
     app.add_user_message(&text);
     app.is_busy = true;
     app.busy_started_at = Some(std::time::Instant::now());
@@ -1512,34 +1533,61 @@ async fn execute_submitted_text(
         let client_clone = client.clone();
         let tx = event_tx.clone();
         tokio::spawn(async move {
-            match client_clone
-                .session_prompt_paged(&sess_id, &prompt_text)
-                .await
-            {
-                Ok(resp) => {
-                    let txt = resp.text_content();
-                    if !txt.is_empty() {
-                        let _ = tx.send(AppEvent::AssistantResponse(txt)).await;
-                    } else {
-                        let _ = tx.send(AppEvent::Ready).await;
-                    }
-                }
-                Err(err) => {
-                    let _ = tx
-                        .send(AppEvent::Error(format!("Prompt failed: {}", err)))
-                        .await;
-                }
-            }
+            let result = match client_clone.session_prompt_paged(&sess_id, &prompt_text).await {
+                Ok(response) => deliver_prompt_final(&client_clone, &sess_id, request_id, response, &tx).await,
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = tx.send(AppEvent::PromptFinished { session_id: sess_id, request_id, result }).await;
         });
     } else {
         // Standalone simulated assistant response
         let reply = format!("Received: \"{}\". Connect to ACP server (`hex acp`) for live autonomous agent execution.", text);
         app.add_assistant_message(&reply);
+        app.active_prompt_id = None;
         app.is_busy = false;
         app.busy_started_at = None;
         app.status_message = "Ready".to_string();
     }
 
+    Ok(())
+}
+
+async fn deliver_prompt_final(
+    client: &AcpClient,
+    session_id: &str,
+    request_id: u64,
+    response: hex_protocol::models::SessionPromptResponse,
+    tx: &tokio::sync::mpsc::Sender<AppEvent>,
+) -> Result<(), String> {
+    if response.session_id != session_id { return Err("Mismatched prompt session".to_string()); }
+    match (response.turn_index, response.response_chars) {
+        (Some(turn), Some(total)) => {
+            let mut offset = 0;
+            loop {
+                let page = client.session_history_content(session_id, turn, "response", offset).await
+                    .map_err(|e| format!("{e}. Full response: /history-turn {turn} response"))?;
+                let end = offset.checked_add(page.content.chars().count()).ok_or("Invalid response page length")?;
+                if page.total_chars != total || end > total || (end < total && end == offset)
+                    || page.next_offset != (end < total).then_some(end) {
+                    return Err(format!("Invalid response page. Full response: /history-turn {turn} response"));
+                }
+                tx.send(AppEvent::PromptText {
+                    session_id: session_id.to_string(), request_id,
+                    text: page.content, first: offset == 0,
+                }).await.map_err(|e| e.to_string())?;
+                if end == total { break; }
+                offset = end;
+            }
+        }
+        (None, None) => {
+            let text = response.text_content();
+            if !text.is_empty() {
+                tx.send(AppEvent::PromptText { session_id: session_id.to_string(), request_id, text, first: true })
+                    .await.map_err(|e| e.to_string())?;
+            }
+        }
+        _ => return Err("Incomplete final-response paging metadata".to_string()),
+    }
     Ok(())
 }
 
@@ -1550,9 +1598,10 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
             if let Ok(update) =
                 serde_json::from_value::<hex_protocol::models::SessionUpdateNotification>(params)
             {
+                if update.session_id != app.session_id || app.pending_resume.is_some() { return; }
                 let terminal = update.is_turn_terminal();
                 let status_val = update.status.clone();
-                if let Some(delta) = update.delta {
+                if let Some(delta) = update.delta.filter(|_| !app.final_response_started && app.pending_resume.is_none() && (app.active_prompt_id.is_some() || app.is_busy)) {
                     app.append_assistant_delta(&delta);
                     app.is_busy = true;
                     if app.busy_started_at.is_none() {
@@ -1609,8 +1658,8 @@ fn handle_notification(app: &mut App, notif: hex_protocol::models::JsonRpcNotifi
                     app.cancel_requested = false;
                     app.close_running_tool_calls();
                     app.clear_approval_request();
-                    app.is_busy = false;
-                    app.busy_started_at = None;
+                    app.is_busy = app.active_prompt_id.is_some();
+                    if !app.is_busy { app.busy_started_at = None; }
                     let st = status_val.as_deref().unwrap_or("Ready");
                     app.status_message = if st.eq_ignore_ascii_case("ready")
                         || st.eq_ignore_ascii_case("completed")
@@ -1679,6 +1728,231 @@ fn handle_start_mouse_click(app: &mut App, col: u16, row: u16, area: ratatui::la
     }
     let resume = app.get_start_resume_area(area);
     app.handle_start_mouse_click(col, row, resume);
+}
+
+#[cfg(test)]
+mod session_recovery_tests {
+    use super::*;
+    use hex_protocol::models::{Role, SessionPromptResponse};
+    use hex_tui::app::{DialogueItem, ResumeSession};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    fn app() -> App {
+        App::with_workspace("recovery", "old-model", "none", Some(&std::env::temp_dir()))
+    }
+
+    fn begin(app: &mut App, id: u64, prompt: &str) {
+        app.active_prompt_id = Some(id);
+        app.final_response_started = false;
+        app.is_busy = true;
+        app.add_user_message(prompt);
+    }
+
+    fn text(app: &mut App, id: u64, value: &str, first: bool) {
+        handle_session_result(app, AppEvent::PromptText {
+            session_id: app.session_id.clone(), request_id: id, text: value.into(), first,
+        });
+    }
+
+    fn finish(app: &mut App, id: u64) {
+        handle_session_result(app, AppEvent::PromptFinished {
+            session_id: app.session_id.clone(), request_id: id, result: Ok(()),
+        });
+    }
+
+    fn answers(app: &App) -> Vec<&str> {
+        app.dialogue_items.iter().filter_map(|item| match item {
+            DialogueItem::Message(m) if m.role == Role::Assistant => Some(m.content.as_str()),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn identical_prefixes_and_repeated_answers_belong_to_distinct_turns() {
+        let mut app = app();
+        let answer = "This identical answer has substantially more than forty characters. 世界";
+        for id in 1..=3 {
+            begin(&mut app, id, "repeat");
+            text(&mut app, id, answer, true);
+            finish(&mut app, id);
+        }
+        assert_eq!(answers(&app), [answer, answer, answer]);
+    }
+
+    #[test]
+    fn interleaved_notices_and_tools_do_not_split_or_suppress_corrected_final() {
+        let mut app = app();
+        begin(&mut app, 1, "correct");
+        app.append_assistant_delta("first draft ");
+        app.add_system_message("interleaved notice");
+        app.add_tool_call("tool-1", "read_file", "args", None, Some("RUNNING"));
+        app.append_assistant_delta("continued draft");
+        assert_eq!(answers(&app), ["first draft continued draft"]);
+        text(&mut app, 1, "authoritative correction 世界", true);
+        app.complete_tool_call("tool-1", "result", 12, false);
+        text(&mut app, 1, " and final ending", false);
+        finish(&mut app, 1);
+        assert_eq!(answers(&app), ["authoritative correction 世界 and final ending"]);
+        assert!(app.dialogue_items.iter().any(|item| matches!(item, DialogueItem::ToolCall(t) if t.result.as_deref() == Some("result"))));
+    }
+
+    #[test]
+    fn stale_prompt_results_and_foreign_notifications_cannot_change_current_turn() {
+        let mut app = app();
+        begin(&mut app, 1, "first");
+        text(&mut app, 1, "first answer", true);
+        finish(&mut app, 1);
+        begin(&mut app, 2, "second");
+        app.append_assistant_delta("current draft");
+        text(&mut app, 1, "stale answer", true);
+        finish(&mut app, 1);
+        handle_session_result(&mut app, AppEvent::PromptText {
+            session_id: "foreign".into(), request_id: 2, text: "foreign answer".into(), first: true,
+        });
+        handle_notification(&mut app, serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "foreign", "updateType": "status", "status": "Ready", "delta": "foreign"}
+        })).unwrap());
+        assert_eq!(answers(&app), ["first answer", "current draft"]);
+        assert_eq!(app.active_prompt_id, Some(2));
+        assert!(app.is_busy);
+        text(&mut app, 2, "current final", true);
+        handle_notification(&mut app, serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "ses_default", "updateType": "agent_response", "delta": "late draft"}
+        })).unwrap());
+        assert_eq!(answers(&app), ["first answer", "current final"]);
+    }
+
+    #[tokio::test]
+    async fn canonical_paged_final_uses_unicode_offsets_not_preview_prose() {
+        let canonical = "世界😀é".repeat(1600);
+        let expected = canonical.clone();
+        let (client_read, mut server_write) = tokio::io::duplex(65536);
+        let (server_read, client_write) = tokio::io::duplex(65536);
+        let client = AcpClient::from_streams(client_read, client_write);
+        let server = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            for offset in [0, 4096] {
+                let request: serde_json::Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                assert_eq!(request["method"], "session/historyContent");
+                assert_eq!(request["params"], serde_json::json!({"sessionId": "ses_default", "turnIndex": 7,
+                    "field": "response", "offset": offset, "limit": 4096}));
+                let content: String = canonical.chars().skip(offset).take(4096).collect();
+                let end = offset + content.chars().count();
+                let response = serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": {
+                    "content": content, "totalChars": 6400, "nextOffset": (end < 6400).then_some(end)}});
+                server_write.write_all((response.to_string() + "\n").as_bytes()).await.unwrap();
+            }
+        });
+        let response: SessionPromptResponse = serde_json::from_value(serde_json::json!({
+            "sessionId": "ses_default", "status": "completed", "content": [{"type": "text", "text": "misleading preview"}],
+            "turnIndex": 7, "responseChars": 6400,
+        })).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        deliver_prompt_final(&client, "ses_default", 1, response, &tx).await.unwrap();
+        let mut app = app();
+        begin(&mut app, 1, "paged");
+        app.append_assistant_delta("incorrect streamed result");
+        while let Ok(event) = rx.try_recv() { handle_session_result(&mut app, event); }
+        finish(&mut app, 1);
+        assert_eq!(answers(&app), [expected.as_str()]);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_final_paging_stops_and_keeps_stream_with_actionable_notice() {
+        let (client_read, mut server_write) = tokio::io::duplex(8192);
+        let (server_read, client_write) = tokio::io::duplex(8192);
+        let client = AcpClient::from_streams(client_read, client_write);
+        let server = tokio::spawn(async move {
+            let request: serde_json::Value = serde_json::from_str(&BufReader::new(server_read).lines().next_line().await.unwrap().unwrap()).unwrap();
+            let response = serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": {
+                "content": "", "totalChars": 6000, "nextOffset": 0}});
+            server_write.write_all((response.to_string() + "\n").as_bytes()).await.unwrap();
+        });
+        let response = serde_json::from_value(serde_json::json!({
+            "sessionId": "ses_default", "status": "completed", "content": [], "turnIndex": 7, "responseChars": 6000,
+        })).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let result = deliver_prompt_final(&client, "ses_default", 1, response, &tx).await;
+        assert!(rx.try_recv().is_err());
+        let mut app = app();
+        begin(&mut app, 1, "paged");
+        app.append_assistant_delta("recoverable stream");
+        handle_session_result(&mut app, AppEvent::PromptFinished { session_id: "ses_default".into(), request_id: 1, result });
+        assert_eq!(answers(&app), ["recoverable stream"]);
+        assert!(!app.is_busy);
+        assert!(matches!(app.dialogue_items.last(), Some(DialogueItem::Message(m)) if m.content.contains("/history-turn 7 response")));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn keyboard_and_mouse_resume_wait_for_handshake_and_retry_without_losing_draft() {
+        let workspace = std::env::temp_dir().join(format!("hex_resume_{}_{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        std::fs::create_dir(&workspace).unwrap();
+        let loaded = serde_json::json!({"sessionId": "actual_session", "cwd": workspace, "model": "saved-model", "historyCount": 1,
+            "history": [{"task_id": "ledger_task", "prompt": "old prompt", "response": "old answer", "status": "completed",
+                "turnIndex": 0, "promptChars": 10, "responseChars": 10}]});
+        let (client_read, mut server_write) = tokio::io::duplex(8192);
+        let (server_read, client_write) = tokio::io::duplex(8192);
+        let client = AcpClient::from_streams(client_read, client_write);
+        let server = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            for attempt in 0..2 {
+                let request: serde_json::Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                assert_eq!(request["method"], "session/load");
+                assert_eq!(request["params"], serde_json::json!({"taskId": "ledger_task", "paged": true}));
+                let response = if attempt == 0 {
+                    serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32602, "message": "load unavailable"}})
+                } else { serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": loaded}) };
+                server_write.write_all((response.to_string() + "\n").as_bytes()).await.unwrap();
+            }
+        });
+        let mut app = app();
+        app.resume_sessions = vec![ResumeSession { session_id: "ledger_task".into(), title: "saved".into(), relative_time: "today".into() }];
+        app.focus = Focus::Resume;
+        app.input_buffer = "preserved draft 世界".into();
+        app.cursor_pos = 4;
+        app.provider_name = "stale-provider".into();
+        app.tools_count = Some(20);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let enter = crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        handle_key_event(&mut app, enter, Some(&client), tx.clone()).await.unwrap();
+        let first = app.pending_resume.unwrap();
+        handle_key_event(&mut app, enter, Some(&client), tx.clone()).await.unwrap();
+        assert_eq!(app.pending_resume, Some(first));
+        assert_eq!(app.screen_state, ScreenState::Start);
+        assert_eq!(app.session_id, "ses_default");
+        assert_eq!(app.input_buffer, "preserved draft 世界");
+        assert_eq!(app.cursor_pos, 4);
+        handle_session_result(&mut app, rx.recv().await.unwrap());
+        assert!(app.pending_resume.is_none() && !app.is_busy);
+        assert!(app.status_message.contains("load unavailable") && app.status_message.contains("retry"));
+        assert_eq!(app.screen_state, ScreenState::Start);
+        assert_eq!(app.input_buffer, "preserved draft 世界");
+        let area = ratatui::layout::Rect::new(0, 0, 120, 36);
+        let resume = app.get_start_resume_area(area);
+        handle_start_mouse_click(&mut app, resume.x + 4, resume.y + 1, area);
+        let task = app.requested_resume.take().unwrap();
+        request_session_resume(&mut app, Some(&client), tx, &task);
+        let second = app.pending_resume.unwrap();
+        assert_ne!(first, second);
+        handle_session_result(&mut app, AppEvent::ResumeResult { session_id: "ses_default".into(), request_id: first, result: Err("stale failure".into()) });
+        assert_eq!(app.pending_resume, Some(second));
+        assert_eq!(app.session_id, "ses_default");
+        handle_session_result(&mut app, rx.recv().await.unwrap());
+        assert_eq!(app.session_id, "actual_session");
+        assert_eq!(app.workspace_path, workspace.to_string_lossy());
+        assert_eq!(app.model_name, "saved-model");
+        assert!(app.provider_name.is_empty() && app.tools_count.is_none());
+        assert_eq!(answers(&app), ["old answer"]);
+        assert_eq!(app.screen_state, ScreenState::Session);
+        assert!(app.input_buffer.is_empty() && app.pending_resume.is_none() && !app.is_busy);
+        server.await.unwrap();
+        drop(app);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1807,6 +2081,8 @@ mod wire_contract_tests {
     }
 
     fn replay(app: &mut App, name: &str) {
+        app.session_id = "ses_fixture".to_string();
+        app.active_prompt_id = Some(1);
         for line in fixture(name) {
             if line.get("method").is_some() {
                 let notif: hex_protocol::models::JsonRpcNotification =
@@ -1822,7 +2098,7 @@ mod wire_contract_tests {
         app.is_busy = true;
         replay(&mut app, "turn_streamed.jsonl");
 
-        assert!(!app.is_busy, "turn must end unbusy");
+        assert!(app.is_busy, "terminal notification must not retire the pending prompt RPC");
         assert_eq!(app.status_message, "Ready");
         assert!(app.active_turn_has_streamed);
 
@@ -1851,6 +2127,17 @@ mod wire_contract_tests {
         assert_eq!(tool.exit_status.as_deref(), Some("OK"));
         assert_eq!(tool.duration_ms, Some(12));
         assert!(tool.result.as_deref().unwrap_or("").contains("a.py"));
+        handle_session_result(&mut app, AppEvent::PromptText {
+            session_id: "ses_fixture".into(), request_id: 1, text: "Fixture answer.".into(), first: true,
+        });
+        handle_session_result(&mut app, AppEvent::PromptFinished {
+            session_id: "ses_fixture".into(), request_id: 1, result: Ok(()),
+        });
+        assert!(!app.is_busy && !app.active_turn_has_streamed);
+        let answers: Vec<_> = app.dialogue_items.iter().filter_map(|item| match item {
+            DialogueItem::Message(m) if m.role == Role::Assistant => Some(m.content.as_str()), _ => None,
+        }).collect();
+        assert_eq!(answers, ["Fixture answer."]);
     }
 
     #[tokio::test]
@@ -1879,6 +2166,7 @@ mod wire_contract_tests {
     #[test]
     fn tool_results_keep_durable_ids_separate_from_ui_correlation() {
         let mut app = App::new("p", "m", "cow");
+        app.session_id = "session_1".into();
         for event in ["start", "complete"] {
             let notification = serde_json::from_value(serde_json::json!({
                 "jsonrpc": "2.0", "method": "session/update",
@@ -1905,7 +2193,10 @@ mod wire_contract_tests {
         let mut app = App::new("p", "m", "cow");
         app.is_busy = true;
         replay(&mut app, "turn_nonstreamed.jsonl");
-
+        assert!(app.is_busy);
+        handle_session_result(&mut app, AppEvent::PromptFinished {
+            session_id: "ses_fixture".into(), request_id: 1, result: Ok(()),
+        });
         assert!(!app.is_busy);
         assert_eq!(app.status_message, "Ready");
         let assistant_text: String = app
@@ -1952,6 +2243,7 @@ mod session_lifecycle_tests {
         let mut app = App::new("p", "m", "cow");
         app.is_busy = true;
         app.cancel_requested = true;
+        app.session_id = "acp_sess_lifecycle".into();
         handle_notification(&mut app, status_notification("Cancelled"));
         assert!(!app.is_busy);
         assert!(!app.cancel_requested);
@@ -1962,6 +2254,7 @@ mod session_lifecycle_tests {
     fn failed_status_seals_turn_with_truthful_state() {
         let mut app = App::new("p", "m", "cow");
         app.is_busy = true;
+        app.session_id = "acp_sess_lifecycle".into();
         handle_notification(&mut app, status_notification("Failed"));
         assert!(!app.is_busy);
         assert_eq!(app.status_message, "Failed");
@@ -2602,7 +2895,10 @@ mod keymap_truth_tests {
                 assert!(app.dialogue_scroll > 0, "{} did not scroll down", b.label)
             }
             (Scope::Start, "/") => assert!(app.show_palette),
-            (Scope::Start, "enter") => assert_eq!(app.screen_state, ScreenState::Session),
+            (Scope::Start, "enter") => {
+                assert_eq!(app.screen_state, ScreenState::Start);
+                assert!(app.status_message.contains("Resume unavailable without an ACP runtime"));
+            }
             (Scope::Start, "d") => assert_eq!(app.pending_delete_index, Some(0)),
             (Scope::Palette, "enter") | (Scope::Palette, "esc") => assert!(!app.show_palette),
             (Scope::Palette, "up") => {
@@ -2852,8 +3148,10 @@ mod keymap_truth_tests {
         assert_eq!(app.focus, Focus::Input);
         press(&mut app, KeyCode::Down).await;
         press(&mut app, KeyCode::Enter).await;
-        assert_eq!(app.screen_state, ScreenState::Session);
-        assert_eq!(app.focus, Focus::Input);
+        assert_eq!(app.screen_state, ScreenState::Start);
+        assert_eq!(app.focus, Focus::Resume);
+        assert!(app.status_message.contains("Resume unavailable"));
+        press(&mut app, KeyCode::Up).await;
         press(&mut app, KeyCode::Char('x')).await;
         assert_eq!(app.input_buffer, "x");
     }

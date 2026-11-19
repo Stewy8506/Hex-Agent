@@ -716,14 +716,14 @@ class ACPServer:
             "splashText": splash_text,
         }
 
-    def _validate_history_params(self, params: Any, allowed: set[str]) -> None:
+    def _validate_history_params(self, params: Any, allowed: set[str], *, identifier: str = "sessionId") -> None:
         if not isinstance(params, dict):
             raise ValueError("Session history params must be an object")
         if params.keys() - allowed:
             raise ValueError("Unknown session history parameter")
-        sid = params.get("sessionId")
+        sid = params.get(identifier)
         if not isinstance(sid, str) or len(sid) > 256 or self._session_path(sid) is None:
-            raise ValueError("sessionId must be a valid session identifier")
+            raise ValueError(f"{identifier} must be a valid session identifier")
 
     @staticmethod
     def _history_integer(params: dict[str, Any], name: str, default: int, minimum: int, maximum: int) -> int:
@@ -747,12 +747,42 @@ class ACPServer:
                 raise OSError("Session history persistence unavailable; source retained")
         return sess.history
 
+    def _session_id_for_task(self, task_id: str) -> str:
+        matches: set[str] = set()
+        db_path = self._sessions_dir / "history.db"
+        if db_path.is_file():
+            # Read-only lookup cannot create storage when a resume entry is stale.
+            conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+            try:
+                matches.update(row[0] for row in conn.execute(
+                    "SELECT DISTINCT session_id FROM history WHERE task_id = ? LIMIT 2",
+                    (task_id,),
+                ))
+            finally:
+                conn.close()
+        with self._lock:
+            matches.update(sess.session_id for sess in self.sessions.values()
+                           if not isinstance(sess.history, SQLiteHistory) and sess.has_task(task_id))
+        if not matches:
+            raise KeyError(f"Task not found in ACP session history: {task_id}")
+        if len(matches) != 1:
+            raise ValueError(f"Task maps to multiple ACP sessions: {task_id}")
+        sid = matches.pop()
+        self._validate_history_params({"sessionId": sid}, {"sessionId"})
+        return sid
+
     def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
-        self._validate_history_params(params, {"sessionId", "paged"})
+        if not isinstance(params, dict):
+            raise ValueError("Session history params must be an object")
+        if ("sessionId" in params) == ("taskId" in params):
+            raise ValueError("Exactly one of sessionId or taskId is required")
+        identifier = "taskId" if "taskId" in params else "sessionId"
+        self._validate_history_params(params, {"sessionId", "taskId", "paged"}, identifier=identifier)
         paged = params.get("paged", False)
         if type(paged) is not bool:
             raise ValueError("paged must be a boolean")
-        sess = self._existing_session(params["sessionId"])
+        sid = self._session_id_for_task(params["taskId"]) if identifier == "taskId" else params["sessionId"]
+        sess = self._existing_session(sid)
         with self._lock:
             self.sessions[sess.session_id] = sess
         # B41: approvals live only in memory, so a reloaded session must not
@@ -1044,7 +1074,9 @@ class ACPServer:
         })
 
         terminal_text = str(terminal_reason)
-        paged_final = paged_response and not streamed and len(terminal_text) > 4096
+        response_chars = len(terminal_text)
+        turn_index = len(sess.history) - 1
+        paged_final = paged_response and not streamed and response_chars > 4096
         if paged_final:
             # The complete original is committed before these synthetic deltas.
             stream_cb(terminal_text)
@@ -1063,8 +1095,9 @@ class ACPServer:
             update_notif["params"]["delta"] = terminal_text
         self._emit(update_notif)
 
-        if paged_response and len(terminal_text) > 4096:
-            turn_index = len(sess.history) - 1
+        response_metadata: dict[str, Any] = {}
+        if paged_response and response_chars > 4096:
+            response_metadata = {"responseChars": response_chars, "turnIndex": turn_index}
             terminal_text = terminal_text[:4096] + f"\n[Full response: /history-turn {turn_index} response]"
 
         return {
@@ -1077,6 +1110,7 @@ class ACPServer:
                 }
             ],
             "taskId": task_id,
+            **response_metadata,
         }
 
     def _handle_session_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
