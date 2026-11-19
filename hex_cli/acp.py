@@ -1355,10 +1355,17 @@ class ACPServer:
                 raise ValueError(f"Unknown approval decision: {decision!r}")
             outcome = {"applied": False, "outcome": None, "lease_id": None, "lease_ttl_seconds": None}
 
+        # B35: distinguish a late decision against an already closed approval
+        # (expired/canceled/resolved) from a genuinely unknown id ("acknowledged").
+        if outcome["applied"]:
+            status = "applied"
+        else:
+            status = outcome.get("closed_reason") or "acknowledged"
+
         return {
             "approvalId": approval_id,
             "decision": decision,
-            "status": "applied" if outcome["applied"] else "acknowledged",
+            "status": status,
             "applied": outcome["applied"],
             "outcome": outcome["outcome"],
             "leaseId": outcome["lease_id"],

@@ -227,18 +227,14 @@ impl AcpBridge {
         Ok(())
     }
 
-    /// Automatically connect: tries Unix domain socket `/tmp/hex-acp.sock` first,
-    /// falling back to spawning the ACP child process if unavailable.
+    /// Automatically connect by spawning the trusted ACP child process over stdio.
+    ///
+    /// B34: auto-connect previously adopted a predictable `/tmp/hex-acp.sock`
+    /// whenever it existed, without authenticating the peer. Any local process
+    /// able to create that socket could impersonate the backend and receive
+    /// prompts and approval decisions. Auto-connect now only spawns the child we
+    /// control; `connect_socket` remains an explicit, deliberate caller choice.
     pub async fn connect_auto(&self) -> Result<(), AcpError> {
-        #[cfg(unix)]
-        {
-            let sock = Path::new("/tmp/hex-acp.sock");
-            if sock.exists() {
-                if let Ok(()) = self.connect_socket(sock).await {
-                    return Ok(());
-                }
-            }
-        }
         self.connect_server().await
     }
 

@@ -6,7 +6,29 @@ use gpui::*;
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{app_runtime, init_app, open_chat_window};
 
+/// Minimal logger that preserves diagnostics (including the ACP child's stderr,
+/// B35) on the desktop's stderr. The GUI does not render to stderr, so this is
+/// safe; the TUI installs no logger and keeps its terminal clean.
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}: {}", record.level(), record.target(), record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
+static LOGGER: StderrLogger = StderrLogger;
+
 fn main() {
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(log::LevelFilter::Warn);
+
     let app = Application::new();
     app.run(|cx: &mut App| {
         init_app(cx);

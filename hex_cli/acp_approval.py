@@ -50,7 +50,19 @@ class AcpApprovalBridge:
             except ValueError:
                 self.default_timeout = 60.0
         self._pending: dict[str, dict[str, Any]] = {}
+        # B35: remember recently closed approval ids and why they closed so a late
+        # decision can be reported as expired/canceled/resolved rather than a
+        # generic "acknowledged" that looks like it might still apply.
+        self._closed: dict[str, str] = {}
         self._lock = threading.RLock()
+
+    def _record_closed(self, approval_id: str, reason: str) -> None:
+        """Record why an approval left the pending set (bounded, first wins)."""
+        self._closed.setdefault(approval_id, reason)
+        overflow = len(self._closed) - 512
+        if overflow > 0:
+            for key in list(self._closed)[:overflow]:
+                self._closed.pop(key, None)
 
     def has_pending(self, approval_id: str) -> bool:
         with self._lock:
@@ -96,6 +108,7 @@ class AcpApprovalBridge:
                 )
                 entry["event"].set()
                 self._pending.pop(approval_id, None)
+                self._record_closed(approval_id, "canceled")
                 woken += 1
         return woken
 
@@ -138,6 +151,10 @@ class AcpApprovalBridge:
         finally:
             with self._lock:
                 self._pending.pop(request.request_id, None)
+                self._record_closed(
+                    request.request_id,
+                    "resolved" if entry["decision"] is not None else "expired",
+                )
 
         decision = entry["decision"]
         if signaled and decision is not None:
@@ -181,7 +198,13 @@ class AcpApprovalBridge:
         with self._lock:
             entry = self._pending.get(approval_id)
             if entry is None:
-                return {"applied": False, "outcome": None, "lease_id": None, "lease_ttl_seconds": None}
+                return {
+                    "applied": False,
+                    "outcome": None,
+                    "lease_id": None,
+                    "lease_ttl_seconds": None,
+                    "closed_reason": self._closed.get(approval_id),
+                }
             lease_id = self._grant_scope_lease(entry["request"], ttl) if grant_scope else None
             granted_ttl = ttl if lease_id else None
             entry["decision"] = ApprovalDecision(

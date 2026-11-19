@@ -282,17 +282,11 @@ impl ChatView {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Workspace".to_string());
-        let git_branch = std::process::Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&workspace)
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|| "no git".to_string());
 
         let mut shell = AppShell::new().with_acp_bridge(bridge.clone());
-        shell.sidebar.set_workspace(workspace_name, git_branch);
+        // B35: the git branch is resolved off the UI thread; show a placeholder
+        // until the background lookup completes instead of blocking startup.
+        shell.sidebar.set_workspace(workspace_name, "…");
         shell.sidebar.provider_status.state = if bridge.is_connected() {
             ProviderState::Connected
         } else {
@@ -329,7 +323,36 @@ impl ChatView {
         };
         view.start_event_pump(cx);
         view.start_backend(cx);
+        view.start_git_branch_lookup(cx);
         view
+    }
+
+    /// Resolve the git branch on a blocking pool instead of the UI thread (B35).
+    fn start_git_branch_lookup(&mut self, cx: &mut Context<Self>) {
+        let rt = self.rt.clone();
+        let ws = self.workspace.clone();
+        let name = self.shell.sidebar.workspace_name.clone();
+        cx.spawn(async move |this, cx| {
+            let branch = rt
+                .spawn_blocking(move || {
+                    std::process::Command::new("git")
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .current_dir(&ws)
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_else(|| "no git".to_string())
+                })
+                .await
+                .unwrap_or_else(|_| "no git".to_string());
+            this.update(cx, |view, cx| {
+                view.shell.sidebar.set_workspace(name, branch);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     // ------------------------------------------------------------------
@@ -1180,10 +1203,12 @@ impl ChatView {
                 self.shell.feed.add_system_notice(notice);
             }
             Ok(Ok(resp)) => {
-                self.shell.feed.add_system_notice(format!(
-                    "The runtime did not apply this decision ({}; approval {}); no pending request matched. Retry or deny.",
-                    resp.status, resp.approval_id
-                ));
+                // B35: a late decision against an already expired/canceled/resolved
+                // approval is ignored, not applied — say so precisely instead of
+                // prompting a futile retry.
+                self.shell
+                    .feed
+                    .add_system_notice(late_approval_notice(&resp.status, &resp.approval_id));
             }
             Ok(Err(err)) => {
                 self.shell.feed.add_system_notice(format!(
@@ -2503,10 +2528,36 @@ impl Element for ComposerElement {
     }
 }
 
+/// Notice for a decision the runtime did not apply (B35). A late decision against
+/// an already closed approval is reported as ignored; an unknown id stays retryable.
+fn late_approval_notice(status: &str, approval_id: &str) -> String {
+    match status {
+        "expired" | "canceled" | "resolved" => {
+            format!("This approval was already {status}; the late decision was ignored.")
+        }
+        _ => format!(
+            "The runtime did not apply this decision ({status}; approval {approval_id}); no pending request matched. Retry or deny."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[test]
+    fn late_approval_notice_distinguishes_closed_from_unknown() {
+        for status in ["expired", "canceled", "resolved"] {
+            let notice = late_approval_notice(status, "appr_1");
+            assert!(notice.contains(&format!("already {status}")), "{notice}");
+            assert!(notice.contains("ignored"), "{notice}");
+            assert!(!notice.contains("Retry"), "{notice}");
+        }
+        let unknown = late_approval_notice("acknowledged", "appr_1");
+        assert!(unknown.contains("Retry or deny"), "{unknown}");
+        assert!(!unknown.contains("ignored"), "{unknown}");
+    }
 
     #[test]
     fn authoritative_final_replaces_nonempty_truncated_preview() {
