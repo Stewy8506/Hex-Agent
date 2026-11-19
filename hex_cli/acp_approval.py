@@ -20,6 +20,9 @@ from harness_core.core.approval_lease import ApprovalLeaseManager
 _COMMAND_KEYS = ("command", "cmd", "command_line", "script")
 _APPROVE_ONCE = {"approve", "allow", "allow_once", "approved", "y", "yes"}
 _APPROVE_SCOPE = {"approve_scope", "allow_scope", "allow_project", "a"}
+_DENY = {"deny", "reject", "denied", "no", "n"}
+_MIN_LEASE_TTL_SECONDS = 60
+_MAX_LEASE_TTL_SECONDS = 86400
 
 
 class AcpApprovalBridge:
@@ -146,32 +149,69 @@ class AcpApprovalBridge:
             reason=f"No operator decision within {timeout:.0f}s; denied by default.",
         )
 
-    def resolve(self, approval_id: str, decision: str, reason: str | None = None) -> bool:
-        """Apply a client decision to a waiting turn. False if nothing is waiting."""
+    def resolve(
+        self,
+        approval_id: str,
+        decision: str,
+        reason: str | None = None,
+        lease_ttl_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Apply a client decision to a waiting turn.
+
+        B27/B30: the outcome is typed (APPROVE/DENY) and reported back to the
+        caller; an unrecognized decision is a parameter error, never a silent
+        denial. A scoped grant honors a validated ``lease_ttl_seconds``; a
+        once-off approval never creates a lease. Silence (timeout) is still a
+        denial, handled by ``request_approval``.
+        """
         clean = (decision or "").strip().lower()
         if clean in _APPROVE_ONCE:
             outcome, grant_scope = "APPROVE", False
         elif clean in _APPROVE_SCOPE:
             outcome, grant_scope = "APPROVE", True
-        else:
+        elif clean in _DENY:
             outcome, grant_scope = "DENY", False
+        else:
+            raise ValueError(f"Unknown approval decision: {decision!r}")
+
+        if lease_ttl_seconds is not None:
+            self._validate_ttl(lease_ttl_seconds)
+        ttl = lease_ttl_seconds if grant_scope else None
 
         with self._lock:
             entry = self._pending.get(approval_id)
             if entry is None:
-                return False
-            lease_id = self._grant_scope_lease(entry["request"]) if grant_scope else None
+                return {"applied": False, "outcome": None, "lease_id": None, "lease_ttl_seconds": None}
+            lease_id = self._grant_scope_lease(entry["request"], ttl) if grant_scope else None
+            granted_ttl = ttl if lease_id else None
             entry["decision"] = ApprovalDecision(
                 decision=outcome,
                 responder_id="operator",
                 platform="acp",
                 timestamp=time.time(),
-                reason=reason or ("Approved for this project" if lease_id else f"Operator decision: {outcome}"),
+                reason=reason or (
+                    f"Approved for this project (lease {granted_ttl}s)"
+                    if lease_id else f"Operator decision: {outcome}"
+                ),
             )
             entry["event"].set()
-        return True
+        return {
+            "applied": True,
+            "outcome": outcome,
+            "lease_id": lease_id,
+            "lease_ttl_seconds": granted_ttl,
+        }
 
-    def _grant_scope_lease(self, request: ApprovalRequest) -> str | None:
+    def _validate_ttl(self, lease_ttl_seconds: Any) -> int:
+        if isinstance(lease_ttl_seconds, bool) or not isinstance(lease_ttl_seconds, int):
+            raise ValueError("leaseTtlSeconds must be an integer number of seconds")
+        if not (_MIN_LEASE_TTL_SECONDS <= lease_ttl_seconds <= _MAX_LEASE_TTL_SECONDS):
+            raise ValueError(
+                f"leaseTtlSeconds must be between {_MIN_LEASE_TTL_SECONDS} and {_MAX_LEASE_TTL_SECONDS}"
+            )
+        return lease_ttl_seconds
+
+    def _grant_scope_lease(self, request: ApprovalRequest, ttl_seconds: int | None = None) -> str | None:
         """Persist a narrowly bound 'allow again' grant for this exact action.
 
         B45: the grant binds to the full command (exact match) or, for
@@ -181,6 +221,7 @@ class AcpApprovalBridge:
         """
         if self.lease_manager is None:
             return None
+        ttl = ttl_seconds if ttl_seconds is not None else self.scope_ttl_seconds
         session_id = self._session_for_task(request.task_id)
         command = self.command_text(request.arguments)
         if command:
@@ -188,7 +229,7 @@ class AcpApprovalBridge:
                 command_prefix=command,
                 match_mode="exact",
                 tool_name=request.tool_name,
-                ttl_seconds=self.scope_ttl_seconds,
+                ttl_seconds=ttl,
                 task_id=request.task_id,
                 session_id=session_id,
                 scope="session",
@@ -197,7 +238,7 @@ class AcpApprovalBridge:
             lease = self.lease_manager.grant_lease(
                 tool_name=request.tool_name,
                 args_fingerprint=self.lease_manager.fingerprint_args(request.arguments),
-                ttl_seconds=self.scope_ttl_seconds,
+                ttl_seconds=ttl,
                 task_id=request.task_id,
                 session_id=session_id,
                 scope="session",

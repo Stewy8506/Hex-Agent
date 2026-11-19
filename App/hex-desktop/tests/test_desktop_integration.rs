@@ -182,19 +182,24 @@ async fn test_tool_approval_workflow_with_15m_lease() {
                     let params = req.get("params").unwrap();
                     let approval_id = params.get("approvalId").and_then(|v| v.as_str()).unwrap();
                     let decision = params.get("decision").and_then(|v| v.as_str()).unwrap();
-                    let reason = params.get("reason").and_then(|v| v.as_str());
+                    let ttl = params.get("leaseTtlSeconds").and_then(|v| v.as_u64());
 
                     assert_eq!(approval_id, "appr_777");
-                    assert_eq!(decision, "approve");
-                    assert_eq!(reason, Some("lease_duration:900"));
+                    assert_eq!(decision, "approve_scope");
+                    assert_eq!(ttl, Some(900));
+                    assert!(params.get("reason").is_none());
 
                     let resp = serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
                         "result": {
                             "approvalId": approval_id,
-                            "status": "granted",
-                            "decision": decision
+                            "status": "applied",
+                            "decision": decision,
+                            "applied": true,
+                            "outcome": "APPROVE",
+                            "leaseId": "lease_777",
+                            "leaseTtlSeconds": ttl
                         }
                     });
                     server_write
@@ -236,24 +241,34 @@ async fn test_tool_approval_workflow_with_15m_lease() {
         _ => panic!("Expected active approval modal"),
     }
 
-    // 2. User toggles 15m temporal lease auto-approval
+    // 2. The 15m lease is real only for the scoped choice (B27/B30).
     if let ActiveModal::Approval(ref mut modal) = shell.active_modal {
         modal.toggle_lease();
         assert!(modal.lease_15m);
 
+        let once = modal.confirm();
+        assert_eq!(once.choice, ToolApprovalChoice::Once);
+        assert!(!once.lease_15m);
+        assert_eq!(once.lease_seconds(), None);
+
+        modal.set_choice(ToolApprovalChoice::Session);
         let result = modal.confirm();
-        assert_eq!(result.choice, ToolApprovalChoice::Once);
+        assert_eq!(result.choice, ToolApprovalChoice::Session);
         assert!(result.lease_15m);
         assert_eq!(result.lease_seconds(), Some(900));
 
         // Send decision to backend bridge
         let resp = bridge
-            .send_approval_decision(&result.request_id, result.choice, result.lease_15m)
+            .send_approval_decision(&result.request_id, result.choice, result.lease_seconds())
             .await
             .expect("decision dispatch failed");
         assert_eq!(resp.approval_id, "appr_777");
-        assert_eq!(resp.decision, "approve");
-        assert_eq!(resp.status, "granted");
+        assert_eq!(resp.decision, "approve_scope");
+        assert_eq!(resp.status, "applied");
+        assert_eq!(resp.applied, Some(true));
+        assert_eq!(resp.outcome.as_deref(), Some("APPROVE"));
+        assert_eq!(resp.lease_id.as_deref(), Some("lease_777"));
+        assert_eq!(resp.lease_ttl_seconds, Some(900));
     }
 
     shell.dismiss_modal();

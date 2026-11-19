@@ -490,3 +490,45 @@ fn test_subagent_record_tolerates_missing_optional_fields() {
     assert!(agent.result.is_none());
     assert_eq!(agent.elapsed_seconds(50.0), 0);
 }
+
+#[test]
+fn test_approval_decision_params_omit_absent_lease_ttl() {
+    let params = hex_protocol::models::ApprovalDecisionParams {
+        approval_id: "appr_1".into(),
+        decision: "approve_scope".into(),
+        reason: None,
+        lease_ttl_seconds: None,
+    };
+    let json = serde_json::to_value(&params).unwrap();
+    assert_eq!(json["approvalId"], "appr_1");
+    assert_eq!(json["decision"], "approve_scope");
+    assert!(json.get("reason").is_none());
+    assert!(json.get("leaseTtlSeconds").is_none());
+
+    let with_ttl = hex_protocol::models::ApprovalDecisionParams {
+        lease_ttl_seconds: Some(900),
+        ..params
+    };
+    let json = serde_json::to_value(&with_ttl).unwrap();
+    assert_eq!(json["leaseTtlSeconds"], 900);
+}
+
+#[test]
+fn test_approval_decision_response_typed_outcome_and_legacy_shape() {
+    let raw = r#"{"approvalId":"appr_1","status":"applied","decision":"approve_scope",
+        "applied":true,"outcome":"APPROVE","leaseId":"lease_9","leaseTtlSeconds":900}"#;
+    let resp: hex_protocol::models::ApprovalDecisionResponse = serde_json::from_str(raw).unwrap();
+    assert_eq!(resp.applied, Some(true));
+    assert_eq!(resp.outcome.as_deref(), Some("APPROVE"));
+    assert_eq!(resp.lease_id.as_deref(), Some("lease_9"));
+    assert_eq!(resp.lease_ttl_seconds, Some(900));
+
+    // Older servers omit the typed fields; deserialization must still succeed.
+    let legacy = r#"{"approvalId":"appr_2","status":"acknowledged","decision":"approve"}"#;
+    let resp: hex_protocol::models::ApprovalDecisionResponse = serde_json::from_str(legacy).unwrap();
+    assert_eq!(resp.status, "acknowledged");
+    assert_eq!(resp.applied, None);
+    assert_eq!(resp.outcome, None);
+    assert_eq!(resp.lease_id, None);
+    assert_eq!(resp.lease_ttl_seconds, None);
+}

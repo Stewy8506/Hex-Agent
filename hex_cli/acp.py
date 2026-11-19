@@ -633,7 +633,8 @@ class ACPServer:
                 "id": req_id,
                 "error": {
                     "code": -32602 if method in {
-                        "session/toolResult", "session/load", "session/history", "session/historyContent"
+                        "session/toolResult", "session/load", "session/history", "session/historyContent",
+                        "session/approvalDecision"
                     } and isinstance(exc, (ValueError, TypeError)) else -32000,
                     "message": str(exc),
                 },
@@ -1269,6 +1270,7 @@ class ACPServer:
         approval_id = params.get("approvalId") or params.get("approval_id")
         decision = (params.get("decision") or "reject").lower()
         reason = params.get("reason", "")
+        ttl = params.get("leaseTtlSeconds", params.get("lease_ttl_seconds"))
         if not approval_id:
             raise ValueError("approvalId is required")
 
@@ -1280,14 +1282,23 @@ class ACPServer:
                 "status": "decided",
             }
 
-        applied = False
         if self.approval_bridge is not None:
-            applied = self.approval_bridge.resolve(approval_id, decision, reason or None)
+            outcome = self.approval_bridge.resolve(approval_id, decision, reason or None, ttl)
+        else:
+            from harness_core.client.acp_approval import _APPROVE_ONCE, _APPROVE_SCOPE, _DENY
+
+            if decision not in _APPROVE_ONCE | _APPROVE_SCOPE | _DENY:
+                raise ValueError(f"Unknown approval decision: {decision!r}")
+            outcome = {"applied": False, "outcome": None, "lease_id": None, "lease_ttl_seconds": None}
 
         return {
             "approvalId": approval_id,
             "decision": decision,
-            "status": "applied" if applied else "acknowledged",
+            "status": "applied" if outcome["applied"] else "acknowledged",
+            "applied": outcome["applied"],
+            "outcome": outcome["outcome"],
+            "leaseId": outcome["lease_id"],
+            "leaseTtlSeconds": outcome["lease_ttl_seconds"],
         }
 
     def _handle_session_tool_result(self, params: dict[str, Any]) -> dict[str, Any]:

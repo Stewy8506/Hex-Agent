@@ -2562,6 +2562,7 @@ mod control_recovery_tests {
             app.approval_pending = true;
             let event = approval_result(&app, Ok(ApprovalDecisionResponse {
                 approval_id: id.into(), status: status.into(), decision: decision.into(),
+                applied: None, outcome: None, lease_id: None, lease_ttl_seconds: None,
             }));
             handle_control_result(&mut app, event);
             assert!(app.active_approval.is_some() && !app.approval_pending);
@@ -2575,6 +2576,7 @@ mod control_recovery_tests {
         app.approval_pending = true;
         let event = approval_result(&app, Ok(ApprovalDecisionResponse {
             approval_id: "approval-1".into(), status: "applied".into(), decision: "approve".into(),
+            applied: None, outcome: None, lease_id: None, lease_ttl_seconds: None,
         }));
         let req = app.active_approval.clone().unwrap();
         app.set_approval_request(req);

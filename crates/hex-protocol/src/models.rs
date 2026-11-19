@@ -672,6 +672,8 @@ pub struct ApprovalDecisionParams {
     pub decision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_ttl_seconds: Option<u64>,
 }
 
 /// Response returned from `session/approvalDecision`.
@@ -681,6 +683,14 @@ pub struct ApprovalDecisionResponse {
     pub approval_id: String,
     pub status: String,
     pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_ttl_seconds: Option<u64>,
 }
 
 /// Parameters for `session/command` method request sent from client to server.

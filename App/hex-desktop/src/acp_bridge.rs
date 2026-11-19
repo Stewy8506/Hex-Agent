@@ -391,29 +391,80 @@ impl AcpBridge {
     }
 
     /// Send operator approval decision back to `harness_core`.
+    ///
+    /// B27/B30: decisions use the server's canonical vocabulary and the lease
+    /// TTL travels as a validated field, never as reason text. A scoped lease
+    /// only accompanies `Session`; once-off approvals never widen authority.
     pub async fn send_approval_decision(
         &self,
         approval_id: &str,
         choice: ToolApprovalChoice,
-        lease_15m: bool,
+        lease_ttl_seconds: Option<u64>,
     ) -> Result<ApprovalDecisionResponse, AcpError> {
         let client_opt = self.client.lock().await.clone();
         if let Some(client) = client_opt {
             let decision_str = match choice {
                 ToolApprovalChoice::Once => "approve",
-                ToolApprovalChoice::Session => "allow_session",
+                ToolApprovalChoice::Session => "approve_scope",
                 ToolApprovalChoice::Deny => "deny",
             };
-
-            let reason = if lease_15m && choice != ToolApprovalChoice::Deny {
-                Some("lease_duration:900")
-            } else {
-                None
+            let ttl = match choice {
+                ToolApprovalChoice::Session => lease_ttl_seconds,
+                _ => None,
             };
-
-            client.session_approval_decision(approval_id, decision_str, reason).await
+            client
+                .session_approval_decision_with_ttl(approval_id, decision_str, None, ttl)
+                .await
         } else {
             Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Assemble the authoritative final answer for a completed turn.
+    ///
+    /// B31: when the server truncated the inline response it advertises
+    /// `turnIndex`/`responseChars`; the full text is fetched page by page and
+    /// validated so a lagged stream can never be presented as the final answer.
+    pub async fn fetch_canonical_final(
+        &self,
+        session_id: &str,
+        response: &hex_protocol::models::SessionPromptResponse,
+    ) -> Result<String, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        let Some(client) = client_opt else {
+            return Err(AcpError::ConnectionClosed);
+        };
+        match (response.turn_index, response.response_chars) {
+            (Some(turn), Some(total)) => {
+                let mut text = String::new();
+                let mut offset = 0usize;
+                loop {
+                    let page = client
+                        .session_history_content(session_id, turn, "response", offset)
+                        .await?;
+                    let end = offset
+                        .checked_add(page.content.chars().count())
+                        .ok_or_else(|| AcpError::InvalidResponse("response page overflow".into()))?;
+                    if page.total_chars != total
+                        || end > total
+                        || (end < total && end == offset)
+                        || page.next_offset != (end < total).then_some(end)
+                    {
+                        return Err(AcpError::InvalidResponse(
+                            "invalid canonical response page".into(),
+                        ));
+                    }
+                    text.push_str(&page.content);
+                    if end == total {
+                        return Ok(text);
+                    }
+                    offset = end;
+                }
+            }
+            (None, None) => Ok(response.text_content()),
+            _ => Err(AcpError::InvalidResponse(
+                "incomplete final-response paging metadata".into(),
+            )),
         }
     }
 
@@ -529,7 +580,7 @@ mod tests {
 
         // Verify approval decision
         let appr_resp = bridge
-            .send_approval_decision("appr_123", ToolApprovalChoice::Once, true)
+            .send_approval_decision("appr_123", ToolApprovalChoice::Once, None)
             .await
             .unwrap();
         assert_eq!(appr_resp.approval_id, "appr_123");
@@ -675,5 +726,141 @@ mod tests {
         assert_eq!(events[1], AcpEvent::TurnComplete { session_id: "ses_fixture".into() });
         assert!(resp.is_completed());
         assert_eq!(resp.text_content(), "Fixture answer.");
+    }
+
+    async fn bridge_with_history_pages(
+        pages: Vec<serde_json::Value>,
+    ) -> (AcpBridge, std::sync::Arc<std::sync::Mutex<Vec<(usize, String)>>>) {
+        let (client_read, mut server_write) = tokio::io::duplex(65536);
+        let (server_read, client_write) = tokio::io::duplex(65536);
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = requests.clone();
+
+        tokio::spawn(async move {
+            let mut pages = pages.into_iter();
+            let mut lines = BufReader::new(server_read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let method = req.get("method").and_then(|v| v.as_str()).unwrap();
+                let id = req.get("id").cloned();
+                let result = match method {
+                    "initialize" => serde_json::json!({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {
+                            "session": { "streaming": true, "cancel": true, "history": true },
+                            "tools": { "listChanged": false }
+                        },
+                        "serverInfo": { "name": "harness_core_mock", "version": "1.0.0" }
+                    }),
+                    "session/historyContent" => {
+                        let params = req.get("params").unwrap();
+                        let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap() as usize;
+                        let field = params.get("field").and_then(|v| v.as_str()).unwrap().to_string();
+                        log.lock().unwrap().push((offset, field));
+                        // An unexpected extra request yields an undecodable page
+                        // so the fetch fails fast instead of hanging.
+                        pages.next().unwrap_or(serde_json::Value::Null)
+                    }
+                    _ => continue,
+                };
+                let resp = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
+                server_write
+                    .write_all((serde_json::to_string(&resp).unwrap() + "\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let bridge = AcpBridge::new();
+        bridge.connect_streams(client_read, client_write).await.unwrap();
+        (bridge, requests)
+    }
+
+    fn paged_prompt_response(
+        turn: Option<usize>,
+        total: Option<usize>,
+        preview: &str,
+    ) -> hex_protocol::models::SessionPromptResponse {
+        hex_protocol::models::SessionPromptResponse {
+            session_id: "ses_page".into(),
+            status: "completed".into(),
+            content: vec![hex_protocol::models::ContentBlock::text(preview)],
+            task_id: None,
+            response_chars: total,
+            turn_index: turn,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_canonical_final_assembles_validated_pages() {
+        let (bridge, requests) = bridge_with_history_pages(vec![
+            serde_json::json!({ "content": "01234", "nextOffset": 5, "totalChars": 10 }),
+            serde_json::json!({ "content": "56789", "nextOffset": null, "totalChars": 10 }),
+        ])
+        .await;
+
+        let resp = paged_prompt_response(Some(2), Some(10), "01234");
+        let text = bridge.fetch_canonical_final("ses_page", &resp).await.unwrap();
+        assert_eq!(text, "0123456789");
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![(0, "response".to_string()), (5, "response".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_canonical_final_rejects_inconsistent_total() {
+        let (bridge, _) = bridge_with_history_pages(vec![serde_json::json!({
+            "content": "01234", "nextOffset": 5, "totalChars": 9
+        })])
+        .await;
+
+        let resp = paged_prompt_response(Some(2), Some(10), "01234");
+        let err = bridge.fetch_canonical_final("ses_page", &resp).await.unwrap_err();
+        assert!(matches!(err, AcpError::InvalidResponse(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_canonical_final_rejects_stalled_page() {
+        let (bridge, _) = bridge_with_history_pages(vec![serde_json::json!({
+            "content": "", "nextOffset": null, "totalChars": 10
+        })])
+        .await;
+
+        let resp = paged_prompt_response(Some(2), Some(10), "");
+        let err = bridge.fetch_canonical_final("ses_page", &resp).await.unwrap_err();
+        assert!(matches!(err, AcpError::InvalidResponse(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_canonical_final_rejects_missing_next_offset() {
+        let (bridge, _) = bridge_with_history_pages(vec![serde_json::json!({
+            "content": "01234", "nextOffset": null, "totalChars": 10
+        })])
+        .await;
+
+        let resp = paged_prompt_response(Some(2), Some(10), "01234");
+        let err = bridge.fetch_canonical_final("ses_page", &resp).await.unwrap_err();
+        assert!(matches!(err, AcpError::InvalidResponse(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_canonical_final_rejects_mixed_metadata() {
+        let (bridge, requests) = bridge_with_history_pages(vec![]).await;
+
+        let resp = paged_prompt_response(Some(2), None, "preview");
+        let err = bridge.fetch_canonical_final("ses_page", &resp).await.unwrap_err();
+        assert!(matches!(err, AcpError::InvalidResponse(_)), "got {err:?}");
+        assert!(requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_canonical_final_uses_inline_text_without_metadata() {
+        let (bridge, requests) = bridge_with_history_pages(vec![]).await;
+
+        let resp = paged_prompt_response(None, None, "inline answer");
+        let text = bridge.fetch_canonical_final("ses_page", &resp).await.unwrap();
+        assert_eq!(text, "inline answer");
+        assert!(requests.lock().unwrap().is_empty());
     }
 }

@@ -628,10 +628,23 @@ impl AcpClient {
         decision: &str,
         reason: Option<&str>,
     ) -> Result<ApprovalDecisionResponse, AcpError> {
+        self.session_approval_decision_with_ttl(approval_id, decision, reason, None)
+            .await
+    }
+
+    /// Send an approval decision with an optional validated scoped-lease TTL.
+    pub async fn session_approval_decision_with_ttl(
+        &self,
+        approval_id: &str,
+        decision: &str,
+        reason: Option<&str>,
+        lease_ttl_seconds: Option<u64>,
+    ) -> Result<ApprovalDecisionResponse, AcpError> {
         let params = ApprovalDecisionParams {
             approval_id: approval_id.to_string(),
             decision: decision.to_string(),
             reason: reason.map(|s| s.to_string()),
+            lease_ttl_seconds,
         };
         self.send_request("session/approvalDecision", params).await
     }
