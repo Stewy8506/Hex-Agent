@@ -302,11 +302,24 @@ fn render_left_canvas(app: &App, theme: &HexTheme, anim: &AnimationState, reveal
     let footer_pad = CANVAS_PAD_X.min(footer_area.width / 4);
     let footer_width = footer_area.width.saturating_sub(footer_pad * 2) as usize;
     let left_len: usize = footer_left.iter().map(|s| s.content.chars().count()).sum();
-    let right_len = footer_right.chars().count();
-    if left_len + right_len + 2 <= footer_width {
-        footer_left.push(Span::raw(" ".repeat(footer_width - left_len - right_len)));
-        footer_left.push(Span::styled(footer_right, Style::default().fg(theme.text_dim)));
+    // Telemetry (mode, model, tokens, failure badge) keeps its place; the hint
+    // row yields its tail when the canvas is narrow, never dropping whole hints
+    // silently. Trim back to a complete " · " segment so no partial word shows.
+    let avail = footer_width.saturating_sub(left_len + 1);
+    let mut right = footer_right;
+    if right.chars().count() > avail {
+        let mut cut: String = right.chars().take(avail).collect();
+        if let Some(idx) = cut.rfind(" · ") {
+            if idx > 0 {
+                cut.truncate(idx);
+            }
+        }
+        right = cut;
     }
+    let right_len = right.chars().count();
+    let spaces = footer_width.saturating_sub(left_len + right_len);
+    footer_left.push(Span::raw(" ".repeat(spaces)));
+    footer_left.push(Span::styled(right, Style::default().fg(theme.text_dim)));
 
     buf.set_line(
         footer_area.x + footer_pad,
