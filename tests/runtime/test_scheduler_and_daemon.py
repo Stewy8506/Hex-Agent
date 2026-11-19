@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 
 from harness_core.client.cli import main
 from harness_core.runtime.daemon import DaemonConfig, DaemonInstaller
-from harness_core.runtime.scheduler import CronParser, ScheduledJob, TaskScheduler
+from harness_core.runtime.scheduler import CronParser, ScheduledJob, TaskScheduler, _tick_lock
 from harness_core.capabilities.webhooks import WebhookConfig, WebhookNotifier
 
 
@@ -121,6 +121,34 @@ class TestCronParser(unittest.TestCase):
             self.assertFalse(p.is_valid(), f"Expected '{expr}' to be invalid")
             with self.assertRaises(ValueError):
                 p.next_run_after(datetime.now(timezone.utc))
+
+    def test_vixie_dom_dow_or_when_both_restricted(self):
+        # B43: "0 0 13 * 5" runs on the 13th OR any Friday (Vixie OR).
+        p = CronParser("0 0 13 * 5")
+        self.assertTrue(p.is_valid())
+        fri_not_13 = datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc)  # Friday, day 6
+        self.assertTrue(p.matches(fri_not_13))
+        thirteenth_not_fri = datetime(2026, 10, 13, 0, 0, tzinfo=timezone.utc)  # Tuesday, day 13
+        self.assertTrue(p.matches(thirteenth_not_fri))
+        neither = datetime(2026, 11, 3, 0, 0, tzinfo=timezone.utc)  # Tuesday, day 3
+        self.assertFalse(p.matches(neither))
+
+    def test_vixie_or_next_run_picks_earlier_dow(self):
+        p = CronParser("0 0 13 * 5")
+        base = datetime(2026, 11, 3, 0, 0, tzinfo=timezone.utc)  # Tuesday
+        nxt = p.next_run_after(base)
+        # Friday the 6th arrives before the 13th; AND semantics would skip to the 13th.
+        self.assertEqual(nxt, datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc))
+
+    def test_vixie_dom_only_when_dow_star(self):
+        p = CronParser("0 0 13 * *")
+        self.assertTrue(p.matches(datetime(2026, 11, 13, 0, 0, tzinfo=timezone.utc)))
+        self.assertFalse(p.matches(datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc)))
+
+    def test_vixie_dow_only_when_dom_star(self):
+        p = CronParser("0 0 * * 5")
+        self.assertTrue(p.matches(datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc)))
+        self.assertFalse(p.matches(datetime(2026, 11, 3, 0, 0, tzinfo=timezone.utc)))
 
 
 class TestScheduledJob(unittest.TestCase):
@@ -293,6 +321,85 @@ class TestTaskScheduler(unittest.TestCase):
         # Next run still advanced despite failure to prevent retry loops
         updated_jobs = self.scheduler.list_jobs()
         self.assertGreater(datetime.fromisoformat(updated_jobs[0].next_run), now)
+
+
+class TestSchedulerTickLocking(unittest.TestCase):
+    """B38: inter-process tick lock, durable claim-before-execute, catch-up."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="hex_test_sched_lock_")
+        self.storage_path = Path(self.tmp_dir) / "schedules.json"
+        self.scheduler = TaskScheduler(storage_path=self.storage_path)
+        self.lock_path = self.storage_path.with_name(self.storage_path.name + ".lock")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_concurrent_tick_is_skipped(self):
+        job = ScheduledJob(cron_expr="* * * * *", goal="g", next_run="2026-11-01T00:00:00+00:00")
+        self.scheduler.save_jobs([job])
+        mock_orch = MagicMock()
+        now = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
+        # A second tick holding the lock must make execute_due_jobs skip entirely.
+        with _tick_lock(self.lock_path) as acquired:
+            self.assertTrue(acquired)
+            results = self.scheduler.execute_due_jobs(mock_orch, now=now)
+        self.assertEqual(results, [])
+        mock_orch.submit_and_run.assert_not_called()
+        # Skipped tick leaves the job untouched (still due for the next free tick).
+        self.assertEqual(self.scheduler.list_jobs()[0].next_run, "2026-11-01T00:00:00+00:00")
+
+    def test_crash_after_claim_does_not_refire(self):
+        class SimulatedCrash(BaseException):
+            pass
+
+        job = ScheduledJob(cron_expr="*/5 * * * *", goal="g", next_run="2026-11-01T10:00:00+00:00")
+        self.scheduler.save_jobs([job])
+        now = datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc)
+        mock_orch = MagicMock()
+
+        def crash(req, auto_execute=True):
+            # The claim must already be durable on disk before execution begins.
+            on_disk = self.scheduler.list_jobs()[0]
+            assert datetime.fromisoformat(on_disk.next_run) > now, "claim not persisted before run"
+            raise SimulatedCrash()
+
+        mock_orch.submit_and_run.side_effect = crash
+        with self.assertRaises(SimulatedCrash):
+            self.scheduler.execute_due_jobs(mock_orch, now=now)
+
+        after = self.scheduler.list_jobs()[0]
+        self.assertGreater(datetime.fromisoformat(after.next_run), now)
+        # A subsequent tick at the same time must not refire the claimed occurrence.
+        mock_orch2 = MagicMock()
+        self.assertEqual(self.scheduler.execute_due_jobs(mock_orch2, now=now), [])
+        mock_orch2.submit_and_run.assert_not_called()
+
+    def test_catch_up_coalesces_missed_intervals(self):
+        job = ScheduledJob(cron_expr="* * * * *", goal="g", next_run="2026-11-01T00:00:00+00:00")
+        self.scheduler.save_jobs([job])
+        now = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)  # ~1.5 days overdue
+        mock_orch = MagicMock()
+        mock_orch.submit_and_run.return_value = {"status": "COMPLETED"}
+        results = self.scheduler.execute_due_jobs(mock_orch, now=now)
+        self.assertEqual(len(results), 1)  # one catch-up fire, not one per missed minute
+        mock_orch.submit_and_run.assert_called_once()
+        nxt = datetime.fromisoformat(self.scheduler.list_jobs()[0].next_run)
+        self.assertEqual(nxt, datetime(2026, 11, 2, 12, 1, tzinfo=timezone.utc))
+
+    def test_corrupt_next_run_repaired_not_perpetually_due(self):
+        job = ScheduledJob(cron_expr="*/5 * * * *", goal="g", next_run="not-a-timestamp")
+        self.scheduler.save_jobs([job])
+        now = datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc)
+        mock_orch = MagicMock()
+        mock_orch.submit_and_run.return_value = {"status": "COMPLETED"}
+        results = self.scheduler.execute_due_jobs(mock_orch, now=now)
+        self.assertEqual(len(results), 1)
+        nxt = datetime.fromisoformat(self.scheduler.list_jobs()[0].next_run)  # repaired to valid
+        self.assertGreater(nxt, now)
+        mock_orch2 = MagicMock()
+        self.assertEqual(self.scheduler.execute_due_jobs(mock_orch2, now=now), [])
+        mock_orch2.submit_and_run.assert_not_called()
 
 
 class TestDaemonInstaller(unittest.TestCase):
