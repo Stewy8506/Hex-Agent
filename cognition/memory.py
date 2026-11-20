@@ -2939,12 +2939,22 @@ class MemoryLifecycleManager:
             pass
         return False
 
-    def run_demotion_sweep(self, retention_days: int = 30) -> list[dict[str, Any]]:
-        """Scan active entries in MEMORY.md and USER.md; demote stale (>30d) or AST-diverged notes to SQLite FTS5."""
+    def run_demotion_sweep(
+        self, retention_days: int = 30, include_user: bool = False
+    ) -> list[dict[str, Any]]:
+        """Demote stale (>retention_days) or AST-diverged workspace notes to SQLite FTS5.
+
+        Only workspace-scoped ``memory`` entries are swept by default. The global
+        ``user`` profile (``~/.hex/USER.md``) is shared across every workspace, so a
+        per-workspace maintenance sweep must not prune it; pass ``include_user=True``
+        only from an explicit global-user maintenance call (B62).
+        """
         cutoff = time.time() - (retention_days * 86400)
         demoted: list[dict[str, Any]] = []
 
-        active_items = self.controller.list_memories("memory") + self.controller.list_memories("user")
+        active_items = self.controller.list_memories("memory")
+        if include_user:
+            active_items = active_items + self.controller.list_memories("user")
         for item in active_items:
             reason = None
             if item.last_referenced_at < cutoff:
