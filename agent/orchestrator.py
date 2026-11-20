@@ -1670,9 +1670,8 @@ class HarnessOrchestrator:
             except Exception:
                 memory_lessons_ctx = ""
 
-        # Ordered stable -> context -> volatile tiers for prompt prefix caching
-        stable_system_prompt = (
-            "You are HEX, an autonomous AI agent and pairing partner.\n"
+        # Ordered stable -> context -> volatile tiers for prompt prefix caching.
+        repair_instructions = (
             "A verification test failed during execution. Fix the failing code with the shortest, most minimal patch.\n"
             "Follow pragmatic discipline: root-cause fix, no unrequested abstractions, zero boilerplate, deletion over addition.\n"
             "Instructions:\n"
@@ -1682,6 +1681,28 @@ class HarnessOrchestrator:
             "```\n"
             "Provide only valid code in the content."
         )
+        # Ground repair in the resolved SOUL persona + frozen memory from the REAL source workspace (B58): the CoW attempt clone excludes .hex.
+        persona_grounding = ""
+        if hasattr(self, "prompt_builder") and self.prompt_builder is not None:
+            try:
+                source_ws = Path(
+                    (task.get("constraints") or {}).get("workspace_root") or self.default_workspace
+                ).resolve()
+                surface = str((task.get("constraints") or {}).get("surface") or "tui")
+                persona_grounding = self.prompt_builder.build_system_prompt(
+                    workspace_root=source_ws,
+                    mode=str(task.get("mode") or "agent"),
+                    session_id=task_id,
+                    surface=surface,
+                ).strip()
+            except Exception as pb_exc:
+                logger.debug("Repair persona grounding failed: %s", pb_exc)
+        if persona_grounding:
+            stable_system_prompt = f"{persona_grounding}\n\n[Repair Task]\n{repair_instructions}"
+        else:
+            stable_system_prompt = (
+                "You are HEX, an autonomous AI agent and pairing partner.\n" + repair_instructions
+            )
         cacheable_context_prefix = (
             (f"{arch_summary}\n\n" if arch_summary else "")
             + (f"{domain_lessons_ctx}\n\n" if domain_lessons_ctx else "")
