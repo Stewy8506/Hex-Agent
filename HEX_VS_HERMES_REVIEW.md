@@ -491,11 +491,99 @@ Other lower-impact skill issues: substring selection can over-match skills (`age
 
 ## 12. Memory, context compression, reflection, learning, and persona
 
-**Status: outstanding review — no conclusions claimed.**
+**Status: review completed — source-verified call-site audit (2026-11-20).**
 
-The dedicated reviewer failed before returning findings. This compilation does not invent a quality rating or infer runtime integration from filenames. The todo/compression and transcript/resume observations above are scoped findings from completed planning/persistence reviews, not a full cognition assessment.
+This section replaces the earlier "outstanding — no conclusions claimed" placeholder. Every verdict below was traced to a live production call site (or its absence) in the Hex tree, not inferred from filenames or docstrings. Findings continue the unified `B`-number series (B58–B68) so later remediation can track them. Verdicts: **WIRED** = reachable from a normal production entry point; **PARTIAL** = reachable only on some paths / with caveats; **DEAD** = defined but no production caller (tests-only or unreachable).
 
-A follow-up should verify actual call sites for memory retrieval/injection, scope separation, memory write policy, compressor thresholds and durability, tool-call pairing after compression, reflection/skill synthesis reachability, repetition detection, persona loading, and prompt-cache behavior. Hermes's numerous compression/memory module families must likewise be traced to live entry points before crediting them. No feature-parity conclusion for this area is warranted yet.
+### Verdict summary
+
+| Area | Verdict | Finding |
+| --- | --- | --- |
+| Memory retrieval / injection into prompt | PARTIAL | B58 |
+| Context-compaction thresholds, trigger, tool-pairing | WIRED | — |
+| Context-compaction durability / resume reconstruction | DEAD | B59 |
+| Autonomous reflection → skill promotion | DEAD | B60 |
+| Reflection hit-counting on use (`record_reference`) | DEAD | B61 |
+| Memory scope separation (workspace vs global user) | PARTIAL / leak | B62 |
+| Prompt-cache behavior | PARTIAL | B63 |
+| Persona loading (SOUL) | WIRED (core) / DEAD (sub-features) | B64 |
+| `/compress` surface honesty | PARTIAL | B65 |
+| Phase-4 cache-locking / atomic-boundary helpers | DEAD | B66 |
+| Reflection lesson fidelity + DAG-learned memory publication | PARTIAL | B67 |
+| Frozen-snapshot lifetime / stream scrubbing | PARTIAL | B68 |
+| Reflection hardware-gating + durable pending queue + idle drain | WIRED | — |
+| Repetition / loop detection | WIRED | — |
+| Skill synthesis on explicit user command | WIRED | — |
+
+### B58 — Persona/memory injection is path-dependent; the default coding path skips it (P2, PARTIAL)
+
+`build_system_prompt` (the 5-slot assembler: SOUL identity, mode modulator, environment/tools, frozen `<memory-context>`, project rules + skills index) is called from exactly two production sites: [agent/orchestrator.py:909](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/orchestrator.py#L909) (`run_agent_loop`, ReAct) and [agent/orchestrator.py:1457](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/orchestrator.py#L1457) (`_execute_fast_path`). The standard DAG executor `_execute_standard_dag` ([agent/orchestrator.py:2263](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/orchestrator.py#L2263)) runs pre-planned tool nodes via `gateway.invoke` ([:2445](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/orchestrator.py#L2445)) and `execute_code_mode_composition` ([:2428](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/orchestrator.py#L2428)) and **never builds a system prompt** — so SOUL persona, frozen memory, and the skills index are absent on that path.
+
+This matters because the DAG path is the *default* for ordinary coding goals: `execution_mode="auto"` resolves at [storage/db.py:485](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/storage/db.py#L485) via `_is_fast_path_eligible` ([storage/db.py:642](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/storage/db.py#L642)), which returns False for ≥3 steps or any write keyword. A typical "implement/fix/refactor X" task therefore executes without the persona/memory context the review elsewhere credits. *Fix direction:* assemble and inject the same system prompt (or at least SOUL + frozen memory) on the DAG path, or document the DAG path as persona-free by design.
+
+### B59 — Compaction is real but in-process only; resume cannot reconstruct it (P2, DEAD durability)
+
+Thresholds and triggering are genuinely wired: `CompactionConfig` defaults `max_context_tokens=100_000`, `trigger_threshold=0.8`, `protect_last_n=6`, `keep_tool_rounds=4` ([cognition/context_compressor.py:841](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/context_compressor.py#L841)); the ReAct loop creates a compactor when `budget_tokens>0` and compacts at the 0.8 threshold ([agent/react_loop.py:1533](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/react_loop.py#L1533)). Tool-call/result pairing is preserved by `sanitize_tool_pairs` ([cognition/context_compressor.py:545](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/context_compressor.py#L545)), applied at [agent/react_loop.py:1406](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/react_loop.py#L1406). **These are WIRED.**
+
+Durability is not: compaction mutates `self.messages` in memory only. `save_dialogue_turns` ([storage/db.py:4202](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/storage/db.py#L4202)) has no production caller, so the compacted window is never persisted; resume replays raw stored turns and re-compacts from scratch (or not at all if `budget_tokens==0`). The compacted state is therefore not reconstructable across restarts. *Fix direction:* persist a compaction checkpoint (summary + cut boundary) and reconstruct on resume, or explicitly scope compaction as ephemeral.
+
+### B60 — Autonomous reflection → skill promotion is unreachable (P2, DEAD)
+
+`MemoryLifecycleManager.check_promotions` always emits `"target": "MEMORY.md"` ([cognition/memory.py:2787](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/memory.py#L2787), [:2800](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/memory.py#L2800)). The orchestrator's promotion mapping ([agent/orchestrator.py:1204](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/orchestrator.py#L1204) and [:3085](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/orchestrator.py#L3085)) consequently always selects the `"memory"` store, and `promote_to_skill` ([cognition/memory.py:2807](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/memory.py#L2807)) has no production caller. The advertised "frequently-used reflections graduate into skills" lifecycle never fires autonomously; skill creation only happens on explicit user command (see WIRED list). *Fix direction:* either implement the reflection→skill branch end-to-end or remove the dead promotion path and stop claiming autonomous skill graduation.
+
+### B61 — `record_reference` has no production caller; hit-counting on use is broken (P2, DEAD)
+
+`record_reference` ([cognition/memory.py:2755](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/memory.py#L2755)) is invoked only by tests. Promotion thresholds keyed on `hit_counter` (e.g. "≥3 references across sessions") are therefore never incremented by actual memory use in production — the counter only moves when a reflection is re-recorded. Combined with B60, the usage-driven promotion story is not live. *Fix direction:* call `record_reference` from the memory-injection/retrieval path when a note is actually surfaced to the model.
+
+### B62 — Memory scope separation leaks across workspace/global boundaries (P1, PARTIAL)
+
+Three concrete leaks:
+1. **ACP hardcodes one project scope.** `project_id="acp_session"` is fixed at [hex_cli/acp.py:971](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/hex_cli/acp.py#L971), [:1877](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/hex_cli/acp.py#L1877), [:1900](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/hex_cli/acp.py#L1900) regardless of the actual workspace, so distinct projects share a memory/ledger scope.
+2. **A workspace sweep deletes global user memory.** `run_demotion_sweep` iterates `list_memories("memory") + list_memories("user")` ([cognition/memory.py:2947](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/memory.py#L2947)) and deletes by `item.scope` ([:2972](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/memory.py#L2972)). The `user` target resolves to the **global** `~/.hex/USER.md` ([cognition/memory.py:378](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/memory.py#L378)), yet the sweep is invoked per-workspace via `run_lifecycle_maintenance(workspace_root=…)`. A stale-note sweep in one workspace can archive/prune the user's global profile.
+3. **Gateway write policy is ungated for `user`.** The model-facing memory tool accepts `target="user"` without an authority gate, letting a task write global user memory.
+
+*Fix direction:* derive `project_id` from the resolved workspace; restrict the demotion sweep to workspace-scoped (`memory`) items unless explicitly invoked for global maintenance; gate `target="user"` writes behind user authority.
+
+### B63 — Prompt caching is real Anthropic `cache_control`, but only the repair/compression paths use it (P3, PARTIAL)
+
+The provider implements genuine caching: `anthropic-beta: prompt-caching-2024-07-31` ([providers/cloud_provider.py:816](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/providers/cloud_provider.py#L816)), `cache_control: ephemeral` breakpoints ([:921](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/providers/cloud_provider.py#L921), [:942](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/providers/cloud_provider.py#L942), [:964](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/providers/cloud_provider.py#L964)), and `cache_read_input_tokens` parsing ([:1102](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/providers/cloud_provider.py#L1102)). But `enable_prompt_caching` defaults **False** ([:403](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/providers/cloud_provider.py#L403)), and the only production callers that turn it on are the repair path (`cacheable_prefix` + `enable_prompt_caching=True`, [agent/orchestrator.py:1716](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/orchestrator.py#L1716)) and log compression ([providers/cloud_provider.py:664](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/providers/cloud_provider.py#L664)). The headline 5-slot chat/ReAct prompt is sent **without** cache hints; its "stable prefix" is an ordering convention only, and the slot order places volatile content (mode modulator, frozen memory) ahead of more-stable project rules, which is the wrong tiering for cache reuse. *Fix direction:* enable caching on the main prompt and order slots stable→volatile.
+
+### B64 — Persona core is WIRED; Developer DNA and distribution-trust branches are DEAD (P3)
+
+`SoulManager.resolve_soul` (workspace `.hex/SOUL.md` → global → DEFAULT) is reached on the fast/ReAct paths via Slot#1, so core persona loading is **WIRED**. Dead sub-features: `load_developer_dna` (the `USER.md` developer-profile injection) has no production caller; `SoulProvenance` distribution/repository/remote trust branches are never produced, and `is_distribution_profile` / `soul_provenance` parameters are never passed, so the untrusted-distribution blocking branch is unreachable for SOUL. `rename_identity` does not propagate to the repair prompt, and `HEX_CAPABILITIES_GUIDANCE` hardcodes "You are HEX" ([cognition/prompt_builder.py:122](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/prompt_builder.py#L122)), so a renamed persona is contradicted in guidance text. *Fix direction:* wire or remove Developer DNA / distribution provenance; thread the resolved identity into guidance and repair prompts.
+
+### B65 — `/compress` surfaces are partly cosmetic (P3, PARTIAL)
+
+The TUI `/compress` command compacts a `self.messages` buffer that is never fed into the agent loop, so it does not shrink the live task context. The ACP `/compressor off` toggle governs *log* compression, not context compaction. Both read as context controls but affect different things. *Fix direction:* make `/compress` operate on the actual loop context (or relabel it honestly as log/transcript compression).
+
+### B66 — Phase-4 cache-locking and atomic-boundary helpers are tests-only (P3, DEAD)
+
+`stabilize_prompt_cache_prefix` ([cognition/context_compressor.py:1293](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/context_compressor.py#L1293)), `compute_cache_signature` ([:1322](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/context_compressor.py#L1322)), and `apply_cache_control_breakpoints` ([:1377](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/context_compressor.py#L1377)) are called only from `tests/cognition/test_context_compressor_integration.py`. `validate_atomic_boundaries` ([:449](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/cognition/context_compressor.py#L449)) is likewise tests-only — compacted output is never re-validated for atomic tool-pair boundaries in production. *Fix direction:* wire the cache-prefix stabilizer into the main prompt build (ties to B63) and run boundary validation on compacted output, or delete the unused helpers.
+
+### B67 — Reflection lessons are thin on the agent-loop path; DAG-learned memory never publishes (P2, PARTIAL)
+
+Reflection is hardware-gated and durably queued (WIRED, below), but lesson fidelity differs by path: the agent-loop synthesizer receives candidates without `error_traces` / `final_patch` / `modified_files`, producing generic templates rather than evidence-grounded lessons. Separately, DAG-learned memory is written into the attempt workspace's `.hex` *after* `publish_delta`, and `.hex` is in `IGNORE_DIRS` ([storage/cow.py:35](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/storage/cow.py#L35)), so CoW publication excludes it — the learned note never reaches the real workspace. *Fix direction:* pass full evidence into the agent-loop synthesizer; write learned memory to the real workspace (or publish it explicitly outside the ignored `.hex` tree).
+
+### B68 — Frozen snapshot is per-task, not per-session; cache churns and stream is unscrubbed (P3, PARTIAL)
+
+`MemorySnapshot.build_frozen_snapshot` is keyed per session, but `run_agent_loop` mints a fresh task/session UUID per invocation and ACP creates a new task per prompt, so the "turn-0 frozen memory" prefix effectively churns every task rather than staying stable for a conversation (undermining B63 cache reuse). `_cached_snapshots` is unbounded. Context sanitization (`sanitize_context`) runs only on the fast path; the ReAct stream is not scrubbed. *Fix direction:* tie the frozen snapshot to a stable conversation/session id, bound the snapshot cache, and apply scrubbing on the ReAct path too.
+
+### Genuinely wired strengths (credited, not gaps)
+
+- **Compaction mechanics:** threshold/trigger, tail protection, tool-output demotion, and tool-call/result pairing are live on the ReAct path (B59 evidence).
+- **Reflection lifecycle plumbing:** hardware gating (`cloud_only` default), suppression to a durable `pending_reflections.json`, and idle-drain via the scheduler are reachable; the idle worker drains pending candidates, writes `LESSONS.md`, and enforces a retry ceiling (covered by `tests/cognition/test_durable_lifecycle_and_reflection.py`).
+- **Repetition / loop detection:** the repetition sentry is wired into the loop.
+- **Skill synthesis on explicit command:** `/learn` and `hex skill synthesize` reach the synthesizer (the autonomous route in B60 does not).
+- **Hybrid skill retrieval:** as of remediation 4.5, `retrieve_task_skills` injects goal-relevant skills into the ReAct/fast-path prompt ([agent/orchestrator.py:909](file:///C:/Users/dasan/OneDrive/Documents/Hex-Agent/agent/orchestrator.py#L909)); the DAG path (B58) still lacks it.
+- **Durable memory mutations:** archive-before-delete and transactional batch rollback are real and tested (`tests/cognition/test_durable_lifecycle_and_reflection.py`).
+
+### Hermes comparison caveat
+
+Per the original scope, Hermes's numerous compression/memory module families must themselves be traced to live entry points before any parity credit. This audit verified **Hex** wiring only; it makes **no feature-parity claim** for this area. Several Hex gaps above (autonomous promotion, durable compaction, scope isolation) are exactly the kind of capability that filename-level comparison would have over-credited on both sides.
+
+### Acceptance gate for follow-up remediation
+
+Any later change to memory/context/cognition must: (1) land a regression test that fails against the current behavior (red-proof) for the specific B-number; (2) prove the new call site is reachable from a normal production entry point (not tests-only); (3) for B62, demonstrate workspace/global isolation with a cross-workspace test; (4) preserve the genuinely-wired strengths listed above. This review is the gate — no memory/cognition source was modified to produce it.
 
 ## 13. Cross-cutting quality and test strategy
 
