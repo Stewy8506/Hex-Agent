@@ -249,6 +249,21 @@ class HarnessOrchestrator:
         # The gateway needs the router for multimodal vision and delegated
         # child execution; it is constructed before the router exists.
         self.gateway.router = self.router
+        # Config-driven MCP startup registration (B57): expose configured external
+        # MCP servers through the live gateway registry so ACP tool discovery
+        # advertises them. No-op when unconfigured; the SkillSpector manifest scan
+        # still gates each server, and per-server failures are logged, never fatal.
+        try:
+            from harness_core.config_loader import load_mcp_servers_config
+            from harness_core.gateway import register_configured_mcp_servers
+
+            mcp_cfg = load_mcp_servers_config(workspace_root=self.default_workspace)
+            if mcp_cfg:
+                mcp_res = register_configured_mcp_servers(self.gateway, mcp_cfg)
+                for sid, reason in mcp_res.get("failed", {}).items():
+                    logger.warning("MCP server '%s' not registered at startup: %s", sid, reason)
+        except Exception as exc:
+            logger.warning("MCP startup registration skipped: %s", exc)
         self.demo_mode = bool(demo_mode) or os.environ.get("HEX_DEMO_MODE", "").strip().lower() in (
             "1",
             "true",

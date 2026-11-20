@@ -123,6 +123,34 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+def load_mcp_servers_config(
+    config_dir: Path | None = None,
+    workspace_root: Path | None = None,
+) -> dict[str, Any]:
+    """Read the ``mcp_servers`` mapping from global and project config.yaml (B57).
+
+    Global (``~/.hex/config.yaml``) provides defaults; the project
+    (``<workspace>/.hex/config.yaml``) overrides per server via deep merge. Returns
+    ``{}`` when no MCP servers are configured, so startup registration is a no-op by
+    default. Malformed files are skipped with a warning rather than aborting startup.
+    """
+    global_dir = config_dir or (Path.home() / ".hex")
+    local_dir = (workspace_root or Path.cwd()) / ".hex"
+    merged: dict[str, Any] = {}
+    for cfg_file in (global_dir / "config.yaml", local_dir / "config.yaml"):
+        if not cfg_file.is_file():
+            continue
+        try:
+            cfg_data = parse_config_yaml(cfg_file)
+        except ConfigParseError as exc:
+            print(f"[hex] WARNING: skipping malformed config: {exc}", file=sys.stderr)
+            continue
+        section = cfg_data.get("mcp_servers")
+        if isinstance(section, dict):
+            merged = _deep_merge(merged, section)
+    return merged
+
+
 def write_config_text_atomic(file_path: Path, text: str) -> None:
     """Atomically replace a config file: temp file in the same directory + os.replace."""
     file_path.parent.mkdir(parents=True, exist_ok=True)

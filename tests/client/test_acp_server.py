@@ -169,6 +169,65 @@ class TestACPServer(unittest.TestCase):
         self.assertTrue(len(content_items) > 0)
         self.assertIn("hello acp", content_items[0]["text"])
 
+    def test_acp_discovery_and_invocation_of_dynamic_mcp_tool(self) -> None:
+        """B57: a dynamically registered MCP tool is advertised by tools/list and
+        invocable through tools/call (the static catalog could not advertise it)."""
+        from harness_core.mcp_client import MCPClientAdapter
+
+        class _FakeTransport:
+            def __init__(self):
+                self.calls = []
+
+            def send_request(self, method, params=None, timeout=30.0):
+                params = params or {}
+                if method == "initialize":
+                    return {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "fake", "version": "1.0"}}
+                if method == "tools/list":
+                    return {"tools": [{
+                        "name": "lookup_docs",
+                        "description": "Query architectural documentation",
+                        "inputSchema": {"type": "object",
+                                        "properties": {"query": {"type": "string"}},
+                                        "required": ["query"]},
+                    }]}
+                if method == "tools/call":
+                    self.calls.append((params.get("name"), params.get("arguments")))
+                    return {"content": [{"type": "text", "text": "docs-result"}], "isError": False}
+                raise ValueError(method)
+
+            def send_notification(self, method, params=None):
+                pass
+
+            def close(self):
+                pass
+
+        transport = _FakeTransport()
+        adapter = MCPClientAdapter("fake_docs", transport)
+        self.orchestrator.gateway.register_mcp_server(adapter, enforce_scan=False)
+
+        # Discovery advertises the dynamic tool (namespaced + alias) and built-ins.
+        list_resp = self.server.handle_request(
+            {"jsonrpc": "2.0", "id": 30, "method": "tools/list", "params": {}}
+        )
+        tools = list_resp["result"]["tools"]
+        ids = [t["id"] for t in tools]
+        self.assertIn("fake_docs__lookup_docs", ids)
+        self.assertIn("lookup_docs", ids)
+        self.assertIn("read_file", ids)
+        dyn = next(t for t in tools if t["id"] == "fake_docs__lookup_docs")
+        self.assertEqual(dyn["parameters"]["required"], ["query"])
+
+        # Invocation reaches the MCP server through the mandatory gateway boundary.
+        call_resp = self.server.handle_request({
+            "jsonrpc": "2.0", "id": 31, "method": "tools/call",
+            "params": {"name": "fake_docs__lookup_docs", "arguments": {"query": "cow"}},
+        })
+        self.assertIn("result", call_resp)
+        self.assertNotIn("isError", call_resp["result"])
+        self.assertEqual(transport.calls[-1], ("lookup_docs", {"query": "cow"}))
+        self.assertIn("docs-result", call_resp["result"]["content"][0]["text"])
+
     def test_acp_session_prompt_execution(self) -> None:
         """Verify session/prompt executes task through orchestrator and returns text."""
         new_resp = self.server.handle_request({

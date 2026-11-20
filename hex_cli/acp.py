@@ -1307,8 +1307,9 @@ class ACPServer:
         return result
 
     def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        from harness_core.gateway import ToolGateway
-        defs = ToolGateway.list_tool_definitions()
+        # Advertise the live authorized registry (built-ins + dynamically
+        # registered MCP tools), not the static built-in catalog (B57).
+        defs = self.orchestrator.gateway.live_tool_definitions()
         return {"tools": defs}
 
     def _ensure_tools_call_task(self) -> str:
