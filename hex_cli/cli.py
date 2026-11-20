@@ -342,12 +342,12 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_voice.add_argument("--no-stream", action="store_true", default=argparse.SUPPRESS, help="Disable live token streaming")
     p_voice.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
-    p_gw = sub.add_parser("gateway", help="Manage bidirectional chat gateways (Telegram & Discord)")
+    p_gw = sub.add_parser("gateway", help="Manage chat gateways (Telegram bidirectional; Discord send-only)")
     p_gw_sub = p_gw.add_subparsers(dest="gateway_cmd", required=True)
 
-    p_gw_start = p_gw_sub.add_parser("start", help="Start bidirectional chat gateway daemon")
+    p_gw_start = p_gw_sub.add_parser("start", help="Start chat gateway daemon (Telegram polling; Discord send-only)")
     p_gw_start.add_argument("--telegram", action="store_true", help="Explicitly enable Telegram gateway (default: enabled if token is set in env)")
-    p_gw_start.add_argument("--discord", action="store_true", help="Explicitly enable Discord gateway (default: enabled if token is set in env)")
+    p_gw_start.add_argument("--discord", action="store_true", help="Explicitly enable Discord gateway, send-only/outbound (default: enabled if token is set in env)")
     p_gw_start.add_argument("--poll-interval", type=float, default=1.0, help="Polling interval in seconds")
     p_gw_start.add_argument("--project", default="default", help="Project ID")
     p_gw_start.add_argument("--workspace", default=None, help="Workspace path (defaults to repo root)")
@@ -385,12 +385,13 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_sch_run.add_argument("--once", action="store_true", help="Run due jobs once and exit")
     p_sch_run.add_argument("--storage-path", default=None, help="Custom schedules.json path")
 
-    p_dmn = sub.add_parser("daemon", help="Manage background OS service daemon (launchd/systemd)")
+    p_dmn = sub.add_parser("daemon", help="Manage background OS service daemon (launchd/systemd/Task Scheduler)")
     p_dmn_sub = p_dmn.add_subparsers(dest="daemon_cmd", required=True)
 
     p_dmn_inst = p_dmn_sub.add_parser("install", help="Generate and install OS service configuration")
     p_dmn_inst.add_argument("--launchd", action="store_true", help="Target macOS LaunchAgent")
     p_dmn_inst.add_argument("--systemd", action="store_true", help="Target Linux systemd")
+    p_dmn_inst.add_argument("--schtasks", action="store_true", help="Target Windows Task Scheduler")
     p_dmn_inst.add_argument("--user", action="store_true", default=True, help="Install as user service (default: True)")
     p_dmn_inst.add_argument("--system", dest="user", action="store_false", help="Install as system-wide service")
     p_dmn_inst.add_argument("--dry-run", action="store_true", help="Dry run: print generated configuration without writing files")
@@ -547,9 +548,9 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_grph_tree.add_argument("--workspace", default=None, help="Workspace directory")
     p_grph_tree.add_argument("--json", action="store_true", help="Output JSON")
 
-    p_acp = sub.add_parser("acp", help="Start Agent Client Protocol (ACP) stdio JSON-RPC server for Zed, Neovim & VSCode")
+    p_acp = sub.add_parser("acp", help="Start HEX's private ACP-style stdio JSON-RPC server (internal dialect; standard Zed/VSCode ACP interop not certified)")
     p_acp.add_argument("--check", action="store_true", help="Validate ACP runtime readiness and environment health")
-    p_acp.add_argument("--setup", action="store_true", help="Print editor configuration snippets for Zed (.zed/settings.json) and Neovim")
+    p_acp.add_argument("--setup", action="store_true", help="Print experimental editor snippets for HEX's private dialect (Zed/Neovim compatibility unverified)")
     p_acp.add_argument("--workspace", default=None, help="Root workspace directory path")
 
     p_ps = sub.add_parser("ps", help="List and manage background processes managed by ProcessRegistry")
@@ -767,7 +768,8 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
             print("  ✓ Python Runtime:    OK")
             print("  ✓ Stdio Transport:   Ready")
             print(f"  ✓ Workspace Root:    {ws}")
-            print("  ✓ Compatible with:   Zed, Neovim (avante.nvim/codecompanion), VSCode\n")
+            print("  ℹ Protocol:          HEX private ACP dialect (hex-private-acp/1)")
+            print("  ⚠ Standard ACP editors (Zed/VSCode/Neovim/Cursor): interop not certified\n")
             return 0
 
         if getattr(args, "setup", False):
@@ -779,9 +781,12 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
                     "protocol": "acp",
                 }
             }
-            print("\n⚙️  HEX Editor Integration Snippets")
+            print("\n⚙️  HEX Editor Integration Snippets (experimental)")
             print("=" * 60)
-            print("Add to your Zed editor configuration (.zed/settings.json):")
+            print("NOTE: HEX speaks a private ACP dialect, not certified standard")
+            print("ACP. These snippets are unverified against Zed/Neovim/VSCode and")
+            print("may not work without a standard-ACP adapter.")
+            print("\nAdd to your Zed editor configuration (.zed/settings.json):")
             print(json.dumps(zed_config, indent=2))
             print("\nFor Neovim (avante.nvim / codecompanion):")
             print('  provider = "acp",')
@@ -1401,15 +1406,21 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
             dry_run = getattr(args, "dry_run", False)
             target_launchd = getattr(args, "launchd", False)
             target_systemd = getattr(args, "systemd", False)
+            target_schtasks = getattr(args, "schtasks", False)
 
-            if not target_launchd and not target_systemd:
-                if platform.system() == "Darwin":
+            if not target_launchd and not target_systemd and not target_schtasks:
+                system = platform.system()
+                if system == "Darwin":
                     target_launchd = True
+                elif system == "Windows":
+                    target_schtasks = True
                 else:
                     target_systemd = True
 
             if target_launchd:
                 res = installer.install_launchd(target_path=target_path, dry_run=dry_run)
+            elif target_schtasks:
+                res = installer.install_windows_task(target_path=target_path, dry_run=dry_run)
             else:
                 user_service = getattr(args, "user", True)
                 res = installer.install_systemd(user=user_service, target_path=target_path, dry_run=dry_run)

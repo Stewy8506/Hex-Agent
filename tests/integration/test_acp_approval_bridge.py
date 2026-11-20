@@ -130,6 +130,71 @@ def test_unknown_approval_id_is_not_applied(tmp_path: Path) -> None:
     assert bridge.resolve("appr_missing", "approve")["applied"] is False
 
 
+def test_late_decision_after_expiry_reports_expired(tmp_path: Path) -> None:
+    """B35: a decision arriving after the request timed out is ignored, not applied."""
+    bridge = AcpApprovalBridge(EmitCapture(), lambda tid: None, tmp_path, timeout_seconds=0.05)
+    decision = bridge.request_approval(ApprovalRequest(request_id="appr_exp", tool_name="terminal"))
+    assert decision.decision == "DENY"
+    late = bridge.resolve("appr_exp", "approve")
+    assert late["applied"] is False
+    assert late["closed_reason"] == "expired"
+
+
+def test_late_decision_after_cancel_reports_canceled(tmp_path: Path) -> None:
+    bridge = AcpApprovalBridge(EmitCapture(), lambda tid: "sess_c", tmp_path, timeout_seconds=5.0)
+    request = ApprovalRequest(request_id="appr_can", task_id="task_c", tool_name="terminal")
+    outcome: dict[str, Any] = {}
+    thread = threading.Thread(
+        target=lambda: outcome.update(decision=bridge.request_approval(request)), daemon=True
+    )
+    thread.start()
+    for _ in range(200):
+        if bridge.has_pending("appr_can"):
+            break
+        time.sleep(0.01)
+    assert bridge.cancel_pending(task_id="task_c") == 1
+    thread.join(timeout=5.0)
+    late = bridge.resolve("appr_can", "approve")
+    assert late["applied"] is False
+    assert late["closed_reason"] == "canceled"
+
+
+def test_unknown_approval_has_no_closed_reason(tmp_path: Path) -> None:
+    bridge = AcpApprovalBridge(EmitCapture(), lambda tid: None, tmp_path)
+    late = bridge.resolve("appr_never", "approve")
+    assert late["applied"] is False
+    assert late["closed_reason"] is None
+
+
+def test_wire_late_decision_after_expiry_reports_expired(tmp_path: Path) -> None:
+    """B35: the wire distinguishes an expired approval from an unknown id."""
+    ledger, gateway, task_id = make_gateway(tmp_path)
+    try:
+        server = ACPServer(
+            orchestrator=SimpleNamespace(gateway=gateway, ledger=ledger), workspace_root=tmp_path
+        )
+        _ = server.orchestrator  # wires the approval bridge to the gateway
+        bridge = server.approval_bridge
+        assert bridge is not None
+        bridge.default_timeout = 0.05
+        request = ApprovalRequest(request_id="appr_wire_exp", task_id=task_id, tool_name="terminal")
+        thread = threading.Thread(target=lambda: bridge.request_approval(request), daemon=True)
+        thread.start()
+        thread.join(timeout=5.0)
+        response = server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "session/approvalDecision",
+            "params": {"approvalId": "appr_wire_exp", "decision": "approve"},
+        })
+        result = response["result"]
+        assert result["status"] == "expired"
+        assert result["applied"] is False
+        assert result["outcome"] is None
+    finally:
+        ledger.close()
+
+
 def test_scope_decision_grants_narrow_lease_for_the_exact_action(tmp_path: Path) -> None:
     ledger, gateway, task_id = make_gateway(tmp_path)
     try:

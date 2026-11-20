@@ -37,6 +37,19 @@ pub struct NotificationPacket {
     _permit: OwnedSemaphorePermit,
 }
 
+/// Preserve child stderr diagnostics instead of discarding them to a sink.
+/// Lines are emitted through the `log` facade so an installed logger captures
+/// them; with no logger (e.g. the TUI) this is a harmless no-op that never
+/// writes to the terminal and corrupts rendering.
+fn drain_stderr(stderr: tokio::process::ChildStderr) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            log::warn!(target: "hex_acp::stderr", "{line}");
+        }
+    });
+}
+
 fn notification_retained_bytes(notification: &JsonRpcNotification) -> usize {
     fn heap_bytes(value: &serde_json::Value) -> usize {
         match value {
@@ -246,10 +259,8 @@ impl AcpClient {
         }
 
         let mut child = cmd.spawn()?;
-        if let Some(mut stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
-            });
+        if let Some(stderr) = child.stderr.take() {
+            drain_stderr(stderr);
         }
         let stdout = child.stdout.take().ok_or_else(|| {
             AcpError::Io(std::io::Error::new(
@@ -321,6 +332,34 @@ impl AcpClient {
         start_path
     }
 
+    /// Ordered interpreter candidates, honoring both POSIX (`bin/python`) and
+    /// Windows (`Scripts/python.exe`) virtualenv layouts so the backend can be
+    /// spawned on either platform (B33).
+    fn interpreter_candidates(repo_root: &Path) -> Vec<String> {
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(bin_env) = std::env::var("HEX_PYTHON_BIN") {
+            candidates.push(bin_env);
+        }
+        let mut venv_roots: Vec<PathBuf> = Vec::new();
+        if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
+            venv_roots.push(PathBuf::from(venv));
+        }
+        venv_roots.push(repo_root.join(".venv"));
+        for venv in venv_roots {
+            let windows = venv.join("Scripts").join("python.exe");
+            if windows.exists() {
+                candidates.push(windows.to_string_lossy().to_string());
+            }
+            let posix = venv.join("bin").join("python");
+            if posix.exists() {
+                candidates.push(posix.to_string_lossy().to_string());
+            }
+        }
+        candidates.push("python3".to_string());
+        candidates.push("python".to_string());
+        candidates
+    }
+
     /// Whether `python` can import the server and its config parser.
     async fn interpreter_can_run_server(python: &str, repo_root: &Path) -> bool {
         let mut cmd = Command::new(python);
@@ -339,18 +378,7 @@ impl AcpClient {
         // An interpreter that cannot import the server's dependencies would start
         // a degraded runtime that silently ignores the configured model, so probe
         // the candidates instead of trusting the first one that exists.
-        let mut candidates: Vec<String> = Vec::new();
-        if let Ok(bin_env) = std::env::var("HEX_PYTHON_BIN") {
-            candidates.push(bin_env);
-        }
-        if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
-            candidates.push(format!("{}/bin/python", venv));
-        }
-        let venv_python = repo_root.join(".venv/bin/python");
-        if venv_python.exists() {
-            candidates.push(venv_python.to_string_lossy().to_string());
-        }
-        candidates.push("python3".to_string());
+        let candidates = Self::interpreter_candidates(&repo_root);
 
         let mut py_bin = None;
         for candidate in candidates {
@@ -380,10 +408,8 @@ impl AcpClient {
 
         let mut child = cmd.spawn()?;
 
-        if let Some(mut stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
-            });
+        if let Some(stderr) = child.stderr.take() {
+            drain_stderr(stderr);
         }
 
         let stdout = child.stdout.take().ok_or_else(|| {
@@ -897,6 +923,23 @@ mod tests {
             AcpClient::find_repo_root(&nested),
             Some(repo.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn test_interpreter_candidates_cover_windows_and_posix_venv_layouts() {
+        let repo = tempfile::tempdir().unwrap();
+        let win = repo.path().join(".venv").join("Scripts").join("python.exe");
+        let posix = repo.path().join(".venv").join("bin").join("python");
+        std::fs::create_dir_all(win.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(posix.parent().unwrap()).unwrap();
+        std::fs::write(&win, "").unwrap();
+        std::fs::write(&posix, "").unwrap();
+
+        let candidates = AcpClient::interpreter_candidates(repo.path());
+        assert!(candidates.contains(&win.to_string_lossy().to_string()));
+        assert!(candidates.contains(&posix.to_string_lossy().to_string()));
+        assert!(candidates.contains(&"python3".to_string()));
+        assert!(candidates.contains(&"python".to_string()));
     }
 
     #[tokio::test]

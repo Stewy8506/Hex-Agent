@@ -1,7 +1,8 @@
 """HEX Multi-Gateway Supervisor (GatewayManager).
 
-Coordinates concurrent lifecycles, health reporting, polling loops,
-and graceful shutdown (SIGINT/SIGTERM) of both Telegram and Discord gateways.
+Coordinates lifecycles, health reporting, polling loops, and graceful shutdown
+(SIGINT/SIGTERM). Telegram runs a bidirectional polling receive loop; Discord is
+send-only (outbound) and starts no ingress receive loop (B54).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ logger = logging.getLogger("harness_core.gateways.manager")
 
 
 class GatewayManager:
-    """Supervises bidirectional chat gateways (Telegram & Discord)."""
+    """Supervises chat gateways: Telegram (bidirectional polling) and Discord (send-only)."""
 
     def __init__(
         self,
@@ -85,7 +86,11 @@ class GatewayManager:
             logger.info("Started Telegram gateway background polling thread.")
 
         if self.discord_gateway:
-            logger.info("Discord Interaction gateway active and registered with supervisor.")
+            logger.info(
+                "Discord gateway is send-only (outbound); no ingress receive loop is "
+                "started. To receive commands/reactions, wire an external authenticated "
+                "HTTP endpoint to DiscordBotGateway.handle_interaction (B54)."
+            )
 
         logger.info("GatewayManager started successfully (daemon=%s).", daemon)
 
@@ -134,6 +139,8 @@ class GatewayManager:
             gateways_info.append({
                 "name": "telegram",
                 "active": True,
+                "mode": "bidirectional",
+                "ingress": True,
                 "allowed_users": sorted(list(self.telegram_gateway.config.allowed_user_ids)),
                 "allowed_chats": sorted(list(self.telegram_gateway.config.allowed_chat_ids)),
                 "dry_run": self.telegram_gateway.config.dry_run,
@@ -143,6 +150,8 @@ class GatewayManager:
             gateways_info.append({
                 "name": "discord",
                 "active": True,
+                "mode": self.discord_gateway.ingress_mode,
+                "ingress": False,
                 "allowed_users": sorted(list(self.discord_gateway.config.allowed_user_ids)),
                 "allowed_guilds": sorted(list(self.discord_gateway.config.allowed_guild_ids)),
                 "allowed_channels": sorted(list(self.discord_gateway.config.allowed_channel_ids)),

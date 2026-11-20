@@ -1,8 +1,14 @@
-"""HEX Discord Bot Gateway.
+"""HEX Discord Bot Gateway (send-only / outbound).
 
-Provides bidirectional Discord Interaction Bot interface for conversational task delegation,
-operator whitelisting, rich embed status notifications, and interactive message components
-(buttons) for gated R3/R4 human-in-the-loop approvals.
+Sends rich embed status notifications and interactive approval cards (buttons) to
+Discord channels for gated R3/R4 human-in-the-loop approvals.
+
+HEX does NOT run a Discord ingress receive loop: slash commands, button presses, and
+reactions are not received by this process on their own. ``handle_interaction`` and
+``handle_reaction_add`` are integration points for an EXTERNAL authenticated ingress
+(e.g. an HTTP endpoint that verifies Discord's Ed25519 ``X-Signature-Ed25519`` header
+using ``DiscordConfig.public_key`` before dispatching). Wiring and authenticating that
+ingress is the operator's responsibility; the gateway itself is send-only.
 """
 
 from __future__ import annotations
@@ -237,10 +243,11 @@ class MockDiscordTransport:
 
 
 class DiscordBotGateway:
-    """Bidirectional Discord Interaction Bot Gateway.
+    """Send-only (outbound) Discord gateway.
 
-    Handles Discord interaction payloads (PING, slash commands, button components),
-    enforces operator whitelists, dispatches tasks, and renders rich embeds and buttons.
+    Sends approval cards / status embeds and exposes ``handle_interaction`` for an
+    external authenticated ingress. It does not receive Discord events itself
+    (``ingress_mode == "send_only"``); see the module docstring for integration notes.
     """
 
     def __init__(
@@ -259,6 +266,24 @@ class DiscordBotGateway:
             self.transport = MockDiscordTransport()
         else:
             self.transport = HttpDiscordTransport(config.bot_token)
+
+    #: Discord ingress is not implemented in-process; this gateway only sends (B54).
+    INGRESS_MODE = "send_only"
+
+    @property
+    def ingress_mode(self) -> str:
+        """Ingress capability: ``send_only`` (no in-process receiver)."""
+        return self.INGRESS_MODE
+
+    def capabilities(self) -> dict[str, Any]:
+        """Honest capability descriptor for status/diagnostics (B54)."""
+        return {
+            "platform": "discord",
+            "send": True,
+            "receive": False,
+            "ingress_mode": self.INGRESS_MODE,
+            "interaction_handler": "external",
+        }
 
     def is_user_authorized(self, user_id: str | int | None) -> bool:
         """Verify user is in whitelist (strict default-deny)."""
@@ -343,7 +368,13 @@ class DiscordBotGateway:
         return compute_workspace_diff(base_dir, attempt_ws)
 
     def handle_interaction(self, interaction: dict[str, Any]) -> dict[str, Any]:
-        """Process incoming Discord interaction payload."""
+        """Process an incoming Discord interaction payload.
+
+        Integration point for an EXTERNAL authenticated ingress only: the caller MUST
+        verify Discord's Ed25519 request signature (using ``config.public_key``) before
+        invoking this. HEX runs no receiver and performs no signature verification
+        itself (the gateway is send-only).
+        """
         itype = interaction.get("type")
 
         # Type 1: PING -> PONG

@@ -6,6 +6,7 @@ due job execution via HarnessOrchestrator, and automated webhook alert dispatch.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -19,7 +20,56 @@ from harness_core.core.models import TaskSubmitRequest
 from harness_core.core.orchestrator import HarnessOrchestrator
 from harness_core.capabilities.webhooks import WebhookNotifier
 
+try:  # POSIX advisory lock
+    import fcntl
+except ImportError:  # pragma: no cover - platform dependent
+    fcntl = None
+try:  # Windows advisory lock
+    import msvcrt
+except ImportError:  # pragma: no cover - platform dependent
+    msvcrt = None
+
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _tick_lock(lock_path: Path):
+    """Exclusive, non-blocking inter-process scheduler tick lock (B38).
+
+    Yields True when acquired, False when another tick already holds it. The
+    lock is advisory and held on an open descriptor, so the OS releases it
+    automatically if the process dies — a crash never leaves a stale lock that
+    would block all future ticks. Callers skip the tick when it is not acquired,
+    which gives non-overlap between concurrent scheduler processes.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    acquired = False
+    try:
+        try:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            elif msvcrt is not None:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                acquired = True
+            else:  # pragma: no cover - no locking primitive on this platform
+                acquired = True
+        except OSError:
+            acquired = False
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except OSError:  # pragma: no cover - best-effort release
+                pass
+        os.close(fd)
 
 
 def utcnow_iso() -> str:
@@ -111,6 +161,8 @@ class CronParser:
         self._days: set[int] = set()
         self._months: set[int] = set()
         self._dows: set[int] = set()
+        self._dom_restricted: bool = False
+        self._dow_restricted: bool = False
         self._parse()
 
     def _parse(self) -> None:
@@ -126,6 +178,9 @@ class CronParser:
             self._days = _parse_cron_field(parts[2], 1, 31)
             self._months = _parse_cron_field(parts[3], 1, 12)
             self._dows = _parse_cron_field(parts[4], 0, 7, is_dow=True)
+            # Vixie semantics: a day field is "restricted" when it is not '*'.
+            self._dom_restricted = parts[2].strip() != "*"
+            self._dow_restricted = parts[4].strip() != "*"
             self._is_valid = True
         except Exception as exc:
             self._is_valid = False
@@ -135,18 +190,29 @@ class CronParser:
         """Returns True if the expression is syntactically valid and fields are within bounds."""
         return self._is_valid
 
+    def _day_matches(self, dt: datetime) -> bool:
+        """Vixie day-of-month / day-of-week combination (B43).
+
+        When both day fields are restricted (neither is '*'), the day matches if
+        EITHER matches (OR). When at least one is '*', the restricted field
+        controls (AND with a wildcard), the conventional crontab(5) behavior.
+        """
+        cron_dow = (dt.weekday() + 1) % 7
+        dom_ok = dt.day in self._days
+        dow_ok = cron_dow in self._dows
+        if self._dom_restricted and self._dow_restricted:
+            return dom_ok or dow_ok
+        return dom_ok and dow_ok
+
     def matches(self, dt: datetime) -> bool:
         """Checks if a given datetime matches all 5 cron fields."""
         if not self._is_valid:
             return False
-        # dt.weekday(): 0=Mon, 6=Sun -> cron dow: (weekday + 1) % 7 (0=Sun, 1=Mon, ..., 6=Sat)
-        cron_dow = (dt.weekday() + 1) % 7
         return (
             dt.minute in self._minutes
             and dt.hour in self._hours
-            and dt.day in self._days
+            and self._day_matches(dt)
             and dt.month in self._months
-            and cron_dow in self._dows
         )
 
     def next_run_after(self, base_dt: datetime) -> datetime:
@@ -166,8 +232,7 @@ class CronParser:
                     curr = curr.replace(month=curr.month + 1, day=1, hour=0, minute=0)
                 continue
 
-            cron_dow = (curr.weekday() + 1) % 7
-            if curr.day not in self._days or cron_dow not in self._dows:
+            if not self._day_matches(curr):
                 curr = (curr + timedelta(days=1)).replace(hour=0, minute=0)
                 continue
 
@@ -349,19 +414,57 @@ class TaskScheduler:
         notifier: WebhookNotifier | None = None,
         now: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Submits due jobs to the orchestrator, updates execution timestamps, and sends alerts."""
+        """Run one scheduler tick under an inter-process lock (B38).
+
+        The tick is skipped (returns []) when another process already holds the
+        lock, giving non-overlap. Due jobs are claimed durably *before* execution
+        so a crash mid-run cannot refire the same occurrence.
+        """
         current_time = now or datetime.now(timezone.utc)
         if current_time.tzinfo is None:
             current_time = current_time.replace(tzinfo=timezone.utc)
 
+        lock_path = self.storage_path.with_name(self.storage_path.name + ".lock")
+        with _tick_lock(lock_path) as acquired:
+            if not acquired:
+                logger.info("Scheduler tick skipped; another tick holds %s", lock_path)
+                return []
+            return self._execute_due_jobs_locked(orchestrator, notifier, current_time)
+
+    def _compute_next_run(self, job: ScheduledJob, base_dt: datetime) -> str:
+        try:
+            return CronParser(job.cron_expr).next_run_after(base_dt).isoformat()
+        except Exception as exc:
+            logger.warning("Failed to compute next_run for job %s: %s", job.job_id, exc)
+            return (base_dt + timedelta(days=1)).isoformat()
+
+    def _execute_due_jobs_locked(
+        self,
+        orchestrator: HarnessOrchestrator,
+        notifier: WebhookNotifier | None,
+        current_time: datetime,
+    ) -> list[dict[str, Any]]:
         all_jobs = self.load_jobs()
         job_map = {j.job_id: j for j in all_jobs}
         due_jobs = self.get_due_jobs(current_time)
         results: list[dict[str, Any]] = []
 
+        # Durable claim BEFORE execution (B38): advance next_run to the next
+        # occurrence after the tick time and persist it now, so a crash during
+        # the run cannot refire this occurrence. Missed intervals are coalesced
+        # into a single catch-up fire (next_run jumps past them rather than
+        # replaying each); a missing/unparseable next_run is repaired here
+        # instead of leaving the job perpetually due.
+        claimed: list[ScheduledJob] = []
         for due_job in due_jobs:
             job = job_map.get(due_job.job_id, due_job)
-            exec_start = datetime.now(timezone.utc)
+            job.last_run = current_time.isoformat()
+            job.next_run = self._compute_next_run(job, current_time)
+            claimed.append(job)
+        if claimed:
+            self.save_jobs(list(job_map.values()))
+
+        for job in claimed:
             req = TaskSubmitRequest(
                 goal=job.goal,
                 project_id=job.project_id,
@@ -382,16 +485,11 @@ class TaskScheduler:
                     "job_id": job.job_id,
                 }
 
-            # Advance next_run to prevent infinite retry loops
-            job.last_run = exec_start.isoformat()
             job.last_status = "FAILED" if error_msg else str(task_result.get("status") or "COMPLETED")
             job.last_error = error_msg
-            try:
-                parser = CronParser(job.cron_expr)
-                job.next_run = parser.next_run_after(exec_start).isoformat()
-            except Exception as exc:
-                logger.warning("Failed to compute next_run for job %s: %s", job.job_id, exc)
-                job.next_run = (exec_start + timedelta(days=1)).isoformat()
+            # Persist each outcome immediately so a crash after this job does not
+            # lose its status; next_run was already claimed above.
+            self.save_jobs(list(job_map.values()))
 
             # Dispatch failure alert if needed
             if error_msg and notifier is not None:
@@ -413,9 +511,6 @@ class TaskScheduler:
                 "task_result": task_result,
                 "error": error_msg,
             })
-
-        # Save updated execution states
-        self.save_jobs(list(job_map.values()))
 
         # Run idle reflection drainage & memory lifecycle maintenance when no due jobs ran
         if not due_jobs:

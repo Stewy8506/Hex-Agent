@@ -40,7 +40,7 @@ from .graphify import (
     SUPPORTED_CODE_EXTENSIONS,
 )
 from .lsp.manager import LSPManager
-from .mcp_client import MCPClientAdapter, MCPToolDefinition
+from .mcp_client import MCPClientAdapter, MCPToolDefinition, StdioMCPTransport, HttpSSEMCPTransport
 from harness_core.cognition.memory import format_jit_memories_block, query_jit_memories_for_file
 from harness_core.core.models import PolicyDecisionType, RiskClass
 from harness_core.runtime.process_registry import ProcessRegistry, get_process_registry
@@ -81,6 +81,7 @@ class ToolSpec:
     risk_class: RiskClass
     handler: Callable[[Path, dict[str, Any]], dict[str, Any]]
     result_size_cap: int = 64_000
+    parameters: dict[str, Any] | None = None
 
 
 class PolicyBlockedError(PermissionError):
@@ -668,6 +669,76 @@ def sealed_effect_state(prior: dict[str, Any], workspace_dir: Path | str) -> str
     return "diverged"
 
 
+def _build_mcp_transport(spec: dict[str, Any]) -> Any:
+    """Construct an MCP transport from a config entry (stdio ``command`` or HTTP ``url``)."""
+    url = spec.get("url") or spec.get("endpoint_url")
+    if url:
+        headers = spec.get("headers") or {}
+        if not isinstance(headers, dict):
+            raise ValueError("MCP server 'headers' must be a mapping")
+        return HttpSSEMCPTransport(endpoint_url=str(url), headers={str(k): str(v) for k, v in headers.items()})
+
+    command = spec.get("command")
+    if isinstance(command, str):
+        command = shlex.split(command)
+    if not isinstance(command, list) or not command:
+        raise ValueError("MCP server config needs a 'command' (stdio) or 'url' (HTTP)")
+    cwd = spec.get("cwd")
+    env = spec.get("env")
+    if env is not None and not isinstance(env, dict):
+        raise ValueError("MCP server 'env' must be a mapping")
+    return StdioMCPTransport(
+        command=[str(c) for c in command],
+        cwd=cwd,
+        env={str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else None,
+    )
+
+
+def register_configured_mcp_servers(
+    gateway: ToolGateway,
+    mcp_servers: dict[str, Any],
+    *,
+    scanner: SkillSecurityScanner | None = None,
+    enforce_scan: bool = True,
+) -> dict[str, Any]:
+    """Register MCP servers described by a config mapping at startup (B57).
+
+    Each entry is a stdio server (``command``: list[str] or str, optional ``cwd``/
+    ``env``) or an HTTP server (``url``: str, optional ``headers``). Registration
+    reuses :meth:`ToolGateway.register_mcp_server`, so the SkillSpector manifest
+    scan and SHA-256 pinning still gate every server before its tools are exposed.
+
+    Per-server failures are collected and returned rather than silently dropped or
+    aborting the remaining servers, so one bad server cannot take down startup or
+    hide the fact that it failed. Returns
+    ``{"registered": {server_id: [tool_ids]}, "failed": {server_id: reason}}``.
+    """
+    registered: dict[str, list[str]] = {}
+    failed: dict[str, str] = {}
+    for server_id, raw in (mcp_servers or {}).items():
+        if not isinstance(raw, dict):
+            failed[server_id] = "server config must be a mapping"
+            continue
+        transport = None
+        try:
+            transport = _build_mcp_transport(raw)
+            adapter = MCPClientAdapter(server_id=server_id, transport=transport)
+            registered[server_id] = gateway.register_mcp_server(
+                adapter, scanner=scanner, enforce_scan=enforce_scan
+            )
+        except Exception as exc:
+            failed[server_id] = str(exc)
+            logger.warning("MCP server '%s' registration failed: %s", server_id, exc)
+            # A stdio transport spawns its child at construction; close it so a
+            # failed discovery/scan does not leak an orphaned subprocess.
+            if transport is not None:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+    return {"registered": registered, "failed": failed}
+
+
 class ToolGateway(FileToolsMixin):
     """Policy-enforcing, call-journaling gateway for direct tools and Code Mode scripts."""
 
@@ -708,8 +779,42 @@ class ToolGateway(FileToolsMixin):
 
     @classmethod
     def list_tool_definitions(cls) -> list[dict[str, Any]]:
-        """Return standardized schema list of all built-in tools."""
+        """Return the static built-in tool catalog (schema metadata only).
+
+        This is the fixed built-in schema list; it does not reflect dynamically
+        registered MCP tools. Use the instance-level :meth:`live_tool_definitions`
+        to advertise everything the live authorized registry actually exposes (B57).
+        """
         return [dict(t) for t in TOOL_DEFINITIONS]
+
+    def live_tool_definitions(self) -> list[dict[str, Any]]:
+        """Build tool definitions from the live authorized registry (B57).
+
+        Iterates ``self.tools`` so dynamically registered MCP/dynamic tools are
+        advertised alongside built-ins. Built-ins reuse their static schema
+        metadata; dynamic tools carry the input schema discovered from the MCP
+        server (``ToolSpec.parameters``). A tool that is not registered is never
+        advertised, so discovery cannot promise a tool that invocation would reject.
+        """
+        static_by_id = {d["id"]: d for d in TOOL_DEFINITIONS}
+        definitions: list[dict[str, Any]] = []
+        for tool_id, spec in self.tools.items():
+            risk = spec.risk_class.value if isinstance(spec.risk_class, RiskClass) else str(spec.risk_class)
+            base = static_by_id.get(tool_id)
+            if base is not None:
+                entry = dict(base)
+                entry["description"] = spec.description or base.get("description", "")
+                entry["risk_class"] = risk
+            else:
+                entry = {
+                    "id": tool_id,
+                    "name": tool_id,
+                    "description": spec.description,
+                    "risk_class": risk,
+                    "parameters": spec.parameters or {"type": "object", "properties": {}},
+                }
+            definitions.append(entry)
+        return definitions
 
     def _get_lsp_manager(self, workspace_dir: Path) -> LSPManager:
         if self.lsp_manager is None:
@@ -764,6 +869,7 @@ class ToolGateway(FileToolsMixin):
                 description=tool.description,
                 risk_class=risk_cls,
                 handler=_make_handler(adapter, tool.name),
+                parameters=dict(tool.input_schema) if isinstance(tool.input_schema, dict) else None,
             )
             self.register_tool(spec)
             registered_ids.append(namespaced_id)
@@ -774,6 +880,7 @@ class ToolGateway(FileToolsMixin):
                     description=tool.description,
                     risk_class=risk_cls,
                     handler=_make_handler(adapter, tool.name),
+                    parameters=dict(tool.input_schema) if isinstance(tool.input_schema, dict) else None,
                 )
                 self.register_tool(alias_spec)
                 registered_ids.append(tool.name)

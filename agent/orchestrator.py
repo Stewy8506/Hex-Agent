@@ -249,6 +249,21 @@ class HarnessOrchestrator:
         # The gateway needs the router for multimodal vision and delegated
         # child execution; it is constructed before the router exists.
         self.gateway.router = self.router
+        # Config-driven MCP startup registration (B57): expose configured external
+        # MCP servers through the live gateway registry so ACP tool discovery
+        # advertises them. No-op when unconfigured; the SkillSpector manifest scan
+        # still gates each server, and per-server failures are logged, never fatal.
+        try:
+            from harness_core.config_loader import load_mcp_servers_config
+            from harness_core.gateway import register_configured_mcp_servers
+
+            mcp_cfg = load_mcp_servers_config(workspace_root=self.default_workspace)
+            if mcp_cfg:
+                mcp_res = register_configured_mcp_servers(self.gateway, mcp_cfg)
+                for sid, reason in mcp_res.get("failed", {}).items():
+                    logger.warning("MCP server '%s' not registered at startup: %s", sid, reason)
+        except Exception as exc:
+            logger.warning("MCP startup registration skipped: %s", exc)
         self.demo_mode = bool(demo_mode) or os.environ.get("HEX_DEMO_MODE", "").strip().lower() in (
             "1",
             "true",
@@ -801,6 +816,63 @@ class HarnessOrchestrator:
     def submit_task(self, req: TaskSubmitRequest, auto_execute: bool = False) -> dict[str, Any]:
         return self.submit_and_run(req, auto_execute=auto_execute)
 
+    def _get_skill_retriever(self, workspace_root: Path) -> Any:
+        """Lazily construct and cache (per workspace) the hybrid skill retriever."""
+        cached = getattr(self, "_skill_retriever", None)
+        if cached is not None and getattr(cached, "workspace_root", None) == workspace_root:
+            return cached
+        from harness_core.skills import HybridLearningRetriever
+
+        retriever = HybridLearningRetriever(
+            ledger=getattr(self, "ledger", None),
+            graphify=getattr(self, "graphify", None),
+            workspace_root=workspace_root,
+        )
+        self._skill_retriever = retriever
+        return retriever
+
+    def retrieve_task_skills(
+        self,
+        goal: str,
+        workspace_root: Path | str | None = None,
+        target_files: list[str] | None = None,
+        limit: int = 5,
+    ) -> str:
+        """Retrieve goal-relevant skills via hybrid FTS5 + AST search and format them
+        for injection into the task system prompt (4.5).
+
+        Returns a fenced ``<retrieved_skills>`` block, or ``""`` when nothing relevant
+        is found or retrieval fails. Retrieval is non-fatal: a task must not fail
+        because skill retrieval is unavailable.
+        """
+        if not goal or not str(goal).strip():
+            return ""
+        ws = Path(workspace_root or self.default_workspace).resolve()
+        try:
+            retriever = self._get_skill_retriever(ws)
+            retriever.refresh_index()
+            matches = retriever.find_skills_for_task(
+                goal=str(goal), target_files=target_files, limit=limit
+            )
+        except Exception as exc:
+            logger.debug("Hybrid skill retrieval failed for goal %r: %s", goal, exc)
+            return ""
+        if not matches:
+            return ""
+        blocks: list[str] = []
+        for m in matches:
+            body = (m.content or "").strip()
+            if len(body) > 2000:
+                body = body[:2000] + "\n... (truncated)"
+            blocks.append(f"### {m.title} (relevance {m.score}, {m.match_type})\n{body}")
+        return (
+            "<retrieved_skills>\n"
+            "[System note: Skills retrieved as relevant to this task goal by hybrid "
+            "FTS5 + AST search. Reference guidance, not new user input.]\n\n"
+            + "\n\n".join(blocks)
+            + "\n</retrieved_skills>"
+        )
+
     def run_agent_loop(
         self,
         goal: str,
@@ -825,10 +897,19 @@ class HarnessOrchestrator:
         # Submit task into ledger if available
         active_task_id = task_id or f"task_react_{uuid.uuid4().hex[:8]}"
 
+        # 4.5: retrieve goal-relevant skills via the hybrid FTS5 + AST engine and
+        # inject them into the system prompt through the scanned extra_rules slot.
+        skill_context = self.retrieve_task_skills(goal, workspace_root=effective_ws)
+        combined_extra_rules = extra_rules
+        if skill_context:
+            combined_extra_rules = (
+                f"{extra_rules}\n\n{skill_context}" if extra_rules.strip() else skill_context
+            )
+
         system_directive = self.prompt_builder.build_system_prompt(
             workspace_root=effective_ws,
             mode=mode,
-            extra_rules=extra_rules,
+            extra_rules=combined_extra_rules,
             curated_memory=curated_memory,
             session_id=active_task_id,
         )

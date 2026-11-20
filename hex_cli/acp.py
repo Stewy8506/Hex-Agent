@@ -1,15 +1,21 @@
-"""Agent Client Protocol (ACP) Server for HEX Agent.
+"""HEX private ACP-style JSON-RPC 2.0 stdio server.
 
-Implements the ACP JSON-RPC 2.0 protocol over stdio for IDE integration with Zed, Neovim, VSCode, and Cursor.
-Standardized methods:
-- initialize
-- session/new
-- session/load
-- session/prompt
-- session/cancel
-- session/list
-- tools/list
-- tools/call
+This is HEX's *internal* Agent Client Protocol dialect, spoken by HEX's own Rust
+desktop/TUI clients. It is NOT a certified implementation of the standard Agent
+Client Protocol: it uses an MCP-style ``protocolVersion`` string, custom
+approval/update payloads, and does not expose the standard
+authenticate/permission/fs/terminal/mode surfaces. Compatibility with standard
+ACP editors (Zed, VSCode, Neovim, Cursor) is unverified — the matching HEX Rust
+client is not proof of third-party editor interop. The ``initialize`` result
+advertises ``protocolDialect`` so a client can detect this explicitly.
+
+Dispatched methods:
+- initialize, ping
+- session/new, session/load, session/list, session/models
+- session/prompt, session/cancel, session/command
+- session/history, session/historyContent, session/toolResult, session/subagents
+- session/approvalDecision
+- tools/list, tools/call
 """
 
 from __future__ import annotations
@@ -32,6 +38,43 @@ from typing import Any
 from harness_core import __version__
 
 logger = logging.getLogger(__name__)
+
+
+_SECRET_TEXT_NAMES = (
+    "key", "api_key", "apikey", "api-key", "token", "access_token",
+    "auth_token", "refresh_token", "id_token", "secret", "client_secret",
+    "password", "passwd", "authorization", "x-api-key", "x-auth-token",
+)
+
+
+def _redact_sensitive_text(text: object) -> str:
+    """Mask credentials embedded in arbitrary text before it reaches a client.
+
+    Provider discovery errors can echo the request URL (e.g. Gemini's
+    ``?key=...``) or an Authorization header; returning that raw would leak the
+    configured API key/token to any ACP client consuming ``session/models``.
+    """
+    s = str(text)
+    names = "|".join(re.escape(n) for n in _SECRET_TEXT_NAMES)
+    s = re.sub(
+        rf"([?&](?:{names})=)[^&\s\"'<>]+",
+        r"\1[REDACTED]",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"(Bearer\s+)[A-Za-z0-9._\-+/=]+",
+        r"\1[REDACTED]",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        rf"\b((?:{names})\s*[=:]\s*)[\"']?[^\s\"',;}}\[\]]+",
+        r"\1[REDACTED]",
+        s,
+        flags=re.IGNORECASE,
+    )
+    return s
 
 
 def _bounded_tool_preview(payload: Any, *, error: bool = False) -> str:
@@ -422,8 +465,18 @@ class ACPSession:
         return {str(turn["task_id"]) for turn in self.history if turn.get("task_id")}
 
 
+_SUPPORTED_METHODS = (
+    "initialize", "ping",
+    "session/new", "session/load", "session/list", "session/models",
+    "session/prompt", "session/cancel", "session/command",
+    "session/history", "session/historyContent", "session/toolResult",
+    "session/subagents", "session/approvalDecision",
+    "tools/list", "tools/call",
+)
+
+
 class ACPServer:
-    """Agent Client Protocol (ACP) JSON-RPC 2.0 stdio server."""
+    """HEX private ACP-style JSON-RPC 2.0 stdio server (not certified standard ACP)."""
 
     def __init__(
         self,
@@ -620,7 +673,14 @@ class ACPServer:
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
-                    "error": {"code": -32601, "message": f"Method not found: {method}"},
+                    "error": {
+                        "code": -32601,
+                        "message": (
+                            f"Method not found: {method}. This is HEX's private "
+                            "ACP dialect (hex-private-acp/1). Supported methods: "
+                            + ", ".join(_SUPPORTED_METHODS)
+                        ),
+                    },
                 }
 
             return {
@@ -645,6 +705,7 @@ class ACPServer:
     def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         return {
             "protocolVersion": "2024-11-05",
+            "protocolDialect": "hex-private-acp/1",
             "capabilities": {
                 "session": {
                     "streaming": True,
@@ -660,6 +721,11 @@ class ACPServer:
             "serverInfo": {
                 "name": "HEX",
                 "version": __version__,
+                "description": (
+                    "HEX internal ACP-style dialect (hex-private-acp/1); not a "
+                    "certified standard Agent Client Protocol implementation. "
+                    "Zed/VSCode/Neovim/Cursor interop is unverified."
+                ),
             },
         }
 
@@ -1210,7 +1276,7 @@ class ACPServer:
                     "provider": provider_label, "isLocal": False,
                 })
         except Exception as exc:
-            errors.append(f"{provider_label}: {exc}")
+            errors.append(f"{provider_label}: {_redact_sensitive_text(exc)}")
 
         if getattr(router, "local_model_id", None):
             try:
@@ -1220,7 +1286,7 @@ class ACPServer:
                         "provider": "Local", "isLocal": True,
                     })
             except Exception as exc:
-                errors.append(f"local: {exc}")
+                errors.append(f"local: {_redact_sensitive_text(exc)}")
 
         if not models:
             detail = "; ".join(errors) or (
@@ -1241,8 +1307,9 @@ class ACPServer:
         return result
 
     def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        from harness_core.gateway import ToolGateway
-        defs = ToolGateway.list_tool_definitions()
+        # Advertise the live authorized registry (built-ins + dynamically
+        # registered MCP tools), not the static built-in catalog (B57).
+        defs = self.orchestrator.gateway.live_tool_definitions()
         return {"tools": defs}
 
     def _ensure_tools_call_task(self) -> str:
@@ -1355,10 +1422,17 @@ class ACPServer:
                 raise ValueError(f"Unknown approval decision: {decision!r}")
             outcome = {"applied": False, "outcome": None, "lease_id": None, "lease_ttl_seconds": None}
 
+        # B35: distinguish a late decision against an already closed approval
+        # (expired/canceled/resolved) from a genuinely unknown id ("acknowledged").
+        if outcome["applied"]:
+            status = "applied"
+        else:
+            status = outcome.get("closed_reason") or "acknowledged"
+
         return {
             "approvalId": approval_id,
             "decision": decision,
-            "status": "applied" if outcome["applied"] else "acknowledged",
+            "status": status,
             "applied": outcome["applied"],
             "outcome": outcome["outcome"],
             "leaseId": outcome["lease_id"],
