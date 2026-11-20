@@ -583,6 +583,55 @@ class TestGatewayManagerAndSupervision(unittest.TestCase):
         self.assertEqual(self.mgr.update_counts["telegram"], 1)
 
 
+class TestDiscordSendOnlyLabeling(unittest.TestCase):
+    """B54: Discord has no in-process ingress; it must be honestly labeled send-only
+    rather than claiming bidirectional interaction reception."""
+
+    def _discord_gw(self) -> DiscordBotGateway:
+        return DiscordBotGateway(
+            orchestrator=None,
+            config=DiscordConfig(bot_token="dc_mock", allowed_user_ids={"u_dc"}),
+            transport=MockDiscordTransport(),
+        )
+
+    def test_discord_gateway_reports_send_only(self) -> None:
+        gw = self._discord_gw()
+        self.assertEqual(gw.ingress_mode, "send_only")
+        caps = gw.capabilities()
+        self.assertTrue(caps["send"])
+        self.assertFalse(caps["receive"])
+        self.assertEqual(caps["ingress_mode"], "send_only")
+        self.assertEqual(caps["interaction_handler"], "external")
+
+    def test_discord_docstring_does_not_claim_bidirectional(self) -> None:
+        doc = (DiscordBotGateway.__doc__ or "").lower()
+        self.assertNotIn("bidirectional", doc)
+        self.assertIn("send-only", doc)
+
+    def test_manager_status_labels_discord_send_only(self) -> None:
+        tg = TelegramBotGateway(
+            None,
+            TelegramConfig(bot_token="tg_mock", allowed_user_ids={"u_tg"}),
+            transport=MockTelegramTransport(),
+        )
+        mgr = GatewayManager(None, telegram_gateway=tg, discord_gateway=self._discord_gw())
+        stat = mgr.get_status()
+        by_name = {g["name"]: g for g in stat["gateways"]}
+        self.assertEqual(by_name["discord"]["mode"], "send_only")
+        self.assertFalse(by_name["discord"]["ingress"])
+        self.assertEqual(by_name["telegram"]["mode"], "bidirectional")
+        self.assertTrue(by_name["telegram"]["ingress"])
+
+    def test_manager_starts_no_discord_receive_loop(self) -> None:
+        mgr = GatewayManager(None, discord_gateway=self._discord_gw())
+        try:
+            mgr.start(daemon=True)
+            self.assertFalse(any("Discord" in t.name for t in mgr._threads))
+            self.assertEqual(mgr.update_counts["discord"], 0)
+        finally:
+            mgr.stop(timeout=2.0)
+
+
 class TestCLIGatewayIntegration(unittest.TestCase):
     def test_cli_gateway_status(self) -> None:
         buf = io.StringIO()

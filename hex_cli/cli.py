@@ -342,12 +342,12 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_voice.add_argument("--no-stream", action="store_true", default=argparse.SUPPRESS, help="Disable live token streaming")
     p_voice.add_argument("--data-dir", default=argparse.SUPPRESS, help="Path to local HEX ledger and CoW storage directory")
 
-    p_gw = sub.add_parser("gateway", help="Manage bidirectional chat gateways (Telegram & Discord)")
+    p_gw = sub.add_parser("gateway", help="Manage chat gateways (Telegram bidirectional; Discord send-only)")
     p_gw_sub = p_gw.add_subparsers(dest="gateway_cmd", required=True)
 
-    p_gw_start = p_gw_sub.add_parser("start", help="Start bidirectional chat gateway daemon")
+    p_gw_start = p_gw_sub.add_parser("start", help="Start chat gateway daemon (Telegram polling; Discord send-only)")
     p_gw_start.add_argument("--telegram", action="store_true", help="Explicitly enable Telegram gateway (default: enabled if token is set in env)")
-    p_gw_start.add_argument("--discord", action="store_true", help="Explicitly enable Discord gateway (default: enabled if token is set in env)")
+    p_gw_start.add_argument("--discord", action="store_true", help="Explicitly enable Discord gateway, send-only/outbound (default: enabled if token is set in env)")
     p_gw_start.add_argument("--poll-interval", type=float, default=1.0, help="Polling interval in seconds")
     p_gw_start.add_argument("--project", default="default", help="Project ID")
     p_gw_start.add_argument("--workspace", default=None, help="Workspace path (defaults to repo root)")
