@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from harness_core import __version__
+from harness_core.storage import compute_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -968,7 +969,7 @@ class ACPServer:
         exec_mode = str(params.get("execution_mode") or "fast_path")
         task_req = TaskSubmitRequest(
             goal=prompt_text,
-            project_id="acp_session",
+            project_id=compute_project_id(sess.workspace_root),
             execution_mode=exec_mode,
             workspace_root=str(sess.workspace_root),
             constraints={
@@ -1874,7 +1875,7 @@ class ACPServer:
         if memory is None:
             raise ValueError("Governed memory service unavailable on this orchestrator.")
         items = memory.retrieve_memories(
-            project_id="acp_session",
+            project_id=compute_project_id(sess.workspace_root),
             query=args.strip(),
             workspace_dir=sess.workspace_root,
         )
@@ -1897,7 +1898,7 @@ class ACPServer:
             raise ValueError("Usage: /remember <subject>: <content> (both parts required)")
         mem = memory.write_memory(
             scope="project",
-            project_id="acp_session",
+            project_id=compute_project_id(sess.workspace_root),
             subject=subject.strip(),
             content=content.strip(),
             workspace_dir=sess.workspace_root,
@@ -2002,11 +2003,18 @@ class ACPServer:
         valid = ("deterministic", "cloud", "local", "off", "disabled")
         if not mode:
             cur = getattr(router, "compressor_mode", "deterministic")
-            return f"Current compressor mode: {cur} (usage: /compressor <{'|'.join(valid)}>)"
+            return (
+                f"Current log compressor mode: {cur} "
+                f"(usage: /compressor <{'|'.join(valid)}>; governs verbose log compression, "
+                "not the live context window)"
+            )
         if mode not in valid:
             raise ValueError(f"Invalid compressor mode '{mode}'. Valid: {', '.join(valid)}")
         router.compressor_mode = "off" if mode == "disabled" else mode
-        return f"Compressor mode set to: {router.compressor_mode} (session-only)"
+        return (
+            f"Log compressor mode set to: {router.compressor_mode} (session-only; governs verbose "
+            "log compression, not the live context window)"
+        )
 
     def _cmd_rollback(self, sess: ACPSession, args: str) -> str:
         if not hasattr(self.orchestrator, "cancel_task"):

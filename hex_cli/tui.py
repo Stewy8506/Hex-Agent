@@ -2101,14 +2101,18 @@ class HexConsole:
         valid = ("deterministic", "cloud", "local", "off", "disabled")
         if mode not in valid:
             cur = getattr(getattr(self.orchestrator, "router", None), "compressor_mode", "deterministic")
-            print(f"{ANSI_CYAN}Current compressor mode:{ANSI_RESET} {cur} (Usage: /compressor <deterministic|cloud|local|off>)")
+            print(f"{ANSI_CYAN}Current log compressor mode:{ANSI_RESET} {cur} (Usage: /compressor <deterministic|cloud|local|off>; governs verbose log compression, not the live context window)")
             return
         if hasattr(self.orchestrator, "router"):
             self.orchestrator.router.compressor_mode = "off" if mode == "disabled" else mode
-        print(f"{ANSI_GREEN}Compressor mode updated to: {mode} (session-only; sensitive/secret logs remain auto-pinned to local){ANSI_RESET}")
+        print(f"{ANSI_GREEN}Log compressor mode updated to: {mode} (session-only; governs verbose log compression, not the live context window; sensitive/secret logs remain auto-pinned to local){ANSI_RESET}")
 
     def _cmd_compress(self, arg: str = "") -> None:
-        """Manually trigger context window compaction on current dialogue history."""
+        """Manually compact the local session transcript buffer (display/rewind history).
+
+        This does NOT shrink the live model context: agent loops build their context
+        per run and compact it automatically during long runs.
+        """
         from harness_core.cognition.context_compressor import CompactionConfig, ContextCompactor, estimate_messages_tokens
 
         messages = getattr(self, "messages", [])
@@ -2145,16 +2149,18 @@ class HexConsole:
             self.session_compression_ratio = result.compression_ratio
             pct_saved = (1.0 - result.compression_ratio) * 100
             print(
-                f"\n{ANSI_GREEN}✓ Context Compacted Successfully{ANSI_RESET}\n"
+                f"\n{ANSI_GREEN}✓ Session Transcript Compacted{ANSI_RESET}\n"
                 f"  Original:  {result.original_tokens:,} tokens ({len(result.compacted_messages) + result.phase3_summarized_turns} turns)\n"
                 f"  Compacted: {result.compacted_tokens:,} tokens ({len(result.compacted_messages)} turns)\n"
                 f"  Savings:   {pct_saved:.1f}% reduction\n"
                 f"  Phase 1:   {result.phase1_demoted_tools} stale tool outputs demoted\n"
                 f"  Phase 3:   {result.phase3_summarized_turns} middle turns summarized\n"
+                f"  Note:      this trims the local transcript buffer only; the live model"
+                f" context is compacted automatically by the agent loop during long runs."
             )
         else:
             print(
-                f"\n{ANSI_CYAN}ℹ Context already optimal ({orig_tokens:,} tokens). No compression applied.{ANSI_RESET}\n"
+                f"\n{ANSI_CYAN}ℹ Transcript already compact ({orig_tokens:,} tokens). No compression applied.{ANSI_RESET}\n"
             )
 
     def _cmd_rewind(self, arg: str = "") -> None:

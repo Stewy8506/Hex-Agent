@@ -1,14 +1,12 @@
-"""4-Phase Context Compactor & Prompt Cache Locking Core.
+"""4-Phase Context Compactor.
 
 Provides deterministic stale tool output demotion, atomic tool-pair boundary
-protection, middle-turn summarization, and immutable prompt-cache prefixing
-matching production agent standards.
+protection, and middle-turn summarization.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import hashlib
 import json
 import re
 from typing import Any, Callable
@@ -446,102 +444,6 @@ def align_boundary_backward(messages: list[dict[str, Any]], cut_idx: int) -> int
     return max(0, cut_idx)
 
 
-def validate_atomic_boundaries(messages: list[dict[str, Any]]) -> bool:
-    """Validate that tool calls and tool results are atomically paired without orphans.
-
-    Returns False if:
-      - Any tool result message exists without a preceding assistant tool call.
-      - Any assistant tool call is severed from its corresponding tool results.
-      - Any tool_call_id in a tool result does not match the preceding assistant's tool_calls.
-      - Any tool call declared in an assistant message has no matching tool result.
-    """
-    if not messages:
-        return True
-
-    n = len(messages)
-    i = 0
-    while i < n:
-        msg = messages[i]
-        role = msg.get("role")
-
-        # 1. Orphaned tool result at top or unexpected position
-        if role == "tool":
-            return False
-
-        # 2. XML observation without preceding assistant XML tool call
-        if role == "user":
-            content = msg.get("content", "")
-            if isinstance(content, str) and ("<observation" in content or "<tool_result" in content):
-                return False
-            if msg.get("name") == "observation":
-                return False
-
-        # 3. Assistant message with structured tool calls
-        if role == "assistant":
-            tool_calls = msg.get("tool_calls")
-            if isinstance(tool_calls, list) and tool_calls:
-                expected_ids = [
-                    str(tc.get("id") or tc.get("call_id") or "")
-                    for tc in tool_calls
-                    if isinstance(tc, dict)
-                ]
-                expected_set = set(expected_ids)
-                expected_set.discard("")
-
-                # Check following messages
-                j = i + 1
-                received_ids: list[str] = []
-                while j < n and messages[j].get("role") == "tool":
-                    t_id = str(messages[j].get("tool_call_id") or "")
-                    received_ids.append(t_id)
-                    j += 1
-
-                # If no tool results followed, or if any expected id is missing
-                if not received_ids:
-                    return False
-
-                if expected_set:
-                    # Every expected call must have a matching response
-                    if set(received_ids) != expected_set:
-                        return False
-                else:
-                    if len(received_ids) != len(tool_calls):
-                        return False
-
-                i = j
-                continue
-
-            # Check XML tool calls
-            content = msg.get("content", "")
-            if isinstance(content, str) and ("<tool_call" in content or "</tool_call>" in content):
-                j = i + 1
-                obs_count = 0
-                while j < n:
-                    cand = messages[j]
-                    cand_role = cand.get("role")
-                    cand_content = cand.get("content", "")
-                    if cand_role == "tool" or (
-                        cand_role == "user"
-                        and (
-                            isinstance(cand_content, str)
-                            and ("<observation" in cand_content or "<tool_result" in cand_content)
-                            or cand.get("name") == "observation"
-                        )
-                    ):
-                        obs_count += 1
-                        j += 1
-                    else:
-                        break
-                if obs_count == 0:
-                    return False
-                i = j
-                continue
-
-        i += 1
-
-    return True
-
-
 def sanitize_tool_pairs(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sanitize message sequence to strip severed or orphaned tool calls and responses.
 
@@ -859,6 +761,7 @@ class CompactionResult:
     phase1_demoted_tools: int
     phase3_summarized_turns: int
     used_fallback: bool
+    summary_text: str = ""
 
 
 class ContextCompactor:
@@ -1218,6 +1121,7 @@ class ContextCompactor:
         middle_turns = working[compress_start:compress_end]
         phase3_turns = len(middle_turns)
         used_fallback = False
+        summary_text = ""
 
         if phase3_turns > 0:
             summary_text = self._generate_model_summary(middle_turns)
@@ -1283,151 +1187,5 @@ class ContextCompactor:
             phase1_demoted_tools=demoted_count,
             phase3_summarized_turns=phase3_turns,
             used_fallback=used_fallback,
+            summary_text=summary_text,
         )
-
-
-# ==============================================================================
-# Phase 4: Immutable Prompt-Cache Prefixing & Provider Cache Breakpoints
-# ==============================================================================
-
-def stabilize_prompt_cache_prefix(
-    messages: list[dict[str, Any]],
-    system_prompt: str,
-    tools_schema: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Enforce byte-for-byte immutable prompt-cache prefix for high KV hit rates.
-
-    Ensures that the system prompt message occupies index 0 with canonical,
-    deterministic text, dynamic runtime stamps are excluded from the static prefix,
-    and subsequent conversational turns are cleanly preserved.
-    """
-    clean_messages: list[dict[str, Any]] = []
-
-    # 1. Canonical system message at index 0
-    canonical_system = str(system_prompt).strip()
-    clean_messages.append({"role": "system", "content": canonical_system})
-
-    # 2. Add non-system messages from input
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("role") == "system":
-            # Strip redundant internal system messages to avoid cache churn
-            continue
-        clean_messages.append(dict(msg))
-
-    return clean_messages
-
-
-def compute_cache_signature(
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None = None,
-    prefix_turns: int = 2,
-) -> str:
-    """Compute deterministic SHA-256 hex digest of the static prompt-cache prefix.
-
-    Covers the sorted canonical tool schemas and the first `prefix_turns`
-    messages (typically system instructions and initial task turn).
-    """
-    hasher = hashlib.sha256()
-
-    # Tool schemas deterministic serialization
-    if tools:
-        canonical_tools = json.dumps(tools, sort_keys=True, separators=(",", ":"))
-        hasher.update(canonical_tools.encode("utf-8"))
-
-    # First `prefix_turns` messages
-    prefix_slice = messages[:prefix_turns]
-    for msg in prefix_slice:
-        # Canonical message representation ignoring ephemeral internal keys
-        msg_copy = {k: v for k, v in msg.items() if not k.startswith("_")}
-        canonical_msg = json.dumps(msg_copy, sort_keys=True, separators=(",", ":"))
-        hasher.update(canonical_msg.encode("utf-8"))
-
-    return hasher.hexdigest()
-
-
-def _inject_cache_control_into_message(msg: dict[str, Any]) -> dict[str, Any]:
-    """Inject ephemeral cache_control into a message dictionary.
-
-    Supports native Anthropic Messages API by injecting cache_control into
-    content block parts, while preserving top-level cache_control for proxies.
-    """
-    new_msg = dict(msg)
-    content = new_msg.get("content")
-    if isinstance(content, str):
-        new_msg["content"] = [
-            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-        ]
-    elif isinstance(content, list) and content:
-        new_content = [dict(b) if isinstance(b, dict) else b for b in content]
-        if isinstance(new_content[-1], dict):
-            new_content[-1]["cache_control"] = {"type": "ephemeral"}
-        else:
-            new_content[-1] = {
-                "type": "text",
-                "text": str(new_content[-1]),
-                "cache_control": {"type": "ephemeral"},
-            }
-        new_msg["content"] = new_content
-    new_msg["cache_control"] = {"type": "ephemeral"}
-    return new_msg
-
-
-def apply_cache_control_breakpoints(
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None = None,
-    provider: str = "anthropic",
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
-    """Inject provider-specific ephemeral cache control breakpoints.
-
-    For Anthropic: injects `"cache_control": {"type": "ephemeral"}` onto:
-      1. The last tool definition in `tools` (caches tools schema).
-      2. The system prompt message (caches static system instructions).
-      3. The latest context summary checkpoint in middle history (if present).
-      4. The second-to-last turn in the active tail (caches conversation prefix).
-    Respects Anthropic maximum of 4 cache breakpoints per request.
-
-    For Gemini and OpenAI: preserves exact byte stability without injecting breakpoints.
-    """
-    tagged_msgs: list[dict[str, Any]] = [dict(m) for m in messages]
-    tagged_tools: list[dict[str, Any]] | None = [dict(t) for t in tools] if tools is not None else None
-
-    prov = provider.lower()
-    if "anthropic" not in prov and "claude" not in prov:
-        return tagged_msgs, tagged_tools
-
-    breakpoints_used = 0
-    max_breakpoints = 4
-
-    # 1. Last tool definition
-    if tagged_tools and len(tagged_tools) > 0 and breakpoints_used < max_breakpoints:
-        tagged_tools[-1] = dict(tagged_tools[-1])
-        tagged_tools[-1]["cache_control"] = {"type": "ephemeral"}
-        breakpoints_used += 1
-
-    # 2. System prompt message (index 0)
-    if tagged_msgs and tagged_msgs[0].get("role") == "system" and breakpoints_used < max_breakpoints:
-        tagged_msgs[0] = _inject_cache_control_into_message(tagged_msgs[0])
-        breakpoints_used += 1
-
-    # 3. Latest context summary checkpoint in middle history
-    summary_idx = -1
-    for idx in range(len(tagged_msgs) - 1, 0, -1):
-        if is_context_summary_message(tagged_msgs[idx]):
-            summary_idx = idx
-            break
-
-    if summary_idx > 0 and breakpoints_used < max_breakpoints:
-        tagged_msgs[summary_idx] = _inject_cache_control_into_message(tagged_msgs[summary_idx])
-        breakpoints_used += 1
-
-    # 4. Second-to-last turn in active tail (or last turn if >= 2 messages and not already tagged)
-    if len(tagged_msgs) >= 2 and breakpoints_used < max_breakpoints:
-        tail_target_idx = len(tagged_msgs) - 2 if len(tagged_msgs) > 2 else len(tagged_msgs) - 1
-        if tail_target_idx != summary_idx and tail_target_idx != 0:
-            tagged_msgs[tail_target_idx] = _inject_cache_control_into_message(tagged_msgs[tail_target_idx])
-            breakpoints_used += 1
-
-    return tagged_msgs, tagged_tools
-

@@ -56,7 +56,7 @@ from harness_core.core.router import GovernedMemoryService, TwoTierModelRouter
 from harness_core.storage.sandbox import ExecutionSandbox, get_default_sandbox
 from harness_core.skills.executor import SecurityError, SkillExecutionEngine
 from harness_core.cognition.skillspector import SkillSpectorScanner
-from harness_core.cognition.soul import SoulManager
+from harness_core.cognition.soul import DEFAULT_SOUL_NAME, SoulManager
 from harness_core.core.subagent import SubagentManager, SubagentRole
 from harness_core.vendor_paths import get_harness2_dir
 from harness_core.capabilities.webhooks import WebhookConfig, WebhookNotifier
@@ -139,6 +139,58 @@ def _observation_indicates_failure(output: str) -> bool:
         return True
     m = re.search(r'"exit_code"\s*:\s*(-?\d+)', low)
     return bool(m and int(m.group(1)) != 0)
+
+
+def _promotion_target_for(cand: dict[str, Any]) -> str:
+    """Route a check_promotions candidate to its destination store.
+
+    ``MEMORY.md`` verdicts (3-4 recorded uses) promote the note into active
+    curated memory; ``SKILL`` verdicts (5+ uses, action ``flag_for_skill``)
+    compile a reusable skill bundle (B60).
+    """
+    action = str(cand.get("action") or "")
+    if action == "flag_for_skill" or str(cand.get("target") or "") == "SKILL":
+        return "skill"
+    return "memory"
+
+
+def _extract_react_evidence(turns: list[Any]) -> dict[str, Any]:
+    """Harvest post-mortem evidence from ReAct turns (B67).
+
+    Returns ``error_traces`` (failed tool outputs), ``modified_files`` (paths of
+    successful ``write_file`` calls), and ``final_patch`` (content of the last
+    successful write) so friction lessons are grounded in what actually happened.
+    """
+    error_traces: list[str] = []
+    modified_files: list[str] = []
+    final_patch = ""
+    for turn in turns or []:
+        calls = getattr(turn, "tool_calls", None) or []
+        results_by_call_id = {
+            getattr(r, "call_id", None): r for r in (getattr(turn, "tool_results", None) or [])
+        }
+        for call in calls:
+            if getattr(call, "name", None) != "write_file":
+                continue
+            result = results_by_call_id.get(getattr(call, "call_id", None))
+            if result is not None and getattr(result, "is_error", False):
+                continue
+            args = getattr(call, "arguments", None) or {}
+            path = str(args.get("path") or "").strip()
+            if not path:
+                continue
+            if path not in modified_files and len(modified_files) < 20:
+                modified_files.append(path)
+            final_patch = str(args.get("content") or "")[:2000]
+        for result in getattr(turn, "tool_results", None) or []:
+            if not getattr(result, "is_error", False):
+                continue
+            output = str(getattr(result, "output", "") or "").strip()
+            if not output or len(error_traces) >= 5:
+                continue
+            name = getattr(result, "name", None) or "tool"
+            error_traces.append(f"{name}: {output}"[:500])
+    return {"error_traces": error_traces, "modified_files": modified_files, "final_patch": final_patch}
 
 
 class ProviderUnavailableError(RuntimeError):
@@ -282,6 +334,9 @@ class HarnessOrchestrator:
         self.soul_manager = soul_manager or SoulManager()
         self.moa_config = moa_config
         self.prompt_builder = PromptBuilder(soul_manager=self.soul_manager)
+        # Stable conversation-scoped id so the Turn-0 memory snapshot freezes once
+        # per conversation, not once per task (B68).
+        self._conversation_session_id = f"conv_{uuid.uuid4().hex[:12]}"
         self.proof_service = VerificationAndProofService(
             self.ledger,
             self.cow,
@@ -873,6 +928,20 @@ class HarnessOrchestrator:
             + "\n</retrieved_skills>"
         )
 
+    def _snapshot_session_id(self, task: Any, task_id: str) -> str:
+        """Resolve the stable conversation-scoped id for Turn-0 snapshot hydration (B68).
+
+        Prefers a caller-supplied ``constraints.conversation_id`` (ACP passes its
+        stable session id); otherwise one id per orchestrator process, so a
+        console/TUI conversation freezes memory once instead of once per task.
+        """
+        conv = ""
+        if isinstance(task, dict):
+            conv = str((task.get("constraints") or {}).get("conversation_id") or "")
+        if conv:
+            return conv
+        return getattr(self, "_conversation_session_id", None) or task_id
+
     def run_agent_loop(
         self,
         goal: str,
@@ -884,6 +953,7 @@ class HarnessOrchestrator:
         curated_memory: str = "",
         moa_config: Any | None = None,
         demo_mode: bool | None = None,
+        resume_from_task_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute an autonomous continuous multi-turn ReAct tool loop (Hermes Parity Pillar 1).
 
@@ -893,6 +963,21 @@ class HarnessOrchestrator:
         """
         effective_ws = Path(workspace_root or self.default_workspace).resolve()
         effective_ws.mkdir(parents=True, exist_ok=True)
+
+        # Durable resume: rebuild the compacted conversation window from the prior
+        # task's compaction checkpoints instead of replaying raw turns (B59).
+        initial_messages: list[dict[str, Any]] = []
+        dialogue_turn_base = 0
+        ledger_ref = getattr(self, "ledger", None)
+        if resume_from_task_id and ledger_ref is not None:
+            try:
+                window = ledger_ref.reconstruct_active_dialogue(resume_from_task_id)
+                initial_messages = list(window.get("messages") or [])
+                dialogue_turn_base = int(window.get("next_turn_index") or 0)
+            except Exception as exc:
+                logger.debug(
+                    "Durable dialogue reconstruction failed for %s: %s", resume_from_task_id, exc
+                )
 
         # Submit task into ledger if available
         active_task_id = task_id or f"task_react_{uuid.uuid4().hex[:8]}"
@@ -911,10 +996,16 @@ class HarnessOrchestrator:
             mode=mode,
             extra_rules=combined_extra_rules,
             curated_memory=curated_memory,
-            session_id=active_task_id,
+            session_id=self._snapshot_session_id(None, active_task_id),
         )
         task_record: dict[str, Any] | None = None
-        if hasattr(self, "ledger") and self.ledger is not None:
+        resuming_same_task = bool(
+            task_id
+            and resume_from_task_id == task_id
+            and ledger_ref is not None
+            and ledger_ref.get_task(task_id) is not None
+        )
+        if hasattr(self, "ledger") and self.ledger is not None and not resuming_same_task:
             try:
                 task_record = self.ledger.submit_task(
                     TaskSubmitRequest(
@@ -965,6 +1056,7 @@ class HarnessOrchestrator:
                             system_prompt=system_directive,
                             workspace_dir=effective_ws,
                             max_tokens=4096,
+                            enable_prompt_caching=True,
                         )
                         resp_text = (getattr(model_resp, "text", "") or "").strip() if model_resp else ""
                         if resp_text:
@@ -1072,6 +1164,7 @@ class HarnessOrchestrator:
                         timeout_seconds=proposer.timeout_seconds,
                         system_prompt=system_directive,
                         workspace_dir=effective_ws,
+                        enable_prompt_caching=True,
                     )
                 except ProviderUnavailableError:
                     if not demo:
@@ -1111,9 +1204,12 @@ class HarnessOrchestrator:
             ledger=self.ledger,
             context_compactor=compactor,
             cancel_check=lambda: self.is_cancel_requested(active_task_id),
+            dialogue_turn_base=dialogue_turn_base,
         )
 
-        session_res = loop.run(prompt=goal, task_id=active_task_id)
+        session_res = loop.run(
+            prompt=goal, task_id=active_task_id, initial_messages=initial_messages or None
+        )
 
         # Record completion in ledger
         if hasattr(self, "ledger") and self.ledger is not None:
@@ -1180,12 +1276,16 @@ class HarnessOrchestrator:
                     or session_res.friction_info.get("turn_repair_count", 0)
                     or session_res.retry_count
                 )
+                evidence = _extract_react_evidence(session_res.turns or [])
                 self._handle_post_task_reflection(
                     task_id=active_task_id,
                     goal=goal,
                     workspace_root=effective_ws,
                     repair_attempts=rep_count,
                     friction_info=session_res.friction_info,
+                    error_traces=evidence["error_traces"],
+                    modified_files=evidence["modified_files"],
+                    final_patch=evidence["final_patch"],
                 )
             except Exception as e:
                 logger.warning("Agent loop friction reflection failed: %s", e)
@@ -1201,12 +1301,7 @@ class HarnessOrchestrator:
                 if lifecycle and hasattr(lifecycle, "check_promotions"):
                     candidates = lifecycle.check_promotions()
                     for cand in candidates:
-                        target_store = (
-                            "memory"
-                            if cand.get("action") == "promote_to_memory" or cand.get("target") == "MEMORY.md"
-                            else "skill"
-                        )
-                        lifecycle.promote_entry(cand["id"], target=target_store)
+                        lifecycle.promote_entry(cand["id"], target=_promotion_target_for(cand))
             except Exception as e:
                 logger.warning("Agent loop memory promotion check failed: %s", e)
 
@@ -1457,7 +1552,7 @@ class HarnessOrchestrator:
                 system_directive = self.prompt_builder.build_system_prompt(
                     workspace_root=source_ws,
                     mode=str(task.get("mode") or "agent"),
-                    session_id=task_id,
+                    session_id=self._snapshot_session_id(task, task_id),
                     surface=surface,
                 )
             except Exception as pb_exc:
@@ -1530,6 +1625,7 @@ class HarnessOrchestrator:
                         max_tokens=4096,
                         stream_callback=scrubbed_cb,
                         system_prompt=system_directive,
+                        enable_prompt_caching=True,
                     )
                     if scrubber is not None and raw_cb is not None:
                         rem = scrubber.flush()
@@ -1670,9 +1766,8 @@ class HarnessOrchestrator:
             except Exception:
                 memory_lessons_ctx = ""
 
-        # Ordered stable -> context -> volatile tiers for prompt prefix caching
-        stable_system_prompt = (
-            "You are HEX, an autonomous AI agent and pairing partner.\n"
+        # Ordered stable -> context -> volatile tiers for prompt prefix caching.
+        repair_instructions = (
             "A verification test failed during execution. Fix the failing code with the shortest, most minimal patch.\n"
             "Follow pragmatic discipline: root-cause fix, no unrequested abstractions, zero boilerplate, deletion over addition.\n"
             "Instructions:\n"
@@ -1682,6 +1777,40 @@ class HarnessOrchestrator:
             "```\n"
             "Provide only valid code in the content."
         )
+        # Ground repair in the resolved SOUL persona + frozen memory from the REAL source workspace (B58): the CoW attempt clone excludes .hex.
+        persona_grounding = ""
+        if hasattr(self, "prompt_builder") and self.prompt_builder is not None:
+            try:
+                source_ws = Path(
+                    (task.get("constraints") or {}).get("workspace_root") or self.default_workspace
+                ).resolve()
+                surface = str((task.get("constraints") or {}).get("surface") or "tui")
+                persona_grounding = self.prompt_builder.build_system_prompt(
+                    workspace_root=source_ws,
+                    mode=str(task.get("mode") or "agent"),
+                    session_id=self._snapshot_session_id(task, task_id),
+                    surface=surface,
+                ).strip()
+            except Exception as pb_exc:
+                logger.debug("Repair persona grounding failed: %s", pb_exc)
+        if persona_grounding:
+            stable_system_prompt = f"{persona_grounding}\n\n[Repair Task]\n{repair_instructions}"
+        else:
+            # Identity still resolves from the workspace soul even without a prompt builder (B64).
+            fallback_ws = Path(
+                (task.get("constraints") or {}).get("workspace_root") or self.default_workspace
+            )
+            fallback_identity = DEFAULT_SOUL_NAME
+            try:
+                fallback_identity = self.soul_manager.get_active_name(
+                    workspace_root=fallback_ws.resolve()
+                )
+            except Exception as id_exc:
+                logger.debug("Repair fallback identity resolution failed: %s", id_exc)
+            stable_system_prompt = (
+                f"You are {fallback_identity}, an autonomous AI agent and pairing partner.\n"
+                + repair_instructions
+            )
         cacheable_context_prefix = (
             (f"{arch_summary}\n\n" if arch_summary else "")
             + (f"{domain_lessons_ctx}\n\n" if domain_lessons_ctx else "")
@@ -2745,6 +2874,9 @@ class HarnessOrchestrator:
             or 2
         )
         budget_exceeded = False
+        # B67: keep the last failure digest and applied patch for post-success reflection
+        failure_digest = ""
+        last_repair_patch_text = ""
 
         while not ver_outcome["passed"] and repair_attempt < max_repair_retries:
             self._check_execution_fence(fence_check)
@@ -2834,6 +2966,7 @@ class HarnessOrchestrator:
                                 file_p = str(op["args"]["path"])
                                 if file_p not in modified_files:
                                     modified_files.append(file_p)
+                                last_repair_patch_text = str(op["args"].get("content", ""))[:2000]
                     except BudgetExceededError:
                         budget_exceeded = True
                         break
@@ -3020,7 +3153,7 @@ class HarnessOrchestrator:
             provenance={"task_id": task_id, "proof_id": ver_outcome["proof"]["proof_id"]},
             source_nodes=cited_nodes,
             outcome=mem_outcome,
-            workspace_dir=attempt_ws,
+            workspace_dir=source_ws,
         )
 
         # Record harness2 experience if supplied in constraints or task payload
@@ -3059,15 +3192,20 @@ class HarnessOrchestrator:
                 )
 
         # Autonomous Friction Reflection with Hardware Gating (PRD Section 7.3)
+        # B67: write lessons into the real workspace (the CoW clone is unpublished
+        # and its .hex tree is excluded from publish_delta) with the failure digest
+        # and applied patch as evidence.
         if repair_attempt >= 3:
             try:
                 self._handle_post_task_reflection(
                     task_id=task_id,
                     goal=task.get("goal") or "",
-                    workspace_root=attempt_ws,
+                    workspace_root=source_ws,
                     repair_attempts=repair_attempt,
+                    error_traces=[failure_digest] if failure_digest else [],
                     modified_files=list(modified_files),
                     source_nodes=cited_nodes,
+                    final_patch=last_repair_patch_text,
                 )
             except Exception as e:
                 logger.warning("Post-task friction reflection failed: %s", e)
@@ -3082,12 +3220,7 @@ class HarnessOrchestrator:
             if lifecycle and hasattr(lifecycle, "check_promotions"):
                 candidates = lifecycle.check_promotions()
                 for cand in candidates:
-                    target_store = (
-                        "memory"
-                        if cand.get("action") == "promote_to_memory" or cand.get("target") == "MEMORY.md"
-                        else "skill"
-                    )
-                    lifecycle.promote_entry(cand["id"], target=target_store)
+                    lifecycle.promote_entry(cand["id"], target=_promotion_target_for(cand))
         except Exception as e:
             logger.warning("Post-task memory promotion check failed: %s", e)
 
@@ -3129,6 +3262,23 @@ class HarnessOrchestrator:
         if self._is_terminal_status(task.get("status")):
             raise TerminalTaskReentryError(
                 f"Task {task_id} is {task['status']} and cannot be resumed; submit a new task instead."
+            )
+        if task.get("execution_mode") == "react_loop":
+            # The ReAct path has no DAG steps to replay: re-enter the loop with the
+            # durable compacted window instead of the DAG executor (B59).
+            constraints = task.get("constraints") or {}
+            if str(task.get("status")) != TaskState.RUNNING.value:
+                try:
+                    self.ledger.transition_task(
+                        task_id, TaskState.RUNNING, reason_code="RESUMED_REACT_LOOP"
+                    )
+                except Exception:
+                    pass
+            return self.run_agent_loop(
+                goal=str(task.get("goal") or ""),
+                workspace_root=constraints.get("workspace_root") or self.default_workspace,
+                task_id=task_id,
+                resume_from_task_id=task_id,
             )
         if task["status"] in (
             TaskState.PAUSED.value,

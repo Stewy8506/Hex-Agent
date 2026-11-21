@@ -648,6 +648,16 @@ Hermes should not be copied indiscriminately: large entry points, parallel compa
 
 **Gate:** startup-configured features are discoverable and callable through the same policy boundary, scheduled work survives defined crash/retry cases, and unsupported integrations fail explicitly rather than simulate success.
 
+### Phase 5 — Close the memory/context/cognition gaps surfaced by the §12 audit
+
+Ordered by the §12 priorities (P1 → P2 → P3); tracked as sub-phases 5.1–5.9 in `docs/development/review-remediation-plan.md`.
+
+- **B62 (P1):** memory scope isolation — workspace-derived ACP `project_id`, workspace-only demotion sweep, approval-gated global `user` writes.
+- **B58/B59/B60/B61/B67 (P2):** persona/memory on the DAG path, durable compaction + resume, live usage-driven promotion, evidence-grounded lessons and published DAG memory.
+- **B63/B66/B64/B65/B68 (P3):** main-prompt caching and slot tiering, wired cache-locking/boundary helpers, Developer DNA / identity propagation, honest `/compress`, stable session-scoped frozen snapshot.
+
+**Gate (from §12):** each change ships a regression test that fails against the prior behavior, proves the new call site is reachable from a normal production entry point (not tests-only), demonstrates workspace/global isolation for B62, and preserves the genuinely-wired strengths credited in §12.
+
 ## Validation receipts retained from the original review
 
 These receipts are inherited from the attached original report; they were **not rerun during compilation**. All filesystem probes used disposable `tempfile.TemporaryDirectory` data and actual checked-out modules loaded via `importlib.util.spec_from_file_location`. Neither repository's working files were used as probe targets.

@@ -4288,6 +4288,87 @@ class LedgerStore:
             )
             return [self._row_to_dict(r) for r in rows]
 
+    def save_compaction_checkpoint(
+        self,
+        task_id: str,
+        summary_text: str,
+        cut_turn_index: int,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist a compaction checkpoint: the summary + the cut boundary it covers.
+
+        Stored as an active ``dialogue_turns`` row (role ``system``) tagged
+        ``type=compaction_checkpoint`` so ``reconstruct_active_dialogue`` can rebuild
+        the compacted window after a restart instead of replaying raw turns.
+        Raw rows are left active for forensic/rewind completeness; the cut boundary
+        alone decides what reconstruction skips.
+        """
+        meta = {"type": "compaction_checkpoint", "cut_turn_index": int(cut_turn_index)}
+        meta.update(metadata or {})
+        row = self.record_dialogue_turn(
+            task_id=task_id,
+            turn_index=int(cut_turn_index),
+            role="system",
+            content=summary_text,
+            metadata=meta,
+        )
+        try:
+            self.record_event(
+                task_id=task_id,
+                event_type="CONTEXT_COMPACTED",
+                reason_code="COMPACTION_CHECKPOINT_SAVED",
+                payload={
+                    "cut_turn_index": int(cut_turn_index),
+                    "summary_chars": len(summary_text),
+                    **{k: v for k, v in (metadata or {}).items() if k != "type"},
+                },
+            )
+        except Exception:
+            pass
+        return row
+
+    def load_compaction_checkpoint(self, task_id: str) -> dict[str, Any] | None:
+        """Return the newest active compaction checkpoint row for a task, or None."""
+        checkpoints = [
+            r
+            for r in self.get_active_dialogue(task_id)
+            if (r.get("metadata") or {}).get("type") == "compaction_checkpoint"
+        ]
+        if not checkpoints:
+            return None
+        return max(
+            checkpoints,
+            key=lambda r: (int(r.get("turn_index") or 0), str(r.get("created_at") or "")),
+        )
+
+    def reconstruct_active_dialogue(self, task_id: str) -> dict[str, Any]:
+        """Rebuild the live conversation window from durable dialogue state.
+
+        Without a checkpoint this is the full raw transcript; with one it is the
+        checkpoint summary followed by every active row recorded after the cut
+        boundary — the durable equivalent of the in-memory compacted window.
+        """
+        rows = [r for r in self.get_active_dialogue(task_id) if r.get("content")]
+        checkpoint = self.load_compaction_checkpoint(task_id)
+        if checkpoint is None:
+            messages = [
+                {"role": r["role"], "content": r["content"], "turn_index": r.get("turn_index")}
+                for r in rows
+            ]
+            next_index = max((int(r.get("turn_index") or 0) for r in rows), default=-1) + 1
+            return {"messages": messages, "next_turn_index": next_index, "checkpoint": None}
+
+        cut = int((checkpoint.get("metadata") or {}).get("cut_turn_index", checkpoint.get("turn_index") or 0))
+        messages: list[dict[str, Any]] = [{"role": checkpoint["role"], "content": checkpoint["content"]}]
+        messages.extend(
+            {"role": r["role"], "content": r["content"], "turn_index": r.get("turn_index")}
+            for r in rows
+            if int(r.get("turn_index") or 0) > cut
+            and (r.get("metadata") or {}).get("type") != "compaction_checkpoint"
+        )
+        next_index = max((int(r.get("turn_index") or 0) for r in rows), default=cut) + 1
+        return {"messages": messages, "next_turn_index": next_index, "checkpoint": checkpoint}
+
     def revert_tool_calls_for_turns(self, task_id: str, turn_indices: list[int]) -> int:
         """Mark tool calls belonging to specified turn indices as REVERTED."""
         if not turn_indices:

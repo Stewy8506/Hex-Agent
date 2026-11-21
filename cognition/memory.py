@@ -1002,6 +1002,16 @@ class MemorySnapshot:
     """Manages frozen Turn-0 memory context assembly for Slot #4."""
 
     _cached_snapshots: Dict[str, str] = {}
+    # Bound the snapshot cache: one entry per workspace×session conversation.
+    # Eviction is oldest-inserted; an evicted session re-hydrates on next use.
+    MAX_CACHED_SNAPSHOTS: int = 64
+
+    @classmethod
+    def _store_snapshot(cls, cache_key: str, value: str) -> None:
+        cls._cached_snapshots[cache_key] = value
+        while len(cls._cached_snapshots) > cls.MAX_CACHED_SNAPSHOTS:
+            oldest = next(iter(cls._cached_snapshots))
+            cls._cached_snapshots.pop(oldest, None)
 
     @classmethod
     def build_frozen_snapshot(
@@ -1026,6 +1036,7 @@ class MemorySnapshot:
 
         store = CuratedMemoryStore(workspace_root=ws, global_home=gh)
         sections: List[str] = []
+        surfaced_entries: List[str] = []
 
         for target in ("user", "memory", "guardrails"):
             entries = store.read_entries(target)
@@ -1033,10 +1044,24 @@ class MemorySnapshot:
                 header = TARGET_HEADERS[target]
                 body = "\n\n".join(entries)
                 sections.append(f"{header}\n{body}")
+                surfaced_entries.extend(entries)
 
         if not sections:
-            cls._cached_snapshots[cache_key] = ""
+            cls._store_snapshot(cache_key, "")
             return ""
+
+        # B61: usage hit-counting is live — every note surfaced into a session's
+        # model context counts one use, feeding usage-driven promotion
+        # (check_promotions). Fires only on cache misses, i.e. once per session;
+        # failures never block prompt assembly.
+        try:
+            from harness_core.cognition.memory import MemoryLifecycleManager
+
+            lifecycle = MemoryLifecycleManager(workspace_root=ws, global_home=gh)
+            for entry_text in surfaced_entries:
+                lifecycle.record_reference_for_content(entry_text)
+        except Exception as e:
+            logger.debug("Usage hit-counting for surfaced notes failed: %s", e)
 
         raw_joined = "\n\n".join(sections)
         sanitized = sanitize_context(raw_joined)
@@ -1051,7 +1076,7 @@ class MemorySnapshot:
             "</memory-context>"
         )
 
-        cls._cached_snapshots[cache_key] = fenced
+        cls._store_snapshot(cache_key, fenced)
         return fenced
 
     @classmethod
@@ -2130,6 +2155,7 @@ class MemoryItem:
     hit_counter: int = 0
     created_at: float = field(default_factory=time.time)
     last_referenced_at: float = field(default_factory=time.time)
+    promoted: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -2143,6 +2169,7 @@ class MemoryItem:
             "last_referenced_iso": time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.last_referenced_at)
             ),
+            "promoted": self.promoted,
         }
 
     @classmethod
@@ -2155,6 +2182,7 @@ class MemoryItem:
             hit_counter=int(data.get("hit_counter", 0)),
             created_at=float(data.get("created_at", time.time())),
             last_referenced_at=float(data.get("last_referenced_at", time.time())),
+            promoted=bool(data.get("promoted", False)),
         )
 
 
@@ -2772,33 +2800,70 @@ class MemoryLifecycleManager:
 
         return None
 
+    def record_reference_for_content(self, content: str) -> Optional[dict[str, Any]]:
+        """Bump usage counters for a tracked note surfaced to the model, matched by content (B61).
+
+        Resolution is deterministic: a reflection id is ``ref_md5(content)`` and AMEM
+        items are matched by normalized text, so any surface that knows the exact
+        note text can credit usage without carrying ids across stores. Untracked
+        content returns None (honest no-op).
+        """
+        clean = str(content or "").strip()
+        if not clean:
+            return None
+
+        ref_id = f"ref_{hashlib.md5(clean.encode('utf-8')).hexdigest()[:10]}"
+        if ref_id in self._reflections:
+            return self.record_reference(ref_id)
+
+        target_norm = _normalize_for_match(clean)
+        if target_norm:
+            for item in self.controller.list_memories("all"):
+                if _normalize_for_match(item.text) == target_norm:
+                    return self.record_reference(item.id)
+
+        return None
+
     def check_promotions(self) -> list[dict[str, Any]]:
-        """Identify reflections or episodic entries with hit_counter >= 3 for promotion."""
+        """Identify reflections or episodic entries with hit_counter >= 3 for promotion.
+
+        The verdict is honest about the destination: 3-4 recorded uses promote the
+        note into active curated memory (MEMORY.md); 5+ uses flag it for skill
+        compilation (SKILL.md bundle) so the reflection-to-skill branch is
+        reachable end-to-end (B60).
+        """
         candidates: list[dict[str, Any]] = []
 
         # Check reflections
         for ref in self._reflections.values():
             if not ref.get("promoted") and ref.get("hit_counter", 0) >= 3:
+                hits = ref.get("hit_counter", 0)
+                action = "promote_to_memory" if hits < 5 else "flag_for_skill"
                 candidates.append({
                     "id": ref["id"],
                     "content": ref["content"],
-                    "hit_counter": ref["hit_counter"],
+                    "hit_counter": hits,
                     "source": ref.get("source", "LESSONS.md"),
-                    "target": "MEMORY.md",
-                    "action": "promote_to_memory" if ref["hit_counter"] < 5 else "flag_for_skill",
+                    "target": "MEMORY.md" if action == "promote_to_memory" else "SKILL",
+                    "action": action,
                     "promoted": False,
                 })
 
         # Check active items with episodic/reflection scope
         for item in self.controller.list_memories("all"):
-            if item.scope in ("reflection", "episodic") and item.hit_counter >= 3:
+            if (
+                item.scope in ("reflection", "episodic")
+                and item.hit_counter >= 3
+                and not item.promoted
+            ):
+                action = "promote_to_memory" if item.hit_counter < 5 else "flag_for_skill"
                 candidates.append({
                     "id": item.id,
                     "content": item.text,
                     "hit_counter": item.hit_counter,
                     "source": item.scope,
-                    "target": "MEMORY.md",
-                    "action": "promote_to_memory" if item.hit_counter < 5 else "flag_for_skill",
+                    "target": "MEMORY.md" if action == "promote_to_memory" else "SKILL",
+                    "action": action,
                     "promoted": False,
                 })
 
@@ -2851,7 +2916,15 @@ class MemoryLifecycleManager:
         target_norm = str(target or "memory").strip().lower()
         if target_norm == "skill":
             res = self.promote_to_skill(entry_id)
-            return bool(res and getattr(res, "skill_dir", None))
+            ok = bool(res and getattr(res, "skill_dir", None))
+            if ok:
+                # Reflections are marked inside promote_to_skill; AMEM items need
+                # their own promoted flag so check_promotions stops re-flagging.
+                item = self.controller.get_memory(entry_id)
+                if item is not None:
+                    item.promoted = True
+                    self.controller._save_metadata()
+            return ok
 
         target_content = ""
         is_reflection = False
@@ -2875,6 +2948,11 @@ class MemoryLifecycleManager:
         if is_reflection:
             self._reflections[entry_id]["promoted"] = True
             self._save_reflections()
+        else:
+            item = self.controller.get_memory(entry_id)
+            if item is not None:
+                item.promoted = True
+                self.controller._save_metadata()
 
         return True
 
@@ -2939,12 +3017,22 @@ class MemoryLifecycleManager:
             pass
         return False
 
-    def run_demotion_sweep(self, retention_days: int = 30) -> list[dict[str, Any]]:
-        """Scan active entries in MEMORY.md and USER.md; demote stale (>30d) or AST-diverged notes to SQLite FTS5."""
+    def run_demotion_sweep(
+        self, retention_days: int = 30, include_user: bool = False
+    ) -> list[dict[str, Any]]:
+        """Demote stale (>retention_days) or AST-diverged workspace notes to SQLite FTS5.
+
+        Only workspace-scoped ``memory`` entries are swept by default. The global
+        ``user`` profile (``~/.hex/USER.md``) is shared across every workspace, so a
+        per-workspace maintenance sweep must not prune it; pass ``include_user=True``
+        only from an explicit global-user maintenance call (B62).
+        """
         cutoff = time.time() - (retention_days * 86400)
         demoted: list[dict[str, Any]] = []
 
-        active_items = self.controller.list_memories("memory") + self.controller.list_memories("user")
+        active_items = self.controller.list_memories("memory")
+        if include_user:
+            active_items = active_items + self.controller.list_memories("user")
         for item in active_items:
             reason = None
             if item.last_referenced_at < cutoff:

@@ -1189,6 +1189,32 @@ class ToolGateway(FileToolsMixin):
             if has_lease:
                 return (PolicyDecisionType.ALLOW, f"LEASE_APPROVED:{lease_id}")
 
+        # B62: the global user profile (~/.hex/USER.md) is shared across every
+        # workspace. A model-driven memory mutation targeting it is a privileged,
+        # cross-workspace write, so route it through the human-approval boundary
+        # rather than allowing it under the tool's nominal R1 class. Reads and
+        # workspace-scoped memory writes are unaffected.
+        if spec.tool_id == "memory":
+            mem_target = str(args.get("target") or "memory").strip().lower()
+            mem_action = str(args.get("action", "list")).strip().lower()
+            mem_mutation = (
+                isinstance(args.get("operations"), list)
+                or mem_action in ("add", "set", "save", "replace", "patch", "remove", "delete", "forget")
+            )
+            if mem_target == "user" and mem_mutation:
+                task_id = task.get("task_id")
+                if task_id:
+                    action_hash = sha256_hex(
+                        f"{task_id}|{spec.tool_id}|{canonical_json(redact_secrets(args))}"
+                    )
+                    approvals = self.ledger.list_approvals(task_id=task_id, decision="APPROVED")
+                    if any(a["action_hash"] == action_hash for a in approvals):
+                        return (PolicyDecisionType.ALLOW, "Global user-profile mutation explicitly pre-approved by owner")
+                return (
+                    PolicyDecisionType.REQUIRE_APPROVAL,
+                    "Writing the global user profile (memory target='user') requires human approval",
+                )
+
         if spec.risk_class == RiskClass.R3:
             # Check if an approved approval record already exists for this exact action
             action_hash = sha256_hex(f"{task['task_id']}|{spec.tool_id}|{canonical_json(redact_secrets(args))}")
