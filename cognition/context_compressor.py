@@ -859,6 +859,7 @@ class CompactionResult:
     phase1_demoted_tools: int
     phase3_summarized_turns: int
     used_fallback: bool
+    summary_text: str = ""
 
 
 class ContextCompactor:
@@ -1218,6 +1219,7 @@ class ContextCompactor:
         middle_turns = working[compress_start:compress_end]
         phase3_turns = len(middle_turns)
         used_fallback = False
+        summary_text = ""
 
         if phase3_turns > 0:
             summary_text = self._generate_model_summary(middle_turns)
@@ -1283,6 +1285,7 @@ class ContextCompactor:
             phase1_demoted_tools=demoted_count,
             phase3_summarized_turns=phase3_turns,
             used_fallback=used_fallback,
+            summary_text=summary_text,
         )
 
 

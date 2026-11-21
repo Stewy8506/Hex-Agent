@@ -884,6 +884,7 @@ class HarnessOrchestrator:
         curated_memory: str = "",
         moa_config: Any | None = None,
         demo_mode: bool | None = None,
+        resume_from_task_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute an autonomous continuous multi-turn ReAct tool loop (Hermes Parity Pillar 1).
 
@@ -893,6 +894,21 @@ class HarnessOrchestrator:
         """
         effective_ws = Path(workspace_root or self.default_workspace).resolve()
         effective_ws.mkdir(parents=True, exist_ok=True)
+
+        # Durable resume: rebuild the compacted conversation window from the prior
+        # task's compaction checkpoints instead of replaying raw turns (B59).
+        initial_messages: list[dict[str, Any]] = []
+        dialogue_turn_base = 0
+        ledger_ref = getattr(self, "ledger", None)
+        if resume_from_task_id and ledger_ref is not None:
+            try:
+                window = ledger_ref.reconstruct_active_dialogue(resume_from_task_id)
+                initial_messages = list(window.get("messages") or [])
+                dialogue_turn_base = int(window.get("next_turn_index") or 0)
+            except Exception as exc:
+                logger.debug(
+                    "Durable dialogue reconstruction failed for %s: %s", resume_from_task_id, exc
+                )
 
         # Submit task into ledger if available
         active_task_id = task_id or f"task_react_{uuid.uuid4().hex[:8]}"
@@ -914,7 +930,13 @@ class HarnessOrchestrator:
             session_id=active_task_id,
         )
         task_record: dict[str, Any] | None = None
-        if hasattr(self, "ledger") and self.ledger is not None:
+        resuming_same_task = bool(
+            task_id
+            and resume_from_task_id == task_id
+            and ledger_ref is not None
+            and ledger_ref.get_task(task_id) is not None
+        )
+        if hasattr(self, "ledger") and self.ledger is not None and not resuming_same_task:
             try:
                 task_record = self.ledger.submit_task(
                     TaskSubmitRequest(
@@ -1111,9 +1133,12 @@ class HarnessOrchestrator:
             ledger=self.ledger,
             context_compactor=compactor,
             cancel_check=lambda: self.is_cancel_requested(active_task_id),
+            dialogue_turn_base=dialogue_turn_base,
         )
 
-        session_res = loop.run(prompt=goal, task_id=active_task_id)
+        session_res = loop.run(
+            prompt=goal, task_id=active_task_id, initial_messages=initial_messages or None
+        )
 
         # Record completion in ledger
         if hasattr(self, "ledger") and self.ledger is not None:
@@ -3150,6 +3175,23 @@ class HarnessOrchestrator:
         if self._is_terminal_status(task.get("status")):
             raise TerminalTaskReentryError(
                 f"Task {task_id} is {task['status']} and cannot be resumed; submit a new task instead."
+            )
+        if task.get("execution_mode") == "react_loop":
+            # The ReAct path has no DAG steps to replay: re-enter the loop with the
+            # durable compacted window instead of the DAG executor (B59).
+            constraints = task.get("constraints") or {}
+            if str(task.get("status")) != TaskState.RUNNING.value:
+                try:
+                    self.ledger.transition_task(
+                        task_id, TaskState.RUNNING, reason_code="RESUMED_REACT_LOOP"
+                    )
+                except Exception:
+                    pass
+            return self.run_agent_loop(
+                goal=str(task.get("goal") or ""),
+                workspace_root=constraints.get("workspace_root") or self.default_workspace,
+                task_id=task_id,
+                resume_from_task_id=task_id,
             )
         if task["status"] in (
             TaskState.PAUSED.value,

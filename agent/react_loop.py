@@ -202,6 +202,7 @@ class ReActLoop:
         approval_lease_manager: Any | None = None,
         cancel_check: Callable[[], bool] | None = None,
         moa_caller: Callable[..., Any] | None = None,
+        dialogue_turn_base: int = 0,
     ) -> None:
         self.model_caller = model_caller
         self.gateway = gateway
@@ -210,6 +211,9 @@ class ReActLoop:
         self.config = config or ReActConfig()
         self.ledger = ledger
         self.context_compactor = context_compactor
+        # Durable dialogue rows continue after this index when resuming a task
+        # whose transcript already holds earlier turns (B59).
+        self._dialogue_turn_base = max(0, int(dialogue_turn_base))
         self.session_id = session_id or f"session_{uuid.uuid4().hex[:12]}"
         if title_synthesizer is not None:
             self.title_synthesizer = title_synthesizer
@@ -1363,7 +1367,7 @@ class ReActLoop:
         try:
             recorder(
                 task_id=task_id,
-                turn_index=turn_index,
+                turn_index=self._dialogue_turn_base + turn_index,
                 role=role,
                 content=content[:8000],
                 metadata=metadata or {},
@@ -1371,6 +1375,35 @@ class ReActLoop:
         except Exception as exc:
             self._emit_event(
                 "dialogue_persist_failed", {"role": role, "turn_index": turn_index, "error": str(exc)}
+            )
+
+    def _persist_compaction_checkpoint(self, task_id: str, comp_res: Any, turn_index: int) -> None:
+        """Persist the compaction outcome so a resume reconstructs this window (B59)."""
+        ledger = self.ledger
+        if ledger is None:
+            return
+        summary = str(getattr(comp_res, "summary_text", "") or "").strip()
+        if not summary:
+            return
+        saver = getattr(ledger, "save_compaction_checkpoint", None)
+        if not callable(saver):
+            return
+        try:
+            saver(
+                task_id=task_id,
+                summary_text=summary[:8000],
+                cut_turn_index=self._dialogue_turn_base + turn_index,
+                metadata={
+                    "original_tokens": int(getattr(comp_res, "original_tokens", 0) or 0),
+                    "compacted_tokens": int(getattr(comp_res, "compacted_tokens", 0) or 0),
+                    "compression_ratio": float(getattr(comp_res, "compression_ratio", 1.0) or 1.0),
+                    "summarized_turns": int(getattr(comp_res, "phase3_summarized_turns", 0) or 0),
+                    "used_fallback": bool(getattr(comp_res, "used_fallback", False)),
+                },
+            )
+        except Exception as exc:
+            self._emit_event(
+                "compaction_checkpoint_failed", {"turn_index": turn_index, "error": str(exc)}
             )
 
     def rewind_to(self, turn_spec: int | str, task_id: str | None = None) -> list[dict[str, Any]]:
@@ -1395,7 +1428,7 @@ class ReActLoop:
 
         return self.messages
 
-    def _apply_preflight_session_hygiene(self, budget_tokens: int) -> None:
+    def _apply_preflight_session_hygiene(self, budget_tokens: int, task_id: str | None = None) -> None:
         """Run initial sanitization and pre-compaction pass on oversized inputs before Turn 1."""
         if not self.messages:
             return
@@ -1421,6 +1454,8 @@ class ReActLoop:
             if comp_res.compacted_tokens < comp_res.original_tokens:
                 self.messages = comp_res.compacted_messages
                 self.last_compaction_result = comp_res
+                if task_id:
+                    self._persist_compaction_checkpoint(task_id, comp_res, 1)
 
         # 4. If still exceeding 85% of budget, pre-compact oversized messages
         current_tokens = estimate_messages_tokens(self.messages)
@@ -1496,7 +1531,7 @@ class ReActLoop:
         budget = getattr(self.config, "budget_tokens", 100_000) or 100_000
         initial_tokens = estimate_messages_tokens(self.messages)
         if initial_tokens >= int(budget * 0.85):
-            self._apply_preflight_session_hygiene(budget)
+            self._apply_preflight_session_hygiene(budget, task_id=task_id)
 
         # Stage 1: Instant Title derivation in ledger (Phase 37)
         if self.title_synthesizer and self.ledger and task_id:
@@ -1538,6 +1573,7 @@ class ReActLoop:
                     if comp_res.compacted_tokens < comp_res.original_tokens:
                         self.messages = comp_res.compacted_messages
                         self.last_compaction_result = comp_res
+                        self._persist_compaction_checkpoint(task_id, comp_res, turn_index)
 
             # 1. Call model
             turn_moa_res = None
