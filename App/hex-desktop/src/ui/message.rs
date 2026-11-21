@@ -10,6 +10,7 @@ use gpui::*;
 use crate::theme::HermesTheme;
 use crate::ui::reasoning::ThinkingDisclosure;
 use crate::ui::tool_card::ToolCallCard;
+use crate::ui::icon_svg;
 
 /// Formats a message timestamp into a compact HH:MM AM/PM string.
 pub fn format_message_time(dt: DateTime<Utc>) -> String {
@@ -376,7 +377,7 @@ impl AssistantMessageView {
             .flex_row()
             .items_center()
             .gap_2()
-            .child(div().text_sm().child("⚡"))
+            .child(icon_svg("bolt", 14.0))
             .child(
                 div()
                     .text_xs()

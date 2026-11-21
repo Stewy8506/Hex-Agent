@@ -36,7 +36,7 @@ pub use tool_card::{tool_icon, ToolCallCard, ToolStatus};
 
 /// Renders a bundled stroke SVG icon at the given pixel size, tinted via
 /// `text_color` on the parent (SVGs use `stroke="currentColor"`).
-pub fn icon_svg(name: &'static str, size: f32) -> gpui::Svg {
+pub fn icon_svg(name: &str, size: f32) -> gpui::Svg {
     use gpui::{px, svg, Styled};
     svg()
         .path(format!("icons/{name}.svg"))

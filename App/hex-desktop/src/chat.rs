@@ -2356,7 +2356,7 @@ impl ChatView {
                                 })),
                             )
                             .child(
-                                self.render_header_icon_button(theme, "header_settings", SharedString::from("⚙"))
+                                self.render_header_icon_svg(theme, "header_settings", "settings")
                                     .on_click(cx.listener(|this, _event, window, cx| {
                                         this.on_open_settings(&shortcuts::OpenSettings, window, cx);
                                     })),
@@ -2459,6 +2459,28 @@ impl ChatView {
             self.shell.active_modal = ActiveModal::Approval(modal);
             cx.notify();
         }
+    }
+
+    fn render_header_icon_svg(
+        &self,
+        theme: &HermesTheme,
+        id: &'static str,
+        icon: &'static str,
+    ) -> Stateful<Div> {
+        div()
+            .id(SharedString::from(id))
+            .cursor_pointer()
+            .size(px(26.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .text_color(theme.mockup_text_dim)
+            .hover(|s| {
+                s.bg(theme.mockup_hover)
+                    .text_color(theme.mockup_text)
+            })
+            .child(crate::ui::icon_svg(icon, 16.0))
     }
 
     fn render_header_icon_button(
