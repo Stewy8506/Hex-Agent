@@ -334,6 +334,9 @@ class HarnessOrchestrator:
         self.soul_manager = soul_manager or SoulManager()
         self.moa_config = moa_config
         self.prompt_builder = PromptBuilder(soul_manager=self.soul_manager)
+        # Stable conversation-scoped id so the Turn-0 memory snapshot freezes once
+        # per conversation, not once per task (B68).
+        self._conversation_session_id = f"conv_{uuid.uuid4().hex[:12]}"
         self.proof_service = VerificationAndProofService(
             self.ledger,
             self.cow,
@@ -925,6 +928,20 @@ class HarnessOrchestrator:
             + "\n</retrieved_skills>"
         )
 
+    def _snapshot_session_id(self, task: Any, task_id: str) -> str:
+        """Resolve the stable conversation-scoped id for Turn-0 snapshot hydration (B68).
+
+        Prefers a caller-supplied ``constraints.conversation_id`` (ACP passes its
+        stable session id); otherwise one id per orchestrator process, so a
+        console/TUI conversation freezes memory once instead of once per task.
+        """
+        conv = ""
+        if isinstance(task, dict):
+            conv = str((task.get("constraints") or {}).get("conversation_id") or "")
+        if conv:
+            return conv
+        return getattr(self, "_conversation_session_id", None) or task_id
+
     def run_agent_loop(
         self,
         goal: str,
@@ -979,7 +996,7 @@ class HarnessOrchestrator:
             mode=mode,
             extra_rules=combined_extra_rules,
             curated_memory=curated_memory,
-            session_id=active_task_id,
+            session_id=self._snapshot_session_id(None, active_task_id),
         )
         task_record: dict[str, Any] | None = None
         resuming_same_task = bool(
@@ -1535,7 +1552,7 @@ class HarnessOrchestrator:
                 system_directive = self.prompt_builder.build_system_prompt(
                     workspace_root=source_ws,
                     mode=str(task.get("mode") or "agent"),
-                    session_id=task_id,
+                    session_id=self._snapshot_session_id(task, task_id),
                     surface=surface,
                 )
             except Exception as pb_exc:
@@ -1771,7 +1788,7 @@ class HarnessOrchestrator:
                 persona_grounding = self.prompt_builder.build_system_prompt(
                     workspace_root=source_ws,
                     mode=str(task.get("mode") or "agent"),
-                    session_id=task_id,
+                    session_id=self._snapshot_session_id(task, task_id),
                     surface=surface,
                 ).strip()
             except Exception as pb_exc:

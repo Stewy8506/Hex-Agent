@@ -1002,6 +1002,16 @@ class MemorySnapshot:
     """Manages frozen Turn-0 memory context assembly for Slot #4."""
 
     _cached_snapshots: Dict[str, str] = {}
+    # Bound the snapshot cache: one entry per workspace×session conversation.
+    # Eviction is oldest-inserted; an evicted session re-hydrates on next use.
+    MAX_CACHED_SNAPSHOTS: int = 64
+
+    @classmethod
+    def _store_snapshot(cls, cache_key: str, value: str) -> None:
+        cls._cached_snapshots[cache_key] = value
+        while len(cls._cached_snapshots) > cls.MAX_CACHED_SNAPSHOTS:
+            oldest = next(iter(cls._cached_snapshots))
+            cls._cached_snapshots.pop(oldest, None)
 
     @classmethod
     def build_frozen_snapshot(
@@ -1037,7 +1047,7 @@ class MemorySnapshot:
                 surfaced_entries.extend(entries)
 
         if not sections:
-            cls._cached_snapshots[cache_key] = ""
+            cls._store_snapshot(cache_key, "")
             return ""
 
         # B61: usage hit-counting is live — every note surfaced into a session's
@@ -1066,7 +1076,7 @@ class MemorySnapshot:
             "</memory-context>"
         )
 
-        cls._cached_snapshots[cache_key] = fenced
+        cls._store_snapshot(cache_key, fenced)
         return fenced
 
     @classmethod

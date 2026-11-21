@@ -1846,6 +1846,15 @@ class ReActLoop:
         if termination_reason == "max_turns" and not success:
             final_answer = self.turns[-1].thought if self.turns else ""
 
+        # B68: scrub leaked memory fences/system notes from the ReAct path too —
+        # the fast path already applies sanitize_context; the loop did not.
+        try:
+            from harness_core.cognition.memory import sanitize_context
+
+            final_answer = sanitize_context(final_answer)
+        except Exception:
+            pass
+
         if self.retry_count >= 3 or self.turn_repair_count >= 3 or self.repair_attempts >= 3:
             self._check_and_trigger_friction("friction_threshold_reached")
 
