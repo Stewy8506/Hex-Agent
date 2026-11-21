@@ -14,6 +14,7 @@ use crate::theme::HermesTheme;
 use crate::ui::modals::{
     render_modal_container, ActiveModal, CommandPaletteModal, ModelPickerModal, ToolApprovalModal,
 };
+use crate::ui::composer::glow_card;
 use crate::ui::sidebar::{ProviderState, SidebarView};
 use crate::ui::tool_card::ToolCallCard;
 
@@ -286,7 +287,7 @@ impl AppShell {
                     .p_4()
                     .border_t_1()
                     .border_color(theme.border_subtle())
-                    .child(self.composer.render(theme)),
+                    .child(glow_card(self.composer.render(theme), theme, "composer-glow")),
             )
     }
 

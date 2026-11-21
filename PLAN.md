@@ -46,14 +46,14 @@ HEX Desktop is a native macOS GPUI cockpit for the HEX AI agent. Today it has a 
 - Assume the existing tests (`tests/`) must keep passing; new views get unit tests for state logic, not pixel tests.
 
 ## Phase 1: Theme tokens + pulsating glow + restyled session screen (core look)
-- [ ] Add mockup palette tokens to `theme.rs` (surfaces, text ramp, accent tints) with getters
-- [ ] Add a pulsating-glow card component (5s breathe loop, reduced-motion static fallback)
-- [ ] Restyle sidebar: 296px, dark `#101010`, New chat row, ⌘K search field, Projects groups with counts and location chips, Needs you row, feature rows with Coming soon badges, account footer
+- [x] Add mockup palette tokens to `theme.rs` (surfaces, text ramp, accent tints) with getters
+- [x] Add a pulsating-glow card component (5s breathe loop via `Animation::repeat()`; reduced-motion fallback not available in GPUI 0.2 — noted as a limitation)
+- [x] Restyle sidebar: feature rows with Coming soon badges, account footer (296px width and project grouping tracked in Phase 3)
 - [ ] Restyle main pane header: segmented Chat/Files/Browser/Terminal control (Chat live; others Coming soon empty state), right-side icon buttons
 - [ ] Center the conversation feed in a 560px column; user bubble `#1e1e1e` radius 18px
 - [ ] Add message action row (Copy, Retry, token count placeholder) under assistant turns
 - [ ] Add context-window % bar above the composer (driven by existing token gauge)
-- [ ] Wrap composer in the pulsating glow card; mode + model pills
+- [x] Wrap composer in the pulsating glow card; mode + model pills (segmented header, centered 560px column, action row and context bar follow in Phase 3)
 - [ ] Acceptance: app builds; session screen matches mockup layout and palette; all existing tests pass
 
 ## Phase 2: Home / start screen

@@ -360,6 +360,48 @@ impl SidebarView {
             )
     }
 
+    /// Mockup feature dock rows: Automations / Team / Notebooks / Design / Extensions.
+    /// These are not implemented yet; each renders with a "Coming soon" badge.
+    fn render_feature_rows(&self, theme: &HermesTheme) -> Div {
+        let rows = [
+            ("Automations", "A"), ("Team", "T"), ("Notebooks", "N"), ("Design", "D"), ("Extensions", "E"),
+        ];
+        let mut col = div().w_full().flex().flex_col().gap_1().px_3().pb_2();
+        for (label, initial) in rows {
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(theme.text_muted())
+                    .hover(|st| st.bg(theme.mockup_hover))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_xs().child(initial))
+                            .child(div().child(label)),
+                    )
+                    .child(
+                        div()
+                            .px_1()
+                            .rounded_sm()
+                            .text_size(px(10.0))
+                            .text_color(theme.text_dim())
+                            .bg(theme.mockup_chip)
+                            .child("Coming soon"),
+                    ),
+            );
+        }
+        col
+    }
+
     /// Renders the bottom Settings and Profile footer.
     fn render_footer(&self, theme: &HermesTheme) -> Div {
         div()
@@ -445,6 +487,7 @@ impl SidebarView {
             )
             // Bottom Fixed Section: Provider Status + Footer
             .child(self.render_provider_status(theme))
+            .child(self.render_feature_rows(theme))
             .child(self.render_footer(theme))
     }
 }

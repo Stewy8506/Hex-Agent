@@ -1,16 +1,147 @@
-//! Bottom multiline prompt composer with token gauge and model selector for HEX Desktop.
+//! Pulsating glow card + mockup-styled composer wrapper for HEX Desktop.
 //!
-//! Directly mirrors Hermes Desktop composer (`app/chat/composer/`):
-//! - Auto-growing multiline input area (from 1 line ~40px up to 8 lines ~200px)
-//! - Rotating or default placeholder: "Ask HEX anything, or type / for slash commands..."
-//! - Key shortcuts: Enter to submit, Shift+Enter for newline, Cmd+Enter forced submit
-//! - Inline clear button (`×`) when text is present
-//! - Integrated `TokenGaugeWidget` showing ASCII block progress bar
-//! - Integrated `ModelSelectorPill` and circular `SendButton` (`↑` / `⏹`)
+//! Mirrors the mockup's `.glow` composer: a rounded card ringed by an
+//! electric-blue halo whose opacity breathes on a ~5s loop
+//! (`@keyframes breathe` in DesktopSession.dc.html). Implemented with GPUI's
+//! `with_animation` + `Animation::repeat()`, pulsating opacity between 0.32
+//! and 0.7.
 
 use gpui::*;
 
 use crate::theme::HermesTheme;
+
+/// Breathing glow period in seconds, matching the mockup's 5s `breathe` loop.
+pub const GLOW_PERIOD_SECS: f64 = 5.0;
+
+/// Minimum glow alpha (exhale) from the mockup's breathe keyframes.
+pub const GLOW_MIN_ALPHA: f32 = 0.32;
+
+/// Maximum glow alpha (inhale) from the mockup's breathe keyframes.
+pub const GLOW_MAX_ALPHA: f32 = 0.70;
+
+/// Maps a linear animation phase to the mockup's ease-in-out breathing curve.
+pub fn breathe_easing(t: f32) -> f32 {
+    let x = t.clamp(0.0, 1.0);
+    // Triangle wave 0..2 so the glow inhales then exhales within one loop.
+    let tri = if x < 0.5 { x * 2.0 } else { (1.0 - x) * 2.0 };
+    // Ease-in-out smoothing on each leg.
+    let s = tri * tri * (3.0 - 2.0 * tri);
+    s.clamp(0.0, 1.0)
+}
+
+/// Interpolates the glow alpha for an animation phase.
+pub fn glow_alpha(phase: f32) -> f32 {
+    GLOW_MIN_ALPHA + (GLOW_MAX_ALPHA - GLOW_MIN_ALPHA) * breathe_easing(phase)
+}
+
+/// Wraps the composer in the mockup's pulsating glow card.
+///
+/// The glow is three stacked accent-tinted rings (GPUI has no CSS blur), each
+/// rendered on an animated layer whose opacity breathes with the phase.
+pub fn glow_card(inner: Div, theme: &HermesTheme, id: impl Into<ElementId>) -> Div {
+    let accent = theme.accent_blue();
+
+    // Static halo ring (subtle, always present so the glow never disappears).
+    let static_ring = blend_over(accent, theme.mockup_surface, 0.18);
+
+    let card = div()
+        .id(id.into())
+        .relative()
+        .w_full()
+        .rounded(px(24.0))
+        .bg(theme.mockup_surface)
+        .border_1()
+        .border_color(theme.mockup_border_strong)
+        .shadow(vec![BoxShadow {
+            color: hsla_from_rgba(accent, 0.12),
+            offset: point(px(0.0), px(0.0)),
+            blur_radius: px(28.0),
+            spread_radius: px(2.0),
+        }])
+        .child(inner);
+
+    // Animated outer halo: opacity pulses with the breathe curve.
+    let halo = div()
+        .absolute()
+        .top(px(-2.0))
+        .bottom(px(-2.0))
+        .left(px(-2.0))
+        .right(px(-2.0))
+        .rounded(px(26.0))
+        .border_2()
+        .border_color(hsla_from_rgba(accent, 0.6));
+
+    let halo = halo
+        .with_animation(
+            "glow-breathe",
+            Animation::new(std::time::Duration::from_secs_f64(GLOW_PERIOD_SECS)).repeat(),
+            |el, phase| el.opacity(glow_alpha(phase)),
+        )
+        .into_any_element();
+
+    div()
+        .relative()
+        .w_full()
+        .child(card)
+        .child(halo)
+        .child(
+            // Inner static tint ring keeps a visible glow even at exhale.
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(px(24.0))
+                .border_1()
+                .border_color(static_ring),
+        )
+}
+
+/// Blends `fg` over `bg` at `alpha`, returning an opaque Rgba.
+fn blend_over(fg: Rgba, bg: Rgba, alpha: f32) -> Rgba {
+    let base = Rgba { r: bg.r, g: bg.g, b: bg.b, a: 1.0 };
+    let tint = Rgba { r: fg.r, g: fg.g, b: fg.b, a: alpha };
+    base.blend(tint)
+}
+
+/// Converts an Rgba to an Hsla with the given alpha (for borders/shadows).
+fn hsla_from_rgba(c: Rgba, alpha: f32) -> Hsla {
+    let hsla: Hsla = c.into();
+    hsla.alpha(alpha)
+}
+
+#[cfg(test)]
+mod glow_tests {
+    use super::{breathe_easing, glow_alpha, GLOW_MAX_ALPHA, GLOW_MIN_ALPHA};
+
+    #[test]
+    fn test_glow_alpha_pulsates_between_bounds() {
+        let a0 = glow_alpha(0.0);
+        let a_peak = glow_alpha(0.5);
+        let a_end = glow_alpha(1.0);
+        assert!((a0 - GLOW_MIN_ALPHA).abs() < 1e-4);
+        assert!((a_peak - GLOW_MAX_ALPHA).abs() < 1e-4);
+        assert!((a_end - GLOW_MIN_ALPHA).abs() < 1e-4);
+        assert!(a_peak > a0);
+    }
+
+    #[test]
+    fn test_breathe_easing_is_smooth_and_bounded() {
+        for i in 0..=100 {
+            let t = i as f32 / 100.0;
+            let e = breathe_easing(t);
+            assert!((0.0..=1.0).contains(&e));
+        }
+        // Monotonic on the inhale leg.
+        assert!(breathe_easing(0.1) < breathe_easing(0.2));
+    }
+}
+// Directly mirrors Hermes Desktop composer (`app/chat/composer/`):
+// - Auto-growing multiline input area (from 1 line ~40px up to 8 lines ~200px)
+// - Rotating or default placeholder: "Ask HEX anything, or type / for slash commands..."
+// - Key shortcuts: Enter to submit, Shift+Enter for newline, Cmd+Enter forced submit
+// - Inline clear button (`×`) when text is present
+// - Integrated `TokenGaugeWidget` showing ASCII block progress bar
+// - Integrated `ModelSelectorPill` and circular `SendButton` (`↑` / `⏹`)
+
 use crate::ui::model_pill::{ModelSelectorPill, SendButton};
 use crate::ui::token_gauge::TokenGaugeWidget;
 
