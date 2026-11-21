@@ -112,6 +112,31 @@ pub struct HermesTheme {
     pub panel_frosted_bg: Rgba,
     /// Typography tokens.
     pub typography: TypographyTokens,
+    // --- Mockup palette (docs/design/mockups-desktop) ---
+    /// Window canvas (#141414).
+    pub mockup_canvas: Rgba,
+    /// Deep body background (#0a0a0a).
+    pub mockup_body: Rgba,
+    /// Sidebar background (#101010).
+    pub mockup_sidebar: Rgba,
+    /// Composer / card surface (#171717).
+    pub mockup_surface: Rgba,
+    /// Hover surface (#1e1e1e).
+    pub mockup_hover: Rgba,
+    /// Chip background (#1d1d1d).
+    pub mockup_chip: Rgba,
+    /// Subtle mockup border (#222222).
+    pub mockup_border: Rgba,
+    /// Structural mockup border (#262626).
+    pub mockup_border_strong: Rgba,
+    /// Primary mockup text (#e6e6e6).
+    pub mockup_text: Rgba,
+    /// Bright heading text (#f2f2f2).
+    pub mockup_text_bright: Rgba,
+    /// Muted mockup text (#9a9a9a).
+    pub mockup_text_muted: Rgba,
+    /// Dim mockup text (#858585).
+    pub mockup_text_dim: Rgba,
 }
 
 impl Default for HermesTheme {
@@ -133,6 +158,18 @@ impl Default for HermesTheme {
             rose_bg: rgba(0xc98b8b1a),
             warning_amber: rgb(0xf59e0b),
             panel_frosted_bg: rgba(0x18181be0),
+            mockup_canvas: rgb(0x141414),
+            mockup_body: rgb(0x0a0a0a),
+            mockup_sidebar: rgb(0x101010),
+            mockup_surface: rgb(0x171717),
+            mockup_hover: rgb(0x1e1e1e),
+            mockup_chip: rgb(0x1d1d1d),
+            mockup_border: rgb(0x222222),
+            mockup_border_strong: rgb(0x262626),
+            mockup_text: rgb(0xe6e6e6),
+            mockup_text_bright: rgb(0xf2f2f2),
+            mockup_text_muted: rgb(0x9a9a9a),
+            mockup_text_dim: rgb(0x858585),
             typography: TypographyTokens::default(),
         }
     }
