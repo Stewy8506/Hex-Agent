@@ -154,6 +154,45 @@ def _promotion_target_for(cand: dict[str, Any]) -> str:
     return "memory"
 
 
+def _extract_react_evidence(turns: list[Any]) -> dict[str, Any]:
+    """Harvest post-mortem evidence from ReAct turns (B67).
+
+    Returns ``error_traces`` (failed tool outputs), ``modified_files`` (paths of
+    successful ``write_file`` calls), and ``final_patch`` (content of the last
+    successful write) so friction lessons are grounded in what actually happened.
+    """
+    error_traces: list[str] = []
+    modified_files: list[str] = []
+    final_patch = ""
+    for turn in turns or []:
+        calls = getattr(turn, "tool_calls", None) or []
+        results_by_call_id = {
+            getattr(r, "call_id", None): r for r in (getattr(turn, "tool_results", None) or [])
+        }
+        for call in calls:
+            if getattr(call, "name", None) != "write_file":
+                continue
+            result = results_by_call_id.get(getattr(call, "call_id", None))
+            if result is not None and getattr(result, "is_error", False):
+                continue
+            args = getattr(call, "arguments", None) or {}
+            path = str(args.get("path") or "").strip()
+            if not path:
+                continue
+            if path not in modified_files and len(modified_files) < 20:
+                modified_files.append(path)
+            final_patch = str(args.get("content") or "")[:2000]
+        for result in getattr(turn, "tool_results", None) or []:
+            if not getattr(result, "is_error", False):
+                continue
+            output = str(getattr(result, "output", "") or "").strip()
+            if not output or len(error_traces) >= 5:
+                continue
+            name = getattr(result, "name", None) or "tool"
+            error_traces.append(f"{name}: {output}"[:500])
+    return {"error_traces": error_traces, "modified_files": modified_files, "final_patch": final_patch}
+
+
 class ProviderUnavailableError(RuntimeError):
     """Inference is unavailable (no router, no active provider, outage, or empty response).
 
@@ -1218,12 +1257,16 @@ class HarnessOrchestrator:
                     or session_res.friction_info.get("turn_repair_count", 0)
                     or session_res.retry_count
                 )
+                evidence = _extract_react_evidence(session_res.turns or [])
                 self._handle_post_task_reflection(
                     task_id=active_task_id,
                     goal=goal,
                     workspace_root=effective_ws,
                     repair_attempts=rep_count,
                     friction_info=session_res.friction_info,
+                    error_traces=evidence["error_traces"],
+                    modified_files=evidence["modified_files"],
+                    final_patch=evidence["final_patch"],
                 )
             except Exception as e:
                 logger.warning("Agent loop friction reflection failed: %s", e)
@@ -2799,6 +2842,9 @@ class HarnessOrchestrator:
             or 2
         )
         budget_exceeded = False
+        # B67: keep the last failure digest and applied patch for post-success reflection
+        failure_digest = ""
+        last_repair_patch_text = ""
 
         while not ver_outcome["passed"] and repair_attempt < max_repair_retries:
             self._check_execution_fence(fence_check)
@@ -2888,6 +2934,7 @@ class HarnessOrchestrator:
                                 file_p = str(op["args"]["path"])
                                 if file_p not in modified_files:
                                     modified_files.append(file_p)
+                                last_repair_patch_text = str(op["args"].get("content", ""))[:2000]
                     except BudgetExceededError:
                         budget_exceeded = True
                         break
@@ -3074,7 +3121,7 @@ class HarnessOrchestrator:
             provenance={"task_id": task_id, "proof_id": ver_outcome["proof"]["proof_id"]},
             source_nodes=cited_nodes,
             outcome=mem_outcome,
-            workspace_dir=attempt_ws,
+            workspace_dir=source_ws,
         )
 
         # Record harness2 experience if supplied in constraints or task payload
@@ -3113,15 +3160,20 @@ class HarnessOrchestrator:
                 )
 
         # Autonomous Friction Reflection with Hardware Gating (PRD Section 7.3)
+        # B67: write lessons into the real workspace (the CoW clone is unpublished
+        # and its .hex tree is excluded from publish_delta) with the failure digest
+        # and applied patch as evidence.
         if repair_attempt >= 3:
             try:
                 self._handle_post_task_reflection(
                     task_id=task_id,
                     goal=task.get("goal") or "",
-                    workspace_root=attempt_ws,
+                    workspace_root=source_ws,
                     repair_attempts=repair_attempt,
+                    error_traces=[failure_digest] if failure_digest else [],
                     modified_files=list(modified_files),
                     source_nodes=cited_nodes,
+                    final_patch=last_repair_patch_text,
                 )
             except Exception as e:
                 logger.warning("Post-task friction reflection failed: %s", e)
