@@ -56,7 +56,7 @@ from harness_core.core.router import GovernedMemoryService, TwoTierModelRouter
 from harness_core.storage.sandbox import ExecutionSandbox, get_default_sandbox
 from harness_core.skills.executor import SecurityError, SkillExecutionEngine
 from harness_core.cognition.skillspector import SkillSpectorScanner
-from harness_core.cognition.soul import SoulManager
+from harness_core.cognition.soul import DEFAULT_SOUL_NAME, SoulManager
 from harness_core.core.subagent import SubagentManager, SubagentRole
 from harness_core.vendor_paths import get_harness2_dir
 from harness_core.capabilities.webhooks import WebhookConfig, WebhookNotifier
@@ -1779,8 +1779,20 @@ class HarnessOrchestrator:
         if persona_grounding:
             stable_system_prompt = f"{persona_grounding}\n\n[Repair Task]\n{repair_instructions}"
         else:
+            # Identity still resolves from the workspace soul even without a prompt builder (B64).
+            fallback_ws = Path(
+                (task.get("constraints") or {}).get("workspace_root") or self.default_workspace
+            )
+            fallback_identity = DEFAULT_SOUL_NAME
+            try:
+                fallback_identity = self.soul_manager.get_active_name(
+                    workspace_root=fallback_ws.resolve()
+                )
+            except Exception as id_exc:
+                logger.debug("Repair fallback identity resolution failed: %s", id_exc)
             stable_system_prompt = (
-                "You are HEX, an autonomous AI agent and pairing partner.\n" + repair_instructions
+                f"You are {fallback_identity}, an autonomous AI agent and pairing partner.\n"
+                + repair_instructions
             )
         cacheable_context_prefix = (
             (f"{arch_summary}\n\n" if arch_summary else "")

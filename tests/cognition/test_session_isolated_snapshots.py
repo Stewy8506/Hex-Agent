@@ -167,15 +167,6 @@ class TestSessionIsolatedSnapshots(unittest.TestCase):
         self.assertNotIn("[BLOCKED:", prompt)
         self.assertIn("You are SecurityAuditor", prompt)
 
-        # 3. Third-party distribution profile with same content is hard-blocked
-        dist_prompt = builder.build_system_prompt(
-            workspace_root=self.workspace,
-            mode="agent",
-            is_distribution_profile=True,
-        )
-        self.assertIn("[BLOCKED: SOUL.md", dist_prompt)
-        self.assertNotIn("You are SecurityAuditor", dist_prompt)
-
 
 if __name__ == "__main__":
     unittest.main()

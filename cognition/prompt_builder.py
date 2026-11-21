@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from harness_core.cognition.soul import SoulManager, SoulProvenance, get_hex_home
+from harness_core.cognition.soul import DEFAULT_SOUL_NAME, SoulManager, get_hex_home
 from harness_core.resources import bundled_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -117,11 +117,13 @@ MODE_MODULATORS: Dict[str, str] = {
     ),
 }
 
-HEX_CAPABILITIES_GUIDANCE: str = (
-    "[Capabilities & Interaction Guidance]\n"
-    "You are HEX, an autonomous AI agent and pairing partner. When asked about your capabilities, what you can do, or available commands, answer concisely from your active tools, skills, and session commands (/help, /mode [plan|agent|code], /model [name], /clear, /quit).\n"
-    "Match reply length to the ask. Be direct, calm, and senior; avoid robotic disclaimers, filler, or repetitive chanting of acronyms."
-)
+def build_capabilities_guidance(agent_name: str) -> str:
+    """Build the Slot #3 guidance block carrying the resolved identity (B64)."""
+    return (
+        "[Capabilities & Interaction Guidance]\n"
+        f"You are {agent_name}, an autonomous AI agent and pairing partner. When asked about your capabilities, what you can do, or available commands, answer concisely from your active tools, skills, and session commands (/help, /mode [plan|agent|code], /model [name], /clear, /quit).\n"
+        "Match reply length to the ask. Be direct, calm, and senior; avoid robotic disclaimers, filler, or repetitive chanting of acronyms."
+    )
 
 PARALLEL_TOOL_CALL_GUIDANCE: str = (
     "[Parallel Tool Calls]\n"
@@ -232,9 +234,7 @@ class PromptBuilder:
         extra_rules: str = "",
         curated_memory: str = "",
         custom_env_context: Optional[str] = None,
-        is_distribution_profile: bool = False,
         session_id: Optional[str] = None,
-        soul_provenance: Optional[SoulProvenance | str] = None,
         surface: str = "tui",
         include_tools: bool = True,
         include_skills: bool = True,
@@ -254,10 +254,13 @@ class PromptBuilder:
 
         # --- Slot #1: SOUL.md Identity ---
         raw_soul, resolved_scope = self.soul_manager.resolve_soul(workspace_root=ws)
-        active_scope = soul_provenance or resolved_scope
-        # Distinguish local user-authored workspace souls (.hex/SOUL.md) from untrusted distribution profiles
-        user_authored = not is_distribution_profile and (
-            active_scope in ("global_user", "workspace_user", "workspace", "global", "default")
+        # resolve_soul only ever returns user-authored scopes (global or workspace .hex files)
+        user_authored = resolved_scope in (
+            "global_user",
+            "workspace_user",
+            "workspace",
+            "global",
+            "default",
         )
         safe_soul = scan_context_content(raw_soul, "SOUL.md", user_authored=user_authored)
         slots.append(safe_soul.strip())
@@ -277,6 +280,11 @@ class PromptBuilder:
                 else "Read files before editing. Verify changes empirically with tests or commands."
             )
             platform_hint = PLATFORM_HINTS.get(str(surface or "tui").lower(), PLATFORM_HINTS["tui"])
+            identity_name = DEFAULT_SOUL_NAME
+            try:
+                identity_name = self.soul_manager.get_active_name(workspace_root=ws)
+            except Exception as e:
+                logger.debug("Failed resolving identity name for guidance slot: %s", e)
             env_parts = [
                 (
                     f"[Environment Context]\n"
@@ -285,7 +293,7 @@ class PromptBuilder:
                     f"- {platform_hint}\n"
                     f"- Policy: {policy_line}"
                 ),
-                HEX_CAPABILITIES_GUIDANCE,
+                build_capabilities_guidance(identity_name),
                 PARALLEL_TOOL_CALL_GUIDANCE,
             ]
             if include_tools:

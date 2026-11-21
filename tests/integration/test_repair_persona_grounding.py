@@ -14,7 +14,8 @@ captures the ``system_prompt`` kwarg, proving:
   3. Persona/memory resolve from the REAL source workspace even though the CoW
      attempt clone excludes ``.hex`` (so attempt_ws has no persona of its own).
   4. The repair-specific JSON write_file instructions are preserved.
-  5. A non-fatal fallback to the hardcoded identity when prompt_builder is absent.
+  5. A non-fatal fallback when prompt_builder is absent that still resolves the
+     identity from the workspace soul (no hardcoded "You are HEX", B64).
 """
 
 from __future__ import annotations
@@ -159,7 +160,8 @@ class TestRepairPersonaGrounding(unittest.TestCase):
 
         system_prompt, ops = self._run_repair(orch, task_id)
 
-        self.assertIn("You are HEX", system_prompt)
+        # B64: even the fallback resolves the identity from the workspace soul.
+        self.assertIn(f"You are {PERSONA_TOKEN}", system_prompt)
         self.assertIn("write_file", system_prompt)
         self.assertEqual(len(ops), 1)
         self.assertEqual(ops[0]["tool_id"], "write_file")

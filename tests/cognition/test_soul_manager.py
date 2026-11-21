@@ -32,8 +32,8 @@ class TestSoulManager(unittest.TestCase):
         self.assertIn("You are HEX", content)
         self.assertEqual(normalize_soul(content), normalize_soul(DEFAULT_SOUL_MD))
 
-        dna = mgr.load_developer_dna()
-        self.assertIn("Developer Profile & Conventions", dna)
+        user_md = mgr.global_user_path.read_text(encoding="utf-8")
+        self.assertIn("Developer Profile & Conventions", user_md)
 
     def test_soul_manager_resolution_hierarchy(self) -> None:
         mgr = SoulManager(global_home=self.temp_hex_home)

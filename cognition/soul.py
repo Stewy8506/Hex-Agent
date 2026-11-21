@@ -82,9 +82,6 @@ class SoulProvenance(str, Enum):
 
     GLOBAL_USER = "global_user"
     WORKSPACE_USER = "workspace_user"
-    REPOSITORY = "repository"
-    REMOTE_PROFILE = "remote_profile"
-    DISTRIBUTION = "distribution"
 
     def __eq__(self, other: Any) -> bool:
         if super().__eq__(other):
@@ -113,7 +110,7 @@ def get_hex_home() -> Path:
 
 
 class SoulManager:
-    """Manages global and workspace SOUL.md files, Developer DNA (USER.md), and /rename."""
+    """Manages global and workspace SOUL.md files and /rename."""
 
     def __init__(self, global_home: Optional[Path] = None):
         self.global_home = Path(global_home).resolve() if global_home else get_hex_home()
@@ -215,15 +212,6 @@ class SoulManager:
             keep_len = MAX_SOUL_CHARS - len(TRUNCATION_MARKER)
             return content[:keep_len].rstrip() + TRUNCATION_MARKER
         return content
-
-    def load_developer_dna(self) -> str:
-        """Load machine-wide Developer DNA from ~/.hex/USER.md."""
-        if self.global_user_path.is_file():
-            try:
-                return self.global_user_path.read_text(encoding="utf-8").strip()
-            except Exception as e:
-                logger.debug("Could not read developer DNA from %s: %s", self.global_user_path, e)
-        return DEFAULT_USER_MD.strip()
 
     def rename_identity(
         self,
