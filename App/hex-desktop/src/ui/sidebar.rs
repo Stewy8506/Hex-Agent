@@ -292,12 +292,7 @@ impl SidebarView {
                     .bg(theme.card_bg())
                     .border_1()
                     .border_color(theme.border_subtle())
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.text_dim())
-                            .child("🔍"),
-                    )
+                    .child(icon_svg("search", 14.0).text_color(theme.text_dim()))
                     .child(
                         div()
                             .text_xs()

@@ -11,6 +11,7 @@ use gpui::*;
 use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
+use crate::ui::icon_svg;
 use crate::ui::session_list::SessionItem;
 
 /// Category grouping for command palette entries.
@@ -290,12 +291,7 @@ impl CommandPaletteModal {
                     .border_b_1()
                     .border_color(theme.border_subtle())
                     .gap_3()
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .text_color(theme.text_dim())
-                            .child("🔍"),
-                    )
+                    .child(icon_svg("search", 14.0).text_color(theme.text_dim()))
                     .child(
                         div()
                             .flex_1()
