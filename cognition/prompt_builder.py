@@ -245,7 +245,9 @@ class PromptBuilder:
         Slot #2: Mode Behavioral Overrides (plan / agent / code)
         Slot #3: Environment, Tools & Execution Guidance
         Slot #4: Curated Memory Snapshot (fenced)
-        Slot #5: Project Rules / AGENTS.md / Skills
+        Slot #5: Project Rules / AGENTS.md / Skills (stable content first; volatile
+        per-goal blocks such as retrieved skills are appended last so they never
+        invalidate the cached stable prefix — B63).
         """
         ws = Path(workspace_root).resolve() if workspace_root else Path.cwd()
         slots: List[str] = []
@@ -321,7 +323,7 @@ class PromptBuilder:
             except Exception as e:
                 logger.debug("Failed building frozen memory snapshot in PromptBuilder: %s", e)
 
-        # --- Slot #5: Project Context & Rules ---
+        # --- Slot #5: Project Context & Rules (stable content first, volatile last) ---
         project_rules_list = []
         # Check workspace rules
         for rule_file in ("AGENTS.md", ".cursorrules", "CLAUDE.md"):
@@ -335,10 +337,6 @@ class PromptBuilder:
                 except Exception as e:
                     logger.debug("Failed reading rule file %s: %s", rpath, e)
 
-        if extra_rules and extra_rules.strip():
-            safe_extra = scan_context_content(extra_rules.strip(), "extra_rules", user_authored=False)
-            project_rules_list.append(safe_extra)
-
         if include_skills:
             skills_idx = build_skills_index(
                 ws,
@@ -346,6 +344,12 @@ class PromptBuilder:
             )
             if skills_idx:
                 project_rules_list.append(skills_idx)
+
+        # Volatile tail: per-goal rules (e.g. retrieved skills) change between turns,
+        # so they sit after every stable block to preserve the cacheable prefix.
+        if extra_rules and extra_rules.strip():
+            safe_extra = scan_context_content(extra_rules.strip(), "extra_rules", user_authored=False)
+            project_rules_list.append(safe_extra)
 
         if project_rules_list:
             slots.append("\n\n".join(project_rules_list))

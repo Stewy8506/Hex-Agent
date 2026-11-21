@@ -1039,6 +1039,7 @@ class HarnessOrchestrator:
                             system_prompt=system_directive,
                             workspace_dir=effective_ws,
                             max_tokens=4096,
+                            enable_prompt_caching=True,
                         )
                         resp_text = (getattr(model_resp, "text", "") or "").strip() if model_resp else ""
                         if resp_text:
@@ -1146,6 +1147,7 @@ class HarnessOrchestrator:
                         timeout_seconds=proposer.timeout_seconds,
                         system_prompt=system_directive,
                         workspace_dir=effective_ws,
+                        enable_prompt_caching=True,
                     )
                 except ProviderUnavailableError:
                     if not demo:
@@ -1606,6 +1608,7 @@ class HarnessOrchestrator:
                         max_tokens=4096,
                         stream_callback=scrubbed_cb,
                         system_prompt=system_directive,
+                        enable_prompt_caching=True,
                     )
                     if scrubber is not None and raw_cb is not None:
                         rem = scrubber.flush()

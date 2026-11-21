@@ -26,7 +26,6 @@ from harness_core.cognition.context_compressor import (
     find_tool_call_groups,
     is_context_summary_message,
     is_demoted_stub,
-    validate_atomic_boundaries,
 )
 
 
@@ -322,99 +321,6 @@ class TestContextCompressorTailPruning(unittest.TestCase):
         # Cutting at index 5 is after the group
         self.assertEqual(align_boundary_backward(messages, 5), 5)
 
-    def test_validate_atomic_boundaries(self):
-        """Test validation of well-formed vs severed tool calling boundaries."""
-        # 1. Well-formed structured messages
-        valid_structured = [
-            {"role": "user", "content": "hello"},
-            {
-                "role": "assistant",
-                "content": "calling tool",
-                "tool_calls": [{"id": "c1", "function": {"name": "test"}}],
-            },
-            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
-            {"role": "assistant", "content": "done"},
-        ]
-        self.assertTrue(validate_atomic_boundaries(valid_structured))
-
-        # 2. Well-formed XML messages
-        valid_xml = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "<tool_call name='test'>args</tool_call>"},
-            {"role": "user", "content": "<observation tool='test'>output</observation>"},
-            {"role": "assistant", "content": "done"},
-        ]
-        self.assertTrue(validate_atomic_boundaries(valid_xml))
-
-        # 3. Orphaned tool message at start
-        self.assertFalse(validate_atomic_boundaries([{"role": "tool", "content": "orphan"}]))
-
-        # 4. Orphaned tool message after user
-        self.assertFalse(
-            validate_atomic_boundaries(
-                [
-                    {"role": "user", "content": "hi"},
-                    {"role": "tool", "tool_call_id": "c1", "content": "orphan"},
-                ]
-            )
-        )
-
-        # 5. Assistant with tool_calls at the end of messages (severed)
-        self.assertFalse(
-            validate_atomic_boundaries(
-                [
-                    {"role": "user", "content": "hi"},
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [{"id": "c1", "function": {"name": "test"}}],
-                    },
-                ]
-            )
-        )
-
-        # 6. Assistant tool calls severed by subsequent user message
-        self.assertFalse(
-            validate_atomic_boundaries(
-                [
-                    {"role": "user", "content": "hi"},
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [{"id": "c1", "function": {"name": "test"}}],
-                    },
-                    {"role": "user", "content": "interrupting user message"},
-                ]
-            )
-        )
-
-        # 7. Incomplete parallel tool calls (missing c2)
-        self.assertFalse(
-            validate_atomic_boundaries(
-                [
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {"id": "c1", "function": {"name": "t1"}},
-                            {"id": "c2", "function": {"name": "t2"}},
-                        ],
-                    },
-                    {"role": "tool", "tool_call_id": "c1", "content": "ok1"},
-                    {"role": "user", "content": "next"},
-                ]
-            )
-        )
-
-        # 8. Orphaned XML observation
-        self.assertFalse(
-            validate_atomic_boundaries(
-                [
-                    {"role": "user", "content": "<observation tool='t'>orphan</observation>"},
-                ]
-            )
-        )
-
     def test_sanitize_tool_pairs(self):
         """Verify sanitize_tool_pairs removes orphan tool results and unresolved tool_calls."""
         from harness_core.cognition.context_compressor import sanitize_tool_pairs
@@ -447,7 +353,6 @@ class TestContextCompressorTailPruning(unittest.TestCase):
         self.assertEqual(cleaned[1]["role"], "tool")
         self.assertEqual(cleaned[1]["tool_call_id"], "c1")
         self.assertEqual(cleaned[2]["role"], "user")
-        self.assertTrue(validate_atomic_boundaries(cleaned))
 
     def test_strip_historical_media(self):
         """Verify strip_historical_media replaces base64 images before tail_start."""

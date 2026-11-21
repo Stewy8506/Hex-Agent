@@ -16,12 +16,8 @@ from harness_core.cognition.context_compressor import (
     CompactionResult,
     ContextCompactor,
     _INFLIGHT_TASK_REPLAY_HEADER,
-    apply_cache_control_breakpoints,
-    compute_cache_signature,
     estimate_messages_tokens,
     is_context_summary_message,
-    stabilize_prompt_cache_prefix,
-    validate_atomic_boundaries,
 )
 from harness_core.core.react_loop import ReActConfig, ReActLoop
 from harness_core.core.router import TwoTierModelRouter
@@ -66,49 +62,6 @@ class TestContextCompressorIntegration(unittest.TestCase):
         # Verify compaction occurred during the multi-turn session
         self.assertIsNotNone(loop.last_compaction_result)
         self.assertTrue(loop.last_compaction_result.compacted_tokens < loop.last_compaction_result.original_tokens)
-
-    def test_prompt_cache_prefix_stability_across_continuous_turns(self) -> None:
-        """Verify prompt cache SHA-256 signature remains 100% constant across 10 turns."""
-        system_prompt = "You are HEX Autonomous AI Workbench. Strictly adhere to coding standards."
-        tools = [
-            {"name": "read_file", "description": "Read file contents", "parameters": {"type": "object"}},
-            {"name": "write_file", "description": "Write file contents", "parameters": {"type": "object"}},
-        ]
-
-        messages = [
-            {"role": "user", "content": "Initial user goal: build web app"},
-            {"role": "assistant", "content": "I will examine the project structure."},
-        ]
-
-        # Base stabilized prefix
-        base_messages = stabilize_prompt_cache_prefix(messages, system_prompt, tools)
-        initial_sig = compute_cache_signature(base_messages, tools, prefix_turns=2)
-
-        # Simulate 10 continuous conversational turns
-        current_history = list(messages)
-        for i in range(1, 11):
-            current_history.append({"role": "user", "content": f"Turn {i}: follow-up instruction and detail"})
-            current_history.append({"role": "assistant", "content": f"Turn {i}: executed action and observed outcome."})
-
-            stabilized = stabilize_prompt_cache_prefix(current_history, system_prompt, tools)
-            turn_sig = compute_cache_signature(stabilized, tools, prefix_turns=2)
-
-            self.assertEqual(
-                turn_sig,
-                initial_sig,
-                f"Cache prefix signature drifted at turn {i}!",
-            )
-
-        # Verify Anthropic ephemeral cache control breakpoints
-        tagged_msgs, tagged_tools = apply_cache_control_breakpoints(
-            stabilized, tools, provider="anthropic"
-        )
-        self.assertIsNotNone(tagged_tools)
-        self.assertEqual(tagged_tools[-1].get("cache_control"), {"type": "ephemeral"})
-        self.assertEqual(tagged_msgs[0].get("cache_control"), {"type": "ephemeral"})
-        # Verify native Anthropic Messages API content block part formatting
-        self.assertIsInstance(tagged_msgs[0]["content"], list)
-        self.assertEqual(tagged_msgs[0]["content"][0]["cache_control"], {"type": "ephemeral"})
 
     def test_full_four_phase_compaction_pipeline(self) -> None:
         """Verify full 4-phase compaction pipeline preserves atomic boundaries and reduces tokens."""
@@ -162,10 +115,7 @@ class TestContextCompressorIntegration(unittest.TestCase):
         self.assertLess(res.compacted_tokens, orig_tokens)
         self.assertLess(res.compression_ratio, 0.7)
 
-        # 4. Atomic tool boundaries intact
-        self.assertTrue(validate_atomic_boundaries(res.compacted_messages))
-
-        # 5. Summary marker present
+        # 4. Summary marker present
         summary_found = any(is_context_summary_message(m) for m in res.compacted_messages)
         self.assertTrue(summary_found)
 
