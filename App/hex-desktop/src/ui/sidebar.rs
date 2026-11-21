@@ -174,7 +174,8 @@ impl SidebarView {
                     .child(
                         div()
                             .text_sm()
-                            .child("📁"),
+                            .text_color(theme.text_muted())
+                            .child(icon_svg("notebooks", 14.0)),
                     )
                     .child(
                         div()
@@ -430,7 +431,8 @@ impl SidebarView {
                     .child(
                         div()
                             .text_xs()
-                            .child("👤"),
+                            .text_color(theme.text_muted())
+                            .child(icon_svg("team", 14.0)),
                     )
                     .child(
                         div()

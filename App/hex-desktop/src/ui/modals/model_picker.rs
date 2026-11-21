@@ -11,6 +11,7 @@ use gpui::*;
 use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
+use crate::ui::icon_svg;
 use crate::ui::model_pill::provider_dot_color;
 
 /// Model entry representation in the picker dialog.
@@ -170,7 +171,7 @@ impl ModelPickerModal {
                         div()
                             .text_size(px(14.0))
                             .text_color(theme.text_dim())
-                            .child("✨"),
+                            .child(icon_svg("bolt", 14.0)),
                     )
                     .child(
                         div()

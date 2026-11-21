@@ -11,6 +11,7 @@ use gpui::*;
 use hex_protocol::diff::{DiffFile, DiffHunk, DiffLine, DiffLineType, UnifiedDiff};
 
 use crate::theme::HermesTheme;
+use crate::ui::icon_svg;
 
 /// Determines the background tint for a diff line type.
 pub fn line_background(line_type: DiffLineType, theme: &HermesTheme) -> Option<Rgba> {
@@ -206,7 +207,8 @@ impl DiffView {
                         .child(
                             div()
                                 .text_xs()
-                                .child("📄"),
+                                .text_color(theme.text_dim())
+                                .child(icon_svg("notebooks", 14.0)),
                         )
                         .child(
                             div()

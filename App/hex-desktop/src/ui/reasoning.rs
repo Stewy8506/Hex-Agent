@@ -12,6 +12,7 @@
 use gpui::*;
 
 use crate::theme::HermesTheme;
+use crate::ui::icon_svg;
 
 /// Formats an elapsed duration in seconds into human-readable timing text.
 pub fn format_reasoning_elapsed(seconds: f64) -> String {
@@ -133,7 +134,8 @@ impl ThinkingDisclosure {
             .child(
                 div()
                     .text_xs()
-                    .child("🧠"),
+                    .text_color(theme.text_dim())
+                    .child(icon_svg("design", 14.0)),
             )
             .child(
                 div()
