@@ -2003,11 +2003,18 @@ class ACPServer:
         valid = ("deterministic", "cloud", "local", "off", "disabled")
         if not mode:
             cur = getattr(router, "compressor_mode", "deterministic")
-            return f"Current compressor mode: {cur} (usage: /compressor <{'|'.join(valid)}>)"
+            return (
+                f"Current log compressor mode: {cur} "
+                f"(usage: /compressor <{'|'.join(valid)}>; governs verbose log compression, "
+                "not the live context window)"
+            )
         if mode not in valid:
             raise ValueError(f"Invalid compressor mode '{mode}'. Valid: {', '.join(valid)}")
         router.compressor_mode = "off" if mode == "disabled" else mode
-        return f"Compressor mode set to: {router.compressor_mode} (session-only)"
+        return (
+            f"Log compressor mode set to: {router.compressor_mode} (session-only; governs verbose "
+            "log compression, not the live context window)"
+        )
 
     def _cmd_rollback(self, sess: ACPSession, args: str) -> str:
         if not hasattr(self.orchestrator, "cancel_task"):

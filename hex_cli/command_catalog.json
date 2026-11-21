@@ -172,14 +172,14 @@
       "name": "/compressor",
       "aliases": ["/comp"],
       "usage": "/compressor [deterministic|cloud|local|off]",
-      "description": "Inspect or switch the context compressor mode",
+      "description": "Inspect or switch the verbose log compressor mode (failure-digest compression; not the live context window)",
       "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
     },
     {
       "name": "/compress",
       "aliases": ["/compact", "/compaction"],
       "usage": "/compress [threshold]",
-      "description": "Run 4-phase context compaction on the active dialogue history",
+      "description": "Compact the local session transcript buffer (display/rewind history; the live model context is compacted automatically by the agent loop)",
       "surfaces": {"console": "supported", "tui": "unavailable", "acp": "unavailable"}
     },
     {

@@ -336,7 +336,7 @@ class TestHexConsoleSlashCommands(unittest.TestCase):
         self.assertEqual(self.console.skin_name, "cyberpunk")
         self.assertEqual(self.orch.router.compressor_mode, "cloud")
         self.assertIn("Skin updated to: cyberpunk", out.getvalue())
-        self.assertIn("Compressor mode updated to: cloud", out.getvalue())
+        self.assertIn("Log compressor mode updated to: cloud", out.getvalue())
 
     def test_handle_slash_command_memory_and_workers(self):
         out = StringIO()
