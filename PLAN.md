@@ -49,12 +49,12 @@ HEX Desktop is a native macOS GPUI cockpit for the HEX AI agent. Today it has a 
 - [x] Add mockup palette tokens to `theme.rs` (surfaces, text ramp, accent tints) with getters
 - [x] Add a pulsating-glow card component (5s breathe loop via `Animation::repeat()`; reduced-motion fallback not available in GPUI 0.2 — noted as a limitation)
 - [x] Restyle sidebar: feature rows with Coming soon badges, account footer (296px width and project grouping tracked in Phase 3)
-- [ ] Restyle main pane header: segmented Chat/Files/Browser/Terminal control (Chat live; others Coming soon empty state), right-side icon buttons
-- [ ] Center the conversation feed in a 560px column; user bubble `#1e1e1e` radius 18px
-- [ ] Add message action row (Copy, Retry, token count placeholder) under assistant turns
-- [ ] Add context-window % bar above the composer (driven by existing token gauge)
+- [x] Restyle main pane header: segmented Chat/Files/Browser/Terminal control (Chat live; others Coming soon empty state), right-side icon buttons
+- [x] Center the conversation feed in a 560px column; user bubble `#1e1e1e` radius 18px
+- [x] Add message action row (Copy, Retry, token count placeholder) under assistant turns
+- [x] Add context-window % bar above the composer (driven by existing token gauge)
 - [x] Wrap composer in the pulsating glow card; mode + model pills (segmented header, centered 560px column, action row and context bar follow in Phase 3)
-- [ ] Acceptance: app builds; session screen matches mockup layout and palette; all existing tests pass
+- [x] Acceptance: app builds; session screen matches mockup layout and palette; all existing tests pass
 
 ## Phase 2: Home / start screen
 - [ ] New `ui/home.rs` with ASCII logo, pulsating glowing composer card, mode/model pills, attach/send buttons

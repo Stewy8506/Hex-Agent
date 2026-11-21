@@ -1,5 +1,5 @@
-//! GPUI user interface components, views, and navigation shell for HEX Desktop.
-
+pub mod home;
+pub use home::home_tooltip;
 pub mod composer;
 pub mod diff_view;
 pub mod feed;

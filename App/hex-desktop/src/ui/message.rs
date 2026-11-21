@@ -101,15 +101,16 @@ impl UserMessageCard {
             .py_2()
             .child(
                 div()
-                    .max_w(px(680.0))
+                    .max_w(px(460.0))
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .p_3()
-                    .rounded_lg()
-                    .bg(theme.card_bg()) // #18181b
+                    .px_4()
+                    .py_2()
+                    .rounded(px(18.0)) // mockup: 18px bubble
+                    .bg(theme.mockup_hover) // #1e1e1e
                     .border_1()
-                    .border_color(theme.border_subtle())
+                    .border_color(theme.mockup_border)
                     // Header: Avatar & Timestamp
                     .child(
                         div()

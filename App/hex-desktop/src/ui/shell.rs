@@ -24,8 +24,27 @@ pub enum ShellView {
     /// Conversation message feed and prompt composer.
     #[default]
     Chat,
+    /// Coming soon: file browser pane.
+    Files,
+    /// Coming soon: embedded browser pane.
+    Browser,
+    /// Coming soon: embedded terminal pane.
+    Terminal,
     /// Settings and configuration editor.
     Settings,
+}
+
+impl ShellView {
+    /// Human label for the view (header segment or empty-state title).
+    pub fn pane_title(self) -> &'static str {
+        match self {
+            Self::Chat => "Chat",
+            Self::Files => "Files",
+            Self::Browser => "Browser",
+            Self::Terminal => "Terminal",
+            Self::Settings => "Settings",
+        }
+    }
 }
 
 /// Top-level application shell GPUI component.

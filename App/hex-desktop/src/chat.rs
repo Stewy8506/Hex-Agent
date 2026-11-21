@@ -19,6 +19,9 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::ui::home::{ContinueRow, COMING_SOON_DOCK};
+
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tokio::runtime::{Handle, Runtime};
 use unicode_segmentation::UnicodeSegmentation;
@@ -38,7 +41,7 @@ use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
 use crate::ui::modals::{render_modal_container, ActiveModal, ModelEntry, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
 use crate::ui::session_list::SessionItem;
-use crate::ui::shell::AppShell;
+use crate::ui::shell::{AppShell, ShellView};
 use crate::ui::sidebar::ProviderState;
 use crate::ui::tool_card::ToolCallCard;
 use crate::window::WindowConfig;
@@ -268,6 +271,13 @@ pub struct ChatView {
     model_id: Option<String>,
     /// B28: one supervised reconnect loop at a time; re-armed on every loss.
     supervisor_active: bool,
+    /// Phase 2 routing: the app opens on the Home start screen.
+    show_home: bool,
+    /// Prompt typed on Home before the first session exists; submitted once
+    /// `adopt_session` creates the session.
+    pending_home_prompt: Option<String>,
+    /// Dock feature the user clicked that is not built yet (Coming soon).
+    home_coming_soon: Option<&'static str>,
 }
 
 impl Focusable for ChatView {
@@ -320,6 +330,9 @@ impl ChatView {
             current_provider: "HEX".to_string(),
             model_id: None,
             supervisor_active: false,
+            show_home: true,
+            pending_home_prompt: None,
+            home_coming_soon: None,
         };
         view.start_event_pump(cx);
         view.start_backend(cx);
@@ -734,6 +747,13 @@ impl ChatView {
         self.shell.select_session(id);
         self.current_model = resp.model.clone();
         self.model_id = Some(resp.model.clone());
+        // Phase 2: a prompt submitted on Home opens the session it created.
+        if self.show_home {
+            if let Some(text) = self.pending_home_prompt.take() {
+                self.show_home = false;
+                self.submit_text(text, cx);
+            }
+        }
         self.current_provider = resp.provider.clone().unwrap_or_else(|| "HEX".to_string());
         self.shell
             .composer
@@ -842,6 +862,161 @@ impl ChatView {
         .detach();
     }
 
+    /// Phase 2: full Home / start screen — ASCII logo, glowing prompt card,
+    /// Continue list and the bottom feature dock. Submitting a prompt requests
+    /// a new session (adopted on creation) and opens it; a dock item that is
+    /// not built yet surfaces its Coming soon notice.
+    fn render_home(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
+        let workspace_name = self
+            .workspace
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Workspace".to_string());
+
+        // Continue list: the five most recent real sessions.
+        let now = chrono::Utc::now();
+        let rows: Vec<ContinueRow> = self
+            .shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter()
+            .take(5)
+            .map(|s| ContinueRow {
+                id: s.id.clone(),
+                title: s.title.clone(),
+                relative_time: crate::ui::session_list::format_relative_time(s.updated_at, now),
+                location_chip: "Local",
+            })
+            .collect();
+
+        let home_coming_soon = self.home_coming_soon;
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .size_full()
+            .bg(theme.mockup_canvas)
+            .child(
+                div()
+                    .w(px(640.0))
+                    .max_w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        // ASCII logo
+                        crate::ui::home::render_logo(theme),
+                    )
+                    .child(
+                        // Pulsating glowing prompt card wrapping the composer
+                        // body (mode/model pills + attach/send) re-rendered here
+                        // without the session-only context bar.
+                        self.render_home_composer(theme, cx),
+                    )
+                    .child(
+                        // Continue list
+                        div()
+                            .w_full()
+                            .mt(px(28.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .when(!rows.is_empty(), |c| {
+                                c.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.mockup_text_dim)
+                                        .mb(px(6.0))
+                                        .child("Continue"),
+                                )
+                            })
+                            .children(rows.iter().map(|row| {
+                                let id = row.id.clone();
+                                crate::ui::home::render_continue_row(theme, row, {
+                                    let this = cx.entity().downgrade();
+                                    move |_, _, cx| {
+                                        this.update(cx, |view, cx| {
+                                            view.show_home = false;
+                                            view.switch_session(id.clone(), cx);
+                                            cx.notify();
+                                        });
+                                    }
+                                })
+                            })),
+                    ),
+            )
+            .child(
+                // Bottom feature dock
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .pb(px(18.0))
+                    .child(div().flex().flex_row().gap(px(8.0)).children(
+                        COMING_SOON_DOCK
+                            .iter()
+                            .map(|(label, glyph)| {
+                                crate::ui::home::render_dock_item(
+                                    theme,
+                                    label,
+                                    label,
+                                    glyph,
+                                )
+                            }),
+                    )),
+            )
+            .when_some(home_coming_soon, |c, label| {
+                c.child(
+                    div()
+                        .absolute()
+                        .bottom(px(70.0))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .bg(theme.mockup_surface)
+                                .border_1()
+                                .border_color(theme.mockup_border)
+                                .rounded(px(10.0))
+                                .px(px(14.0))
+                                .py(px(8.0))
+                                .text_sm()
+                                .text_color(theme.mockup_text_dim)
+                                .child(SharedString::from(format!(
+                                    "{} — coming soon",
+                                    label
+                                ))),
+                        ),
+                )
+            })
+    }
+
+    /// Home prompt card: the pulsating glow composer with pills and buttons.
+    /// Delegates rendering to the shared composer so Home and Session stay
+    /// visually identical; submit routes into the session (see adopt_session).
+    fn render_home_composer(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
+        let composer = self.render_composer(theme, cx);
+        div().w_full().child(
+            crate::ui::composer::glow_card(
+                div().child(composer),
+                theme,
+                "home_glow_card",
+            ),
+        )
+    }
+
+    #[allow(dead_code)]
+    fn unused_home_helper(&self) {
+        let _ = self.home_coming_soon;
+    }
+
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
         if !self.bridge.is_connected() {
             self.shell.feed.add_system_notice(
@@ -892,6 +1067,11 @@ impl ChatView {
 
     fn submit_text(&mut self, text: String, cx: &mut Context<Self>) {
         if self.active_turn_running() {
+            return;
+        }
+        if self.show_home {
+            self.pending_home_prompt = Some(text);
+            self.request_new_chat(cx);
             return;
         }
         let Some(session_id) = self.shell.active_session_id.clone() else {
@@ -1899,7 +2079,12 @@ impl ChatView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.regenerate(&assistant_id, cx);
                     }))
-                    .child("🔄 Regenerate"),
+                    .child("🔄 Retry"),
+            )
+            .child(
+                div()
+                    .text_color(theme.text_dim())
+                    .child("· · ·"), // token count placeholder (coming soon)
             )
     }
 
@@ -1908,13 +2093,43 @@ impl ChatView {
         let can_send = !self.content.trim().is_empty() && !running;
         let send_btn = SendButton::new(running, can_send);
         let has_text = !self.content.is_empty();
+        let gauge = &self.shell.composer.token_gauge;
+        let ctx_pct = gauge.percentage();
+        let ctx_color = gauge.threshold_color(theme);
+        let context_bar = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .pb_1()
+            .text_xs()
+            .text_color(theme.mockup_text_dim)
+            .child("Context")
+            .child(div().flex_1().h(px(4.0)).rounded_full().bg(theme.mockup_surface).child(
+                div()
+                    .h_full()
+                    .w(relative(gauge.fraction() as f32))
+                    .rounded_full()
+                    .bg(ctx_color),
+            ))
+            .child(format!("{:.0}%", ctx_pct));
 
         div()
             .w_full()
+            .flex()
+            .flex_col()
+            .items_center()
             .p_4()
             .border_t_1()
             .border_color(theme.border_subtle())
             .child(
+                div()
+                    .w(px(640.0))
+                    .max_w_full()
+                    .flex()
+                    .flex_col()
+                    .child(context_bar)
+                    .child(
                 div()
                     .w_full()
                     .flex()
@@ -2008,18 +2223,13 @@ impl ChatView {
                                     ),
                             ),
                     ),
+                ),
             )
     }
 
     fn render_main_pane(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
-        let active_title = self
-            .shell
-            .sidebar
-            .session_list
-            .selected_session()
-            .map(|s| s.title.clone())
-            .unwrap_or_else(|| "New Session".to_string());
-
+        // Non-Chat segments show a Coming soon empty state instead of the feed.
+        let coming_soon_pane = self.shell.active_view != ShellView::Chat;
         let feed = self.shell.feed.render_with_bars(theme, |assistant| {
             if assistant.is_streaming {
                 return None;
@@ -2031,13 +2241,27 @@ impl ChatView {
                 cx,
             ))
         });
+        // Center the conversation feed in a 560px column per the session mockup.
+        let feed = div()
+            .flex_1()
+            .w_full()
+            .flex()
+            .justify_center()
+            .overflow_y_hidden()
+            .child(
+                div()
+                    .w(px(560.0))
+                    .max_w_full()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(feed),
+            );
 
         div()
-            .flex_1()
-            .h_full()
             .flex()
             .flex_col()
-            .bg(theme.canvas_bg())
+            .bg(theme.mockup_canvas)
             .child(
                 div()
                     .w_full()
@@ -2048,7 +2272,7 @@ impl ChatView {
                     .justify_between()
                     .px_4()
                     .border_b_1()
-                    .border_color(theme.border_subtle())
+                    .border_color(theme.mockup_border)
                     .child(
                         div()
                             .flex()
@@ -2060,8 +2284,8 @@ impl ChatView {
                                     .id("sidebar_toggle")
                                     .cursor_pointer()
                                     .text_sm()
-                                    .text_color(theme.text_muted())
-                                    .hover(|s| s.text_color(theme.text_primary()))
+                                    .text_color(theme.mockup_text_dim)
+                                    .hover(|s| s.text_color(theme.mockup_text))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.shell.toggle_sidebar();
                                         cx.notify();
@@ -2072,29 +2296,132 @@ impl ChatView {
                                         "◀"
                                     }),
                             )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.text_primary())
-                                    .child(active_title),
-                            ),
+                            .child(self.render_segmented_header(theme, cx)),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(theme.text_dim())
-                            .child(self.shell.sidebar.provider_status.display_label()),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("header_provider")
+                                    .text_xs()
+                                    .text_color(theme.mockup_text_dim)
+                                    .child(self.shell.sidebar.provider_status.display_label()),
+                            )
+                            .child(self.render_header_icon_button(theme, "header_settings", SharedString::from("⚙"))),
                     ),
             )
-            .child(feed)
-            .child(self.render_composer(theme, cx))
+            .child(if coming_soon_pane {
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.mockup_text)
+                            .child(SharedString::from(format!(
+                                "{} — coming soon",
+                                self.shell.active_view.pane_title()
+                            ))),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.mockup_text_dim)
+                            .child("This pane isn't built yet."),
+                    )
+            } else {
+                feed
+            })
+            .when(!coming_soon_pane, |c| c.child(self.render_composer(theme, cx)))
+    }
+
+    /// Segmented Chat/Files/Browser/Terminal header control. Only Chat is live;
+    /// the other panes are coming soon and render an empty state when picked.
+    fn render_segmented_header(&self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
+        let segments: [(&str, ShellView); 4] = [
+            ("Chat", ShellView::Chat),
+            ("Files", ShellView::Files),
+            ("Browser", ShellView::Browser),
+            ("Terminal", ShellView::Terminal),
+        ];
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .p(px(2.0))
+            .rounded(px(8.0))
+            .bg(theme.mockup_surface)
+            .border_1()
+            .border_color(theme.mockup_border)
+            .children(segments.map(|(label, view)| {
+                let active = self.shell.active_view == view;
+                div()
+                    .id(SharedString::from(format!("segment_{}", label)))
+                    .cursor_pointer()
+                    .px_2()
+                    .py(px(3.0))
+                    .rounded(px(6.0))
+                    .text_xs()
+                    .when(active, |s| {
+                        s.bg(theme.mockup_hover)
+                            .text_color(theme.mockup_text)
+                    })
+                    .when(!active, |s| {
+                        s.text_color(theme.mockup_text_dim)
+                            .hover(|s| s.text_color(theme.mockup_text))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.shell.active_view = view;
+                        cx.notify();
+                    }))
+                    .child(label)
+            }))
+    }
+
+    fn render_header_icon_button(
+        &self,
+        theme: &HermesTheme,
+        id: &'static str,
+        glyph: SharedString,
+    ) -> Stateful<Div> {
+        div()
+            .id(SharedString::from(id))
+            .cursor_pointer()
+            .size(px(26.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .text_xs()
+            .text_color(theme.mockup_text_dim)
+            .hover(|s| {
+                s.bg(theme.mockup_hover)
+                    .text_color(theme.mockup_text)
+            })
+            .child(glyph)
     }
 }
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = HermesTheme::get(cx).clone();
+
+        // Phase 2: the app opens on the Home / start screen; any submit or
+        // session selection routes to the Session view (show_home=false).
+        if self.show_home {
+            return self.render_home(&theme, cx);
+        }
 
         // Predictable focus: opening a modal moves focus to it, closing returns
         // focus to the composer. Background activity never steals focus.
