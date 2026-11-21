@@ -29,7 +29,7 @@ pub fn line_foreground(line_type: DiffLineType, theme: &HermesTheme) -> Rgba {
         DiffLineType::Deleted => theme.rose_fg(),
         DiffLineType::HunkHeader => theme.accent_blue(),
         DiffLineType::Meta => theme.text_dim(),
-        DiffLineType::Context => theme.text_muted(),
+        DiffLineType::Context => theme.text_muted,
     }
 }
 
@@ -110,7 +110,7 @@ impl DiffView {
                     .flex()
                     .justify_end()
                     .pr_2()
-                    .text_color(theme.text_extra_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child(old_num_str),
             )
             // New line number gutter (40px)
@@ -120,7 +120,7 @@ impl DiffView {
                     .flex()
                     .justify_end()
                     .pr_2()
-                    .text_color(theme.text_extra_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child(new_num_str),
             )
             // Gutter prefix symbol (+ / - / @@)
@@ -153,7 +153,7 @@ impl DiffView {
                     .w_full()
                     .px_2()
                     .py(px(2.0))
-                    .bg(theme.card_bg())
+                    .bg(theme.mockup_chip)
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.accent_blue())
@@ -180,8 +180,8 @@ impl DiffView {
             .flex_col()
             .rounded_md()
             .border_1()
-            .border_color(theme.border_subtle())
-            .bg(rgb(0x0e0e11)) // Slightly darker code surface
+            .border_color(theme.mockup_border)
+            .bg(theme.mockup_body) // Mockup code surface (#0a0a0a)
             .overflow_hidden();
 
         // File Header Bar
@@ -194,9 +194,9 @@ impl DiffView {
                 .justify_between()
                 .px_3()
                 .py(px(6.0))
-                .bg(theme.card_bg())
+                .bg(theme.mockup_surface)
                 .border_b_1()
-                .border_color(theme.border_subtle())
+                .border_color(theme.mockup_border)
                 .child(
                     div()
                         .flex()
@@ -212,7 +212,7 @@ impl DiffView {
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.text_primary())
+                                .text_color(theme.mockup_text_bright)
                                 .child(file_path),
                         ),
                 )

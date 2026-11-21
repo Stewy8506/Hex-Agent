@@ -279,6 +279,11 @@ impl ToolCallCard {
     }
 
     /// Renders the tool card container.
+    /// The diff view hosted by this card, when the tool call produced a diff.
+    pub fn diff_view(&self) -> Option<&DiffView> {
+        self.diff.as_ref()
+    }
+
     pub fn render(&self, theme: &HermesTheme) -> Div {
         let mut card = div()
             .w_full()

@@ -65,6 +65,137 @@ pub fn split_content_segments(content: &str) -> Vec<ContentSegment> {
     segments
 }
 
+/// Best-effort file label for the Changes card: the path from a diff, else the
+/// tool's own name.
+fn file_label_from_tool(tool: &ToolCallCard) -> String {
+    if let Some(view) = tool.diff_view() {
+        if let Some(file) = view.diff.files.first() {
+            return file.path().to_string();
+        }
+    }
+    tool.tool_name.clone()
+}
+
+/// Phase 3: collapsible "Changes" summary card listing files touched by a
+/// turn, driven by the diff data already attached to the turn's tool calls.
+/// Returns `None` when the turn touched no files. The card starts collapsed.
+fn render_changes_card(theme: &HermesTheme, tool_calls: &[ToolCallCard]) -> Option<Div> {
+    let mut files: Vec<(String, usize, usize)> = Vec::new();
+    for tool in tool_calls {
+        let Some(view) = tool.diff_view() else {
+            continue;
+        };
+        let label = file_label_from_tool(tool);
+        let entry = (
+            label,
+            view.total_additions(),
+            view.total_deletions(),
+        );
+        if !files.iter().any(|f| f.0 == entry.0) {
+            files.push(entry);
+        }
+    }
+    if files.is_empty() {
+        return None;
+    }
+    let file_count = files.len();
+    let adds: usize = files.iter().map(|f| f.1).sum();
+    let dels: usize = files.iter().map(|f| f.2).sum();
+    let mut rows = div().w_full().flex().flex_col().gap(px(2.0));
+    for (name, a, d) in &files {
+        rows = rows.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .text_xs()
+                .child(
+                    div()
+                        .text_color(theme.mockup_text_muted)
+                        .child(name.clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.sage_fg())
+                                .child(format!("+{a}")),
+                        )
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.rose_fg())
+                                .child(format!("-{d}")),
+                        ),
+                ),
+        );
+    }
+    Some(
+        div()
+            .w_full()
+            .mt_1()
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.mockup_border)
+            .bg(theme.mockup_surface)
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py(px(6.0))
+                    .text_xs()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.mockup_text)
+                            .child("Changes"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .text_color(theme.mockup_text_dim)
+                            .child(format!(
+                                "{file_count} file{}",
+                                if file_count == 1 { "" } else { "s" }
+                            ))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.sage_fg())
+                                    .child(format!("+{adds}")),
+                            )
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.rose_fg())
+                                    .child(format!("-{dels}")),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .py(px(4.0))
+                    .border_t_1()
+                    .border_color(theme.mockup_border)
+                    .child(rows),
+            ),
+    )
+}
+
 /// User message query card.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserMessageCard {
@@ -289,9 +420,15 @@ impl AssistantMessageView {
             card = card.child(reasoning.render(theme));
         }
 
-        // 2. Tool Call Cards
+        // 2. Tool Call Cards, then a collapsible Changes summary card when the
+        // turn touched files (driven by the tool calls' existing diff data).
         for tool in &self.tool_calls {
             card = card.child(tool.render(theme));
+        }
+        if !self.is_streaming {
+            if let Some(changes) = render_changes_card(theme, &self.tool_calls) {
+                card = card.child(changes);
+            }
         }
 
         // 3. Prose / Text Content (fenced code blocks render as structured blocks)

@@ -64,8 +64,8 @@ HEX Desktop is a native macOS GPUI cockpit for the HEX AI agent. Today it has a 
 - [x] Acceptance: app launches on Home; clicking a Continue row opens that session; submitting text creates and opens a session with the prompt
 
 ## Phase 3: Session detail polish
-- [ ] Changes (2 files, +22 −23) collapsible card under turns that touched files, driven by existing diff view data
-- [ ] Inline diff cards restyled to mockup colors/typography
-- [ ] Needs you: sidebar row and header bell wired to the real approval queue count; clicking opens the pending approval
-- [ ] Empty, loading and error states for the feed (connecting spinner, empty session prompt, reconnect notice)
-- [ ] Acceptance: approval flow shows the badge; diff cards match the mockup; feed states all render
+- [x] Changes (2 files, +22 −23) collapsible card under turns that touched files, driven by existing diff view data
+- [x] Inline diff cards restyled to mockup colors/typography
+- [x] Needs you: sidebar row and header bell wired to the real approval queue count; clicking opens the pending approval
+- [x] Empty, loading and error states for the feed (connecting spinner, empty session prompt, reconnect notice)
+- [x] Acceptance: approval flow shows the badge; diff cards match the mockup; feed states all render

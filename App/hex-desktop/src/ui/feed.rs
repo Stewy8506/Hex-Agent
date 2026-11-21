@@ -26,6 +26,11 @@ pub struct MessageFeed {
     pub messages: Vec<MessageItem>,
     pub auto_scroll_bottom: bool,
     pub is_streaming: bool,
+    /// Transport is dialing a new session; the feed shows a connecting spinner.
+    pub is_connecting: bool,
+    /// Set while the supervised reconnect with backoff is in progress; the
+    /// feed shows an inline reconnect notice instead of failing silently.
+    pub reconnect_notice: Option<String>,
 }
 
 impl Default for MessageFeed {
@@ -40,6 +45,8 @@ impl MessageFeed {
             messages: Vec::new(),
             auto_scroll_bottom: true,
             is_streaming: false,
+            is_connecting: false,
+            reconnect_notice: None,
         }
     }
 
@@ -48,7 +55,19 @@ impl MessageFeed {
             messages,
             auto_scroll_bottom: true,
             is_streaming: false,
+            is_connecting: false,
+            reconnect_notice: None,
         }
+    }
+
+    /// Sets the inline reconnect/error notice shown above the feed content.
+    pub fn set_reconnect_notice(&mut self, notice: Option<String>) {
+        self.reconnect_notice = notice;
+    }
+
+    /// Marks the feed as dialing a session (connecting spinner state).
+    pub fn set_connecting(&mut self, connecting: bool) {
+        self.is_connecting = connecting;
     }
 
     pub fn len(&self) -> usize {
@@ -166,7 +185,58 @@ impl MessageFeed {
             .p_4()
             .overflow_y_hidden();
 
+        // Error / reconnect notice banner (Phase 3): shown inline at the top
+        // of the feed while the supervised reconnect is in progress.
+        if let Some(notice) = &self.reconnect_notice {
+            feed_container = feed_container.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .px_3()
+                            .py(px(6.0))
+                            .rounded_md()
+                            .bg(theme.mockup_surface)
+                            .border_1()
+                            .border_color(theme.rose_fg())
+                            .text_xs()
+                            .text_color(theme.rose_fg())
+                            .child(format!("⚠ {notice}")),
+                    ),
+            );
+        }
+        // Empty / connecting states (Phase 3): only when the feed has no turns.
         if self.messages.is_empty() {
+            // Connecting spinner state (Phase 3): a session is being dialled.
+            if self.is_connecting {
+                return feed_container.child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_lg()
+                                .text_color(theme.accent_blue())
+                                .child("◐"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.text_muted())
+                                .child("Connecting to session…"),
+                        ),
+                );
+            }
             return feed_container.child(
                 div()
                     .flex_1()

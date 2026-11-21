@@ -96,6 +96,8 @@ pub struct SidebarView {
     pub git_branch: String,
     pub session_list: SessionListView,
     pub provider_status: ProviderStatus,
+    /// Phase 3: number of unresolved approvals waiting for the user.
+    pub pending_approvals: usize,
 }
 
 impl Default for SidebarView {
@@ -111,6 +113,7 @@ impl SidebarView {
             git_branch: "experimental-features".to_string(),
             session_list: SessionListView::new(),
             provider_status: ProviderStatus::default(),
+            pending_approvals: 0,
         }
     }
 
@@ -123,7 +126,13 @@ impl SidebarView {
             git_branch: git_branch.into(),
             session_list: SessionListView::new(),
             provider_status: ProviderStatus::default(),
+            pending_approvals: 0,
         }
+    }
+
+    /// Phase 3: update the "Needs you" badge from the live approval queue.
+    pub fn set_pending_approvals(&mut self, count: usize) {
+        self.pending_approvals = count;
     }
 
     pub fn set_provider_status(&mut self, status: ProviderStatus) {
@@ -449,19 +458,93 @@ impl SidebarView {
             )
     }
 
+    /// Phase 3: pending approval count surfaced as a "Needs you" row with a
+    /// count badge. Rendered above the provider status chip.
+    fn render_needs_you(
+        &self,
+        theme: &HermesTheme,
+        on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+    ) -> Div {
+        let count = self.pending_approvals;
+        let mut row = div()
+            .id("needs_you_row")
+            .w_full()
+            .mx_3()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_3()
+            .py_1()
+            .rounded_md()
+            .text_xs()
+            .cursor_pointer();
+        if count > 0 {
+            row = row
+                .bg(theme.mockup_hover)
+                .border_1()
+                .border_color(theme.warning_amber())
+                .hover(|st| st.bg(theme.mockup_chip));
+        } else {
+            row = row
+                .text_color(theme.text_dim())
+                .hover(|st| st.bg(theme.mockup_hover));
+        }
+        let mut inner = row
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_xs().child("🔔"))
+                    .child(
+                        div()
+                            .text_color(if count > 0 {
+                                theme.mockup_text_bright
+                            } else {
+                                theme.text_dim()
+                            })
+                            .child("Needs you"),
+                    ),
+            );
+        if count > 0 {
+            inner = inner.child(
+                div()
+                    .px(px(6.0))
+                    .rounded_full()
+                    .bg(theme.warning_amber())
+                    .text_size(px(10.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x141414))
+                    .child(format!("{count}")),
+            );
+        }
+        let mut container = div().w_full().px_3().pb_1();
+        if let Some(handler) = on_click {
+            container = container.child(
+                inner.on_click(move |event, window, cx| handler(event, window, cx)),
+            );
+        } else {
+            container = container.child(inner);
+        }
+        container
+    }
+
     /// Renders the full 260px sidebar.
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        self.render_with_actions(theme, None, None)
+        self.render_with_actions(theme, None, None, None)
     }
 
     /// Renders the sidebar with optional interactive handlers:
-    /// `on_new_chat` for the New Chat button and `on_select_session(session_id)`
-    /// for history rows. `ChatView` wires these to real backend operations.
+    /// `on_new_chat` for the New Chat button, `on_select_session(session_id)`
+    /// for history rows and `on_needs_you` for the approval queue row.
+    /// `ChatView` wires these to real backend operations.
     pub fn render_with_actions(
         &self,
         theme: &HermesTheme,
         on_new_chat: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
         on_select_session: Option<Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)>>,
+        on_needs_you: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     ) -> Div {
         let now = Utc::now();
 
@@ -485,7 +568,8 @@ impl SidebarView {
                     .px_1()
                     .child(self.session_list.render_with_select(theme, now, on_select_session)),
             )
-            // Bottom Fixed Section: Provider Status + Footer
+            // Bottom Fixed Section: Needs-you (approvals) + Provider Status + Footer
+            .child(self.render_needs_you(theme, on_needs_you))
             .child(self.render_provider_status(theme))
             .child(self.render_feature_rows(theme))
             .child(self.render_footer(theme))

@@ -278,6 +278,8 @@ pub struct ChatView {
     pending_home_prompt: Option<String>,
     /// Dock feature the user clicked that is not built yet (Coming soon).
     home_coming_soon: Option<&'static str>,
+    settings_open: bool,
+    home_connection_error: Option<String>,
 }
 
 impl Focusable for ChatView {
@@ -333,6 +335,8 @@ impl ChatView {
             show_home: true,
             pending_home_prompt: None,
             home_coming_soon: None,
+            settings_open: false,
+            home_connection_error: None,
         };
         view.start_event_pump(cx);
         view.start_backend(cx);
@@ -748,6 +752,7 @@ impl ChatView {
         self.current_model = resp.model.clone();
         self.model_id = Some(resp.model.clone());
         // Phase 2: a prompt submitted on Home opens the session it created.
+        self.home_connection_error = None;
         if self.show_home {
             if let Some(text) = self.pending_home_prompt.take() {
                 self.show_home = false;
@@ -867,12 +872,6 @@ impl ChatView {
     /// a new session (adopted on creation) and opens it; a dock item that is
     /// not built yet surfaces its Coming soon notice.
     fn render_home(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
-        let workspace_name = self
-            .workspace
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Workspace".to_string());
-
         // Continue list: the five most recent real sessions.
         let now = chrono::Utc::now();
         let rows: Vec<ContinueRow> = self
@@ -914,6 +913,24 @@ impl ChatView {
                         // body (mode/model pills + attach/send) re-rendered here
                         // without the session-only context bar.
                         self.render_home_composer(theme, cx),
+                    )
+                    .when_some(
+                        self.home_connection_error.clone(),
+                        |c, msg| {
+                            c.child(
+                                div()
+                                    .mt(px(12.0))
+                                    .px(px(14.0))
+                                    .py(px(8.0))
+                                    .rounded(px(10.0))
+                                    .bg(theme.mockup_surface)
+                                    .border_1()
+                                    .border_color(theme.mockup_border)
+                                    .text_sm()
+                                    .text_color(theme.mockup_text_dim)
+                                    .child(SharedString::from(msg)),
+                            )
+                        },
                     )
                     .child(
                         // Continue list
@@ -1020,20 +1037,17 @@ impl ChatView {
         )
     }
 
-    #[allow(dead_code)]
-    fn unused_home_helper(&self) {
-        let _ = self.home_coming_soon;
-    }
-
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
-        // Phase 2: New chat returns to the Home start screen.
+        // Phase 2: New chat returns to the Home start screen. A prompt already
+        // queued from the Home composer (set in submit_text) must survive this
+        // reset so adopt_session can submit it once the session exists.
         self.show_home = true;
-        self.pending_home_prompt = None;
-        cx.notify();
+        self.home_connection_error = None;
         if !self.bridge.is_connected() {
-            self.shell.feed.add_system_notice(
-                "Not connected to the HEX runtime — cannot start a new chat.",
-            );
+            let msg = "Not connected to the HEX runtime — cannot start a new chat.".to_string();
+            // Surface on Home itself, where the user actually is.
+            self.home_connection_error = Some(msg.clone());
+            self.shell.feed.add_system_notice(msg);
             cx.notify();
             return;
         }
@@ -1048,6 +1062,7 @@ impl ChatView {
             this.update(cx, |view, cx| match res {
                 Ok(Ok(resp)) => view.adopt_session(resp, cx),
                 Ok(Err(err)) => {
+                    view.home_connection_error = Some(format!("Could not create session: {err}"));
                     view.shell
                         .feed
                         .add_system_notice(format!("Could not create session: {err}"));
@@ -1672,10 +1687,17 @@ impl ChatView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.shell
-            .feed
-            .add_system_notice("Settings are not available in the desktop yet.");
+        self.settings_open = !self.settings_open;
         cx.notify();
+    }
+
+    /// Shared settings-dismissal path for the Esc shortcut and the modal
+    /// backdrop, so the panel can always be closed.
+    fn close_settings(&mut self, cx: &mut Context<Self>) {
+        if self.settings_open {
+            self.settings_open = false;
+            cx.notify();
+        }
     }
 
     fn on_cancel_or_dismiss(
@@ -2323,7 +2345,22 @@ impl ChatView {
                                     .text_color(theme.mockup_text_dim)
                                     .child(self.shell.sidebar.provider_status.display_label()),
                             )
-                            .child(self.render_header_icon_button(theme, "header_settings", SharedString::from("⚙"))),
+                            .child(
+                                self.render_header_icon_button(
+                                    theme,
+                                    "header_bell",
+                                    SharedString::from(self.provider_display_glyph()),
+                                )
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.open_first_pending_approval(cx);
+                                })),
+                            )
+                            .child(
+                                self.render_header_icon_button(theme, "header_settings", SharedString::from("⚙"))
+                                    .on_click(cx.listener(|this, _event, window, cx| {
+                                        this.on_open_settings(&shortcuts::OpenSettings, window, cx);
+                                    })),
+                            ),
                     ),
             )
             .child(if coming_soon_pane {
@@ -2401,6 +2438,29 @@ impl ChatView {
             }))
     }
 
+    /// Phase 3: header bell glyph for the approval queue. Shows the pending
+    /// count (or a filled bell) when approvals are waiting, else a plain bell.
+    fn provider_display_glyph(&self) -> String {
+        let pending = self.shell.sidebar.pending_approvals;
+        if pending > 0 {
+            format!("🔔{pending}")
+        } else {
+            "🔔".to_string()
+        }
+    }
+
+    /// Phase 3: opens the first pending approval from the modal queue, if any.
+    /// Used by the sidebar "Needs you" row and the header bell.
+    fn open_first_pending_approval(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.shell.active_modal, ActiveModal::Approval(_)) {
+            return;
+        }
+        if let Some(ActiveModal::Approval(modal)) = self.shell.modal_queue.pop_front() {
+            self.shell.active_modal = ActiveModal::Approval(modal);
+            cx.notify();
+        }
+    }
+
     fn render_header_icon_button(
         &self,
         theme: &HermesTheme,
@@ -2427,12 +2487,42 @@ impl ChatView {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Phase 3: badge + bell reflect the live approval queue every frame
+        // (active modal + queued approval modals).
+        {
+            let pending = match &self.shell.active_modal {
+                ActiveModal::Approval(_) => 1,
+                _ => 0,
+            } + self
+                .shell
+                .modal_queue
+                .iter()
+                .filter(|m| matches!(m, ActiveModal::Approval(_)))
+                .count();
+            self.shell.sidebar.set_pending_approvals(pending);
+        }
         let theme = HermesTheme::get(cx).clone();
 
         // Phase 2: the app opens on the Home / start screen; any submit or
         // session selection routes to the Session view (show_home=false).
+        // Home still renders inside the shared root (key context, global
+        // actions and the modal layer) so modals raised on Home stay visible
+        // and dismissible.
         if self.show_home {
-            return self.render_home(&theme, cx);
+            let home = self
+                .render_home(&theme, cx)
+                .key_context("ChatView")
+                .on_action(cx.listener(Self::on_submit))
+                .on_action(cx.listener(Self::on_new_chat))
+                .on_action(cx.listener(Self::on_open_settings))
+                .on_action(cx.listener(Self::on_cancel_or_dismiss));
+
+            let modal = self.render_modal_layer(&theme, cx);
+            return if let Some(modal) = modal {
+                home.child(modal).into_any_element()
+            } else {
+                home.into_any_element()
+            };
         }
 
         // Predictable focus: opening a modal moves focus to it, closing returns
@@ -2449,11 +2539,14 @@ impl Render for ChatView {
 
         let on_new_chat: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
             Rc::new(cx.listener(|this, _, _, cx| this.request_new_chat(cx)));
-        let weak = cx.entity().downgrade();
-        let on_select_session: Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)> =
+        let on_needs_you: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
+            Rc::new(cx.listener(|this, _, _, cx| this.open_first_pending_approval(cx)));
+        let on_select_session: Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)> = {
+            let weak = cx.entity().downgrade();
             Rc::new(move |id, _event, _window, cx| {
                 weak.update(cx, |this, cx| this.switch_session(id, cx)).ok();
-            });
+            })
+        };
 
         let mut root = div()
             .size_full()
@@ -2480,39 +2573,52 @@ impl Render for ChatView {
                     &theme,
                     Some(on_new_chat),
                     Some(on_select_session),
+                    Some(on_needs_you),
                 ))
                 .child(div().w(px(1.0)).h_full().bg(theme.border_subtle()));
         }
 
         root = root.child(self.render_main_pane(&theme, cx));
 
+        if let Some(modal) = self.render_modal_layer(&theme, cx) {
+            root = root.child(modal);
+        }
+
+        root.into_any_element()
+    }
+}
+
+impl ChatView {
+    /// The overlay modal layer (approval, palette, model picker), or `None`
+    /// when no modal is open. Shared by the Session and Home render paths.
+    fn render_modal_layer(
+        &mut self,
+        theme: &HermesTheme,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         let modal = match &self.shell.active_modal {
             ActiveModal::None => None,
             ActiveModal::Approval(modal) => {
-                Some(render_modal_container(modal.render(&theme), &theme))
+                Some(render_modal_container(modal.render(theme), theme))
             }
             ActiveModal::Palette(palette) => {
-                Some(render_modal_container(palette.render(&theme), &theme))
+                Some(render_modal_container(palette.render(theme), theme))
             }
             ActiveModal::ModelPicker(picker) => {
-                Some(render_modal_container(picker.render(&theme), &theme))
+                Some(render_modal_container(picker.render(theme), theme))
             }
-        };
-        if let Some(modal) = modal {
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .key_context("Modal")
-                    .track_focus(&self.modal_focus_handle)
-                    .on_action(cx.listener(Self::on_backspace))
-                    .on_action(cx.listener(Self::on_up))
-                    .on_action(cx.listener(Self::on_down))
-                    .child(modal),
-            );
-        }
-
-        root
+        }?;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .key_context("Modal")
+                .track_focus(&self.modal_focus_handle)
+                .on_action(cx.listener(Self::on_backspace))
+                .on_action(cx.listener(Self::on_up))
+                .on_action(cx.listener(Self::on_down))
+                .child(modal),
+        )
     }
 }
 
