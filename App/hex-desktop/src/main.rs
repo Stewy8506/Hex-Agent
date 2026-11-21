@@ -11,7 +11,6 @@ use hex_desktop::chat::{app_runtime, init_app, open_chat_window};
 struct FsAssets {
     base: std::path::PathBuf,
 }
-
 impl AssetSource for FsAssets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
         std::fs::read(self.base.join(path))
@@ -60,7 +59,7 @@ fn main() {
     log::set_max_level(log::LevelFilter::Warn);
 
     let app = Application::new().with_assets(FsAssets {
-        base: std::path::PathBuf::from("App/hex-desktop/assets"),
+        base: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
     });
     app.run(|cx: &mut App| {
         init_app(cx);
