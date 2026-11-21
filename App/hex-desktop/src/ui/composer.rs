@@ -170,7 +170,7 @@ impl PromptComposer {
     pub fn new() -> Self {
         Self {
             input_text: String::new(),
-            placeholder: "Ask HEX anything, or type / for slash commands...".to_string(),
+            placeholder: "Describe what to build or fix".to_string(),
             token_gauge: TokenGaugeWidget::default(),
             model_pill: ModelSelectorPill::default(),
             is_streaming: false,
@@ -257,12 +257,9 @@ impl PromptComposer {
             .w_full()
             .flex()
             .flex_col()
-            .p_3()
-            .rounded_xl()
-            .bg(theme.card_bg())
-            .border_1()
-            .border_color(theme.border_subtle())
-            // Top Section: Text Area Row
+            .gap(px(30.0))
+            // Top Section: Text Area Row (the glow_card supplies the single
+            // #171717 card, radius 24 and border, so no inner card here)
             .child(
                 div()
                     .w_full()
@@ -276,11 +273,11 @@ impl PromptComposer {
                     .child(
                         div()
                             .flex_1()
-                            .text_sm()
+                            .text_size(px(16.0))
                             .text_color(if has_text {
-                                theme.text_primary()
+                                theme.mockup_text
                             } else {
-                                theme.text_extra_dim()
+                                theme.mockup_text_dim
                             })
                             .child(if has_text {
                                 self.input_text.clone()
@@ -311,9 +308,6 @@ impl PromptComposer {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .pt_2()
-                    .border_t_1()
-                    .border_color(theme.border_subtle())
                     // Left Side: Model Selector Pill
                     .child(self.model_pill.render(theme))
                     // Right Side: Token Gauge & Send Button

@@ -14,6 +14,7 @@ use chrono::Utc;
 use gpui::*;
 
 use crate::theme::HermesTheme;
+use crate::ui::icon_svg;
 use crate::ui::session_list::{SessionItem, SessionListView};
 
 /// Connectivity and operational state for the AI provider.
@@ -242,7 +243,7 @@ impl SidebarView {
                         .child(
                             div()
                                 .text_sm()
-                                .child("✏️"),
+                                .child(icon_svg("pencil", 14.0)),
                         )
                         .child(
                             div()
@@ -453,7 +454,7 @@ impl SidebarView {
                         div()
                             .text_xs()
                             .text_color(theme.text_muted())
-                            .child("⚙️ Settings"),
+                            .child(icon_svg("settings", 14.0)).child("Settings"),
                     ),
             )
     }
@@ -496,7 +497,7 @@ impl SidebarView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().text_xs().child("🔔"))
+                    .child(icon_svg("bell", 14.0))
                     .child(
                         div()
                             .text_color(if count > 0 {

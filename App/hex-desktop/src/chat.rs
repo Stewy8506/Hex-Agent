@@ -2349,7 +2349,7 @@ impl ChatView {
                                 self.render_header_icon_button(
                                     theme,
                                     "header_bell",
-                                    SharedString::from(self.provider_display_glyph()),
+                                    SharedString::from(self.pending_approval_label()),
                                 )
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.open_first_pending_approval(cx);
@@ -2440,12 +2440,12 @@ impl ChatView {
 
     /// Phase 3: header bell glyph for the approval queue. Shows the pending
     /// count (or a filled bell) when approvals are waiting, else a plain bell.
-    fn provider_display_glyph(&self) -> String {
+    fn pending_approval_label(&self) -> String {
         let pending = self.shell.sidebar.pending_approvals;
         if pending > 0 {
-            format!("🔔{pending}")
+            format!("{pending}")
         } else {
-            "🔔".to_string()
+            String::new()
         }
     }
 
