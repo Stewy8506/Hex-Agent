@@ -141,6 +141,19 @@ def _observation_indicates_failure(output: str) -> bool:
     return bool(m and int(m.group(1)) != 0)
 
 
+def _promotion_target_for(cand: dict[str, Any]) -> str:
+    """Route a check_promotions candidate to its destination store.
+
+    ``MEMORY.md`` verdicts (3-4 recorded uses) promote the note into active
+    curated memory; ``SKILL`` verdicts (5+ uses, action ``flag_for_skill``)
+    compile a reusable skill bundle (B60).
+    """
+    action = str(cand.get("action") or "")
+    if action == "flag_for_skill" or str(cand.get("target") or "") == "SKILL":
+        return "skill"
+    return "memory"
+
+
 class ProviderUnavailableError(RuntimeError):
     """Inference is unavailable (no router, no active provider, outage, or empty response).
 
@@ -1226,12 +1239,7 @@ class HarnessOrchestrator:
                 if lifecycle and hasattr(lifecycle, "check_promotions"):
                     candidates = lifecycle.check_promotions()
                     for cand in candidates:
-                        target_store = (
-                            "memory"
-                            if cand.get("action") == "promote_to_memory" or cand.get("target") == "MEMORY.md"
-                            else "skill"
-                        )
-                        lifecycle.promote_entry(cand["id"], target=target_store)
+                        lifecycle.promote_entry(cand["id"], target=_promotion_target_for(cand))
             except Exception as e:
                 logger.warning("Agent loop memory promotion check failed: %s", e)
 
@@ -3128,12 +3136,7 @@ class HarnessOrchestrator:
             if lifecycle and hasattr(lifecycle, "check_promotions"):
                 candidates = lifecycle.check_promotions()
                 for cand in candidates:
-                    target_store = (
-                        "memory"
-                        if cand.get("action") == "promote_to_memory" or cand.get("target") == "MEMORY.md"
-                        else "skill"
-                    )
-                    lifecycle.promote_entry(cand["id"], target=target_store)
+                    lifecycle.promote_entry(cand["id"], target=_promotion_target_for(cand))
         except Exception as e:
             logger.warning("Post-task memory promotion check failed: %s", e)
 
