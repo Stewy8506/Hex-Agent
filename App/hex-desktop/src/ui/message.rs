@@ -212,7 +212,7 @@ impl UserMessageCard {
             id: id.into(),
             content: content.into(),
             timestamp: Utc::now(),
-            avatar_glyph: "👤".to_string(),
+            avatar_glyph: "Y".to_string(),
         }
     }
 

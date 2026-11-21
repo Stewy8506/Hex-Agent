@@ -50,6 +50,8 @@ impl Default for TypographyTokens {
     fn default() -> Self {
         Self {
             font_mono: vec![
+                // Mockup (DesktopStart.dc.html) typography: Geist Mono first.
+                "Geist Mono".into(),
                 "JetBrains Mono".into(),
                 "SF Mono".into(),
                 "Menlo".into(),
@@ -57,6 +59,10 @@ impl Default for TypographyTokens {
                 "monospace".into(),
             ],
             font_sans: vec![
+                // Mockup (DesktopStart.dc.html) typography: Apfel Grotezk first.
+                "Apfel Grotezk".into(),
+                "Helvetica Neue".into(),
+                "Arial".into(),
                 "-apple-system".into(),
                 "BlinkMacSystemFont".into(),
                 "SF Pro Text".into(),
