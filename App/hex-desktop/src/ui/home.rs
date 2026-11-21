@@ -147,4 +147,3 @@ pub fn render_continue_row(
                 .child(row.relative_time.clone()),
         )
 }
-

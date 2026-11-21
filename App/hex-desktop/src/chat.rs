@@ -961,12 +961,20 @@ impl ChatView {
                         COMING_SOON_DOCK
                             .iter()
                             .map(|(label, glyph)| {
+                                let this = cx.entity().downgrade();
+                                let name: &'static str = label;
                                 crate::ui::home::render_dock_item(
                                     theme,
                                     label,
                                     label,
                                     glyph,
                                 )
+                                .on_click(move |_, _, cx| {
+                                    this.update(cx, |view, cx| {
+                                        view.home_coming_soon = Some(name);
+                                        cx.notify();
+                                    });
+                                })
                             }),
                     )),
             )
@@ -1018,6 +1026,10 @@ impl ChatView {
     }
 
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
+        // Phase 2: New chat returns to the Home start screen.
+        self.show_home = true;
+        self.pending_home_prompt = None;
+        cx.notify();
         if !self.bridge.is_connected() {
             self.shell.feed.add_system_notice(
                 "Not connected to the HEX runtime — cannot start a new chat.",

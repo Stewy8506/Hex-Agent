@@ -57,11 +57,11 @@ HEX Desktop is a native macOS GPUI cockpit for the HEX AI agent. Today it has a 
 - [x] Acceptance: app builds; session screen matches mockup layout and palette; all existing tests pass
 
 ## Phase 2: Home / start screen
-- [ ] New `ui/home.rs` with ASCII logo, pulsating glowing composer card, mode/model pills, attach/send buttons
-- [ ] "Continue" list from real recent sessions with relative times and location chips
-- [ ] Bottom feature dock with tooltips; Automations/Team/Notebooks/Design/Extensions open a Coming soon state
-- [ ] Route: app opens on Home; submitting a prompt or selecting a session opens Session; New chat returns Home
-- [ ] Acceptance: app launches on Home; clicking a Continue row opens that session; submitting text creates and opens a session with the prompt
+- [x] New `ui/home.rs` with ASCII logo, pulsating glowing composer card, mode/model pills, attach/send buttons
+- [x] "Continue" list from real recent sessions with relative times and location chips
+- [x] Bottom feature dock with tooltips; Automations/Team/Notebooks/Design/Extensions open a Coming soon state
+- [x] Route: app opens on Home; submitting a prompt or selecting a session opens Session; New chat returns Home
+- [x] Acceptance: app launches on Home; clicking a Continue row opens that session; submitting text creates and opens a session with the prompt
 
 ## Phase 3: Session detail polish
 - [ ] Changes (2 files, +22 −23) collapsible card under turns that touched files, driven by existing diff view data
