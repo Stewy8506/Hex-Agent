@@ -48,6 +48,41 @@ pub fn format_relative_time(target: DateTime<Utc>, now: DateTime<Utc>) -> String
     }
 }
 
+/// Compact Continue-list format (mockup, no "ago"):
+/// - `< 60s`: "now"
+/// - `< 60m`: "{m}m"
+/// - `< 24h`: "{h}h"
+/// - `< 7d`: "{d}d"
+/// - `>= 7d`: "MMM d" (e.g., "Nov 6")
+pub fn format_compact_relative_time(target: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let seconds = now.signed_duration_since(target).num_seconds();
+
+    if seconds < 60 {
+        "now".to_string()
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86400 {
+        format!("{}h", seconds / 3600)
+    } else if seconds < 86400 * 7 {
+        format!("{}d", seconds / 86400)
+    } else {
+        target.format("%b %-d").to_string()
+    }
+}
+
+/// Orders one project's sessions for the sidebar: pinned sessions first,
+/// then most recently updated. Keeps pin logic while the mockup groups by
+/// project instead of date.
+pub fn sort_project_sessions<'a>(sessions: &'a [SessionItem]) -> Vec<&'a SessionItem> {
+    let mut ordered: Vec<&SessionItem> = sessions.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.is_pinned
+            .cmp(&a.is_pinned)
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+    });
+    ordered
+}
+
 /// Date grouping category for recent sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SessionGroupCategory {
@@ -310,7 +345,7 @@ impl SessionListView {
     ) -> Stateful<Div> {
         let rel_time = format_relative_time(session.updated_at, now);
         let bg_color = if is_selected {
-            theme.card_hover() // #27272a
+            theme.mockup_row_hover
         } else {
             rgb(0x00000000) // transparent
         };
@@ -327,7 +362,7 @@ impl SessionListView {
             .rounded_md()
             .bg(bg_color)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.card_hover()));
+            .hover(|s| s.bg(theme.mockup_row_hover));
 
         // Active indicator on the left
         if is_selected {
@@ -357,16 +392,16 @@ impl SessionListView {
                             FontWeight::NORMAL
                         })
                         .text_color(if is_selected {
-                            theme.text_primary()
+                            theme.mockup_text_bright
                         } else {
-                            theme.text_muted()
+                            theme.mockup_session_inactive
                         })
                         .child(session.title.clone()),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(theme.text_dim())
+                        .text_color(theme.mockup_text_dim)
                         .child(rel_time),
                 ),
         )
@@ -402,7 +437,7 @@ impl SessionListView {
                     .py(px(2.0))
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child("PINNED"),
             );
 
@@ -429,7 +464,7 @@ impl SessionListView {
                     .py(px(2.0))
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child(category.label()),
             );
 
@@ -483,6 +518,45 @@ mod tests {
         // 10 days ago -> "Nov 6"
         let t_10d = now - Duration::days(10);
         assert_eq!(format_relative_time(t_10d, now), "Nov 6");
+    }
+
+    #[test]
+    fn test_compact_relative_time_formatting() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 16, 12, 0, 0).unwrap();
+
+        // 30 seconds ago -> "now"
+        let t_30s = now - Duration::seconds(30);
+        assert_eq!(format_compact_relative_time(t_30s, now), "now");
+
+        // 5 minutes ago -> "5m"
+        let t_5m = now - Duration::minutes(5);
+        assert_eq!(format_compact_relative_time(t_5m, now), "5m");
+
+        // 2 hours ago -> "2h"
+        let t_2h = now - Duration::hours(2);
+        assert_eq!(format_compact_relative_time(t_2h, now), "2h");
+
+        // 3 days ago -> "3d"
+        let t_3d = now - Duration::days(3);
+        assert_eq!(format_compact_relative_time(t_3d, now), "3d");
+
+        // 10 days ago -> "Nov 6"
+        let t_10d = now - Duration::days(10);
+        assert_eq!(format_compact_relative_time(t_10d, now), "Nov 6");
+    }
+
+    #[test]
+    fn test_sort_project_sessions_pinned_first_then_recency() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 16, 12, 0, 0).unwrap();
+        let old = SessionItem::with_timestamps("old", "Old", now - Duration::days(2), now - Duration::days(2));
+        let recent = SessionItem::with_timestamps("recent", "Recent", now - Duration::hours(1), now - Duration::hours(1));
+        let pinned = SessionItem::with_timestamps("pinned", "Pinned", now - Duration::days(1), now - Duration::days(1))
+            .with_pinned(true);
+
+        let sessions = [old, recent, pinned];
+        let ordered = sort_project_sessions(&sessions);
+        let ids: Vec<&str> = ordered.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["pinned", "recent", "old"]);
     }
 
     #[test]

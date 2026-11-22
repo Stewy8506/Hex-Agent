@@ -101,7 +101,7 @@ fn sync_directory(path: &Path) -> Result<(), String> {
 }
 
 fn private_directory(path: &Path) -> Result<(), String> {
-    let builder = fs::DirBuilder::new();
+    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

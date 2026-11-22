@@ -7,6 +7,7 @@ pub mod message;
 pub mod modals;
 pub mod model_pill;
 pub mod motion;
+pub mod pill;
 pub mod reasoning;
 pub mod session_list;
 pub mod shell;
@@ -14,15 +15,18 @@ pub mod sidebar;
 pub mod token_gauge;
 pub mod tool_card;
 
-pub use composer::PromptComposer;
+pub use composer::{
+    context_bar, context_label, glow_card, PromptComposer, SESSION_PLACEHOLDER,
+};
 pub use diff_view::{line_background, line_foreground, line_prefix, DiffView};
 pub use feed::{MessageFeed, MessageItem};
-pub use message::{format_message_time, AssistantMessageView, UserMessageCard};
+pub use message::{AssistantMessageView, UserMessageCard};
 pub use modals::{
     render_modal_container, ActiveModal, CommandPaletteModal, ModelEntry, ModelPickerModal,
     PaletteAction, PaletteItem, ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult,
 };
 pub use model_pill::{provider_dot_color, ModelSelectorPill, SendButton};
+pub use pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
 pub use reasoning::{format_reasoning_elapsed, ThinkingDisclosure};
 pub use session_list::{
     classify_session_date, format_relative_time, SessionGroupCategory, SessionItem,

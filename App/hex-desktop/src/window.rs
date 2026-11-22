@@ -1,4 +1,4 @@
-//! Native macOS Metal-accelerated window configuration for HEX Desktop.
+//! Window configuration for HEX Desktop (1440×900 opaque mockup canvas).
 
 use gpui::*;
 
@@ -82,92 +82,6 @@ impl WindowConfig {
             focus: true,
             show: true,
             ..Default::default()
-        }
-    }
-}
-
-/// View states available in the desktop cockpit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DesktopView {
-    Start,
-    Session,
-    Settings,
-}
-
-/// Root GPUI view holding workspace context and view dispatch state.
-pub struct DesktopWindow {
-    pub workspace_path: Option<String>,
-    pub status_message: String,
-    pub active_view: DesktopView,
-    pub shell: crate::ui::AppShell,
-}
-
-impl DesktopWindow {
-    pub fn new() -> Self {
-        Self {
-            workspace_path: None,
-            status_message: "Ready".to_string(),
-            active_view: DesktopView::Start,
-            shell: crate::ui::AppShell::new(),
-        }
-    }
-
-    pub fn with_workspace(workspace_path: impl Into<String>) -> Self {
-        let path = workspace_path.into();
-        Self {
-            workspace_path: Some(path.clone()),
-            status_message: "Workspace loaded".to_string(),
-            active_view: DesktopView::Start,
-            shell: crate::ui::AppShell::with_workspace(path, "experimental-features"),
-        }
-    }
-
-    pub fn set_view(&mut self, view: DesktopView) {
-        self.active_view = view;
-    }
-}
-
-impl Default for DesktopWindow {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Render for DesktopWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = crate::theme::HermesTheme::get(cx);
-        match self.active_view {
-            DesktopView::Session => self.shell.render_shell(theme),
-            _ => div()
-                .size_full()
-                .bg(rgb(0x09090b))
-                .text_color(rgb(0xfafafa))
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .p_4()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("HEX Autonomous AI Workbench"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(0xa1a1aa))
-                                .child(self.status_message.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .child(self.shell.render_shell(theme)),
-                ),
         }
     }
 }

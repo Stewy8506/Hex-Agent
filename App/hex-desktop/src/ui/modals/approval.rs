@@ -75,6 +75,9 @@ impl ToolApprovalResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolApprovalModal {
     pub request_id: String,
+    /// ACP session that raised the request, when known; drives the Home
+    /// Continue list's "Review" chip.
+    pub session_id: Option<String>,
     pub tool_name: String,
     pub risk_class: String,
     pub command: String,
@@ -94,6 +97,7 @@ impl ToolApprovalModal {
     ) -> Self {
         Self {
             request_id: request_id.into(),
+            session_id: None,
             tool_name: tool_name.into(),
             risk_class: risk_class.into(),
             command: command.into(),
@@ -193,7 +197,7 @@ impl ToolApprovalModal {
                         div()
                             .text_size(px(14.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text_primary())
+                            .text_color(theme.mockup_text_bright)
                             .child("Privileged Tool Approval"),
                     ),
             )
@@ -207,9 +211,9 @@ impl ToolApprovalModal {
                             .px_2()
                             .py_0p5()
                             .rounded(px(4.0))
-                            .bg(theme.card_hover())
+                            .bg(theme.mockup_hover)
                             .border_1()
-                            .border_color(theme.border_subtle())
+                            .border_color(theme.mockup_border)
                             .text_size(px(11.0))
                             .font_family(theme.typography.font_mono[0].clone())
                             .text_color(theme.accent_blue())
@@ -237,7 +241,7 @@ impl ToolApprovalModal {
             .child(
                 div()
                     .text_size(px(11.0))
-                    .text_color(theme.text_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child("COMMAND / ARGUMENTS:"),
             )
             .child(
@@ -246,12 +250,12 @@ impl ToolApprovalModal {
                     .overflow_y_hidden()
                     .p_3()
                     .rounded(px(6.0))
-                    .bg(theme.canvas_bg())
+                    .bg(theme.mockup_body)
                     .border_1()
-                    .border_color(theme.border_subtle())
+                    .border_color(theme.mockup_border)
                     .font_family(theme.typography.font_mono[0].clone())
                     .text_size(px(11.5))
-                    .text_color(theme.text_primary())
+                    .text_color(theme.mockup_text_bright)
                     .child(self.command.clone()),
             )
     }
@@ -263,14 +267,14 @@ impl ToolApprovalModal {
             .gap_2()
             .p_3()
             .rounded(px(6.0))
-            .bg(theme.card_hover())
+            .bg(theme.mockup_hover)
             .border_1()
-            .border_color(theme.border_subtle())
+            .border_color(theme.mockup_border)
             .child(
                 div()
                     .text_size(px(11.0))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child("DECISION:"),
             )
             .child(self.render_radio_option(ToolApprovalChoice::Once, theme))
@@ -290,13 +294,13 @@ impl ToolApprovalModal {
             .bg(if lease_active {
                 rgba(0x7aa7ff1a)
             } else {
-                theme.card_hover()
+                theme.mockup_hover
             })
             .border_1()
             .border_color(if lease_active {
                 rgba(0x7aa7ff59)
             } else {
-                theme.border_subtle()
+                theme.mockup_border
             })
             .child(
                 div()
@@ -312,21 +316,21 @@ impl ToolApprovalModal {
                             .border_color(if lease_active {
                                 theme.accent_blue()
                             } else {
-                                theme.border_structural()
+                                theme.mockup_border_strong
                             })
                             .bg(if lease_active {
                                 theme.accent_blue()
                             } else {
-                                theme.canvas_bg()
+                                theme.mockup_body
                             })
                             .flex()
                             .items_center()
                             .justify_center()
                             .text_size(px(10.0))
                             .text_color(if lease_active {
-                                theme.canvas_bg()
+                                theme.mockup_body
                             } else {
-                                theme.text_dim()
+                                theme.mockup_text_dim
                             })
                             .child(if lease_active { "✓" } else { "" }),
                     )
@@ -338,13 +342,13 @@ impl ToolApprovalModal {
                                 div()
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.text_primary())
+                                    .text_color(theme.mockup_text_bright)
                                     .child("Grant a 15-minute lease for this exact action"),
                             )
                             .child(
                                 div()
                                     .text_size(px(10.5))
-                                    .text_color(theme.text_dim())
+                                    .text_color(theme.mockup_text_dim)
                                     .child("Applies only to \"Allow again for this session\"; the identical command skips approval until the lease expires (hotkey: l)"),
                             ),
                     ),
@@ -354,10 +358,10 @@ impl ToolApprovalModal {
                     .px_1p5()
                     .py_0p5()
                     .rounded(px(3.0))
-                    .bg(theme.border_subtle())
+                    .bg(theme.mockup_border)
                     .text_size(px(10.0))
                     .font_family(theme.typography.font_mono[0].clone())
-                    .text_color(theme.text_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child("15m"),
             )
     }
@@ -410,7 +414,7 @@ impl ToolApprovalModal {
                         div()
                             .text_size(px(12.0))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.canvas_bg())
+                            .text_color(theme.mockup_body)
                             .child(if self.choice == ToolApprovalChoice::Deny {
                                 "Confirm Deny"
                             } else {
@@ -420,7 +424,7 @@ impl ToolApprovalModal {
                     .child(
                         div()
                             .text_size(px(10.0))
-                            .text_color(theme.canvas_bg())
+                            .text_color(theme.mockup_body)
                             .child("↵"),
                     ),
             )
@@ -440,7 +444,7 @@ impl ToolApprovalModal {
             root = root.child(
                 div()
                     .text_size(px(12.0))
-                    .text_color(theme.text_muted())
+                    .text_color(theme.mockup_text_muted)
                     .child(desc.clone()),
             );
         }
@@ -467,7 +471,7 @@ impl ToolApprovalModal {
             .py_1()
             .rounded(px(4.0))
             .bg(if is_selected {
-                theme.canvas_bg()
+                theme.mockup_body
             } else {
                 gpui::rgba(0x00000000)
             })
@@ -486,7 +490,7 @@ impl ToolApprovalModal {
                             .border_color(if is_selected {
                                 active_fg
                             } else {
-                                theme.border_structural()
+                                theme.mockup_border_strong
                             })
                             .flex()
                             .items_center()
@@ -507,9 +511,9 @@ impl ToolApprovalModal {
                         div()
                             .text_size(px(12.0))
                             .text_color(if is_selected {
-                                theme.text_primary()
+                                theme.mockup_text_bright
                             } else {
-                                theme.text_muted()
+                                theme.mockup_text_muted
                             })
                             .child(format!("[{}] {}", option.key_number(), option.label())),
                     ),
@@ -518,10 +522,10 @@ impl ToolApprovalModal {
                 div()
                     .px_1p5()
                     .rounded(px(3.0))
-                    .bg(theme.border_subtle())
+                    .bg(theme.mockup_border)
                     .font_family(theme.typography.font_mono[0].clone())
                     .text_size(px(10.0))
-                    .text_color(theme.text_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child(option.hotkey()),
             )
     }

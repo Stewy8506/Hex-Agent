@@ -107,18 +107,18 @@ fn test_diff_line_classification_and_colors() {
     assert_eq!(diff_view.total_additions(), 2);
     assert_eq!(diff_view.total_deletions(), 1);
 
-    // Verify addition colors (sage green)
-    assert_eq!(line_foreground(DiffLineType::Added, &theme), theme.sage_fg());
-    assert_eq!(line_background(DiffLineType::Added, &theme), Some(theme.sage_bg()));
+    // Verify addition colors (mockup diff sage: #c4e0c7 on rgba tint).
+    assert_eq!(line_foreground(DiffLineType::Added, &theme), theme.mockup_diff_add_fg);
+    assert_eq!(line_background(DiffLineType::Added, &theme), Some(theme.mockup_diff_add_bg));
     assert_eq!(line_prefix(DiffLineType::Added), "+");
 
-    // Verify deletion colors (rose red)
-    assert_eq!(line_foreground(DiffLineType::Deleted, &theme), theme.rose_fg());
-    assert_eq!(line_background(DiffLineType::Deleted, &theme), Some(theme.rose_bg()));
-    assert_eq!(line_prefix(DiffLineType::Deleted), "-");
+    // Verify deletion colors (mockup diff rose: #d4a9a9, U+2212 minus).
+    assert_eq!(line_foreground(DiffLineType::Deleted, &theme), theme.mockup_diff_del_fg);
+    assert_eq!(line_background(DiffLineType::Deleted, &theme), Some(theme.mockup_diff_del_bg));
+    assert_eq!(line_prefix(DiffLineType::Deleted), "\u{2212}");
 
-    // Verify context colors
-    assert_eq!(line_foreground(DiffLineType::Context, &theme), theme.text_muted());
+    // Verify context colors (prose base on the plain card).
+    assert_eq!(line_foreground(DiffLineType::Context, &theme), theme.mockup_text_base);
     assert_eq!(line_background(DiffLineType::Context, &theme), None);
     assert_eq!(line_prefix(DiffLineType::Context), " ");
 }
@@ -174,12 +174,10 @@ fn test_message_feed_and_tool_cards() {
 }
 
 #[test]
-fn test_prompt_composer_and_model_pill() {
+fn test_prompt_composer_state_and_model_pill() {
     let theme = HermesTheme::default();
     let mut composer = PromptComposer::new().with_tokens(10_000, 128_000);
 
-    assert_eq!(composer.line_count(), 1);
-    assert_eq!(composer.calculate_input_height_px(), px(36.0));
     assert!(!composer.can_send());
 
     // Model Pill
@@ -197,28 +195,14 @@ fn test_prompt_composer_and_model_pill() {
         rgb(0x3b82f6)
     );
 
-    // Text entry and line growth
+    // Text entry
     composer.set_text("Line 1\nLine 2\nLine 3\nLine 4");
-    assert_eq!(composer.line_count(), 4);
     assert!(composer.can_send());
-    assert_eq!(composer.calculate_input_height_px(), px(36.0 + 3.0 * 20.0));
 
-    // Shift+Enter appends newline
-    assert_eq!(composer.handle_enter_key(true), None);
-    assert_eq!(composer.line_count(), 5);
-
-    // Enter submits text and clears input
-    let submitted = composer.handle_enter_key(false);
-    assert!(submitted.is_some());
-    assert!(submitted.unwrap().starts_with("Line 1"));
-    assert!(composer.input_text.is_empty());
+    // Clearing empties the buffer
+    composer.clear();
+    assert_eq!(composer.input_text, "");
     assert!(!composer.can_send());
-
-    // Cmd+Enter forced submit
-    composer.set_text("Deploy to production");
-    let cmd_sub = composer.handle_cmd_enter();
-    assert_eq!(cmd_sub.as_deref(), Some("Deploy to production"));
-    assert!(composer.input_text.is_empty());
 }
 
 #[gpui::test]

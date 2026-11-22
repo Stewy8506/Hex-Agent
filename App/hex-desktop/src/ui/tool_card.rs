@@ -1,39 +1,57 @@
-//! Distinct tool call cards with collapsible arguments, output, and inline diffs for HEX Desktop.
+//! Tool call cards in the mockup token language (parity plan P5, derived
+//! surfaces — tool cards are not in DesktopSession.dc.html, so they are styled
+//! from the same token language: `#171717` surface, `#222` border, radius 14,
+//! mono input/output blocks on `#101010`).
 //!
-//! Mirrors Hermes Desktop tool card components (`components/assistant-ui/tool/`):
-//! - Tool header with icon badge, tool name, execution status, and duration
-//! - Collapsible arguments / input panel
-//! - Collapsible terminal output / observation box
-//! - Optional integrated `DiffView` for code modifications
+//! Status indicators: running turns use the mockup's `.sp` braille spinner,
+//! success paints the derived `check.svg` in sage, failure paints `x.svg` in
+//! rose — never the ⏳✓✗ glyphs (D21).
 
 use gpui::*;
 
-use crate::theme::HermesTheme;
+use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::diff_view::DiffView;
+use crate::ui::icon_svg;
+use crate::ui::motion;
+
+/// Tool card corner radius (derived token language, plan P5).
+pub const TOOL_CARD_RADIUS: f32 = 14.0;
+/// Tool card body text size (mono blocks share the diff scale).
+pub const TOOL_BODY_SIZE: f32 = 12.5;
+pub const TOOL_BODY_LINE_HEIGHT: f32 = 21.0;
+/// Tool header label size.
+pub const TOOL_NAME_SIZE: f32 = 12.5;
+/// Fold label / duration size (mockup `.chip` scale).
+pub const TOOL_META_SIZE: f32 = 11.5;
+/// Inner mono-block horizontal padding.
+pub const TOOL_BLOCK_PADDING_X: f32 = 16.0;
+pub const TOOL_BLOCK_PADDING_Y: f32 = 10.0;
 
 /// Execution status of a tool invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
-    /// In flight / executing (Amber indicator).
+    /// In flight / executing (braille spinner, accent).
     Running,
-    /// Executed successfully with exit code 0 (Sage green checkmark).
+    /// Executed successfully with exit code 0 (sage check).
     Success,
-    /// Failed or returned non-zero error (Rose red cross).
+    /// Failed or returned non-zero error (rose cross).
     Failed,
 }
 
 impl ToolStatus {
-    pub fn badge_symbol(&self) -> &'static str {
+    /// The tinted SVG status icon: sage `check` on success, rose `x` on
+    /// failure; running shows the braille spinner instead (no icon).
+    pub fn icon_name(&self) -> Option<&'static str> {
         match self {
-            ToolStatus::Running => "⏳",
-            ToolStatus::Success => "✓",
-            ToolStatus::Failed => "✗",
+            ToolStatus::Running => None,
+            ToolStatus::Success => Some("check"),
+            ToolStatus::Failed => Some("x"),
         }
     }
 
     pub fn color(&self, theme: &HermesTheme) -> Rgba {
         match self {
-            ToolStatus::Running => theme.warning_amber(),
+            ToolStatus::Running => theme.accent_blue(),
             ToolStatus::Success => theme.sage_fg(),
             ToolStatus::Failed => theme.rose_fg(),
         }
@@ -115,12 +133,45 @@ impl ToolCallCard {
         self.output_expanded = !self.output_expanded;
     }
 
+    /// The status indicator element: braille spinner for running turns, or
+    /// the tinted status SVG.
+    fn render_status(&self, theme: &HermesTheme) -> AnyElement {
+        match self.status {
+            ToolStatus::Running => {
+                let spinner = div()
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(MockupTypeScale::SPINNER_SIZE))
+                    .text_color(theme.accent_blue());
+                if motion::reduced_motion() {
+                    spinner
+                        .child(motion::spinner_frame(motion::SPIN_PERIOD).to_string())
+                        .into_any_element()
+                } else {
+                    let id = SharedString::from(format!("tool_spin_{}", self.call_id));
+                    spinner
+                        .with_animation(
+                            id,
+                            Animation::new(motion::SPIN_PERIOD).repeat(),
+                            |el, phase| {
+                                let elapsed = motion::SPIN_PERIOD.mul_f32(phase);
+                                el.child(motion::spinner_frame(elapsed).to_string())
+                            },
+                        )
+                        .into_any_element()
+                }
+            }
+            ToolStatus::Success => div()
+                .child(icon_svg("check", 14.0).text_color(theme.sage_fg()))
+                .into_any_element(),
+            ToolStatus::Failed => div()
+                .child(icon_svg("x", 14.0).text_color(theme.rose_fg()))
+                .into_any_element(),
+        }
+    }
+
     /// Renders the tool header row.
     fn render_header(&self, theme: &HermesTheme) -> Div {
         let icon = tool_icon(&self.tool_name);
-        let status_color = self.status.color(theme);
-        let status_symbol = self.status.badge_symbol();
-
         let duration_str = self
             .duration_ms
             .map(|ms| format!("{}ms", ms))
@@ -132,27 +183,21 @@ impl ToolCallCard {
             .flex_row()
             .items_center()
             .justify_between()
-            .px_3()
-            .py_2()
-            .bg(theme.card_bg())
-            .border_b_1()
-            .border_color(theme.border_subtle())
+            .px(px(TOOL_BLOCK_PADDING_X))
+            .py(px(8.0))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_2()
+                    .child(icon_svg(icon, 14.0).text_color(theme.mockup_text_muted))
                     .child(
                         div()
-                            .text_color(theme.text_muted())
-                            .child(crate::ui::icon_svg(icon, 14.0)),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text_primary())
+                            .font_family(theme.font_mono()[0].clone())
+                            .text_size(px(TOOL_NAME_SIZE))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.mockup_text)
                             .child(self.tool_name.clone()),
                     ),
             )
@@ -161,64 +206,45 @@ impl ToolCallCard {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_2()
-                    .text_xs()
+                    .gap(px(8.0))
                     .child(
                         div()
-                            .text_color(theme.text_dim())
+                            .text_size(px(TOOL_META_SIZE))
+                            .text_color(theme.mockup_text_dim)
                             .child(duration_str),
                     )
-                    .child(
-                        div()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(status_color)
-                            .child(status_symbol),
-                    ),
+                    .child(self.render_status(theme)),
+            )
+    }
+
+    /// Renders one fold header (caret chevron + label).
+    fn render_fold_header(&self, theme: &HermesTheme, label: &str, expanded: bool) -> Div {
+        let caret_icon = if expanded { "chevron-down" } else { "chevron-right" };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px(px(TOOL_BLOCK_PADDING_X))
+            .py(px(6.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.mockup_hover))
+            .child(icon_svg(caret_icon, 12.0).text_color(theme.mockup_text_dim))
+            .child(
+                div()
+                    .text_size(px(TOOL_META_SIZE))
+                    .text_color(theme.mockup_text_dim)
+                    .child(label.to_string()),
             )
     }
 
     /// Renders the tool input / parameters fold.
     fn render_input_fold(&self, theme: &HermesTheme) -> Div {
-        let caret = if self.input_expanded { "▾" } else { "▸" };
-
         let mut section = div().w_full().flex().flex_col();
-
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .px_3()
-            .py_1()
-            .bg(theme.card_bg())
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.card_hover()))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.text_dim())
-                    .child(caret),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.text_muted())
-                    .child("Parameters"),
-            );
-
-        section = section.child(header);
+        section = section.child(self.render_fold_header(theme, "Parameters", self.input_expanded));
 
         if self.input_expanded {
-            let body = div()
-                .w_full()
-                .p_2()
-                .bg(rgb(0x0e0e11))
-                .border_t_1()
-                .border_color(theme.border_subtle())
-                .text_xs()
-                .text_color(theme.text_muted())
-                .child(self.arguments_json.clone());
-            section = section.child(body);
+            section = section.child(self.render_mono_block(theme, &self.arguments_json, false));
         }
 
         section
@@ -227,58 +253,36 @@ impl ToolCallCard {
     /// Renders the output / observation fold.
     fn render_output_fold(&self, theme: &HermesTheme) -> Option<Div> {
         let output = self.output_text.as_ref()?;
-        let caret = if self.output_expanded { "▾" } else { "▸" };
-
         let mut section = div().w_full().flex().flex_col();
-
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .px_3()
-            .py_1()
-            .bg(theme.card_bg())
-            .border_t_1()
-            .border_color(theme.border_subtle())
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.card_hover()))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.text_dim())
-                    .child(caret),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.text_muted())
-                    .child("Output"),
-            );
-
-        section = section.child(header);
+        section = section.child(self.render_fold_header(theme, "Output", self.output_expanded));
 
         if self.output_expanded {
-            let body = div()
-                .w_full()
-                .p_3()
-                .bg(rgb(0x0a0a0c))
-                .border_t_1()
-                .border_color(theme.border_subtle())
-                .text_xs()
-                .text_color(if self.status == ToolStatus::Failed {
-                    theme.rose_fg()
-                } else {
-                    theme.text_muted()
-                })
-                .child(output.clone());
-            section = section.child(body);
+            section = section.child(self.render_mono_block(theme, output, true));
         }
 
         Some(section)
     }
 
-    /// Renders the tool card container.
+    /// A mono `#101010` block: 12.5/21 Geist Mono, whitespace preserved;
+    /// failure output tints rose.
+    fn render_mono_block(&self, theme: &HermesTheme, text: &str, is_output: bool) -> Div {
+        div()
+            .w_full()
+            .font_family(theme.font_mono()[0].clone())
+            .text_size(px(TOOL_BODY_SIZE))
+            .line_height(px(TOOL_BODY_LINE_HEIGHT))
+            .px(px(TOOL_BLOCK_PADDING_X))
+            .py(px(TOOL_BLOCK_PADDING_Y))
+            .bg(theme.mockup_sidebar)
+            .whitespace_nowrap()
+            .text_color(if is_output && self.status == ToolStatus::Failed {
+                theme.rose_fg()
+            } else {
+                theme.mockup_text_muted
+            })
+            .child(text.to_string())
+    }
+
     /// The diff view hosted by this card, when the tool call produced a diff.
     pub fn diff_view(&self) -> Option<&DiffView> {
         self.diff.as_ref()
@@ -289,27 +293,24 @@ impl ToolCallCard {
             .w_full()
             .flex()
             .flex_col()
-            .rounded_md()
+            .rounded(px(TOOL_CARD_RADIUS))
             .border_1()
-            .border_color(theme.border_subtle())
-            .bg(theme.card_bg())
+            .border_color(theme.mockup_border)
+            .bg(theme.mockup_surface)
             .overflow_hidden()
             .child(self.render_header(theme))
             .child(self.render_input_fold(theme));
 
-        // If diff exists, render diff section
         if let Some(diff_view) = &self.diff {
             card = card.child(
                 div()
                     .w_full()
-                    .p_2()
                     .border_t_1()
-                    .border_color(theme.border_subtle())
+                    .border_color(theme.mockup_border)
                     .child(diff_view.render(theme)),
             );
         }
 
-        // Render output section
         if let Some(output_fold) = self.render_output_fold(theme) {
             card = card.child(output_fold);
         }
@@ -333,17 +334,13 @@ mod tests {
         assert_eq!(tool_icon("web_search"), "search");
         assert_eq!(tool_icon("unknown_tool"), "settings");
 
-        let run = ToolStatus::Running;
-        assert_eq!(run.badge_symbol(), "⏳");
-        assert_eq!(run.color(&theme), theme.warning_amber());
-
-        let succ = ToolStatus::Success;
-        assert_eq!(succ.badge_symbol(), "✓");
-        assert_eq!(succ.color(&theme), theme.sage_fg());
-
-        let fail = ToolStatus::Failed;
-        assert_eq!(fail.badge_symbol(), "✗");
-        assert_eq!(fail.color(&theme), theme.rose_fg());
+        // D21: status glyphs are SVG icon names / spinner, never ⏳✓✗.
+        assert_eq!(ToolStatus::Running.icon_name(), None);
+        assert_eq!(ToolStatus::Success.icon_name(), Some("check"));
+        assert_eq!(ToolStatus::Failed.icon_name(), Some("x"));
+        assert_eq!(ToolStatus::Success.color(&theme), theme.sage_fg());
+        assert_eq!(ToolStatus::Failed.color(&theme), theme.rose_fg());
+        assert_eq!(ToolStatus::Running.color(&theme), theme.accent_blue());
     }
 
     #[test]

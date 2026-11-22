@@ -280,7 +280,7 @@ impl CommandPaletteModal {
             .max_h(px(480.0))
             .flex()
             .flex_col()
-            .bg(theme.card_bg())
+            .bg(theme.mockup_surface)
             // Top search bar
             .child(
                 div()
@@ -289,17 +289,17 @@ impl CommandPaletteModal {
                     .px_4()
                     .py_3()
                     .border_b_1()
-                    .border_color(theme.border_subtle())
+                    .border_color(theme.mockup_border)
                     .gap_3()
-                    .child(icon_svg("search", 14.0).text_color(theme.text_dim()))
+                    .child(icon_svg("search", 14.0).text_color(theme.mockup_text_dim))
                     .child(
                         div()
                             .flex_1()
                             .text_size(px(13.5))
                             .text_color(if self.query.is_empty() {
-                                theme.text_dim()
+                                theme.mockup_text_dim
                             } else {
-                                theme.text_primary()
+                                theme.mockup_text_bright
                             })
                             .child(if self.query.is_empty() {
                                 "Type a command or search sessions...".to_string()
@@ -312,12 +312,12 @@ impl CommandPaletteModal {
                             .px_1p5()
                             .py_0p5()
                             .rounded(px(3.0))
-                            .bg(theme.card_hover())
+                            .bg(theme.mockup_hover)
                             .border_1()
-                            .border_color(theme.border_subtle())
+                            .border_color(theme.mockup_border)
                             .text_size(px(10.0))
                             .font_family(theme.typography.font_mono[0].clone())
-                            .text_color(theme.text_dim())
+                            .text_color(theme.mockup_text_dim)
                             .child("Esc"),
                     ),
             )
@@ -342,13 +342,13 @@ impl CommandPaletteModal {
                                 .child(
                                     div()
                                         .text_size(px(13.0))
-                                        .text_color(theme.text_dim())
+                                        .text_color(theme.mockup_text_dim)
                                         .child("No matching commands found"),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(11.0))
-                                        .text_color(theme.text_extra_dim())
+                                        .text_color(theme.mockup_text_dim)
                                         .child(format!("No results for \"{}\"", self.query)),
                                 ),
                         )
@@ -370,25 +370,34 @@ impl CommandPaletteModal {
                                         .pb_1()
                                         .text_size(px(10.0))
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme.text_dim())
+                                        .text_color(theme.mockup_text_dim)
                                         .child(item.category.title()),
                                 );
                             }
 
-                            // Render item row
+                            // Render item row (mockup `.row` language: radius 8,
+                            // hover `#1a1a1a`; the selection carries the accent
+                            // chip wash + accent border as the focus indicator).
                             container = container.child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .px_3()
-                                    .py_2()
-                                    .rounded(px(6.0))
-                                    .bg(if is_selected {
-                                        theme.card_hover()
+                                    .px(px(12.0))
+                                    .py(px(8.0))
+                                    .rounded(px(8.0))
+                                    .border_1()
+                                    .border_color(if is_selected {
+                                        theme.mockup_accent_border
                                     } else {
                                         gpui::rgba(0x00000000)
                                     })
+                                    .bg(if is_selected {
+                                        theme.mockup_accent_chip_bg
+                                    } else {
+                                        gpui::rgba(0x00000000)
+                                    })
+                                    .hover(|s| s.bg(theme.mockup_row_hover))
                                     .cursor_pointer()
                                     .child(
                                         div()
@@ -397,9 +406,9 @@ impl CommandPaletteModal {
                                             .gap_2p5()
                                             .child(
                                                 div()
-                                                    .text_color(theme.text_muted())
+                                                    .text_color(theme.mockup_text_muted)
                                                     .child(crate::ui::icon_svg(
-                                                        if item.icon.contains(' ') { "notebooks" } else { item.icon.as_str() },
+                                                        item.icon.as_str(),
                                                         14.0,
                                                     )),
                                             )
@@ -416,9 +425,9 @@ impl CommandPaletteModal {
                                                                 FontWeight::NORMAL
                                                             })
                                                             .text_color(if is_selected {
-                                                                theme.text_primary()
+                                                                theme.mockup_text_bright
                                                             } else {
-                                                                theme.text_muted()
+                                                                theme.mockup_text_muted
                                                             })
                                                             .child(item.title.clone()),
                                                     )
@@ -426,7 +435,7 @@ impl CommandPaletteModal {
                                                         p.child(
                                                             div()
                                                                 .text_size(px(10.5))
-                                                                .text_color(theme.text_dim())
+                                                                .text_color(theme.mockup_text_dim)
                                                                 .child(sub.clone()),
                                                         )
                                                     }),
@@ -438,13 +447,13 @@ impl CommandPaletteModal {
                                                 .px_1p5()
                                                 .py_0p5()
                                                 .rounded(px(3.0))
-                                                .bg(theme.border_subtle())
+                                                .bg(theme.mockup_border)
                                                 .font_family(theme.typography.font_mono[0].clone())
                                                 .text_size(px(10.5))
                                                 .text_color(if is_selected {
-                                                    theme.text_primary()
+                                                    theme.mockup_text_bright
                                                 } else {
-                                                    theme.text_dim()
+                                                    theme.mockup_text_dim
                                                 })
                                                 .child(sc.clone()),
                                         )
@@ -478,6 +487,23 @@ mod tests {
         let filtered = palette.filtered_items();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].title, "Compact Context");
+    }
+
+    #[test]
+    fn test_command_palette_icons_resolve_to_assets() {
+        // Every palette icon (chat, trash, …) must name a bundled SVG — the
+        // old "contains(' ')" fallback is gone (plan P5).
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let palette = CommandPaletteModal::new();
+        for item in &palette.items {
+            let path = format!("{manifest}/assets/icons/{}.svg", item.icon);
+            assert!(
+                std::path::Path::new(&path).exists(),
+                "palette icon {:?} (item {:?}) has no bundled asset at {path}",
+                item.icon,
+                item.title
+            );
+        }
     }
 
     #[test]

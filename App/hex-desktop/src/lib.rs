@@ -19,13 +19,13 @@ pub use theme::{
     contrast_ratio, relative_luminance, HermesTheme, MockupTypeScale, TypographyTokens,
 };
 pub use ui::{
-    classify_session_date, format_message_time, format_reasoning_elapsed, format_relative_time,
-    format_token_number, line_background, line_foreground, line_prefix, provider_dot_color,
-    render_ascii_progress_bar, render_modal_container, ActiveModal, AppShell, AssistantMessageView,
-    CommandPaletteModal, DiffView, GaugeThreshold, MessageFeed, MessageItem, ModelEntry,
-    ModelPickerModal, ModelSelectorPill, PaletteAction, PaletteItem, PromptComposer, ProviderState,
-    ProviderStatus, SendButton, SessionGroupCategory, SessionItem, SessionListView, ShellView,
-    SidebarView, ThinkingDisclosure, TokenGaugeWidget, ToolApprovalChoice, ToolApprovalModal,
-    ToolApprovalResult, ToolCallCard, ToolStatus, UserMessageCard,
+    classify_session_date, format_reasoning_elapsed, format_relative_time, format_token_number,
+    line_background, line_foreground, line_prefix, provider_dot_color, render_ascii_progress_bar,
+    render_modal_container, ActiveModal, AppShell, AssistantMessageView, CommandPaletteModal,
+    DiffView, GaugeThreshold, MessageFeed, MessageItem, ModelEntry, ModelPickerModal,
+    ModelSelectorPill, PaletteAction, PaletteItem, PromptComposer, ProviderState, ProviderStatus,
+    SendButton, SessionGroupCategory, SessionItem, SessionListView, ShellView, SidebarView,
+    ThinkingDisclosure, TokenGaugeWidget, ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult,
+    ToolCallCard, ToolStatus, UserMessageCard,
 };
-pub use window::{DesktopView, DesktopWindow, WindowConfig};
+pub use window::WindowConfig;

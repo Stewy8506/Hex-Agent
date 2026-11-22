@@ -1,16 +1,46 @@
-//! Scrollable conversation message feed for HEX Desktop.
+//! Mockup conversation feed for HEX Desktop (parity plan §2.4 / §6 P4).
 //!
-//! Directly mirrors Hermes Desktop conversation thread (`components/assistant-ui/thread/`):
-//! - Scrollable thread layout with auto-scroll to bottom on token arrival
-//! - User message bubbles and streaming assistant responses
-//! - Collapsible reasoning folds with elapsed timing
-//! - Distinct tool call cards with diff visualizer
+//! Mirrors the DesktopSession mockup's feed: a 560px column (gap 20,
+//! padding-top 10, padding-bottom 6) that bottoms out at the newest turn,
+//! inside a full-height area with a 28px canvas fade across its top edge.
+//! Scrolling is a GPUI `list` anchored to `ListAlignment::Bottom`, so short
+//! conversations hug the composer and long ones scroll internally.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use gpui::*;
 
-use crate::theme::HermesTheme;
-use crate::ui::message::{AssistantMessageView, UserMessageCard};
+use crate::theme::{HermesTheme, MockupTypeScale};
+use crate::ui::message::{ActionBarHandlers, AssistantMessageView, UserMessageCard};
+use crate::ui::motion;
 use crate::ui::tool_card::{ToolCallCard, ToolStatus};
+
+/// Vertical gap between feed items (mockup `gap:20px`).
+pub const FEED_GAP: f32 = 20.0;
+/// Feed area top padding (mockup `padding-top:10px`).
+pub const FEED_PAD_TOP: f32 = 10.0;
+/// Feed column bottom padding (mockup `padding-bottom:6px`).
+pub const FEED_PAD_BOTTOM: f32 = 6.0;
+/// Height of the canvas fade across the feed's top edge (mockup mask fade).
+pub const FEED_FADE_HEIGHT: f32 = 28.0;
+/// Feed column width (mockup `width:560px`).
+pub const FEED_COLUMN_WIDTH: f32 = 560.0;
+
+/// Painted bounds of the feed fade overlay, recorded for tests. Production
+/// never sets this global, so the paint listener is a no-op read.
+#[derive(Debug, Clone, Default)]
+pub struct FeedPaintProbe(pub Arc<Mutex<Vec<Bounds<Pixels>>>>);
+
+impl Global for FeedPaintProbe {}
+
+/// The two gradient stops backing the top fade: opaque canvas at the edge
+/// blending to fully transparent at [`FEED_FADE_HEIGHT`].
+pub fn feed_fade_stops(canvas: Rgba) -> (Hsla, Hsla) {
+    let base: Hsla = canvas.into();
+    (base, base.alpha(0.0))
+}
 
 /// Items rendered within the conversation feed.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +50,9 @@ pub enum MessageItem {
     SystemNotice(String),
 }
 
-/// Scrollable message feed component.
+/// Message feed state shared with `ChatView`; rendering happens through
+/// [`MessageFeed::render_scrolled`] (session screen) or [`MessageFeed::render`]
+/// (static shell path).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageFeed {
     pub messages: Vec<MessageItem>,
@@ -154,39 +186,194 @@ impl MessageFeed {
         self.is_streaming = false;
     }
 
-    /// Renders the complete scrollable conversation feed.
-    pub fn render(&self, theme: &HermesTheme) -> Div {
-        self.render_inner(theme, |view| view.render(theme))
-    }
-
-    /// Renders the feed with caller-supplied action bars per assistant message
-    /// (`None` hides the bar). `ChatView` uses this to wire Copy/Regenerate.
-    pub fn render_with_bars(
+    /// Renders the full feed area: the 560px bottom-anchored scroll column,
+    /// the 28px top fade, and the notice / empty / connecting states.
+    ///
+    /// `bars` carries per-assistant click handlers keyed by message id;
+    /// `token_count` is the honest gauge total ("24.5k tokens") or `None`
+    /// while unknown (hidden).
+    pub fn render_scrolled(
         &self,
         theme: &HermesTheme,
-        mut bar_for: impl FnMut(&AssistantMessageView) -> Option<Div>,
+        list_state: &ListState,
+        bars: HashMap<String, ActionBarHandlers>,
+        token_count: Option<String>,
     ) -> Div {
-        self.render_inner(theme, |view| {
-            view.render_with_action_bar(theme, bar_for(view))
-        })
-    }
-
-    fn render_inner(
-        &self,
-        theme: &HermesTheme,
-        mut render_assistant: impl FnMut(&AssistantMessageView) -> Div,
-    ) -> Div {
-        let mut feed_container = div()
+        let mut root = div()
             .flex_1()
+            .min_h_0()
             .w_full()
             .flex()
             .flex_col()
-            .gap_4()
+            .overflow_hidden();
+
+        // Reconnect notice: inline above the feed while the supervised
+        // reconnect with backoff is in progress.
+        if let Some(notice) = &self.reconnect_notice {
+            root = root.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .pb_2()
+                    .child(
+                        div()
+                            .rounded(px(8.0))
+                            .bg(theme.mockup_diff_del_bg)
+                            .px_3()
+                            .py(px(6.0))
+                            .text_size(px(MockupTypeScale::HINT_SIZE))
+                            .text_color(theme.rose_fg())
+                            .child(notice.clone()),
+                    ),
+            );
+        }
+
+        let count = self.messages.len();
+        let messages = self.messages.clone();
+        let list_theme = theme.clone();
+        let token_count = token_count.clone();
+
+        let area = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .pt(px(FEED_PAD_TOP))
+            .on_children_prepainted(|children, _window, cx| {
+                if let Some(probe) = cx.try_global::<FeedPaintProbe>() {
+                    if let Some(fade) = children.last() {
+                        probe.0.lock().unwrap().push(*fade);
+                    }
+                }
+            });
+
+        let mut column = div()
+            .w(px(FEED_COLUMN_WIDTH))
+            .max_w_full()
+            .h_full()
+            .flex()
+            .flex_col();
+
+        if self.messages.is_empty() && !self.is_connecting {
+            let empty = div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .text_size(px(MockupTypeScale::BASE_SIZE))
+                        .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.mockup_text_bright)
+                        .child("HEX Autonomous AI Workbench"),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(theme.mockup_text_dim)
+                        .child("Ask a question, run a command, or inspect code diffs."),
+                );
+            column = column.child(empty);
+        } else if self.is_connecting {
+            let spinner_el: AnyElement = if motion::reduced_motion() {
+                div()
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(MockupTypeScale::SPINNER_SIZE))
+                    .text_color(theme.accent_blue())
+                    .child(motion::spinner_frame(Duration::ZERO).to_string())
+                    .into_any_element()
+            } else {
+                div()
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(MockupTypeScale::SPINNER_SIZE))
+                    .text_color(theme.accent_blue())
+                    .with_animation(
+                        "feed_connect_spin",
+                        Animation::new(motion::SPIN_PERIOD).repeat(),
+                        |el, phase| {
+                            let elapsed =
+                                Duration::from_secs_f32(phase * motion::SPIN_PERIOD.as_secs_f32());
+                            el.child(motion::spinner_frame(elapsed).to_string())
+                        },
+                    )
+                    .into_any_element()
+            };
+            column = column.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(10.0))
+                    .child(spinner_el)
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(theme.mockup_text_muted)
+                            .child("Connecting to session…"),
+                    ),
+            );
+        } else {
+            let list = list(
+                list_state.clone(),
+                move |ix, _window, _cx| {
+                    let theme = list_theme.clone();
+                    let item = match messages.get(ix) {
+                        Some(MessageItem::User(card)) => card.render(&theme),
+                        Some(MessageItem::Assistant(view)) => {
+                            let handlers = bars.get(&view.id);
+                            view.render_with_action_bar(&theme, handlers, token_count.clone())
+                        }
+                        Some(MessageItem::SystemNotice(notice)) => div()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .text_size(px(MockupTypeScale::HINT_SIZE))
+                            .line_height(px(MockupTypeScale::CHIP_LINE_HEIGHT))
+                            .text_color(theme.mockup_text_dim)
+                            .child(notice.clone()),
+                        None => div(),
+                    };
+                    if ix + 1 >= count {
+                        item.into_any_element()
+                    } else {
+                        item.pb(px(FEED_GAP)).into_any_element()
+                    }
+                },
+            );
+            column = column.child(list.flex_1());
+        }
+
+        let area = area.child(column).child(fade_overlay(theme));
+
+        root.child(area)
+    }
+
+    /// Legacy static render (no list, no handlers) used by the shell's
+    /// non-session surfaces.
+    pub fn render(&self, theme: &HermesTheme) -> Div {
+        self.render_inner(theme)
+    }
+
+    fn render_inner(&self, theme: &HermesTheme) -> Div {
+        let mut feed_container = div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(FEED_GAP))
             .p_4()
             .overflow_y_hidden();
 
-        // Error / reconnect notice banner (Phase 3): shown inline at the top
-        // of the feed while the supervised reconnect is in progress.
         if let Some(notice) = &self.reconnect_notice {
             feed_container = feed_container.child(
                 div()
@@ -195,25 +382,18 @@ impl MessageFeed {
                     .justify_center()
                     .child(
                         div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
+                            .rounded(px(8.0))
+                            .bg(theme.mockup_diff_del_bg)
                             .px_3()
                             .py(px(6.0))
-                            .rounded_md()
-                            .bg(theme.mockup_surface)
-                            .border_1()
-                            .border_color(theme.rose_fg())
-                            .text_xs()
+                            .text_size(px(MockupTypeScale::HINT_SIZE))
                             .text_color(theme.rose_fg())
-                            .child(format!("⚠ {notice}")),
+                            .child(notice.clone()),
                     ),
             );
         }
-        // Empty / connecting states (Phase 3): only when the feed has no turns.
+
         if self.messages.is_empty() {
-            // Connecting spinner state (Phase 3): a session is being dialled.
             if self.is_connecting {
                 return feed_container.child(
                     div()
@@ -222,17 +402,18 @@ impl MessageFeed {
                         .flex_col()
                         .items_center()
                         .justify_center()
-                        .gap_2()
+                        .gap(px(10.0))
                         .child(
                             div()
-                                .text_lg()
+                                .font_family(theme.font_mono()[0].clone())
+                                .text_size(px(MockupTypeScale::SPINNER_SIZE))
                                 .text_color(theme.accent_blue())
-                                .child("◐"),
+                                .child(motion::spinner_frame(Duration::ZERO).to_string()),
                         )
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(theme.text_muted())
+                                .text_size(px(13.0))
+                                .text_color(theme.mockup_text_muted)
                                 .child("Connecting to session…"),
                         ),
                 );
@@ -244,18 +425,19 @@ impl MessageFeed {
                     .flex_col()
                     .items_center()
                     .justify_center()
-                    .gap_2()
+                    .gap(px(8.0))
                     .child(
                         div()
-                            .text_lg()
+                            .text_size(px(MockupTypeScale::BASE_SIZE))
+                            .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text_primary())
+                            .text_color(theme.mockup_text_bright)
                             .child("HEX Autonomous AI Workbench"),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(theme.text_muted())
+                            .text_size(px(13.0))
+                            .text_color(theme.mockup_text_dim)
                             .child("Ask a question, run a command, or inspect code diffs."),
                     ),
             );
@@ -267,7 +449,7 @@ impl MessageFeed {
                     feed_container = feed_container.child(card.render(theme));
                 }
                 MessageItem::Assistant(view) => {
-                    feed_container = feed_container.child(render_assistant(view));
+                    feed_container = feed_container.child(view.render(theme));
                 }
                 MessageItem::SystemNotice(notice) => {
                     feed_container = feed_container.child(
@@ -275,19 +457,10 @@ impl MessageFeed {
                             .w_full()
                             .flex()
                             .justify_center()
-                            .py_1()
-                            .child(
-                                div()
-                                    .px_3()
-                                    .py(px(2.0))
-                                    .rounded_md()
-                                    .bg(theme.card_bg())
-                                    .border_1()
-                                    .border_color(theme.border_subtle())
-                                    .text_xs()
-                                    .text_color(theme.text_dim())
-                                    .child(notice.clone()),
-                            ),
+                            .text_size(px(MockupTypeScale::HINT_SIZE))
+                            .line_height(px(MockupTypeScale::CHIP_LINE_HEIGHT))
+                            .text_color(theme.mockup_text_dim)
+                            .child(notice.clone()),
                     );
                 }
             }
@@ -295,6 +468,20 @@ impl MessageFeed {
 
         feed_container
     }
+}
+
+/// The 28px canvas-to-transparent fade painted across the feed's top edge.
+/// Painted last so it sits above the scrolling content; it has no hitbox, so
+/// clicks and scroll wheel pass through to the feed.
+pub fn fade_overlay(theme: &HermesTheme) -> Div {
+    let (opaque, transparent) = feed_fade_stops(theme.mockup_canvas);
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(FEED_FADE_HEIGHT))
+        .bg(linear_gradient(180.0, linear_color_stop(opaque, 0.0), linear_color_stop(transparent, 1.0)))
 }
 
 #[cfg(test)]
@@ -327,5 +514,22 @@ mod tests {
         } else {
             panic!("Expected Assistant message");
         }
+    }
+
+    #[test]
+    fn test_feed_fade_stops_run_canvas_to_transparent() {
+        let canvas = gpui::rgb(0x141414);
+        let (opaque, transparent) = feed_fade_stops(canvas);
+        let opaque_rgb: gpui::Rgba = gpui::Rgba::from(opaque);
+        let transparent_rgb: gpui::Rgba = gpui::Rgba::from(transparent);
+        assert_eq!((opaque_rgb.r * 255.0).round() as u8, 0x14);
+        assert_eq!((opaque_rgb.g * 255.0).round() as u8, 0x14);
+        assert_eq!((opaque_rgb.b * 255.0).round() as u8, 0x14);
+        assert!((opaque.a - 1.0).abs() < 1e-4);
+        assert!(transparent.a.abs() < 1e-4);
+        // Same hue, only alpha differs.
+        assert_eq!(opaque_rgb.r, transparent_rgb.r);
+        assert_eq!(opaque_rgb.g, transparent_rgb.g);
+        assert_eq!(opaque_rgb.b, transparent_rgb.b);
     }
 }

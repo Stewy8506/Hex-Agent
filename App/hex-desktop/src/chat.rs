@@ -20,6 +20,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::ui::home::{ContinueRow, COMING_SOON_DOCK};
+use crate::ui::home;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -35,15 +36,19 @@ use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
 use crate::shortcuts::{self, init_shortcuts};
-use crate::theme::HermesTheme;
+use crate::theme::{HermesTheme, MockupTypeScale};
+use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{MessageFeed, MessageItem};
-use crate::ui::message::AssistantMessageView;
+use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
 use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
 use crate::ui::modals::{render_modal_container, ActiveModal, ModelEntry, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
+use crate::ui::motion;
+use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
 use crate::ui::session_list::SessionItem;
 use crate::ui::shell::{AppShell, ShellView};
-use crate::ui::sidebar::ProviderState;
+use crate::ui::sidebar::{ProviderState, SidebarHandlers};
+use crate::ui::token_gauge::format_token_number;
 use crate::ui::tool_card::ToolCallCard;
 use crate::window::WindowConfig;
 
@@ -285,6 +290,11 @@ pub struct ChatView {
     home_coming_soon: Option<&'static str>,
     settings_open: bool,
     home_connection_error: Option<String>,
+    /// Scroll state of the bottom-anchored message list; owned here because
+    /// `AppShell` derives Debug/Clone/PartialEq and `ListState` cannot.
+    feed_list: ListState,
+    /// Feed item count currently spliced into `feed_list`.
+    feed_synced_count: usize,
 }
 
 impl Focusable for ChatView {
@@ -342,6 +352,8 @@ impl ChatView {
             home_coming_soon: None,
             settings_open: false,
             home_connection_error: None,
+            feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
+            feed_synced_count: 0,
         };
         view.start_event_pump(cx);
         view.start_backend(cx);
@@ -619,6 +631,7 @@ impl ChatView {
         // Approvals surface as a modal regardless of which session is active.
         if let AcpEvent::ApprovalRequest {
             approval_id,
+            session_id,
             tool_name,
             risk_level,
             command,
@@ -627,6 +640,7 @@ impl ChatView {
         } = event
         {
             let mut modal = ToolApprovalModal::new(approval_id, tool_name, command, risk_level);
+            modal.session_id = Some(session_id.clone());
             if let Some(desc) = description {
                 modal = modal.with_description(desc);
             }
@@ -880,13 +894,19 @@ impl ChatView {
         .detach();
     }
 
-    /// Phase 2: full Home / start screen — ASCII logo, glowing prompt card,
-    /// Continue list and the bottom feature dock. Submitting a prompt requests
-    /// a new session (adopted on creation) and opens it; a dock item that is
-    /// not built yet surfaces its Coming soon notice.
+    /// Phase 2: full Home / start screen — h60 top bar (panel toggle, search,
+    /// bell, settings), centered column with the rising ASCII logo and glowing
+    /// prompt card, the Continue list of recent sessions (running dots, Review
+    /// chips, compact times) and the bottom feature dock. Submitting a prompt
+    /// requests a new session (adopted on creation) and opens it; a dock item
+    /// that is not built yet surfaces its Coming soon notice.
     fn render_home(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
-        // Continue list: the five most recent real sessions.
+        // Continue list: the five most recent real sessions, with honest
+        // running (live turn) and Review (pending approval) state, synced
+        // by sync_sidebar_live_state each frame.
         let now = chrono::Utc::now();
+        let workspace = self.shell.sidebar.workspace_name.clone();
+        let pending_sessions = self.shell.sidebar.review_sessions.clone();
         let rows: Vec<ContinueRow> = self
             .shell
             .sidebar
@@ -897,20 +917,131 @@ impl ChatView {
             .map(|s| ContinueRow {
                 id: s.id.clone(),
                 title: s.title.clone(),
-                relative_time: crate::ui::session_list::format_relative_time(s.updated_at, now),
-                location_chip: "Local",
+                relative_time: crate::ui::session_list::format_compact_relative_time(
+                    s.updated_at, now,
+                ),
+                location_chip: "This Mac",
+                project: workspace.clone(),
+                running: self.running_turns.contains(&s.id),
+                pending_review: pending_sessions.contains(&s.id),
             })
             .collect();
 
         let home_coming_soon = self.home_coming_soon;
-        div()
+
+        // Top bar: h60, padding 0 20px; panel toggle left; right gap 4 =
+        // search, bell (+ pulsing accent dot when needs-you > 0), settings.
+        let sidebar_toggle = div()
+            .id("home_sidebar_toggle")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.shell.toggle_sidebar();
+                cx.notify();
+            }))
+            .child(mockup_icon_button(
+                theme,
+                "sidebar",
+                home::TOP_BAR_ICON_SIZE,
+                theme.mockup_text_muted,
+                None,
+            ));
+        let search_button = div()
+            .id("home_search_button")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.on_toggle_palette(&shortcuts::ToggleCommandPalette, window, cx);
+            }))
+            .child(mockup_icon_button(
+                theme,
+                "search",
+                home::TOP_BAR_ICON_SIZE,
+                theme.mockup_text_muted,
+                None,
+            ));
+        let bell_button = div()
+            .id("home_bell_button")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.open_first_pending_approval(cx);
+            }))
+            .child(mockup_icon_button(
+                theme,
+                "bell",
+                home::TOP_BAR_ICON_SIZE,
+                theme.mockup_text_muted,
+                None,
+            ));
+        let settings_button = div()
+            .id("home_settings_button")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.on_open_settings(&shortcuts::OpenSettings, window, cx);
+            }))
+            .child(mockup_icon_button(
+                theme,
+                "settings",
+                home::TOP_BAR_ICON_SIZE,
+                theme.mockup_text_muted,
+                None,
+            ));
+        let bell_dot = if self.shell.sidebar.pending_approvals > 0 {
+            let dot = div()
+                .absolute()
+                .top(px(6.0))
+                .right(px(7.0))
+                .size(px(home::CONTINUE_DOT_SIZE))
+                .rounded_full()
+                .bg(theme.accent_blue);
+            if motion::reduced_motion() {
+                dot.into_any_element()
+            } else {
+                dot.with_animation(
+                    "home_bell_pl",
+                    Animation::new(motion::PULSE_PERIOD).repeat(),
+                    |el, phase| {
+                        let elapsed = std::time::Duration::from_secs_f32(
+                            phase * motion::PULSE_PERIOD.as_secs_f32(),
+                        );
+                        el.opacity(motion::pulse_opacity(elapsed))
+                    },
+                )
+                .into_any_element()
+            }
+        } else {
+            div().into_any_element()
+        };
+
+        let top_bar = div()
+            .w_full()
+            .h(px(home::TOP_BAR_HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px(px(home::TOP_BAR_PADDING_X))
+            .child(sidebar_toggle)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(search_button)
+                    .child(
+                        div()
+                            .relative()
+                            .child(bell_button)
+                            .child(bell_dot),
+                    )
+                    .child(settings_button),
+            );
+
+        // Center column: flex-1, centered, padding-bottom 96px; the composer
+        // column stays w640 while the Continue block is w600.
+        let center = div()
+            .flex_1()
+            .w_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .size_full()
-            .font_family(theme.font_sans()[0].clone())
-            .bg(theme.mockup_canvas)
+            .pb(px(home::CENTER_PADDING_BOTTOM))
             .child(
                 div()
                     .w(px(640.0))
@@ -919,7 +1050,7 @@ impl ChatView {
                     .flex_col()
                     .items_center()
                     .child(
-                        // ASCII logo
+                        // ASCII logo with rise entrance
                         crate::ui::home::render_logo(theme),
                     )
                     .child(
@@ -945,75 +1076,91 @@ impl ChatView {
                                     .child(SharedString::from(msg)),
                             )
                         },
-                    )
-                    .child(
-                        // Continue list
-                        div()
-                            .w_full()
-                            .mt(px(28.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .when(!rows.is_empty(), |c| {
-                                c.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.mockup_text_dim)
-                                        .mb(px(6.0))
-                                        .child("Continue"),
-                                )
-                            })
-                            .children(rows.iter().map(|row| {
-                                let id = row.id.clone();
-                                crate::ui::home::render_continue_row(theme, row, {
-                                    let this = cx.entity().downgrade();
-                                    move |_, _, cx| {
-                                        this.update(cx, |view, cx| {
-                                            view.show_home = false;
-                                            view.switch_session(id.clone(), cx);
-                                            cx.notify();
-                                        });
-                                    }
-                                })
-                            })),
                     ),
             )
             .child(
-                // Bottom feature dock
+                // Continue list: w600, margin-top 48, `.sl` header padding
+                // 0 14px 4px 33px.
                 div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
+                    .w(px(home::CONTINUE_WIDTH))
+                    .max_w_full()
+                    .mt(px(home::CONTINUE_MARGIN_TOP))
                     .flex()
-                    .justify_center()
-                    .pb(px(18.0))
-                    .child(div().flex().flex_row().gap(px(8.0)).children(
-                        COMING_SOON_DOCK
-                            .iter()
-                            .map(|(label, glyph)| {
-                                let this = cx.entity().downgrade();
-                                let name: &'static str = label;
-                                crate::ui::home::render_dock_item(
-                                    theme,
-                                    label,
-                                    label,
-                                    glyph,
-                                )
-                                .on_click(move |_, _, cx| {
-                                    this.update(cx, |view, cx| {
-                                        view.home_coming_soon = Some(name);
-                                        cx.notify();
-                                    });
-                                })
-                            }),
-                    )),
-            )
+                    .flex_col()
+                    .gap(px(2.0))
+                    .when(!rows.is_empty(), |c| {
+                        c.child(
+                            div()
+                                .text_size(px(crate::theme::MockupTypeScale::CONTINUE_HEADER_SIZE))
+                                .text_color(theme.mockup_text_dim)
+                                .pl(px(home::CONTINUE_HEADER_PAD_LEFT))
+                                .pr(px(14.0))
+                                .pb(px(home::CONTINUE_HEADER_PAD_BOTTOM))
+                                .child("Continue"),
+                        )
+                    })
+                    .children(rows.iter().map(|row| {
+                        let id = row.id.clone();
+                        crate::ui::home::render_continue_row(theme, row, {
+                            let this = cx.entity().downgrade();
+                            move |_, _, cx| {
+                                let _ = this.update(cx, |view, cx| {
+                                    view.show_home = false;
+                                    view.switch_session(id.clone(), cx);
+                                    cx.notify();
+                                });
+                            }
+                        })
+                    })),
+            );
+
+        // Bottom feature dock: absolute, bottom 28, centered; container
+        // bg #191919, border #232323, radius 16, padding 5, gap 2.
+        let dock = div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(px(home::DOCK_BOTTOM))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(home::DOCK_GAP))
+                    .bg(theme.mockup_dock)
+                    .border_1()
+                    .border_color(theme.mockup_dock_border)
+                    .rounded(px(home::DOCK_RADIUS))
+                    .p(px(home::DOCK_PADDING))
+                    .children(COMING_SOON_DOCK.iter().map(|(label, glyph)| {
+                        let this = cx.entity().downgrade();
+                        let name: &'static str = label;
+                        crate::ui::home::render_dock_item(theme, label, label, glyph)
+                            .on_click(move |_, _, cx| {
+                                let _ = this.update(cx, |view, cx| {
+                                    view.home_coming_soon = Some(name);
+                                    cx.notify();
+                                });
+                            })
+                    })),
+            );
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .font_family(theme.font_sans()[0].clone())
+            .bg(theme.mockup_canvas)
+            .child(top_bar)
+            .child(center)
+            .child(dock)
             .when_some(home_coming_soon, |c, label| {
                 c.child(
                     div()
                         .absolute()
-                        .bottom(px(70.0))
+                        .bottom(px(home::NOTICE_BOTTOM))
                         .left_0()
                         .right_0()
                         .flex()
@@ -1038,17 +1185,11 @@ impl ChatView {
     }
 
     /// Home prompt card: the pulsating glow composer with pills and buttons.
-    /// Delegates rendering to the shared composer so Home and Session stay
-    /// visually identical; submit routes into the session (see adopt_session).
+    /// Delegates to the shared composer in its Home variant so Home and
+    /// Session stay visually identical; submit routes into the session (see
+    /// adopt_session).
     fn render_home_composer(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
-        let composer = self.render_composer(theme, cx);
-        div().w_full().child(
-            crate::ui::composer::glow_card(
-                div().child(composer),
-                theme,
-                "home_glow_card",
-            ),
-        )
+        self.render_composer(theme, cx, ComposerVariant::Home)
     }
 
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
@@ -1616,6 +1757,14 @@ impl ChatView {
 
     /// Route a key to the open modal. Returns true when the modal consumed it.
     fn handle_modal_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        // The settings card is static: consume every key while it is open so
+        // nothing reaches the composer underneath, and close on Esc.
+        if self.settings_open {
+            if key == "escape" {
+                self.close_settings(cx);
+            }
+            return true;
+        }
         match &mut self.shell.active_modal {
             ActiveModal::Approval(modal) => {
                 if modal.is_submitting {
@@ -2112,287 +2261,314 @@ impl ChatView {
     // Rendering
     // ------------------------------------------------------------------
 
-    fn message_action_bar(
-        &self,
-        theme: &HermesTheme,
-        content: String,
-        assistant_id: String,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
-            .pt_1()
-            .text_xs()
-            .child(
-                div()
-                    .id(SharedString::from(format!("msg_copy_{assistant_id}")))
-                    .cursor_pointer()
-                    .text_color(theme.text_dim())
-                    .hover(|s| s.text_color(theme.text_primary()))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(content.clone()));
-                    })
-                    .child("📋 Copy"),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(format!("msg_regen_{assistant_id}")))
-                    .cursor_pointer()
-                    .text_color(theme.text_dim())
-                    .hover(|s| s.text_color(theme.text_primary()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.regenerate(&assistant_id, cx);
-                    }))
-                    .child("🔄 Retry"),
-            )
-            .child(
-                div()
-                    .text_color(theme.text_dim())
-                    .child("· · ·"), // token count placeholder (coming soon)
-            )
+    /// Expands or collapses the Changes card on an assistant message (P4).
+    fn toggle_changes(&mut self, assistant_id: &str, cx: &mut Context<Self>) {
+        if let Some(assistant) = find_assistant_mut(&mut self.shell.feed, assistant_id) {
+            assistant.changes_expanded = !assistant.changes_expanded;
+            cx.notify();
+        }
     }
 
-    fn render_composer(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
+    /// The gauge total for the action bar ("24.5k tokens"), or `None` while
+    /// the gauge has not reported anything (the count is then hidden).
+    fn action_token_count(&self) -> Option<String> {
+        let gauge = &self.shell.composer.token_gauge;
+        if gauge.current_tokens == 0 {
+            None
+        } else {
+            Some(format!("{} tokens", format_token_number(gauge.current_tokens)))
+        }
+    }
+
+    /// Per-assistant action-bar handlers for the session feed: Copy, Retry
+    /// and the Changes toggle. Built per render because they capture the
+    /// message content and the weak entity handle.
+    fn action_bar_handlers(&self, cx: &mut Context<Self>) -> HashMap<String, ActionBarHandlers> {
+        let mut bars: HashMap<String, ActionBarHandlers> = HashMap::new();
+        for item in &self.shell.feed.messages {
+            if let MessageItem::Assistant(view) = item {
+                if view.is_streaming {
+                    continue;
+                }
+                let weak_retry = cx.entity().downgrade();
+                let weak_changes = cx.entity().downgrade();
+                let retry_id = view.id.clone();
+                let changes_id = view.id.clone();
+                let content = view.content.clone();
+                bars.insert(
+                    view.id.clone(),
+                    ActionBarHandlers {
+                        copy: Some(Rc::new(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(content.clone()));
+                        })),
+                        retry: Some(Rc::new(move |_, _, cx| {
+                            weak_retry
+                                .update(cx, |this, cx| this.regenerate(&retry_id, cx))
+                                .ok();
+                        })),
+                        changes: Some(Rc::new(move |_, _, cx| {
+                            weak_changes
+                                .update(cx, |this, cx| this.toggle_changes(&changes_id, cx))
+                                .ok();
+                        })),
+                    },
+                );
+            }
+        }
+        bars
+    }
+
+    fn render_composer(
+        &mut self,
+        theme: &HermesTheme,
+        cx: &mut Context<Self>,
+        variant: ComposerVariant,
+    ) -> Div {
         let running = self.active_turn_running();
         let can_send = !self.content.trim().is_empty() && !running;
         let send_btn = SendButton::new(running, can_send);
-        let has_text = !self.content.is_empty();
-        let gauge = &self.shell.composer.token_gauge;
-        let ctx_pct = gauge.percentage();
-        let ctx_color = gauge.threshold_color(theme);
-        let context_bar = div()
+        let session = variant == ComposerVariant::Session;
+        let placeholder = if session {
+            SESSION_PLACEHOLDER.to_string()
+        } else {
+            self.shell.composer.placeholder.clone()
+        };
+
+        // Input row: 16/20 text, the focus target and editor action surface.
+        let input_row = div()
+            .w_full()
+            .text_size(px(16.0))
+            .line_height(px(20.0))
+            .text_color(theme.mockup_text)
+            .key_context("Composer")
+            .track_focus(&self.focus_handle)
+            .cursor(CursorStyle::IBeam)
+            .on_action(cx.listener(Self::on_insert_newline))
+            .on_action(cx.listener(Self::on_backspace))
+            .on_action(cx.listener(Self::on_delete))
+            .on_action(cx.listener(Self::on_left))
+            .on_action(cx.listener(Self::on_right))
+            .on_action(cx.listener(Self::on_select_left))
+            .on_action(cx.listener(Self::on_select_right))
+            .on_action(cx.listener(Self::on_home))
+            .on_action(cx.listener(Self::on_end))
+            .on_action(cx.listener(Self::on_up))
+            .on_action(cx.listener(Self::on_down))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .child(ComposerElement {
+                view: cx.entity(),
+                placeholder,
+            });
+
+        // Toolbar (mockup gap 8): attach, Auto pill, model pill, spacer, mic,
+        // send.
+        let toolbar = div()
             .w_full()
             .flex()
+            .flex_row()
             .items_center()
-            .gap_2()
-            .pb_1()
-            .text_xs()
-            .text_color(theme.mockup_text_dim)
-            .child("Context")
-            .child(div().flex_1().h(px(4.0)).rounded_full().bg(theme.mockup_surface).child(
+            .gap(px(8.0))
+            .child(mockup_icon_button(theme, "attach", 18.0, rgb(0xcfcfcf), None))
+            .child(
+                mockup_pill(theme)
+                    .child("Auto")
+                    .child(mockup_pill_chevron()),
+            )
+            .child(
                 div()
-                    .h_full()
-                    .w(relative(gauge.fraction() as f32))
-                    .rounded_full()
-                    .bg(ctx_color),
+                    .id("model_pill_button")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.request_model_picker(cx);
+                    }))
+                    .child(
+                        mockup_pill(theme)
+                            .child(self.shell.composer.model_pill.model_name.clone())
+                            .child(mockup_pill_chevron()),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(mockup_icon_button(
+                theme,
+                "mic",
+                16.0,
+                theme.mockup_text_muted,
+                Some(theme.mockup_text),
             ))
-            .child(format!("{:.0}%", ctx_pct));
+            .child(
+                div()
+                    .id("composer_send")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.active_turn_running() {
+                            this.cancel_turn(cx);
+                        } else {
+                            this.submit_prompt(cx);
+                        }
+                    }))
+                    .child(send_btn.render(theme)),
+            );
 
-        div()
+        let column = div()
             .w_full()
             .flex()
             .flex_col()
-            .items_center()
-            .p_4()
-            .border_t_1()
-            .border_color(theme.border_subtle())
+            .gap(px(COMPOSER_COLUMN_GAP))
+            .child(input_row)
+            .child(toolbar);
+
+        let glow = glow_card(column, theme);
+
+        if session {
+            let fraction = self.shell.composer.token_gauge.fraction();
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .items_center()
+                .pt(px(20.0))
+                .pb(px(26.0))
+                .gap(px(10.0))
+                .child(context_bar(fraction, theme))
+                .child(div().w(px(560.0)).max_w_full().child(glow))
+        } else {
+            glow
+        }
+    }
+
+    fn render_main_pane(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
+        // Non-Chat segments show a Coming soon empty state instead of the feed.
+        let coming_soon_pane = self.shell.active_view != ShellView::Chat;
+        // Re-splice the list whenever the item count changes or a turn is
+        // streaming (streamed items grow taller per chunk).
+        let item_count = self.shell.feed.len();
+        if item_count != self.feed_synced_count || self.shell.feed.is_streaming {
+            self.feed_list.reset(item_count);
+            self.feed_synced_count = item_count;
+        }
+        let bars = if coming_soon_pane {
+            HashMap::new()
+        } else {
+            self.action_bar_handlers(cx)
+        };
+        let feed = self
+            .shell
+            .feed
+            .render_scrolled(theme, &self.feed_list, bars, self.action_token_count());
+
+        div()
+            .flex()
+            .flex_col()
+            .bg(theme.mockup_canvas)
+            // Header h60, padding 0 20px: hamburger ib left; the icon
+            // segmented control is absolute-centered per the mockup (it
+            // paints below the side row, whose corners stay clickable);
+            // right gap 4: Device / Team / More ibs.
             .child(
                 div()
-                    .w(px(640.0))
-                    .max_w_full()
-                    .flex()
-                    .flex_col()
-                    .child(context_bar)
-                    .child(
-                div()
+                    .relative()
                     .w_full()
-                    .flex()
-                    .flex_col()
-                    .p_3()
-                    .rounded_xl()
-                    .bg(theme.card_bg())
-                    .border_1()
-                    .border_color(theme.border_subtle())
-                    .key_context("Composer")
-                    .track_focus(&self.focus_handle)
-                    .cursor(CursorStyle::IBeam)
-                    .line_height(px(20.0))
-                    .text_size(px(14.0))
-                    .on_action(cx.listener(Self::on_insert_newline))
-                    .on_action(cx.listener(Self::on_backspace))
-                    .on_action(cx.listener(Self::on_delete))
-                    .on_action(cx.listener(Self::on_left))
-                    .on_action(cx.listener(Self::on_right))
-                    .on_action(cx.listener(Self::on_select_left))
-                    .on_action(cx.listener(Self::on_select_right))
-                    .on_action(cx.listener(Self::on_home))
-                    .on_action(cx.listener(Self::on_end))
-                    .on_action(cx.listener(Self::on_up))
-                    .on_action(cx.listener(Self::on_down))
-                    .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                    .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                    .on_mouse_move(cx.listener(Self::on_mouse_move))
+                    .h(px(crate::ui::shell::HEADER_HEIGHT))
+                    .flex_none()
                     .child(
                         div()
-                            .w_full()
-                            .min_h(px(36.0))
-                            .max_h(px(160.0))
-                            .child(ComposerElement {
-                                view: cx.entity(),
-                            }),
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.render_segmented_header(theme, cx)),
                     )
                     .child(
                         div()
                             .w_full()
+                            .h_full()
                             .flex()
                             .flex_row()
                             .items_center()
                             .justify_between()
-                            .pt_2()
-                            .border_t_1()
-                            .border_color(theme.border_subtle())
+                            .px(px(crate::ui::shell::HEADER_PADDING_X))
                             .child(
                                 div()
-                                    .id("model_pill_button")
+                                    .id("header_toggle")
+                                    .cursor_pointer()
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.request_model_picker(cx);
+                                        this.shell.toggle_sidebar();
+                                        cx.notify();
                                     }))
-                                    .child(self.shell.composer.model_pill.render(theme)),
+                                    .child(mockup_icon_button(
+                                        theme,
+                                        "hamburger",
+                                        crate::ui::shell::HEADER_ICON,
+                                        theme.mockup_text_muted,
+                                        None,
+                                    )),
                             )
                             .child(
                                 div()
                                     .flex()
                                     .flex_row()
                                     .items_center()
-                                    .gap_3()
-                                    .child(if has_text {
-                                        div()
-                                            .id("composer_clear")
-                                            .cursor_pointer()
-                                            .px_1()
-                                            .text_xs()
-                                            .text_color(theme.text_dim())
-                                            .hover(|s| s.text_color(theme.text_primary()))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.reset_editor(cx);
-                                            }))
-                                            .child("×")
-                                            .into_any()
-                                    } else {
-                                        div().into_any()
-                                    })
-                                    .child(self.shell.composer.token_gauge.render(theme))
+                                    .gap(px(4.0))
                                     .child(
                                         div()
-                                            .id("composer_send")
+                                            .id("header_device")
+                                            .cursor_pointer()
                                             .on_click(cx.listener(|this, _, _, cx| {
-                                                if this.active_turn_running() {
-                                                    this.cancel_turn(cx);
-                                                } else {
-                                                    this.submit_prompt(cx);
-                                                }
+                                                this.shell
+                                                    .feed
+                                                    .add_system_notice("Device — coming soon");
+                                                cx.notify();
                                             }))
-                                            .child(send_btn.render(theme)),
+                                            .child(mockup_icon_button(
+                                                theme,
+                                                "device",
+                                                crate::ui::shell::HEADER_ICON,
+                                                theme.mockup_text_muted,
+                                                None,
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("header_team")
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.shell
+                                                    .feed
+                                                    .add_system_notice("Team — coming soon");
+                                                cx.notify();
+                                            }))
+                                            .child(mockup_icon_button(
+                                                theme,
+                                                "team",
+                                                crate::ui::shell::HEADER_ICON,
+                                                theme.mockup_text_muted,
+                                                None,
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("header_more")
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.on_open_settings(
+                                                    &shortcuts::OpenSettings,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }))
+                                            .child(mockup_icon_button(
+                                                theme,
+                                                "more",
+                                                crate::ui::shell::HEADER_ICON,
+                                                theme.mockup_text_muted,
+                                                None,
+                                            )),
                                     ),
-                            ),
-                    ),
-                ),
-            )
-    }
-
-    fn render_main_pane(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
-        // Non-Chat segments show a Coming soon empty state instead of the feed.
-        let coming_soon_pane = self.shell.active_view != ShellView::Chat;
-        let feed = self.shell.feed.render_with_bars(theme, |assistant| {
-            if assistant.is_streaming {
-                return None;
-            }
-            Some(self.message_action_bar(
-                theme,
-                assistant.content.clone(),
-                assistant.id.clone(),
-                cx,
-            ))
-        });
-        // Center the conversation feed in a 560px column per the session mockup.
-        let feed = div()
-            .flex_1()
-            .w_full()
-            .flex()
-            .justify_center()
-            .overflow_y_hidden()
-            .child(
-                div()
-                    .w(px(560.0))
-                    .max_w_full()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(feed),
-            );
-
-        div()
-            .flex()
-            .flex_col()
-            .bg(theme.mockup_canvas)
-            .child(
-                div()
-                    .w_full()
-                    .h(px(40.0))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_4()
-                    .border_b_1()
-                    .border_color(theme.mockup_border)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .id("sidebar_toggle")
-                                    .cursor_pointer()
-                                    .text_sm()
-                                    .text_color(theme.mockup_text_dim)
-                                    .hover(|s| s.text_color(theme.mockup_text))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.shell.toggle_sidebar();
-                                        cx.notify();
-                                    }))
-                                    .child(if self.shell.sidebar_collapsed {
-                                        "▶"
-                                    } else {
-                                        "◀"
-                                    }),
-                            )
-                            .child(self.render_segmented_header(theme, cx)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id("header_provider")
-                                    .text_xs()
-                                    .text_color(theme.mockup_text_dim)
-                                    .child(self.shell.sidebar.provider_status.display_label()),
-                            )
-                            .child(
-                                self.render_header_icon_button(
-                                    theme,
-                                    "header_bell",
-                                    SharedString::from(self.pending_approval_label()),
-                                )
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.open_first_pending_approval(cx);
-                                })),
-                            )
-                            .child(
-                                self.render_header_icon_svg(theme, "header_settings", "settings")
-                                    .on_click(cx.listener(|this, _event, window, cx| {
-                                        this.on_open_settings(&shortcuts::OpenSettings, window, cx);
-                                    })),
                             ),
                     ),
             )
@@ -2423,63 +2599,53 @@ impl ChatView {
             } else {
                 feed
             })
-            .when(!coming_soon_pane, |c| c.child(self.render_composer(theme, cx)))
+            .when(!coming_soon_pane, |c| {
+                c.child(self.render_composer(theme, cx, ComposerVariant::Session))
+            })
     }
 
-    /// Segmented Chat/Files/Browser/Terminal header control. Only Chat is live;
-    /// the other panes are coming soon and render an empty state when picked.
+    /// Segmented Chat/Files/Browser/Terminal header control: bg `#191919`,
+    /// border `#232323`, radius 12, padding 3, gap 2; four 32×32 icon buttons
+    /// (Chat bubble / Files / Browser globe / Terminal); active button bg
+    /// `#262626`, icon tint unchanged. Only Chat is live; the other panes
+    /// render a coming-soon empty state when picked.
     fn render_segmented_header(&self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
         let segments: [(&str, ShellView); 4] = [
-            ("Chat", ShellView::Chat),
-            ("Files", ShellView::Files),
-            ("Browser", ShellView::Browser),
-            ("Terminal", ShellView::Terminal),
+            ("chat", ShellView::Chat),
+            ("files", ShellView::Files),
+            ("browser", ShellView::Browser),
+            ("terminal", ShellView::Terminal),
         ];
 
         div()
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
-            .p(px(2.0))
-            .rounded(px(8.0))
-            .bg(theme.mockup_surface)
+            .gap(px(crate::ui::shell::SEGMENTED_GAP))
+            .p(px(crate::ui::shell::SEGMENTED_PADDING))
+            .rounded(px(crate::ui::shell::SEGMENTED_RADIUS))
+            .bg(theme.mockup_dock)
             .border_1()
-            .border_color(theme.mockup_border)
-            .children(segments.map(|(label, view)| {
+            .border_color(theme.mockup_dock_border)
+            .children(segments.map(|(icon, view)| {
                 let active = self.shell.active_view == view;
                 div()
-                    .id(SharedString::from(format!("segment_{}", label)))
+                    .id(SharedString::from(format!("segment_{icon}")))
                     .cursor_pointer()
-                    .px_2()
-                    .py(px(3.0))
-                    .rounded(px(6.0))
-                    .text_xs()
-                    .when(active, |s| {
-                        s.bg(theme.mockup_hover)
-                            .text_color(theme.mockup_text)
-                    })
-                    .when(!active, |s| {
-                        s.text_color(theme.mockup_text_dim)
-                            .hover(|s| s.text_color(theme.mockup_text))
-                    })
+                    .size(px(crate::ui::shell::SEGMENT_BUTTON))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(crate::ui::shell::SEGMENT_BUTTON_RADIUS))
+                    .text_color(theme.mockup_text_muted)
+                    .when(active, |s| s.bg(theme.mockup_seg_active))
+                    .when(!active, |s| s.hover(|s| s.bg(theme.mockup_hover)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.shell.active_view = view;
                         cx.notify();
                     }))
-                    .child(label)
+                    .child(crate::ui::icon_svg(icon, crate::ui::shell::SEGMENT_ICON))
             }))
-    }
-
-    /// Phase 3: header bell glyph for the approval queue. Shows the pending
-    /// count (or a filled bell) when approvals are waiting, else a plain bell.
-    fn pending_approval_label(&self) -> String {
-        let pending = self.shell.sidebar.pending_approvals;
-        if pending > 0 {
-            format!("{pending}")
-        } else {
-            String::new()
-        }
     }
 
     /// Phase 3: opens the first pending approval from the modal queue, if any.
@@ -2494,49 +2660,27 @@ impl ChatView {
         }
     }
 
-    fn render_header_icon_svg(
-        &self,
-        theme: &HermesTheme,
-        id: &'static str,
-        icon: &'static str,
-    ) -> Stateful<Div> {
-        div()
-            .id(SharedString::from(id))
-            .cursor_pointer()
-            .size(px(26.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.0))
-            .text_color(theme.mockup_text_dim)
-            .hover(|s| {
-                s.bg(theme.mockup_hover)
-                    .text_color(theme.mockup_text)
-            })
-            .child(crate::ui::icon_svg(icon, 16.0))
-    }
-
-    fn render_header_icon_button(
-        &self,
-        theme: &HermesTheme,
-        id: &'static str,
-        glyph: SharedString,
-    ) -> Stateful<Div> {
-        div()
-            .id(SharedString::from(id))
-            .cursor_pointer()
-            .size(px(26.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.0))
-            .text_xs()
-            .text_color(theme.mockup_text_dim)
-            .hover(|s| {
-                s.bg(theme.mockup_hover)
-                    .text_color(theme.mockup_text)
-            })
-            .child(glyph)
+    /// Syncs sidebar live state every frame: live-turn session ids drive the
+    /// slot spinners and the running project dot; pending-approval session
+    /// ids drive the "Review" chips (sidebar rows and the Home Continue list).
+    fn sync_sidebar_live_state(&mut self) {
+        self.shell
+            .sidebar
+            .set_running_sessions(self.running_turns.clone());
+        let mut review: HashSet<String> = HashSet::new();
+        if let ActiveModal::Approval(modal) = &self.shell.active_modal {
+            if let Some(sid) = &modal.session_id {
+                review.insert(sid.clone());
+            }
+        }
+        for modal in &self.shell.modal_queue {
+            if let ActiveModal::Approval(modal) = modal {
+                if let Some(sid) = &modal.session_id {
+                    review.insert(sid.clone());
+                }
+            }
+        }
+        self.shell.sidebar.set_review_sessions(review);
     }
 }
 
@@ -2556,6 +2700,7 @@ impl Render for ChatView {
                 .count();
             self.shell.sidebar.set_pending_approvals(pending);
         }
+        self.sync_sidebar_live_state();
         let theme = HermesTheme::get(cx).clone();
 
         // Phase 2: the app opens on the Home / start screen; any submit or
@@ -2567,7 +2712,7 @@ impl Render for ChatView {
             // The start screen's composer is the primary target (mockup shows
             // an active caret); focus it so typing works without a click.
             // Modal focus follows the same rules as the session path.
-            let modal_open = self.shell.active_modal.is_open();
+            let modal_open = self.shell.active_modal.is_open() || self.settings_open;
             if modal_open {
                 if !self.last_modal_open {
                     self.modal_focus_handle.focus(window);
@@ -2602,7 +2747,7 @@ impl Render for ChatView {
 
         // Predictable focus: opening a modal moves focus to it, closing returns
         // focus to the composer. Background activity never steals focus.
-        let modal_open = self.shell.active_modal.is_open();
+        let modal_open = self.shell.active_modal.is_open() || self.settings_open;
         if modal_open {
             if !self.last_modal_open {
                 self.modal_focus_handle.focus(window);
@@ -2621,6 +2766,40 @@ impl Render for ChatView {
             Rc::new(move |id, _event, _window, cx| {
                 weak.update(cx, |this, cx| this.switch_session(id, cx)).ok();
             })
+        };
+        let on_search: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
+            Rc::new(cx.listener(|this, _, window, cx| {
+                this.on_toggle_palette(&shortcuts::ToggleCommandPalette, window, cx);
+            }));
+        let on_settings: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
+            Rc::new(cx.listener(|this, _, window, cx| {
+                this.on_open_settings(&shortcuts::OpenSettings, window, cx);
+            }));
+        let on_feature: Rc<dyn Fn(&'static str, &ClickEvent, &mut Window, &mut App)> = {
+            let weak = cx.entity().downgrade();
+            Rc::new(move |label, _event, _window, cx| {
+                weak.update(cx, |view, cx| {
+                    view.shell
+                        .feed
+                        .add_system_notice(format!("{label} — coming soon"));
+                    cx.notify();
+                })
+                .ok();
+            })
+        };
+        let on_toggle_project: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
+            Rc::new(cx.listener(|this, _, _, cx| {
+                this.shell.sidebar.projects_collapsed = !this.shell.sidebar.projects_collapsed;
+                cx.notify();
+            }));
+        let sidebar_handlers = SidebarHandlers {
+            on_new_chat: Some(on_new_chat),
+            on_select_session: Some(on_select_session),
+            on_needs_you: Some(on_needs_you),
+            on_search: Some(on_search),
+            on_settings: Some(on_settings),
+            on_feature: Some(on_feature),
+            on_toggle_project: Some(on_toggle_project),
         };
 
         let mut root = div()
@@ -2645,13 +2824,7 @@ impl Render for ChatView {
 
         if !self.shell.sidebar_collapsed {
             root = root
-                .child(self.shell.sidebar.render_with_actions(
-                    &theme,
-                    Some(on_new_chat),
-                    Some(on_select_session),
-                    Some(on_needs_you),
-                ))
-                .child(div().w(px(1.0)).h_full().bg(theme.border_subtle()));
+                .child(self.shell.sidebar.render_with_actions(&theme, &sidebar_handlers));
         }
 
         root = root.child(self.render_main_pane(&theme, cx));
@@ -2673,7 +2846,16 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         let modal = match &self.shell.active_modal {
-            ActiveModal::None => None,
+            ActiveModal::None => {
+                if self.settings_open {
+                    Some(render_modal_container(
+                        self.render_settings_card(theme),
+                        theme,
+                    ))
+                } else {
+                    None
+                }
+            }
             ActiveModal::Approval(modal) => {
                 Some(render_modal_container(modal.render(theme), theme))
             }
@@ -2695,6 +2877,120 @@ impl ChatView {
                 .on_action(cx.listener(Self::on_down))
                 .child(modal),
         )
+    }
+
+    /// Settings surface (P5, derived): the mockup has no settings screen, so
+    /// the card is built from the shared token language — surface card,
+    /// muted labels, mono values, and an Esc hint like the palette's.
+    fn render_settings_card(&self, theme: &HermesTheme) -> Div {
+        let status = &self.shell.sidebar.provider_status;
+        let model = if status.model_name.is_empty() {
+            "Not selected".to_string()
+        } else {
+            status.model_name.clone()
+        };
+        let workspace = format!(
+            "{} · {}",
+            self.shell.sidebar.workspace_name, self.shell.sidebar.git_branch
+        );
+        let rows: Vec<(&str, String)> = vec![
+            ("Provider", status.provider_name.clone()),
+            ("Model", model),
+            ("Workspace", workspace),
+            (
+                "Sessions",
+                self.shell.sidebar.session_list.sessions.len().to_string(),
+            ),
+        ];
+
+        let mut list = div().flex().flex_col();
+        for (label, value) in rows {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(16.0))
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(theme.mockup_sidebar)
+                    .child(
+                        div()
+                            .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
+                            .text_color(theme.mockup_text_muted)
+                            .child(label.to_string()),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme.font_mono()[0].clone())
+                            .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
+                            .text_color(theme.mockup_text_bright)
+                            .child(value),
+                    ),
+            );
+        }
+
+        div()
+            .w(px(460.0))
+            .flex()
+            .flex_col()
+            // Header
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(20.0))
+                    .py(px(14.0))
+                    .border_b_1()
+                    .border_color(theme.mockup_border)
+                    .child(
+                        div()
+                            .text_size(px(MockupTypeScale::BASE_SIZE))
+                            .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.mockup_text_bright)
+                            .child("Settings"),
+                    )
+                    .child(
+                        div()
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded(px(3.0))
+                            .bg(theme.mockup_hover)
+                            .border_1()
+                            .border_color(theme.mockup_border)
+                            .font_family(theme.font_mono()[0].clone())
+                            .text_size(px(MockupTypeScale::HINT_SIZE))
+                            .text_color(theme.mockup_text_dim)
+                            .child("Esc"),
+                    ),
+            )
+            // Honest rows
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .px(px(20.0))
+                    .py(px(16.0))
+                    .child(list),
+            )
+            // Footer hint
+            .child(
+                div()
+                    .flex()
+                    .justify_center()
+                    .px(px(20.0))
+                    .py(px(12.0))
+                    .border_t_1()
+                    .border_color(theme.mockup_border)
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(MockupTypeScale::HINT_SIZE))
+                    .text_color(theme.mockup_text_dim)
+                    .child("Press Esc to close"),
+            )
     }
 }
 
@@ -2827,8 +3123,24 @@ impl EntityInputHandler for ChatView {
 // Multiline composer element (registers the platform input handler on paint)
 // ----------------------------------------------------------------------
 
+/// Composer variants: the Start screen glow card (640px, no context bar) and
+/// the Session footer (560px card over the context bar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposerVariant {
+    Home,
+    Session,
+}
+
+/// Milliseconds since first use, driving the caret blink phase.
+fn caret_epoch_ms() -> u64 {
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
 struct ComposerElement {
     view: Entity<ChatView>,
+    /// Placeholder shown while the buffer is empty (Start vs Session wording).
+    placeholder: String,
 }
 
 struct ComposerPrepaint {
@@ -2931,14 +3243,15 @@ impl Element for ComposerElement {
         let selected_range = view.selected_range.clone();
         let cursor = view.cursor_offset();
         let marked_range = view.marked_range.clone();
-        let placeholder = view.shell.composer.placeholder.clone();
+        let placeholder = self.placeholder.clone();
         let theme = HermesTheme::get(cx);
         let style = window.text_style();
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
 
         let (display_text, text_color) = if content.is_empty() {
-            (placeholder, theme.text_extra_dim().into())
+            // Mockup placeholder tone (#858585).
+            (placeholder, theme.mockup_text_dim.into())
         } else {
             (content.clone(), style.color)
         };
@@ -2966,12 +3279,16 @@ impl Element for ComposerElement {
 
         let mut selections = Vec::new();
         let mut cursor_quad = None;
+        // Mockup caret: 2×20 accent, 1.1s steps(1) blink; reduced motion
+        // keeps it solid. The glow's breathe animation supplies the repaints.
+        let caret_on = motion::reduced_motion()
+            || motion::blink_visible(std::time::Duration::from_millis(caret_epoch_ms()));
         let mut start = 0usize;
         for (i, shaped) in lines.iter().enumerate() {
             let line_end = start + shaped.text.len();
             let y = bounds.top() + line_height * i as f32;
             if selected_range.is_empty() {
-                if cursor >= start && cursor <= line_end {
+                if caret_on && cursor >= start && cursor <= line_end {
                     let x = shaped.x_for_index(cursor - start);
                     cursor_quad = Some(fill(
                         Bounds::new(point(bounds.left() + x, y), size(px(2.0), line_height)),

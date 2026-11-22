@@ -1,6 +1,7 @@
 use core::prelude::v1::test;
 use gpui::*;
 use hex_desktop::theme::*;
+use hex_desktop::ui::shell::{AppShell, ShellView};
 use hex_desktop::window::*;
 
 #[test]
@@ -94,51 +95,49 @@ fn test_mockup_type_scale_constants() {
 fn test_theme_color_tokens_and_hex_accuracy() {
     let theme = HermesTheme::default();
 
-    // Canvas Background #09090b (Dark Zinc canvas)
-    assert_eq!((theme.canvas_bg.r * 255.0).round() as u8, 0x09);
-    assert_eq!((theme.canvas_bg.g * 255.0).round() as u8, 0x09);
-    assert_eq!((theme.canvas_bg.b * 255.0).round() as u8, 0x0b);
-    assert_eq!((theme.canvas_bg.a * 255.0).round() as u8, 0xff);
+    // P6 deliberate retirement: the legacy zinc tokens (canvas #09090b, card
+    // #18181b, zinc borders/text, frosted glass) were removed; the roles they
+    // played are now asserted against the canonical mockup palette.
+    // Canvas #141414
+    assert_eq!((theme.mockup_canvas.r * 255.0).round() as u8, 0x14);
+    assert_eq!((theme.mockup_canvas.g * 255.0).round() as u8, 0x14);
+    assert_eq!((theme.mockup_canvas.b * 255.0).round() as u8, 0x14);
+    assert_eq!((theme.mockup_canvas.a * 255.0).round() as u8, 0xff);
 
-    // Card Background #18181b (zinc-900)
-    assert_eq!((theme.card_bg.r * 255.0).round() as u8, 0x18);
-    assert_eq!((theme.card_bg.g * 255.0).round() as u8, 0x18);
-    assert_eq!((theme.card_bg.b * 255.0).round() as u8, 0x1b);
+    // Surface card #171717
+    assert_eq!((theme.mockup_surface.r * 255.0).round() as u8, 0x17);
+    assert_eq!((theme.mockup_surface.g * 255.0).round() as u8, 0x17);
+    assert_eq!((theme.mockup_surface.b * 255.0).round() as u8, 0x17);
 
-    // Card Hover / Elevated #27272a (zinc-800)
-    assert_eq!((theme.card_hover.r * 255.0).round() as u8, 0x27);
-    assert_eq!((theme.card_hover.g * 255.0).round() as u8, 0x27);
-    assert_eq!((theme.card_hover.b * 255.0).round() as u8, 0x2a);
+    // Hover surface #1e1e1e
+    assert_eq!((theme.mockup_hover.r * 255.0).round() as u8, 0x1e);
+    assert_eq!((theme.mockup_hover.g * 255.0).round() as u8, 0x1e);
+    assert_eq!((theme.mockup_hover.b * 255.0).round() as u8, 0x1e);
 
-    // Border Low Subtle #27272a
-    assert_eq!((theme.border_subtle.r * 255.0).round() as u8, 0x27);
-    assert_eq!((theme.border_subtle.g * 255.0).round() as u8, 0x27);
-    assert_eq!((theme.border_subtle.b * 255.0).round() as u8, 0x2a);
+    // Border subtle #222222
+    assert_eq!((theme.mockup_border.r * 255.0).round() as u8, 0x22);
+    assert_eq!((theme.mockup_border.g * 255.0).round() as u8, 0x22);
+    assert_eq!((theme.mockup_border.b * 255.0).round() as u8, 0x22);
 
-    // Border Structural #3f3f46 (zinc-700)
-    assert_eq!((theme.border_structural.r * 255.0).round() as u8, 0x3f);
-    assert_eq!((theme.border_structural.g * 255.0).round() as u8, 0x3f);
-    assert_eq!((theme.border_structural.b * 255.0).round() as u8, 0x46);
+    // Border structural #262626
+    assert_eq!((theme.mockup_border_strong.r * 255.0).round() as u8, 0x26);
+    assert_eq!((theme.mockup_border_strong.g * 255.0).round() as u8, 0x26);
+    assert_eq!((theme.mockup_border_strong.b * 255.0).round() as u8, 0x26);
 
-    // Text Primary #fafafa (zinc-50)
-    assert_eq!((theme.text_primary.r * 255.0).round() as u8, 0xfa);
-    assert_eq!((theme.text_primary.g * 255.0).round() as u8, 0xfa);
-    assert_eq!((theme.text_primary.b * 255.0).round() as u8, 0xfa);
+    // Bright text #f2f2f2
+    assert_eq!((theme.mockup_text_bright.r * 255.0).round() as u8, 0xf2);
+    assert_eq!((theme.mockup_text_bright.g * 255.0).round() as u8, 0xf2);
+    assert_eq!((theme.mockup_text_bright.b * 255.0).round() as u8, 0xf2);
 
-    // Text Muted #a1a1aa (zinc-400)
-    assert_eq!((theme.text_muted.r * 255.0).round() as u8, 0xa1);
-    assert_eq!((theme.text_muted.g * 255.0).round() as u8, 0xa1);
-    assert_eq!((theme.text_muted.b * 255.0).round() as u8, 0xaa);
+    // Muted text #9a9a9a
+    assert_eq!((theme.mockup_text_muted.r * 255.0).round() as u8, 0x9a);
+    assert_eq!((theme.mockup_text_muted.g * 255.0).round() as u8, 0x9a);
+    assert_eq!((theme.mockup_text_muted.b * 255.0).round() as u8, 0x9a);
 
-    // Text Dim #71717a (zinc-500)
-    assert_eq!((theme.text_dim.r * 255.0).round() as u8, 0x71);
-    assert_eq!((theme.text_dim.g * 255.0).round() as u8, 0x71);
-    assert_eq!((theme.text_dim.b * 255.0).round() as u8, 0x7a);
-
-    // Text Extra Dim #52525b (zinc-600)
-    assert_eq!((theme.text_extra_dim.r * 255.0).round() as u8, 0x52);
-    assert_eq!((theme.text_extra_dim.g * 255.0).round() as u8, 0x52);
-    assert_eq!((theme.text_extra_dim.b * 255.0).round() as u8, 0x5b);
+    // Dim text #858585
+    assert_eq!((theme.mockup_text_dim.r * 255.0).round() as u8, 0x85);
+    assert_eq!((theme.mockup_text_dim.g * 255.0).round() as u8, 0x85);
+    assert_eq!((theme.mockup_text_dim.b * 255.0).round() as u8, 0x85);
 
     // Accent Electric Blue #7aa7ff
     assert_eq!((theme.accent_blue.r * 255.0).round() as u8, 0x7a);
@@ -171,39 +170,34 @@ fn test_theme_color_tokens_and_hex_accuracy() {
     assert_eq!((theme.warning_amber.r * 255.0).round() as u8, 0xf5);
     assert_eq!((theme.warning_amber.g * 255.0).round() as u8, 0x9e);
     assert_eq!((theme.warning_amber.b * 255.0).round() as u8, 0x0b);
-
-    // Frosted Glass Panel Fill 88% alpha (0xe0)
-    assert_eq!((theme.panel_frosted_bg.r * 255.0).round() as u8, 0x18);
-    assert_eq!((theme.panel_frosted_bg.g * 255.0).round() as u8, 0x18);
-    assert_eq!((theme.panel_frosted_bg.b * 255.0).round() as u8, 0x1b);
-    assert_eq!((theme.panel_frosted_bg.a * 255.0).round() as u8, 0xe0);
 }
 
 #[test]
 fn test_theme_wcag_contrast_ratios() {
     let theme = HermesTheme::default();
 
-    // Contrast on canvas background (#fafafa on #09090b)
-    let cr_canvas = contrast_ratio(theme.text_primary, theme.canvas_bg);
+    // Contrast on canvas background (#f2f2f2 on #141414)
+    let cr_canvas = contrast_ratio(theme.mockup_text_bright, theme.mockup_canvas);
     assert!(
         cr_canvas > 12.0,
         "Luminance contrast ratio on canvas must exceed 12:1, got {:.2}:1",
         cr_canvas
     );
 
-    // Contrast on card surface (#fafafa on #18181b)
-    let cr_card = contrast_ratio(theme.text_primary, theme.card_bg);
+    // Contrast on card surface (#f2f2f2 on #171717)
+    let cr_card = contrast_ratio(theme.mockup_text_bright, theme.mockup_surface);
     assert!(
         cr_card > 9.0,
         "Luminance contrast ratio on card must exceed 9:1, got {:.2}:1",
         cr_card
     );
 
-    // Contrast for secondary text on canvas (#a1a1aa on #09090b)
-    let cr_muted = contrast_ratio(theme.text_muted, theme.canvas_bg);
+    // Contrast for secondary text on canvas (#9a9a9a on #141414) — the mockup
+    // muted token lands at ~6.5:1: WCAG AA for body text, not the zinc AAA 7:1.
+    let cr_muted = contrast_ratio(theme.mockup_text_muted, theme.mockup_canvas);
     assert!(
-        cr_muted > 7.0,
-        "Muted text contrast ratio on canvas must exceed 7:1 (WCAG AAA), got {:.2}:1",
+        cr_muted > 6.0,
+        "Muted text contrast ratio on canvas must exceed 6:1 (WCAG AA), got {:.2}:1",
         cr_muted
     );
 }
@@ -251,40 +245,32 @@ fn test_window_config_defaults_and_metal_options() {
 }
 
 #[gpui::test]
-async fn test_desktop_window_in_test_context(cx: &mut TestAppContext) {
+async fn test_app_shell_state_in_test_context(cx: &mut TestAppContext) {
     // Test theme initialization on GPUI context
     cx.update(|cx| {
         HermesTheme::init(cx);
         let theme = HermesTheme::get(cx);
-        assert_eq!((theme.canvas_bg.r * 255.0).round() as u8, 0x09);
-        assert_eq!((theme.card_bg.r * 255.0).round() as u8, 0x18);
+        assert_eq!((theme.mockup_canvas.r * 255.0).round() as u8, 0x14);
+        assert_eq!((theme.mockup_surface.r * 255.0).round() as u8, 0x17);
         assert_eq!(theme.title_size(), px(15.0));
     });
 
-    // Test DesktopWindow view instantiation
-    let window_entity = cx.new(|_cx| DesktopWindow::new());
+    // P6: the legacy DesktopWindow root view was retired; ChatView owns
+    // layout and rendering, so only AppShell state is asserted here.
+    let shell_entity = cx.new(|_cx| AppShell::new());
     cx.update(|cx| {
-        let win = window_entity.read(cx);
-        assert_eq!(win.status_message, "Ready");
-        assert_eq!(win.active_view, DesktopView::Start);
-        assert!(win.workspace_path.is_none());
+        let shell = shell_entity.read(cx);
+        assert_eq!(shell.active_view, ShellView::Chat);
+        assert!(shell.active_session_id.is_none());
     });
 
-    // Test view state transition
-    window_entity.update(cx, |win, _cx| {
-        win.set_view(DesktopView::Session);
-        assert_eq!(win.active_view, DesktopView::Session);
-    });
-
-    // Test initialization with custom workspace path
-    let loaded_window = cx.new(|_cx| DesktopWindow::with_workspace("/tmp/test-hex-workspace"));
+    // Test workspace-scoped shell construction
+    let workspace_shell =
+        cx.new(|_cx| AppShell::with_workspace("test-hex-workspace", "main"));
     cx.update(|cx| {
-        let win = loaded_window.read(cx);
-        assert_eq!(
-            win.workspace_path.as_deref(),
-            Some("/tmp/test-hex-workspace")
-        );
-        assert_eq!(win.status_message, "Workspace loaded");
-        assert_eq!(win.active_view, DesktopView::Start);
+        let shell = workspace_shell.read(cx);
+        assert_eq!(shell.sidebar.workspace_name, "test-hex-workspace");
+        assert_eq!(shell.sidebar.git_branch, "main");
+        assert_eq!(shell.active_view, ShellView::Chat);
     });
 }
