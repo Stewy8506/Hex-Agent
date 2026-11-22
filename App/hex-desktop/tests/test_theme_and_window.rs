@@ -211,18 +211,18 @@ fn test_theme_wcag_contrast_ratios() {
 #[test]
 fn test_window_config_defaults_and_metal_options() {
     let config = WindowConfig::default();
-    assert_eq!(config.width, px(1200.0));
-    assert_eq!(config.height, px(800.0));
+    assert_eq!(config.width, px(1440.0));
+    assert_eq!(config.height, px(900.0));
     assert_eq!(config.min_width, px(900.0));
     assert_eq!(config.min_height, px(600.0));
     assert_eq!(config.target_fps, 120);
 
     // Verify default bounds calculations
     let bounds = config.default_bounds();
-    assert_eq!(bounds.size.width, px(1200.0));
-    assert_eq!(bounds.size.height, px(800.0));
-    assert_eq!(bounds.origin.x, px(360.0));
-    assert_eq!(bounds.origin.y, px(140.0));
+    assert_eq!(bounds.size.width, px(1440.0));
+    assert_eq!(bounds.size.height, px(900.0));
+    assert_eq!(bounds.origin.x, px(240.0));
+    assert_eq!(bounds.origin.y, px(90.0));
 
     // Centered on 2560x1440 display
     let display_bounds = Bounds {
@@ -230,8 +230,8 @@ fn test_window_config_defaults_and_metal_options() {
         size: size(px(2560.0), px(1440.0)),
     };
     let centered = config.centered_on_display(display_bounds);
-    assert_eq!(centered.origin.x, px(680.0));
-    assert_eq!(centered.origin.y, px(320.0));
+    assert_eq!(centered.origin.x, px(560.0));
+    assert_eq!(centered.origin.y, px(270.0));
 
     // Verify Titlebar options: transparent and custom traffic light placement
     let titlebar = config.titlebar_options();
@@ -241,14 +241,11 @@ fn test_window_config_defaults_and_metal_options() {
         Some(point(px(14.0), px(16.0)))
     );
 
-    // Verify WindowOptions configuration
+    // Verify WindowOptions configuration: opaque mockup canvas, no vibrancy.
     let win_opts = config.window_options(None);
     assert!(win_opts.window_bounds.is_some());
     assert_eq!(win_opts.window_min_size, Some(size(px(900.0), px(600.0))));
-    assert_eq!(
-        win_opts.window_background,
-        WindowBackgroundAppearance::Blurred
-    );
+    assert_eq!(win_opts.window_background, WindowBackgroundAppearance::Opaque);
     assert!(win_opts.focus);
     assert!(win_opts.show);
 }

@@ -2629,7 +2629,7 @@ impl Render for ChatView {
             .flex()
             .flex_row()
             .overflow_hidden()
-            .bg(theme.canvas_bg())
+            .bg(theme.mockup_canvas)
             .key_context("ChatView")
             .on_action(cx.listener(Self::on_submit))
             .on_action(cx.listener(Self::on_new_chat))
