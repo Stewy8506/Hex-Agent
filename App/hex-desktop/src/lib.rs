@@ -16,7 +16,7 @@ pub use menu::{application_menus, init_menus};
 pub use shortcuts::{desktop_keybindings, init_shortcuts};
 
 pub use theme::{
-    contrast_ratio, relative_luminance, HermesTheme, TypographyTokens,
+    contrast_ratio, relative_luminance, HermesTheme, MockupTypeScale, TypographyTokens,
 };
 pub use ui::{
     classify_session_date, format_message_time, format_reasoning_elapsed, format_relative_time,

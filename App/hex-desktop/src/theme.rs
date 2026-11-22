@@ -143,6 +143,36 @@ pub struct HermesTheme {
     pub mockup_text_muted: Rgba,
     /// Dim mockup text (#858585).
     pub mockup_text_dim: Rgba,
+    /// Row hover / search box background (#1a1a1a).
+    pub mockup_row_hover: Rgba,
+    /// Pill background (#1f1f1f).
+    pub mockup_pill: Rgba,
+    /// Pill hover background (#272727).
+    pub mockup_pill_hover: Rgba,
+    /// Dock / segmented container background (#191919).
+    pub mockup_dock: Rgba,
+    /// Dock / segmented container border (#232323).
+    pub mockup_dock_border: Rgba,
+    /// Active segmented button background (#262626).
+    pub mockup_seg_active: Rgba,
+    /// Send circle / context track background (#2a2a2a).
+    pub mockup_track: Rgba,
+    /// Non-active session row titles (#bdbdbd).
+    pub mockup_session_inactive: Rgba,
+    /// Assistant prose base text (#d9d9d9).
+    pub mockup_text_base: Rgba,
+    /// Composer card border (rgba(122,167,255,.3)).
+    pub mockup_accent_border: Rgba,
+    /// Review / Needs-you chip background (rgba(122,167,255,.14)).
+    pub mockup_accent_chip_bg: Rgba,
+    /// Added diff line text (#c4e0c7).
+    pub mockup_diff_add_fg: Rgba,
+    /// Added diff line tint (rgba(143,191,147,.1)).
+    pub mockup_diff_add_bg: Rgba,
+    /// Deleted diff line text (#d4a9a9).
+    pub mockup_diff_del_fg: Rgba,
+    /// Deleted diff line tint (rgba(201,139,139,.09)).
+    pub mockup_diff_del_bg: Rgba,
 }
 
 impl Default for HermesTheme {
@@ -176,6 +206,21 @@ impl Default for HermesTheme {
             mockup_text_bright: rgb(0xf2f2f2),
             mockup_text_muted: rgb(0x9a9a9a),
             mockup_text_dim: rgb(0x858585),
+            mockup_row_hover: rgb(0x1a1a1a),
+            mockup_pill: rgb(0x1f1f1f),
+            mockup_pill_hover: rgb(0x272727),
+            mockup_dock: rgb(0x191919),
+            mockup_dock_border: rgb(0x232323),
+            mockup_seg_active: rgb(0x262626),
+            mockup_track: rgb(0x2a2a2a),
+            mockup_session_inactive: rgb(0xbdbdbd),
+            mockup_text_base: rgb(0xd9d9d9),
+            mockup_accent_border: rgba(0x7aa7ff4d),
+            mockup_accent_chip_bg: rgba(0x7aa7ff24),
+            mockup_diff_add_fg: rgb(0xc4e0c7),
+            mockup_diff_add_bg: rgba(0x8fbf931a),
+            mockup_diff_del_fg: rgb(0xd4a9a9),
+            mockup_diff_del_bg: rgba(0xc98b8b17),
             typography: TypographyTokens::default(),
         }
     }
@@ -329,8 +374,66 @@ impl HermesTheme {
     }
 }
 
-// --- WCAG Contrast & Luminance Calculations ---
+/// Mockup type scale (docs/design mockups-desktop §2.2). Sizes in px, paired
+/// with the matching line-height where the mockup defines one. The legacy
+/// `TypographyTokens` stays untouched until the P6 retirement.
+pub struct MockupTypeScale;
 
+impl MockupTypeScale {
+    /// Base prose / bold lead-ins / user bubble / Continue + project titles.
+    pub const BASE_SIZE: f32 = 15.0;
+    pub const BASE_LINE_HEIGHT: f32 = 26.0;
+    /// ASCII logo (Geist Mono w500).
+    pub const LOGO_SIZE: f32 = 56.0;
+    pub const LOGO_LINE_HEIGHT: f32 = 56.0;
+    pub const LOGO_WEIGHT: FontWeight = FontWeight::MEDIUM;
+    /// Bold lead-ins inside assistant prose.
+    pub const BOLD_WEIGHT: FontWeight = FontWeight::BOLD;
+    /// Composer placeholder.
+    pub const PLACEHOLDER_SIZE: f32 = 16.0;
+    /// `.pill` rows.
+    pub const PILL_SIZE: f32 = 14.0;
+    pub const PILL_LINE_HEIGHT: f32 = 20.0;
+    /// `.chip` rows.
+    pub const CHIP_SIZE: f32 = 11.5;
+    pub const CHIP_LINE_HEIGHT: f32 = 20.0;
+    /// Inline code `.cd` and diff header/lines (lines use DIFF_LINE_HEIGHT).
+    pub const INLINE_CODE_SIZE: f32 = 12.5;
+    pub const DIFF_SIZE: f32 = 12.5;
+    pub const DIFF_LINE_HEIGHT: f32 = 21.0;
+    /// Sidebar search placeholder / session titles / feature labels.
+    pub const SEARCH_SIZE: f32 = 14.5;
+    pub const SESSION_TITLE_SIZE: f32 = 14.5;
+    pub const FEATURE_LABEL_SIZE: f32 = 14.5;
+    /// `cmd K` hint.
+    pub const HINT_SIZE: f32 = 11.5;
+    /// Projects header.
+    pub const PROJECTS_HEADER_SIZE: f32 = 13.5;
+    /// Project count / running spinner.
+    pub const PROJECT_COUNT_SIZE: f32 = 13.0;
+    pub const SPINNER_SIZE: f32 = 13.0;
+    /// Account footer.
+    pub const ACCOUNT_NAME_SIZE: f32 = 14.0;
+    pub const ACCOUNT_SUB_SIZE: f32 = 12.0;
+    pub const ACCOUNT_LINE_HEIGHT: f32 = 18.0;
+    /// Avatar letter.
+    pub const AVATAR_SIZE: f32 = 13.0;
+    /// Continue list.
+    pub const CONTINUE_HEADER_SIZE: f32 = 13.0;
+    pub const CONTINUE_PROJECT_SIZE: f32 = 12.0;
+    pub const CONTINUE_TIME_SIZE: f32 = 13.0;
+    /// Action bar / token count / context label.
+    pub const ACTION_BAR_SIZE: f32 = 13.5;
+    pub const TOKEN_COUNT_SIZE: f32 = 13.0;
+    pub const CONTEXT_LABEL_SIZE: f32 = 13.0;
+    /// Changes button.
+    pub const CHANGES_SIZE: f32 = 14.0;
+    /// Tooltip.
+    pub const TOOLTIP_SIZE: f32 = 12.5;
+    pub const TOOLTIP_LINE_HEIGHT: f32 = 20.0;
+}
+
+// --- WCAG Contrast & Luminance Calculations ---
 /// Computes the linear sRGB channel value according to WCAG 2.1 specifications.
 fn srgb_to_linear(channel: f32) -> f32 {
     let c = channel.clamp(0.0, 1.0);
