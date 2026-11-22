@@ -47,6 +47,23 @@ impl ShellView {
     }
 }
 
+// --- Mockup session-header metrics (docs/design mockups-desktop) ---
+
+/// Header height in px.
+pub const HEADER_HEIGHT: f32 = 60.0;
+/// Header horizontal padding.
+pub const HEADER_PADDING_X: f32 = 20.0;
+/// Header icon-button SVG size.
+pub const HEADER_ICON: f32 = 16.0;
+/// Segmented control: container radius 12, padding 3, gap 2; buttons 32×32
+/// radius 8 with 16px icons.
+pub const SEGMENTED_RADIUS: f32 = 12.0;
+pub const SEGMENTED_PADDING: f32 = 3.0;
+pub const SEGMENTED_GAP: f32 = 2.0;
+pub const SEGMENT_BUTTON: f32 = 32.0;
+pub const SEGMENT_BUTTON_RADIUS: f32 = 8.0;
+pub const SEGMENT_ICON: f32 = 16.0;
+
 /// Top-level application shell GPUI component.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppShell {
@@ -381,6 +398,24 @@ impl Render for AppShell {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[test]
+    fn test_header_tokens_match_mockup() {
+        let theme = HermesTheme::default();
+        assert_eq!(HEADER_HEIGHT, 60.0);
+        assert_eq!(HEADER_PADDING_X, 20.0);
+        assert_eq!(HEADER_ICON, 16.0);
+        assert_eq!(SEGMENTED_RADIUS, 12.0);
+        assert_eq!(SEGMENTED_PADDING, 3.0);
+        assert_eq!(SEGMENTED_GAP, 2.0);
+        assert_eq!(SEGMENT_BUTTON, 32.0);
+        assert_eq!(SEGMENT_BUTTON_RADIUS, 8.0);
+        assert_eq!(SEGMENT_ICON, 16.0);
+        // Segmented container #191919 / border #232323; active button #262626.
+        assert_eq!(theme.mockup_dock, rgb(0x191919));
+        assert_eq!(theme.mockup_dock_border, rgb(0x232323));
+        assert_eq!(theme.mockup_seg_active, rgb(0x262626));
+    }
 
     #[test]
     fn test_app_shell_defaults_and_toggles() {

@@ -47,7 +47,7 @@ use crate::ui::motion;
 use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
 use crate::ui::session_list::SessionItem;
 use crate::ui::shell::{AppShell, ShellView};
-use crate::ui::sidebar::ProviderState;
+use crate::ui::sidebar::{ProviderState, SidebarHandlers};
 use crate::ui::tool_card::ToolCallCard;
 use crate::window::WindowConfig;
 
@@ -894,22 +894,11 @@ impl ChatView {
     /// that is not built yet surfaces its Coming soon notice.
     fn render_home(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
         // Continue list: the five most recent real sessions, with honest
-        // running (live turn) and Review (pending approval) state.
+        // running (live turn) and Review (pending approval) state, synced
+        // by sync_sidebar_live_state each frame.
         let now = chrono::Utc::now();
         let workspace = self.shell.sidebar.workspace_name.clone();
-        let mut pending_sessions: HashSet<String> = HashSet::new();
-        if let ActiveModal::Approval(modal) = &self.shell.active_modal {
-            if let Some(sid) = &modal.session_id {
-                pending_sessions.insert(sid.clone());
-            }
-        }
-        for modal in &self.shell.modal_queue {
-            if let ActiveModal::Approval(modal) = modal {
-                if let Some(sid) = &modal.session_id {
-                    pending_sessions.insert(sid.clone());
-                }
-            }
-        }
+        let pending_sessions = self.shell.sidebar.review_sessions.clone();
         let rows: Vec<ContinueRow> = self
             .shell
             .sidebar
@@ -2453,70 +2442,114 @@ impl ChatView {
             .flex()
             .flex_col()
             .bg(theme.mockup_canvas)
+            // Header h60, padding 0 20px: hamburger ib left; the icon
+            // segmented control is absolute-centered per the mockup (it
+            // paints below the side row, whose corners stay clickable);
+            // right gap 4: Device / Team / More ibs.
             .child(
                 div()
+                    .relative()
                     .w_full()
-                    .h(px(40.0))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_4()
-                    .border_b_1()
-                    .border_color(theme.mockup_border)
+                    .h(px(crate::ui::shell::HEADER_HEIGHT))
+                    .flex_none()
                     .child(
                         div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top_0()
+                            .bottom_0()
                             .flex()
-                            .flex_row()
                             .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .id("sidebar_toggle")
-                                    .cursor_pointer()
-                                    .text_sm()
-                                    .text_color(theme.mockup_text_dim)
-                                    .hover(|s| s.text_color(theme.mockup_text))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.shell.toggle_sidebar();
-                                        cx.notify();
-                                    }))
-                                    .child(if self.shell.sidebar_collapsed {
-                                        "▶"
-                                    } else {
-                                        "◀"
-                                    }),
-                            )
+                            .justify_center()
                             .child(self.render_segmented_header(theme, cx)),
                     )
                     .child(
                         div()
+                            .w_full()
+                            .h_full()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_2()
+                            .justify_between()
+                            .px(px(crate::ui::shell::HEADER_PADDING_X))
                             .child(
                                 div()
-                                    .id("header_provider")
-                                    .text_xs()
-                                    .text_color(theme.mockup_text_dim)
-                                    .child(self.shell.sidebar.provider_status.display_label()),
+                                    .id("header_toggle")
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.shell.toggle_sidebar();
+                                        cx.notify();
+                                    }))
+                                    .child(mockup_icon_button(
+                                        theme,
+                                        "hamburger",
+                                        crate::ui::shell::HEADER_ICON,
+                                        theme.mockup_text_muted,
+                                        None,
+                                    )),
                             )
                             .child(
-                                self.render_header_icon_button(
-                                    theme,
-                                    "header_bell",
-                                    SharedString::from(self.pending_approval_label()),
-                                )
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.open_first_pending_approval(cx);
-                                })),
-                            )
-                            .child(
-                                self.render_header_icon_svg(theme, "header_settings", "settings")
-                                    .on_click(cx.listener(|this, _event, window, cx| {
-                                        this.on_open_settings(&shortcuts::OpenSettings, window, cx);
-                                    })),
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .child(
+                                        div()
+                                            .id("header_device")
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.shell
+                                                    .feed
+                                                    .add_system_notice("Device — coming soon");
+                                                cx.notify();
+                                            }))
+                                            .child(mockup_icon_button(
+                                                theme,
+                                                "device",
+                                                crate::ui::shell::HEADER_ICON,
+                                                theme.mockup_text_muted,
+                                                None,
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("header_team")
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.shell
+                                                    .feed
+                                                    .add_system_notice("Team — coming soon");
+                                                cx.notify();
+                                            }))
+                                            .child(mockup_icon_button(
+                                                theme,
+                                                "team",
+                                                crate::ui::shell::HEADER_ICON,
+                                                theme.mockup_text_muted,
+                                                None,
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("header_more")
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.on_open_settings(
+                                                    &shortcuts::OpenSettings,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }))
+                                            .child(mockup_icon_button(
+                                                theme,
+                                                "more",
+                                                crate::ui::shell::HEADER_ICON,
+                                                theme.mockup_text_muted,
+                                                None,
+                                            )),
+                                    ),
                             ),
                     ),
             )
@@ -2552,60 +2585,48 @@ impl ChatView {
             })
     }
 
-    /// Segmented Chat/Files/Browser/Terminal header control. Only Chat is live;
-    /// the other panes are coming soon and render an empty state when picked.
+    /// Segmented Chat/Files/Browser/Terminal header control: bg `#191919`,
+    /// border `#232323`, radius 12, padding 3, gap 2; four 32×32 icon buttons
+    /// (Chat bubble / Files / Browser globe / Terminal); active button bg
+    /// `#262626`, icon tint unchanged. Only Chat is live; the other panes
+    /// render a coming-soon empty state when picked.
     fn render_segmented_header(&self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
         let segments: [(&str, ShellView); 4] = [
-            ("Chat", ShellView::Chat),
-            ("Files", ShellView::Files),
-            ("Browser", ShellView::Browser),
-            ("Terminal", ShellView::Terminal),
+            ("chat", ShellView::Chat),
+            ("files", ShellView::Files),
+            ("browser", ShellView::Browser),
+            ("terminal", ShellView::Terminal),
         ];
 
         div()
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
-            .p(px(2.0))
-            .rounded(px(8.0))
-            .bg(theme.mockup_surface)
+            .gap(px(crate::ui::shell::SEGMENTED_GAP))
+            .p(px(crate::ui::shell::SEGMENTED_PADDING))
+            .rounded(px(crate::ui::shell::SEGMENTED_RADIUS))
+            .bg(theme.mockup_dock)
             .border_1()
-            .border_color(theme.mockup_border)
-            .children(segments.map(|(label, view)| {
+            .border_color(theme.mockup_dock_border)
+            .children(segments.map(|(icon, view)| {
                 let active = self.shell.active_view == view;
                 div()
-                    .id(SharedString::from(format!("segment_{}", label)))
+                    .id(SharedString::from(format!("segment_{icon}")))
                     .cursor_pointer()
-                    .px_2()
-                    .py(px(3.0))
-                    .rounded(px(6.0))
-                    .text_xs()
-                    .when(active, |s| {
-                        s.bg(theme.mockup_hover)
-                            .text_color(theme.mockup_text)
-                    })
-                    .when(!active, |s| {
-                        s.text_color(theme.mockup_text_dim)
-                            .hover(|s| s.text_color(theme.mockup_text))
-                    })
+                    .size(px(crate::ui::shell::SEGMENT_BUTTON))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(crate::ui::shell::SEGMENT_BUTTON_RADIUS))
+                    .text_color(theme.mockup_text_muted)
+                    .when(active, |s| s.bg(theme.mockup_seg_active))
+                    .when(!active, |s| s.hover(|s| s.bg(theme.mockup_hover)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.shell.active_view = view;
                         cx.notify();
                     }))
-                    .child(label)
+                    .child(crate::ui::icon_svg(icon, crate::ui::shell::SEGMENT_ICON))
             }))
-    }
-
-    /// Phase 3: header bell glyph for the approval queue. Shows the pending
-    /// count (or a filled bell) when approvals are waiting, else a plain bell.
-    fn pending_approval_label(&self) -> String {
-        let pending = self.shell.sidebar.pending_approvals;
-        if pending > 0 {
-            format!("{pending}")
-        } else {
-            String::new()
-        }
     }
 
     /// Phase 3: opens the first pending approval from the modal queue, if any.
@@ -2620,49 +2641,27 @@ impl ChatView {
         }
     }
 
-    fn render_header_icon_svg(
-        &self,
-        theme: &HermesTheme,
-        id: &'static str,
-        icon: &'static str,
-    ) -> Stateful<Div> {
-        div()
-            .id(SharedString::from(id))
-            .cursor_pointer()
-            .size(px(26.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.0))
-            .text_color(theme.mockup_text_dim)
-            .hover(|s| {
-                s.bg(theme.mockup_hover)
-                    .text_color(theme.mockup_text)
-            })
-            .child(crate::ui::icon_svg(icon, 16.0))
-    }
-
-    fn render_header_icon_button(
-        &self,
-        theme: &HermesTheme,
-        id: &'static str,
-        glyph: SharedString,
-    ) -> Stateful<Div> {
-        div()
-            .id(SharedString::from(id))
-            .cursor_pointer()
-            .size(px(26.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.0))
-            .text_xs()
-            .text_color(theme.mockup_text_dim)
-            .hover(|s| {
-                s.bg(theme.mockup_hover)
-                    .text_color(theme.mockup_text)
-            })
-            .child(glyph)
+    /// Syncs sidebar live state every frame: live-turn session ids drive the
+    /// slot spinners and the running project dot; pending-approval session
+    /// ids drive the "Review" chips (sidebar rows and the Home Continue list).
+    fn sync_sidebar_live_state(&mut self) {
+        self.shell
+            .sidebar
+            .set_running_sessions(self.running_turns.clone());
+        let mut review: HashSet<String> = HashSet::new();
+        if let ActiveModal::Approval(modal) = &self.shell.active_modal {
+            if let Some(sid) = &modal.session_id {
+                review.insert(sid.clone());
+            }
+        }
+        for modal in &self.shell.modal_queue {
+            if let ActiveModal::Approval(modal) = modal {
+                if let Some(sid) = &modal.session_id {
+                    review.insert(sid.clone());
+                }
+            }
+        }
+        self.shell.sidebar.set_review_sessions(review);
     }
 }
 
@@ -2682,6 +2681,7 @@ impl Render for ChatView {
                 .count();
             self.shell.sidebar.set_pending_approvals(pending);
         }
+        self.sync_sidebar_live_state();
         let theme = HermesTheme::get(cx).clone();
 
         // Phase 2: the app opens on the Home / start screen; any submit or
@@ -2748,6 +2748,40 @@ impl Render for ChatView {
                 weak.update(cx, |this, cx| this.switch_session(id, cx)).ok();
             })
         };
+        let on_search: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
+            Rc::new(cx.listener(|this, _, window, cx| {
+                this.on_toggle_palette(&shortcuts::ToggleCommandPalette, window, cx);
+            }));
+        let on_settings: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
+            Rc::new(cx.listener(|this, _, window, cx| {
+                this.on_open_settings(&shortcuts::OpenSettings, window, cx);
+            }));
+        let on_feature: Rc<dyn Fn(&'static str, &ClickEvent, &mut Window, &mut App)> = {
+            let weak = cx.entity().downgrade();
+            Rc::new(move |label, _event, _window, cx| {
+                weak.update(cx, |view, cx| {
+                    view.shell
+                        .feed
+                        .add_system_notice(format!("{label} — coming soon"));
+                    cx.notify();
+                })
+                .ok();
+            })
+        };
+        let on_toggle_project: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
+            Rc::new(cx.listener(|this, _, _, cx| {
+                this.shell.sidebar.projects_collapsed = !this.shell.sidebar.projects_collapsed;
+                cx.notify();
+            }));
+        let sidebar_handlers = SidebarHandlers {
+            on_new_chat: Some(on_new_chat),
+            on_select_session: Some(on_select_session),
+            on_needs_you: Some(on_needs_you),
+            on_search: Some(on_search),
+            on_settings: Some(on_settings),
+            on_feature: Some(on_feature),
+            on_toggle_project: Some(on_toggle_project),
+        };
 
         let mut root = div()
             .size_full()
@@ -2771,13 +2805,7 @@ impl Render for ChatView {
 
         if !self.shell.sidebar_collapsed {
             root = root
-                .child(self.shell.sidebar.render_with_actions(
-                    &theme,
-                    Some(on_new_chat),
-                    Some(on_select_session),
-                    Some(on_needs_you),
-                ))
-                .child(div().w(px(1.0)).h_full().bg(theme.border_subtle()));
+                .child(self.shell.sidebar.render_with_actions(&theme, &sidebar_handlers));
         }
 
         root = root.child(self.render_main_pane(&theme, cx));

@@ -70,6 +70,19 @@ pub fn format_compact_relative_time(target: DateTime<Utc>, now: DateTime<Utc>) -
     }
 }
 
+/// Orders one project's sessions for the sidebar: pinned sessions first,
+/// then most recently updated. Keeps pin logic while the mockup groups by
+/// project instead of date.
+pub fn sort_project_sessions<'a>(sessions: &'a [SessionItem]) -> Vec<&'a SessionItem> {
+    let mut ordered: Vec<&SessionItem> = sessions.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.is_pinned
+            .cmp(&a.is_pinned)
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+    });
+    ordered
+}
+
 /// Date grouping category for recent sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SessionGroupCategory {
@@ -530,6 +543,20 @@ mod tests {
         // 10 days ago -> "Nov 6"
         let t_10d = now - Duration::days(10);
         assert_eq!(format_compact_relative_time(t_10d, now), "Nov 6");
+    }
+
+    #[test]
+    fn test_sort_project_sessions_pinned_first_then_recency() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 16, 12, 0, 0).unwrap();
+        let old = SessionItem::with_timestamps("old", "Old", now - Duration::days(2), now - Duration::days(2));
+        let recent = SessionItem::with_timestamps("recent", "Recent", now - Duration::hours(1), now - Duration::hours(1));
+        let pinned = SessionItem::with_timestamps("pinned", "Pinned", now - Duration::days(1), now - Duration::days(1))
+            .with_pinned(true);
+
+        let sessions = [old, recent, pinned];
+        let ordered = sort_project_sessions(&sessions);
+        let ids: Vec<&str> = ordered.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["pinned", "recent", "old"]);
     }
 
     #[test]
