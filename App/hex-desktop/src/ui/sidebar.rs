@@ -370,7 +370,7 @@ impl SidebarView {
     /// These are not implemented yet; each renders with a "Coming soon" badge.
     fn render_feature_rows(&self, theme: &HermesTheme) -> Div {
         let rows = [
-            ("Automations", "A"), ("Team", "T"), ("Notebooks", "N"), ("Design", "D"), ("Extensions", "E"),
+            ("Automations", "bolt"), ("Team", "team"), ("Notebooks", "notebooks"), ("Design", "design"), ("Extensions", "extensions"),
         ];
         let mut col = div().w_full().flex().flex_col().gap_1().px_3().pb_2();
         for (label, initial) in rows {
@@ -391,7 +391,12 @@ impl SidebarView {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().text_xs().child(initial))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.text_muted())
+                                    .child(icon_svg(initial, 14.0)),
+                            )
                             .child(div().child(label)),
                     )
                     .child(
