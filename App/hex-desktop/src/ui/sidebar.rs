@@ -373,7 +373,7 @@ impl SidebarView {
             ("Automations", "bolt"), ("Team", "team"), ("Notebooks", "notebooks"), ("Design", "design"), ("Extensions", "extensions"),
         ];
         let mut col = div().w_full().flex().flex_col().gap_1().px_3().pb_2();
-        for (label, initial) in rows {
+        for (label, icon) in rows {
             col = col.child(
                 div()
                     .flex()
@@ -391,12 +391,8 @@ impl SidebarView {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_muted())
-                                    .child(icon_svg(initial, 14.0)),
-                            )
+                            .text_color(theme.text_muted())
+                            .child(icon_svg(icon, 14.0))
                             .child(div().child(label)),
                     )
                     .child(
