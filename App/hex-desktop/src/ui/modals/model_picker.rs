@@ -229,7 +229,7 @@ impl ModelPickerModal {
                                 .child(
                                     div()
                                         .text_size(px(11.0))
-                                        .text_color(theme.text_extra_dim())
+                                        .text_color(theme.mockup_text_dim)
                                         .child(format!("No matches for \"{}\"", self.search_query)),
                                 ),
                         )

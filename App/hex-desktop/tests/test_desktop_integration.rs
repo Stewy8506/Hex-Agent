@@ -19,7 +19,6 @@ use hex_desktop::ui::modals::{
 };
 use hex_desktop::ui::session_list::SessionItem;
 use hex_desktop::ui::shell::AppShell;
-use hex_desktop::window::DesktopWindow;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::test]
@@ -354,8 +353,8 @@ async fn test_desktop_cockpit_shortcuts_and_menus(cx: &mut TestAppContext) {
         init_menus(cx);
 
         let theme = HermesTheme::get(cx);
-        assert_eq!((theme.canvas_bg.r * 255.0).round() as u8, 0x09);
-        assert_eq!((theme.card_bg.r * 255.0).round() as u8, 0x18);
+        assert_eq!((theme.mockup_canvas.r * 255.0).round() as u8, 0x14);
+        assert_eq!((theme.mockup_surface.r * 255.0).round() as u8, 0x17);
     });
 
     // 2. Test keybindings structure
@@ -370,30 +369,31 @@ async fn test_desktop_cockpit_shortcuts_and_menus(cx: &mut TestAppContext) {
     assert_eq!(menus[2].name.as_ref(), "Edit");
     assert_eq!(menus[3].name.as_ref(), "View");
 
-    // 4. Test DesktopWindow view holding AppShell with overlay rendering
-    let window_entity = cx.new(|_cx| DesktopWindow::with_workspace("/tmp/test-workspace"));
+    // 4. Test AppShell state (P6: the legacy DesktopWindow root view was
+    // retired; ChatView owns layout and rendering).
+    let shell_entity = cx.new(|_cx| AppShell::with_workspace("test-workspace", "main"));
 
     cx.update(|cx| {
-        let win = window_entity.read(cx);
-        assert_eq!(win.workspace_path.as_deref(), Some("/tmp/test-workspace"));
-        assert!(!win.shell.sidebar_collapsed);
-        assert_eq!(win.shell.active_modal, ActiveModal::None);
+        let shell = shell_entity.read(cx);
+        assert_eq!(shell.sidebar.workspace_name, "test-workspace");
+        assert!(!shell.sidebar_collapsed);
+        assert_eq!(shell.active_modal, ActiveModal::None);
     });
 
     // 5. Test opening modal on AppShell inside GPUI entity
-    window_entity.update(cx, |win, _cx| {
-        win.shell.open_command_palette();
-        assert!(matches!(win.shell.active_modal, ActiveModal::Palette(_)));
+    shell_entity.update(cx, |shell, _cx| {
+        shell.open_command_palette();
+        assert!(matches!(shell.active_modal, ActiveModal::Palette(_)));
     });
 
     cx.update(|cx| {
-        let win = window_entity.read(cx);
-        assert!(win.shell.active_modal.is_open());
+        let shell = shell_entity.read(cx);
+        assert!(shell.active_modal.is_open());
     });
 
     // 6. Test dismissing modal
-    window_entity.update(cx, |win, _cx| {
-        win.shell.dismiss_modal();
-        assert_eq!(win.shell.active_modal, ActiveModal::None);
+    shell_entity.update(cx, |shell, _cx| {
+        shell.dismiss_modal();
+        assert_eq!(shell.active_modal, ActiveModal::None);
     });
 }

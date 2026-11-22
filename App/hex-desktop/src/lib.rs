@@ -28,4 +28,4 @@ pub use ui::{
     ThinkingDisclosure, TokenGaugeWidget, ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult,
     ToolCallCard, ToolStatus, UserMessageCard,
 };
-pub use window::{DesktopView, DesktopWindow, WindowConfig};
+pub use window::WindowConfig;

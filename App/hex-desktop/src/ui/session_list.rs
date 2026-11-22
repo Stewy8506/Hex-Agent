@@ -345,7 +345,7 @@ impl SessionListView {
     ) -> Stateful<Div> {
         let rel_time = format_relative_time(session.updated_at, now);
         let bg_color = if is_selected {
-            theme.card_hover() // #27272a
+            theme.mockup_row_hover
         } else {
             rgb(0x00000000) // transparent
         };
@@ -362,7 +362,7 @@ impl SessionListView {
             .rounded_md()
             .bg(bg_color)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.card_hover()));
+            .hover(|s| s.bg(theme.mockup_row_hover));
 
         // Active indicator on the left
         if is_selected {
@@ -392,16 +392,16 @@ impl SessionListView {
                             FontWeight::NORMAL
                         })
                         .text_color(if is_selected {
-                            theme.text_primary()
+                            theme.mockup_text_bright
                         } else {
-                            theme.text_muted()
+                            theme.mockup_session_inactive
                         })
                         .child(session.title.clone()),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(theme.text_dim())
+                        .text_color(theme.mockup_text_dim)
                         .child(rel_time),
                 ),
         )
@@ -437,7 +437,7 @@ impl SessionListView {
                     .py(px(2.0))
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child("PINNED"),
             );
 
@@ -464,7 +464,7 @@ impl SessionListView {
                     .py(px(2.0))
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text_dim())
+                    .text_color(theme.mockup_text_dim)
                     .child(category.label()),
             );
 

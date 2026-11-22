@@ -1,23 +1,16 @@
-//! Hermes Design System Tokens, Zinc Palette & Typography for HEX Desktop.
+//! HEX Desktop design tokens (docs/design/mockups-desktop) & typography.
 //!
-//! Provides the complete Hermes visual language matching `benchmarks/hermes-agent/apps/desktop/`
-//! and the HEX truecolor design tokens:
-//! - Canvas Background: `#09090b` (Dark Zinc canvas)
-//! - Card / Surface Background: `#18181b` (Zinc-900)
-//! - Card Elevated / Hover: `#27272a` (Zinc-800)
-//! - Border Low / Subtle: `#27272a`
-//! - Border Mid / Structural: `#3f3f46` (Zinc-700)
-//! - Primary Text: `#fafafa` (Zinc-50)
-//! - Secondary / Muted Text: `#a1a1aa` (Zinc-400)
-//! - Dim / Metadata Text: `#71717a` (Zinc-500)
-//! - Extra Dim Text: `#52525b` (Zinc-600)
+//! Canonical palette is the mockup token language (plan P0/P6); the semantic
+//! accent/diff tints below are shared with it:
+//! - Canvas: `#141414`, Body: `#0a0a0a`, Sidebar: `#101010`, Surface: `#171717`
+//! - Hover: `#1e1e1e`, Chip: `#1d1d1d`, Borders: `#222222` / `#262626`
+//! - Text: `#e6e6e6` / bright `#f2f2f2` / muted `#9a9a9a` / dim `#858585`
 //! - Electric Blue Accent: `#7aa7ff`
 //! - Sage Green / Addition FG: `#8fbf93`
 //! - Sage Tint / Addition BG: `rgba(0x8fbf93, 0.12)` (#171f18)
 //! - Rose Red / Deletion FG: `#c98b8b`
 //! - Rose Tint / Deletion BG: `rgba(0xc98b8b, 0.10)` (#1c1616)
 //! - Warning Amber: `#f59e0b`
-//! - Translucent Frosted Glass: `rgba(0x18181b, 0.88)`
 
 use gpui::*;
 
@@ -81,27 +74,9 @@ impl Default for TypographyTokens {
     }
 }
 
-/// Hermes Design System Theme containing Dark Zinc tokens, diff tints, and typography.
+/// HEX Desktop theme: mockup palette tokens, diff tints, and typography.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HermesTheme {
-    /// Canvas background (#09090b).
-    pub canvas_bg: Rgba,
-    /// Surface card background (#18181b / zinc-900).
-    pub card_bg: Rgba,
-    /// Elevated card / hover state (#27272a / zinc-800).
-    pub card_hover: Rgba,
-    /// Subtle low-contrast border (#27272a).
-    pub border_subtle: Rgba,
-    /// Structural mid-contrast border (#3f3f46 / zinc-700).
-    pub border_structural: Rgba,
-    /// Primary high-contrast text (#fafafa / zinc-50).
-    pub text_primary: Rgba,
-    /// Secondary muted text (#a1a1aa / zinc-400).
-    pub text_muted: Rgba,
-    /// Dim metadata text (#71717a / zinc-500).
-    pub text_dim: Rgba,
-    /// Extra dim separator text (#52525b / zinc-600).
-    pub text_extra_dim: Rgba,
     /// Electric Blue accent for focus and active indicators (#7aa7ff).
     pub accent_blue: Rgba,
     /// Sage green for diff additions and test passes (#8fbf93).
@@ -114,8 +89,6 @@ pub struct HermesTheme {
     pub rose_bg: Rgba,
     /// Warning amber for alerts (#f59e0b).
     pub warning_amber: Rgba,
-    /// Frosted glass translucent panel background (rgba(0x18181be0)).
-    pub panel_frosted_bg: Rgba,
     /// Typography tokens.
     pub typography: TypographyTokens,
     // --- Mockup palette (docs/design/mockups-desktop) ---
@@ -180,22 +153,12 @@ pub struct HermesTheme {
 impl Default for HermesTheme {
     fn default() -> Self {
         Self {
-            canvas_bg: rgb(0x09090b),
-            card_bg: rgb(0x18181b),
-            card_hover: rgb(0x27272a),
-            border_subtle: rgb(0x27272a),
-            border_structural: rgb(0x3f3f46),
-            text_primary: rgb(0xfafafa),
-            text_muted: rgb(0xa1a1aa),
-            text_dim: rgb(0x71717a),
-            text_extra_dim: rgb(0x52525b),
             accent_blue: rgb(0x7aa7ff),
             sage_fg: rgb(0x8fbf93),
             sage_bg: rgba(0x8fbf931f),
             rose_fg: rgb(0xc98b8b),
             rose_bg: rgba(0xc98b8b1a),
             warning_amber: rgb(0xf59e0b),
-            panel_frosted_bg: rgba(0x18181be0),
             mockup_canvas: rgb(0x141414),
             mockup_body: rgb(0x0a0a0a),
             mockup_sidebar: rgb(0x101010),
@@ -245,51 +208,6 @@ impl HermesTheme {
     // --- Color Getters ---
 
     #[inline]
-    pub fn canvas_bg(&self) -> Rgba {
-        self.canvas_bg
-    }
-
-    #[inline]
-    pub fn card_bg(&self) -> Rgba {
-        self.card_bg
-    }
-
-    #[inline]
-    pub fn card_hover(&self) -> Rgba {
-        self.card_hover
-    }
-
-    #[inline]
-    pub fn border_subtle(&self) -> Rgba {
-        self.border_subtle
-    }
-
-    #[inline]
-    pub fn border_structural(&self) -> Rgba {
-        self.border_structural
-    }
-
-    #[inline]
-    pub fn text_primary(&self) -> Rgba {
-        self.text_primary
-    }
-
-    #[inline]
-    pub fn text_muted(&self) -> Rgba {
-        self.text_muted
-    }
-
-    #[inline]
-    pub fn text_dim(&self) -> Rgba {
-        self.text_dim
-    }
-
-    #[inline]
-    pub fn text_extra_dim(&self) -> Rgba {
-        self.text_extra_dim
-    }
-
-    #[inline]
     pub fn accent_blue(&self) -> Rgba {
         self.accent_blue
     }
@@ -317,11 +235,6 @@ impl HermesTheme {
     #[inline]
     pub fn warning_amber(&self) -> Rgba {
         self.warning_amber
-    }
-
-    #[inline]
-    pub fn panel_frosted_bg(&self) -> Rgba {
-        self.panel_frosted_bg
     }
 
     // --- Typography Getters ---
@@ -473,20 +386,20 @@ mod tests {
     fn test_theme_color_tokens() {
         let theme = HermesTheme::default();
 
-        // Canvas #09090b
-        assert_eq!((theme.canvas_bg.r * 255.0).round() as u8, 0x09);
-        assert_eq!((theme.canvas_bg.g * 255.0).round() as u8, 0x09);
-        assert_eq!((theme.canvas_bg.b * 255.0).round() as u8, 0x0b);
+        // Canvas #141414 (canonical mockup canvas)
+        assert_eq!((theme.mockup_canvas.r * 255.0).round() as u8, 0x14);
+        assert_eq!((theme.mockup_canvas.g * 255.0).round() as u8, 0x14);
+        assert_eq!((theme.mockup_canvas.b * 255.0).round() as u8, 0x14);
 
-        // Card #18181b
-        assert_eq!((theme.card_bg.r * 255.0).round() as u8, 0x18);
-        assert_eq!((theme.card_bg.g * 255.0).round() as u8, 0x18);
-        assert_eq!((theme.card_bg.b * 255.0).round() as u8, 0x1b);
+        // Surface #171717 (canonical mockup card surface)
+        assert_eq!((theme.mockup_surface.r * 255.0).round() as u8, 0x17);
+        assert_eq!((theme.mockup_surface.g * 255.0).round() as u8, 0x17);
+        assert_eq!((theme.mockup_surface.b * 255.0).round() as u8, 0x17);
 
-        // Text primary #fafafa
-        assert_eq!((theme.text_primary.r * 255.0).round() as u8, 0xfa);
-        assert_eq!((theme.text_primary.g * 255.0).round() as u8, 0xfa);
-        assert_eq!((theme.text_primary.b * 255.0).round() as u8, 0xfa);
+        // Bright text #f2f2f2 (canonical mockup heading text)
+        assert_eq!((theme.mockup_text_bright.r * 255.0).round() as u8, 0xf2);
+        assert_eq!((theme.mockup_text_bright.g * 255.0).round() as u8, 0xf2);
+        assert_eq!((theme.mockup_text_bright.b * 255.0).round() as u8, 0xf2);
 
         // Sage green #8fbf93
         assert_eq!((theme.sage_fg.r * 255.0).round() as u8, 0x8f);
@@ -508,14 +421,14 @@ mod tests {
     fn test_wcag_contrast_ratios() {
         let theme = HermesTheme::default();
 
-        let cr_canvas = contrast_ratio(theme.text_primary, theme.canvas_bg);
+        let cr_canvas = contrast_ratio(theme.mockup_text_bright, theme.mockup_canvas);
         assert!(
             cr_canvas > 12.0,
             "Contrast ratio on canvas must exceed 12:1, got {:.2}",
             cr_canvas
         );
 
-        let cr_card = contrast_ratio(theme.text_primary, theme.card_bg);
+        let cr_card = contrast_ratio(theme.mockup_text_bright, theme.mockup_surface);
         assert!(
             cr_card > 9.0,
             "Contrast ratio on card must exceed 9:1, got {:.2}",

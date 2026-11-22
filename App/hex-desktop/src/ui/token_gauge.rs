@@ -159,7 +159,7 @@ impl TokenGaugeWidget {
             .child(
                 div()
                     .text_color(if self.threshold() == GaugeThreshold::Normal {
-                        theme.text_dim()
+                        theme.mockup_text_dim
                     } else {
                         color
                     })

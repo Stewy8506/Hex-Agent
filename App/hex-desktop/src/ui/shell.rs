@@ -1,20 +1,13 @@
-//! Top-level GPUI dual-pane desktop application shell for HEX Desktop.
+//! Application-shell state container for HEX Desktop.
 //!
-//! Splits the viewport horizontally into:
-//! - Left pane: 260px collapsible sidebar with session history and provider chip.
-//! - Right pane: Flex-1 main conversation area hosting feed and composer.
-//!
-//! Supports collapsing sidebar (via Cmd+B / programmatic toggle), session switching,
-//! and Hermes dark zinc aesthetics.
-
-use gpui::*;
+//! Owns the sidebar view, message feed, composer, active pane, and the modal
+//! stack. Layout and rendering live in `ChatView` (`src/chat.rs`); this type
+//! only carries state shared across sessions.
 
 use crate::acp_bridge::{AcpBridge, AcpEvent};
-use crate::theme::HermesTheme;
 use crate::ui::modals::{
-    render_modal_container, ActiveModal, CommandPaletteModal, ModelPickerModal, ToolApprovalModal,
+    ActiveModal, CommandPaletteModal, ModelPickerModal, ToolApprovalModal,
 };
-use crate::ui::composer::glow_card;
 use crate::ui::sidebar::{ProviderState, SidebarView};
 use crate::ui::tool_card::ToolCallCard;
 
@@ -250,154 +243,14 @@ impl AppShell {
         self.select_session(new_id.clone());
         new_id
     }
-
-    /// Render the main conversation right pane (header, feed area, and composer area).
-    fn render_main_pane(&self, theme: &HermesTheme) -> Div {
-        let active_title = self
-            .sidebar
-            .session_list
-            .selected_session()
-            .map(|s| s.title.clone())
-            .unwrap_or_else(|| "New Session".to_string());
-
-        div()
-            .flex_1()
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(theme.canvas_bg())
-            // Top Navigation / Titlebar Strip
-            .child(
-                div()
-                    .w_full()
-                    .h(px(40.0))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_4()
-                    .border_b_1()
-                    .border_color(theme.border_subtle())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                // Sidebar Toggle Icon Button
-                                div()
-                                    .cursor_pointer()
-                                    .text_sm()
-                                    .text_color(theme.text_muted())
-                                    .hover(|s| s.text_color(theme.text_primary()))
-                                    .child(if self.sidebar_collapsed { "▶" } else { "◀" }),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.text_primary())
-                                    .child(active_title),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_dim())
-                                    .child(self.sidebar.provider_status.display_label()),
-                            ),
-                    ),
-            )
-            // Center Conversation Feed (Task 2 connects MessageFeed)
-            .child(self.feed.render(theme))
-            // Bottom Prompt Composer (legacy pane: paint-only placeholder
-            // column; the live editor lives in ChatView::render_composer)
-            .child(
-                div()
-                    .w_full()
-                    .p_4()
-                    .border_t_1()
-                    .border_color(theme.border_subtle())
-                    .child(glow_card(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(30.0))
-                            .child(
-                                div()
-                                    .text_size(px(16.0))
-                                    .line_height(px(20.0))
-                                    .text_color(theme.mockup_text_dim)
-                                    .child(self.composer.placeholder.clone()),
-                            )
-                            .child(self.composer.model_pill.render(theme)),
-                        theme,
-                    )),
-            )
-    }
-
-    /// Renders the AppShell horizontal split container.
-    pub fn render_shell(&self, theme: &HermesTheme) -> Div {
-        let mut shell_container = div()
-            .size_full()
-            .bg(theme.canvas_bg())
-            .flex()
-            .flex_row()
-            .overflow_hidden();
-
-        // 1. Left Sidebar (rendered when not collapsed)
-        if !self.sidebar_collapsed {
-            shell_container = shell_container
-                .child(self.sidebar.render(theme))
-                .child(
-                    // Split Divider
-                    div()
-                        .w(px(1.0))
-                        .h_full()
-                        .bg(theme.border_subtle()),
-                );
-        }
-
-        // 2. Right Main Content Area
-        shell_container = shell_container.child(self.render_main_pane(theme));
-
-        // 3. Active Modal Overlay (Backdrop + Centered Card)
-        if let Some(modal_overlay) = self.render_active_modal(theme) {
-            shell_container = shell_container.child(modal_overlay);
-        }
-
-        shell_container
-    }
-
-    /// Render currently active modal overlay wrapped in backdrop container.
-    fn render_active_modal(&self, theme: &HermesTheme) -> Option<Div> {
-        match &self.active_modal {
-            ActiveModal::None => None,
-            ActiveModal::Approval(modal) => Some(render_modal_container(modal.render(theme), theme)),
-            ActiveModal::Palette(palette) => Some(render_modal_container(palette.render(theme), theme)),
-            ActiveModal::ModelPicker(picker) => Some(render_modal_container(picker.render(theme), theme)),
-        }
-    }
-}
-
-impl Render for AppShell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = HermesTheme::get(cx);
-        self.render_shell(theme)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::HermesTheme;
     use core::prelude::v1::test;
+    use gpui::*;
 
     #[test]
     fn test_header_tokens_match_mockup() {
