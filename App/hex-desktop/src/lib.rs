@@ -3,6 +3,7 @@
 
 pub mod acp_bridge;
 pub mod chat;
+pub mod fonts;
 pub mod menu;
 pub mod shortcuts;
 pub mod theme;

@@ -32,6 +32,7 @@ use hex_protocol::models::{
 };
 
 use crate::acp_bridge::{AcpBridge, AcpEvent};
+use crate::fonts;
 use crate::menu::init_menus;
 use crate::shortcuts::{self, init_shortcuts};
 use crate::theme::HermesTheme;
@@ -87,9 +88,13 @@ pub fn composer_keybindings() -> Vec<KeyBinding> {
     ]
 }
 
-/// Register theme, menus, global shortcuts, and composer bindings.
-/// Shared by the real `main` entry point and the acceptance tests.
+/// Register embedded brand fonts, theme, menus, global shortcuts, and
+/// composer bindings. Shared by the real `main` entry point and the
+/// acceptance tests.
 pub fn init_app(cx: &mut App) {
+    if let Err(err) = fonts::load_embedded_fonts(cx) {
+        log::warn!("failed to load embedded brand fonts: {err}");
+    }
     HermesTheme::init(cx);
     init_shortcuts(cx);
     init_menus(cx);
@@ -405,7 +410,7 @@ impl ChatView {
                 .await;
             this.update(cx, |view, cx| match res {
                 Ok(Ok(resp)) => {
-                    view.adopt_session(resp, cx);
+                    view.adopt_session(resp, false, cx);
                     view.refresh_session_list(cx);
                 }
                 Ok(Err(err)) => {
@@ -497,7 +502,7 @@ impl ChatView {
                     Some((load, feed)) => view.adopt_loaded_session(load, feed, cx),
                     None => match fresh {
                         Some(resp) => {
-                            view.adopt_session(resp, cx);
+                            view.adopt_session(resp, true, cx);
                             view.shell.feed.add_system_notice(
                                 "Started a new session; the previous conversation was not recoverable.",
                             );
@@ -740,7 +745,12 @@ impl ChatView {
         }
     }
 
-    fn adopt_session(&mut self, resp: SessionNewResponse, cx: &mut Context<Self>) {
+    fn adopt_session(
+        &mut self,
+        resp: SessionNewResponse,
+        opens_view: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.save_active_session();
         let id = resp.session_id.clone();
         self.shell.feed = MessageFeed::new();
@@ -751,13 +761,16 @@ impl ChatView {
         self.shell.select_session(id);
         self.current_model = resp.model.clone();
         self.model_id = Some(resp.model.clone());
-        // Phase 2: a prompt submitted on Home opens the session it created.
+        // Phase 2: a prompt submitted on Home opens the session it created, and
+        // an explicit new chat opens the blank session view. The startup
+        // pre-warm keeps the user on Home until they submit.
         self.home_connection_error = None;
-        if self.show_home {
-            if let Some(text) = self.pending_home_prompt.take() {
-                self.show_home = false;
-                self.submit_text(text, cx);
-            }
+        let home_prompt = self.pending_home_prompt.take();
+        if let Some(text) = home_prompt {
+            self.show_home = false;
+            self.submit_text(text, cx);
+        } else if opens_view {
+            self.show_home = false;
         }
         self.current_provider = resp.provider.clone().unwrap_or_else(|| "HEX".to_string());
         self.shell
@@ -896,6 +909,7 @@ impl ChatView {
             .items_center()
             .justify_center()
             .size_full()
+            .font_family(theme.font_sans()[0].clone())
             .bg(theme.mockup_canvas)
             .child(
                 div()
@@ -1051,6 +1065,25 @@ impl ChatView {
             cx.notify();
             return;
         }
+        // start_backend pre-warms a session at launch; while it is still
+        // untouched, the first Home prompt must adopt it rather than orphan
+        // it in the sidebar as an empty "New Chat" entry.
+        if self.pending_home_prompt.is_some()
+            && self.shell.feed.is_empty()
+            && !self.active_turn_running()
+            && self
+                .shell
+                .sidebar
+                .session_list
+                .selected_session()
+                .map(|s| s.title == "New Chat")
+                .unwrap_or(false)
+        {
+            let text = self.pending_home_prompt.take().unwrap();
+            self.show_home = false;
+            self.submit_text(text, cx);
+            return;
+        }
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         let cwd = self.workspace.to_string_lossy().to_string();
@@ -1060,7 +1093,7 @@ impl ChatView {
                 .spawn(async move { bridge.new_session_full(Some(&cwd), model.as_deref()).await })
                 .await;
             this.update(cx, |view, cx| match res {
-                Ok(Ok(resp)) => view.adopt_session(resp, cx),
+                Ok(Ok(resp)) => view.adopt_session(resp, true, cx),
                 Ok(Err(err)) => {
                     view.home_connection_error = Some(format!("Could not create session: {err}"));
                     view.shell
@@ -2531,13 +2564,33 @@ impl Render for ChatView {
         // actions and the modal layer) so modals raised on Home stay visible
         // and dismissible.
         if self.show_home {
+            // The start screen's composer is the primary target (mockup shows
+            // an active caret); focus it so typing works without a click.
+            // Modal focus follows the same rules as the session path.
+            let modal_open = self.shell.active_modal.is_open();
+            if modal_open {
+                if !self.last_modal_open {
+                    self.modal_focus_handle.focus(window);
+                }
+            } else if self.last_modal_open || !self.focus_handle.is_focused(window) {
+                self.focus_handle.focus(window);
+            }
+            self.last_modal_open = modal_open;
+
             let home = self
                 .render_home(&theme, cx)
                 .key_context("ChatView")
                 .on_action(cx.listener(Self::on_submit))
                 .on_action(cx.listener(Self::on_new_chat))
+                .on_action(cx.listener(Self::on_toggle_palette))
+                .on_action(cx.listener(Self::on_toggle_sidebar))
                 .on_action(cx.listener(Self::on_open_settings))
-                .on_action(cx.listener(Self::on_cancel_or_dismiss));
+                .on_action(cx.listener(Self::on_cancel_or_dismiss))
+                .on_action(cx.listener(Self::on_copy))
+                .on_action(cx.listener(Self::on_cut))
+                .on_action(cx.listener(Self::on_paste))
+                .on_action(cx.listener(Self::on_select_all))
+                .on_key_down(cx.listener(Self::on_key_down));
 
             let modal = self.render_modal_layer(&theme, cx);
             return if let Some(modal) = modal {
@@ -2572,6 +2625,7 @@ impl Render for ChatView {
 
         let mut root = div()
             .size_full()
+            .font_family(theme.font_sans()[0].clone())
             .flex()
             .flex_row()
             .overflow_hidden()
