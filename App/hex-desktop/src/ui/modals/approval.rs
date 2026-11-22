@@ -12,6 +12,7 @@ use gpui::*;
 use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
+use crate::ui::icon_svg;
 
 /// Operator decision choice for privileged tool approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +188,7 @@ impl ToolApprovalModal {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().text_size(px(16.0)).child("🛡️"))
+                    .child(div().text_size(px(16.0)).child(icon_svg("design", 16.0)))
                     .child(
                         div()
                             .text_size(px(14.0))

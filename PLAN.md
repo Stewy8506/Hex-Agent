@@ -1,5 +1,8 @@
 # HEX Desktop — Mockup Implementation Plan
 
+> **Superseded:** the live app still diverges from the mockups. The current exact-parity
+> audit and implementation plan is `docs/development/desktop-design-parity-plan.md`.
+
 ## Goal and users
 HEX Desktop is a native macOS GPUI cockpit for the HEX AI agent. Today it has a working chat app (live ACP backend, sessions, approvals, model picker, command palette) but a utilitarian look. This plan re-skins and extends it to match the approved HTML mockups in `docs/design/mockups-desktop/` so it reads as a polished product: a **Start/home screen** and a restyled **Session screen**, both in the mockup's dark "Apfel Grotezk / Geist Mono" aesthetic with the electric-blue `#7aa7ff` accent.
 

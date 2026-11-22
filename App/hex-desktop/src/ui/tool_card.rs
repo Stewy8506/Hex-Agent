@@ -43,12 +43,12 @@ impl ToolStatus {
 /// Returns a descriptive icon for a recognized tool name.
 pub fn tool_icon(name: &str) -> &'static str {
     match name {
-        "run_command" | "execute_command" | "bash" | "shell" => "⚡",
-        "write_file" | "edit_file" | "patch" => "📝",
-        "read_file" | "list_directory" | "find_files" => "📄",
-        "web_search" | "browser" => "🌐",
-        "delegate" | "subagent" => "🤖",
-        _ => "🛠️",
+        "run_command" | "execute_command" | "bash" | "shell" => "bolt",
+        "write_file" | "edit_file" | "patch" => "pencil",
+        "read_file" | "list_directory" | "find_files" => "notebooks",
+        "web_search" | "browser" => "search",
+        "delegate" | "subagent" => "team",
+        _ => "settings",
     }
 }
 
@@ -145,8 +145,8 @@ impl ToolCallCard {
                     .gap_2()
                     .child(
                         div()
-                            .text_sm()
-                            .child(icon),
+                            .text_color(theme.text_muted())
+                            .child(crate::ui::icon_svg(icon, 14.0)),
                     )
                     .child(
                         div()
@@ -327,11 +327,11 @@ mod tests {
     fn test_tool_icons_and_status() {
         let theme = HermesTheme::default();
 
-        assert_eq!(tool_icon("run_command"), "⚡");
-        assert_eq!(tool_icon("write_file"), "📝");
-        assert_eq!(tool_icon("read_file"), "📄");
-        assert_eq!(tool_icon("web_search"), "🌐");
-        assert_eq!(tool_icon("unknown_tool"), "🛠️");
+        assert_eq!(tool_icon("run_command"), "bolt");
+        assert_eq!(tool_icon("write_file"), "pencil");
+        assert_eq!(tool_icon("read_file"), "notebooks");
+        assert_eq!(tool_icon("web_search"), "search");
+        assert_eq!(tool_icon("unknown_tool"), "settings");
 
         let run = ToolStatus::Running;
         assert_eq!(run.badge_symbol(), "⏳");

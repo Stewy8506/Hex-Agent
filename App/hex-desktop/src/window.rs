@@ -26,8 +26,8 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            width: px(1200.0),
-            height: px(800.0),
+            width: px(1440.0),
+            height: px(900.0),
             min_width: px(900.0),
             min_height: px(600.0),
             traffic_light_x: px(14.0),
@@ -71,13 +71,13 @@ impl WindowConfig {
     }
 
     /// Construct `WindowOptions` targeting native macOS Metal rendering at 120 FPS
-    /// with blurred vibrancy background.
+    /// with the opaque mockup canvas (no vibrancy).
     pub fn window_options(&self, bounds: Option<Bounds<Pixels>>) -> WindowOptions {
         let b = bounds.unwrap_or_else(|| self.default_bounds());
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(b)),
             titlebar: Some(self.titlebar_options()),
-            window_background: WindowBackgroundAppearance::Blurred,
+            window_background: WindowBackgroundAppearance::Opaque,
             window_min_size: Some(size(self.min_width, self.min_height)),
             focus: true,
             show: true,

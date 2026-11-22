@@ -10,15 +10,15 @@ use gpui::*;
 use crate::theme::HermesTheme;
 
 /// The mockup's ASCII wordmark (56px mono block art).
-pub const ASCII_LOGO: &str = "█ █ ███▀▀ ▀▄▀\n█▀█ ██▄ ▄▀▄";
+pub const ASCII_LOGO: &str = "█ ▀ ██▀▀ ▀▄▀\n█▀█ ██▄ ▄▀▄";
 
 /// Coming-soon dock entries, in the mockup's left-to-right order.
 pub const COMING_SOON_DOCK: [(&str, &str); 5] = [
-    ("Notebooks", "📓"),
-    ("Design", "✏"),
-    ("Extensions", "⊞"),
-    ("Automations", "⚡"),
-    ("Team", "👥"),
+    ("Notebooks", "notebooks"),
+    ("Design", "design"),
+    ("Extensions", "extensions"),
+    ("Automations", "bolt"),
+    ("Team", "team"),
 ];
 
 /// Renders the ASCII logo block, centered.
@@ -27,14 +27,15 @@ pub fn render_logo(theme: &HermesTheme) -> Div {
         .flex()
         .flex_col()
         .items_center()
-        .mb(px(40.0))
+        .mb(px(46.0))
         .child(
             div()
                 .font_family("Geist Mono")
-                .text_size(px(40.0))
-                .line_height(px(40.0))
-                .text_color(theme.mockup_text)
-                .whitespace_normal()
+                .text_size(px(56.0))
+                .line_height(px(56.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.mockup_text_bright)
+                .whitespace_nowrap()
                 .child(ASCII_LOGO),
         )
 }

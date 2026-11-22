@@ -4,6 +4,93 @@ use hex_desktop::theme::*;
 use hex_desktop::window::*;
 
 #[test]
+fn test_mockup_token_values_byte_exact() {
+    let theme = HermesTheme::default();
+
+    let px8 = |c: Rgba| -> [u8; 4] {
+        [
+            (c.r * 255.0).round() as u8,
+            (c.g * 255.0).round() as u8,
+            (c.b * 255.0).round() as u8,
+            (c.a * 255.0).round() as u8,
+        ]
+    };
+
+    // Row hover / search box #1a1a1a.
+    assert_eq!(px8(theme.mockup_row_hover), [0x1a, 0x1a, 0x1a, 0xff]);
+
+    // Pill #1f1f1f, hover #272727.
+    assert_eq!(px8(theme.mockup_pill), [0x1f, 0x1f, 0x1f, 0xff]);
+    assert_eq!(px8(theme.mockup_pill_hover), [0x27, 0x27, 0x27, 0xff]);
+
+    // Dock / segmented container #191919, border #232323.
+    assert_eq!(px8(theme.mockup_dock), [0x19, 0x19, 0x19, 0xff]);
+    assert_eq!(px8(theme.mockup_dock_border), [0x23, 0x23, 0x23, 0xff]);
+
+    // Segmented active bg #262626; send / context track #2a2a2a.
+    assert_eq!(px8(theme.mockup_seg_active), [0x26, 0x26, 0x26, 0xff]);
+    assert_eq!(px8(theme.mockup_track), [0x2a, 0x2a, 0x2a, 0xff]);
+
+    // Inactive session titles #bdbdbd; prose base #d9d9d9.
+    assert_eq!(px8(theme.mockup_session_inactive), [0xbd, 0xbd, 0xbd, 0xff]);
+    assert_eq!(px8(theme.mockup_text_base), [0xd9, 0xd9, 0xd9, 0xff]);
+
+    // Accent border rgba(122,167,255,.3) -> alpha 0x4d.
+    assert_eq!(px8(theme.mockup_accent_border), [0x7a, 0xa7, 0xff, 0x4d]);
+
+    // Accent chip bg rgba(122,167,255,.14) -> alpha 0x24.
+    assert_eq!(px8(theme.mockup_accent_chip_bg), [0x7a, 0xa7, 0xff, 0x24]);
+
+    // Diff add: fg #c4e0c7, tint rgba(143,191,147,.1) -> alpha 0x1a.
+    assert_eq!(px8(theme.mockup_diff_add_fg), [0xc4, 0xe0, 0xc7, 0xff]);
+    assert_eq!(px8(theme.mockup_diff_add_bg), [0x8f, 0xbf, 0x93, 0x1a]);
+
+    // Diff del: fg #d4a9a9, tint rgba(201,139,139,.09) -> alpha 0x17.
+    assert_eq!(px8(theme.mockup_diff_del_fg), [0xd4, 0xa9, 0xa9, 0xff]);
+    assert_eq!(px8(theme.mockup_diff_del_bg), [0xc9, 0x8b, 0x8b, 0x17]);
+}
+
+#[test]
+fn test_mockup_type_scale_constants() {
+    use hex_desktop::theme::MockupTypeScale as T;
+
+    assert_eq!(T::BASE_SIZE, 15.0);
+    assert_eq!(T::BASE_LINE_HEIGHT, 26.0);
+    assert_eq!(T::LOGO_SIZE, 56.0);
+    assert_eq!(T::LOGO_LINE_HEIGHT, 56.0);
+    assert_eq!(T::LOGO_WEIGHT, FontWeight::MEDIUM);
+    assert_eq!(T::BOLD_WEIGHT, FontWeight::BOLD);
+    assert_eq!(T::PLACEHOLDER_SIZE, 16.0);
+    assert_eq!(T::PILL_SIZE, 14.0);
+    assert_eq!(T::PILL_LINE_HEIGHT, 20.0);
+    assert_eq!(T::CHIP_SIZE, 11.5);
+    assert_eq!(T::CHIP_LINE_HEIGHT, 20.0);
+    assert_eq!(T::INLINE_CODE_SIZE, 12.5);
+    assert_eq!(T::DIFF_SIZE, 12.5);
+    assert_eq!(T::DIFF_LINE_HEIGHT, 21.0);
+    assert_eq!(T::SEARCH_SIZE, 14.5);
+    assert_eq!(T::SESSION_TITLE_SIZE, 14.5);
+    assert_eq!(T::FEATURE_LABEL_SIZE, 14.5);
+    assert_eq!(T::HINT_SIZE, 11.5);
+    assert_eq!(T::PROJECTS_HEADER_SIZE, 13.5);
+    assert_eq!(T::PROJECT_COUNT_SIZE, 13.0);
+    assert_eq!(T::SPINNER_SIZE, 13.0);
+    assert_eq!(T::ACCOUNT_NAME_SIZE, 14.0);
+    assert_eq!(T::ACCOUNT_SUB_SIZE, 12.0);
+    assert_eq!(T::ACCOUNT_LINE_HEIGHT, 18.0);
+    assert_eq!(T::AVATAR_SIZE, 13.0);
+    assert_eq!(T::CONTINUE_HEADER_SIZE, 13.0);
+    assert_eq!(T::CONTINUE_PROJECT_SIZE, 12.0);
+    assert_eq!(T::CONTINUE_TIME_SIZE, 13.0);
+    assert_eq!(T::ACTION_BAR_SIZE, 13.5);
+    assert_eq!(T::TOKEN_COUNT_SIZE, 13.0);
+    assert_eq!(T::CONTEXT_LABEL_SIZE, 13.0);
+    assert_eq!(T::CHANGES_SIZE, 14.0);
+    assert_eq!(T::TOOLTIP_SIZE, 12.5);
+    assert_eq!(T::TOOLTIP_LINE_HEIGHT, 20.0);
+}
+
+#[test]
 fn test_theme_color_tokens_and_hex_accuracy() {
     let theme = HermesTheme::default();
 
@@ -124,18 +211,18 @@ fn test_theme_wcag_contrast_ratios() {
 #[test]
 fn test_window_config_defaults_and_metal_options() {
     let config = WindowConfig::default();
-    assert_eq!(config.width, px(1200.0));
-    assert_eq!(config.height, px(800.0));
+    assert_eq!(config.width, px(1440.0));
+    assert_eq!(config.height, px(900.0));
     assert_eq!(config.min_width, px(900.0));
     assert_eq!(config.min_height, px(600.0));
     assert_eq!(config.target_fps, 120);
 
     // Verify default bounds calculations
     let bounds = config.default_bounds();
-    assert_eq!(bounds.size.width, px(1200.0));
-    assert_eq!(bounds.size.height, px(800.0));
-    assert_eq!(bounds.origin.x, px(360.0));
-    assert_eq!(bounds.origin.y, px(140.0));
+    assert_eq!(bounds.size.width, px(1440.0));
+    assert_eq!(bounds.size.height, px(900.0));
+    assert_eq!(bounds.origin.x, px(240.0));
+    assert_eq!(bounds.origin.y, px(90.0));
 
     // Centered on 2560x1440 display
     let display_bounds = Bounds {
@@ -143,8 +230,8 @@ fn test_window_config_defaults_and_metal_options() {
         size: size(px(2560.0), px(1440.0)),
     };
     let centered = config.centered_on_display(display_bounds);
-    assert_eq!(centered.origin.x, px(680.0));
-    assert_eq!(centered.origin.y, px(320.0));
+    assert_eq!(centered.origin.x, px(560.0));
+    assert_eq!(centered.origin.y, px(270.0));
 
     // Verify Titlebar options: transparent and custom traffic light placement
     let titlebar = config.titlebar_options();
@@ -154,14 +241,11 @@ fn test_window_config_defaults_and_metal_options() {
         Some(point(px(14.0), px(16.0)))
     );
 
-    // Verify WindowOptions configuration
+    // Verify WindowOptions configuration: opaque mockup canvas, no vibrancy.
     let win_opts = config.window_options(None);
     assert!(win_opts.window_bounds.is_some());
     assert_eq!(win_opts.window_min_size, Some(size(px(900.0), px(600.0))));
-    assert_eq!(
-        win_opts.window_background,
-        WindowBackgroundAppearance::Blurred
-    );
+    assert_eq!(win_opts.window_background, WindowBackgroundAppearance::Opaque);
     assert!(win_opts.focus);
     assert!(win_opts.show);
 }

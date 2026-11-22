@@ -6,6 +6,35 @@ use gpui::*;
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{app_runtime, init_app, open_chat_window};
 
+/// Filesystem asset source so `svg().path("icons/…")` resolves against the
+/// crate's `assets/` directory when running from a source checkout.
+struct FsAssets {
+    base: std::path::PathBuf,
+}
+impl AssetSource for FsAssets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        std::fs::read(self.base.join(path))
+            .map(|data| Some(std::borrow::Cow::Owned(data)))
+            .map_err(|err| err.into())
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let dir = self.base.join(path);
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.path().file_name() {
+                    out.push(SharedString::from(format!(
+                        "{path}/{}",
+                        name.to_string_lossy()
+                    )));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// Minimal logger that preserves diagnostics (including the ACP child's stderr,
 /// B35) on the desktop's stderr. The GUI does not render to stderr, so this is
 /// safe; the TUI installs no logger and keeps its terminal clean.
@@ -29,7 +58,9 @@ fn main() {
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(log::LevelFilter::Warn);
 
-    let app = Application::new();
+    let app = Application::new().with_assets(FsAssets {
+        base: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
+    });
     app.run(|cx: &mut App| {
         init_app(cx);
 

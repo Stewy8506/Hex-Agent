@@ -11,6 +11,7 @@ use gpui::*;
 use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
+use crate::ui::icon_svg;
 use crate::ui::session_list::SessionItem;
 
 /// Category grouping for command palette entries.
@@ -143,41 +144,41 @@ impl CommandPaletteModal {
 
         // Standard Actions
         items.push(
-            PaletteItem::new("act_new_chat", "New Chat", PaletteCategory::Actions, "💬", PaletteAction::NewChat)
+            PaletteItem::new("act_new_chat", "New Chat", PaletteCategory::Actions, "chat", PaletteAction::NewChat)
                 .with_subtitle("Start a fresh agent conversation")
-                .with_shortcut("⌘N"),
+                .with_shortcut("\u{2318}N"),
         );
         items.push(
-            PaletteItem::new("act_clear", "Clear History", PaletteCategory::Actions, "🗑️", PaletteAction::ClearHistory)
+            PaletteItem::new("act_clear", "Clear History", PaletteCategory::Actions, "trash", PaletteAction::ClearHistory)
                 .with_subtitle("Reset the active conversation stream"),
         );
         items.push(
-            PaletteItem::new("act_export", "Export Transcript", PaletteCategory::Actions, "📄", PaletteAction::ExportTranscript)
+            PaletteItem::new("act_export", "Export Transcript", PaletteCategory::Actions, "notebooks", PaletteAction::ExportTranscript)
                 .with_subtitle("Save session dialogue to Markdown file"),
         );
         items.push(
-            PaletteItem::new("act_compact", "Compact Context", PaletteCategory::Actions, "⚡", PaletteAction::CompactContext)
+            PaletteItem::new("act_compact", "Compact Context", PaletteCategory::Actions, "bolt", PaletteAction::CompactContext)
                 .with_subtitle("Trigger 4-phase context compaction and cache lock"),
         );
         items.push(
-            PaletteItem::new("act_model", "Switch Model", PaletteCategory::Actions, "🧠", PaletteAction::SwitchModel)
+            PaletteItem::new("act_model", "Switch Model", PaletteCategory::Actions, "search", PaletteAction::SwitchModel)
                 .with_subtitle("Pick the active model from the live backend catalog"),
         );
 
         // Navigation
         items.push(
-            PaletteItem::new("nav_settings", "Open Settings", PaletteCategory::Navigation, "⚙️", PaletteAction::OpenSettings)
+            PaletteItem::new("nav_settings", "Open Settings", PaletteCategory::Navigation, "settings", PaletteAction::OpenSettings)
                 .with_subtitle("Configure model providers, API keys, and gateways")
-                .with_shortcut("⌘,"),
+                .with_shortcut("\u{2318},"),
         );
         items.push(
-            PaletteItem::new("nav_workspace", "Switch Workspace", PaletteCategory::Navigation, "📂", PaletteAction::SwitchWorkspace)
+            PaletteItem::new("nav_workspace", "Switch Workspace", PaletteCategory::Navigation, "design", PaletteAction::SwitchWorkspace)
                 .with_subtitle("Select another project directory"),
         );
         items.push(
-            PaletteItem::new("nav_sidebar", "Toggle Sidebar", PaletteCategory::Navigation, "📑", PaletteAction::ToggleSidebar)
+            PaletteItem::new("nav_sidebar", "Toggle Sidebar", PaletteCategory::Navigation, "sidebar", PaletteAction::ToggleSidebar)
                 .with_subtitle("Show or hide the navigation sidebar")
-                .with_shortcut("⌘B"),
+                .with_shortcut("\u{2318}B"),
         );
 
         Self {
@@ -198,7 +199,7 @@ impl CommandPaletteModal {
                     format!("ses_{}", session.id),
                     session.title.clone(),
                     PaletteCategory::Sessions,
-                    "📝",
+                    "notebooks",
                     PaletteAction::SelectSession(session.id.clone()),
                 )
                 .with_subtitle(format!(
@@ -290,12 +291,7 @@ impl CommandPaletteModal {
                     .border_b_1()
                     .border_color(theme.border_subtle())
                     .gap_3()
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .text_color(theme.text_dim())
-                            .child("🔍"),
-                    )
+                    .child(icon_svg("search", 14.0).text_color(theme.text_dim()))
                     .child(
                         div()
                             .flex_1()
@@ -401,8 +397,11 @@ impl CommandPaletteModal {
                                             .gap_2p5()
                                             .child(
                                                 div()
-                                                    .text_size(px(13.0))
-                                                    .child(item.icon.clone()),
+                                                    .text_color(theme.text_muted())
+                                                    .child(crate::ui::icon_svg(
+                                                        if item.icon.contains(' ') { "notebooks" } else { item.icon.as_str() },
+                                                        14.0,
+                                                    )),
                                             )
                                             .child(
                                                 div()

@@ -10,6 +10,7 @@
 use gpui::*;
 
 use crate::theme::HermesTheme;
+use crate::ui::icon_svg;
 
 /// Provider brand dot color mapping.
 pub fn provider_dot_color(provider_name: &str, theme: &HermesTheme) -> Rgba {
@@ -125,25 +126,19 @@ impl SendButton {
         }
     }
 
-    /// Renders the circular send/stop button.
+    /// Renders the circular send/stop button (mockup: 36px circle, #2a2a2a bg).
     pub fn render(&self, theme: &HermesTheme) -> Div {
         let bg_color = if self.is_streaming {
             theme.rose_fg()
         } else if self.can_send {
-            theme.accent_blue()
+            rgb(0x2a2a2a)
         } else {
-            theme.border_subtle()
-        };
-
-        let text_color = if self.can_send || self.is_streaming {
-            rgb(0x09090b) // Dark glyph on active fill
-        } else {
-            theme.text_dim()
+            rgb(0x2a2a2a)
         };
 
         div()
-            .w(px(28.0))
-            .h(px(28.0))
+            .w(px(36.0))
+            .h(px(36.0))
             .flex()
             .items_center()
             .justify_center()
@@ -151,11 +146,20 @@ impl SendButton {
             .bg(bg_color)
             .cursor_pointer()
             .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(text_color)
-                    .child(self.icon()),
+                // Mockup: 16px stroke arrow-up (#cfcfcf), stop glyph while streaming.
+                if self.is_streaming {
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(0xcfcfcf))
+                        .child("■")
+                } else {
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon_svg("arrow-up", 16.0).text_color(rgb(0xcfcfcf)))
+                },
             )
     }
 }

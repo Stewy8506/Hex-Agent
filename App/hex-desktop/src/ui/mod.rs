@@ -6,6 +6,7 @@ pub mod feed;
 pub mod message;
 pub mod modals;
 pub mod model_pill;
+pub mod motion;
 pub mod reasoning;
 pub mod session_list;
 pub mod shell;
@@ -33,3 +34,18 @@ pub use token_gauge::{
     format_token_number, render_ascii_progress_bar, GaugeThreshold, TokenGaugeWidget,
 };
 pub use tool_card::{tool_icon, ToolCallCard, ToolStatus};
+
+/// Renders a bundled stroke SVG icon at the given pixel size, tinted via
+/// `text_color` on the parent (SVGs use `stroke="currentColor"`).
+pub fn icon_svg(name: &str, size: f32) -> gpui::Svg {
+    use gpui::{px, rgb, svg, Styled};
+    // GPUI only paints an SVG when the style has a text color (it maps to
+    // `stroke="currentColor"` in the mockups). Callers may override via
+    // `.text_color(...)`; the mockup's default muted icon tone is #9a9a9a.
+    svg()
+        .path(format!("icons/{name}.svg"))
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .text_color(rgb(0x9a9a9a))
+}

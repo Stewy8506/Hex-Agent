@@ -14,6 +14,7 @@ use chrono::Utc;
 use gpui::*;
 
 use crate::theme::HermesTheme;
+use crate::ui::icon_svg;
 use crate::ui::session_list::{SessionItem, SessionListView};
 
 /// Connectivity and operational state for the AI provider.
@@ -173,7 +174,8 @@ impl SidebarView {
                     .child(
                         div()
                             .text_sm()
-                            .child("📁"),
+                            .text_color(theme.text_muted())
+                            .child(icon_svg("notebooks", 14.0)),
                     )
                     .child(
                         div()
@@ -242,7 +244,7 @@ impl SidebarView {
                         .child(
                             div()
                                 .text_sm()
-                                .child("✏️"),
+                                .child(icon_svg("pencil", 14.0)),
                         )
                         .child(
                             div()
@@ -291,12 +293,7 @@ impl SidebarView {
                     .bg(theme.card_bg())
                     .border_1()
                     .border_color(theme.border_subtle())
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.text_dim())
-                            .child("🔍"),
-                    )
+                    .child(icon_svg("search", 14.0).text_color(theme.text_dim()))
                     .child(
                         div()
                             .text_xs()
@@ -373,10 +370,10 @@ impl SidebarView {
     /// These are not implemented yet; each renders with a "Coming soon" badge.
     fn render_feature_rows(&self, theme: &HermesTheme) -> Div {
         let rows = [
-            ("Automations", "A"), ("Team", "T"), ("Notebooks", "N"), ("Design", "D"), ("Extensions", "E"),
+            ("Automations", "bolt"), ("Team", "team"), ("Notebooks", "notebooks"), ("Design", "design"), ("Extensions", "extensions"),
         ];
         let mut col = div().w_full().flex().flex_col().gap_1().px_3().pb_2();
-        for (label, initial) in rows {
+        for (label, icon) in rows {
             col = col.child(
                 div()
                     .flex()
@@ -394,7 +391,8 @@ impl SidebarView {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().text_xs().child(initial))
+                            .text_color(theme.text_muted())
+                            .child(icon_svg(icon, 14.0))
                             .child(div().child(label)),
                     )
                     .child(
@@ -434,7 +432,8 @@ impl SidebarView {
                     .child(
                         div()
                             .text_xs()
-                            .child("👤"),
+                            .text_color(theme.text_muted())
+                            .child(icon_svg("team", 14.0)),
                     )
                     .child(
                         div()
@@ -453,7 +452,7 @@ impl SidebarView {
                         div()
                             .text_xs()
                             .text_color(theme.text_muted())
-                            .child("⚙️ Settings"),
+                            .child(icon_svg("settings", 14.0)).child("Settings"),
                     ),
             )
     }
@@ -496,7 +495,7 @@ impl SidebarView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().text_xs().child("🔔"))
+                    .child(icon_svg("bell", 14.0))
                     .child(
                         div()
                             .text_color(if count > 0 {
