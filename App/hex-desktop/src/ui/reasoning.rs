@@ -1,17 +1,13 @@
 //! Collapsible `<think>` reasoning fold with elapsed activity timer for HEX Desktop.
 //!
-//! Directly mirrors Hermes Desktop reasoning disclosure (`components/assistant-ui/thread/message-parts.tsx`):
-//! - Dynamic header state:
-//!   - While generating: "Thinking..." with pulse indicator
-//!   - When finished with < 1s: "Thought briefly"
-//!   - When finished with >= 1s: "Thought for 6s" (or formatted duration)
-//!   - When finished without timer: "Thought"
-//! - Collapsible disclosure with caret (`▾` / `▸`) and brain glyph (`🧠`)
-//! - Expandable content box with monospace font, muted zinc-400 text, and left accent border
+//! Header states (Hermes semantics): "Thinking..." while generating, "Thought
+//! briefly" / "Thought for 6s" / "Thought" once settled. Styling follows the
+//! mockup token language (plan P5, derived surface): chevron SVG carets
+//! instead of ▾/▸ (D21), dim 12.5px labels, and a mono `#101010` body.
 
 use gpui::*;
 
-use crate::theme::HermesTheme;
+use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::icon_svg;
 
 /// Formats an elapsed duration in seconds into human-readable timing text.
@@ -105,46 +101,34 @@ impl ThinkingDisclosure {
 
     /// Renders the collapsible thinking fold.
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        let caret = if self.is_expanded { "▾" } else { "▸" };
+        let caret_icon = if self.is_expanded {
+            "chevron-down"
+        } else {
+            "chevron-right"
+        };
         let label = self.header_label();
 
-        let mut container = div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap_1();
+        let mut container = div().w_full().flex().flex_col().gap(px(6.0));
 
         // Header Row
         let header = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
-            .py_1()
-            .px_2()
-            .rounded_md()
+            .gap(px(8.0))
+            .py(px(4.0))
+            .px(px(8.0))
+            .rounded(px(8.0))
             .cursor_pointer()
-            .hover(|s| s.bg(theme.card_hover()))
+            .hover(|s| s.bg(theme.mockup_hover))
+            .child(icon_svg(caret_icon, 14.0).text_color(theme.mockup_text_dim))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(theme.text_dim())
-                    .child(caret),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.text_dim())
-                    .child(icon_svg("design", 14.0)),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
                     .text_color(if self.is_generating {
                         theme.accent_blue()
                     } else {
-                        theme.text_muted()
+                        theme.mockup_text_dim
                     })
                     .child(label),
             );
@@ -155,14 +139,17 @@ impl ThinkingDisclosure {
         if self.is_expanded {
             let body = div()
                 .w_full()
-                .ml_2()
-                .p_3()
-                .rounded_md()
-                .bg(theme.card_bg())
+                .rounded(px(8.0))
+                .bg(theme.mockup_sidebar)
                 .border_l_2()
-                .border_color(theme.border_structural())
-                .text_xs()
-                .text_color(theme.text_muted())
+                .border_color(theme.mockup_border_strong)
+                .px(px(12.0))
+                .py(px(10.0))
+                .font_family(theme.font_mono()[0].clone())
+                .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
+                .line_height(px(MockupTypeScale::DIFF_LINE_HEIGHT))
+                .whitespace_nowrap()
+                .text_color(theme.mockup_text_muted)
                 .child(self.thought_text.clone());
 
             container = container.child(body);

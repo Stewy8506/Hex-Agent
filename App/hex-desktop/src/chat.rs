@@ -36,7 +36,7 @@ use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
 use crate::shortcuts::{self, init_shortcuts};
-use crate::theme::HermesTheme;
+use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{MessageFeed, MessageItem};
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
@@ -1757,6 +1757,14 @@ impl ChatView {
 
     /// Route a key to the open modal. Returns true when the modal consumed it.
     fn handle_modal_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        // The settings card is static: consume every key while it is open so
+        // nothing reaches the composer underneath, and close on Esc.
+        if self.settings_open {
+            if key == "escape" {
+                self.close_settings(cx);
+            }
+            return true;
+        }
         match &mut self.shell.active_modal {
             ActiveModal::Approval(modal) => {
                 if modal.is_submitting {
@@ -2704,7 +2712,7 @@ impl Render for ChatView {
             // The start screen's composer is the primary target (mockup shows
             // an active caret); focus it so typing works without a click.
             // Modal focus follows the same rules as the session path.
-            let modal_open = self.shell.active_modal.is_open();
+            let modal_open = self.shell.active_modal.is_open() || self.settings_open;
             if modal_open {
                 if !self.last_modal_open {
                     self.modal_focus_handle.focus(window);
@@ -2739,7 +2747,7 @@ impl Render for ChatView {
 
         // Predictable focus: opening a modal moves focus to it, closing returns
         // focus to the composer. Background activity never steals focus.
-        let modal_open = self.shell.active_modal.is_open();
+        let modal_open = self.shell.active_modal.is_open() || self.settings_open;
         if modal_open {
             if !self.last_modal_open {
                 self.modal_focus_handle.focus(window);
@@ -2838,7 +2846,16 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         let modal = match &self.shell.active_modal {
-            ActiveModal::None => None,
+            ActiveModal::None => {
+                if self.settings_open {
+                    Some(render_modal_container(
+                        self.render_settings_card(theme),
+                        theme,
+                    ))
+                } else {
+                    None
+                }
+            }
             ActiveModal::Approval(modal) => {
                 Some(render_modal_container(modal.render(theme), theme))
             }
@@ -2860,6 +2877,120 @@ impl ChatView {
                 .on_action(cx.listener(Self::on_down))
                 .child(modal),
         )
+    }
+
+    /// Settings surface (P5, derived): the mockup has no settings screen, so
+    /// the card is built from the shared token language — surface card,
+    /// muted labels, mono values, and an Esc hint like the palette's.
+    fn render_settings_card(&self, theme: &HermesTheme) -> Div {
+        let status = &self.shell.sidebar.provider_status;
+        let model = if status.model_name.is_empty() {
+            "Not selected".to_string()
+        } else {
+            status.model_name.clone()
+        };
+        let workspace = format!(
+            "{} · {}",
+            self.shell.sidebar.workspace_name, self.shell.sidebar.git_branch
+        );
+        let rows: Vec<(&str, String)> = vec![
+            ("Provider", status.provider_name.clone()),
+            ("Model", model),
+            ("Workspace", workspace),
+            (
+                "Sessions",
+                self.shell.sidebar.session_list.sessions.len().to_string(),
+            ),
+        ];
+
+        let mut list = div().flex().flex_col();
+        for (label, value) in rows {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(16.0))
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(theme.mockup_sidebar)
+                    .child(
+                        div()
+                            .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
+                            .text_color(theme.mockup_text_muted)
+                            .child(label.to_string()),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme.font_mono()[0].clone())
+                            .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
+                            .text_color(theme.mockup_text_bright)
+                            .child(value),
+                    ),
+            );
+        }
+
+        div()
+            .w(px(460.0))
+            .flex()
+            .flex_col()
+            // Header
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(20.0))
+                    .py(px(14.0))
+                    .border_b_1()
+                    .border_color(theme.mockup_border)
+                    .child(
+                        div()
+                            .text_size(px(MockupTypeScale::BASE_SIZE))
+                            .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.mockup_text_bright)
+                            .child("Settings"),
+                    )
+                    .child(
+                        div()
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded(px(3.0))
+                            .bg(theme.mockup_hover)
+                            .border_1()
+                            .border_color(theme.mockup_border)
+                            .font_family(theme.font_mono()[0].clone())
+                            .text_size(px(MockupTypeScale::HINT_SIZE))
+                            .text_color(theme.mockup_text_dim)
+                            .child("Esc"),
+                    ),
+            )
+            // Honest rows
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .px(px(20.0))
+                    .py(px(16.0))
+                    .child(list),
+            )
+            // Footer hint
+            .child(
+                div()
+                    .flex()
+                    .justify_center()
+                    .px(px(20.0))
+                    .py(px(12.0))
+                    .border_t_1()
+                    .border_color(theme.mockup_border)
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(MockupTypeScale::HINT_SIZE))
+                    .text_color(theme.mockup_text_dim)
+                    .child("Press Esc to close"),
+            )
     }
 }
 

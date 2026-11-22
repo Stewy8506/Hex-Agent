@@ -156,7 +156,7 @@ impl ModelPickerModal {
             .max_h(px(500.0))
             .flex()
             .flex_col()
-            .bg(theme.card_bg())
+            .bg(theme.mockup_surface)
             // Header with search input
             .child(
                 div()
@@ -165,12 +165,12 @@ impl ModelPickerModal {
                     .px_4()
                     .py_3()
                     .border_b_1()
-                    .border_color(theme.border_subtle())
+                    .border_color(theme.mockup_border)
                     .gap_3()
                     .child(
                         div()
                             .text_size(px(14.0))
-                            .text_color(theme.text_dim())
+                            .text_color(theme.mockup_text_dim)
                             .child(icon_svg("bolt", 14.0)),
                     )
                     .child(
@@ -178,9 +178,9 @@ impl ModelPickerModal {
                             .flex_1()
                             .text_size(px(13.5))
                             .text_color(if self.search_query.is_empty() {
-                                theme.text_dim()
+                                theme.mockup_text_dim
                             } else {
-                                theme.text_primary()
+                                theme.mockup_text_bright
                             })
                             .child(if self.search_query.is_empty() {
                                 "Search models across providers...".to_string()
@@ -193,12 +193,12 @@ impl ModelPickerModal {
                             .px_1p5()
                             .py_0p5()
                             .rounded(px(3.0))
-                            .bg(theme.card_hover())
+                            .bg(theme.mockup_hover)
                             .border_1()
-                            .border_color(theme.border_subtle())
+                            .border_color(theme.mockup_border)
                             .text_size(px(10.0))
                             .font_family(theme.typography.font_mono[0].clone())
-                            .text_color(theme.text_dim())
+                            .text_color(theme.mockup_text_dim)
                             .child("Esc"),
                     ),
             )
@@ -223,7 +223,7 @@ impl ModelPickerModal {
                                 .child(
                                     div()
                                         .text_size(px(13.0))
-                                        .text_color(theme.text_dim())
+                                        .text_color(theme.mockup_text_dim)
                                         .child("No models found"),
                                 )
                                 .child(
@@ -252,7 +252,7 @@ impl ModelPickerModal {
                                         .pb_1()
                                         .text_size(px(10.0))
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme.text_dim())
+                                        .text_color(theme.mockup_text_dim)
                                         .child(model.provider.to_uppercase()),
                                 );
                             }
@@ -269,7 +269,7 @@ impl ModelPickerModal {
                                     .py_2()
                                     .rounded(px(6.0))
                                     .bg(if is_highlighted {
-                                        theme.card_hover()
+                                        theme.mockup_hover
                                     } else {
                                         gpui::rgba(0x00000000)
                                     })
@@ -299,9 +299,9 @@ impl ModelPickerModal {
                                                     .text_color(if is_selected {
                                                         theme.accent_blue()
                                                     } else if is_highlighted {
-                                                        theme.text_primary()
+                                                        theme.mockup_text_bright
                                                     } else {
-                                                        theme.text_muted()
+                                                        theme.mockup_text_muted
                                                     })
                                                     .child(model.display_name.clone()),
                                             ),
@@ -320,13 +320,13 @@ impl ModelPickerModal {
                                                     .bg(if model.is_local {
                                                         theme.sage_bg()
                                                     } else {
-                                                        theme.card_hover()
+                                                        theme.mockup_hover
                                                     })
                                                     .text_size(px(10.0))
                                                     .text_color(if model.is_local {
                                                         theme.sage_fg()
                                                     } else {
-                                                        theme.text_dim()
+                                                        theme.mockup_text_dim
                                                     })
                                                     .child(if model.is_local { "Local" } else { "Cloud" }),
                                             )
