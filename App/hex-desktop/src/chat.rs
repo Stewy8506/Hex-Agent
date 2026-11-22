@@ -39,7 +39,7 @@ use crate::shortcuts::{self, init_shortcuts};
 use crate::theme::HermesTheme;
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{MessageFeed, MessageItem};
-use crate::ui::message::AssistantMessageView;
+use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
 use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
 use crate::ui::modals::{render_modal_container, ActiveModal, ModelEntry, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
@@ -48,6 +48,7 @@ use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
 use crate::ui::session_list::SessionItem;
 use crate::ui::shell::{AppShell, ShellView};
 use crate::ui::sidebar::{ProviderState, SidebarHandlers};
+use crate::ui::token_gauge::format_token_number;
 use crate::ui::tool_card::ToolCallCard;
 use crate::window::WindowConfig;
 
@@ -289,6 +290,11 @@ pub struct ChatView {
     home_coming_soon: Option<&'static str>,
     settings_open: bool,
     home_connection_error: Option<String>,
+    /// Scroll state of the bottom-anchored message list; owned here because
+    /// `AppShell` derives Debug/Clone/PartialEq and `ListState` cannot.
+    feed_list: ListState,
+    /// Feed item count currently spliced into `feed_list`.
+    feed_synced_count: usize,
 }
 
 impl Focusable for ChatView {
@@ -346,6 +352,8 @@ impl ChatView {
             home_coming_soon: None,
             settings_open: false,
             home_connection_error: None,
+            feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
+            feed_synced_count: 0,
         };
         view.start_event_pump(cx);
         view.start_backend(cx);
@@ -2245,47 +2253,61 @@ impl ChatView {
     // Rendering
     // ------------------------------------------------------------------
 
-    fn message_action_bar(
-        &self,
-        theme: &HermesTheme,
-        content: String,
-        assistant_id: String,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
-            .pt_1()
-            .text_xs()
-            .child(
-                div()
-                    .id(SharedString::from(format!("msg_copy_{assistant_id}")))
-                    .cursor_pointer()
-                    .text_color(theme.text_dim())
-                    .hover(|s| s.text_color(theme.text_primary()))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(content.clone()));
-                    })
-                    .child("📋 Copy"),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(format!("msg_regen_{assistant_id}")))
-                    .cursor_pointer()
-                    .text_color(theme.text_dim())
-                    .hover(|s| s.text_color(theme.text_primary()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.regenerate(&assistant_id, cx);
-                    }))
-                    .child("🔄 Retry"),
-            )
-            .child(
-                div()
-                    .text_color(theme.text_dim())
-                    .child("· · ·"), // token count placeholder (coming soon)
-            )
+    /// Expands or collapses the Changes card on an assistant message (P4).
+    fn toggle_changes(&mut self, assistant_id: &str, cx: &mut Context<Self>) {
+        if let Some(assistant) = find_assistant_mut(&mut self.shell.feed, assistant_id) {
+            assistant.changes_expanded = !assistant.changes_expanded;
+            cx.notify();
+        }
+    }
+
+    /// The gauge total for the action bar ("24.5k tokens"), or `None` while
+    /// the gauge has not reported anything (the count is then hidden).
+    fn action_token_count(&self) -> Option<String> {
+        let gauge = &self.shell.composer.token_gauge;
+        if gauge.current_tokens == 0 {
+            None
+        } else {
+            Some(format!("{} tokens", format_token_number(gauge.current_tokens)))
+        }
+    }
+
+    /// Per-assistant action-bar handlers for the session feed: Copy, Retry
+    /// and the Changes toggle. Built per render because they capture the
+    /// message content and the weak entity handle.
+    fn action_bar_handlers(&self, cx: &mut Context<Self>) -> HashMap<String, ActionBarHandlers> {
+        let mut bars: HashMap<String, ActionBarHandlers> = HashMap::new();
+        for item in &self.shell.feed.messages {
+            if let MessageItem::Assistant(view) = item {
+                if view.is_streaming {
+                    continue;
+                }
+                let weak_retry = cx.entity().downgrade();
+                let weak_changes = cx.entity().downgrade();
+                let retry_id = view.id.clone();
+                let changes_id = view.id.clone();
+                let content = view.content.clone();
+                bars.insert(
+                    view.id.clone(),
+                    ActionBarHandlers {
+                        copy: Some(Rc::new(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(content.clone()));
+                        })),
+                        retry: Some(Rc::new(move |_, _, cx| {
+                            weak_retry
+                                .update(cx, |this, cx| this.regenerate(&retry_id, cx))
+                                .ok();
+                        })),
+                        changes: Some(Rc::new(move |_, _, cx| {
+                            weak_changes
+                                .update(cx, |this, cx| this.toggle_changes(&changes_id, cx))
+                                .ok();
+                        })),
+                    },
+                );
+            }
+        }
+        bars
     }
 
     fn render_composer(
@@ -2410,33 +2432,22 @@ impl ChatView {
     fn render_main_pane(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
         // Non-Chat segments show a Coming soon empty state instead of the feed.
         let coming_soon_pane = self.shell.active_view != ShellView::Chat;
-        let feed = self.shell.feed.render_with_bars(theme, |assistant| {
-            if assistant.is_streaming {
-                return None;
-            }
-            Some(self.message_action_bar(
-                theme,
-                assistant.content.clone(),
-                assistant.id.clone(),
-                cx,
-            ))
-        });
-        // Center the conversation feed in a 560px column per the session mockup.
-        let feed = div()
-            .flex_1()
-            .w_full()
-            .flex()
-            .justify_center()
-            .overflow_y_hidden()
-            .child(
-                div()
-                    .w(px(560.0))
-                    .max_w_full()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(feed),
-            );
+        // Re-splice the list whenever the item count changes or a turn is
+        // streaming (streamed items grow taller per chunk).
+        let item_count = self.shell.feed.len();
+        if item_count != self.feed_synced_count || self.shell.feed.is_streaming {
+            self.feed_list.reset(item_count);
+            self.feed_synced_count = item_count;
+        }
+        let bars = if coming_soon_pane {
+            HashMap::new()
+        } else {
+            self.action_bar_handlers(cx)
+        };
+        let feed = self
+            .shell
+            .feed
+            .render_scrolled(theme, &self.feed_list, bars, self.action_token_count());
 
         div()
             .flex()

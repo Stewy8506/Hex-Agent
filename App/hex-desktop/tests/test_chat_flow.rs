@@ -18,7 +18,7 @@ use gpui::*;
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{init_app, ChatView};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
-use hex_desktop::ui::feed::MessageItem;
+use hex_desktop::ui::feed::{FeedPaintProbe, MessageItem};
 use hex_desktop::ui::modals::ActiveModal;
 use hex_desktop::ui::sidebar::ProviderState;
 use hex_desktop::ui::tool_card::ToolStatus;
@@ -321,6 +321,7 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     cx.update(|cx| {
         init_app(cx);
         cx.set_global(GlowCardProbe::default());
+        cx.set_global(FeedPaintProbe::default());
     });
     let workspace = std::env::temp_dir();
     let (view, vc) = cx.add_window_view(|_window, cx| {
@@ -388,6 +389,32 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     let paints = glow_paints(vc, &view);
     assert_eq!(paints.len(), 1, "Session must render exactly one glow card");
     assert_px_close(paints[0].card.size.width, px(560.0));
+
+    // 2c. Feed parity: the session feed paints the mockup's 28px canvas fade
+    // across its top edge, spanning the whole feed area (D7's missing fade).
+    vc.update(|_window, app| {
+        if let Some(probe) = app.try_global::<FeedPaintProbe>() {
+            probe.0.lock().unwrap().clear();
+        }
+        view.update(app, |_, cx| cx.notify());
+    });
+    vc.run_until_parked();
+    let fades = vc.read(|app| {
+        app.try_global::<FeedPaintProbe>()
+            .map(|p| p.0.lock().unwrap().clone())
+            .unwrap_or_default()
+    });
+    assert_eq!(
+        fades.len(),
+        1,
+        "session feed must paint exactly one fade overlay"
+    );
+    assert_px_close(fades[0].size.height, px(28.0));
+    assert!(
+        fades[0].size.width >= px(560.0),
+        "fade must span the feed area, got {:?}",
+        fades[0].size.width
+    );
 
     // 3. Cmd+C copies the assistant answer (composer focused, no selection).
     vc.simulate_keystrokes("cmd-c");

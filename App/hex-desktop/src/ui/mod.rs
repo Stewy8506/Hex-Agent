@@ -20,7 +20,7 @@ pub use composer::{
 };
 pub use diff_view::{line_background, line_foreground, line_prefix, DiffView};
 pub use feed::{MessageFeed, MessageItem};
-pub use message::{format_message_time, AssistantMessageView, UserMessageCard};
+pub use message::{AssistantMessageView, UserMessageCard};
 pub use modals::{
     render_modal_container, ActiveModal, CommandPaletteModal, ModelEntry, ModelPickerModal,
     PaletteAction, PaletteItem, ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult,

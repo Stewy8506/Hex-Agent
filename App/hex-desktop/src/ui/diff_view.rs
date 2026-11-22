@@ -1,36 +1,51 @@
-//! Inline syntax-highlighted git diff visualizer for HEX Desktop.
-//!
-//! Conforms to Hermes Desktop and HEX truecolor specifications:
-//! - Added lines: sage green foreground (`#8fbf93`), 12% tint background (`rgba(0x8fbf93, 0.12)`), `+` gutter prefix.
-//! - Deleted lines: rose red foreground (`#c98b8b`), 10% tint background (`rgba(0xc98b8b, 0.10)`), `-` gutter prefix.
-//! - Context lines: muted zinc text (`#a1a1aa`), neutral background.
-//! - Hunk headers: electric blue (`#7aa7ff`), subtle background.
-//! - Dual line numbers: old lineno and new lineno gutters.
+//! Inline git diff visualizer for HEX Desktop, matching the mockup diff card
+//! (`docs/design/mockups-desktop`):
+//! - Card: `#101010` surface, `#222` border, radius 14, overflow hidden.
+//! - Header: mono 12.5, padding 8px 16px, border-bottom `#222`; plain
+//!   filename plus `+N` `#8fbf93` / `−N` `#c98b8b` (U+2212).
+//! - Body: padding 6px 0; lines mono 12.5/21, padding 0 16px, single gutter
+//!   ` {lineno} {±}    {code}` with lineno `#858585`.
+//! - Deleted lines: bg `rgba(201,139,139,.09)`, fg `#d4a9a9`; added lines:
+//!   bg `rgba(143,191,147,.1)`, fg `#c4e0c7`; context `#d9d9d9`.
 
 use gpui::*;
+
 use hex_protocol::diff::{DiffFile, DiffHunk, DiffLine, DiffLineType, UnifiedDiff};
 
-use crate::theme::HermesTheme;
-use crate::ui::icon_svg;
+use crate::theme::{HermesTheme, MockupTypeScale};
+
+/// Diff card corner radius (mockup `border-radius:14px`).
+pub const DIFF_CARD_RADIUS: f32 = 14.0;
+/// Diff header padding (mockup `padding:8px 16px`).
+pub const DIFF_HEADER_PADDING_Y: f32 = 8.0;
+pub const DIFF_HEADER_PADDING_X: f32 = 16.0;
+/// Diff body vertical padding (mockup `padding:6px 0`).
+pub const DIFF_BODY_PADDING_Y: f32 = 6.0;
+/// Diff line horizontal padding (mockup `padding:0 16px`).
+pub const DIFF_LINE_PADDING_X: f32 = 16.0;
+/// Gap between the header's `+N` and `−N` stats.
+pub const DIFF_HEADER_STATS_GAP: f32 = 6.0;
+/// U+2212 minus used for deletions (mockup uses the typographic minus).
+pub const MINUS_SIGN: char = '\u{2212}';
+/// Spaces between the gutter symbol and the code (mockup `±    code`).
+const GUTTER_CODE_GAP: &str = "    ";
 
 /// Determines the background tint for a diff line type.
 pub fn line_background(line_type: DiffLineType, theme: &HermesTheme) -> Option<Rgba> {
     match line_type {
-        DiffLineType::Added => Some(theme.sage_bg()),
-        DiffLineType::Deleted => Some(theme.rose_bg()),
-        DiffLineType::HunkHeader => Some(theme.card_bg()),
-        DiffLineType::Context | DiffLineType::Meta => None,
+        DiffLineType::Added => Some(theme.mockup_diff_add_bg),
+        DiffLineType::Deleted => Some(theme.mockup_diff_del_bg),
+        DiffLineType::HunkHeader | DiffLineType::Context | DiffLineType::Meta => None,
     }
 }
 
 /// Determines the text foreground color for a diff line type.
 pub fn line_foreground(line_type: DiffLineType, theme: &HermesTheme) -> Rgba {
     match line_type {
-        DiffLineType::Added => theme.sage_fg(),
-        DiffLineType::Deleted => theme.rose_fg(),
-        DiffLineType::HunkHeader => theme.accent_blue(),
-        DiffLineType::Meta => theme.text_dim(),
-        DiffLineType::Context => theme.text_muted,
+        DiffLineType::Added => theme.mockup_diff_add_fg,
+        DiffLineType::Deleted => theme.mockup_diff_del_fg,
+        DiffLineType::HunkHeader | DiffLineType::Meta => theme.mockup_text_dim,
+        DiffLineType::Context => theme.mockup_text_base,
     }
 }
 
@@ -38,11 +53,65 @@ pub fn line_foreground(line_type: DiffLineType, theme: &HermesTheme) -> Rgba {
 pub fn line_prefix(line_type: DiffLineType) -> &'static str {
     match line_type {
         DiffLineType::Added => "+",
-        DiffLineType::Deleted => "-",
+        DiffLineType::Deleted => "−",
         DiffLineType::HunkHeader => "@@",
         DiffLineType::Context => " ",
         DiffLineType::Meta => "#",
     }
+}
+
+/// The single line number shown in the gutter: old lineno for deletions, new
+/// lineno for additions and context.
+fn gutter_lineno(line: &DiffLine) -> Option<usize> {
+    match line.line_type {
+        DiffLineType::Deleted => line.old_lineno,
+        _ => line.new_lineno,
+    }
+}
+
+/// Formats one diff line as the mockup's single-gutter text:
+/// ` {lineno} {±}    {code}`.
+pub fn diff_line_text(line: &DiffLine) -> String {
+    let lineno = gutter_lineno(line)
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    format!(
+        " {} {}{}{}",
+        lineno,
+        line_prefix(line.line_type),
+        GUTTER_CODE_GAP,
+        line.content
+    )
+}
+
+/// Builds the two shaped runs for one diff line: a `#858585` gutter run
+/// (` {lineno} `) and the tinted `±    code` run.
+pub fn diff_line_runs(line: &DiffLine, theme: &HermesTheme) -> (String, Vec<TextRun>) {
+    let text = diff_line_text(line);
+    let lineno = gutter_lineno(line)
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    let gutter_len = format!(" {} ", lineno).len();
+    let mono = gpui::font(theme.font_mono()[0].clone());
+    let runs = vec![
+        TextRun {
+            len: gutter_len,
+            font: mono.clone(),
+            color: theme.mockup_text_dim.into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        },
+        TextRun {
+            len: text.len() - gutter_len,
+            font: mono,
+            color: line_foreground(line.line_type, theme).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        },
+    ];
+    (text, runs)
 }
 
 /// Inline diff component rendering unified patches.
@@ -75,73 +144,25 @@ impl DiffView {
         self.diff.total_deletions()
     }
 
-    /// Renders a single diff line with line numbers, gutter symbol, and tinted row.
+    /// Renders a single diff line: full-width tinted row, mono 12.5/21,
+    /// whitespace preserved, single gutter.
     fn render_diff_line(&self, line: &DiffLine, theme: &HermesTheme) -> Div {
         let fg = line_foreground(line.line_type, theme);
-        let bg = line_background(line.line_type, theme);
-        let prefix = line_prefix(line.line_type);
-
-        let old_num_str = line
-            .old_lineno
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        let new_num_str = line
-            .new_lineno
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-
         let mut row = div()
             .w_full()
-            .flex()
-            .flex_row()
-            .items_center()
-            .py(px(1.0))
-            .px_2()
-            .text_xs();
+            .font_family(theme.font_mono()[0].clone())
+            .text_size(px(MockupTypeScale::DIFF_SIZE))
+            .line_height(px(MockupTypeScale::DIFF_LINE_HEIGHT))
+            .px(px(DIFF_LINE_PADDING_X))
+            .whitespace_nowrap()
+            .text_color(fg);
 
-        if let Some(bg_color) = bg {
+        if let Some(bg_color) = line_background(line.line_type, theme) {
             row = row.bg(bg_color);
         }
 
-        row
-            // Old line number gutter (40px)
-            .child(
-                div()
-                    .w(px(36.0))
-                    .flex()
-                    .justify_end()
-                    .pr_2()
-                    .text_color(theme.mockup_text_dim)
-                    .child(old_num_str),
-            )
-            // New line number gutter (40px)
-            .child(
-                div()
-                    .w(px(36.0))
-                    .flex()
-                    .justify_end()
-                    .pr_2()
-                    .text_color(theme.mockup_text_dim)
-                    .child(new_num_str),
-            )
-            // Gutter prefix symbol (+ / - / @@)
-            .child(
-                div()
-                    .w(px(18.0))
-                    .flex()
-                    .justify_center()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(fg)
-                    .child(prefix),
-            )
-            // Line content
-            .child(
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .text_color(fg)
-                    .child(line.content.clone()),
-            )
+        let (text, runs) = diff_line_runs(line, theme);
+        row.child(StyledText::new(text).with_runs(runs))
     }
 
     /// Renders a diff hunk with its header and lines.
@@ -152,13 +173,13 @@ impl DiffView {
             hunk_container = hunk_container.child(
                 div()
                     .w_full()
-                    .px_2()
-                    .py(px(2.0))
-                    .bg(theme.mockup_chip)
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.accent_blue())
-                    .child(format!("@@ {}", heading)),
+                    .px(px(DIFF_LINE_PADDING_X))
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(MockupTypeScale::DIFF_SIZE))
+                    .line_height(px(MockupTypeScale::DIFF_LINE_HEIGHT))
+                    .whitespace_nowrap()
+                    .text_color(theme.mockup_text_dim)
+                    .child(format!("@@ {heading}")),
             );
         }
 
@@ -169,86 +190,63 @@ impl DiffView {
         hunk_container
     }
 
-    /// Renders a diff file container with its header, stats, and hunks.
+    /// Renders one diff file as the mockup diff card.
     fn render_file(&self, file: &DiffFile, theme: &HermesTheme) -> Div {
         let file_path = file.path().to_string();
         let adds = file.total_additions();
         let dels = file.total_deletions();
 
-        let mut file_container = div()
+        let header = div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px(px(DIFF_HEADER_PADDING_X))
+            .py(px(DIFF_HEADER_PADDING_Y))
+            .border_b_1()
+            .border_color(theme.mockup_border)
+            .font_family(theme.font_mono()[0].clone())
+            .text_size(px(MockupTypeScale::DIFF_SIZE))
+            .text_color(theme.mockup_text_base)
+            .child(file_path)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(DIFF_HEADER_STATS_GAP))
+                    .child(
+                        div()
+                            .text_color(theme.sage_fg())
+                            .child(format!("+{adds}")),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.rose_fg())
+                            .child(format!("{MINUS_SIGN}{dels}")),
+                    ),
+            );
+
+        let mut body = div().w_full().flex().flex_col().py(px(DIFF_BODY_PADDING_Y));
+        for hunk in &file.hunks {
+            body = body.child(self.render_hunk(hunk, theme));
+        }
+
+        div()
             .w_full()
             .flex()
             .flex_col()
-            .rounded_md()
+            .rounded(px(DIFF_CARD_RADIUS))
             .border_1()
             .border_color(theme.mockup_border)
-            .bg(theme.mockup_body) // Mockup code surface (#0a0a0a)
-            .overflow_hidden();
-
-        // File Header Bar
-        file_container = file_container.child(
-            div()
-                .w_full()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .px_3()
-                .py(px(6.0))
-                .bg(theme.mockup_surface)
-                .border_b_1()
-                .border_color(theme.mockup_border)
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.text_dim())
-                                .child(icon_svg("notebooks", 14.0)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.mockup_text_bright)
-                                .child(file_path),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .text_xs()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.sage_fg())
-                                .child(format!("+{}", adds)),
-                        )
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.rose_fg())
-                                .child(format!("-{}", dels)),
-                        ),
-                ),
-        );
-
-        // Render Hunks
-        for hunk in &file.hunks {
-            file_container = file_container.child(self.render_hunk(hunk, theme));
-        }
-
-        file_container
+            .bg(theme.mockup_sidebar)
+            .overflow_hidden()
+            .child(header)
+            .child(body)
     }
 
-    /// Renders the complete diff view.
+    /// Renders the complete diff view (one card per file).
     pub fn render(&self, theme: &HermesTheme) -> Div {
         let mut container = div().w_full().flex().flex_col().gap_3();
 
@@ -287,21 +285,107 @@ mod tests {
         let file = &view.diff.files[0];
         assert_eq!(file.path(), "src/main.rs");
 
-        // Verify color assignments
-        assert_eq!(line_foreground(DiffLineType::Added, &theme), theme.sage_fg());
-        assert_eq!(line_foreground(DiffLineType::Deleted, &theme), theme.rose_fg());
+        // Mockup color assignments (plan §2.1).
         assert_eq!(
-            line_foreground(DiffLineType::HunkHeader, &theme),
-            theme.accent_blue()
+            line_foreground(DiffLineType::Added, &theme),
+            theme.mockup_diff_add_fg
+        );
+        assert_eq!(
+            line_foreground(DiffLineType::Deleted, &theme),
+            theme.mockup_diff_del_fg
         );
         assert_eq!(
             line_foreground(DiffLineType::Context, &theme),
-            theme.text_muted()
+            theme.mockup_text_base
+        );
+        assert_eq!(
+            line_foreground(DiffLineType::HunkHeader, &theme),
+            theme.mockup_text_dim
         );
 
-        // Verify background tints
-        assert_eq!(line_background(DiffLineType::Added, &theme), Some(theme.sage_bg()));
-        assert_eq!(line_background(DiffLineType::Deleted, &theme), Some(theme.rose_bg()));
+        // Mockup background tints.
+        assert_eq!(
+            line_background(DiffLineType::Added, &theme),
+            Some(theme.mockup_diff_add_bg)
+        );
+        assert_eq!(
+            line_background(DiffLineType::Deleted, &theme),
+            Some(theme.mockup_diff_del_bg)
+        );
         assert_eq!(line_background(DiffLineType::Context, &theme), None);
+    }
+
+    #[test]
+    fn test_diff_line_single_gutter_format() {
+        let view = DiffView::from_patch(SAMPLE_PATCH);
+        let hunk = &view.diff.files[0].hunks[0];
+
+        let deleted = hunk
+            .lines
+            .iter()
+            .find(|l| l.line_type == DiffLineType::Deleted)
+            .expect("patch has a deleted line");
+        let added = hunk
+            .lines
+            .iter()
+            .find(|l| l.line_type == DiffLineType::Added)
+            .expect("patch has added lines");
+
+        let del_text = diff_line_text(deleted);
+        let add_text = diff_line_text(added);
+        // 4-space separator gap plus the source's own 4-space indent.
+        assert_eq!(
+            del_text,
+            " 2 −        println!(\"Hello, old world!\");"
+        );
+        assert_eq!(
+            add_text,
+            " 2 +        println!(\"Hello, new world!\");"
+        );
+        // The second added line gets the next new-file lineno.
+        let added_second = hunk
+            .lines
+            .iter()
+            .filter(|l| l.line_type == DiffLineType::Added)
+            .nth(1)
+            .unwrap();
+        assert!(diff_line_text(added_second).starts_with(" 3 +"));
+
+        // U+2212 minus, never the ASCII hyphen, for deletions.
+        assert_eq!(line_prefix(DiffLineType::Deleted), "−");
+        assert_eq!(MINUS_SIGN, '\u{2212}');
+    }
+
+    #[test]
+    fn test_diff_line_runs_split_gutter_and_code() {
+        let theme = HermesTheme::default();
+        let view = DiffView::from_patch(SAMPLE_PATCH);
+        let hunk = &view.diff.files[0].hunks[0];
+        let added = hunk
+            .lines
+            .iter()
+            .find(|l| l.line_type == DiffLineType::Added)
+            .unwrap();
+
+        let (text, runs) = diff_line_runs(added, &theme);
+        let total: usize = runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, text.len(), "runs must cover the whole line");
+        assert_eq!(runs.len(), 2, "gutter run + code run");
+
+        let gutter_rgb = gpui::Rgba::from(runs[0].color);
+        assert_eq!((gutter_rgb.r * 255.0).round() as u8, 0x85);
+        assert_eq!((gutter_rgb.g * 255.0).round() as u8, 0x85);
+        let code_rgb = gpui::Rgba::from(runs[1].color);
+        assert_eq!((code_rgb.r * 255.0).round() as u8, 0xc4);
+        // Mono font on both runs.
+        assert_eq!(runs[0].font.family.as_ref(), "Geist Mono");
+        assert_eq!(runs[1].font.family.as_ref(), "Geist Mono");
+    }
+
+    #[test]
+    fn test_diff_render_smoke() {
+        let theme = HermesTheme::default();
+        let view = DiffView::from_patch(SAMPLE_PATCH);
+        let _ = view.render(&theme);
     }
 }

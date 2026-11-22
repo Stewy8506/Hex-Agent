@@ -107,18 +107,18 @@ fn test_diff_line_classification_and_colors() {
     assert_eq!(diff_view.total_additions(), 2);
     assert_eq!(diff_view.total_deletions(), 1);
 
-    // Verify addition colors (sage green)
-    assert_eq!(line_foreground(DiffLineType::Added, &theme), theme.sage_fg());
-    assert_eq!(line_background(DiffLineType::Added, &theme), Some(theme.sage_bg()));
+    // Verify addition colors (mockup diff sage: #c4e0c7 on rgba tint).
+    assert_eq!(line_foreground(DiffLineType::Added, &theme), theme.mockup_diff_add_fg);
+    assert_eq!(line_background(DiffLineType::Added, &theme), Some(theme.mockup_diff_add_bg));
     assert_eq!(line_prefix(DiffLineType::Added), "+");
 
-    // Verify deletion colors (rose red)
-    assert_eq!(line_foreground(DiffLineType::Deleted, &theme), theme.rose_fg());
-    assert_eq!(line_background(DiffLineType::Deleted, &theme), Some(theme.rose_bg()));
-    assert_eq!(line_prefix(DiffLineType::Deleted), "-");
+    // Verify deletion colors (mockup diff rose: #d4a9a9, U+2212 minus).
+    assert_eq!(line_foreground(DiffLineType::Deleted, &theme), theme.mockup_diff_del_fg);
+    assert_eq!(line_background(DiffLineType::Deleted, &theme), Some(theme.mockup_diff_del_bg));
+    assert_eq!(line_prefix(DiffLineType::Deleted), "\u{2212}");
 
-    // Verify context colors
-    assert_eq!(line_foreground(DiffLineType::Context, &theme), theme.text_muted());
+    // Verify context colors (prose base on the plain card).
+    assert_eq!(line_foreground(DiffLineType::Context, &theme), theme.mockup_text_base);
     assert_eq!(line_background(DiffLineType::Context, &theme), None);
     assert_eq!(line_prefix(DiffLineType::Context), " ");
 }

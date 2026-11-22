@@ -1,21 +1,65 @@
 //! Message views for User queries and Assistant responses in HEX Desktop.
 //!
-//! Mirrors Hermes Desktop message components (`components/assistant-ui/thread/`):
-//! - `UserMessageCard`: Right/center aligned card with `#18181b` background, rounded borders, avatar, timestamp.
-//! - `AssistantMessageView`: Left aligned response with markdown prose, code blocks, thinking folds, tool cards, and action bar.
+//! Mirrors the mockup conversation thread (`docs/design/mockups-desktop`):
+//! - User bubble: right-aligned `#1e1e1e` pill, radius 18, padding 10px 18px,
+//!   max-width 440 — no border, avatar, header, or timestamp.
+//! - Assistant: plain 15/26 `#d9d9d9` prose with bold `#fff` lead-ins and
+//!   inline `.cd` code chips (mono 12.5 on `#202020`), a mockup action bar
+//!   (Copy / thumbs / Retry, 13.5px `#858585`, no emoji), and a collapsed
+//!   "Changes" button that expands into the turn's diff cards.
 
-use chrono::{DateTime, Utc};
+use std::ops::Range;
+use std::rc::Rc;
+
 use gpui::*;
 
-use crate::theme::HermesTheme;
+use crate::theme::{HermesTheme, MockupTypeScale};
+use crate::ui::feed::FEED_GAP;
+use crate::ui::motion;
 use crate::ui::reasoning::ThinkingDisclosure;
 use crate::ui::tool_card::ToolCallCard;
-use crate::ui::icon_svg;
 
-/// Formats a message timestamp into a compact HH:MM AM/PM string.
-pub fn format_message_time(dt: DateTime<Utc>) -> String {
-    dt.format("%l:%M %p").to_string().trim().to_string()
+/// Handler signature for the interactive message action bar.
+pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// Per-assistant action handlers wired by `ChatView`. A `None` field renders
+/// the corresponding button without a click action (legacy static path).
+#[derive(Clone, Default)]
+pub struct ActionBarHandlers {
+    pub copy: Option<ClickHandler>,
+    pub retry: Option<ClickHandler>,
+    pub changes: Option<ClickHandler>,
 }
+
+/// Gap between action-bar buttons (mockup `gap:18px`).
+pub const ACTION_BAR_GAP: f32 = 18.0;
+/// Gap between a button's icon and its label (mockup `gap:6px`).
+pub const ACTION_BUTTON_GAP: f32 = 6.0;
+/// Action-bar icon size (mockup `width:15`).
+pub const ACTION_ICON_SIZE: f32 = 15.0;
+/// Retry chevron size (mockup `width:12`).
+pub const ACTION_CHEV_SIZE: f32 = 12.0;
+/// Changes-card icon size (mockup `width:16`).
+pub const CHANGES_ICON_SIZE: f32 = 16.0;
+/// Changes-card chevron size (mockup `width:14`).
+pub const CHANGES_CHEV_SIZE: f32 = 14.0;
+/// Changes-card padding (mockup `padding:12px 16px`).
+pub const CHANGES_PADDING_Y: f32 = 12.0;
+pub const CHANGES_PADDING_X: f32 = 16.0;
+/// Changes-card gap between label and summary (mockup `gap:10px`).
+pub const CHANGES_GAP: f32 = 10.0;
+/// Changes-card corner radius (mockup `border-radius:14px`).
+pub const CHANGES_RADIUS: f32 = 14.0;
+/// User bubble corner radius (mockup `border-radius:18px`).
+pub const USER_BUBBLE_RADIUS: f32 = 18.0;
+/// User bubble padding (mockup `padding:10px 18px`).
+pub const USER_BUBBLE_PADDING_Y: f32 = 10.0;
+pub const USER_BUBBLE_PADDING_X: f32 = 18.0;
+/// User bubble max width (mockup `max-width:440px`).
+pub const USER_BUBBLE_MAX_WIDTH: f32 = 440.0;
+
+/// Mockup action-bar labels — plain text, never emoji (D5).
+pub const ACTION_BAR_LABELS: [&str; 2] = ["Copy", "Retry"];
 
 /// A stretch of assistant content: plain prose or a fenced code block.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,11 +88,11 @@ pub fn split_content_segments(content: &str) -> Vec<ContentSegment> {
             } else {
                 body.push_str(line);
             }
-        } else if trimmed.starts_with("```") {
+        } else if let Some(rest) = trimmed.strip_prefix("```") {
             if !prose.is_empty() {
                 segments.push(ContentSegment::Prose(std::mem::take(&mut prose)));
             }
-            code = Some((trimmed[3..].trim().to_string(), String::new()));
+            code = Some((rest.trim().to_string(), String::new()));
         } else {
             prose.push_str(line);
         }
@@ -66,6 +110,334 @@ pub fn split_content_segments(content: &str) -> Vec<ContentSegment> {
     segments
 }
 
+// --------------------------------------------------------------------------
+// Inline rich text (bold lead-ins + `.cd` code chips)
+// --------------------------------------------------------------------------
+
+/// The flavour of an inline rich-text span in assistant prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RichSpanKind {
+    Bold,
+    Code,
+}
+
+/// One styled span within the flattened rich text; ranges index the flattened
+/// string (markers stripped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RichSpan {
+    pub kind: RichSpanKind,
+    pub range: Range<usize>,
+}
+
+/// Parses assistant prose into flattened text plus bold/`code` spans.
+/// `**bold**` and `` `code` `` markers are stripped; unmatched markers stay
+/// literal (streaming), and spans may nest (code inside bold).
+pub fn parse_inline_rich(content: &str) -> (String, Vec<RichSpan>) {
+    let mut out = String::with_capacity(content.len());
+    let mut spans: Vec<RichSpan> = Vec::new();
+    let bytes = content.as_bytes();
+    let mut i = 0usize;
+    let mut open_bold: Option<usize> = None;
+    let mut open_code: Option<usize> = None;
+
+    while i < bytes.len() {
+        let bold_marker = bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'*';
+        let code_marker = bytes[i] == b'`';
+        // Consume an opener only when it has a closer; otherwise it stays
+        // literal so a half-streamed message never loses characters.
+        let close_bold = bold_marker && (open_bold.is_some() || find_marker(content, i + 2, "**").is_some());
+        let close_code = code_marker && (open_code.is_some() || content[i + 1..].contains('`'));
+
+        if close_bold {
+            if let Some(start) = open_bold.take() {
+                if out.len() > start {
+                    spans.push(RichSpan {
+                        kind: RichSpanKind::Bold,
+                        range: start..out.len(),
+                    });
+                }
+            } else {
+                open_bold = Some(out.len());
+            }
+            i += 2;
+        } else if close_code {
+            if let Some(start) = open_code.take() {
+                if out.len() > start {
+                    spans.push(RichSpan {
+                        kind: RichSpanKind::Code,
+                        range: start..out.len(),
+                    });
+                }
+            } else {
+                open_code = Some(out.len());
+            }
+            i += 1;
+        } else {
+            let ch = content[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    (out, spans)
+}
+
+fn find_marker(content: &str, from: usize, marker: &str) -> Option<usize> {
+    if from > content.len() {
+        return None;
+    }
+    content[from..].find(marker).map(|rel| from + rel)
+}
+
+/// Typography and palette used to shape [`rich_text_runs`]: plain prose 15px
+/// sans `#d9d9d9`, bold weight 700 `#fff`, code mono 12.5px `#e6e6e6` on the
+/// `#202020` chip background.
+pub struct RichTextStyle {
+    pub base_font: Font,
+    pub mono_font: Font,
+    pub base_color: Hsla,
+    pub bold_color: Hsla,
+    pub code_color: Hsla,
+    pub code_bg: Hsla,
+}
+
+impl RichTextStyle {
+    /// The mockup's prose style resolved from the theme.
+    pub fn mockup(theme: &HermesTheme) -> Self {
+        Self {
+            base_font: gpui::font(theme.font_sans()[0].clone()),
+            mono_font: gpui::font(theme.font_mono()[0].clone()),
+            base_color: theme.mockup_text_base.into(),
+            bold_color: rgb(0xffffff).into(),
+            code_color: theme.mockup_text.into(),
+            code_bg: theme.mockup_inline_code_bg.into(),
+        }
+    }
+}
+
+/// Maps rich spans to shaped `TextRun`s covering exactly `text`.
+pub fn rich_text_runs(
+    text: &str,
+    spans: &[RichSpan],
+    style: &RichTextStyle,
+) -> Vec<TextRun> {
+    let style_at = |pos: usize| -> (bool, bool) {
+        let bold = spans
+            .iter()
+            .any(|s| s.kind == RichSpanKind::Bold && s.range.contains(&pos));
+        let code = spans
+            .iter()
+            .any(|s| s.kind == RichSpanKind::Code && s.range.contains(&pos));
+        (bold, code)
+    };
+
+    let make_run = |len: usize, bold: bool, code: bool| -> TextRun {
+        let mut font = style.base_font.clone();
+        let mut color = style.base_color;
+        let mut background_color = None;
+        if code {
+            font = style.mono_font.clone();
+            color = style.code_color;
+            background_color = Some(style.code_bg);
+        }
+        if bold {
+            font = font.bold();
+            if !code {
+                color = style.bold_color;
+            }
+        }
+        TextRun {
+            len,
+            font,
+            color,
+            background_color,
+            underline: None,
+            strikethrough: None,
+        }
+    };
+
+    let mut runs = Vec::new();
+    let mut current: Option<(bool, bool)> = None;
+    let mut run_len = 0usize;
+    for (idx, ch) in text.char_indices() {
+        let style = style_at(idx);
+        match current {
+            None => current = Some(style),
+            Some(prev) if prev != style => {
+                runs.push(make_run(run_len, prev.0, prev.1));
+                run_len = 0;
+                current = Some(style);
+            }
+            _ => {}
+        }
+        run_len += ch.len_utf8();
+    }
+    if let Some(prev) = current {
+        if run_len > 0 {
+            runs.push(make_run(run_len, prev.0, prev.1));
+        }
+    }
+    runs
+}
+
+/// Renders one assistant prose paragraph at the mockup's 15/26 `#d9d9d9` with
+/// bold lead-ins and inline code chips.
+pub fn render_rich_prose(content: &str, theme: &HermesTheme) -> Div {
+    let (text, spans) = parse_inline_rich(content);
+    let runs = rich_text_runs(&text, &spans, &RichTextStyle::mockup(theme));
+    div()
+        .w_full()
+        .text_size(px(MockupTypeScale::BASE_SIZE))
+        .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
+        .text_color(theme.mockup_text_base)
+        .child(StyledText::new(text).with_runs(runs))
+}
+
+/// Renders one fenced code block: mono 12.5/21 on `#101010` with a `#222`
+/// border, no language label (mockup parity).
+fn render_code_block(code: &str, theme: &HermesTheme) -> Div {
+    div()
+        .w_full()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(theme.mockup_border)
+        .bg(theme.mockup_sidebar)
+        .px(px(12.0))
+        .py(px(10.0))
+        .font_family(theme.font_mono()[0].clone())
+        .text_size(px(MockupTypeScale::DIFF_SIZE))
+        .line_height(px(MockupTypeScale::DIFF_LINE_HEIGHT))
+        .text_color(theme.mockup_text_base)
+        .whitespace_nowrap()
+        .child(code.to_string())
+}
+
+// --------------------------------------------------------------------------
+// Action bar + Changes card
+// --------------------------------------------------------------------------
+
+/// An action-bar SVG icon with no tint of its own — it inherits the parent
+/// text color so hover restyles flow through.
+fn action_icon(name: &str, size: f32) -> Svg {
+    svg()
+        .path(format!("icons/{name}.svg"))
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+}
+
+/// One action-bar button: flex row (icon, optional label, optional trailing
+/// chevron) at 13.5px `#858585`; becomes a cursor-pointer target when a
+/// handler is wired.
+fn action_button(
+    theme: &HermesTheme,
+    key: String,
+    handler: Option<&ClickHandler>,
+    icon: &str,
+    label: Option<&str>,
+    trailing_icon: Option<(&str, f32)>,
+) -> AnyElement {
+    let mut button = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(ACTION_BUTTON_GAP))
+        .text_size(px(MockupTypeScale::ACTION_BAR_SIZE))
+        .text_color(theme.mockup_text_dim)
+        .hover(|s| s.text_color(theme.mockup_text))
+        .child(action_icon(icon, ACTION_ICON_SIZE));
+    if let Some(label) = label {
+        button = button.child(label.to_string());
+    }
+    if let Some((icon, size)) = trailing_icon {
+        button = button.child(action_icon(icon, size));
+    }
+    match handler {
+        Some(handler) => {
+            let handler = handler.clone();
+            button
+                .id(SharedString::from(key))
+                .cursor_pointer()
+                .on_click(move |event, window, cx| handler(event, window, cx))
+                .into_any_element()
+        }
+        None => button.into_any_element(),
+    }
+}
+
+/// Builds the mockup action bar for one assistant message: Copy (files icon +
+/// label), thumbs-up, thumbs-down (rotation baked into the SVG), Retry
+/// (rotate-ccw + label + chevron-down), then the real token count (13px,
+/// hidden when unknown). No emoji anywhere (D5).
+pub fn mockup_action_bar(
+    theme: &HermesTheme,
+    id: &str,
+    token_count: Option<String>,
+    handlers: &ActionBarHandlers,
+) -> Div {
+    let mut row = div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(ACTION_BAR_GAP));
+
+    row = row.child(action_button(
+        theme,
+        format!("action_copy_{id}"),
+        handlers.copy.as_ref(),
+        "files",
+        Some(ACTION_BAR_LABELS[0]),
+        None,
+    ));
+    row = row.child(action_button(
+        theme,
+        format!("action_up_{id}"),
+        None,
+        "thumbs-up",
+        None,
+        None,
+    ));
+    row = row.child(action_button(
+        theme,
+        format!("action_down_{id}"),
+        None,
+        "thumbs-down",
+        None,
+        None,
+    ));
+    row = row.child(action_button(
+        theme,
+        format!("action_retry_{id}"),
+        handlers.retry.as_ref(),
+        "retry",
+        Some(ACTION_BAR_LABELS[1]),
+        Some(("chevron-down", ACTION_CHEV_SIZE)),
+    ));
+
+    if let Some(tokens) = token_count {
+        row = row.child(
+            div()
+                .text_size(px(MockupTypeScale::TOKEN_COUNT_SIZE))
+                .text_color(theme.mockup_text_dim)
+                .child(tokens),
+        );
+    }
+    row
+}
+
+/// Formats the Changes-button summary: `"N files, +A −D"` with a U+2212 minus.
+pub fn changes_summary(file_count: usize, adds: usize, dels: usize) -> String {
+    format!(
+        "{file_count} file{}, +{adds} \u{2212}{dels}",
+        if file_count == 1 { "" } else { "s" }
+    )
+}
+
+// --------------------------------------------------------------------------
+// Message models
+// --------------------------------------------------------------------------
+
 /// Best-effort file label for the Changes card: the path from a diff, else the
 /// tool's own name.
 fn file_label_from_tool(tool: &ToolCallCard) -> String {
@@ -77,133 +449,11 @@ fn file_label_from_tool(tool: &ToolCallCard) -> String {
     tool.tool_name.clone()
 }
 
-/// Phase 3: collapsible "Changes" summary card listing files touched by a
-/// turn, driven by the diff data already attached to the turn's tool calls.
-/// Returns `None` when the turn touched no files. The card starts collapsed.
-fn render_changes_card(theme: &HermesTheme, tool_calls: &[ToolCallCard]) -> Option<Div> {
-    let mut files: Vec<(String, usize, usize)> = Vec::new();
-    for tool in tool_calls {
-        let Some(view) = tool.diff_view() else {
-            continue;
-        };
-        let label = file_label_from_tool(tool);
-        let entry = (
-            label,
-            view.total_additions(),
-            view.total_deletions(),
-        );
-        if !files.iter().any(|f| f.0 == entry.0) {
-            files.push(entry);
-        }
-    }
-    if files.is_empty() {
-        return None;
-    }
-    let file_count = files.len();
-    let adds: usize = files.iter().map(|f| f.1).sum();
-    let dels: usize = files.iter().map(|f| f.2).sum();
-    let mut rows = div().w_full().flex().flex_col().gap(px(2.0));
-    for (name, a, d) in &files {
-        rows = rows.child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .text_xs()
-                .child(
-                    div()
-                        .text_color(theme.mockup_text_muted)
-                        .child(name.clone()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.sage_fg())
-                                .child(format!("+{a}")),
-                        )
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.rose_fg())
-                                .child(format!("-{d}")),
-                        ),
-                ),
-        );
-    }
-    Some(
-        div()
-            .w_full()
-            .mt_1()
-            .flex()
-            .flex_col()
-            .rounded_md()
-            .border_1()
-            .border_color(theme.mockup_border)
-            .bg(theme.mockup_surface)
-            .overflow_hidden()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_3()
-                    .py(px(6.0))
-                    .text_xs()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.mockup_text)
-                            .child("Changes"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .text_color(theme.mockup_text_dim)
-                            .child(format!(
-                                "{file_count} file{}",
-                                if file_count == 1 { "" } else { "s" }
-                            ))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.sage_fg())
-                                    .child(format!("+{adds}")),
-                            )
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.rose_fg())
-                                    .child(format!("-{dels}")),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .px_3()
-                    .py(px(4.0))
-                    .border_t_1()
-                    .border_color(theme.mockup_border)
-                    .child(rows),
-            ),
-    )
-}
-
-/// User message query card.
+/// User message query bubble.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserMessageCard {
     pub id: String,
     pub content: String,
-    pub timestamp: DateTime<Utc>,
-    pub avatar_glyph: String,
 }
 
 impl UserMessageCard {
@@ -211,84 +461,35 @@ impl UserMessageCard {
         Self {
             id: id.into(),
             content: content.into(),
-            timestamp: Utc::now(),
-            avatar_glyph: "Y".to_string(),
         }
     }
 
-    pub fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
-        self.timestamp = timestamp;
-        self
-    }
-
-    /// Renders the user message card aligned to the right/center.
+    /// Renders the exact mockup bubble: right-aligned `#1e1e1e` pill, radius
+    /// 18, padding 10px 18px, max-width 440, 15/26 `#e6e6e6` — no border,
+    /// avatar, header, or timestamp.
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        let time_str = format_message_time(self.timestamp);
-
         div()
             .w_full()
             .flex()
             .flex_row()
             .justify_end()
-            .py_2()
             .child(
                 div()
-                    .max_w(px(460.0))
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .px_4()
-                    .py_2()
-                    .rounded(px(18.0)) // mockup: 18px bubble
-                    .bg(theme.mockup_hover) // #1e1e1e
-                    .border_1()
-                    .border_color(theme.mockup_border)
-                    // Header: Avatar & Timestamp
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(6.0))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .child(self.avatar_glyph.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(theme.text_primary())
-                                            .child("You"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_dim())
-                                    .child(time_str),
-                            ),
-                    )
-                    // Content Body
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_primary())
-                            .child(self.content.clone()),
-                    ),
+                    .max_w(px(USER_BUBBLE_MAX_WIDTH))
+                    .rounded(px(USER_BUBBLE_RADIUS))
+                    .bg(theme.mockup_hover)
+                    .px(px(USER_BUBBLE_PADDING_X))
+                    .py(px(USER_BUBBLE_PADDING_Y))
+                    .text_size(px(MockupTypeScale::BASE_SIZE))
+                    .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
+                    .text_color(theme.mockup_text)
+                    .child(self.content.clone()),
             )
     }
 }
 
-/// Assistant response view hosting prose, reasoning, tool calls, and action bar.
+/// Assistant response view hosting prose, reasoning, tool calls, action bar,
+/// and the Changes card.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssistantMessageView {
     pub id: String,
@@ -296,8 +497,9 @@ pub struct AssistantMessageView {
     pub reasoning: Option<ThinkingDisclosure>,
     pub tool_calls: Vec<ToolCallCard>,
     pub is_streaming: bool,
-    pub timestamp: DateTime<Utc>,
     pub model_name: String,
+    /// Whether the collapsed Changes button is expanded into diff cards.
+    pub changes_expanded: bool,
 }
 
 impl AssistantMessageView {
@@ -308,9 +510,9 @@ impl AssistantMessageView {
             reasoning: None,
             tool_calls: Vec::new(),
             is_streaming: false,
-            timestamp: Utc::now(),
             // Unknown until the runtime reports it; never invent a model.
             model_name: String::new(),
+            changes_expanded: false,
         }
     }
 
@@ -334,186 +536,177 @@ impl AssistantMessageView {
         self
     }
 
-    /// Renders the static action bar (Copy, Regenerate).
-    ///
-    /// Branch is intentionally absent: the ACP backend has no branch operation,
-    /// so the interactive `ChatView` bar only offers actions it can perform.
+    /// Renders the static action bar (legacy `AppShell` path): mockup-styled
+    /// buttons without click actions, no token count (unknown).
     fn render_action_bar(&self, theme: &HermesTheme) -> Div {
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
-            .pt_1()
-            .text_xs()
-            .child(
-                div()
-                    .cursor_pointer()
-                    .text_color(theme.text_dim())
-                    .hover(|s| s.text_color(theme.text_primary()))
-                    .child("📋 Copy"),
-            )
-            .child(
-                div()
-                    .cursor_pointer()
-                    .text_color(theme.text_dim())
-                    .hover(|s| s.text_color(theme.text_primary()))
-                    .child("🔄 Regenerate"),
-            )
+        mockup_action_bar(theme, &self.id, None, &ActionBarHandlers::default())
     }
 
     /// Renders the assistant message view aligned to the left.
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        self.render_with_action_bar(theme, Some(self.render_action_bar(theme)))
+        self.render_with_action_bar(theme, None, None)
     }
 
-    /// Renders the message body with a caller-supplied action bar (or none).
-    /// `ChatView` passes an interactive bar wired to clipboard/regeneration.
-    pub fn render_with_action_bar(&self, theme: &HermesTheme, action_bar: Option<Div>) -> Div {
-        let time_str = format_message_time(self.timestamp);
-
-        let mut badge = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(icon_svg("bolt", 14.0))
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text_primary())
-                    .child("HEX"),
-            );
-        if !self.model_name.is_empty() {
-            badge = badge.child(
-                div()
-                    .text_xs()
-                    .text_color(theme.text_dim())
-                    .child(self.model_name.clone()),
-            );
-        }
-
-        let mut card = div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .py_2()
-            // Top Header: Assistant Badge & Model & Time
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(badge)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.text_dim())
-                            .child(time_str),
-                    ),
-            );
+    /// Renders the message body with the mockup action bar wired through
+    /// `handlers` (or the static bar when `None`), and the Changes card.
+    pub fn render_with_action_bar(
+        &self,
+        theme: &HermesTheme,
+        handlers: Option<&ActionBarHandlers>,
+        token_count: Option<String>,
+    ) -> Div {
+        let mut card = div().w_full().flex().flex_col().gap(px(FEED_GAP));
 
         // 1. Thinking / Reasoning Fold
         if let Some(reasoning) = &self.reasoning {
             card = card.child(reasoning.render(theme));
         }
 
-        // 2. Tool Call Cards, then a collapsible Changes summary card when the
-        // turn touched files (driven by the tool calls' existing diff data).
+        // 2. Tool Call Cards
         for tool in &self.tool_calls {
             card = card.child(tool.render(theme));
         }
-        if !self.is_streaming {
-            if let Some(changes) = render_changes_card(theme, &self.tool_calls) {
-                card = card.child(changes);
-            }
-        }
 
-        // 3. Prose / Text Content (fenced code blocks render as structured blocks)
+        // 3. Prose / Text Content (fenced code blocks render as structured
+        // blocks; prose gets bold lead-ins and inline code chips).
         for segment in split_content_segments(&self.content) {
             match segment {
                 ContentSegment::Prose(text) => {
                     if !text.trim().is_empty() {
-                        card = card.child(
-                            div()
-                                .w_full()
-                                .text_sm()
-                                .text_color(theme.text_primary())
-                                .child(text),
-                        );
+                        card = card.child(render_rich_prose(&text, theme));
                     }
                 }
-                ContentSegment::Code { language, code } => {
-                    let mut block = div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .p_3()
-                        .rounded_lg()
-                        .bg(theme.card_bg())
-                        .border_1()
-                        .border_color(theme.border_subtle());
-                    if !language.is_empty() {
-                        block = block.child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.text_dim())
-                                .child(language),
-                        );
-                    }
-                    card = card.child(block.child(
-                        div()
-                            .text_sm()
-                            .font_family("Menlo")
-                            .text_color(theme.text_primary())
-                            .child(code),
-                    ));
+                ContentSegment::Code { code, .. } => {
+                    card = card.child(render_code_block(&code, theme));
                 }
             }
         }
 
-        // 4. Streaming Pulse Indicator
+        // 4. Streaming braille spinner at the tail (mockup `.sp`).
         if self.is_streaming {
-            card = card.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .w(px(6.0))
-                            .h(px(6.0))
-                            .rounded_full()
-                            .bg(theme.accent_blue()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.accent_blue())
-                            .child("Streaming..."),
-                    ),
-            );
+            card = card.child(self.render_streaming_spinner(theme));
         }
 
-        // 5. Action Bar (only when not streaming)
+        // 5. Action bar + Changes button (only when not streaming).
         if !self.is_streaming {
-            if let Some(bar) = action_bar {
-                card = card.child(bar);
+            let bar = match handlers {
+                Some(h) => mockup_action_bar(theme, &self.id, token_count, h),
+                None => self.render_action_bar(theme),
+            };
+            card = card.child(bar);
+            let changes_click = handlers.and_then(|h| h.changes.as_ref());
+            if let Some(changes) = self.render_changes_button(theme, changes_click) {
+                card = card.child(changes);
             }
         }
 
         card
+    }
+
+    /// The mockup `.sp` braille spinner (900ms steps(1)); reduced motion keeps
+    /// the first frame static.
+    fn render_streaming_spinner(&self, theme: &HermesTheme) -> AnyElement {
+        let spinner = div()
+            .font_family(theme.font_mono()[0].clone())
+            .text_size(px(MockupTypeScale::SPINNER_SIZE))
+            .text_color(theme.accent_blue());
+        if motion::reduced_motion() {
+            spinner
+                .child(motion::spinner_frame(std::time::Duration::ZERO).to_string())
+                .into_any_element()
+        } else {
+            spinner
+                .with_animation(
+                    ElementId::Name(SharedString::from(format!("feed_sp_{}", self.id))),
+                    Animation::new(motion::SPIN_PERIOD).repeat(),
+                    |el, phase| {
+                        let elapsed =
+                            std::time::Duration::from_secs_f32(phase * motion::SPIN_PERIOD.as_secs_f32());
+                        el.child(motion::spinner_frame(elapsed).to_string())
+                    },
+                )
+                .into_any_element()
+        }
+    }
+
+    /// Collapsed "Changes" button per the mockup (border `#222`, radius 14,
+    /// padding 12px 16px, gap 10): files icon 16, label `#e6e6e6`, summary
+    /// "N files, +A −D" flex-1 `#9a9a9a`, chevron-down 14. Expanded, the
+    /// turn's diff cards render below the button. Returns `None` when the
+    /// turn touched no files.
+    fn render_changes_button(&self, theme: &HermesTheme, on_toggle: Option<&ClickHandler>) -> Option<AnyElement> {
+        let mut files: Vec<(String, usize, usize)> = Vec::new();
+        for tool in &self.tool_calls {
+            let Some(view) = tool.diff_view() else {
+                continue;
+            };
+            let label = file_label_from_tool(tool);
+            let entry = (label, view.total_additions(), view.total_deletions());
+            if !files.iter().any(|f| f.0 == entry.0) {
+                files.push(entry);
+            }
+        }
+        if files.is_empty() {
+            return None;
+        }
+        let file_count = files.len();
+        let adds: usize = files.iter().map(|f| f.1).sum();
+        let dels: usize = files.iter().map(|f| f.2).sum();
+
+        let button = div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(CHANGES_GAP))
+            .px(px(CHANGES_PADDING_X))
+            .py(px(CHANGES_PADDING_Y))
+            .rounded(px(CHANGES_RADIUS))
+            .border_1()
+            .border_color(theme.mockup_border)
+            .text_size(px(MockupTypeScale::CHANGES_SIZE))
+            .text_color(theme.mockup_text_muted)
+            .child(
+                action_icon("files", CHANGES_ICON_SIZE).text_color(theme.mockup_text_dim),
+            )
+            .child(
+                div()
+                    .text_color(theme.mockup_text)
+                    .child("Changes"),
+            )
+            .child(div().flex_1().child(changes_summary(file_count, adds, dels)))
+            .child(
+                action_icon("chevron-down", CHANGES_CHEV_SIZE)
+                    .text_color(theme.mockup_text_dim),
+            );
+        let button: AnyElement = match on_toggle {
+            Some(handler) => {
+                let handler = handler.clone();
+                button
+                    .id(SharedString::from(format!("changes_{}", self.id)))
+                    .cursor_pointer()
+                    .on_click(move |event, window, cx| handler(event, window, cx))
+                    .into_any_element()
+            }
+            None => button.into_any_element(),
+        };
+
+        let mut column = div().w_full().flex().flex_col().gap(px(8.0)).child(button);
+        if self.changes_expanded {
+            for tool in &self.tool_calls {
+                if let Some(view) = tool.diff_view() {
+                    column = column.child(view.render(theme));
+                }
+            }
+        }
+        Some(column.into_any_element())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::diff_view::DiffView;
     use core::prelude::v1::test;
 
     #[test]
@@ -529,6 +722,7 @@ mod tests {
         assert_eq!(a.id, "msg_2");
         assert!(a.is_streaming);
         assert_eq!(a.model_name, "Claude 3.7 Sonnet");
+        assert!(!a.changes_expanded, "Changes must start collapsed");
     }
 
     #[test]
@@ -580,6 +774,95 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_inline_rich_bold_and_code_boundaries() {
+        let content = "**The change:** `GraphBuilder.edges()` now streams.";
+        let (text, spans) = parse_inline_rich(content);
+        assert_eq!(text, "The change: GraphBuilder.edges() now streams.");
+        // The space between the bold lead-in and the code chip is preserved
+        // (mockup: `<b>The change:</b> <span class="cd">…</span>`).
+        assert_eq!(
+            spans,
+            vec![
+                RichSpan {
+                    kind: RichSpanKind::Bold,
+                    range: 0..11,
+                },
+                RichSpan {
+                    kind: RichSpanKind::Code,
+                    range: 12..32,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_inline_rich_nested_code_inside_bold() {
+        let (text, spans) = parse_inline_rich("**bold `code` tail** rest");
+        assert_eq!(text, "bold code tail rest");
+        let bold = spans.iter().find(|s| s.kind == RichSpanKind::Bold).unwrap();
+        let code = spans.iter().find(|s| s.kind == RichSpanKind::Code).unwrap();
+        assert_eq!(bold.clone().range, 0..14);
+        assert_eq!(code.clone().range, 5..9);
+    }
+
+    #[test]
+    fn test_parse_inline_rich_unmatched_markers_stay_literal() {
+        for content in ["a ** b", "**bold", "tick ` x", "lone `"] {
+            let (text, spans) = parse_inline_rich(content);
+            assert_eq!(text, content, "markers must survive when unmatched");
+            assert!(spans.is_empty(), "{content:?} must produce no spans");
+        }
+    }
+
+    #[test]
+    fn test_rich_text_runs_cover_text_with_styles() {
+        let (text, spans) = parse_inline_rich("**Lead:** `x()` plain");
+        let style = RichTextStyle {
+            base_font: gpui::font("Apfel Grotezk"),
+            mono_font: gpui::font("Geist Mono"),
+            base_color: rgb(0xd9d9d9).into(),
+            bold_color: rgb(0xffffff).into(),
+            code_color: rgb(0xe6e6e6).into(),
+            code_bg: rgb(0x202020).into(),
+        };
+        let runs = rich_text_runs(&text, &spans, &style);
+        let total: usize = runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, text.len(), "runs must cover the flattened text");
+
+        // First run = bold lead-in ("Lead:"), white + bold sans.
+        assert_eq!(&text[..runs[0].len], "Lead:");
+        assert_eq!(runs[0].font.weight, FontWeight::BOLD);
+        let bold_rgb = gpui::Rgba::from(runs[0].color);
+        assert!((bold_rgb.r * 255.0).round() as u8 == 0xff);
+        // The code run uses the mono font with the chip background.
+        let code_run = runs
+            .iter()
+            .find(|r| r.background_color.is_some())
+            .expect("code run must carry the chip background");
+        assert_eq!(code_run.font.family.as_ref(), "Geist Mono");
+        let chip_bg = gpui::Rgba::from(code_run.background_color.unwrap());
+        assert_eq!((chip_bg.r * 255.0).round() as u8, 0x20);
+    }
+
+    #[test]
+    fn test_changes_summary_format() {
+        assert_eq!(changes_summary(2, 22, 33), "2 files, +22 \u{2212}33");
+        assert_eq!(changes_summary(1, 2, 3), "1 file, +2 \u{2212}3");
+    }
+
+    #[test]
+    fn test_action_bar_labels_contain_no_emoji() {
+        // D5: the action bar must never regress to "📋 Copy" / "🔄 Retry".
+        for label in ACTION_BAR_LABELS {
+            assert!(
+                label.is_ascii(),
+                "action-bar label {label:?} must be plain ASCII text"
+            );
+        }
+        assert_eq!(ACTION_BAR_LABELS, ["Copy", "Retry"]);
+    }
+
+    #[test]
     fn test_message_render_smoke_with_code_and_unknown_model() {
         let theme = HermesTheme::default();
         let view = AssistantMessageView::new(
@@ -588,5 +871,23 @@ mod tests {
         );
         let _ = view.render(&theme);
         let _ = view.with_model("claude-3-7-sonnet").render(&theme);
+        let streaming = AssistantMessageView::new("msg_2", "partial").with_streaming(true);
+        let _ = streaming.render(&theme);
+    }
+
+    #[test]
+    fn test_changes_button_smoke_expanded_and_collapsed() {
+        let theme = HermesTheme::default();
+        let tool = ToolCallCard::new("tc_1", "edit_file", "{}").with_diff(DiffView::from_patch(
+            "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+        ));
+        let collapsed = AssistantMessageView::new("msg_1", "").with_tool_call(tool.clone());
+        let _ = collapsed.render(&theme);
+        let expanded = AssistantMessageView::new("msg_1", "")
+            .with_tool_call(tool)
+            .with_streaming(false);
+        let mut expanded = expanded;
+        expanded.changes_expanded = true;
+        let _ = expanded.render(&theme);
     }
 }

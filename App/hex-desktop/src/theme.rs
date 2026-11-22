@@ -161,6 +161,8 @@ pub struct HermesTheme {
     pub mockup_session_inactive: Rgba,
     /// Assistant prose base text (#d9d9d9).
     pub mockup_text_base: Rgba,
+    /// Inline code chip background (#202020).
+    pub mockup_inline_code_bg: Rgba,
     /// Composer card border (rgba(122,167,255,.3)).
     pub mockup_accent_border: Rgba,
     /// Review / Needs-you chip background (rgba(122,167,255,.14)).
@@ -215,6 +217,7 @@ impl Default for HermesTheme {
             mockup_track: rgb(0x2a2a2a),
             mockup_session_inactive: rgb(0xbdbdbd),
             mockup_text_base: rgb(0xd9d9d9),
+            mockup_inline_code_bg: rgb(0x202020),
             mockup_accent_border: rgba(0x7aa7ff4d),
             mockup_accent_chip_bg: rgba(0x7aa7ff24),
             mockup_diff_add_fg: rgb(0xc4e0c7),
