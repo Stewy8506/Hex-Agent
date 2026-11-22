@@ -6,6 +6,7 @@ pub mod feed;
 pub mod message;
 pub mod modals;
 pub mod model_pill;
+pub mod motion;
 pub mod reasoning;
 pub mod session_list;
 pub mod shell;
