@@ -1,11 +1,11 @@
 //! Model selector pill button and send button controls for HEX Desktop.
 //!
 //! Mirrors Hermes Desktop composer model pill (`app/chat/composer/model-pill.tsx`):
-//! - Compact pill button embedded in composer bottom bar
-//! - Provider dot color: Anthropic (Amber), OpenAI (Emerald), Google (Blue), Local/Other (Electric Blue)
-//! - Model name label and chevron down (`▾`)
+//! - Compact pill button embedded in composer bottom bar (mockup `.pill`)
+//! - Model name label and chevron-down SVG
 //! - Click toggle for model selection modal
 //! - Dedicated Send/Stop action button
+//! (`provider_dot_color` stays available for the model-picker rows.)
 
 use gpui::*;
 
@@ -62,44 +62,13 @@ impl ModelSelectorPill {
         &self.model_name
     }
 
-    /// Renders the compact model pill button.
+    /// Renders the compact model pill button (mockup `.pill`: bg `#1f1f1f`,
+    /// radius 99, 5×14 padding, 14/20 `#cfcfcf`, chevron 12px `#858585`,
+    /// hover `#272727`).
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        let dot_color = self.dot_color(theme);
-
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.0))
-            .h(px(28.0))
-            .px_2()
-            .rounded_md()
-            .bg(theme.card_bg())
-            .border_1()
-            .border_color(theme.border_subtle())
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.card_hover()))
-            .child(
-                // Provider Dot
-                div()
-                    .w(px(6.0))
-                    .h(px(6.0))
-                    .rounded_full()
-                    .bg(dot_color),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::NORMAL)
-                    .text_color(theme.text_muted())
-                    .child(self.model_name.clone()),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.text_dim())
-                    .child("▾"),
-            )
+        crate::ui::pill::mockup_pill(theme)
+            .child(self.model_name.clone())
+            .child(crate::ui::pill::mockup_pill_chevron())
     }
 }
 

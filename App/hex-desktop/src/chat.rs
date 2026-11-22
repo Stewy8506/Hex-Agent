@@ -36,11 +36,14 @@ use crate::fonts;
 use crate::menu::init_menus;
 use crate::shortcuts::{self, init_shortcuts};
 use crate::theme::HermesTheme;
+use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{MessageFeed, MessageItem};
 use crate::ui::message::AssistantMessageView;
 use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
 use crate::ui::modals::{render_modal_container, ActiveModal, ModelEntry, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
+use crate::ui::motion;
+use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
 use crate::ui::session_list::SessionItem;
 use crate::ui::shell::{AppShell, ShellView};
 use crate::ui::sidebar::ProviderState;
@@ -1038,17 +1041,11 @@ impl ChatView {
     }
 
     /// Home prompt card: the pulsating glow composer with pills and buttons.
-    /// Delegates rendering to the shared composer so Home and Session stay
-    /// visually identical; submit routes into the session (see adopt_session).
+    /// Delegates to the shared composer in its Home variant so Home and
+    /// Session stay visually identical; submit routes into the session (see
+    /// adopt_session).
     fn render_home_composer(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
-        let composer = self.render_composer(theme, cx);
-        div().w_full().child(
-            crate::ui::composer::glow_card(
-                div().child(composer),
-                theme,
-                "home_glow_card",
-            ),
-        )
+        self.render_composer(theme, cx, ComposerVariant::Home)
     }
 
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
@@ -2155,143 +2152,123 @@ impl ChatView {
             )
     }
 
-    fn render_composer(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
+    fn render_composer(
+        &mut self,
+        theme: &HermesTheme,
+        cx: &mut Context<Self>,
+        variant: ComposerVariant,
+    ) -> Div {
         let running = self.active_turn_running();
         let can_send = !self.content.trim().is_empty() && !running;
         let send_btn = SendButton::new(running, can_send);
-        let has_text = !self.content.is_empty();
-        let gauge = &self.shell.composer.token_gauge;
-        let ctx_pct = gauge.percentage();
-        let ctx_color = gauge.threshold_color(theme);
-        let context_bar = div()
+        let session = variant == ComposerVariant::Session;
+        let placeholder = if session {
+            SESSION_PLACEHOLDER.to_string()
+        } else {
+            self.shell.composer.placeholder.clone()
+        };
+
+        // Input row: 16/20 text, the focus target and editor action surface.
+        let input_row = div()
+            .w_full()
+            .text_size(px(16.0))
+            .line_height(px(20.0))
+            .text_color(theme.mockup_text)
+            .key_context("Composer")
+            .track_focus(&self.focus_handle)
+            .cursor(CursorStyle::IBeam)
+            .on_action(cx.listener(Self::on_insert_newline))
+            .on_action(cx.listener(Self::on_backspace))
+            .on_action(cx.listener(Self::on_delete))
+            .on_action(cx.listener(Self::on_left))
+            .on_action(cx.listener(Self::on_right))
+            .on_action(cx.listener(Self::on_select_left))
+            .on_action(cx.listener(Self::on_select_right))
+            .on_action(cx.listener(Self::on_home))
+            .on_action(cx.listener(Self::on_end))
+            .on_action(cx.listener(Self::on_up))
+            .on_action(cx.listener(Self::on_down))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .child(ComposerElement {
+                view: cx.entity(),
+                placeholder,
+            });
+
+        // Toolbar (mockup gap 8): attach, Auto pill, model pill, spacer, mic,
+        // send.
+        let toolbar = div()
             .w_full()
             .flex()
+            .flex_row()
             .items_center()
-            .gap_2()
-            .pb_1()
-            .text_xs()
-            .text_color(theme.mockup_text_dim)
-            .child("Context")
-            .child(div().flex_1().h(px(4.0)).rounded_full().bg(theme.mockup_surface).child(
+            .gap(px(8.0))
+            .child(mockup_icon_button(theme, "attach", 18.0, rgb(0xcfcfcf), None))
+            .child(
+                mockup_pill(theme)
+                    .child("Auto")
+                    .child(mockup_pill_chevron()),
+            )
+            .child(
                 div()
-                    .h_full()
-                    .w(relative(gauge.fraction() as f32))
-                    .rounded_full()
-                    .bg(ctx_color),
+                    .id("model_pill_button")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.request_model_picker(cx);
+                    }))
+                    .child(
+                        mockup_pill(theme)
+                            .child(self.shell.composer.model_pill.model_name.clone())
+                            .child(mockup_pill_chevron()),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(mockup_icon_button(
+                theme,
+                "mic",
+                16.0,
+                theme.mockup_text_muted,
+                Some(theme.mockup_text),
             ))
-            .child(format!("{:.0}%", ctx_pct));
+            .child(
+                div()
+                    .id("composer_send")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.active_turn_running() {
+                            this.cancel_turn(cx);
+                        } else {
+                            this.submit_prompt(cx);
+                        }
+                    }))
+                    .child(send_btn.render(theme)),
+            );
 
-        div()
+        let column = div()
             .w_full()
             .flex()
             .flex_col()
-            .items_center()
-            .p_4()
-            .border_t_1()
-            .border_color(theme.border_subtle())
-            .child(
-                div()
-                    .w(px(640.0))
-                    .max_w_full()
-                    .flex()
-                    .flex_col()
-                    .child(context_bar)
-                    .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .p_3()
-                    .rounded_xl()
-                    .bg(theme.card_bg())
-                    .border_1()
-                    .border_color(theme.border_subtle())
-                    .key_context("Composer")
-                    .track_focus(&self.focus_handle)
-                    .cursor(CursorStyle::IBeam)
-                    .line_height(px(20.0))
-                    .text_size(px(14.0))
-                    .on_action(cx.listener(Self::on_insert_newline))
-                    .on_action(cx.listener(Self::on_backspace))
-                    .on_action(cx.listener(Self::on_delete))
-                    .on_action(cx.listener(Self::on_left))
-                    .on_action(cx.listener(Self::on_right))
-                    .on_action(cx.listener(Self::on_select_left))
-                    .on_action(cx.listener(Self::on_select_right))
-                    .on_action(cx.listener(Self::on_home))
-                    .on_action(cx.listener(Self::on_end))
-                    .on_action(cx.listener(Self::on_up))
-                    .on_action(cx.listener(Self::on_down))
-                    .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                    .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                    .on_mouse_move(cx.listener(Self::on_mouse_move))
-                    .child(
-                        div()
-                            .w_full()
-                            .min_h(px(36.0))
-                            .max_h(px(160.0))
-                            .child(ComposerElement {
-                                view: cx.entity(),
-                            }),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .pt_2()
-                            .border_t_1()
-                            .border_color(theme.border_subtle())
-                            .child(
-                                div()
-                                    .id("model_pill_button")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.request_model_picker(cx);
-                                    }))
-                                    .child(self.shell.composer.model_pill.render(theme)),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(if has_text {
-                                        div()
-                                            .id("composer_clear")
-                                            .cursor_pointer()
-                                            .px_1()
-                                            .text_xs()
-                                            .text_color(theme.text_dim())
-                                            .hover(|s| s.text_color(theme.text_primary()))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.reset_editor(cx);
-                                            }))
-                                            .child("×")
-                                            .into_any()
-                                    } else {
-                                        div().into_any()
-                                    })
-                                    .child(self.shell.composer.token_gauge.render(theme))
-                                    .child(
-                                        div()
-                                            .id("composer_send")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                if this.active_turn_running() {
-                                                    this.cancel_turn(cx);
-                                                } else {
-                                                    this.submit_prompt(cx);
-                                                }
-                                            }))
-                                            .child(send_btn.render(theme)),
-                                    ),
-                            ),
-                    ),
-                ),
-            )
+            .gap(px(COMPOSER_COLUMN_GAP))
+            .child(input_row)
+            .child(toolbar);
+
+        let glow = glow_card(column, theme);
+
+        if session {
+            let fraction = self.shell.composer.token_gauge.fraction();
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .items_center()
+                .pt(px(20.0))
+                .pb(px(26.0))
+                .gap(px(10.0))
+                .child(context_bar(fraction, theme))
+                .child(div().w(px(560.0)).max_w_full().child(glow))
+        } else {
+            glow
+        }
     }
 
     fn render_main_pane(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
@@ -2423,7 +2400,9 @@ impl ChatView {
             } else {
                 feed
             })
-            .when(!coming_soon_pane, |c| c.child(self.render_composer(theme, cx)))
+            .when(!coming_soon_pane, |c| {
+                c.child(self.render_composer(theme, cx, ComposerVariant::Session))
+            })
     }
 
     /// Segmented Chat/Files/Browser/Terminal header control. Only Chat is live;
@@ -2827,8 +2806,24 @@ impl EntityInputHandler for ChatView {
 // Multiline composer element (registers the platform input handler on paint)
 // ----------------------------------------------------------------------
 
+/// Composer variants: the Start screen glow card (640px, no context bar) and
+/// the Session footer (560px card over the context bar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposerVariant {
+    Home,
+    Session,
+}
+
+/// Milliseconds since first use, driving the caret blink phase.
+fn caret_epoch_ms() -> u64 {
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
 struct ComposerElement {
     view: Entity<ChatView>,
+    /// Placeholder shown while the buffer is empty (Start vs Session wording).
+    placeholder: String,
 }
 
 struct ComposerPrepaint {
@@ -2931,14 +2926,15 @@ impl Element for ComposerElement {
         let selected_range = view.selected_range.clone();
         let cursor = view.cursor_offset();
         let marked_range = view.marked_range.clone();
-        let placeholder = view.shell.composer.placeholder.clone();
+        let placeholder = self.placeholder.clone();
         let theme = HermesTheme::get(cx);
         let style = window.text_style();
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
 
         let (display_text, text_color) = if content.is_empty() {
-            (placeholder, theme.text_extra_dim().into())
+            // Mockup placeholder tone (#858585).
+            (placeholder, theme.mockup_text_dim.into())
         } else {
             (content.clone(), style.color)
         };
@@ -2966,12 +2962,16 @@ impl Element for ComposerElement {
 
         let mut selections = Vec::new();
         let mut cursor_quad = None;
+        // Mockup caret: 2×20 accent, 1.1s steps(1) blink; reduced motion
+        // keeps it solid. The glow's breathe animation supplies the repaints.
+        let caret_on = motion::reduced_motion()
+            || motion::blink_visible(std::time::Duration::from_millis(caret_epoch_ms()));
         let mut start = 0usize;
         for (i, shaped) in lines.iter().enumerate() {
             let line_end = start + shaped.text.len();
             let y = bounds.top() + line_height * i as f32;
             if selected_range.is_empty() {
-                if cursor >= start && cursor <= line_end {
+                if caret_on && cursor >= start && cursor <= line_end {
                     let x = shaped.x_for_index(cursor - start);
                     cursor_quad = Some(fill(
                         Bounds::new(point(bounds.left() + x, y), size(px(2.0), line_height)),

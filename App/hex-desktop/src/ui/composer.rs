@@ -1,14 +1,20 @@
-//! Pulsating glow card + mockup-styled composer wrapper for HEX Desktop.
+//! Pulsating glow card + mockup-styled composer state for HEX Desktop.
 //!
 //! Mirrors the mockup's `.glow` composer: a rounded card ringed by an
 //! electric-blue halo whose opacity breathes on a ~5s loop
-//! (`@keyframes breathe` in DesktopSession.dc.html). Implemented with GPUI's
-//! `with_animation` + `Animation::repeat()`, pulsating opacity between 0.32
-//! and 0.7.
+//! (`@keyframes breathe` in DesktopSession.dc.html). The halo is the mockup's
+//! `.glow::before` (inset -2px, radius 26, 120° accent gradient, blur 16px)
+//! approximated with GPUI primitives: a gradient div plus two stacked
+//! blur-16 box shadows, animated with `with_animation` +
+//! `Animation::repeat()` between opacity 0.32 and 0.7.
+
+use std::sync::{Arc, Mutex};
 
 use gpui::*;
 
 use crate::theme::HermesTheme;
+use crate::ui::motion;
+use crate::ui::token_gauge::TokenGaugeWidget;
 
 /// Breathing glow period in seconds, matching the mockup's 5s `breathe` loop.
 pub const GLOW_PERIOD_SECS: f64 = 5.0;
@@ -18,6 +24,56 @@ pub const GLOW_MIN_ALPHA: f32 = 0.32;
 
 /// Maximum glow alpha (inhale) from the mockup's breathe keyframes.
 pub const GLOW_MAX_ALPHA: f32 = 0.70;
+
+/// Halo overhang past the card edge (mockup `inset:-2px`).
+pub const HALO_INSET: f32 = 2.0;
+
+/// Halo corner radius (mockup `border-radius:26px`).
+pub const HALO_RADIUS: f32 = 26.0;
+
+/// Halo blur emulated by stacked shadows (mockup `filter:blur(16px)`).
+pub const HALO_BLUR: f32 = 16.0;
+
+/// Halo gradient angle in CSS convention (0° = up, clockwise).
+pub const GLOW_ANGLE_DEG: f32 = 120.0;
+
+/// Gradient start alpha (mockup `rgba(122,167,255,.6)`).
+pub const GLOW_START_ALPHA: f32 = 0.6;
+
+/// Gradient end alpha (mockup's far stop `rgba(122,167,255,.4)`; the middle
+/// `.08` dip is approximated away — GPUI gradients have exactly two stops).
+pub const GLOW_END_ALPHA: f32 = 0.4;
+
+/// Static halo opacity used under reduced motion (mockup pre-animation
+/// `opacity:.5`).
+pub const HALO_STATIC_OPACITY: f32 = 0.5;
+
+/// Composer card corner radius (mockup `border-radius:24px`).
+pub const CARD_RADIUS: f32 = 24.0;
+
+/// Composer card padding (mockup `padding:20px 22px 14px 22px`).
+pub const CARD_PADDING_TOP: f32 = 20.0;
+pub const CARD_PADDING_X: f32 = 22.0;
+pub const CARD_PADDING_BOTTOM: f32 = 14.0;
+
+/// Gap between the composer input row and its toolbar (mockup `gap:30px`).
+pub const COMPOSER_COLUMN_GAP: f32 = 30.0;
+
+/// Context bar width (session screen, mockup `width:560px`).
+pub const CONTEXT_BAR_WIDTH: f32 = 560.0;
+/// Context track width / height / radius (mockup 88×4, radius 2).
+pub const CONTEXT_TRACK_WIDTH: f32 = 88.0;
+pub const CONTEXT_TRACK_HEIGHT: f32 = 4.0;
+pub const CONTEXT_TRACK_RADIUS: f32 = 2.0;
+/// Gap between track and label, and the row's left padding.
+pub const CONTEXT_GAP: f32 = 10.0;
+pub const CONTEXT_PADDING_LEFT: f32 = 6.0;
+/// Context label size (13px `#9a9a9a`).
+pub const CONTEXT_LABEL_SIZE: f32 = 13.0;
+
+/// Session-screen composer placeholder (the Start screen uses the
+/// `PromptComposer` default).
+pub const SESSION_PLACEHOLDER: &str = "Ask a follow-up...";
 
 /// Maps a linear animation phase to the mockup's ease-in-out breathing curve.
 pub fn breathe_easing(t: f32) -> f32 {
@@ -34,118 +90,168 @@ pub fn glow_alpha(phase: f32) -> f32 {
     GLOW_MIN_ALPHA + (GLOW_MAX_ALPHA - GLOW_MIN_ALPHA) * breathe_easing(phase)
 }
 
-/// Wraps the composer in the mockup's pulsating glow card.
-///
-/// The glow is three stacked accent-tinted rings (GPUI has no CSS blur), each
-/// rendered on an animated layer whose opacity breathes with the phase.
-pub fn glow_card(inner: Div, theme: &HermesTheme, id: impl Into<ElementId>) -> Div {
+/// The two gradient stops backing [`glow_halo_gradient`], exposed for tests
+/// (GPUI `Background` fields are crate-private).
+pub fn glow_gradient_stops(accent: Rgba) -> (Hsla, Hsla) {
+    (
+        rgba_to_hsla(accent, GLOW_START_ALPHA),
+        rgba_to_hsla(accent, GLOW_END_ALPHA),
+    )
+}
+
+/// The halo's 120° accent wash.
+pub fn glow_halo_gradient(accent: Rgba) -> Background {
+    let (start, end) = glow_gradient_stops(accent);
+    linear_gradient(
+        GLOW_ANGLE_DEG,
+        linear_color_stop(start, 0.0),
+        linear_color_stop(end, 1.0),
+    )
+}
+
+/// Two stacked blur-16 shadows extending the gradient rim into a diffuse
+/// skirt, standing in for the mockup's blurred `::before`.
+pub fn glow_shadow_stack(accent: Rgba) -> Vec<BoxShadow> {
+    vec![
+        BoxShadow {
+            color: rgba_to_hsla(accent, 0.45),
+            offset: point(px(0.0), px(0.0)),
+            blur_radius: px(HALO_BLUR),
+            spread_radius: px(0.0),
+        },
+        BoxShadow {
+            color: rgba_to_hsla(accent, 0.18),
+            offset: point(px(0.0), px(0.0)),
+            blur_radius: px(HALO_BLUR),
+            spread_radius: px(6.0),
+        },
+    ]
+}
+
+/// Painted geometry of one glow card, recorded for the one-card smoke tests.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlowCardPaint {
+    /// Bounds of the composer card itself.
+    pub card: Bounds<Pixels>,
+    /// Bounds of the halo behind it (card ± 2px).
+    pub halo: Bounds<Pixels>,
+}
+
+/// Probe installed by tests; production never sets this global, so glow_card's
+/// paint listener is a no-op read of a missing global.
+#[derive(Default)]
+pub struct GlowCardProbe(pub Arc<Mutex<Vec<GlowCardPaint>>>);
+
+impl Global for GlowCardProbe {}
+
+/// Wraps the composer in the mockup's pulsating glow card: the single
+/// `#171717` card with the accent border, halo behind it, and the mockup's
+/// card padding (20px 22px 14px 22px). `inner` is the composer column
+/// (input row + toolbar); the column supplies its own 30px gap.
+pub fn glow_card(inner: Div, theme: &HermesTheme) -> Div {
     let accent = theme.accent_blue();
 
-    // Static halo ring (subtle, always present so the glow never disappears).
-    let static_ring = blend_over(accent, theme.mockup_surface, 0.18);
-
     let card = div()
-        .id(id.into())
         .relative()
         .w_full()
-        .rounded(px(24.0))
+        .rounded(px(CARD_RADIUS))
         .bg(theme.mockup_surface)
         .border_1()
-        .border_color(theme.mockup_border_strong)
-        .shadow(vec![BoxShadow {
-            color: hsla_from_rgba(accent, 0.12),
-            offset: point(px(0.0), px(0.0)),
-            blur_radius: px(28.0),
-            spread_radius: px(2.0),
-        }])
+        .border_color(theme.mockup_accent_border)
+        .pt(px(CARD_PADDING_TOP))
+        .px(px(CARD_PADDING_X))
+        .pb(px(CARD_PADDING_BOTTOM))
         .child(inner);
 
-    // Animated outer halo: opacity pulses with the breathe curve.
     let halo = div()
         .absolute()
-        .top(px(-2.0))
-        .bottom(px(-2.0))
-        .left(px(-2.0))
-        .right(px(-2.0))
-        .rounded(px(26.0))
-        .border_2()
-        .border_color(hsla_from_rgba(accent, 0.6));
+        .top(px(-HALO_INSET))
+        .bottom(px(-HALO_INSET))
+        .left(px(-HALO_INSET))
+        .right(px(-HALO_INSET))
+        .rounded(px(HALO_RADIUS))
+        .bg(glow_halo_gradient(accent))
+        .shadow(glow_shadow_stack(accent));
 
-    let halo = halo
-        .with_animation(
+    let halo = if motion::reduced_motion() {
+        halo.opacity(HALO_STATIC_OPACITY).into_any_element()
+    } else {
+        halo.with_animation(
             "glow-breathe",
             Animation::new(std::time::Duration::from_secs_f64(GLOW_PERIOD_SECS)).repeat(),
             |el, phase| el.opacity(glow_alpha(phase)),
         )
-        .into_any_element();
+        .into_any_element()
+    };
 
     div()
         .relative()
         .w_full()
-        .child(card)
+        .on_children_prepainted(|children, _window, cx| {
+            if let Some(probe) = cx.try_global::<GlowCardProbe>() {
+                if let (Some(&halo), Some(&card)) = (children.first(), children.get(1)) {
+                    probe.0.lock().unwrap().push(GlowCardPaint { card, halo });
+                }
+            }
+        })
         .child(halo)
-        .child(
-            // Inner static tint ring keeps a visible glow even at exhale.
-            div()
-                .absolute()
-                .inset_0()
-                .rounded(px(24.0))
-                .border_1()
-                .border_color(static_ring),
-        )
+        .child(card)
 }
 
-/// Blends `fg` over `bg` at `alpha`, returning an opaque Rgba.
-fn blend_over(fg: Rgba, bg: Rgba, alpha: f32) -> Rgba {
-    let base = Rgba { r: bg.r, g: bg.g, b: bg.b, a: 1.0 };
-    let tint = Rgba { r: fg.r, g: fg.g, b: fg.b, a: alpha };
-    base.blend(tint)
+/// Formats the mockup context-bar label: "Context N% full" with an integer
+/// percent.
+pub fn context_label(fraction: f64) -> String {
+    format!("Context {}% full", (fraction * 100.0).round() as i64)
+}
+
+/// Session-only context bar: 88×4 track (radius 2, `#2a2a2a`) with a `#cfcfcf`
+/// fill and the 13px `#9a9a9a` "Context N% full" label, 560px wide with 6px
+/// left padding.
+pub fn context_bar(fraction: f64, theme: &HermesTheme) -> Div {
+    let fill = fraction.clamp(0.0, 1.0) as f32;
+    div()
+        .w(px(CONTEXT_BAR_WIDTH))
+        .max_w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(CONTEXT_GAP))
+        .pl(px(CONTEXT_PADDING_LEFT))
+        .text_size(px(CONTEXT_LABEL_SIZE))
+        .text_color(theme.mockup_text_muted)
+        .child(
+            div()
+                .w(px(CONTEXT_TRACK_WIDTH))
+                .h(px(CONTEXT_TRACK_HEIGHT))
+                .rounded(px(CONTEXT_TRACK_RADIUS))
+                .bg(theme.mockup_track)
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(fill))
+                        .rounded(px(CONTEXT_TRACK_RADIUS))
+                        .bg(rgb(0xcfcfcf)),
+                ),
+        )
+        .child(context_label(fraction))
 }
 
 /// Converts an Rgba to an Hsla with the given alpha (for borders/shadows).
-fn hsla_from_rgba(c: Rgba, alpha: f32) -> Hsla {
+fn rgba_to_hsla(c: Rgba, alpha: f32) -> Hsla {
     let hsla: Hsla = c.into();
     hsla.alpha(alpha)
 }
 
-#[cfg(test)]
-mod glow_tests {
-    use super::{breathe_easing, glow_alpha, GLOW_MAX_ALPHA, GLOW_MIN_ALPHA};
-
-    #[test]
-    fn test_glow_alpha_pulsates_between_bounds() {
-        let a0 = glow_alpha(0.0);
-        let a_peak = glow_alpha(0.5);
-        let a_end = glow_alpha(1.0);
-        assert!((a0 - GLOW_MIN_ALPHA).abs() < 1e-4);
-        assert!((a_peak - GLOW_MAX_ALPHA).abs() < 1e-4);
-        assert!((a_end - GLOW_MIN_ALPHA).abs() < 1e-4);
-        assert!(a_peak > a0);
-    }
-
-    #[test]
-    fn test_breathe_easing_is_smooth_and_bounded() {
-        for i in 0..=100 {
-            let t = i as f32 / 100.0;
-            let e = breathe_easing(t);
-            assert!((0.0..=1.0).contains(&e));
-        }
-        // Monotonic on the inhale leg.
-        assert!(breathe_easing(0.1) < breathe_easing(0.2));
-    }
-}
 // Directly mirrors Hermes Desktop composer (`app/chat/composer/`):
-// - Auto-growing multiline input area (from 1 line ~40px up to 8 lines ~200px)
-// - Rotating or default placeholder: "Ask HEX anything, or type / for slash commands..."
 // - Key shortcuts: Enter to submit, Shift+Enter for newline, Cmd+Enter forced submit
-// - Inline clear button (`×`) when text is present
-// - Integrated `TokenGaugeWidget` showing ASCII block progress bar
-// - Integrated `ModelSelectorPill` and circular `SendButton` (`↑` / `⏹`)
+// - Integrated `TokenGaugeWidget` tracking context usage
+// - Integrated `ModelSelectorPill`
+// (Rendering now lives in `ChatView::render_composer`; this struct holds the
+// shared composer state.)
 
-use crate::ui::model_pill::{ModelSelectorPill, SendButton};
-use crate::ui::token_gauge::TokenGaugeWidget;
+use crate::ui::model_pill::ModelSelectorPill;
 
-/// Prompt composer component.
+/// Prompt composer state shared by the Home and Session screens.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromptComposer {
     /// Currently buffered prompt input text.
@@ -201,159 +307,67 @@ impl PromptComposer {
     pub fn can_send(&self) -> bool {
         !self.input_text.trim().is_empty() && !self.is_streaming
     }
-
-    /// Number of lines currently in the input text.
-    pub fn line_count(&self) -> usize {
-        if self.input_text.is_empty() {
-            1
-        } else {
-            self.input_text.split('\n').count().max(1)
-        }
-    }
-
-    /// Calculates container height dynamically: 1 line = 40px, up to 8 lines = 200px.
-    pub fn calculate_input_height_px(&self) -> Pixels {
-        let lines = self.line_count().min(8);
-        let base_h = 36.0;
-        let line_h = 20.0;
-        px(base_h + ((lines.saturating_sub(1)) as f32 * line_h))
-    }
-
-    /// Handles an Enter key event.
-    ///
-    /// If Shift is held: appends a newline.
-    /// If Shift is not held and input is non-empty: submits prompt and returns `Some(text)`.
-    pub fn handle_enter_key(&mut self, shift_held: bool) -> Option<String> {
-        if shift_held {
-            self.input_text.push('\n');
-            None
-        } else if self.can_send() {
-            let submitted = self.input_text.trim().to_string();
-            self.input_text.clear();
-            Some(submitted)
-        } else {
-            None
-        }
-    }
-
-    /// Handles a Cmd+Enter key event (forced submit).
-    pub fn handle_cmd_enter(&mut self) -> Option<String> {
-        if !self.input_text.trim().is_empty() {
-            let submitted = self.input_text.trim().to_string();
-            self.input_text.clear();
-            Some(submitted)
-        } else {
-            None
-        }
-    }
-
-    /// Renders the complete composer view container.
-    pub fn render(&self, theme: &HermesTheme) -> Div {
-        let input_h = self.calculate_input_height_px();
-        let has_text = !self.input_text.is_empty();
-        let send_btn = SendButton::new(self.is_streaming, self.can_send());
-
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(px(30.0))
-            // Top Section: Text Area Row (the glow_card supplies the single
-            // #171717 card, radius 24 and border, so no inner card here)
-            .child(
-                div()
-                    .w_full()
-                    .min_h(input_h)
-                    .max_h(px(200.0))
-                    .flex()
-                    .flex_row()
-                    .items_start()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(16.0))
-                            .text_color(if has_text {
-                                theme.mockup_text
-                            } else {
-                                theme.mockup_text_dim
-                            })
-                            .child(if has_text {
-                                self.input_text.clone()
-                            } else {
-                                self.placeholder.clone()
-                            }),
-                    )
-                    .child(
-                        // Clear button (visible when text is present)
-                        if has_text {
-                            div()
-                                .cursor_pointer()
-                                .px_1()
-                                .text_xs()
-                                .text_color(theme.text_dim())
-                                .hover(|s| s.text_color(theme.text_primary()))
-                                .child("×")
-                        } else {
-                            div()
-                        },
-                    ),
-            )
-            // Bottom Toolbar Row: Model Pill (Left) and Token Gauge + Send Button (Right)
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    // Left Side: Model Selector Pill
-                    .child(self.model_pill.render(theme))
-                    // Right Side: Token Gauge & Send Button
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_3()
-                            .child(self.token_gauge.render(theme))
-                            .child(send_btn.render(theme)),
-                    ),
-            )
-    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use core::prelude::v1::test;
+mod glow_tests {
+    use super::{
+        breathe_easing, context_label, glow_alpha, glow_gradient_stops, glow_shadow_stack,
+        GLOW_END_ALPHA, GLOW_MAX_ALPHA, GLOW_MIN_ALPHA, GLOW_START_ALPHA, HALO_BLUR,
+    };
 
     #[test]
-    fn test_prompt_composer_line_count_and_height() {
-        let mut composer = PromptComposer::new();
-        assert_eq!(composer.line_count(), 1);
-        assert_eq!(composer.calculate_input_height_px(), px(36.0));
-
-        composer.set_text("Line 1\nLine 2\nLine 3");
-        assert_eq!(composer.line_count(), 3);
-        assert_eq!(composer.calculate_input_height_px(), px(36.0 + 40.0));
+    fn test_glow_alpha_pulsates_between_bounds() {
+        let a0 = glow_alpha(0.0);
+        let a_peak = glow_alpha(0.5);
+        let a_end = glow_alpha(1.0);
+        assert!((a0 - GLOW_MIN_ALPHA).abs() < 1e-4);
+        assert!((a_peak - GLOW_MAX_ALPHA).abs() < 1e-4);
+        assert!((a_end - GLOW_MIN_ALPHA).abs() < 1e-4);
+        assert!(a_peak > a0);
     }
 
     #[test]
-    fn test_prompt_composer_key_handling() {
-        let mut composer = PromptComposer::new();
+    fn test_breathe_easing_is_smooth_and_bounded() {
+        for i in 0..=100 {
+            let t = i as f32 / 100.0;
+            let e = breathe_easing(t);
+            assert!((0.0..=1.0).contains(&e));
+        }
+        // Monotonic on the inhale leg.
+        assert!(breathe_easing(0.1) < breathe_easing(0.2));
+    }
 
-        // Shift+Enter inserts newline
-        assert_eq!(composer.handle_enter_key(true), None);
-        assert_eq!(composer.input_text, "\n");
+    #[test]
+    fn test_glow_gradient_stops_match_mockup() {
+        let accent = gpui::rgb(0x7aa7ff);
+        let (start, end) = glow_gradient_stops(accent);
+        assert!((start.a - GLOW_START_ALPHA).abs() < 1e-4);
+        assert!((end.a - GLOW_END_ALPHA).abs() < 1e-4);
+        let start_rgb: gpui::Rgba = gpui::Rgba::from(start);
+        assert_eq!((start_rgb.r * 255.0).round() as u8, 0x7a);
+    }
 
-        composer.clear();
-        composer.set_text("Build a compiler");
+    #[test]
+    fn test_glow_shadow_stack_is_stacked_blur_16() {
+        let accent = gpui::rgb(0x7aa7ff);
+        let shadows = glow_shadow_stack(accent);
+        assert_eq!(shadows.len(), 2);
+        for shadow in &shadows {
+            assert_eq!(shadow.blur_radius, gpui::px(HALO_BLUR));
+            assert_eq!(shadow.offset.x, gpui::px(0.0));
+            assert_eq!(shadow.offset.y, gpui::px(0.0));
+        }
+        assert_eq!(shadows[0].spread_radius, gpui::px(0.0));
+        assert_eq!(shadows[1].spread_radius, gpui::px(6.0));
+        assert!(shadows[0].color.a > shadows[1].color.a);
+    }
 
-        // Normal Enter submits prompt
-        let submitted = composer.handle_enter_key(false);
-        assert_eq!(submitted.as_deref(), Some("Build a compiler"));
-        assert!(composer.input_text.is_empty());
+    #[test]
+    fn test_context_label_formats_integer_percent() {
+        assert_eq!(context_label(0.38), "Context 38% full");
+        assert_eq!(context_label(0.0), "Context 0% full");
+        assert_eq!(context_label(1.0), "Context 100% full");
+        assert_eq!(context_label(0.376), "Context 38% full");
     }
 }

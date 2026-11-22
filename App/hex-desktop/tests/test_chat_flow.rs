@@ -17,6 +17,7 @@ use core::prelude::v1::test;
 use gpui::*;
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{init_app, ChatView};
+use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::MessageItem;
 use hex_desktop::ui::modals::ActiveModal;
 use hex_desktop::ui::sidebar::ProviderState;
@@ -267,6 +268,37 @@ fn last_assistant(view: &ChatView) -> Option<&hex_desktop::ui::message::Assistan
     })
 }
 
+fn clear_glow_probe(vc: &mut VisualTestContext) {
+    vc.update(|_window, app| {
+        if let Some(probe) = app.try_global::<GlowCardProbe>() {
+            probe.0.lock().unwrap().clear();
+        }
+    });
+}
+
+/// Forces a repaint and returns the glow-card paints recorded since the last
+/// clear. The test executor paints exactly one frame per notify (the breathe
+/// animation's next frame is 5s out, so `run_until_parked` stops after the
+/// notified frame), so one entry per rendered glow card.
+fn glow_paints(vc: &mut VisualTestContext, view: &Entity<ChatView>) -> Vec<GlowCardPaint> {
+    vc.update(|_window, app| {
+        view.update(app, |_, cx| cx.notify());
+    });
+    vc.run_until_parked();
+    vc.read(|app| {
+        app.try_global::<GlowCardProbe>()
+            .map(|p| p.0.lock().unwrap().clone())
+            .unwrap_or_default()
+    })
+}
+
+fn assert_px_close(actual: Pixels, expected: Pixels) {
+    assert!(
+        (actual - expected).abs() < px(0.5),
+        "expected ~{expected:?}, got {actual:?}"
+    );
+}
+
 #[gpui::test]
 async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -286,7 +318,10 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     assert!(bridge.is_connected());
 
     // Real entry point: same init + root view as main.rs.
-    cx.update(|cx| init_app(cx));
+    cx.update(|cx| {
+        init_app(cx);
+        cx.set_global(GlowCardProbe::default());
+    });
     let workspace = std::env::temp_dir();
     let (view, vc) = cx.add_window_view(|_window, cx| {
         ChatView::new(bridge.clone(), rt.handle().clone(), workspace.clone(), cx)
@@ -303,6 +338,16 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         assert_eq!(v.shell.sidebar.session_list.sessions.len(), 1);
         assert_eq!(v.shell.sidebar.session_list.sessions[0].title, "New Chat");
     });
+
+    // 1b. Composer parity: the Home screen renders exactly one glow card at
+    // the mockup's 640px Start width, with the halo overhanging it by the
+    // mockup's 2px inset on every side.
+    clear_glow_probe(vc);
+    let paints = glow_paints(vc, &view);
+    assert_eq!(paints.len(), 1, "Home must render exactly one glow card");
+    assert_px_close(paints[0].card.size.width, px(640.0));
+    assert_px_close(paints[0].halo.size.width, px(644.0));
+    assert_px_close(paints[0].halo.size.height, paints[0].card.size.height + px(4.0));
 
     // 2. Type through the real input system and submit with Enter.
     vc.simulate_input("Hello HEX");
@@ -335,6 +380,14 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         assert_eq!(v.shell.sidebar.session_list.sessions[0].title, "Hello HEX");
         assert_eq!(v.composer_text(), "");
     });
+
+    // 2b. Composer parity: the Session screen also renders exactly one glow
+    // card, now at the mockup's 560px session width (fixes D4's missing
+    // session glow).
+    clear_glow_probe(vc);
+    let paints = glow_paints(vc, &view);
+    assert_eq!(paints.len(), 1, "Session must render exactly one glow card");
+    assert_px_close(paints[0].card.size.width, px(560.0));
 
     // 3. Cmd+C copies the assistant answer (composer focused, no selection).
     vc.simulate_keystrokes("cmd-c");

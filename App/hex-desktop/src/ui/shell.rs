@@ -299,14 +299,29 @@ impl AppShell {
             )
             // Center Conversation Feed (Task 2 connects MessageFeed)
             .child(self.feed.render(theme))
-            // Bottom Prompt Composer
+            // Bottom Prompt Composer (legacy pane: paint-only placeholder
+            // column; the live editor lives in ChatView::render_composer)
             .child(
                 div()
                     .w_full()
                     .p_4()
                     .border_t_1()
                     .border_color(theme.border_subtle())
-                    .child(glow_card(self.composer.render(theme), theme, "composer-glow")),
+                    .child(glow_card(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(30.0))
+                            .child(
+                                div()
+                                    .text_size(px(16.0))
+                                    .line_height(px(20.0))
+                                    .text_color(theme.mockup_text_dim)
+                                    .child(self.composer.placeholder.clone()),
+                            )
+                            .child(self.composer.model_pill.render(theme)),
+                        theme,
+                    )),
             )
     }
 
