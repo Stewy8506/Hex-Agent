@@ -57,6 +57,7 @@ pub fn mockup_pill_chevron() -> Svg {
         .w(px(PILL_CHEVRON_SIZE))
         .h(px(PILL_CHEVRON_SIZE))
         .flex_none()
+        .text_color(rgb(0x858585))
 }
 
 /// Mockup `.ib` icon button: 32×32, radius 8, icon tinted `tint`; hover bg
@@ -73,7 +74,9 @@ pub fn mockup_icon_button(
     hover_tint: Option<Rgba>,
 ) -> Div {
     let hover_bg = theme.mockup_hover;
+    let hover_stroke = hover_tint.unwrap_or(theme.mockup_text);
     div()
+        .group("icon_button")
         .w(px(ICON_BUTTON_SIZE))
         .h(px(ICON_BUTTON_SIZE))
         .rounded(px(ICON_BUTTON_RADIUS))
@@ -81,17 +84,17 @@ pub fn mockup_icon_button(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .text_color(tint)
-        .hover(move |s| match hover_tint {
-            Some(hover_tint) => s.bg(hover_bg).text_color(hover_tint),
-            None => s.bg(hover_bg),
-        })
+        .hover(move |s| s.bg(hover_bg))
         .child(
+            // gpui does not flow container text color into svg children; the
+            // icon carries its own tint and swaps it via group_hover.
             svg()
                 .path(format!("icons/{icon}.svg"))
                 .w(px(icon_size))
                 .h(px(icon_size))
-                .flex_none(),
+                .flex_none()
+                .text_color(tint)
+                .group_hover("icon_button", move |s| s.text_color(hover_stroke)),
         )
 }
 

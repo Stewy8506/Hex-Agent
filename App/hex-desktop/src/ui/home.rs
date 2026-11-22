@@ -151,26 +151,30 @@ pub fn render_dock_item(
     label: &'static str,
     glyph: &'static str,
 ) -> Stateful<Div> {
+    let tint = theme.mockup_text_muted;
+    let hover_tint = theme.mockup_text;
     div()
         .id(SharedString::from(id))
+        .group("dock_item")
         .cursor_pointer()
         .size(px(DOCK_ITEM_SIZE))
         .flex()
         .items_center()
         .justify_center()
         .rounded(px(DOCK_ITEM_RADIUS))
-        .text_color(theme.mockup_text_muted)
-        .hover(|s| {
-            s.bg(theme.mockup_hover)
-                .text_color(theme.mockup_text)
-        })
+        .hover(|s| s.bg(theme.mockup_hover))
         .tooltip(move |window, cx| crate::ui::home_tooltip(label, window, cx))
         .child(
+            // gpui computes each element's style from its own refinements —
+            // text color does not flow from the container, so the svg carries
+            // its own tint and swaps it via group_hover.
             svg()
                 .path(dock_icon_path(glyph))
                 .w(px(DOCK_ICON_SIZE))
                 .h(px(DOCK_ICON_SIZE))
-                .flex_none(),
+                .flex_none()
+                .text_color(tint)
+                .group_hover("dock_item", move |s| s.text_color(hover_tint)),
         )
 }
 
@@ -205,27 +209,30 @@ pub fn render_continue_row(
 ) -> Stateful<Div> {
     let (chip_label, chip_accent) = continue_chip(row);
     let dot_slot = if row.running {
+        let dot = div()
+            .size_full()
+            .rounded_full()
+            .bg(theme.accent_blue);
+        let animated = if motion::reduced_motion() {
+            dot.into_any_element()
+        } else {
+            dot.with_animation(
+                ElementId::Name(SharedString::from(format!("continue_pl_{}", row.id))),
+                Animation::new(motion::PULSE_PERIOD).repeat(),
+                |el, phase| {
+                    let elapsed = std::time::Duration::from_secs_f32(
+                        phase * motion::PULSE_PERIOD.as_secs_f32(),
+                    );
+                    el.opacity(motion::pulse_opacity(elapsed))
+                },
+            )
+            .into_any_element()
+        };
         div()
             .w(px(CONTINUE_DOT_SIZE))
             .h(px(CONTINUE_DOT_SIZE))
             .flex_none()
-            .child(
-                div()
-                    .size_full()
-                    .rounded_full()
-                    .bg(theme.accent_blue)
-                    .with_animation(
-                        ElementId::Name(SharedString::from(format!("continue_pl_{}", row.id))),
-                        Animation::new(motion::PULSE_PERIOD).repeat(),
-                        |el, phase| {
-                            let elapsed = std::time::Duration::from_secs_f32(
-                                phase * motion::PULSE_PERIOD.as_secs_f32(),
-                            );
-                            el.opacity(motion::pulse_opacity(elapsed))
-                        },
-                    )
-                    .into_any_element(),
-            )
+            .child(animated)
             .into_any_element()
     } else {
         div()

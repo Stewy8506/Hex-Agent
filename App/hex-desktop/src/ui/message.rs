@@ -316,14 +316,19 @@ fn render_code_block(code: &str, theme: &HermesTheme) -> Div {
 // Action bar + Changes card
 // --------------------------------------------------------------------------
 
-/// An action-bar SVG icon with no tint of its own — it inherits the parent
-/// text color so hover restyles flow through.
-fn action_icon(name: &str, size: f32) -> Svg {
+/// An action-bar SVG icon: gpui does not flow container text color into svg
+/// children, so the icon carries its own tint and brightens via group_hover
+/// on the enclosing button group (hover restyle reaches the stroke).
+fn action_icon(name: &str, size: f32, group: &str, tint: Rgba, hover_tint: Rgba) -> Svg {
     svg()
         .path(format!("icons/{name}.svg"))
         .w(px(size))
         .h(px(size))
         .flex_none()
+        .text_color(tint)
+        .group_hover(SharedString::from(group.to_string()), move |s| {
+            s.text_color(hover_tint)
+        })
 }
 
 /// One action-bar button: flex row (icon, optional label, optional trailing
@@ -337,7 +342,9 @@ fn action_button(
     label: Option<&str>,
     trailing_icon: Option<(&str, f32)>,
 ) -> AnyElement {
+    let group_name = format!("actb_{key}");
     let mut button = div()
+        .group(SharedString::from(group_name.clone()))
         .flex()
         .flex_row()
         .items_center()
@@ -345,12 +352,24 @@ fn action_button(
         .text_size(px(MockupTypeScale::ACTION_BAR_SIZE))
         .text_color(theme.mockup_text_dim)
         .hover(|s| s.text_color(theme.mockup_text))
-        .child(action_icon(icon, ACTION_ICON_SIZE));
+        .child(action_icon(
+            icon,
+            ACTION_ICON_SIZE,
+            &group_name,
+            theme.mockup_text_dim,
+            theme.mockup_text,
+        ));
     if let Some(label) = label {
         button = button.child(label.to_string());
     }
     if let Some((icon, size)) = trailing_icon {
-        button = button.child(action_icon(icon, size));
+        button = button.child(action_icon(
+            icon,
+            size,
+            &group_name,
+            theme.mockup_text_dim,
+            theme.mockup_text,
+        ));
     }
     match handler {
         Some(handler) => {
@@ -666,19 +685,27 @@ impl AssistantMessageView {
             .border_color(theme.mockup_border)
             .text_size(px(MockupTypeScale::CHANGES_SIZE))
             .text_color(theme.mockup_text_muted)
-            .child(
-                action_icon("files", CHANGES_ICON_SIZE).text_color(theme.mockup_text_dim),
-            )
+            .group("changes_hdr")
+            .child(action_icon(
+                "files",
+                CHANGES_ICON_SIZE,
+                "changes_hdr",
+                theme.mockup_text_dim,
+                theme.mockup_text,
+            ))
             .child(
                 div()
                     .text_color(theme.mockup_text)
                     .child("Changes"),
             )
             .child(div().flex_1().child(changes_summary(file_count, adds, dels)))
-            .child(
-                action_icon("chevron-down", CHANGES_CHEV_SIZE)
-                    .text_color(theme.mockup_text_dim),
-            );
+            .child(action_icon(
+                "chevron-down",
+                CHANGES_CHEV_SIZE,
+                "changes_hdr",
+                theme.mockup_text_dim,
+                theme.mockup_text,
+            ));
         let button: AnyElement = match on_toggle {
             Some(handler) => {
                 let handler = handler.clone();
