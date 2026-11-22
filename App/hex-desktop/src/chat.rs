@@ -20,6 +20,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::ui::home::{ContinueRow, COMING_SOON_DOCK};
+use crate::ui::home;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -622,6 +623,7 @@ impl ChatView {
         // Approvals surface as a modal regardless of which session is active.
         if let AcpEvent::ApprovalRequest {
             approval_id,
+            session_id,
             tool_name,
             risk_level,
             command,
@@ -630,6 +632,7 @@ impl ChatView {
         } = event
         {
             let mut modal = ToolApprovalModal::new(approval_id, tool_name, command, risk_level);
+            modal.session_id = Some(session_id.clone());
             if let Some(desc) = description {
                 modal = modal.with_description(desc);
             }
@@ -883,13 +886,30 @@ impl ChatView {
         .detach();
     }
 
-    /// Phase 2: full Home / start screen — ASCII logo, glowing prompt card,
-    /// Continue list and the bottom feature dock. Submitting a prompt requests
-    /// a new session (adopted on creation) and opens it; a dock item that is
-    /// not built yet surfaces its Coming soon notice.
+    /// Phase 2: full Home / start screen — h60 top bar (panel toggle, search,
+    /// bell, settings), centered column with the rising ASCII logo and glowing
+    /// prompt card, the Continue list of recent sessions (running dots, Review
+    /// chips, compact times) and the bottom feature dock. Submitting a prompt
+    /// requests a new session (adopted on creation) and opens it; a dock item
+    /// that is not built yet surfaces its Coming soon notice.
     fn render_home(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
-        // Continue list: the five most recent real sessions.
+        // Continue list: the five most recent real sessions, with honest
+        // running (live turn) and Review (pending approval) state.
         let now = chrono::Utc::now();
+        let workspace = self.shell.sidebar.workspace_name.clone();
+        let mut pending_sessions: HashSet<String> = HashSet::new();
+        if let ActiveModal::Approval(modal) = &self.shell.active_modal {
+            if let Some(sid) = &modal.session_id {
+                pending_sessions.insert(sid.clone());
+            }
+        }
+        for modal in &self.shell.modal_queue {
+            if let ActiveModal::Approval(modal) = modal {
+                if let Some(sid) = &modal.session_id {
+                    pending_sessions.insert(sid.clone());
+                }
+            }
+        }
         let rows: Vec<ContinueRow> = self
             .shell
             .sidebar
@@ -900,20 +920,131 @@ impl ChatView {
             .map(|s| ContinueRow {
                 id: s.id.clone(),
                 title: s.title.clone(),
-                relative_time: crate::ui::session_list::format_relative_time(s.updated_at, now),
-                location_chip: "Local",
+                relative_time: crate::ui::session_list::format_compact_relative_time(
+                    s.updated_at, now,
+                ),
+                location_chip: "This Mac",
+                project: workspace.clone(),
+                running: self.running_turns.contains(&s.id),
+                pending_review: pending_sessions.contains(&s.id),
             })
             .collect();
 
         let home_coming_soon = self.home_coming_soon;
-        div()
+
+        // Top bar: h60, padding 0 20px; panel toggle left; right gap 4 =
+        // search, bell (+ pulsing accent dot when needs-you > 0), settings.
+        let sidebar_toggle = div()
+            .id("home_sidebar_toggle")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.shell.toggle_sidebar();
+                cx.notify();
+            }))
+            .child(mockup_icon_button(
+                theme,
+                "sidebar",
+                home::TOP_BAR_ICON_SIZE,
+                theme.mockup_text_muted,
+                None,
+            ));
+        let search_button = div()
+            .id("home_search_button")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.on_toggle_palette(&shortcuts::ToggleCommandPalette, window, cx);
+            }))
+            .child(mockup_icon_button(
+                theme,
+                "search",
+                home::TOP_BAR_ICON_SIZE,
+                theme.mockup_text_muted,
+                None,
+            ));
+        let bell_button = div()
+            .id("home_bell_button")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.open_first_pending_approval(cx);
+            }))
+            .child(mockup_icon_button(
+                theme,
+                "bell",
+                home::TOP_BAR_ICON_SIZE,
+                theme.mockup_text_muted,
+                None,
+            ));
+        let settings_button = div()
+            .id("home_settings_button")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.on_open_settings(&shortcuts::OpenSettings, window, cx);
+            }))
+            .child(mockup_icon_button(
+                theme,
+                "settings",
+                home::TOP_BAR_ICON_SIZE,
+                theme.mockup_text_muted,
+                None,
+            ));
+        let bell_dot = if self.shell.sidebar.pending_approvals > 0 {
+            let dot = div()
+                .absolute()
+                .top(px(6.0))
+                .right(px(7.0))
+                .size(px(home::CONTINUE_DOT_SIZE))
+                .rounded_full()
+                .bg(theme.accent_blue);
+            if motion::reduced_motion() {
+                dot.into_any_element()
+            } else {
+                dot.with_animation(
+                    "home_bell_pl",
+                    Animation::new(motion::PULSE_PERIOD).repeat(),
+                    |el, phase| {
+                        let elapsed = std::time::Duration::from_secs_f32(
+                            phase * motion::PULSE_PERIOD.as_secs_f32(),
+                        );
+                        el.opacity(motion::pulse_opacity(elapsed))
+                    },
+                )
+                .into_any_element()
+            }
+        } else {
+            div().into_any_element()
+        };
+
+        let top_bar = div()
+            .w_full()
+            .h(px(home::TOP_BAR_HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px(px(home::TOP_BAR_PADDING_X))
+            .child(sidebar_toggle)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(search_button)
+                    .child(
+                        div()
+                            .relative()
+                            .child(bell_button)
+                            .child(bell_dot),
+                    )
+                    .child(settings_button),
+            );
+
+        // Center column: flex-1, centered, padding-bottom 96px; the composer
+        // column stays w640 while the Continue block is w600.
+        let center = div()
+            .flex_1()
+            .w_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .size_full()
-            .font_family(theme.font_sans()[0].clone())
-            .bg(theme.mockup_canvas)
+            .pb(px(home::CENTER_PADDING_BOTTOM))
             .child(
                 div()
                     .w(px(640.0))
@@ -922,7 +1053,7 @@ impl ChatView {
                     .flex_col()
                     .items_center()
                     .child(
-                        // ASCII logo
+                        // ASCII logo with rise entrance
                         crate::ui::home::render_logo(theme),
                     )
                     .child(
@@ -948,75 +1079,91 @@ impl ChatView {
                                     .child(SharedString::from(msg)),
                             )
                         },
-                    )
-                    .child(
-                        // Continue list
-                        div()
-                            .w_full()
-                            .mt(px(28.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .when(!rows.is_empty(), |c| {
-                                c.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.mockup_text_dim)
-                                        .mb(px(6.0))
-                                        .child("Continue"),
-                                )
-                            })
-                            .children(rows.iter().map(|row| {
-                                let id = row.id.clone();
-                                crate::ui::home::render_continue_row(theme, row, {
-                                    let this = cx.entity().downgrade();
-                                    move |_, _, cx| {
-                                        this.update(cx, |view, cx| {
-                                            view.show_home = false;
-                                            view.switch_session(id.clone(), cx);
-                                            cx.notify();
-                                        });
-                                    }
-                                })
-                            })),
                     ),
             )
             .child(
-                // Bottom feature dock
+                // Continue list: w600, margin-top 48, `.sl` header padding
+                // 0 14px 4px 33px.
                 div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
+                    .w(px(home::CONTINUE_WIDTH))
+                    .max_w_full()
+                    .mt(px(home::CONTINUE_MARGIN_TOP))
                     .flex()
-                    .justify_center()
-                    .pb(px(18.0))
-                    .child(div().flex().flex_row().gap(px(8.0)).children(
-                        COMING_SOON_DOCK
-                            .iter()
-                            .map(|(label, glyph)| {
-                                let this = cx.entity().downgrade();
-                                let name: &'static str = label;
-                                crate::ui::home::render_dock_item(
-                                    theme,
-                                    label,
-                                    label,
-                                    glyph,
-                                )
-                                .on_click(move |_, _, cx| {
-                                    this.update(cx, |view, cx| {
-                                        view.home_coming_soon = Some(name);
-                                        cx.notify();
-                                    });
-                                })
-                            }),
-                    )),
-            )
+                    .flex_col()
+                    .gap(px(2.0))
+                    .when(!rows.is_empty(), |c| {
+                        c.child(
+                            div()
+                                .text_size(px(crate::theme::MockupTypeScale::CONTINUE_HEADER_SIZE))
+                                .text_color(theme.mockup_text_dim)
+                                .pl(px(home::CONTINUE_HEADER_PAD_LEFT))
+                                .pr(px(14.0))
+                                .pb(px(home::CONTINUE_HEADER_PAD_BOTTOM))
+                                .child("Continue"),
+                        )
+                    })
+                    .children(rows.iter().map(|row| {
+                        let id = row.id.clone();
+                        crate::ui::home::render_continue_row(theme, row, {
+                            let this = cx.entity().downgrade();
+                            move |_, _, cx| {
+                                let _ = this.update(cx, |view, cx| {
+                                    view.show_home = false;
+                                    view.switch_session(id.clone(), cx);
+                                    cx.notify();
+                                });
+                            }
+                        })
+                    })),
+            );
+
+        // Bottom feature dock: absolute, bottom 28, centered; container
+        // bg #191919, border #232323, radius 16, padding 5, gap 2.
+        let dock = div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(px(home::DOCK_BOTTOM))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(home::DOCK_GAP))
+                    .bg(theme.mockup_dock)
+                    .border_1()
+                    .border_color(theme.mockup_dock_border)
+                    .rounded(px(home::DOCK_RADIUS))
+                    .p(px(home::DOCK_PADDING))
+                    .children(COMING_SOON_DOCK.iter().map(|(label, glyph)| {
+                        let this = cx.entity().downgrade();
+                        let name: &'static str = label;
+                        crate::ui::home::render_dock_item(theme, label, label, glyph)
+                            .on_click(move |_, _, cx| {
+                                let _ = this.update(cx, |view, cx| {
+                                    view.home_coming_soon = Some(name);
+                                    cx.notify();
+                                });
+                            })
+                    })),
+            );
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .font_family(theme.font_sans()[0].clone())
+            .bg(theme.mockup_canvas)
+            .child(top_bar)
+            .child(center)
+            .child(dock)
             .when_some(home_coming_soon, |c, label| {
                 c.child(
                     div()
                         .absolute()
-                        .bottom(px(70.0))
+                        .bottom(px(home::NOTICE_BOTTOM))
                         .left_0()
                         .right_0()
                         .flex()

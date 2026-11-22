@@ -75,6 +75,9 @@ impl ToolApprovalResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolApprovalModal {
     pub request_id: String,
+    /// ACP session that raised the request, when known; drives the Home
+    /// Continue list's "Review" chip.
+    pub session_id: Option<String>,
     pub tool_name: String,
     pub risk_class: String,
     pub command: String,
@@ -94,6 +97,7 @@ impl ToolApprovalModal {
     ) -> Self {
         Self {
             request_id: request_id.into(),
+            session_id: None,
             tool_name: tool_name.into(),
             risk_class: risk_class.into(),
             command: command.into(),

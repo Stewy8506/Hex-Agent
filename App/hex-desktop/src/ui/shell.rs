@@ -189,8 +189,9 @@ impl AppShell {
             AcpEvent::ToolResult { call_id, output_text, is_error, .. } => {
                 self.feed.update_tool_result(&call_id, &output_text, is_error);
             }
-            AcpEvent::ApprovalRequest { approval_id, tool_name, risk_level, command, description, .. } => {
+            AcpEvent::ApprovalRequest { approval_id, session_id, tool_name, risk_level, command, description, .. } => {
                 let mut modal = ToolApprovalModal::new(approval_id, tool_name, command, risk_level);
+                modal.session_id = Some(session_id.clone());
                 if let Some(desc) = description {
                     modal = modal.with_description(desc);
                 }

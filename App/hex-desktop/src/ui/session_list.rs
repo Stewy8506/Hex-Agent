@@ -48,6 +48,28 @@ pub fn format_relative_time(target: DateTime<Utc>, now: DateTime<Utc>) -> String
     }
 }
 
+/// Compact Continue-list format (mockup, no "ago"):
+/// - `< 60s`: "now"
+/// - `< 60m`: "{m}m"
+/// - `< 24h`: "{h}h"
+/// - `< 7d`: "{d}d"
+/// - `>= 7d`: "MMM d" (e.g., "Nov 6")
+pub fn format_compact_relative_time(target: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let seconds = now.signed_duration_since(target).num_seconds();
+
+    if seconds < 60 {
+        "now".to_string()
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86400 {
+        format!("{}h", seconds / 3600)
+    } else if seconds < 86400 * 7 {
+        format!("{}d", seconds / 86400)
+    } else {
+        target.format("%b %-d").to_string()
+    }
+}
+
 /// Date grouping category for recent sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SessionGroupCategory {
@@ -483,6 +505,31 @@ mod tests {
         // 10 days ago -> "Nov 6"
         let t_10d = now - Duration::days(10);
         assert_eq!(format_relative_time(t_10d, now), "Nov 6");
+    }
+
+    #[test]
+    fn test_compact_relative_time_formatting() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 16, 12, 0, 0).unwrap();
+
+        // 30 seconds ago -> "now"
+        let t_30s = now - Duration::seconds(30);
+        assert_eq!(format_compact_relative_time(t_30s, now), "now");
+
+        // 5 minutes ago -> "5m"
+        let t_5m = now - Duration::minutes(5);
+        assert_eq!(format_compact_relative_time(t_5m, now), "5m");
+
+        // 2 hours ago -> "2h"
+        let t_2h = now - Duration::hours(2);
+        assert_eq!(format_compact_relative_time(t_2h, now), "2h");
+
+        // 3 days ago -> "3d"
+        let t_3d = now - Duration::days(3);
+        assert_eq!(format_compact_relative_time(t_3d, now), "3d");
+
+        // 10 days ago -> "Nov 6"
+        let t_10d = now - Duration::days(10);
+        assert_eq!(format_compact_relative_time(t_10d, now), "Nov 6");
     }
 
     #[test]
