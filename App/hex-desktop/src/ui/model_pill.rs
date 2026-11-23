@@ -32,7 +32,9 @@ pub struct ModelSelectorPill {
 
 impl Default for ModelSelectorPill {
     fn default() -> Self {
-        Self::new("Anthropic", "Claude 3.7 Sonnet")
+        // Neutral until the runtime reports the real model; never fabricate
+        // a model identity before session adoption.
+        Self::new("HEX", "Select model")
     }
 }
 

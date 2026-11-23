@@ -50,7 +50,7 @@ use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
 use crate::ui::session_list::SessionItem;
 use crate::ui::shell::{AppShell, ShellView};
 use crate::ui::sidebar::{ProviderState, SidebarHandlers};
-use crate::ui::token_gauge::format_token_number;
+use crate::ui::token_gauge::{format_token_number, DEFAULT_CONTEXT_LIMIT};
 use crate::ui::tool_card::ToolCallCard;
 use crate::window::WindowConfig;
 
@@ -729,6 +729,26 @@ impl ChatView {
             return;
         }
 
+        // Turn usage feeds the context gauge on the active session only; other
+        // sessions keep their own state and are not rendered right now.
+        if let AcpEvent::TurnUsage {
+            session_id,
+            input_tokens,
+            context_limit,
+            ..
+        } = &event
+        {
+            if self.shell.active_session_id.as_deref() == Some(session_id.as_str()) {
+                let limit = context_limit.unwrap_or(DEFAULT_CONTEXT_LIMIT as u64);
+                self.shell
+                    .composer
+                    .token_gauge
+                    .set_tokens(*input_tokens as usize, limit as usize);
+            }
+            cx.notify();
+            return;
+        }
+
         let session_id = match &event {
             AcpEvent::TokenChunk { session_id, .. }
             | AcpEvent::TurnComplete { session_id }
@@ -1133,6 +1153,33 @@ impl ChatView {
             div().into_any_element()
         };
 
+        // Provider chip: live transport state from the ACP bridge, not a
+        // mockup prop. Dot color + "HEX · Connected" style label.
+        let provider_status = &self.shell.sidebar.provider_status;
+        let provider_chip = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .mr(px(8.0))
+            .child(
+                div()
+                    .size(px(home::CONTINUE_DOT_SIZE))
+                    .rounded_full()
+                    .bg(provider_status.state.dot_color(theme)),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme.mockup_text_muted)
+                    .whitespace_nowrap()
+                    .child(format!(
+                        "{} · {}",
+                        provider_status.provider_name,
+                        provider_status.state.status_label()
+                    )),
+            );
+
         let top_bar = div()
             .w_full()
             .h(px(home::TOP_BAR_HEIGHT))
@@ -1148,6 +1195,7 @@ impl ChatView {
                     .flex_row()
                     .items_center()
                     .gap(px(4.0))
+                    .child(provider_chip)
                     .child(search_button)
                     .child(
                         div()
@@ -1744,13 +1792,85 @@ impl ChatView {
                 self.shell.feed.clear();
                 cx.notify();
             }
-            other => {
+            PaletteAction::OpenSettings => {
+                self.settings_open = !self.settings_open;
+                cx.notify();
+            }
+            PaletteAction::ExportTranscript => self.export_transcript(cx),
+            PaletteAction::Custom(label) => {
                 self.shell.feed.add_system_notice(format!(
-                    "{other:?} is not available in the desktop yet."
+                    "{label} is not available in the desktop yet."
                 ));
                 cx.notify();
             }
         }
+    }
+
+    /// Writes the active conversation to `<workspace>/.hex/exports/` as
+    /// Markdown, mirroring the on-screen feed (user bubbles, assistant prose
+    /// with tool-call summaries, system notices).
+    fn export_transcript(&mut self, cx: &mut Context<Self>) {
+        if self.shell.feed.is_empty() {
+            self.shell
+                .feed
+                .add_system_notice("Nothing to export yet — the transcript is empty.");
+            cx.notify();
+            return;
+        }
+        let mut md = String::from("# HEX session transcript\n\n");
+        for item in &self.shell.feed.messages {
+            match item {
+                MessageItem::User(card) => {
+                    md.push_str("## You\n\n");
+                    md.push_str(card.content.trim());
+                    md.push_str("\n\n");
+                }
+                MessageItem::Assistant(view) => {
+                    md.push_str("## HEX");
+                    if !view.model_name.is_empty() {
+                        md.push_str(&format!(" ({})", view.model_name));
+                    }
+                    md.push_str("\n\n");
+                    md.push_str(view.content.trim());
+                    md.push_str("\n\n");
+                    for call in &view.tool_calls {
+                        let outcome = match call.status {
+                            crate::ui::tool_card::ToolStatus::Running => "running",
+                            crate::ui::tool_card::ToolStatus::Success => "ok",
+                            crate::ui::tool_card::ToolStatus::Failed => "failed",
+                        };
+                        md.push_str(&format!("- Tool `{}` — {}\n", call.tool_name, outcome));
+                    }
+                    if !view.tool_calls.is_empty() {
+                        md.push('\n');
+                    }
+                }
+                MessageItem::SystemNotice(notice) => {
+                    md.push_str(&format!("> {notice}\n\n"));
+                }
+            }
+        }
+        let exports_dir = self.workspace.join(".hex").join("exports");
+        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let session = self
+            .shell
+            .active_session_id
+            .clone()
+            .unwrap_or_else(|| "session".to_string());
+        let path = exports_dir.join(format!("{session}-{stamp}.md"));
+        match std::fs::create_dir_all(&exports_dir).and_then(|_| std::fs::write(&path, md)) {
+            Ok(()) => {
+                self.shell
+                    .feed
+                    .add_system_notice(format!("Transcript exported to {}", path.display()));
+            }
+            Err(e) => {
+                self.shell
+                    .feed
+                    .add_system_notice(format!("Export failed: {e}"));
+            }
+        }
+        cx.notify();
     }
 
     /// B32: open the picker over the live backend catalog, never a hardcoded list.
@@ -2752,20 +2872,14 @@ impl ChatView {
                 placeholder,
             });
 
-        // Toolbar (mockup gap 8): attach, Auto pill, model pill, spacer, mic,
-        // send.
+        // Toolbar (mockup gap 8): model pill, spacer, send. The mockup's
+        // attach / Auto / mic controls stay out until they do something.
         let toolbar = div()
             .w_full()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(8.0))
-            .child(mockup_icon_button(theme, "attach", 18.0, rgb(0xcfcfcf), None))
-            .child(
-                mockup_pill(theme)
-                    .child("Auto")
-                    .child(mockup_pill_chevron()),
-            )
             .child(
                 div()
                     .id("model_pill_button")
@@ -2779,13 +2893,6 @@ impl ChatView {
                     ),
             )
             .child(div().flex_1())
-            .child(mockup_icon_button(
-                theme,
-                "mic",
-                16.0,
-                theme.mockup_text_muted,
-                Some(theme.mockup_text),
-            ))
             .child(
                 div()
                     .id("composer_send")
@@ -2809,7 +2916,10 @@ impl ChatView {
 
         let glow = glow_card(column, theme);
 
-        if session {
+        // The context bar only appears once the runtime has reported real
+        // usage for this session; before the first turn it would show a
+        // fabricated "0% full".
+        if session && self.shell.composer.token_gauge.current_tokens > 0 {
             let fraction = self.shell.composer.token_gauge.fraction();
             div()
                 .flex_none()

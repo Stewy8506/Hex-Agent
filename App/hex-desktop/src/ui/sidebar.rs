@@ -68,9 +68,11 @@ pub struct ProviderStatus {
 impl Default for ProviderStatus {
     fn default() -> Self {
         Self {
-            state: ProviderState::Connected,
-            provider_name: "Anthropic".to_string(),
-            model_name: "Claude 3.7 Sonnet".to_string(),
+            // Honest cold-start state: nothing is connected until the bridge
+            // reports otherwise.
+            state: ProviderState::Offline,
+            provider_name: "HEX".to_string(),
+            model_name: String::new(),
         }
     }
 }

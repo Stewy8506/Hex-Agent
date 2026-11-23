@@ -284,11 +284,12 @@ fn test_command_palette_fuzzy_search_and_actions() {
     ];
     palette.populate_sessions(&sessions);
 
-    // 1. Search for actions ("compact")
-    palette.set_query("compact");
+    // 1. Search for actions ("export"); CompactContext was removed because
+    // no honest backend mapping exists
+    palette.set_query("export");
     let results = palette.filtered_items();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].action, PaletteAction::CompactContext);
+    assert_eq!(results[0].action, PaletteAction::ExportTranscript);
 
     // 2. Search for sessions ("timeline")
     palette.set_query("timeline");

@@ -744,6 +744,22 @@ pub struct SessionUpdateNotification {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SessionUsage>,
+}
+
+/// Token usage of the completed turn, attached by the Python runtime to the
+/// terminal `session/update` status. All fields come from the router's last
+/// routed call — the UI never fabricates numbers when this is absent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_limit: Option<u64>,
 }
 
 impl SessionUpdateNotification {

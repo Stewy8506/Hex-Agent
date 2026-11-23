@@ -39,6 +39,15 @@ pub enum AcpEvent {
     TokenChunk { session_id: String, text: String },
     /// Turn generation completed for the active prompt
     TurnComplete { session_id: String },
+    /// Token usage of the completed turn (terminal status `usage` payload);
+    /// drives the context gauge. Emitted right after `TurnComplete`.
+    TurnUsage {
+        session_id: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        model_id: Option<String>,
+        context_limit: Option<u64>,
+    },
     /// Agent initiated a tool call
     ToolCall {
         session_id: String,
@@ -331,6 +340,15 @@ impl AcpBridge {
                         }
 
                         if update.is_turn_terminal() {
+                            if let Some(usage) = update.usage.clone() {
+                                let _ = event_tx.send(AcpEvent::TurnUsage {
+                                    session_id: update.session_id.clone(),
+                                    input_tokens: usage.input_tokens,
+                                    output_tokens: usage.output_tokens,
+                                    model_id: usage.model_id,
+                                    context_limit: usage.context_limit,
+                                });
+                            }
                             let _ = event_tx.send(AcpEvent::TurnComplete {
                                 session_id: update.session_id,
                             });

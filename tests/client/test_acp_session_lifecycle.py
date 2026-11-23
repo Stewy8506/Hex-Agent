@@ -367,5 +367,59 @@ class TestStreamRetentionAndTerminalOrdering(unittest.TestCase):
                     self.assertNotIn("delta", updates[-1])
 
 
+class TestTurnUsagePayload(unittest.TestCase):
+    """Terminal session/update status carries the router's last turn usage."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ws = Path(self.tmp.name)
+        self.orch = RecordingOrchestrator()
+        self.server = ACPServer(orchestrator=self.orch, workspace_root=self.ws)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _terminal_params(self):
+        sid = self.server.handle_request(
+            _req(1, "session/new", {"cwd": str(self.ws)})
+        )["result"]["sessionId"]
+        messages = []
+        self.server._emit = messages.append
+        self.server.handle_request(
+            _req(2, "session/prompt", {"sessionId": sid, "prompt": "hello"})
+        )
+        updates = [
+            m["params"]
+            for m in messages
+            if m.get("method") == "session/update"
+        ]
+        return updates[-1]
+
+    def test_usage_attached_when_router_reports_it(self) -> None:
+        from harness_core.models.model_metadata import get_model_context_length
+
+        model_id = "totally-unknown-model-xyz"
+        self.orch.router = SimpleNamespace(
+            last_usage={
+                "provider": "cloud",
+                "model_id": model_id,
+                "input_tokens": 1234,
+                "output_tokens": 567,
+                "cost_usd": 0.0,
+                "latency_ms": 42.0,
+            }
+        )
+        params = self._terminal_params()
+        self.assertEqual(params["updateType"], "status")
+        self.assertEqual(params["usage"]["inputTokens"], 1234)
+        self.assertEqual(params["usage"]["outputTokens"], 567)
+        self.assertEqual(params["usage"]["modelId"], model_id)
+        expected_limit = get_model_context_length(model_id, allow_network=False)
+        self.assertEqual(params["usage"]["contextLimit"], expected_limit)
+
+    def test_no_usage_key_without_router(self) -> None:
+        self.assertNotIn("usage", self._terminal_params())
+
+
 if __name__ == "__main__":
     unittest.main()

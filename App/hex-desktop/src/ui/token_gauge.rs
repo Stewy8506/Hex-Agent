@@ -12,6 +12,9 @@ use gpui::*;
 
 use crate::theme::HermesTheme;
 
+/// Fallback context window when the runtime does not report one.
+pub const DEFAULT_CONTEXT_LIMIT: usize = 128_000;
+
 /// Threshold level for context window consumption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GaugeThreshold {
@@ -75,7 +78,7 @@ pub struct TokenGaugeWidget {
 
 impl Default for TokenGaugeWidget {
     fn default() -> Self {
-        Self::new(0, 128_000)
+        Self::new(0, DEFAULT_CONTEXT_LIMIT)
     }
 }
 

@@ -38,10 +38,8 @@ pub enum PaletteAction {
     NewChat,
     ClearHistory,
     ExportTranscript,
-    CompactContext,
     SwitchModel,
     OpenSettings,
-    SwitchWorkspace,
     ToggleSidebar,
     SelectSession(String),
     Custom(String),
@@ -157,10 +155,6 @@ impl CommandPaletteModal {
                 .with_subtitle("Save session dialogue to Markdown file"),
         );
         items.push(
-            PaletteItem::new("act_compact", "Compact Context", PaletteCategory::Actions, "bolt", PaletteAction::CompactContext)
-                .with_subtitle("Trigger 4-phase context compaction and cache lock"),
-        );
-        items.push(
             PaletteItem::new("act_model", "Switch Model", PaletteCategory::Actions, "search", PaletteAction::SwitchModel)
                 .with_subtitle("Pick the active model from the live backend catalog"),
         );
@@ -170,10 +164,6 @@ impl CommandPaletteModal {
             PaletteItem::new("nav_settings", "Open Settings", PaletteCategory::Navigation, "settings", PaletteAction::OpenSettings)
                 .with_subtitle("Configure model providers, API keys, and gateways")
                 .with_shortcut("\u{2318},"),
-        );
-        items.push(
-            PaletteItem::new("nav_workspace", "Switch Workspace", PaletteCategory::Navigation, "design", PaletteAction::SwitchWorkspace)
-                .with_subtitle("Select another project directory"),
         );
         items.push(
             PaletteItem::new("nav_sidebar", "Toggle Sidebar", PaletteCategory::Navigation, "sidebar", PaletteAction::ToggleSidebar)
@@ -482,11 +472,9 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].title, "Open Settings");
 
-        // Filter for "compact"
+        // CompactContext was removed — no honest backend mapping exists.
         palette.set_query("compact");
-        let filtered = palette.filtered_items();
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].title, "Compact Context");
+        assert!(palette.filtered_items().is_empty());
     }
 
     #[test]

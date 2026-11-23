@@ -155,6 +155,9 @@ class TwoTierModelRouter:
         reasoning_effort: str | None = None,
     ):
         self.profile = os.getenv("HEX_MODEL_PROFILE", "antigravity_hybrid")
+        # Usage of the most recent execute_routed_request call, for surfaces
+        # (ACP status updates, UI gauges) that read token counts after a turn.
+        self.last_usage: dict[str, Any] | None = None
         resolved_local_model = (
             local_model_id
             or os.getenv("HEX_LOCAL_MODEL_ID")
@@ -716,6 +719,14 @@ class TwoTierModelRouter:
 
         decision.compression_ratio = round(decision.token_savings_pct / 100.0, 4)
         decision.provider_metadata = dict(response.raw)
+        self.last_usage = {
+            "provider": decision.provider,
+            "model_id": decision.model_id,
+            "input_tokens": decision.input_tokens,
+            "output_tokens": decision.output_tokens,
+            "cost_usd": decision.cost_usd,
+            "latency_ms": decision.latency_ms,
+        }
 
         return decision, response
 

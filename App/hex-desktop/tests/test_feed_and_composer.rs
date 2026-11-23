@@ -180,8 +180,8 @@ fn test_prompt_composer_state_and_model_pill() {
 
     assert!(!composer.can_send());
 
-    // Model Pill
-    assert_eq!(composer.model_pill.display_label(), "Claude 3.7 Sonnet");
+    // Model Pill — neutral default until the runtime reports the real model
+    assert_eq!(composer.model_pill.display_label(), "Select model");
     assert_eq!(
         provider_dot_color("Anthropic", &theme),
         rgb(0xd97706)

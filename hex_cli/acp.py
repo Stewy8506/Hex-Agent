@@ -1293,6 +1293,10 @@ class ACPServer:
         }
         if not streamed and not paged_final:
             update_notif["params"]["delta"] = terminal_text
+
+        usage = self._last_turn_usage()
+        if usage:
+            update_notif["params"]["usage"] = usage
         self._emit(update_notif)
 
         response_metadata: dict[str, Any] = {}
@@ -1312,6 +1316,34 @@ class ACPServer:
             "taskId": task_id,
             **response_metadata,
         }
+
+    def _last_turn_usage(self) -> dict[str, Any] | None:
+        """CamelCase usage payload for the terminal session/update status.
+
+        Reads the router's last_usage snapshot; returns None when the runtime
+        has not recorded a routed call, so the desktop gauge stays empty
+        instead of showing fabricated numbers.
+        """
+        router = getattr(getattr(self, "orchestrator", None), "router", None)
+        last_usage = getattr(router, "last_usage", None)
+        if not last_usage:
+            return None
+        usage: dict[str, Any] = {
+            "inputTokens": int(last_usage.get("input_tokens") or 0),
+            "outputTokens": int(last_usage.get("output_tokens") or 0),
+        }
+        model_id = last_usage.get("model_id")
+        if model_id:
+            usage["modelId"] = str(model_id)
+            try:
+                from harness_core.models.model_metadata import get_model_context_length
+
+                context_limit = get_model_context_length(str(model_id), allow_network=False)
+                if context_limit:
+                    usage["contextLimit"] = int(context_limit)
+            except Exception:
+                pass
+        return usage
 
     def _handle_session_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         sid = params.get("sessionId")

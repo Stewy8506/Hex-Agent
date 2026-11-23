@@ -192,6 +192,10 @@ impl AppShell {
             AcpEvent::TurnComplete { .. } => {
                 self.feed.finish_streaming();
             }
+            AcpEvent::TurnUsage { .. } => {
+                // Gauge update is owned by ChatView's route_event; shell keeps
+                // no gauge state of its own.
+            }
             AcpEvent::ToolCall { call_id, tool_name, arguments_json, .. } => {
                 let card = ToolCallCard::new(call_id, tool_name, arguments_json);
                 self.feed.add_tool_call(card);
