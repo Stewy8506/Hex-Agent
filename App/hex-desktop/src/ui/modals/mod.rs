@@ -10,11 +10,15 @@ pub mod account;
 pub mod approval;
 pub mod model_picker;
 pub mod palette;
+pub mod session_actions;
 
 pub use account::{AccountAction, AccountModal, AccountMode};
 pub use approval::{ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult};
 pub use model_picker::{ModelEntry, ModelPickerModal};
 pub use palette::{CommandPaletteModal, PaletteAction, PaletteItem};
+pub use session_actions::{
+    SessionActionModal, SessionActionOutcome, SessionSearchModal,
+};
 
 use gpui::*;
 use crate::theme::HermesTheme;
@@ -33,6 +37,10 @@ pub enum ActiveModal {
     ModelPicker(ModelPickerModal),
     /// Cloud account sign in / device management.
     Account(AccountModal),
+    /// Per-session actions (rename / pin / archive / delete).
+    SessionAction(SessionActionModal),
+    /// Live chat search over the session list.
+    SessionSearch(SessionSearchModal),
 }
 
 impl ActiveModal {

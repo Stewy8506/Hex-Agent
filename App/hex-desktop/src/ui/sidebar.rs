@@ -21,7 +21,7 @@ use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::motion;
-use crate::ui::session_list::{sort_project_sessions, SessionItem, SessionListView};
+use crate::ui::session_list::{SessionItem, SessionListView};
 
 /// Connectivity and operational state for the AI provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +194,8 @@ pub struct SidebarHandlers {
     pub on_toggle_project: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     /// Account footer click: opens the cloud account modal.
     pub on_account: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+    /// Per-session row "more" affordance: opens the session action modal.
+    pub on_session_actions: Option<Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)>>,
 }
 
 /// State and rendering container for the mockup project navigator.
@@ -532,6 +534,7 @@ impl SidebarView {
 
         let mut row = Self::mockup_row(theme)
             .id(SharedString::from(format!("sidebar_session_{}", session.id)))
+            .group("sidebar_session_row")
             .cursor_pointer()
             .pl(px(SESSION_ROW_INDENT))
             .when(is_active, |s| s.bg(theme.mockup_hover))
@@ -553,7 +556,39 @@ impl SidebarView {
                     .text_size(px(MockupTypeScale::SESSION_TITLE_SIZE))
                     .when(is_active, |s| s.text_color(theme.mockup_text))
                     .when(!is_active, |s| s.text_color(theme.mockup_session_inactive))
+                    .when(session.is_pinned, |s| s.font_weight(FontWeight::MEDIUM))
                     .child(session.title.clone()),
+            )
+            .child(
+                // Row actions appear on hover only (paint trick: the icon is
+                // always laid out but transparent until group hover). The
+                // click stops propagation so it never selects the session.
+                div()
+                    .flex_none()
+                    .opacity(0.0)
+                    .group_hover("sidebar_session_row", |s| s.opacity(1.0))
+                    .child({
+                        let mut more = div()
+                            .id(SharedString::from(format!(
+                                "sidebar_more_{}",
+                                session.id
+                            )))
+                            .cursor_pointer()
+                            .child(Self::tinted_icon(
+                                "more",
+                                CHEVRON_ICON,
+                                theme.mockup_text_dim,
+                            ));
+                        if let Some(on_session_actions) = &handlers.on_session_actions {
+                            let on_session_actions = on_session_actions.clone();
+                            let id = session.id.clone();
+                            more = more.on_click(move |event, window, cx| {
+                                cx.stop_propagation();
+                                on_session_actions(id.clone(), event, window, cx);
+                            });
+                        }
+                        more
+                    }),
             )
             .child(
                 div()
@@ -575,6 +610,44 @@ impl SidebarView {
             let on_select_session = on_select_session.clone();
             let id = session.id.clone();
             row = row.on_click(move |event, window, cx| on_select_session(id.clone(), event, window, cx));
+        }
+        row
+    }
+
+    /// Archived sessions keep their transcripts but leave the active list;
+    /// the only action is unarchive.
+    fn render_archived_row(
+        &self,
+        theme: &HermesTheme,
+        session: &SessionItem,
+        handlers: &SidebarHandlers,
+    ) -> Stateful<Div> {
+        let mut row = Self::mockup_row(theme)
+            .id(SharedString::from(format!("sidebar_archived_{}", session.id)))
+            .group("sidebar_archived_row")
+            .cursor_pointer()
+            .pl(px(SESSION_ROW_INDENT))
+            .opacity(0.7)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(MockupTypeScale::SESSION_TITLE_SIZE))
+                    .text_color(theme.mockup_session_inactive)
+                    .child(session.title.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .opacity(0.0)
+                    .group_hover("sidebar_archived_row", |s| s.opacity(1.0))
+                    .child(Self::tinted_icon("retry", CHEVRON_ICON, theme.mockup_text_dim)),
+            );
+        if let Some(on_session_actions) = &handlers.on_session_actions {
+            let on_session_actions = on_session_actions.clone();
+            let id = session.id.clone();
+            row = row.on_click(move |event, window, cx| on_session_actions(id.clone(), event, window, cx));
         }
         row
     }
@@ -734,8 +807,21 @@ impl SidebarView {
     /// Renders the sidebar with the interactive handlers `ChatView` wires to
     /// real backend operations.
     pub fn render_with_actions(&self, theme: &HermesTheme, handlers: &SidebarHandlers) -> Div {
-        let sessions = sort_project_sessions(&self.session_list.sessions);
-        let any_running = sessions
+        // Active rows honor the live search query and exclude archived
+        // sessions (both driven by SessionListView::filter_sessions).
+        let mut ordered: Vec<&SessionItem> = self.session_list.filter_sessions();
+        ordered.sort_by(|a, b| {
+            b.is_pinned
+                .cmp(&a.is_pinned)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
+        let archived: Vec<&SessionItem> = self
+            .session_list
+            .sessions
+            .iter()
+            .filter(|s| s.is_archived)
+            .collect();
+        let any_running = ordered
             .iter()
             .any(|s| self.running_sessions.contains(&s.id));
 
@@ -748,12 +834,34 @@ impl SidebarView {
             .flex_col()
             .gap(px(2.0))
             .overflow_y_scroll()
-            .child(self.render_project_row(theme, handlers, sessions.len(), any_running));
+            .child(self.render_project_row(theme, handlers, ordered.len(), any_running));
         if !self.projects_collapsed {
-            for session in &sessions {
+            for session in &ordered {
                 project_list =
                     project_list.child(self.render_session_row(theme, session, handlers));
             }
+        }
+        if !archived.is_empty() {
+            let mut archived_block = div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .mt(px(8.0))
+                .child(
+                    div()
+                        .px(px(ROW_PADDING_X))
+                        .pl(px(SESSION_ROW_INDENT))
+                        .text_size(px(MockupTypeScale::HINT_SIZE))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.mockup_text_dim)
+                        .child("ARCHIVED"),
+                );
+            for session in &archived {
+                archived_block =
+                    archived_block.child(self.render_archived_row(theme, session, handlers));
+            }
+            project_list = project_list.child(archived_block);
         }
 
         div()

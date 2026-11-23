@@ -20,11 +20,11 @@ use crate::models::{
     CloudDevicesList, CloudFlags, CloudRevokeResult, CloudUpdatePlan, InitializeParams,
     InitializeResponse,
     JsonRpcNotification, JsonRpcRequest, ModelCatalog, RequestId, SessionCancelParams,
-    SessionCancelResponse, SessionCommandParams, SessionCommandResponse, SessionListItem,
-    SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
-    SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionSubagentsParams,
-    SessionSubagentsResponse, SubagentInfo, ToolCallParams, ToolCallResponse, ToolDefinition,
-    ToolsListResponse,
+    SessionCancelResponse, SessionCommandParams, SessionCommandResponse, SessionDeleteResponse,
+    SessionFlagResponse, SessionListItem, SessionListResponse, SessionLoadParams,
+    SessionLoadResponse, SessionNewParams, SessionNewResponse, SessionPromptParams,
+    SessionPromptResponse, SessionRenameResponse, SessionSubagentsParams, SessionSubagentsResponse,
+    SubagentInfo, ToolCallParams, ToolCallResponse, ToolDefinition, ToolsListResponse,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -640,6 +640,59 @@ impl AcpClient {
             .send_request("session/list", serde_json::json!({}))
             .await?;
         Ok(resp.sessions)
+    }
+
+    /// Rename a session (operator-facing title, persisted by the runtime).
+    pub async fn session_rename(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<SessionRenameResponse, AcpError> {
+        self.send_request(
+            "session/rename",
+            serde_json::json!({ "sessionId": session_id, "title": title }),
+        )
+        .await
+    }
+
+    /// Delete a session: drops the in-memory state, transcript rows, and
+    /// metadata file. Irreversible.
+    pub async fn session_delete(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionDeleteResponse, AcpError> {
+        self.send_request(
+            "session/delete",
+            serde_json::json!({ "sessionId": session_id }),
+        )
+        .await
+    }
+
+    /// Archive (or unarchive) a session; archived sessions stay resumable
+    /// but are hidden from the active list.
+    pub async fn session_archive(
+        &self,
+        session_id: &str,
+        archived: bool,
+    ) -> Result<SessionFlagResponse, AcpError> {
+        self.send_request(
+            "session/archive",
+            serde_json::json!({ "sessionId": session_id, "archived": archived }),
+        )
+        .await
+    }
+
+    /// Pin (or unpin) a session for top-of-list ordering.
+    pub async fn session_pin(
+        &self,
+        session_id: &str,
+        pinned: bool,
+    ) -> Result<SessionFlagResponse, AcpError> {
+        self.send_request(
+            "session/pin",
+            serde_json::json!({ "sessionId": session_id, "pinned": pinned }),
+        )
+        .await
     }
 
     /// Query the live model catalog from the backend's configured providers.

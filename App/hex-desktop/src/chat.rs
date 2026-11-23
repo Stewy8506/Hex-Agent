@@ -43,6 +43,9 @@ use crate::ui::feed::{MessageFeed, MessageItem};
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
 use crate::ui::modals::account::AccountAction;
 use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
+use crate::ui::modals::session_actions::{
+    SessionActionModal, SessionActionOutcome, SessionSearchModal,
+};
 use crate::ui::modals::{render_modal_container, ActiveModal, AccountModal, ModelEntry, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
 use crate::ui::motion;
@@ -649,25 +652,45 @@ impl ChatView {
             if let Ok(Ok(items)) = res {
                 this.update(cx, |view, cx| {
                     for item in items {
-                        if view
-                            .shell
-                            .sidebar
-                            .session_list
-                            .sessions
-                            .iter()
-                            .any(|s| s.id == item.session_id)
-                        {
-                            continue;
-                        }
                         let tail: String = item
                             .session_id
                             .chars()
                             .skip(item.session_id.chars().count().saturating_sub(6))
                             .collect();
+                        let fallback_title = format!("Chat …{tail}");
+                        let session_title = match item.title.as_deref() {
+                            Some(t) if !t.trim().is_empty() => t.to_string(),
+                            _ => fallback_title,
+                        };
+                        if let Some(existing) = view
+                            .shell
+                            .sidebar
+                            .session_list
+                            .sessions
+                            .iter_mut()
+                            .find(|s| s.id == item.session_id)
+                        {
+                            existing.title = session_title;
+                            existing.is_archived = item.archived;
+                            existing.is_pinned = item.pinned;
+                            existing.model_name = Some(item.model.clone());
+                            continue;
+                        }
                         view.shell.sidebar.add_session(
-                            SessionItem::new(item.session_id.clone(), format!("Chat …{tail}"))
+                            SessionItem::new(item.session_id.clone(), session_title)
+                                .with_pinned(item.pinned)
                                 .with_model(item.model.clone()),
                         );
+                        let added = view
+                            .shell
+                            .sidebar
+                            .session_list
+                            .sessions
+                            .iter_mut()
+                            .find(|s| s.id == item.session_id);
+                        if let Some(added) = added {
+                            added.is_archived = item.archived;
+                        }
                     }
                     cx.notify();
                 })
@@ -1059,6 +1082,7 @@ impl ChatView {
             .session_list
             .sessions
             .iter()
+            .filter(|s| !s.is_archived)
             .take(5)
             .map(|s| ContinueRow {
                 id: s.id.clone(),
@@ -2230,6 +2254,15 @@ impl ChatView {
             }
             return true;
         }
+        // Live filtering needs `&mut self` (SessionListView::filter_sessions),
+        // so resolve the results before the match takes a borrow on the modal.
+        let search_results = match &self.shell.active_modal {
+            ActiveModal::SessionSearch(modal) => {
+                let state = modal.clone();
+                Some(self.search_results(&state))
+            }
+            _ => None,
+        };
         match &mut self.shell.active_modal {
             ActiveModal::Approval(modal) => {
                 if modal.is_submitting {
@@ -2305,6 +2338,60 @@ impl ChatView {
                 }
                 // Consume navigation keys so they never reach the composer.
                 matches!(key, "tab" | "shift-tab" | "up" | "arrowup" | "down" | "arrowdown")
+            }
+            ActiveModal::SessionAction(modal) => {
+                if key == "escape" {
+                    self.shell.dismiss_modal();
+                    cx.notify();
+                    return true;
+                }
+                if modal.busy {
+                    return true;
+                }
+                if key == "backspace" {
+                    modal.backspace();
+                    cx.notify();
+                    return true;
+                }
+                if let Some(outcome) = modal.handle_key(key) {
+                    self.execute_session_action(outcome, cx);
+                    return true;
+                }
+                matches!(key, "up" | "arrowup" | "down" | "arrowdown")
+            }
+            ActiveModal::SessionSearch(modal) => {
+                if key == "escape" {
+                    self.shell.dismiss_modal();
+                    cx.notify();
+                    return true;
+                }
+                let results = search_results
+                    .as_ref()
+                    .expect("search results precomputed for SessionSearch");
+                let count = results.len();
+                match key {
+                    "up" | "arrowup" => {
+                        modal.move_selection(-1, count);
+                        cx.notify();
+                        true
+                    }
+                    "down" | "arrowdown" => {
+                        modal.move_selection(1, count);
+                        cx.notify();
+                        true
+                    }
+                    "enter" => {
+                        if let Some(session) =
+                            results.get(modal.selected.min(count.saturating_sub(1)))
+                        {
+                            let id = session.id.clone();
+                            self.shell.dismiss_modal();
+                            self.switch_session(id, cx);
+                        }
+                        true
+                    }
+                    _ => false,
+                }
             }
             ActiveModal::None => false,
         }
@@ -2571,6 +2658,55 @@ impl ChatView {
                     }
                 }
                 if self.handle_modal_key(key, cx) {
+                    cx.stop_propagation();
+                }
+            }
+            ActiveModal::SessionAction(_) => {
+                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
+                    let typed = keystroke.key_char.clone().or_else(|| {
+                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
+                    });
+                    if let Some(ch) = typed {
+                        if let ActiveModal::SessionAction(modal) = &mut self.shell.active_modal {
+                            modal.push_char(&ch);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }
+                        return;
+                    }
+                }
+                let key = if keystroke.key == "tab" && keystroke.modifiers.shift {
+                    "shift-tab"
+                } else {
+                    keystroke.key.as_str()
+                };
+                if self.handle_modal_key(key, cx) {
+                    cx.stop_propagation();
+                }
+            }
+            ActiveModal::SessionSearch(_) => {
+                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
+                    let typed = keystroke.key_char.clone().or_else(|| {
+                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
+                    });
+                    if let Some(ch) = typed {
+                        if let ActiveModal::SessionSearch(modal) = &mut self.shell.active_modal {
+                            modal.push_char(&ch);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }
+                        return;
+                    }
+                    if keystroke.key == "backspace" {
+                        if let ActiveModal::SessionSearch(modal) = &mut self.shell.active_modal {
+                            modal.backspace();
+                            cx.notify();
+                            cx.stop_propagation();
+                        }
+                        return;
+                    }
+                }
+                if self.handle_modal_key(keystroke.key.as_str(), cx) {
                     cx.stop_propagation();
                 }
             }
@@ -3188,6 +3324,261 @@ impl ChatView {
             }))
     }
 
+    // ------------------------------------------------------------------
+    // Session management (DX2): rename / pin / archive / delete + search.
+    // ------------------------------------------------------------------
+
+    fn open_session_actions(&mut self, session_id: String, cx: &mut Context<Self>) {
+        let Some(item) = self
+            .shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter()
+            .find(|s| s.id == session_id)
+        else {
+            return;
+        };
+        let modal = SessionActionModal::open_menu(
+            session_id,
+            item.title.clone(),
+            item.is_pinned,
+            item.is_archived,
+        );
+        self.shell.active_modal = ActiveModal::SessionAction(modal);
+        cx.notify();
+    }
+
+    fn open_session_search(&mut self, cx: &mut Context<Self>) {
+        let query = self.shell.sidebar.session_list.search_query.clone();
+        self.shell.active_modal = ActiveModal::SessionSearch(SessionSearchModal::new(query));
+        cx.notify();
+    }
+
+    /// Search results matching the modal query, from the same
+    /// `filter_sessions` the sidebar renders. The sidebar's own query stays
+    /// empty — the modal owns the search text while it is open.
+    fn search_results(
+        &mut self,
+        modal: &SessionSearchModal,
+    ) -> Vec<crate::ui::session_list::SessionItem> {
+        self.shell.sidebar.session_list.set_search_query(modal.query.clone());
+        let results: Vec<crate::ui::session_list::SessionItem> = self
+            .shell
+            .sidebar
+            .session_list
+            .filter_sessions()
+            .into_iter()
+            .cloned()
+            .collect();
+        self.shell.sidebar.session_list.set_search_query("");
+        results
+    }
+
+    fn execute_session_action(&mut self, outcome: SessionActionOutcome, cx: &mut Context<Self>) {
+        let ActiveModal::SessionAction(modal) = &self.shell.active_modal else {
+            return;
+        };
+        let session_id = modal.session_id.clone();
+        self.shell.dismiss_modal();
+        match outcome {
+            SessionActionOutcome::Rename(title) => {
+                self.apply_session_rename(&session_id, &title, cx)
+            }
+            SessionActionOutcome::Delete => self.apply_session_delete(&session_id, cx),
+            SessionActionOutcome::TogglePin(pinned) => {
+                self.apply_session_pin(&session_id, pinned, cx)
+            }
+            SessionActionOutcome::ToggleArchive(archived) => {
+                self.apply_session_archive(&session_id, archived, cx)
+            }
+        }
+    }
+
+    fn apply_session_rename(&mut self, session_id: &str, title: &str, cx: &mut Context<Self>) {
+        let old_title = self
+            .shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .map(|s| s.title.clone());
+        self.shell
+            .sidebar
+            .session_list
+            .rename_session(session_id, title);
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        let sid = session_id.to_string();
+        let title_owned = title.to_string();
+        let revert = old_title;
+        let sid_revert = sid.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move { bridge.rename_session(&sid, &title_owned).await })
+                .await;
+            this.update(cx, |view, cx| {
+                if let Err(err) = res {
+                    view.shell
+                        .feed
+                        .add_system_notice(format!("Rename task aborted: {err}"));
+                } else if let Ok(Err(err)) = res {
+                    view.shell
+                        .feed
+                        .add_system_notice(format!("Rename failed: {err}"));
+                    if let Some(old) = revert {
+                        view.shell
+                            .sidebar
+                            .session_list
+                            .rename_session(&sid_revert, old);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn apply_session_delete(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let was_active = self.shell.active_session_id.as_deref() == Some(session_id);
+        self.running_turns.remove(session_id);
+        self.turn_assistants.remove(session_id);
+        self.sessions.remove(session_id);
+        self.shell.sidebar.session_list.delete_session(session_id);
+        if was_active {
+            self.shell.feed = MessageFeed::new();
+            self.shell.active_session_id = None;
+            self.feed_synced_count = 0;
+            self.sync_transport_state();
+        }
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        let sid = session_id.to_string();
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move { bridge.delete_session(&sid).await })
+                .await;
+            this.update(cx, |view, cx| {
+                match res {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(err)) => {
+                        view.shell
+                            .feed
+                            .add_system_notice(format!("Delete failed: {err}"));
+                        view.refresh_session_list(cx);
+                    }
+                    Err(err) => {
+                        view.shell
+                            .feed
+                            .add_system_notice(format!("Delete task aborted: {err}"));
+                        view.refresh_session_list(cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn apply_session_pin(&mut self, session_id: &str, pinned: bool, cx: &mut Context<Self>) {
+        if let Some(item) = self
+            .shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == session_id)
+        {
+            item.is_pinned = pinned;
+        }
+        self.spawn_session_flag(session_id, pinned, cx, "Pin", "pin_session");
+    }
+
+    fn apply_session_archive(&mut self, session_id: &str, archived: bool, cx: &mut Context<Self>) {
+        if let Some(item) = self
+            .shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == session_id)
+        {
+            item.is_archived = archived;
+        }
+        if archived && self.shell.active_session_id.as_deref() == Some(session_id) {
+            // Archiving the visible chat returns to Home; the session stays
+            // resumable from the archived section.
+            self.shell.feed = MessageFeed::new();
+            self.shell.active_session_id = None;
+            self.feed_synced_count = 0;
+            self.sync_transport_state();
+        }
+        self.spawn_session_flag(session_id, archived, cx, "Archive", "archive_session");
+    }
+
+    /// Bridge call for a pin/archive flag flip; reverts the optimistic local
+    /// flag on failure.
+    fn spawn_session_flag(
+        &mut self,
+        session_id: &str,
+        value: bool,
+        cx: &mut Context<Self>,
+        label: &'static str,
+        kind: &'static str,
+    ) {
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        let sid = session_id.to_string();
+        let sid_revert = sid.clone();
+        cx.spawn(async move |this, cx| {
+            let res = if kind == "pin_session" {
+                rt.spawn(async move { bridge.pin_session(&sid, value).await }).await
+            } else {
+                rt.spawn(async move { bridge.archive_session(&sid, value).await })
+                    .await
+            };
+            this.update(cx, |view, cx| {
+                let failed = match &res {
+                    Ok(Ok(_)) => false,
+                    Ok(Err(err)) => {
+                        view.shell
+                            .feed
+                            .add_system_notice(format!("{label} failed: {err}"));
+                        true
+                    }
+                    Err(err) => {
+                        view.shell
+                            .feed
+                            .add_system_notice(format!("{label} task aborted: {err}"));
+                        true
+                    }
+                };
+                if failed {
+                    if let Some(item) = view
+                        .shell
+                        .sidebar
+                        .session_list
+                        .sessions
+                        .iter_mut()
+                        .find(|s| s.id == sid_revert)
+                    {
+                        if kind == "pin_session" {
+                            item.is_pinned = !value;
+                        } else {
+                            item.is_archived = !value;
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Phase 3: opens the first pending approval from the modal queue, if any.
     /// Used by the sidebar "Needs you" row and the header bell.
     fn open_first_pending_approval(&mut self, cx: &mut Context<Self>) {
@@ -3332,9 +3723,7 @@ impl Render for ChatView {
             })
         };
         let on_search: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
-            Rc::new(cx.listener(|this, _, window, cx| {
-                this.on_toggle_palette(&shortcuts::ToggleCommandPalette, window, cx);
-            }));
+            Rc::new(cx.listener(|this, _, _, cx| this.open_session_search(cx)));
         let on_settings: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
             Rc::new(cx.listener(|this, _, window, cx| {
                 this.on_open_settings(&shortcuts::OpenSettings, window, cx);
@@ -3356,6 +3745,13 @@ impl Render for ChatView {
                 this.shell.sidebar.projects_collapsed = !this.shell.sidebar.projects_collapsed;
                 cx.notify();
             }));
+        let on_session_actions: Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)> = {
+            let weak = cx.entity().downgrade();
+            Rc::new(move |id, _event, _window, cx| {
+                weak.update(cx, |this, cx| this.open_session_actions(id, cx))
+                    .ok();
+            })
+        };
         let sidebar_handlers = SidebarHandlers {
             on_new_chat: Some(on_new_chat),
             on_select_session: Some(on_select_session),
@@ -3367,6 +3763,7 @@ impl Render for ChatView {
             on_account: Some(Rc::new(cx.listener(|this, _, _, cx| {
                 this.open_account_modal(cx);
             }))),
+            on_session_actions: Some(on_session_actions),
         };
 
         let mut root = div()
@@ -3412,6 +3809,24 @@ impl ChatView {
         theme: &HermesTheme,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
+        // SessionSearch resolves live results through `&mut self` (the modal
+        // drives SessionListView::filter_sessions), so it cannot borrow the
+        // active modal while doing so; clone the tiny state and return early.
+        if let ActiveModal::SessionSearch(state) = self.shell.active_modal.clone() {
+            let now = chrono::Utc::now();
+            let results = self.search_results(&state);
+            let refs: Vec<&crate::ui::session_list::SessionItem> = results.iter().collect();
+            let view = cx.entity().downgrade();
+            let on_open: std::rc::Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)> =
+                std::rc::Rc::new(
+                    move |id: String, _event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                        view.update(cx, |this, cx| this.switch_session(id, cx)).ok();
+                    },
+                );
+            let modal = render_modal_container(state.render(theme, &refs, now, on_open), theme);
+            return Some(self.modal_overlay(modal, cx));
+        }
+
         let modal = match &self.shell.active_modal {
             ActiveModal::None => {
                 if self.settings_open {
@@ -3435,18 +3850,25 @@ impl ChatView {
             ActiveModal::Account(modal) => {
                 Some(render_modal_container(modal.render(theme), theme))
             }
+            ActiveModal::SessionAction(modal) => {
+                Some(render_modal_container(modal.render(theme), theme))
+            }
+            ActiveModal::SessionSearch(_) => unreachable!("handled above"),
         }?;
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .key_context("Modal")
-                .track_focus(&self.modal_focus_handle)
-                .on_action(cx.listener(Self::on_backspace))
-                .on_action(cx.listener(Self::on_up))
-                .on_action(cx.listener(Self::on_down))
-                .child(modal),
-        )
+        Some(self.modal_overlay(modal, cx))
+    }
+
+    /// Focus-tracked overlay wrapper shared by every modal surface.
+    fn modal_overlay(&mut self, modal: Div, cx: &mut Context<Self>) -> Div {
+        div()
+            .absolute()
+            .inset_0()
+            .key_context("Modal")
+            .track_focus(&self.modal_focus_handle)
+            .on_action(cx.listener(Self::on_backspace))
+            .on_action(cx.listener(Self::on_up))
+            .on_action(cx.listener(Self::on_down))
+            .child(modal)
     }
 
     /// Settings surface (P5, derived): the mockup has no settings screen, so

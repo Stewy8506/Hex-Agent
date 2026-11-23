@@ -534,12 +534,43 @@ pub struct SessionListItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<f64>,
     pub turns: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 /// Result returned from `session/list`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
+}
+
+/// Result of `session/rename`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRenameResponse {
+    pub session_id: String,
+    pub title: String,
+}
+
+/// Result of `session/delete`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDeleteResponse {
+    pub session_id: String,
+    pub deleted: bool,
+}
+
+/// Result of `session/archive` / `session/pin` (value echoes the applied flag).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFlagResponse {
+    pub session_id: String,
+    pub archived: bool,
+    pub pinned: bool,
 }
 
 // -- Cloud account (`cloud/auth/*`, `cloud/devices/*`) --------------------

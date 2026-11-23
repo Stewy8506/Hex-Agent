@@ -285,6 +285,13 @@ class SQLiteHistory(Sequence[dict[str, Any]]):
             ).fetchone()[0]
             self._insert(conn, index, record)
 
+    def delete_all(self) -> None:
+        """Remove every transcript row for this session (session/delete)."""
+        self.initialize()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM history WHERE session_id = ?", (self.session_id,))
+
     def __len__(self) -> int:
         with self._connect() as conn:
             return conn.execute(
@@ -451,6 +458,10 @@ class ACPSession:
     last_task_id: str | None = None
     running: bool = False
     cancel_ack: threading.Event = field(default_factory=threading.Event)
+    # Operator-facing metadata; empty title means "never renamed".
+    title: str = ""
+    archived: bool = False
+    pinned: bool = False
 
     def __post_init__(self) -> None:
         self.cancel_ack.set()
@@ -472,6 +483,7 @@ _SUPPORTED_METHODS = (
     "session/prompt", "session/cancel", "session/command",
     "session/history", "session/historyContent", "session/toolResult",
     "session/subagents", "session/approvalDecision",
+    "session/rename", "session/delete", "session/archive", "session/pin",
     "tools/list", "tools/call",
     "cloud/auth/status", "cloud/auth/register", "cloud/auth/login",
     "cloud/auth/logout", "cloud/devices/list", "cloud/devices/revoke",
@@ -609,6 +621,9 @@ class ACPServer:
                     "created_at": sess.created_at,
                     "last_task_id": sess.last_task_id,
                     "history_store": "sqlite",
+                    "title": sess.title,
+                    "archived": sess.archived,
+                    "pinned": sess.pinned,
                 }
                 tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
                 tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -642,6 +657,9 @@ class ACPServer:
                     history=history,
                     created_at=float(data.get("created_at") or time.time()),
                     last_task_id=data.get("last_task_id"),
+                    title=str(data.get("title") or ""),
+                    archived=bool(data.get("archived")),
+                    pinned=bool(data.get("pinned")),
                 )
                 if not isinstance(history, SQLiteHistory):
                     self._persist_session(sess)
@@ -724,6 +742,14 @@ class ACPServer:
                 res = self._handle_session_list(params)
             elif method == "session/models":
                 res = self._handle_session_models(params)
+            elif method == "session/rename":
+                res = self._handle_session_rename(params)
+            elif method == "session/delete":
+                res = self._handle_session_delete(params)
+            elif method == "session/archive":
+                res = self._handle_session_archive(params)
+            elif method == "session/pin":
+                res = self._handle_session_pin(params)
             elif method == "tools/list":
                 res = self._handle_tools_list(params)
             elif method == "tools/call":
@@ -1394,6 +1420,9 @@ class ACPServer:
                 "model": sess.model,
                 "created_at": sess.created_at,
                 "turns": len(sess.history),
+                "title": sess.title,
+                "archived": sess.archived,
+                "pinned": sess.pinned,
             }
 
         sess_list = [summary(sess) for sess in known.values()]
@@ -1406,6 +1435,70 @@ class ACPServer:
                         sess_list.append(summary(sess))
                     del sess
         return {"sessions": sess_list}
+
+    def _session_for_meta_update(self, session_id: Any) -> ACPSession:
+        if not isinstance(session_id, str) or self._session_path(session_id) is None:
+            raise ValueError(f"sessionId must be a valid session identifier, got {session_id!r}")
+        return self._existing_session(session_id)
+
+    def _handle_session_rename(self, params: dict[str, Any]) -> dict[str, Any]:
+        sess = self._session_for_meta_update(params.get("sessionId"))
+        title = params.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("title must be a non-empty string")
+        title = title.strip()[:200]
+        with self._lock:
+            sess.title = title
+        if not self._persist_session(sess):
+            raise OSError("Session persistence unavailable; rename retained in memory only")
+        return {"sessionId": sess.session_id, "title": sess.title}
+
+    def _handle_session_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        sess = self._session_for_meta_update(params.get("sessionId"))
+        session_id = sess.session_id
+        with self._lock:
+            self.sessions.pop(session_id, None)
+        path = self._session_path(session_id)
+        errors: list[str] = []
+        if isinstance(sess.history, SQLiteHistory):
+            try:
+                sess.history.delete_all()
+            except Exception as exc:
+                errors.append(f"history: {exc}")
+        if path is not None and path.is_file():
+            try:
+                path.unlink()
+            except OSError as exc:
+                errors.append(f"metadata: {exc}")
+        if errors:
+            raise OSError("Session delete partially failed: " + "; ".join(errors))
+        return {"sessionId": session_id, "deleted": True}
+
+    def _handle_session_archive(self, params: dict[str, Any]) -> dict[str, Any]:
+        sess = self._session_for_meta_update(params.get("sessionId"))
+        archived = bool(params.get("archived", True))
+        with self._lock:
+            sess.archived = archived
+        if not self._persist_session(sess):
+            raise OSError("Session persistence unavailable; archive retained in memory only")
+        return {
+            "sessionId": sess.session_id,
+            "archived": sess.archived,
+            "pinned": sess.pinned,
+        }
+
+    def _handle_session_pin(self, params: dict[str, Any]) -> dict[str, Any]:
+        sess = self._session_for_meta_update(params.get("sessionId"))
+        pinned = bool(params.get("pinned", True))
+        with self._lock:
+            sess.pinned = pinned
+        if not self._persist_session(sess):
+            raise OSError("Session persistence unavailable; pin retained in memory only")
+        return {
+            "sessionId": sess.session_id,
+            "archived": sess.archived,
+            "pinned": sess.pinned,
+        }
 
     def _handle_session_models(self, params: dict[str, Any]) -> dict[str, Any]:
         """B32: live model catalog from the configured providers, never a hardcoded list."""

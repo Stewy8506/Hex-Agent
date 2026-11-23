@@ -437,6 +437,61 @@ impl AcpBridge {
         }
     }
 
+    /// Rename a session on the runtime (persists the operator-facing title).
+    pub async fn rename_session(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<hex_protocol::models::SessionRenameResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_rename(session_id, title).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Delete a session: in-memory state, transcript rows, and metadata file.
+    pub async fn delete_session(
+        &self,
+        session_id: &str,
+    ) -> Result<hex_protocol::models::SessionDeleteResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_delete(session_id).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Archive or unarchive a session.
+    pub async fn archive_session(
+        &self,
+        session_id: &str,
+        archived: bool,
+    ) -> Result<hex_protocol::models::SessionFlagResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_archive(session_id, archived).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Pin or unpin a session.
+    pub async fn pin_session(
+        &self,
+        session_id: &str,
+        pinned: bool,
+    ) -> Result<hex_protocol::models::SessionFlagResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_pin(session_id, pinned).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Fetch the live model catalog from the backend's configured providers (B32).
     pub async fn list_models(
         &self,
