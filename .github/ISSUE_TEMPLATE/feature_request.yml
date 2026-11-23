@@ -1,0 +1,41 @@
+name: Feature Request
+description: Suggest a new capability, integration, or improvement for HEX Agent
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent Orchestration / Cognition / Memory
+        - CoW Sandboxing / Storage / Ledger
+        - Desktop UI (hex-desktop)
+        - Terminal UI (hex-tui / CLI)
+        - Skills / Tools / MCP / SkillSpector
+        - Cloud Sync / Team Mesh / Backend
+        - Documentation / Developer Experience
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Motivation
+      description: What workflow or limitation does this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe how you envision this working.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative designs or workarounds you considered.
