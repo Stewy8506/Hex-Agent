@@ -230,7 +230,7 @@ This is a physical relocation, not a new public API. The `harness_core/` anchor 
 
 Development requires an editable install from the repository root: `python -m pip install -e ".[full]"`. Reinstall after the relocation to refresh setuptools' editable mappings; a raw repository-root or former source-directory `PYTHONPATH` cannot replace the package mapping. See [Contributing](../development/CONTRIBUTING.md) for setup.
 
-Root manifests, installers, and `assets/` stay in place, as does `.gsd/`. Documentation lives under `docs/{architecture,guides,reference,development,research,audits}/`; design references and their relative assets live together under `docs/design/mockups/`.
+Root manifests, installers, and `assets/` stay in place. Documentation lives under `docs/{architecture,guides,reference,development,research}/`; design references and their relative assets live together under `docs/design/mockups/`.
 
 ---
 

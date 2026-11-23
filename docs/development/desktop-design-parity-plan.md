@@ -1,7 +1,8 @@
 # HEX Desktop — Exact Design-Parity Plan
 
-**Status:** analysis complete, implementation not started. Supersedes the root `PLAN.md`
-(all phases there are marked done; the live app still diverges from the mockups — see §3).
+**Status:** the visual-parity reference for the desktop workstream; implementation is
+tracked as DX1–DX7 in [`ROADMAP.md`](../../ROADMAP.md) (DX1–DX3 landed as of 2026-11-23).
+Supersedes the root `PLAN.md` (removed 2026-11-23; still in git history).
 
 **Goal:** make `App/hex-desktop` pixel-identical to the approved mockups in
 `docs/design/mockups-desktop/` — colours, sizing, spacing, typography, icons, layout,

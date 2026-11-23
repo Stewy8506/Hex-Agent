@@ -432,12 +432,11 @@ For comprehensive guides, architecture deep-dives, and production integrations:
 
 - 📖 **[Operator Runbook](docs/guides/RUNBOOK.md)** — Production operations, CLI command reference, desktop build instructions, database backups, disaster recovery, and storage GC maintenance.
 - 🏗️ **[System Architecture](docs/architecture/ARCHITECTURE.md)** — GPUI Metal desktop architecture, Copy-on-Write sandboxing, Python package layout, cryptographic SHA-256 chain, and AST code intelligence.
-- ⚖️ **[Harness Comparison](docs/research/COMPARISON.md)** — In-depth architectural comparison against Hermes Agent, OpenClaw, Claude Code, and Aider.
 - 🤖 **[Supported Models & 26 Providers](docs/reference/SUPPORTED_MODELS.md)** — Complete catalog of 26 providers, curated model IDs, and environment variables.
 - 🤖 **[Sub-Agent Delegation](docs/guides/SUBAGENTS.md)** — Hierarchical child workers, role-based tool gating, and sandbox scratchpads.
 - 🌐 **[Browser & Vision](docs/guides/BROWSER_AND_VISION.md)** — Headless browser automation, `ariaSnapshot` semantic DOM trees, and visual regression testing.
 - 🔌 **[IDE Integration (ACP)](docs/reference/ACP_INTEGRATION.md)** — Configure HEX inside Zed, Neovim (`avante.nvim`), and VS Code via the Agent Client Protocol.
-- 🤝 **[Contributing Guide](docs/development/CONTRIBUTING.md)** — Development setup, running benchmark evaluations (`hex eval`), and pre-commit checks.
+- 🤝 **[Contributing Guide](CONTRIBUTING.md)** — Development setup, running benchmark evaluations (`hex eval`), and pre-commit checks.
 
 ---
 

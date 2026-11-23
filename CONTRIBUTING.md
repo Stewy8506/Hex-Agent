@@ -68,7 +68,7 @@ Use the open repository-root layout while keeping canonical `harness_core.*` imp
 - `skills/builtin/` and `optional-skills/` contain packaged skill data, not the Python engine in `skill_engine/`. Their canonical resource package names are preserved by the package mappings.
 - The root `Cargo.toml` remains the workspace manifest. `crates/hex-protocol/` and `crates/hex-tui/` stay in place; the experimental macOS desktop lives in `App/hex-desktop/`. Run Cargo commands from the root using the unchanged package names. There is no new mobile app or placeholder mobile directory.
 
-Place tests under the matching `tests/<subsystem>/`; shared fixtures remain in `tests/fixtures/`, and Rust tests stay with their crates. Root manifests, installers, `assets/`, and `.gsd/` are not relocated. This layout does not imply a wholesale split of large orchestration or storage modules. Documentation lives under `docs/{architecture,guides,reference,development,research,audits}/`, with design references and their assets together in `docs/design/mockups/`. See [Source Layout](../architecture/ARCHITECTURE.md#3-python-source-layout-srcharness_core) for the layout and compatibility boundaries.
+Place tests under the matching `tests/<subsystem>/`; shared fixtures remain in `tests/fixtures/`, and Rust tests stay with their crates. Root manifests, installers, and `assets/` are not relocated. This layout does not imply a wholesale split of large orchestration or storage modules. Documentation lives under `docs/{architecture,guides,reference,development,research}/`, with design references and their assets together in `docs/design/mockups/`. See [Source Layout](../architecture/ARCHITECTURE.md#3-python-source-layout-srcharness_core) for the layout and compatibility boundaries.
 
 ---
 
