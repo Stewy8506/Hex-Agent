@@ -542,6 +542,74 @@ pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
 }
 
+// -- Cloud account (`cloud/auth/*`, `cloud/devices/*`) --------------------
+// The Python ACP server returns these raw snake_case dicts from
+// cloud/session.py; field names mirror hex-backend's device rows.
+
+/// Local cloud account/device session state (`cloud/auth/status`, `cloud/auth/login`, `cloud/auth/logout`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CloudAuthStatus {
+    pub base_url: String,
+    pub logged_in: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_record_id: Option<String>,
+    #[serde(default)]
+    pub device_enrolled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+}
+
+/// One enrolled device row as stored by hex-backend (`cloud/devices/list`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CloudDevice {
+    pub device_record_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_pubkey: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_state: Option<String>,
+    #[serde(default)]
+    pub host_eligible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<i64>,
+}
+
+/// Result returned from `cloud/devices/list`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CloudDevicesList {
+    pub devices: Vec<CloudDevice>,
+}
+
+/// Result returned from `cloud/devices/revoke`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CloudRevokeResult {
+    pub revoked: bool,
+    pub device_record_id: String,
+}
+
+/// Push notification emitted by the ACP server as `cloud/event`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CloudEvent {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_record_id: Option<String>,
+}
+
 /// One model in the live backend catalog (`session/models`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

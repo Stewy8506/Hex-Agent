@@ -4,11 +4,14 @@
 //! - Tool Approval Modal (`approval.rs`): 3-way radio selection, 15m lease auto-approval toggle.
 //! - Command Palette Modal (`palette.rs`): Fuzzy search across actions, navigation, and sessions.
 //! - Model Picker Modal (`model_picker.rs`): Provider-grouped model browser with context badges.
+//! - Account Modal (`account.rs`): Cloud sign in / register / device management.
 
+pub mod account;
 pub mod approval;
 pub mod model_picker;
 pub mod palette;
 
+pub use account::{AccountAction, AccountModal, AccountMode};
 pub use approval::{ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult};
 pub use model_picker::{ModelEntry, ModelPickerModal};
 pub use palette::{CommandPaletteModal, PaletteAction, PaletteItem};
@@ -28,6 +31,8 @@ pub enum ActiveModal {
     Palette(CommandPaletteModal),
     /// Model selector dialog.
     ModelPicker(ModelPickerModal),
+    /// Cloud account sign in / device management.
+    Account(AccountModal),
 }
 
 impl ActiveModal {
@@ -44,6 +49,9 @@ impl ActiveModal {
 
 /// Modal card corner radius (derived token language, plan P5: radius 14–24).
 pub const MODAL_CARD_RADIUS: f32 = 16.0;
+
+/// Width for form modals (account sign-in / device list).
+pub const MODAL_CARD_WIDTH_WIDE: f32 = 440.0;
 
 /// Backdrop scrim: 70% black over the `#141414` canvas (derived — modals are
 /// not in the mockup).

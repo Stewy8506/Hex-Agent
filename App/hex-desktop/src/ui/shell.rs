@@ -215,6 +215,9 @@ impl AppShell {
                     ProviderState::Offline
                 };
             }
+            AcpEvent::CloudAccount(_) => {
+                // Routed by ChatView (footer + notices); shell keeps no state.
+            }
         }
     }
 

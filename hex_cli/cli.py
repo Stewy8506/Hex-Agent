@@ -217,6 +217,15 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_auth.add_argument("--verifier", default=None, help="PKCE verifier corresponding to --code")
     p_auth.add_argument("--auth-file", default=None, help="Custom path to antigravity_auth.json")
 
+    p_cloud = sub.add_parser("cloud", help="Manage the HEX cloud account, device enrollment, and backend connection")
+    p_cloud.add_argument("cloud_cmd", nargs="?", default="status", choices=["status", "register", "login", "logout", "devices", "revoke"], help="Cloud account operation")
+    p_cloud.add_argument("--email", default=None, help="Account email (register/login)")
+    p_cloud.add_argument("--password", default=None, help="Account password (register/login; prompted when omitted)")
+    p_cloud.add_argument("--device", dest="device_record_id", default=None, help="Device record id to revoke (revoke)")
+    p_cloud.add_argument("--include-revoked", action="store_true", help="Include revoked devices in the device list")
+    p_cloud.add_argument("--base-url", default=None, help="hex-backend base URL override (default: HEX_CLOUD_BASE_URL or http://127.0.0.1:8787)")
+    p_cloud.add_argument("--json", action="store_true", help="Emit raw JSON output")
+
     p_quota = sub.add_parser("quota", help="Inspect live Google Antigravity model quota windows and reset times")
     p_quota.add_argument("--auth-file", default=None, help="Custom path to antigravity_auth.json")
     p_quota.add_argument("--json", action="store_true", help="Emit raw JSON quota snapshot")
@@ -724,6 +733,11 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
         from harness_core.client.commands.antigravity import run_auth_command
 
         return run_auth_command(args)
+
+    if args.cmd == "cloud":
+        from harness_core.client.commands.cloud_account import run_cloud_command
+
+        return run_cloud_command(args)
 
     if args.cmd == "quota":
         from harness_core.client.commands.antigravity import run_quota_command

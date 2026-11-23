@@ -48,6 +48,7 @@ htmlcov/
 .harness_data/
 .hex/
 .hex_data/
+data/
 *.db
 *.db-shm
 *.db-wal

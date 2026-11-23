@@ -68,6 +68,8 @@ pub enum AcpEvent {
         is_healthy: bool,
         latency_ms: Option<u64>,
     },
+    /// Cloud account lifecycle change pushed by the backend (`cloud/event`)
+    CloudAccount(hex_protocol::models::CloudEvent),
 }
 
 /// ACP client bridge connecting the desktop cockpit to `harness_core`.
@@ -363,6 +365,13 @@ impl AcpBridge {
                     });
                 }
             }
+            "cloud/event" => {
+                if let Some(ref params_val) = notif.params {
+                    if let Ok(event) = serde_json::from_value::<hex_protocol::models::CloudEvent>(params_val.clone()) {
+                        let _ = event_tx.send(AcpEvent::CloudAccount(event));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -433,6 +442,84 @@ impl AcpBridge {
         let client_opt = self.client.lock().await.clone();
         if let Some(client) = client_opt {
             client.session_command(session_id, "model", Some(model_id)).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Fetch local cloud account/device status (`cloud/auth/status`).
+    pub async fn cloud_auth_status(
+        &self,
+    ) -> Result<hex_protocol::models::CloudAuthStatus, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.cloud_auth_status().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Register a new cloud account (`cloud/auth/register`).
+    pub async fn cloud_auth_register(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<serde_json::Value, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.cloud_auth_register(email, password).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Sign in and enroll or reuse this device (`cloud/auth/login`).
+    pub async fn cloud_auth_login(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<hex_protocol::models::CloudAuthStatus, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.cloud_auth_login(email, password).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Sign out on this device (`cloud/auth/logout`).
+    pub async fn cloud_auth_logout(
+        &self,
+    ) -> Result<hex_protocol::models::CloudAuthStatus, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.cloud_auth_logout().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// List enrolled devices (`cloud/devices/list`).
+    pub async fn cloud_devices_list(
+        &self,
+        include_revoked: bool,
+    ) -> Result<Vec<hex_protocol::models::CloudDevice>, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.cloud_devices_list(include_revoked).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Revoke an enrolled device (`cloud/devices/revoke`).
+    pub async fn cloud_devices_revoke(
+        &self,
+        device_record_id: &str,
+    ) -> Result<hex_protocol::models::CloudRevokeResult, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.cloud_devices_revoke(device_record_id).await
         } else {
             Err(AcpError::ConnectionClosed)
         }

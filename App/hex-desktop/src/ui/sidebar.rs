@@ -190,6 +190,8 @@ pub struct SidebarHandlers {
     pub on_settings: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     pub on_feature: Option<Rc<dyn Fn(&'static str, &ClickEvent, &mut Window, &mut App)>>,
     pub on_toggle_project: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+    /// Account footer click: opens the cloud account modal.
+    pub on_account: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
 }
 
 /// State and rendering container for the mockup project navigator.
@@ -207,6 +209,10 @@ pub struct SidebarView {
     pub review_sessions: HashSet<String>,
     /// Whether the project group body is collapsed.
     pub projects_collapsed: bool,
+    /// Account footer primary line (email when signed in to HEX cloud).
+    pub account_label: String,
+    /// Account footer secondary line (cloud/local connection state).
+    pub account_sub: String,
 }
 
 impl Default for SidebarView {
@@ -226,6 +232,8 @@ impl SidebarView {
             running_sessions: HashSet::new(),
             review_sessions: HashSet::new(),
             projects_collapsed: false,
+            account_label: "Account".to_string(),
+            account_sub: "Local mode".to_string(),
         }
     }
 
@@ -242,7 +250,15 @@ impl SidebarView {
             running_sessions: HashSet::new(),
             review_sessions: HashSet::new(),
             projects_collapsed: false,
+            account_label: "Account".to_string(),
+            account_sub: "Local mode".to_string(),
         }
+    }
+
+    /// Reflect the cloud account session in the footer (email / local mode).
+    pub fn set_account_status(&mut self, label: impl Into<String>, sub: impl Into<String>) {
+        self.account_label = label.into();
+        self.account_sub = sub.into();
     }
 
     /// Update the "Needs you" badge from the live approval queue.
@@ -684,17 +700,24 @@ impl SidebarView {
                         div()
                             .text_size(px(MockupTypeScale::ACCOUNT_NAME_SIZE))
                             .text_color(theme.mockup_text)
-                            .child("Account"),
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(self.account_label.clone()),
                     )
                     .child(
                         div()
                             .text_size(px(MockupTypeScale::ACCOUNT_SUB_SIZE))
                             .text_color(theme.mockup_text_dim)
-                            .child("Local mode"),
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(self.account_sub.clone()),
                     ),
             )
             .child(Self::tinted_icon("settings", FEATURE_ICON, theme.mockup_text_dim));
-        if let Some(on_settings) = &handlers.on_settings {
+        if let Some(on_account) = &handlers.on_account {
+            let on_account = on_account.clone();
+            row = row.on_click(move |event, window, cx| on_account(event, window, cx));
+        } else if let Some(on_settings) = &handlers.on_settings {
             let on_settings = on_settings.clone();
             row = row.on_click(move |event, window, cx| on_settings(event, window, cx));
         }

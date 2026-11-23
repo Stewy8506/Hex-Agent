@@ -91,6 +91,41 @@ def sign_enrollment_challenge(
     return base64.urlsafe_b64encode(sig).rstrip(b"=").decode("ascii")
 
 
+def identity_material(identity: DeviceIdentity) -> dict[str, Any]:
+    """Serialize a DeviceIdentity (including its private key) for OS Keychain storage."""
+    material: dict[str, Any] = {
+        "raw_device_id": identity.raw_device_id,
+        "encrypted_device_id": identity.encrypted_device_id,
+        "device_pubkey": identity.device_pubkey,
+        "platform": identity.platform_name,
+    }
+    if identity.private_key is not None:
+        material["private_key_pem"] = identity.private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode("ascii")
+    return material
+
+
+def identity_from_material(material: dict[str, Any]) -> DeviceIdentity:
+    """Restore a DeviceIdentity from its keychain material; private key optional."""
+    private_key: Ed25519PrivateKey | None = None
+    pem = material.get("private_key_pem")
+    if pem:
+        loaded = serialization.load_pem_private_key(pem.encode("ascii"), password=None)
+        if not isinstance(loaded, Ed25519PrivateKey):
+            raise ValueError("Stored device key material is not an Ed25519 private key.")
+        private_key = loaded
+    return DeviceIdentity(
+        raw_device_id=str(material["raw_device_id"]),
+        encrypted_device_id=str(material["encrypted_device_id"]),
+        device_pubkey=str(material["device_pubkey"]),
+        platform_name=str(material.get("platform") or platform.system().lower()),
+        private_key=private_key,
+    )
+
+
 class HexAuthClient:
     """Lightweight stdlib HTTP client for hex-backend auth and encrypted device enrollment."""
 
@@ -129,6 +164,22 @@ class HexAuthClient:
         if device_record_id:
             payload["device_record_id"] = device_record_id
         return self._post_json("/v1/auth/login", payload)
+
+    def refresh(self, refresh_token: str) -> dict[str, Any]:
+        return self._post_json("/v1/auth/refresh", {"refresh_token": refresh_token})
+
+    def list_devices(
+        self, access_token: str, include_revoked: bool = False
+    ) -> list[dict[str, Any]]:
+        query = "?include_revoked=true" if include_revoked else ""
+        return self._request_json(
+            f"/v1/devices{query}", None, access_token=access_token, method="GET"
+        )["devices"]
+
+    def revoke_device(self, access_token: str, device_record_id: str) -> dict[str, Any]:
+        return self._post_json(
+            f"/v1/devices/{device_record_id}/revoke", {}, access_token=access_token
+        )
 
     def device_enrollment_challenge(self, access_token: str) -> dict[str, Any]:
         return self._request_json("/v1/devices/challenge", {}, access_token=access_token)

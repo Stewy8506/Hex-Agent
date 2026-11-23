@@ -138,12 +138,20 @@ After every completed work turn on the Primary Host:
 - [x] `cloud/`: real Ed25519 device keypairs + challenge signing in `auth_client.py`; Ed25519 envelope verification in `updater.py` / `remote_config.py` / `team_mesh.py`.
 - [x] `crates/hex-protocol/src/{backend,p2p}.rs` implemented with cross-language contract tests (TurnCommitBundle canonical digest parity Python <-> Rust).
 
+### Phase B: Account & Devices End-to-End (harness core + desktop)
+- [x] `cloud/session.py`: `CloudAccountManager` — keychain-persisted device identity (Ed25519 keypair via `storage/vault_keychain.py`) and session tokens, enroll-once/reuse `device_record_id`, JWT-`exp`-driven auto-refresh (401 -> rotate -> retry), offline-safe `CloudAccountError`; base URL from `--base-url` > `HEX_CLOUD_BASE_URL` > `http://127.0.0.1:8787`.
+- [x] `cloud/auth_client.py`: `refresh()`, `list_devices()`, `revoke_device()`; `identity_material()`/`identity_from_material()` for keychain round-trip of the keypair.
+- [x] ACP (`hex_cli/acp.py`): `cloud/auth/{status,register,login,logout}` + `cloud/devices/{list,revoke}` methods and `cloud/event` push notifications (login/logout/revoke) for the desktop.
+- [x] CLI: `hex cloud {status,register,login,logout,devices,revoke}` (`hex_cli/commands/cloud_account.py`), human + `--json` output, getpass password prompt.
+- [x] Desktop (`App/hex-desktop`): typed `AcpClient`/`AcpBridge` cloud methods, `AcpEvent::CloudAccount` demux, Account modal (hand-rolled email/password entry, login/register, device roster + revoke + sign out), header device button and sidebar account footer wired (email + "Cloud connected"/"Local mode").
+- [x] Tests: unit tests with memory keychain + cross-repo e2e (`tests/cloud/test_backend_integration.py`) booting real hex-backend under uvicorn: register -> login -> challenge enrollment -> device list -> re-login reuse -> self-revocation -> token rotation.
+
 ### Phase 1: Auth, Device Trust & Personal P2P Sync
 - [x] Implement `cloud/auth_client.py` (client-side encrypted device IDs + auth/enrollment HTTP client).
 - [x] Implement `cloud/signaling.py` (peer discovery, P2P signal routing, revocation & kill-switch listener).
-- [ ] Hook `cloud/auth_client.py` into `storage/vault_keychain.py` for OS Keychain persistence.
+- [x] Hook `cloud/auth_client.py` into `storage/vault_keychain.py` for OS Keychain persistence (via `cloud/session.py`).
 - [ ] Implement `cloud/p2p_transport.py` (QUIC/WebRTC E2EE tunnel + relay fallback) and `cloud/sync_engine.py`.
-- [ ] Add `harness_core.cloud` to `pyproject.toml` and wire CLI subcommands (`hex auth`, `hex devices`, `hex sync`).
+- [x] Add cloud package to `pyproject.toml` and wire CLI subcommands (`hex cloud status/register/login/logout/devices/revoke`; `hex sync` pending with `cloud/sync_engine.py`).
 
 ### Phase 2: Component Updater & Remote Configuration
 - [x] Implement `cloud/updater.py` (signed manifest verifier, compatibility gate, rollback checkpoints).

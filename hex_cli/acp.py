@@ -473,6 +473,8 @@ _SUPPORTED_METHODS = (
     "session/history", "session/historyContent", "session/toolResult",
     "session/subagents", "session/approvalDecision",
     "tools/list", "tools/call",
+    "cloud/auth/status", "cloud/auth/register", "cloud/auth/login",
+    "cloud/auth/logout", "cloud/devices/list", "cloud/devices/revoke",
 )
 
 
@@ -498,6 +500,22 @@ class ACPServer:
         self._tools_call_seq = 0
         self._turn_threads: list[threading.Thread] = []
         self._shutting_down = False
+        self._cloud_account: Any | None = None
+
+    @property
+    def cloud_account(self) -> Any:
+        if self._cloud_account is None:
+            from cloud.session import CloudAccountManager
+
+            self._cloud_account = CloudAccountManager()
+        return self._cloud_account
+
+    def _emit_cloud_event(self, kind: str, **fields: Any) -> None:
+        self._emit({
+            "jsonrpc": "2.0",
+            "method": "cloud/event",
+            "params": {"kind": kind, **fields},
+        })
 
     def _emit(self, obj: dict[str, Any]) -> None:
         """Serialize one JSON-RPC message to stdout (thread-safe)."""
@@ -670,6 +688,37 @@ class ACPServer:
                 res = self._handle_session_tool_result(params)
             elif method == "ping":
                 res = {"pong": True}
+            elif method == "cloud/auth/status":
+                res = self.cloud_account.status()
+            elif method == "cloud/auth/register":
+                res = self.cloud_account.register(
+                    str(params.get("email") or ""), str(params.get("password") or "")
+                )
+                self._emit_cloud_event("account_registered", email=params.get("email"))
+            elif method == "cloud/auth/login":
+                res = self.cloud_account.login(
+                    str(params.get("email") or ""), str(params.get("password") or "")
+                )
+                self._emit_cloud_event(
+                    "account_logged_in",
+                    email=res.get("email"),
+                    device_record_id=res.get("device_record_id"),
+                )
+            elif method == "cloud/auth/logout":
+                res = self.cloud_account.logout()
+                self._emit_cloud_event("account_logged_out")
+            elif method == "cloud/devices/list":
+                res = {"devices": self.cloud_account.list_devices(
+                    include_revoked=bool(params.get("include_revoked"))
+                )}
+            elif method == "cloud/devices/revoke":
+                device_record_id = str(params.get("device_record_id") or "")
+                if not device_record_id:
+                    raise ValueError("device_record_id is required.")
+                res = self.cloud_account.revoke_device(device_record_id)
+                self._emit_cloud_event(
+                    "device_revoked", device_record_id=device_record_id
+                )
             else:
                 return {
                     "jsonrpc": "2.0",

@@ -16,13 +16,14 @@ use tokio::time::timeout;
 
 use crate::error::AcpError;
 use crate::models::{
-    ApprovalDecisionParams, ApprovalDecisionResponse, ClientInfo, InitializeParams,
-    InitializeResponse, JsonRpcNotification, JsonRpcRequest, ModelCatalog, RequestId,
-    SessionCancelParams, SessionCancelResponse, SessionCommandParams, SessionCommandResponse,
-    SessionListItem, SessionListResponse, SessionLoadParams, SessionLoadResponse,
-    SessionNewParams, SessionNewResponse, SessionPromptParams, SessionPromptResponse,
-    SessionSubagentsParams, SessionSubagentsResponse, SubagentInfo, ToolCallParams,
-    ToolCallResponse, ToolDefinition, ToolsListResponse,
+    ApprovalDecisionParams, ApprovalDecisionResponse, ClientInfo, CloudAuthStatus, CloudDevice,
+    CloudDevicesList, CloudRevokeResult, InitializeParams, InitializeResponse,
+    JsonRpcNotification, JsonRpcRequest, ModelCatalog, RequestId, SessionCancelParams,
+    SessionCancelResponse, SessionCommandParams, SessionCommandResponse, SessionListItem,
+    SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
+    SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionSubagentsParams,
+    SessionSubagentsResponse, SubagentInfo, ToolCallParams, ToolCallResponse, ToolDefinition,
+    ToolsListResponse,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -655,6 +656,69 @@ impl AcpClient {
             .send_request("tools/list", serde_json::json!({}))
             .await?;
         Ok(resp.tools)
+    }
+
+    // -- Cloud account ------------------------------------------------------
+
+    /// Local cloud account/device status (`cloud/auth/status`).
+    pub async fn cloud_auth_status(&self) -> Result<CloudAuthStatus, AcpError> {
+        self.send_request("cloud/auth/status", serde_json::json!({}))
+            .await
+    }
+
+    /// Register a new cloud account (`cloud/auth/register`).
+    pub async fn cloud_auth_register(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<serde_json::Value, AcpError> {
+        self.send_request(
+            "cloud/auth/register",
+            serde_json::json!({ "email": email, "password": password }),
+        )
+        .await
+    }
+
+    /// Sign in and enroll or reuse this device (`cloud/auth/login`).
+    pub async fn cloud_auth_login(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<CloudAuthStatus, AcpError> {
+        self.send_request(
+            "cloud/auth/login",
+            serde_json::json!({ "email": email, "password": password }),
+        )
+        .await
+    }
+
+    /// Sign out on this device (`cloud/auth/logout`).
+    pub async fn cloud_auth_logout(&self) -> Result<CloudAuthStatus, AcpError> {
+        self.send_request("cloud/auth/logout", serde_json::json!({}))
+            .await
+    }
+
+    /// List enrolled devices (`cloud/devices/list`).
+    pub async fn cloud_devices_list(&self, include_revoked: bool) -> Result<Vec<CloudDevice>, AcpError> {
+        let resp: CloudDevicesList = self
+            .send_request(
+                "cloud/devices/list",
+                serde_json::json!({ "include_revoked": include_revoked }),
+            )
+            .await?;
+        Ok(resp.devices)
+    }
+
+    /// Revoke an enrolled device (`cloud/devices/revoke`).
+    pub async fn cloud_devices_revoke(
+        &self,
+        device_record_id: &str,
+    ) -> Result<CloudRevokeResult, AcpError> {
+        self.send_request(
+            "cloud/devices/revoke",
+            serde_json::json!({ "device_record_id": device_record_id }),
+        )
+        .await
     }
 
     /// Invoke a tool directly.

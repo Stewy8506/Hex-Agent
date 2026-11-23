@@ -29,7 +29,8 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use hex_protocol::error::AcpError;
 use hex_protocol::models::{
-    ApprovalDecisionResponse, PagedSessionLoad, SessionNewResponse, SessionPromptResponse,
+    ApprovalDecisionResponse, CloudAuthStatus, PagedSessionLoad, SessionNewResponse,
+    SessionPromptResponse,
 };
 
 use crate::acp_bridge::{AcpBridge, AcpEvent};
@@ -40,8 +41,9 @@ use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{MessageFeed, MessageItem};
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
+use crate::ui::modals::account::AccountAction;
 use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
-use crate::ui::modals::{render_modal_container, ActiveModal, ModelEntry, PaletteAction, ToolApprovalModal};
+use crate::ui::modals::{render_modal_container, ActiveModal, AccountModal, ModelEntry, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
 use crate::ui::motion;
 use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
@@ -290,6 +292,8 @@ pub struct ChatView {
     home_coming_soon: Option<&'static str>,
     settings_open: bool,
     home_connection_error: Option<String>,
+    /// Cached `cloud/auth/status` for the sidebar footer and header device chip.
+    cloud_status: Option<CloudAuthStatus>,
     /// Scroll state of the bottom-anchored message list; owned here because
     /// `AppShell` derives Debug/Clone/PartialEq and `ListState` cannot.
     feed_list: ListState,
@@ -352,13 +356,40 @@ impl ChatView {
             home_coming_soon: None,
             settings_open: false,
             home_connection_error: None,
+            cloud_status: None,
             feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             feed_synced_count: 0,
         };
         view.start_event_pump(cx);
         view.start_backend(cx);
         view.start_git_branch_lookup(cx);
+        view.refresh_cloud_status(cx);
         view
+    }
+
+    /// Fetch the local cloud account/device status for the footer + device chip.
+    fn refresh_cloud_status(&mut self, cx: &mut Context<Self>) {
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt.spawn(async move { bridge.cloud_auth_status().await }).await;
+            this.update(cx, |view, cx| {
+                if let Ok(Ok(status)) = res {
+                    view.cloud_status = Some(status.clone());
+                    if status.logged_in {
+                        view.shell.sidebar.set_account_status(
+                            status.email.clone().unwrap_or_else(|| "Account".into()),
+                            "Cloud connected",
+                        );
+                    } else {
+                        view.shell.sidebar.set_account_status("Account", "Local mode");
+                    }
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Resolve the git branch on a blocking pool instead of the UI thread (B35).
@@ -603,6 +634,31 @@ impl ChatView {
     }
 
     fn route_event(&mut self, event: AcpEvent, cx: &mut Context<Self>) {
+        // Cloud account lifecycle pushes never belong to a session.
+        if let AcpEvent::CloudAccount(cloud_event) = &event {
+            let notice = match cloud_event.kind.as_str() {
+                "account_logged_in" => format!(
+                    "Signed in to HEX cloud{}",
+                    cloud_event
+                        .email
+                        .as_deref()
+                        .map(|e| format!(" as {e}"))
+                        .unwrap_or_default(),
+                ),
+                "account_logged_out" => "Signed out of HEX cloud on this device.".to_string(),
+                "account_registered" => "HEX cloud account created.".to_string(),
+                "device_revoked" => format!(
+                    "Device revoked: {}",
+                    cloud_event.device_record_id.as_deref().unwrap_or("unknown")
+                ),
+                other => format!("Cloud event: {other}"),
+            };
+            self.shell.feed.add_system_notice(notice);
+            self.refresh_cloud_status(cx);
+            cx.notify();
+            return;
+        }
+
         let session_id = match &event {
             AcpEvent::TokenChunk { session_id, .. }
             | AcpEvent::TurnComplete { session_id }
@@ -1679,6 +1735,225 @@ impl ChatView {
         .detach();
     }
 
+    // ------------------------------------------------------------------
+    // Cloud account (cloud/* ACP surface)
+    // ------------------------------------------------------------------
+
+    /// Open the account modal over cached status, then refresh live status
+    /// and, when signed in, the device roster.
+    fn open_account_modal(&mut self, cx: &mut Context<Self>) {
+        self.shell.active_modal = ActiveModal::Account(AccountModal::new(self.cloud_status.clone()));
+        cx.notify();
+        self.refresh_account_modal_data(cx);
+    }
+
+    /// Refresh the open account modal: live status plus devices when signed in.
+    fn refresh_account_modal_data(&mut self, cx: &mut Context<Self>) {
+        if let ActiveModal::Account(modal) = &mut self.shell.active_modal {
+            modal.busy = true;
+            modal.error = None;
+        } else {
+            return;
+        }
+        let rt = self.rt.clone();
+        let bridge_status = self.bridge.clone();
+        let bridge_devices = self.bridge.clone();
+        cx.spawn(async move |this, cx| {
+            let status_res = rt
+                .spawn(async move { bridge_status.cloud_auth_status().await })
+                .await;
+            this.update(cx, |view, cx| {
+                if let ActiveModal::Account(modal) = &mut view.shell.active_modal {
+                    match status_res {
+                        Ok(Ok(status)) => {
+                            modal.status = Some(status.clone());
+                            view.cloud_status = Some(status);
+                        }
+                        Ok(Err(err)) => modal.error = Some(format!("{err}")),
+                        Err(err) => modal.error = Some(format!("Account status task aborted: {err}")),
+                    }
+                } else {
+                    return;
+                }
+                cx.notify();
+            })
+            .ok();
+
+            // Devices are only fetched when the fresh status says signed in.
+            let signed_in = this
+                .read_with(cx, |view, _| {
+                    view.cloud_status.as_ref().map(|s| s.logged_in).unwrap_or(false)
+                })
+                .ok()
+                .unwrap_or(false);
+            if !signed_in {
+                this.update(cx, |view, cx| {
+                    if let ActiveModal::Account(modal) = &mut view.shell.active_modal {
+                        modal.busy = false;
+                    }
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+            let res = rt
+                .spawn(async move { bridge_devices.cloud_devices_list(false).await })
+                .await;
+            this.update(cx, |view, cx| {
+                if let ActiveModal::Account(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(devices)) => modal.set_devices(devices),
+                        Ok(Err(err)) => modal.error = Some(format!("{err}")),
+                        Err(err) => modal.error = Some(format!("Device list task aborted: {err}")),
+                    }
+                    modal.busy = false;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Dispatch a modal-requested account action to the ACP backend.
+    fn execute_account_action(&mut self, action: AccountAction, cx: &mut Context<Self>) {
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        match action {
+            AccountAction::SubmitLogin { email, password } => {
+                if let ActiveModal::Account(modal) = &mut self.shell.active_modal {
+                    modal.busy = true;
+                    modal.error = None;
+                }
+                cx.spawn(async move |this, cx| {
+                    let res = rt
+                        .spawn(async move { bridge.cloud_auth_login(&email, &password).await })
+                        .await;
+                    this.update(cx, |view, cx| {
+                        let mut refresh_modal = false;
+                        if let ActiveModal::Account(modal) = &mut view.shell.active_modal {
+                            match res {
+                                Ok(Ok(status)) => {
+                                    view.cloud_status = Some(status);
+                                    modal.mode = crate::ui::modals::account::AccountMode::Devices;
+                                    modal.busy = false;
+                                    modal.error = None;
+                                    modal.notice = Some("Signed in.".to_string());
+                                    refresh_modal = true;
+                                }
+                                Ok(Err(err)) => {
+                                    modal.busy = false;
+                                    modal.error = Some(format!("{err}"));
+                                }
+                                Err(err) => {
+                                    modal.busy = false;
+                                    modal.error = Some(format!("Sign-in task aborted: {err}"));
+                                }
+                            }
+                        }
+                        view.refresh_cloud_status(cx);
+                        if refresh_modal {
+                            view.refresh_account_modal_data(cx);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            AccountAction::SubmitRegister { email, password } => {
+                if let ActiveModal::Account(modal) = &mut self.shell.active_modal {
+                    modal.busy = true;
+                    modal.error = None;
+                }
+                cx.spawn(async move |this, cx| {
+                    let res = rt
+                        .spawn(async move { bridge.cloud_auth_register(&email, &password).await })
+                        .await;
+                    this.update(cx, |view, cx| {
+                        if let ActiveModal::Account(modal) = &mut view.shell.active_modal {
+                            modal.busy = false;
+                            match res {
+                                Ok(Ok(_)) => {
+                                    modal.mode = crate::ui::modals::account::AccountMode::Login;
+                                    modal.notice =
+                                        Some("Account created — sign in to continue.".to_string());
+                                }
+                                Ok(Err(err)) => modal.error = Some(format!("{err}")),
+                                Err(err) => {
+                                    modal.error = Some(format!("Registration task aborted: {err}"))
+                                }
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            AccountAction::Logout => {
+                cx.spawn(async move |this, cx| {
+                    let res = rt.spawn(async move { bridge.cloud_auth_logout().await }).await;
+                    this.update(cx, |view, cx| {
+                        if let ActiveModal::Account(modal) = &mut view.shell.active_modal {
+                            match res {
+                                Ok(Ok(status)) => {
+                                    view.cloud_status = Some(status);
+                                    modal.mode = crate::ui::modals::account::AccountMode::Login;
+                                    modal.set_devices(Vec::new());
+                                    modal.notice = Some("Signed out.".to_string());
+                                }
+                                Ok(Err(err)) => modal.error = Some(format!("{err}")),
+                                Err(err) => {
+                                    modal.error = Some(format!("Sign-out task aborted: {err}"))
+                                }
+                            }
+                        }
+                        view.refresh_cloud_status(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            AccountAction::RevokeDevice(device_record_id) => {
+                if let ActiveModal::Account(modal) = &mut self.shell.active_modal {
+                    modal.busy = true;
+                    modal.error = None;
+                }
+                cx.spawn(async move |this, cx| {
+                    let res = rt
+                        .spawn(async move { bridge.cloud_devices_revoke(&device_record_id).await })
+                        .await;
+                    this.update(cx, |view, cx| {
+                        let mut refresh_modal = false;
+                        if let ActiveModal::Account(modal) = &mut view.shell.active_modal {
+                            modal.busy = false;
+                            match res {
+                                Ok(Ok(result)) => {
+                                    modal.notice =
+                                        Some(format!("Revoked {}.", result.device_record_id));
+                                    refresh_modal = true;
+                                }
+                                Ok(Err(err)) => modal.error = Some(format!("{err}")),
+                                Err(err) => {
+                                    modal.error = Some(format!("Revoke task aborted: {err}"))
+                                }
+                            }
+                        }
+                        view.refresh_cloud_status(cx);
+                        if refresh_modal {
+                            view.refresh_account_modal_data(cx);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+        }
+    }
+
     /// B32: apply a model choice only once the backend confirms the switch.
     fn apply_model_choice(&mut self, model_id: String, cx: &mut Context<Self>) {
         let Some(sid) = self.shell.active_session_id.clone() else {
@@ -1819,6 +2094,27 @@ impl ChatView {
                     return true;
                 }
                 matches!(key, "up" | "down")
+            }
+            ActiveModal::Account(modal) => {
+                if key == "escape" {
+                    self.shell.dismiss_modal();
+                    cx.notify();
+                    return true;
+                }
+                if modal.busy {
+                    return true;
+                }
+                if key == "backspace" {
+                    modal.backspace();
+                    cx.notify();
+                    return true;
+                }
+                if let Some(action) = modal.handle_key(key) {
+                    self.execute_account_action(action, cx);
+                    return true;
+                }
+                // Consume navigation keys so they never reach the composer.
+                matches!(key, "tab" | "shift-tab" | "up" | "arrowup" | "down" | "arrowdown")
             }
             ActiveModal::None => false,
         }
@@ -2062,6 +2358,29 @@ impl ChatView {
                     let query = format!("{}{}", palette.query, ch);
                     palette.set_query(query);
                     cx.notify();
+                    cx.stop_propagation();
+                }
+            }
+            ActiveModal::Account(_) => {
+                let key = if keystroke.key == "tab" && keystroke.modifiers.shift {
+                    "shift-tab"
+                } else {
+                    keystroke.key.as_str()
+                };
+                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
+                    let typed = keystroke.key_char.clone().or_else(|| {
+                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
+                    });
+                    if let Some(ch) = typed {
+                        if let ActiveModal::Account(modal) = &mut self.shell.active_modal {
+                            modal.push_char(&ch);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }
+                        return;
+                    }
+                }
+                if self.handle_modal_key(key, cx) {
                     cx.stop_propagation();
                 }
             }
@@ -2519,10 +2838,7 @@ impl ChatView {
                                             .id("header_device")
                                             .cursor_pointer()
                                             .on_click(cx.listener(|this, _, _, cx| {
-                                                this.shell
-                                                    .feed
-                                                    .add_system_notice("Device — coming soon");
-                                                cx.notify();
+                                                this.open_account_modal(cx);
                                             }))
                                             .child(mockup_icon_button(
                                                 theme,
@@ -2800,6 +3116,9 @@ impl Render for ChatView {
             on_settings: Some(on_settings),
             on_feature: Some(on_feature),
             on_toggle_project: Some(on_toggle_project),
+            on_account: Some(Rc::new(cx.listener(|this, _, _, cx| {
+                this.open_account_modal(cx);
+            }))),
         };
 
         let mut root = div()
@@ -2864,6 +3183,9 @@ impl ChatView {
             }
             ActiveModal::ModelPicker(picker) => {
                 Some(render_modal_container(picker.render(theme), theme))
+            }
+            ActiveModal::Account(modal) => {
+                Some(render_modal_container(modal.render(theme), theme))
             }
         }?;
         Some(
