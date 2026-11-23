@@ -46,6 +46,7 @@ use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
 use crate::ui::modals::session_actions::{
     SessionActionModal, SessionActionOutcome, SessionSearchModal,
 };
+use crate::ui::modals::settings::{SettingsAction, SettingsModal};
 use crate::ui::modals::{render_modal_container, ActiveModal, AccountModal, ModelEntry, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
 use crate::ui::motion;
@@ -293,7 +294,6 @@ pub struct ChatView {
     pending_home_prompt: Option<String>,
     /// Dock feature the user clicked that is not built yet (Coming soon).
     home_coming_soon: Option<&'static str>,
-    settings_open: bool,
     home_connection_error: Option<String>,
     /// Cached `cloud/auth/status` for the sidebar footer and header device chip.
     cloud_status: Option<CloudAuthStatus>,
@@ -359,7 +359,6 @@ impl ChatView {
             show_home: true,
             pending_home_prompt: None,
             home_coming_soon: None,
-            settings_open: false,
             home_connection_error: None,
             cloud_status: None,
             cloud_update: None,
@@ -1816,10 +1815,7 @@ impl ChatView {
                 self.shell.feed.clear();
                 cx.notify();
             }
-            PaletteAction::OpenSettings => {
-                self.settings_open = !self.settings_open;
-                cx.notify();
-            }
+            PaletteAction::OpenSettings => self.open_settings_modal(cx),
             PaletteAction::ExportTranscript => self.export_transcript(cx),
             PaletteAction::Custom(label) => {
                 self.shell.feed.add_system_notice(format!(
@@ -2246,14 +2242,6 @@ impl ChatView {
 
     /// Route a key to the open modal. Returns true when the modal consumed it.
     fn handle_modal_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
-        // The settings card is static: consume every key while it is open so
-        // nothing reaches the composer underneath, and close on Esc.
-        if self.settings_open {
-            if key == "escape" {
-                self.close_settings(cx);
-            }
-            return true;
-        }
         // Live filtering needs `&mut self` (SessionListView::filter_sessions),
         // so resolve the results before the match takes a borrow on the modal.
         let search_results = match &self.shell.active_modal {
@@ -2393,6 +2381,30 @@ impl ChatView {
                     _ => false,
                 }
             }
+            ActiveModal::Settings(modal) => {
+                if modal.busy {
+                    return true;
+                }
+                if key == "escape" {
+                    if modal.editing {
+                        modal.cancel_edit();
+                    } else {
+                        self.shell.dismiss_modal();
+                    }
+                    cx.notify();
+                    return true;
+                }
+                if let Some(SettingsAction::Save) = modal.handle_key(key) {
+                    self.execute_settings_save(cx);
+                    return true;
+                }
+                // Consume navigation keys so they never reach the composer.
+                matches!(
+                    key,
+                    "up" | "arrowup" | "down" | "arrowdown" | "left" | "arrowleft" | "right"
+                        | "arrowright" | "enter"
+                )
+            }
             ActiveModal::None => false,
         }
     }
@@ -2442,17 +2454,7 @@ impl ChatView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.settings_open = !self.settings_open;
-        cx.notify();
-    }
-
-    /// Shared settings-dismissal path for the Esc shortcut and the modal
-    /// backdrop, so the panel can always be closed.
-    fn close_settings(&mut self, cx: &mut Context<Self>) {
-        if self.settings_open {
-            self.settings_open = false;
-            cx.notify();
-        }
+        self.open_settings_modal(cx);
     }
 
     fn on_cancel_or_dismiss(
@@ -2704,6 +2706,36 @@ impl ChatView {
                             cx.stop_propagation();
                         }
                         return;
+                    }
+                }
+                if self.handle_modal_key(keystroke.key.as_str(), cx) {
+                    cx.stop_propagation();
+                }
+            }
+            ActiveModal::Settings(_) => {
+                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
+                    let typed = keystroke.key_char.clone().or_else(|| {
+                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
+                    });
+                    if let Some(ch) = typed {
+                        if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+                            if modal.editing {
+                                modal.push_char(&ch);
+                                cx.notify();
+                                cx.stop_propagation();
+                            }
+                        }
+                        return;
+                    }
+                    if keystroke.key == "backspace" {
+                        if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+                            if modal.editing {
+                                modal.backspace();
+                                cx.notify();
+                                cx.stop_propagation();
+                            }
+                            return;
+                        }
                     }
                 }
                 if self.handle_modal_key(keystroke.key.as_str(), cx) {
@@ -3355,6 +3387,92 @@ impl ChatView {
         cx.notify();
     }
 
+    /// DX3: opens the editable settings modal and hydrates it from the
+    /// runtime via `config/get`. Offline: the modal states that honestly
+    /// instead of inventing values.
+    fn open_settings_modal(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.shell.active_modal, ActiveModal::Settings(_)) {
+            self.shell.dismiss_modal();
+            cx.notify();
+            return;
+        }
+        let mut modal = SettingsModal::loading();
+        if !self.bridge.is_connected() {
+            modal.mark_load_failed("Runtime offline — settings unavailable until HEX connects.");
+            self.shell.active_modal = ActiveModal::Settings(modal);
+            cx.notify();
+            return;
+        }
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt.spawn(async move { bridge.get_config().await }).await;
+            this.update(cx, |view, cx| {
+                let view_result = match res {
+                    Ok(Ok(view)) => Some(view),
+                    Ok(Err(err)) => {
+                        view.shell.feed.add_system_notice(format!("config/get failed: {err}"));
+                        None
+                    }
+                    Err(err) => {
+                        view.shell.feed.add_system_notice(format!("config task aborted: {err}"));
+                        None
+                    }
+                };
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match view_result {
+                        Some(cfg) => modal.apply_view(&cfg),
+                        None => modal.mark_load_failed("Could not read settings from the runtime."),
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        self.shell.active_modal = ActiveModal::Settings(modal);
+        cx.notify();
+    }
+
+    /// DX3: writes the modal's dirty diff via `config/set`; the fresh view in
+    /// the response re-bases the modal, failures keep the operator's edits.
+    fn execute_settings_save(&mut self, cx: &mut Context<Self>) {
+        let ActiveModal::Settings(modal) = &self.shell.active_modal else {
+            return;
+        };
+        let updates = modal.dirty_updates();
+        if !updates.as_object().is_some_and(|m| !m.is_empty()) {
+            return;
+        }
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move { bridge.set_config(updates).await })
+                .await;
+            this.update(cx, |view, cx| {
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(view)) => {
+                            modal.apply_saved(&view);
+                        }
+                        Ok(Err(err)) => {
+                            modal.busy = false;
+                            modal.error = Some(format!("Save failed: {err}"));
+                        }
+                        Err(err) => {
+                            modal.busy = false;
+                            modal.error = Some(format!("Save task aborted: {err}"));
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Search results matching the modal query, from the same
     /// `filter_sessions` the sidebar renders. The sidebar's own query stays
     /// empty — the modal owns the search text while it is open.
@@ -3667,7 +3785,7 @@ impl Render for ChatView {
             // The start screen's composer is the primary target (mockup shows
             // an active caret); focus it so typing works without a click.
             // Modal focus follows the same rules as the session path.
-            let modal_open = self.shell.active_modal.is_open() || self.settings_open;
+            let modal_open = self.shell.active_modal.is_open();
             if modal_open {
                 if !self.last_modal_open {
                     self.modal_focus_handle.focus(window);
@@ -3702,7 +3820,7 @@ impl Render for ChatView {
 
         // Predictable focus: opening a modal moves focus to it, closing returns
         // focus to the composer. Background activity never steals focus.
-        let modal_open = self.shell.active_modal.is_open() || self.settings_open;
+        let modal_open = self.shell.active_modal.is_open();
         if modal_open {
             if !self.last_modal_open {
                 self.modal_focus_handle.focus(window);
@@ -3828,16 +3946,7 @@ impl ChatView {
         }
 
         let modal = match &self.shell.active_modal {
-            ActiveModal::None => {
-                if self.settings_open {
-                    Some(render_modal_container(
-                        self.render_settings_card(theme),
-                        theme,
-                    ))
-                } else {
-                    None
-                }
-            }
+            ActiveModal::None => None,
             ActiveModal::Approval(modal) => {
                 Some(render_modal_container(modal.render(theme), theme))
             }
@@ -3851,6 +3960,9 @@ impl ChatView {
                 Some(render_modal_container(modal.render(theme), theme))
             }
             ActiveModal::SessionAction(modal) => {
+                Some(render_modal_container(modal.render(theme), theme))
+            }
+            ActiveModal::Settings(modal) => {
                 Some(render_modal_container(modal.render(theme), theme))
             }
             ActiveModal::SessionSearch(_) => unreachable!("handled above"),
@@ -3869,120 +3981,6 @@ impl ChatView {
             .on_action(cx.listener(Self::on_up))
             .on_action(cx.listener(Self::on_down))
             .child(modal)
-    }
-
-    /// Settings surface (P5, derived): the mockup has no settings screen, so
-    /// the card is built from the shared token language — surface card,
-    /// muted labels, mono values, and an Esc hint like the palette's.
-    fn render_settings_card(&self, theme: &HermesTheme) -> Div {
-        let status = &self.shell.sidebar.provider_status;
-        let model = if status.model_name.is_empty() {
-            "Not selected".to_string()
-        } else {
-            status.model_name.clone()
-        };
-        let workspace = format!(
-            "{} · {}",
-            self.shell.sidebar.workspace_name, self.shell.sidebar.git_branch
-        );
-        let rows: Vec<(&str, String)> = vec![
-            ("Provider", status.provider_name.clone()),
-            ("Model", model),
-            ("Workspace", workspace),
-            (
-                "Sessions",
-                self.shell.sidebar.session_list.sessions.len().to_string(),
-            ),
-        ];
-
-        let mut list = div().flex().flex_col();
-        for (label, value) in rows {
-            list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(16.0))
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .rounded(px(8.0))
-                    .bg(theme.mockup_sidebar)
-                    .child(
-                        div()
-                            .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
-                            .text_color(theme.mockup_text_muted)
-                            .child(label.to_string()),
-                    )
-                    .child(
-                        div()
-                            .font_family(theme.font_mono()[0].clone())
-                            .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
-                            .text_color(theme.mockup_text_bright)
-                            .child(value),
-                    ),
-            );
-        }
-
-        div()
-            .w(px(460.0))
-            .flex()
-            .flex_col()
-            // Header
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(px(20.0))
-                    .py(px(14.0))
-                    .border_b_1()
-                    .border_color(theme.mockup_border)
-                    .child(
-                        div()
-                            .text_size(px(MockupTypeScale::BASE_SIZE))
-                            .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.mockup_text_bright)
-                            .child("Settings"),
-                    )
-                    .child(
-                        div()
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(3.0))
-                            .bg(theme.mockup_hover)
-                            .border_1()
-                            .border_color(theme.mockup_border)
-                            .font_family(theme.font_mono()[0].clone())
-                            .text_size(px(MockupTypeScale::HINT_SIZE))
-                            .text_color(theme.mockup_text_dim)
-                            .child("Esc"),
-                    ),
-            )
-            // Honest rows
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .px(px(20.0))
-                    .py(px(16.0))
-                    .child(list),
-            )
-            // Footer hint
-            .child(
-                div()
-                    .flex()
-                    .justify_center()
-                    .px(px(20.0))
-                    .py(px(12.0))
-                    .border_t_1()
-                    .border_color(theme.mockup_border)
-                    .font_family(theme.font_mono()[0].clone())
-                    .text_size(px(MockupTypeScale::HINT_SIZE))
-                    .text_color(theme.mockup_text_dim)
-                    .child("Press Esc to close"),
-            )
     }
 }
 

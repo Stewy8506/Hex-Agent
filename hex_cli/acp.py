@@ -36,6 +36,12 @@ from pathlib import Path
 from typing import Any
 
 from harness_core import __version__
+from harness_core.config_loader import (
+    ConfigParseError,
+    parse_config_yaml,
+    write_config_yaml_atomic,
+)
+from harness_core.core.reasoning_effort import EFFORT_LADDER
 from harness_core.storage import compute_project_id
 
 logger = logging.getLogger(__name__)
@@ -485,11 +491,44 @@ _SUPPORTED_METHODS = (
     "session/subagents", "session/approvalDecision",
     "session/rename", "session/delete", "session/archive", "session/pin",
     "tools/list", "tools/call",
+    "config/get", "config/set",
     "cloud/auth/status", "cloud/auth/register", "cloud/auth/login",
     "cloud/auth/logout", "cloud/devices/list", "cloud/devices/revoke",
     "cloud/update/check", "cloud/config/evaluate",
     "cloud/signal/start", "cloud/signal/stop", "cloud/signal/status",
 )
+
+# DX3 settings surface: the only config.yaml sections/keys a client may read
+# through config/get or write through config/set. Values always live in the
+# config file; secrets (API keys, tokens) stay in credentials.env and are
+# rejected here by name. Vocabulary notes:
+#   - reasoning_effort: canonical ladder from harness_core.core.reasoning_effort
+#   - profile: router.py execution profiles (local / hybrid / antigravity_hybrid)
+#   - compressor_mode: router.py FR-045a modes
+#   - web_search.provider: capabilities/web_search.py supported providers
+#   - learning.auto_reflect: get_auto_reflect_policy() vocabulary
+CONFIG_SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
+    "model": {
+        "cloud_provider": {"kind": "text", "required": True},
+        "cloud_model_id": {"kind": "text", "required": True},
+        "reasoning_effort": {"kind": "choice", "options": list(EFFORT_LADDER)},
+        "profile": {"kind": "choice", "options": ["cloud", "local", "hybrid", "antigravity_hybrid"]},
+        "compressor_mode": {"kind": "choice", "options": ["deterministic", "cloud", "local", "off"]},
+        "cloud_base_url": {"kind": "text", "required": False},
+    },
+    "runtime": {
+        "max_turns": {"kind": "int", "min": 1, "max": 1000},
+    },
+    "web_search": {
+        "provider": {"kind": "choice", "options": ["auto", "duckduckgo", "tavily", "brave"]},
+    },
+    "cloud": {
+        "base_url": {"kind": "text", "required": False},
+    },
+    "learning": {
+        "auto_reflect": {"kind": "choice", "options": ["cloud_only", "idle", "off"]},
+    },
+}
 
 
 class ACPServer:
@@ -499,9 +538,15 @@ class ACPServer:
         self,
         orchestrator: Any | None = None,
         workspace_root: Path | str | None = None,
+        config_dir: Path | str | None = None,
     ) -> None:
         self.workspace_root = (
             Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+        )
+        self.config_dir = (
+            Path(config_dir).expanduser().resolve()
+            if config_dir
+            else (Path.home() / ".hex")
         )
         self._orchestrator = orchestrator
         self.sessions: dict[str, ACPSession] = {}
@@ -750,6 +795,10 @@ class ACPServer:
                 res = self._handle_session_archive(params)
             elif method == "session/pin":
                 res = self._handle_session_pin(params)
+            elif method == "config/get":
+                res = self._handle_config_get(params)
+            elif method == "config/set":
+                res = self._handle_config_set(params)
             elif method == "tools/list":
                 res = self._handle_tools_list(params)
             elif method == "tools/call":
@@ -1499,6 +1548,154 @@ class ACPServer:
             "archived": sess.archived,
             "pinned": sess.pinned,
         }
+
+    # --- DX3 settings surface (config/get + config/set) ---------------------
+
+    @staticmethod
+    def _camel(key: str) -> str:
+        head, *rest = key.split("_")
+        return head + "".join(word.capitalize() for word in rest)
+
+    @staticmethod
+    def _snake(key: str) -> str:
+        return "".join(
+            f"_{ch.lower()}" if ch.isupper() else ch for ch in key
+        )
+
+    def _settings_view(self) -> dict[str, Any]:
+        """Sanitized settings view: whitelisted keys only, never secrets.
+
+        Wire keys are camelCase (config.yaml stores snake_case; converted at
+        this boundary like the DX1 usage payload). Sections with no whitelisted
+        keys present in the file are omitted; the client renders those fields
+        as "not set" rather than guessing defaults.
+        """
+        cfg_file = self.config_dir / "config.yaml"
+        try:
+            data = parse_config_yaml(cfg_file)
+        except ConfigParseError as exc:
+            raise OSError(f"Config file unreadable; settings unavailable: {exc}") from exc
+
+        def jsonable(value: Any) -> Any:
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                return value
+            return str(value)
+
+        view: dict[str, Any] = {}
+        for section, keys in CONFIG_SCHEMA.items():
+            sec_data = data.get(section)
+            sec_data = sec_data if isinstance(sec_data, dict) else {}
+            out: dict[str, Any] = {}
+            for key, spec in keys.items():
+                if key in sec_data:
+                    out[self._camel(key)] = jsonable(sec_data[key])
+            if out:
+                view[self._camel(section)] = out
+
+        options = {
+            f"{section}.{self._camel(key)}": list(spec["options"])
+            for section, keys in CONFIG_SCHEMA.items()
+            for key, spec in keys.items()
+            if spec["kind"] == "choice"
+        }
+        return {
+            "path": str(cfg_file),
+            "workspace": str(self.workspace_root),
+            "dataDir": str(self.workspace_root / ".hex" / "data"),
+            "config": view,
+            "options": options,
+        }
+
+    def _handle_config_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._settings_view()
+
+    @staticmethod
+    def _validate_setting_value(
+        section: str, key: str, spec: dict[str, Any], value: Any
+    ) -> Any:
+        kind = spec["kind"]
+        if kind == "choice":
+            if not isinstance(value, str):
+                raise ValueError(f"{section}.{key} must be one of: {', '.join(spec['options'])}")
+            norm = value.strip().lower()
+            if norm not in spec["options"]:
+                raise ValueError(f"{section}.{key} must be one of: {', '.join(spec['options'])}")
+            return norm
+        if kind == "int":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"{section}.{key} must be an integer between {spec['min']} and {spec['max']}"
+                )
+            iv = int(value)
+            if iv != value or iv < spec["min"] or iv > spec["max"]:
+                raise ValueError(
+                    f"{section}.{key} must be an integer between {spec['min']} and {spec['max']}"
+                )
+            return iv
+        # text
+        if not isinstance(value, str):
+            raise ValueError(f"{section}.{key} must be a string")
+        text = value.strip()
+        if spec.get("required") and not text:
+            raise ValueError(f"{section}.{key} must be a non-empty string")
+        if not spec.get("required") and not text:
+            return None  # optional text cleared: remove the key from the file
+        if len(text) > 500:
+            raise ValueError(f"{section}.{key} must be at most 500 characters")
+        return text
+
+    def _handle_config_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        updates = params.get("updates")
+        if not isinstance(updates, dict) or not updates:
+            raise ValueError("updates must be a non-empty mapping of section -> {key: value}")
+
+        normalized: dict[str, dict[str, Any]] = {}
+        changed: list[str] = []
+        for section, sec_updates in updates.items():
+            canonical = self._snake(str(section))
+            if canonical not in CONFIG_SCHEMA:
+                allowed = ", ".join(sorted(CONFIG_SCHEMA))
+                raise ValueError(f"Unknown settings section {section!r}; allowed: {allowed}")
+            if not isinstance(sec_updates, dict) or not sec_updates:
+                raise ValueError(f"Section {section!r} updates must be a non-empty mapping")
+            # Accept camelCase wire keys (or their snake_case file spelling).
+            keyed: dict[str, tuple[str, dict[str, Any]]] = {
+                self._camel(key): (key, spec)
+                for key, spec in CONFIG_SCHEMA[canonical].items()
+            }
+            for key, value in sec_updates.items():
+                lowered = str(key).lower()
+                if any(marker in lowered for marker in _SECRET_TEXT_NAMES):
+                    raise ValueError(
+                        f"{section}.{key} looks like a secret; credentials belong in "
+                        "credentials.env, never config.yaml"
+                    )
+                entry = keyed.get(key) or keyed.get(self._snake(str(key)))
+                if entry is None:
+                    raise ValueError(f"Unknown settings key {section}.{key}")
+                file_key, spec = entry
+                normalized.setdefault(canonical, {})[file_key] = self._validate_setting_value(
+                    section, str(key), spec, value
+                )
+                changed.append(f"{self._camel(canonical)}.{self._camel(file_key)}")
+
+        cfg_file = self.config_dir / "config.yaml"
+        try:
+            merged = parse_config_yaml(cfg_file)
+        except ConfigParseError as exc:
+            raise OSError(f"Refusing to overwrite unreadable config file: {exc}") from exc
+
+        for section, sec_updates in normalized.items():
+            for key, value in sec_updates.items():
+                if value is None:
+                    sec = merged.get(section)
+                    if isinstance(sec, dict):
+                        sec.pop(key, None)
+                else:
+                    merged.setdefault(section, {})[key] = value
+
+        write_config_yaml_atomic(cfg_file, merged)
+        return {**self._settings_view(), "changed": sorted(changed)}
 
     def _handle_session_models(self, params: dict[str, Any]) -> dict[str, Any]:
         """B32: live model catalog from the configured providers, never a hardcoded list."""

@@ -17,14 +17,14 @@ use tokio::time::timeout;
 use crate::error::AcpError;
 use crate::models::{
     ApprovalDecisionParams, ApprovalDecisionResponse, ClientInfo, CloudAuthStatus, CloudDevice,
-    CloudDevicesList, CloudFlags, CloudRevokeResult, CloudUpdatePlan, InitializeParams,
-    InitializeResponse,
-    JsonRpcNotification, JsonRpcRequest, ModelCatalog, RequestId, SessionCancelParams,
-    SessionCancelResponse, SessionCommandParams, SessionCommandResponse, SessionDeleteResponse,
-    SessionFlagResponse, SessionListItem, SessionListResponse, SessionLoadParams,
-    SessionLoadResponse, SessionNewParams, SessionNewResponse, SessionPromptParams,
-    SessionPromptResponse, SessionRenameResponse, SessionSubagentsParams, SessionSubagentsResponse,
-    SubagentInfo, ToolCallParams, ToolCallResponse, ToolDefinition, ToolsListResponse,
+    CloudDevicesList, CloudFlags, CloudRevokeResult, CloudUpdatePlan, ConfigGetResponse,
+    ConfigSetResponse, InitializeParams, InitializeResponse, JsonRpcNotification, JsonRpcRequest,
+    ModelCatalog, RequestId, SessionCancelParams, SessionCancelResponse, SessionCommandParams,
+    SessionCommandResponse, SessionDeleteResponse, SessionFlagResponse, SessionListItem,
+    SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
+    SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionRenameResponse,
+    SessionSubagentsParams, SessionSubagentsResponse, SubagentInfo, ToolCallParams,
+    ToolCallResponse, ToolDefinition, ToolsListResponse,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -702,6 +702,22 @@ impl AcpClient {
             serde_json::json!({ "sessionId": session_id }),
         )
         .await
+    }
+
+    /// Read the sanitized settings view (whitelisted config keys only).
+    pub async fn config_get(&self) -> Result<ConfigGetResponse, AcpError> {
+        self.send_request("config/get", serde_json::json!({}))
+            .await
+    }
+
+    /// Validate-and-write a settings update; returns the fresh view plus the
+    /// dotted keys that were changed.
+    pub async fn config_set(
+        &self,
+        updates: serde_json::Value,
+    ) -> Result<ConfigSetResponse, AcpError> {
+        self.send_request("config/set", serde_json::json!({ "updates": updates }))
+            .await
     }
 
     /// Query available tools from the ACP server.

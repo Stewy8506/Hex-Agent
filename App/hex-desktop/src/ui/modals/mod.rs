@@ -11,6 +11,7 @@ pub mod approval;
 pub mod model_picker;
 pub mod palette;
 pub mod session_actions;
+pub mod settings;
 
 pub use account::{AccountAction, AccountModal, AccountMode};
 pub use approval::{ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult};
@@ -19,6 +20,7 @@ pub use palette::{CommandPaletteModal, PaletteAction, PaletteItem};
 pub use session_actions::{
     SessionActionModal, SessionActionOutcome, SessionSearchModal,
 };
+pub use settings::{SettingsAction, SettingsModal};
 
 use gpui::*;
 use crate::theme::HermesTheme;
@@ -41,6 +43,8 @@ pub enum ActiveModal {
     SessionAction(SessionActionModal),
     /// Live chat search over the session list.
     SessionSearch(SessionSearchModal),
+    /// Editable settings backed by ACP config/get + config/set (DX3).
+    Settings(SettingsModal),
 }
 
 impl ActiveModal {

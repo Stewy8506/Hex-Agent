@@ -573,6 +573,95 @@ pub struct SessionFlagResponse {
     pub pinned: bool,
 }
 
+// -- Settings surface (`config/get`, `config/set`) -------------------------
+// The Python side validates against a whitelist (CONFIG_SCHEMA) and only ever
+// echoes whitelisted keys back, so these typed structs can safely skip absent
+// fields ("not set" on the desktop) without ever carrying secrets.
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ModelSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compressor_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RuntimeSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WebSearchSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CloudSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LearningSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_reflect: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SettingsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<WebSearchSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<CloudSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learning: Option<LearningSettings>,
+}
+
+/// Result of `config/get` / `config/set`. `options` maps dotted keys to the
+/// backend's allowed choice vocabularies (single source of truth for pickers).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigGetResponse {
+    pub path: String,
+    pub workspace: String,
+    pub data_dir: String,
+    pub config: SettingsConfig,
+    pub options: serde_json::Value,
+}
+
+/// Result of `config/set`; `changed` lists the dotted keys written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigSetResponse {
+    pub path: String,
+    pub workspace: String,
+    pub data_dir: String,
+    pub config: SettingsConfig,
+    pub options: serde_json::Value,
+    pub changed: Vec<String>,
+}
+
 // -- Cloud account (`cloud/auth/*`, `cloud/devices/*`) --------------------
 // The Python ACP server returns these raw snake_case dicts from
 // cloud/session.py; field names mirror hex-backend's device rows.

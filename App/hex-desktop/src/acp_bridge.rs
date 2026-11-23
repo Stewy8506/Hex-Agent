@@ -492,6 +492,27 @@ impl AcpBridge {
         }
     }
 
+    pub async fn get_config(&self) -> Result<hex_protocol::models::ConfigGetResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.config_get().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    pub async fn set_config(
+        &self,
+        updates: serde_json::Value,
+    ) -> Result<hex_protocol::models::ConfigSetResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.config_set(updates).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Fetch the live model catalog from the backend's configured providers (B32).
     pub async fn list_models(
         &self,
