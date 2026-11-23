@@ -10,8 +10,8 @@ from .updater import verify_signed_envelope
 class RemoteConfigClient:
     """Verifies signed remote config bundles and merges safely with local ~/.hex/config.yaml."""
 
-    def __init__(self, signing_secret: str) -> None:
-        self._signing_secret = signing_secret
+    def __init__(self, server_public_key_hex: str) -> None:
+        self._server_public_key_hex = server_public_key_hex
         self._flags: dict[str, bool] = {}
         self._kill_switches: dict[str, dict[str, Any]] = {}
         self._provider_routing: dict[str, Any] = {}
@@ -19,7 +19,7 @@ class RemoteConfigClient:
     def apply_signed_config(
         self, signed_config: dict[str, Any], local_denied_features: set[str] | None = None
     ) -> dict[str, bool]:
-        if not verify_signed_envelope(signed_config, self._signing_secret):
+        if not verify_signed_envelope(signed_config, self._server_public_key_hex):
             raise ValueError("Remote config signature verification failed.")
 
         payload = signed_config["payload"]

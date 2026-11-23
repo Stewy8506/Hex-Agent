@@ -39,8 +39,8 @@ Harness/
 ├── providers/
 │   └── hex_gateway_provider.py       # [Planned - Phase 6] Dormant OpenAI-compatible adapter for hex-backend inference
 ├── crates/hex-protocol/src/
-│   ├── backend.rs                    # [Planned] Shared Rust wire types: DeviceIdentity, UpdateManifest, HostLease
-│   └── p2p.rs                        # [Planned] Shared Rust wire types: SyncEnvelope, TurnCommitBundle, ElectionVote
+│   ├── backend.rs                    # [Implemented] Shared Rust wire types: DeviceEnrollment, ServerPubkey, HostLease, ReleaseManifest, SignedEnvelope
+│   └── p2p.rs                        # [Implemented] Shared Rust wire types: SyncEnvelope, TurnCommitBundle (canonical digest), ElectionVote
 └── tests/cloud/
     └── test_cloud_client.py          # [Implemented] Unit & signed-envelope contract tests
 ```
@@ -110,7 +110,7 @@ After every completed work turn on the Primary Host:
 ## 5. Additional Wire Protocols (`Harness` ↔ `hex-backend`)
 
 ### 5.1 Auth, Encrypted Device Enrollment & Personal P2P Sync
-- Client generates an Ed25519 device keypair and computes `encrypted_device_id = dev_enc_v1:...` client-side (`cloud/auth_client.py`) before calling `POST /v1/devices/register`.
+- Client generates an Ed25519 device keypair and computes `encrypted_device_id = dev_enc_v1:...` client-side (`cloud/auth_client.py`) before calling `POST /v1/devices/register`; enrollment requires signing a single-use nonce from `POST /v1/devices/challenge` to prove private-key possession.
 - Rotating refresh credentials detect reuse and revoke the entire token family; revoking a device (`POST /v1/devices/{id}/revoke`) immediately broadcasts `device_revoked` / `peer_revoked` over `/v1/signal` so sibling devices drop its P2P tunnel.
 - Personal multi-device sync runs over three multiplexed P2P streams: `ledger-sync` (hash-chained `ledger.db`), `cognition-sync` (`USER.md`, `SOUL.md`, `MEMORY.md`, `GUARDRAILS.md`, `~/.hex/skills/` gated by `SkillSpector`), and opt-in `workspace-sync`.
 
@@ -130,6 +130,13 @@ After every completed work turn on the Primary Host:
 ---
 
 ## 6. Phased Implementation Status (`Harness` Side)
+
+### Phase A: Crypto & Wire-Contract Hardening (backend + shared)
+- [x] `hex-backend`: all envelope signing migrated from shared-secret HMAC to persistent Ed25519 identity key (`HEX_SIGNING_KEY_PATH`), published via `GET /v1/server/pubkey` and `/health`; access JWTs switched HS256 -> EdDSA.
+- [x] `hex-backend`: device enrollment now requires a single-use challenge nonce (`POST /v1/devices/challenge`) signed with the device's real Ed25519 private key; pubkeys validated/normalized at registration.
+- [x] `hex-backend`: integration token vault upgraded to AES-256-GCM (`enc_v2`) with persisted master key (`HEX_MASTER_KEY_PATH`). Outbound webhooks remain per-webhook HMAC (by design).
+- [x] `cloud/`: real Ed25519 device keypairs + challenge signing in `auth_client.py`; Ed25519 envelope verification in `updater.py` / `remote_config.py` / `team_mesh.py`.
+- [x] `crates/hex-protocol/src/{backend,p2p}.rs` implemented with cross-language contract tests (TurnCommitBundle canonical digest parity Python <-> Rust).
 
 ### Phase 1: Auth, Device Trust & Personal P2P Sync
 - [x] Implement `cloud/auth_client.py` (client-side encrypted device IDs + auth/enrollment HTTP client).

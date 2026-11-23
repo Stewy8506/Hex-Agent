@@ -7,6 +7,7 @@ description = "Agent Client Protocol (ACP) JSON-RPC 2.0 client, models, and diff
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tokio = { version = "1.0", features = ["full"] }
 thiserror = "2.0"
 anyhow = "1.0"

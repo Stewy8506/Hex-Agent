@@ -1,38 +1,57 @@
-"""Client-side signed component manifest verifier and rollback tracker."""
+"""Client-side signed component manifest verifier and rollback tracker.
+
+All hex-backend artifacts (update checks, release manifests, remote config,
+host leases, turn-commit receipts) are Ed25519-signed by the server identity
+key published at GET /v1/server/pubkey. Clients verify with that public key —
+no shared secret is ever embedded in the client.
+"""
 
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
 import json
 from pathlib import Path
 from typing import Any
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-def verify_signed_envelope(envelope: dict[str, Any], signing_secret: str) -> bool:
-    """Verify canonical-JSON HMAC-SHA256 envelope from hex-backend."""
+ENVELOPE_ALG = "ed25519"
+
+
+def _b64url_decode(segment: str) -> bytes:
+    padding = "=" * (-len(segment) % 4)
+    return base64.urlsafe_b64decode(segment + padding)
+
+
+def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
+    """Canonical form shared with hex-backend's signing module."""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def verify_signed_envelope(envelope: dict[str, Any], server_public_key_hex: str) -> bool:
+    """Verify an Ed25519-signed envelope from hex-backend against its published key."""
     payload = envelope.get("payload")
     sig_header = envelope.get("signature", "")
-    if not isinstance(payload, dict) or not sig_header.startswith("hmac-sha256:"):
+    if not isinstance(payload, dict) or not sig_header.startswith(f"{ENVELOPE_ALG}:"):
         return False
-    provided = sig_header.split(":", 1)[1]
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    expected = base64.urlsafe_b64encode(
-        hmac.new(signing_secret.encode("utf-8"), raw, hashlib.sha256).digest()
-    ).decode("ascii")
-    return hmac.compare_digest(provided, expected)
+    try:
+        public_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(server_public_key_hex))
+        public_key.verify(_b64url_decode(sig_header.split(":", 1)[1]), canonical_json_bytes(payload))
+        return True
+    except (InvalidSignature, ValueError, TypeError):
+        return False
 
 
 class ComponentUpdaterClient:
     """Verifies signed update check responses and records safe rollback metadata."""
 
-    def __init__(self, signing_secret: str, rollback_file: Path | None = None) -> None:
-        self._signing_secret = signing_secret
+    def __init__(self, server_public_key_hex: str, rollback_file: Path | None = None) -> None:
+        self._server_public_key_hex = server_public_key_hex
         self._rollback_file = rollback_file
 
     def evaluate_update_response(self, signed_response: dict[str, Any]) -> dict[str, Any]:
-        if not verify_signed_envelope(signed_response, self._signing_secret):
+        if not verify_signed_envelope(signed_response, self._server_public_key_hex):
             raise ValueError("Update response signature verification failed.")
         payload = signed_response["payload"]
         if not payload.get("compatible", True):

@@ -28,9 +28,9 @@ class TurnCommitBundle:
 class TeamMeshCoordinator:
     """Enforces host_epoch fencing and validates incoming TurnCommitBundles on Replica Peers."""
 
-    def __init__(self, local_device_id: str, signing_secret: str) -> None:
+    def __init__(self, local_device_id: str, server_public_key_hex: str) -> None:
         self.local_device_id = local_device_id
-        self._signing_secret = signing_secret
+        self._server_public_key_hex = server_public_key_hex
         self.current_epoch: int = 0
         self.primary_device_id: str | None = None
         self.last_applied_turn_seq: int = 0
@@ -47,7 +47,7 @@ class TeamMeshCoordinator:
 
     def apply_signed_host_lease(self, signed_lease: dict[str, Any]) -> str:
         """Accept a newer host_epoch lease; reject stale epochs to prevent split-brain."""
-        if not verify_signed_envelope(signed_lease, self._signing_secret):
+        if not verify_signed_envelope(signed_lease, self._server_public_key_hex):
             raise ValueError("HostLease signature verification failed.")
         lease = signed_lease["payload"]
         incoming_epoch = int(lease["host_epoch"])

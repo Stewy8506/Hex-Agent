@@ -3,37 +3,94 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 
-from cloud.auth_client import generate_device_identity
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+
+from cloud.auth_client import (
+    DeviceIdentity,
+    encrypt_device_id,
+    enrollment_signing_payload,
+    generate_device_identity,
+    sign_enrollment_challenge,
+)
 from cloud.remote_config import RemoteConfigClient
 from cloud.signaling import P2PSignalingClient
 from cloud.team_mesh import TeamMeshCoordinator, TurnCommitBundle
-from cloud.updater import ComponentUpdaterClient
-
-SECRET = "harness-cloud-test-secret"
+from cloud.updater import ComponentUpdaterClient, canonical_json_bytes, verify_signed_envelope
 
 
-def _sign(payload: dict[str, Any]) -> dict[str, Any]:
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    sig = base64.urlsafe_b64encode(
-        hmac.new(SECRET.encode("utf-8"), raw, hashlib.sha256).digest()
-    ).decode("ascii")
-    return {"payload": payload, "signature": f"hmac-sha256:{sig}", "etag": "test"}
+class _TestServerKey:
+    """Stands in for hex-backend's Ed25519 identity when signing test envelopes."""
+
+    def __init__(self) -> None:
+        self._private = Ed25519PrivateKey.generate()
+        public_raw = self._private.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        self.public_key_hex = public_raw.hex()
+
+    def sign_envelope(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw = canonical_json_bytes(payload)
+        sig = base64.urlsafe_b64encode(self._private.sign(raw)).rstrip(b"=").decode("ascii")
+        return {"payload": payload, "signature": f"ed25519:{sig}", "etag": "test"}
 
 
 class HarnessCloudClientTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.server = _TestServerKey()
+
     def test_encrypted_device_identity_never_leaks_plaintext(self) -> None:
         ident = generate_device_identity("user-account-root-key")
         self.assertTrue(ident.encrypted_device_id.startswith("dev_enc_v1:"))
         self.assertNotIn(ident.raw_device_id, ident.encrypted_device_id)
         self.assertTrue(ident.device_pubkey.startswith("ed25519:"))
+        self.assertEqual(len(ident.device_pubkey.split(":", 1)[1]), 64)
+        self.assertIsNotNone(ident.private_key)
+
+    def test_device_enrollment_signature_matches_backend_canonicalization(self) -> None:
+        """Cross-repo contract: signature verifies over hex-backend's exact canonical payload."""
+        ident = generate_device_identity("k")
+        challenge = "hex_ch_unit_test_challenge"
+        signature_b64 = sign_enrollment_challenge(ident, challenge)
+
+        # This mirrors hex_backend.devices.service.enrollment_payload + canonical_json_bytes.
+        backend_payload = json.dumps(
+            {
+                "challenge": challenge,
+                "device_pubkey": ident.device_pubkey,
+                "encrypted_device_id": ident.encrypted_device_id,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        public_raw = bytes.fromhex(ident.device_pubkey.split(":", 1)[1])
+        verifying_key = Ed25519PublicKey.from_public_bytes(public_raw)
+        verifying_key.verify(base64.urlsafe_b64decode(signature_b64 + "==" ), backend_payload)
+
+        # Tampered payload must not verify.
+        with self.assertRaises(Exception):
+            verifying_key.verify(
+                base64.urlsafe_b64decode(signature_b64 + "=="),
+                backend_payload.replace(b'"challenge"', b'"chalenge"'),
+            )
+
+    def test_enrollment_requires_locally_generated_private_key(self) -> None:
+        ident = DeviceIdentity(
+            raw_device_id="host:abc",
+            encrypted_device_id=encrypt_device_id("host:abc", "k"),
+            device_pubkey="ed25519:" + "00" * 32,
+            platform_name="test",
+            private_key=None,
+        )
+        with self.assertRaises(ValueError):
+            sign_enrollment_challenge(ident, "hex_ch_x")
 
     def test_signaling_tracks_peers_kill_switches_and_revocation(self) -> None:
         sig = P2PSignalingClient("dev_local")
@@ -67,9 +124,9 @@ class HarnessCloudClientTests(unittest.TestCase):
     def test_updater_and_remote_config_verify_signatures_and_local_denials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             rb_file = Path(tmp) / "rollback.json"
-            updater = ComponentUpdaterClient(SECRET, rollback_file=rb_file)
+            updater = ComponentUpdaterClient(self.server.public_key_hex, rollback_file=rb_file)
 
-            signed_upd = _sign(
+            signed_upd = self.server.sign_envelope(
                 {
                     "compatible": True,
                     "mandatory_upgrade_required": False,
@@ -82,14 +139,21 @@ class HarnessCloudClientTests(unittest.TestCase):
             updater.record_rollback_checkpoint("hex-core", "0.22.0")
             self.assertEqual(json.loads(rb_file.read_text())["hex-core"], "0.22.0")
 
-            # Tampered signature is rejected.
+            # Tampered payload is rejected.
             signed_upd["payload"]["mandatory_upgrade_required"] = True
             with self.assertRaises(ValueError):
                 updater.evaluate_update_response(signed_upd)
 
+            # A foreign server key is rejected.
+            stranger = _TestServerKey()
+            with self.assertRaises(ValueError):
+                ComponentUpdaterClient(stranger.public_key_hex).evaluate_update_response(
+                    self.server.sign_envelope({"compatible": True})
+                )
+
             # Remote config honors local security denials over remote enabled flags.
-            rc = RemoteConfigClient(SECRET)
-            signed_cfg = _sign(
+            rc = RemoteConfigClient(self.server.public_key_hex)
+            signed_cfg = self.server.sign_envelope(
                 {
                     "feature_flags": {
                         "p2p_cross_device_sync": True,
@@ -104,10 +168,10 @@ class HarnessCloudClientTests(unittest.TestCase):
             self.assertFalse(rc.is_enabled("cloud_task_workers"))
 
     def test_team_mesh_host_epoch_fencing_and_turn_commit_replication(self) -> None:
-        mesh = TeamMeshCoordinator("dev_peer_b", SECRET)
+        mesh = TeamMeshCoordinator("dev_peer_b", self.server.public_key_hex)
         self.assertEqual(mesh.mode, "LOCAL")
 
-        lease_e1 = _sign(
+        lease_e1 = self.server.sign_envelope(
             {
                 "project_session_id": "proj_1",
                 "host_epoch": 1,
@@ -132,7 +196,7 @@ class HarnessCloudClientTests(unittest.TestCase):
         self.assertEqual(mesh.last_applied_turn_seq, 1)
 
         # Failover promotes dev_peer_b at epoch 2.
-        lease_e2 = _sign(
+        lease_e2 = self.server.sign_envelope(
             {
                 "project_session_id": "proj_1",
                 "host_epoch": 2,

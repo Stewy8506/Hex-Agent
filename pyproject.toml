@@ -14,6 +14,7 @@ dependencies = [
     "httpx>=0.24.0",
     "typing_extensions>=4.6.0",
     "keyring>=24.0.0",
+    "cryptography>=42.0.0",
     "pyyaml>=6.0",
     "tomli>=2.0.1; python_version < '3.11'",
     "backports.strenum>=1.2.8; python_version < '3.11'",
@@ -72,6 +73,7 @@ testpaths = ["tests"]
 include-package-data = false
 py-modules = []
 packages = [
+    "cloud",
     "harness_core",
     "harness_core.capabilities",
     "harness_core.capabilities.gateways",
