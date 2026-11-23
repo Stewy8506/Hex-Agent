@@ -44,3 +44,7 @@ class RemoteConfigClient:
     @property
     def provider_routing(self) -> dict[str, Any]:
         return dict(self._provider_routing)
+
+    @property
+    def kill_switches(self) -> dict[str, dict[str, Any]]:
+        return {name: dict(ks) for name, ks in self._kill_switches.items()}

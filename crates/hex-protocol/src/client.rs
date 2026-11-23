@@ -17,7 +17,8 @@ use tokio::time::timeout;
 use crate::error::AcpError;
 use crate::models::{
     ApprovalDecisionParams, ApprovalDecisionResponse, ClientInfo, CloudAuthStatus, CloudDevice,
-    CloudDevicesList, CloudRevokeResult, InitializeParams, InitializeResponse,
+    CloudDevicesList, CloudFlags, CloudRevokeResult, CloudUpdatePlan, InitializeParams,
+    InitializeResponse,
     JsonRpcNotification, JsonRpcRequest, ModelCatalog, RequestId, SessionCancelParams,
     SessionCancelResponse, SessionCommandParams, SessionCommandResponse, SessionListItem,
     SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
@@ -719,6 +720,18 @@ impl AcpClient {
             serde_json::json!({ "device_record_id": device_record_id }),
         )
         .await
+    }
+
+    /// Check hex-backend for signed component updates (`cloud/update/check`).
+    pub async fn cloud_update_check(&self) -> Result<CloudUpdatePlan, AcpError> {
+        self.send_request("cloud/update/check", serde_json::json!({}))
+            .await
+    }
+
+    /// Fetch the verified remote-config bundle (`cloud/config/evaluate`).
+    pub async fn cloud_config_evaluate(&self) -> Result<CloudFlags, AcpError> {
+        self.send_request("cloud/config/evaluate", serde_json::json!({}))
+            .await
     }
 
     /// Invoke a tool directly.

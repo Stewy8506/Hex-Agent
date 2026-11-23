@@ -610,6 +610,53 @@ pub struct CloudEvent {
     pub device_record_id: Option<String>,
 }
 
+/// One available component update from the signed hex-backend release check.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CloudUpdateItem {
+    pub component: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mandatory: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_to: Option<String>,
+}
+
+/// Verified verdict payload from `cloud/update/check`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CloudUpdatePlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply_allowed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mandatory_upgrade_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updates: Option<Vec<CloudUpdateItem>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollbacks: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility_issues: Option<Vec<serde_json::Value>>,
+}
+
+/// Verified remote-config bundle from `cloud/config/evaluate`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CloudFlags {
+    #[serde(default)]
+    pub flags: std::collections::BTreeMap<String, bool>,
+    #[serde(default)]
+    pub kill_switches: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
 /// One model in the live backend catalog (`session/models`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -172,6 +172,77 @@ class BackendIntegrationTests(unittest.TestCase):
         rotated = json.loads(self.manager._store.get(KEYCHAIN_SERVICE, SESSION_ACCOUNT))
         self.assertNotEqual(rotated["access_token"], session["access_token"])
 
+    def test_signed_release_check_and_manifest(self) -> None:
+        from cloud.updater import verify_signed_envelope
+
+        self.manager.register(self.email, self.password)
+        self.manager.login(self.email, self.password)
+
+        verdict = self.manager.check_updates(installed_versions={"hex-core": "0.21.0"})
+        self.assertTrue(verdict["apply_allowed"])
+        by_component = {u["component"]: u for u in verdict["updates"]}
+        self.assertEqual(by_component["hex-core"]["target_version"], "0.22.0")
+
+        yanked = self.manager.check_updates(installed_versions={"hex-core": "0.21.3"})
+        self.assertTrue(
+            any(rb["rollback_to"] == "0.21.4" for rb in yanked["rollbacks"]),
+            yanked["rollbacks"],
+        )
+
+        manifest = self.manager.release_manifest("stable")
+        self.assertIn("hex-core", manifest["components"])
+
+        # Raw envelope verifies against the published server key, breaks when tampered.
+        from cloud.auth_client import HexAuthClient
+
+        envelope = HexAuthClient(self.base_url).get_manifest("stable")
+        pubkey = self.manager.server_public_key()
+        self.assertTrue(verify_signed_envelope(envelope, pubkey))
+        envelope["payload"]["components"] = {}
+        self.assertFalse(verify_signed_envelope(envelope, pubkey))
+
+    def test_evaluate_remote_config_publishes_flags(self) -> None:
+        from cloud import flags as cloud_flags
+
+        self.manager.register(self.email, self.password)
+        self.manager.login(self.email, self.password)
+        self.addCleanup(cloud_flags.reset_for_tests)
+
+        flags = self.manager.evaluate_remote_config()
+        self.assertIn("inference_gateway", flags)
+        self.assertEqual(cloud_flags.active_kill_switches(), {})
+        self.assertIsNotNone(cloud_flags.remote_config())
+
+    def test_signal_link_connects_to_live_backend(self) -> None:
+        from cloud.signaling import P2PSignalingClient, SignalLink
+
+        self.manager.register(self.email, self.password)
+        self.manager.login(self.email, self.password)
+
+        signaling = P2PSignalingClient(self.manager.device_record_id())
+        link = SignalLink(
+            self.base_url,
+            signaling,
+            token_provider=self.manager.access_token,
+            device_id_provider=self.manager.device_record_id,
+            reconnect_initial=0.05,
+        )
+        link.start()
+        try:
+            deadline = time.time() + 10
+            while time.time() < deadline and not link.status()["connected"]:
+                time.sleep(0.05)
+            status = link.status()
+            self.assertTrue(status["connected"], status)
+            self.assertEqual(status["attempts"], 0)
+
+            # Outbound frames are accepted by the real server socket.
+            self.assertTrue(link.send_turn_ack("proj_e2e", 1))
+            self.assertTrue(link.send_p2p_signal("dev_nowhere", {"hello": True}))
+        finally:
+            link.stop()
+        self.assertFalse(link.status()["running"])
+
 
 if __name__ == "__main__":
     unittest.main()

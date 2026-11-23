@@ -475,6 +475,8 @@ _SUPPORTED_METHODS = (
     "tools/list", "tools/call",
     "cloud/auth/status", "cloud/auth/register", "cloud/auth/login",
     "cloud/auth/logout", "cloud/devices/list", "cloud/devices/revoke",
+    "cloud/update/check", "cloud/config/evaluate",
+    "cloud/signal/start", "cloud/signal/stop", "cloud/signal/status",
 )
 
 
@@ -501,6 +503,8 @@ class ACPServer:
         self._turn_threads: list[threading.Thread] = []
         self._shutting_down = False
         self._cloud_account: Any | None = None
+        self._signal_link: Any | None = None
+        self._signal_lock = threading.Lock()
 
     @property
     def cloud_account(self) -> Any:
@@ -516,6 +520,52 @@ class ACPServer:
             "method": "cloud/event",
             "params": {"kind": kind, **fields},
         })
+
+    def _signal_start(self) -> dict[str, Any]:
+        from cloud.signaling import P2PSignalingClient, SignalLink
+
+        with self._signal_lock:
+            account = self.cloud_account
+            device_id = account.device_record_id()
+            if not device_id:
+                raise ValueError("Device not enrolled; sign in to HEX cloud first.")
+            if self._signal_link is None:
+                link = SignalLink(
+                    account.base_url,
+                    P2PSignalingClient(device_id),
+                    token_provider=account.access_token,
+                    device_id_provider=account.device_record_id,
+                )
+                link.start()
+                self._signal_link = link
+            return self._signal_link.status()
+
+    def _signal_stop(self) -> dict[str, Any]:
+        with self._signal_lock:
+            link = self._signal_link
+        if link is not None:
+            link.stop()
+            return link.status()
+        return {
+            "running": False,
+            "connected": False,
+            "attempts": 0,
+            "last_error": None,
+            "base_url": self.cloud_account.base_url,
+        }
+
+    def _signal_status(self) -> dict[str, Any]:
+        with self._signal_lock:
+            link = self._signal_link
+        if link is not None:
+            return link.status()
+        return {
+            "running": False,
+            "connected": False,
+            "attempts": 0,
+            "last_error": None,
+            "base_url": self.cloud_account.base_url,
+        }
 
     def _emit(self, obj: dict[str, Any]) -> None:
         """Serialize one JSON-RPC message to stdout (thread-safe)."""
@@ -706,6 +756,7 @@ class ACPServer:
                 )
             elif method == "cloud/auth/logout":
                 res = self.cloud_account.logout()
+                self._signal_stop()
                 self._emit_cloud_event("account_logged_out")
             elif method == "cloud/devices/list":
                 res = {"devices": self.cloud_account.list_devices(
@@ -719,6 +770,36 @@ class ACPServer:
                 self._emit_cloud_event(
                     "device_revoked", device_record_id=device_record_id
                 )
+            elif method == "cloud/update/check":
+                installed = params.get("installed_versions")
+                res = self.cloud_account.check_updates(
+                    installed_versions=installed if isinstance(installed, dict) else None,
+                    channel=params.get("channel") or None,
+                    platform_name=params.get("platform") or None,
+                )
+            elif method == "cloud/config/evaluate":
+                from cloud import flags as cloud_flags
+
+                flags = self.cloud_account.evaluate_remote_config(
+                    subscription_tier=params.get("subscription_tier") or None,
+                    channel=params.get("channel") or None,
+                    profile=params.get("profile") or None,
+                    beta_opt_in=(
+                        bool(params.get("beta_opt_in"))
+                        if "beta_opt_in" in params
+                        else None
+                    ),
+                )
+                res = {
+                    "flags": flags,
+                    "kill_switches": cloud_flags.active_kill_switches(),
+                }
+            elif method == "cloud/signal/start":
+                res = self._signal_start()
+            elif method == "cloud/signal/stop":
+                res = self._signal_stop()
+            elif method == "cloud/signal/status":
+                res = self._signal_status()
             else:
                 return {
                     "jsonrpc": "2.0",

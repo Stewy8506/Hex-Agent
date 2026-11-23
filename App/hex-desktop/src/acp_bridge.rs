@@ -525,6 +525,30 @@ impl AcpBridge {
         }
     }
 
+    /// Check hex-backend for signed component updates (`cloud/update/check`).
+    pub async fn cloud_update_check(
+        &self,
+    ) -> Result<hex_protocol::models::CloudUpdatePlan, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.cloud_update_check().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Fetch the verified remote-config bundle (`cloud/config/evaluate`).
+    pub async fn cloud_config_evaluate(
+        &self,
+    ) -> Result<hex_protocol::models::CloudFlags, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.cloud_config_evaluate().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Fetch one validated history page for a turn field ("prompt"/"response").
     pub async fn history_content_page(
         &self,

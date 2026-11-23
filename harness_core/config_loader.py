@@ -382,6 +382,24 @@ def load_hex_environment(
                     else:
                         cfg_props["HEX_AUTO_REFLECT"] = str(raw_ar).strip().lower()
 
+            cloud_section = cfg_data.get("cloud", {})
+            if isinstance(cloud_section, dict):
+                if cloud_section.get("base_url"):
+                    cfg_props["HEX_BACKEND_URL"] = str(cloud_section["base_url"]).strip().rstrip("/")
+                if cloud_section.get("channel"):
+                    cfg_props["HEX_CLOUD_CHANNEL"] = str(cloud_section["channel"]).strip().lower()
+                if cloud_section.get("profile"):
+                    cfg_props["HEX_CLOUD_PROFILE"] = str(cloud_section["profile"])
+                if cloud_section.get("tier"):
+                    cfg_props["HEX_CLOUD_TIER"] = str(cloud_section["tier"]).strip().lower()
+                if "beta_opt_in" in cloud_section:
+                    raw_beta = cloud_section["beta_opt_in"]
+                    cfg_props["HEX_CLOUD_BETA_OPT_IN"] = (
+                        "true"
+                        if raw_beta is True or str(raw_beta).strip().lower() in ("true", "1", "yes", "on")
+                        else "false"
+                    )
+
     for k, v in cfg_props.items():
         if override or k not in os.environ or not os.environ[k].strip():
             os.environ[k] = v

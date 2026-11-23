@@ -139,12 +139,22 @@ After every completed work turn on the Primary Host:
 - [x] `crates/hex-protocol/src/{backend,p2p}.rs` implemented with cross-language contract tests (TurnCommitBundle canonical digest parity Python <-> Rust).
 
 ### Phase B: Account & Devices End-to-End (harness core + desktop)
-- [x] `cloud/session.py`: `CloudAccountManager` — keychain-persisted device identity (Ed25519 keypair via `storage/vault_keychain.py`) and session tokens, enroll-once/reuse `device_record_id`, JWT-`exp`-driven auto-refresh (401 -> rotate -> retry), offline-safe `CloudAccountError`; base URL from `--base-url` > `HEX_CLOUD_BASE_URL` > `http://127.0.0.1:8787`.
+- [x] `cloud/session.py`: `CloudAccountManager` — keychain-persisted device identity (Ed25519 keypair via `storage/vault_keychain.py`) and session tokens, enroll-once/reuse `device_record_id`, JWT-`exp`-driven auto-refresh (401 -> rotate -> retry), offline-safe `CloudAccountError`; base URL from `--base-url` > `HEX_BACKEND_URL` (config `cloud.base_url`) > `http://127.0.0.1:8787`. (`HEX_CLOUD_BASE_URL` is reserved for the model-provider endpoint, agent/router.py.)
 - [x] `cloud/auth_client.py`: `refresh()`, `list_devices()`, `revoke_device()`; `identity_material()`/`identity_from_material()` for keychain round-trip of the keypair.
 - [x] ACP (`hex_cli/acp.py`): `cloud/auth/{status,register,login,logout}` + `cloud/devices/{list,revoke}` methods and `cloud/event` push notifications (login/logout/revoke) for the desktop.
 - [x] CLI: `hex cloud {status,register,login,logout,devices,revoke}` (`hex_cli/commands/cloud_account.py`), human + `--json` output, getpass password prompt.
 - [x] Desktop (`App/hex-desktop`): typed `AcpClient`/`AcpBridge` cloud methods, `AcpEvent::CloudAccount` demux, Account modal (hand-rolled email/password entry, login/register, device roster + revoke + sign out), header device button and sidebar account footer wired (email + "Cloud connected"/"Local mode").
 - [x] Tests: unit tests with memory keychain + cross-repo e2e (`tests/cloud/test_backend_integration.py`) booting real hex-backend under uvicorn: register -> login -> challenge enrollment -> device list -> re-login reuse -> self-revocation -> token rotation.
+
+### Phase C: Updater, Remote Config & Signaling Live (harness core + desktop)
+- [x] `cloud/auth_client.py`: `fetch_server_pubkey()`, `get_manifest(channel)`, `check_updates(token, installed, channel, platform)`, `evaluate_config(token, tier/channel/profile/beta)`; platform falls back to manifest `"any"` artifacts.
+- [x] `cloud/session.py`: `check_updates()` / `evaluate_remote_config()` / `release_manifest()` — every envelope verified against `GET /v1/server/pubkey` before use; `access_token()` / `device_record_id()` providers for the signal link.
+- [x] `cloud/flags.py`: process-wide verified-flags singleton (`flag_enabled()`, `active_kill_switches()`); `config_loader.py` maps config `cloud:` section (`base_url` -> `HEX_BACKEND_URL`, channel/profile/tier/beta vars). `models/model_metadata.py` intentionally NOT flag-gated — it is context-length probing with no natural flag consumers (documented deviation).
+- [x] `cloud/signaling.py`: `SignalLink` — real `websockets.sync` client to `/v1/signal` with reconnect/backoff, token re-read per attempt, thread-safe `send_turn_ack`/`send_p2p_signal`/`request_failover`, `status()`, injectable connect factory; `websockets>=12.0` dependency.
+- [x] ACP: `cloud/update/check`, `cloud/config/evaluate`, `cloud/signal/{start,stop,status}`; `cloud/auth/logout` stops the signal link.
+- [x] CLI: `hex update` (`hex_cli/commands/update.py`) — human + `--json`, `--manifest` view, `--channel`; uses `harness_core.__version__` for `hex-core`.
+- [x] Desktop: `CloudUpdatePlan`/`CloudFlags` wire types + `cloud_update_check`/`cloud_config_evaluate` bridge calls; startup/sign-in update check; update banner between header and feed (addition tint = eligible, deletion tint = mandatory/incompatible); header bell with count badge (pending approvals + update) routing to first approval or account modal.
+- [x] Tests: local Ed25519-signed envelope units (`test_update_config.py`), SignalLink fake-socket units (`test_signal_link.py`), live-backend e2e additions (signed release check incl. yank rollback, manifest tamper detection, remote-config flags, real WS connect + outbound frames).
 
 ### Phase 1: Auth, Device Trust & Personal P2P Sync
 - [x] Implement `cloud/auth_client.py` (client-side encrypted device IDs + auth/enrollment HTTP client).
@@ -156,7 +166,7 @@ After every completed work turn on the Primary Host:
 ### Phase 2: Component Updater & Remote Configuration
 - [x] Implement `cloud/updater.py` (signed manifest verifier, compatibility gate, rollback checkpoints).
 - [x] Implement `cloud/remote_config.py` (signed flag & routing merger with local-denial precedence).
-- [ ] Hook `cloud/remote_config.py` into `harness_core/config_loader.py` & `models/model_metadata.py` and add `hex update`.
+- [x] Hook `cloud/remote_config.py` into `harness_core/config_loader.py` (config `cloud:` section -> `HEX_BACKEND_URL` + channel/profile/tier/beta env) and add `hex update` (Phase C). `models/model_metadata.py` deviation: it is offline context-length probing with no flag consumers; artificial gating skipped.
 
 ### Phase 3: Team Mesh, Post-Turn Replication & Failover
 - [x] Implement `cloud/team_mesh.py` (`TeamMeshCoordinator`, monotonic `host_epoch` fencing, `TurnCommitBundle` validation).

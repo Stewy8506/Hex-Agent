@@ -31,6 +31,9 @@ from .auth_client import (
     identity_from_material,
     identity_material,
 )
+from .flags import set_remote_config
+from .remote_config import RemoteConfigClient
+from .updater import ComponentUpdaterClient, verify_signed_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +116,26 @@ def _wrap_transport_error(base_url: str, exc: Exception) -> CloudAccountError:
 
 
 def resolve_base_url(explicit: str | None = None) -> str:
-    """Explicit flag > HEX_CLOUD_BASE_URL env > default loopback backend."""
+    """Explicit flag > HEX_BACKEND_URL env (config cloud.base_url) > default loopback.
+
+    HEX_CLOUD_BASE_URL is deliberately NOT consulted here: that variable is the
+    model-provider endpoint override (agent/router.py), not the control plane.
+    """
     if explicit:
         return explicit.rstrip("/")
-    env = os.getenv("HEX_CLOUD_BASE_URL", "").strip()
+    env = os.getenv("HEX_BACKEND_URL", "").strip()
     if env:
         return env.rstrip("/")
     return DEFAULT_BASE_URL
+
+
+def _local_core_version() -> str:
+    try:
+        from harness_core import __version__
+
+        return str(__version__)
+    except Exception:
+        return "0.0.0"
 
 
 class CloudAccountManager:
@@ -240,6 +256,27 @@ class CloudAccountManager:
             self._store.delete(KEYCHAIN_SERVICE, SESSION_ACCOUNT)
             return self.status()
 
+    def access_token(self) -> str | None:
+        """Current auto-refreshed access token, or None when not signed in."""
+        with self._lock:
+            session = self._load_session()
+            if not session:
+                return None
+            try:
+                return str(self._refresh_tokens(session)["access_token"])
+            except CloudAccountError:
+                return None
+
+    def device_record_id(self) -> str | None:
+        with self._lock:
+            session = self._load_session()
+            identity = self._load_identity()
+            return (
+                (session or {}).get("device_record_id")
+                or (identity or {}).get("device_record_id")
+                or None
+            )
+
     # -- authenticated device operations -----------------------------------
 
     def _refresh_tokens(self, session: dict[str, Any], force: bool = False) -> dict[str, Any]:
@@ -303,3 +340,81 @@ class CloudAccountManager:
             return result
 
         return self._authed(_revoke)
+
+    # -- signed control-plane artifacts --------------------------------------
+
+    def server_public_key(self) -> str:
+        """Fetch the hex-backend Ed25519 identity key used to verify signed envelopes."""
+        client = HexAuthClient(self.base_url)
+        try:
+            payload = client.fetch_server_pubkey()
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            raise _wrap_transport_error(self.base_url, exc) from exc
+        if payload.get("algorithm") != "ed25519" or not payload.get("public_key"):
+            raise CloudAccountError("Server published an unsupported identity key type.")
+        return str(payload["public_key"])
+
+    def check_updates(
+        self,
+        installed_versions: dict[str, str] | None = None,
+        channel: str | None = None,
+        platform_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Signed update verdict (compatibility + rollout), locally verified."""
+        installed = dict(installed_versions or {"hex-core": _local_core_version()})
+        channel = channel or os.getenv("HEX_CLOUD_CHANNEL", "stable")
+        client = HexAuthClient(self.base_url)
+
+        def _call(token: str) -> dict[str, Any]:
+            updater = ComponentUpdaterClient(self.server_public_key())
+            return updater.evaluate_update_response(
+                client.check_updates(token, installed, channel=channel, platform_name=platform_name)
+            )
+
+        return self._authed(_call)
+
+    def evaluate_remote_config(
+        self,
+        subscription_tier: str | None = None,
+        channel: str | None = None,
+        profile: str | None = None,
+        beta_opt_in: bool | None = None,
+        local_denied_features: set[str] | None = None,
+    ) -> dict[str, bool]:
+        """Signed feature-flag bundle, locally verified, then published process-wide."""
+        tier = subscription_tier or os.getenv("HEX_CLOUD_TIER", "free")
+        channel = channel or os.getenv("HEX_CLOUD_CHANNEL", "stable")
+        profile = profile or os.getenv("HEX_CLOUD_PROFILE", "default")
+        if beta_opt_in is None:
+            beta_opt_in = os.getenv("HEX_CLOUD_BETA_OPT_IN", "").strip().lower() in ("1", "true", "yes", "on")
+        client = HexAuthClient(self.base_url)
+        holder: dict[str, RemoteConfigClient] = {}
+
+        def _call(token: str) -> dict[str, bool]:
+            remote_cfg = RemoteConfigClient(self.server_public_key())
+            holder["client"] = remote_cfg
+            envelope = client.evaluate_config(
+                token,
+                subscription_tier=tier,
+                channel=channel,
+                profile=profile,
+                beta_opt_in=beta_opt_in,
+            )
+            return remote_cfg.apply_signed_config(
+                envelope, local_denied_features=local_denied_features
+            )
+
+        flags = self._authed(_call)
+        set_remote_config(holder["client"])
+        return flags
+
+    def release_manifest(self, channel: str = "stable") -> dict[str, Any]:
+        """Signed release manifest payload for a channel, locally verified."""
+        client = HexAuthClient(self.base_url)
+        try:
+            envelope = client.get_manifest(channel)
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            raise _wrap_transport_error(self.base_url, exc) from exc
+        if not verify_signed_envelope(envelope, self.server_public_key()):
+            raise CloudAccountError("Release manifest signature verification failed.")
+        return envelope["payload"]

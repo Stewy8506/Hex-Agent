@@ -223,8 +223,14 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_cloud.add_argument("--password", default=None, help="Account password (register/login; prompted when omitted)")
     p_cloud.add_argument("--device", dest="device_record_id", default=None, help="Device record id to revoke (revoke)")
     p_cloud.add_argument("--include-revoked", action="store_true", help="Include revoked devices in the device list")
-    p_cloud.add_argument("--base-url", default=None, help="hex-backend base URL override (default: HEX_CLOUD_BASE_URL or http://127.0.0.1:8787)")
+    p_cloud.add_argument("--base-url", default=None, help="hex-backend base URL override (default: HEX_BACKEND_URL or http://127.0.0.1:8787)")
     p_cloud.add_argument("--json", action="store_true", help="Emit raw JSON output")
+
+    p_update = sub.add_parser("update", help="Check hex-backend for signed component updates and rollout verdicts")
+    p_update.add_argument("--channel", default=None, help="Release channel (default: HEX_CLOUD_CHANNEL or stable)")
+    p_update.add_argument("--manifest", action="store_true", help="Print the signed release manifest for the channel")
+    p_update.add_argument("--base-url", default=None, help="hex-backend base URL override (default: HEX_BACKEND_URL or http://127.0.0.1:8787)")
+    p_update.add_argument("--json", action="store_true", help="Emit raw JSON output")
 
     p_quota = sub.add_parser("quota", help="Inspect live Google Antigravity model quota windows and reset times")
     p_quota.add_argument("--auth-file", default=None, help="Custom path to antigravity_auth.json")
@@ -738,6 +744,11 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
         from harness_core.client.commands.cloud_account import run_cloud_command
 
         return run_cloud_command(args)
+
+    if args.cmd == "update":
+        from harness_core.client.commands.update import run_update_command
+
+        return run_update_command(args)
 
     if args.cmd == "quota":
         from harness_core.client.commands.antigravity import run_quota_command

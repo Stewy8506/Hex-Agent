@@ -29,7 +29,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use hex_protocol::error::AcpError;
 use hex_protocol::models::{
-    ApprovalDecisionResponse, CloudAuthStatus, PagedSessionLoad, SessionNewResponse,
+    ApprovalDecisionResponse, CloudAuthStatus, CloudUpdatePlan, PagedSessionLoad, SessionNewResponse,
     SessionPromptResponse,
 };
 
@@ -294,6 +294,8 @@ pub struct ChatView {
     home_connection_error: Option<String>,
     /// Cached `cloud/auth/status` for the sidebar footer and header device chip.
     cloud_status: Option<CloudAuthStatus>,
+    /// Latest verified update plan from `cloud/update/check` (signed in only).
+    cloud_update: Option<CloudUpdatePlan>,
     /// Scroll state of the bottom-anchored message list; owned here because
     /// `AppShell` derives Debug/Clone/PartialEq and `ListState` cannot.
     feed_list: ListState,
@@ -357,6 +359,7 @@ impl ChatView {
             settings_open: false,
             home_connection_error: None,
             cloud_status: None,
+            cloud_update: None,
             feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             feed_synced_count: 0,
         };
@@ -381,6 +384,7 @@ impl ChatView {
                             status.email.clone().unwrap_or_else(|| "Account".into()),
                             "Cloud connected",
                         );
+                        view.refresh_cloud_update(cx);
                     } else {
                         view.shell.sidebar.set_account_status("Account", "Local mode");
                     }
@@ -390,6 +394,72 @@ impl ChatView {
             .ok();
         })
         .detach();
+    }
+
+    /// Signed-in update check: the banner only appears for verified plans;
+    /// signed-out or backend-down errors simply clear it.
+    fn refresh_cloud_update(&mut self, cx: &mut Context<Self>) {
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt.spawn(async move { bridge.cloud_update_check().await }).await;
+            this.update(cx, |view, cx| {
+                view.cloud_update = match res {
+                    Ok(Ok(plan)) => Some(plan),
+                    _ => None,
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Pending approval modals (active + queued), mirroring the render badge.
+    fn pending_approval_count(&self) -> usize {
+        matches!(self.shell.active_modal, ActiveModal::Approval(_)) as usize
+            + self
+                .shell
+                .modal_queue
+                .iter()
+                .filter(|m| matches!(m, ActiveModal::Approval(_)))
+                .count()
+    }
+
+    /// Aggregate notification count driving the header bell badge.
+    fn notification_count(&self) -> usize {
+        self.pending_approval_count()
+            + if self.update_banner_line().is_some() { 1 } else { 0 }
+    }
+
+    /// One-line banner summary for the verified update plan, if any:
+    /// `(text, mandatory)`.
+    fn update_banner_line(&self) -> Option<(String, bool)> {
+        let plan = self.cloud_update.as_ref()?;
+        if plan.apply_allowed == Some(false) {
+            return Some((
+                "Incompatible update set — HEX components are out of sync".to_string(),
+                true,
+            ));
+        }
+        let updates = plan.updates.as_ref()?;
+        if updates.is_empty() {
+            return None;
+        }
+        let mandatory = plan.mandatory_upgrade_required == Some(true)
+            || updates.iter().any(|u| u.mandatory == Some(true));
+        let names: Vec<String> = updates
+            .iter()
+            .map(|u| {
+                format!(
+                    "{} {} → {}",
+                    u.component,
+                    u.installed_version.as_deref().unwrap_or("?"),
+                    u.target_version.as_deref().unwrap_or("?")
+                )
+            })
+            .collect();
+        Some((names.join(", "), mandatory))
     }
 
     /// Resolve the git branch on a blocking pool instead of the UI thread (B35).
@@ -2833,6 +2903,49 @@ impl ChatView {
                                     .flex_row()
                                     .items_center()
                                     .gap(px(4.0))
+                                    .child({
+                                        let bell_count = self.notification_count();
+                                        div()
+                                            .id("header_bell")
+                                            .relative()
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if this.pending_approval_count() > 0 {
+                                                    this.open_first_pending_approval(cx);
+                                                } else {
+                                                    this.open_account_modal(cx);
+                                                }
+                                            }))
+                                            .child(mockup_icon_button(
+                                                theme,
+                                                "bell",
+                                                crate::ui::shell::HEADER_ICON,
+                                                theme.mockup_text_muted,
+                                                None,
+                                            ))
+                                            .when(bell_count > 0, |c| {
+                                                c.child(
+                                                    div()
+                                                        .absolute()
+                                                        .top(px(-3.0))
+                                                        .right(px(-3.0))
+                                                        .min_w(px(14.0))
+                                                        .h(px(14.0))
+                                                        .px(px(3.0))
+                                                        .rounded_full()
+                                                        .bg(theme.accent_blue)
+                                                        .text_color(theme.mockup_body)
+                                                        .text_size(px(9.0))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .child(SharedString::from(
+                                                            bell_count.to_string(),
+                                                        )),
+                                                )
+                                            })
+                                    })
                                     .child(
                                         div()
                                             .id("header_device")
@@ -2888,6 +3001,7 @@ impl ChatView {
                             ),
                     ),
             )
+            .children(self.render_update_banner(theme))
             .child(if coming_soon_pane {
                 div()
                     .flex_1()
@@ -2976,6 +3090,38 @@ impl ChatView {
         }
     }
 
+    /// Signed-update pill between the header and the feed (absent when up to
+    /// date or signed out). Mandatory/incompatible plans use the deletion
+    /// tint; eligible updates use the addition tint.
+    fn render_update_banner(&self, theme: &HermesTheme) -> Option<AnyElement> {
+        let (line, mandatory) = self.update_banner_line()?;
+        let (bg, fg) = if mandatory {
+            (theme.mockup_diff_del_bg, theme.rose_fg())
+        } else {
+            (theme.mockup_diff_add_bg, theme.mockup_diff_add_fg)
+        };
+        Some(
+            div()
+                .mx(px(crate::ui::shell::HEADER_PADDING_X))
+                .mt(px(6.0))
+                .child(
+                    div()
+                        .rounded(px(8.0))
+                        .bg(bg)
+                        .px_3()
+                        .py(px(6.0))
+                        .text_size(px(MockupTypeScale::HINT_SIZE))
+                        .text_color(fg)
+                        .child(SharedString::from(if mandatory {
+                            format!("Update required — {line}. Run `hex update`, then restart.")
+                        } else {
+                            format!("Update available — {line}. Run `hex update` to apply.")
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Syncs sidebar live state every frame: live-turn session ids drive the
     /// slot spinners and the running project dot; pending-approval session
     /// ids drive the "Review" chips (sidebar rows and the Home Continue list).
@@ -3005,15 +3151,7 @@ impl Render for ChatView {
         // Phase 3: badge + bell reflect the live approval queue every frame
         // (active modal + queued approval modals).
         {
-            let pending = match &self.shell.active_modal {
-                ActiveModal::Approval(_) => 1,
-                _ => 0,
-            } + self
-                .shell
-                .modal_queue
-                .iter()
-                .filter(|m| matches!(m, ActiveModal::Approval(_)))
-                .count();
+            let pending = self.pending_approval_count();
             self.shell.sidebar.set_pending_approvals(pending);
         }
         self.sync_sidebar_live_state();

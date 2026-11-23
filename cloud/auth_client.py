@@ -15,6 +15,7 @@ import json
 import platform
 import secrets
 import socket
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
@@ -206,4 +207,55 @@ class HexAuthClient:
                 "device_signature": device_signature,
             },
             access_token=access_token,
+        )
+
+    # -- signed control-plane artifacts -------------------------------------
+
+    def fetch_server_pubkey(self) -> dict[str, Any]:
+        """GET /v1/server/pubkey — the Ed25519 key every signed envelope verifies against."""
+        return self._request_json("/v1/server/pubkey", None, method="GET")
+
+    def get_manifest(self, channel: str = "stable") -> dict[str, Any]:
+        """GET /v1/releases/manifest/{channel} — signed release manifest envelope."""
+        return self._request_json(f"/v1/releases/manifest/{channel}", None, method="GET")
+
+    def check_updates(
+        self,
+        access_token: str,
+        installed_versions: dict[str, str],
+        channel: str = "stable",
+        platform_name: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /v1/releases/check — signed compatibility/rollout verdict envelope."""
+        if platform_name is None:
+            platform_name = f"{platform.system().lower()}-{platform.machine().lower()}"
+        return self._post_json(
+            "/v1/releases/check",
+            {
+                "installed_versions": installed_versions,
+                "channel": channel,
+                "platform": platform_name,
+            },
+            access_token=access_token,
+        )
+
+    def evaluate_config(
+        self,
+        access_token: str,
+        subscription_tier: str = "free",
+        channel: str = "stable",
+        profile: str = "default",
+        beta_opt_in: bool = False,
+    ) -> dict[str, Any]:
+        """GET /v1/config/evaluate — signed feature-flag / kill-switch bundle envelope."""
+        query = urllib.parse.urlencode(
+            {
+                "subscription_tier": subscription_tier,
+                "channel": channel,
+                "profile": profile,
+                "beta_opt_in": "true" if beta_opt_in else "false",
+            }
+        )
+        return self._request_json(
+            f"/v1/config/evaluate?{query}", None, access_token=access_token, method="GET"
         )
