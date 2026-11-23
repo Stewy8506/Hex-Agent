@@ -196,12 +196,16 @@ impl AppShell {
                 // Gauge update is owned by ChatView's route_event; shell keeps
                 // no gauge state of its own.
             }
+            AcpEvent::ThoughtChunk { .. } => {
+                // Reasoning state is owned by ChatView; the static shell path
+                // renders no thinking disclosure.
+            }
             AcpEvent::ToolCall { call_id, tool_name, arguments_json, .. } => {
                 let card = ToolCallCard::new(call_id, tool_name, arguments_json);
                 self.feed.add_tool_call(card);
             }
-            AcpEvent::ToolResult { call_id, output_text, is_error, .. } => {
-                self.feed.update_tool_result(&call_id, &output_text, is_error);
+            AcpEvent::ToolResult { call_id, output_text, is_error, diff, .. } => {
+                self.feed.update_tool_result(&call_id, &output_text, is_error, diff.as_deref());
             }
             AcpEvent::ApprovalRequest { approval_id, session_id, tool_name, risk_level, command, description, .. } => {
                 let mut modal = ToolApprovalModal::new(approval_id, tool_name, command, risk_level);
@@ -367,6 +371,7 @@ mod tests {
             call_id: "tc_1".to_string(),
             output_text: "file1.rs\nfile2.rs".to_string(),
             is_error: false,
+            diff: None,
         });
 
         // 6. Approval request

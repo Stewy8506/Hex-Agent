@@ -17,7 +17,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ui::home::{ContinueRow, COMING_SOON_DOCK};
 use crate::ui::home;
@@ -39,7 +39,7 @@ use crate::menu::init_menus;
 use crate::shortcuts::{self, init_shortcuts};
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
-use crate::ui::feed::{MessageFeed, MessageItem};
+use crate::ui::feed::{ApprovalCard, ApprovalCardState, MessageFeed, MessageItem};
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
 use crate::ui::modals::account::AccountAction;
 use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
@@ -51,6 +51,7 @@ use crate::ui::modals::{render_modal_container, ActiveModal, AccountModal, Model
 use crate::ui::model_pill::SendButton;
 use crate::ui::motion;
 use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
+use crate::ui::reasoning::ThinkingDisclosure;
 use crate::ui::session_list::SessionItem;
 use crate::ui::shell::{AppShell, ShellView};
 use crate::ui::sidebar::{ProviderState, SidebarHandlers};
@@ -304,6 +305,11 @@ pub struct ChatView {
     feed_list: ListState,
     /// Feed item count currently spliced into `feed_list`.
     feed_synced_count: usize,
+    /// Operator-attached local file paths pending inclusion in the next prompt.
+    attachments: Vec<String>,
+    /// When the first reasoning chunk arrived per session, for the
+    /// "Thought for Ns" header on turn completion.
+    thought_starts: HashMap<String, Instant>,
 }
 
 impl Focusable for ChatView {
@@ -364,6 +370,8 @@ impl ChatView {
             cloud_update: None,
             feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             feed_synced_count: 0,
+            attachments: Vec::new(),
+            thought_starts: HashMap::new(),
         };
         view.start_event_pump(cx);
         view.start_backend(cx);
@@ -796,7 +804,9 @@ impl ChatView {
             return;
         };
 
-        // Approvals surface as a modal regardless of which session is active.
+        // Approvals surface as a modal regardless of which session is active,
+        // and mirror into that session's feed so the stream shows what was
+        // asked and how it resolved.
         if let AcpEvent::ApprovalRequest {
             approval_id,
             session_id,
@@ -807,12 +817,50 @@ impl ChatView {
             ..
         } = event
         {
-            let mut modal = ToolApprovalModal::new(approval_id, tool_name, command, risk_level);
+            let mut modal = ToolApprovalModal::new(
+                approval_id.clone(),
+                tool_name.clone(),
+                command.clone(),
+                risk_level.clone(),
+            );
             modal.session_id = Some(session_id.clone());
-            if let Some(desc) = description {
+            if let Some(desc) = description.clone() {
                 modal = modal.with_description(desc);
             }
             self.shell.open_approval(modal);
+
+            let summary_source = if command.trim().is_empty() {
+                description.as_deref().unwrap_or_default()
+            } else {
+                command.as_str()
+            };
+            let summary: String = summary_source.chars().take(200).collect();
+            let summary = if summary.trim().is_empty() {
+                tool_name.clone()
+            } else {
+                summary
+            };
+            let feed: &mut MessageFeed =
+                if self.shell.active_session_id.as_deref() == Some(session_id.as_str()) {
+                    &mut self.shell.feed
+                } else {
+                    match self.sessions.get_mut(&session_id) {
+                        Some(state) => &mut state.feed,
+                        None => {
+                            // The modal still carries the request even when no
+                            // feed exists yet for this session.
+                            self.sync_transport_state();
+                            cx.notify();
+                            return;
+                        }
+                    }
+                };
+            feed.add_approval_card(ApprovalCard::new(
+                approval_id,
+                tool_name,
+                summary,
+                risk_level,
+            ));
             self.sync_transport_state();
             cx.notify();
             return;
@@ -821,6 +869,17 @@ impl ChatView {
         let is_active = self.shell.active_session_id.as_deref() == Some(sid.as_str());
         let running = self.running_turns.contains(&sid);
         let turn_assistant = self.turn_assistants.get(&sid).cloned();
+        // Elapsed reasoning time only when this notification ends the turn.
+        let thought_elapsed = if matches!(event, AcpEvent::TurnComplete { .. }) {
+            self.thought_starts.remove(&sid).map(|t| t.elapsed().as_secs_f64())
+        } else {
+            None
+        };
+        // Stamp the reasoning clock before the feed borrow (same field can't
+        // be touched while `feed` aliases into `self`).
+        if matches!(event, AcpEvent::ThoughtChunk { .. }) {
+            self.thought_starts.entry(sid.clone()).or_insert_with(Instant::now);
+        }
 
         {
             let feed: &mut MessageFeed = if is_active {
@@ -852,8 +911,29 @@ impl ChatView {
                         feed.append_streaming_chunk(&text);
                     }
                 }
+                AcpEvent::ThoughtChunk { text, .. } => {
+                    if let Some(assistant) = turn_assistant
+                        .as_deref()
+                        .and_then(|id| find_assistant_mut(feed, id))
+                    {
+                        let disclosure = assistant
+                            .reasoning
+                            .get_or_insert_with(|| ThinkingDisclosure::new("").with_generating(true));
+                        disclosure.append_chunk(&text);
+                    }
+                }
                 AcpEvent::TurnComplete { .. } => {
                     feed.finish_streaming();
+                    if let Some(elapsed) = thought_elapsed {
+                        if let Some(assistant) = turn_assistant
+                            .as_deref()
+                            .and_then(|id| find_assistant_mut(feed, id))
+                        {
+                            if let Some(disclosure) = &mut assistant.reasoning {
+                                disclosure.finish(elapsed);
+                            }
+                        }
+                    }
                 }
                 AcpEvent::ToolCall {
                     call_id,
@@ -874,9 +954,10 @@ impl ChatView {
                     call_id,
                     output_text,
                     is_error,
+                    diff,
                     ..
                 } => {
-                    feed.update_tool_result(&call_id, &output_text, is_error);
+                    feed.update_tool_result(&call_id, &output_text, is_error, diff.as_deref());
                 }
                 _ => {}
             }
@@ -1457,7 +1538,7 @@ impl ChatView {
 
     fn submit_prompt(&mut self, cx: &mut Context<Self>) {
         let text = self.content.trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() && self.attachments.is_empty() {
             return;
         }
         self.submit_text(text, cx);
@@ -1480,8 +1561,11 @@ impl ChatView {
             return;
         };
 
+        let attachments = std::mem::take(&mut self.attachments);
         self.reset_editor(cx);
-        self.shell.feed.add_user_message(text.clone());
+        self.shell
+            .feed
+            .add_user_message_with_attachments(text.clone(), attachments.clone());
         // Create the turn's assistant message up front so streamed deltas, tool
         // cards, and the authoritative response all reconcile into one message
         // regardless of which path wins the race.
@@ -1514,7 +1598,15 @@ impl ChatView {
         let sid = session_id.clone();
         cx.spawn(async move |this, cx| {
             let result = rt
-                .spawn(async move { bridge.send_prompt(&sid, &text).await })
+                .spawn(async move {
+                    if attachments.is_empty() {
+                        bridge.send_prompt(&sid, &text).await
+                    } else {
+                        bridge
+                            .send_prompt_with_attachments(&sid, &text, &attachments)
+                            .await
+                    }
+                })
                 .await;
             this.update(cx, |view, cx| view.finish_turn(&session_id, result, cx))
                 .ok();
@@ -1762,13 +1854,28 @@ impl ChatView {
                 modal.is_submitting = false;
             }
         }
+        let approval_session = if let ActiveModal::Approval(modal) = &self.shell.active_modal {
+            if modal.request_id == approval_id {
+                modal.session_id.clone()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         match res {
             Ok(Ok(resp)) if resp.status == "applied" && resp.applied != Some(false) => {
-                self.shell.dismiss_modal();
                 let outcome = resp.outcome.clone().unwrap_or_else(|| match choice {
                     ToolApprovalChoice::Deny => "DENY".to_string(),
                     _ => "APPROVE".to_string(),
                 });
+                let card_state = if outcome == "DENY" {
+                    ApprovalCardState::Denied
+                } else {
+                    ApprovalCardState::Approved
+                };
+                self.mark_approval_card(&approval_id, approval_session.as_deref(), card_state);
+                self.shell.dismiss_modal();
                 let notice = if outcome == "DENY" {
                     "Approval denied; the runtime blocked the action.".to_string()
                 } else if let (Some(lease_id), Some(ttl)) = (&resp.lease_id, resp.lease_ttl_seconds) {
@@ -1800,6 +1907,26 @@ impl ChatView {
             }
         }
         cx.notify();
+    }
+
+    /// Marks the in-feed approval card(s) with the runtime-confirmed outcome.
+    fn mark_approval_card(
+        &mut self,
+        approval_id: &str,
+        session_id: Option<&str>,
+        state: ApprovalCardState,
+    ) {
+        let mut touched = false;
+        if let Some(sid) = session_id {
+            if self.shell.active_session_id.as_deref() == Some(sid) {
+                touched |= self.shell.feed.update_approval_state(approval_id, state);
+            } else if let Some(session) = self.sessions.get_mut(sid) {
+                touched |= session.feed.update_approval_state(approval_id, state);
+            }
+        }
+        if !touched {
+            self.shell.feed.update_approval_state(approval_id, state);
+        }
     }
 
     fn execute_palette_action(&mut self, action: PaletteAction, cx: &mut Context<Self>) {
@@ -1867,6 +1994,13 @@ impl ChatView {
                 }
                 MessageItem::SystemNotice(notice) => {
                     md.push_str(&format!("> {notice}\n\n"));
+                }
+                MessageItem::Approval(card) => {
+                    md.push_str(&format!(
+                        "> Approval `{}` — {}\n\n",
+                        card.tool_name,
+                        card.state.label()
+                    ));
                 }
             }
         }
@@ -2796,6 +2930,31 @@ impl ChatView {
 
     fn reset_editor(&mut self, cx: &mut Context<Self>) {
         self.set_editor_content(String::new(), cx);
+        self.attachments.clear();
+    }
+
+    /// Opens the native file picker and stages the picked files as prompt
+    /// attachments (deduped; the runtime enforces its own count/size budget).
+    fn open_file_picker(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let picked = rfd::FileDialog::new()
+            .set_title("Attach files")
+            .pick_files();
+        if let Some(paths) = picked {
+            for path in paths {
+                let as_str = path.to_string_lossy().to_string();
+                if !self.attachments.contains(&as_str) {
+                    self.attachments.push(as_str);
+                }
+            }
+            cx.notify();
+        }
+    }
+
+    fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.attachments.len() {
+            self.attachments.remove(index);
+            cx.notify();
+        }
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -3002,13 +3161,66 @@ impl ChatView {
         variant: ComposerVariant,
     ) -> Div {
         let running = self.active_turn_running();
-        let can_send = !self.content.trim().is_empty() && !running;
+        let can_send =
+            (!self.content.trim().is_empty() || !self.attachments.is_empty()) && !running;
         let send_btn = SendButton::new(running, can_send);
         let session = variant == ComposerVariant::Session;
         let placeholder = if session {
             SESSION_PLACEHOLDER.to_string()
         } else {
             self.shell.composer.placeholder.clone()
+        };
+
+        // Staged attachment chips sit above the input row; the attach icon in
+        // the toolbar returns with a real file picker (DX4).
+        let attachment_chips = if self.attachments.is_empty() {
+            None
+        } else {
+            let mut chips_row = div()
+                .w_full()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.0))
+                .pb(px(8.0));
+            for (index, path) in self.attachments.iter().enumerate() {
+                let name: String = path
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(path)
+                    .to_string();
+                chips_row = chips_row.child(
+                    div()
+                        .id(SharedString::from(format!("attach_chip_{index}")))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .rounded(px(6.0))
+                        .bg(theme.mockup_chip)
+                        .border_1()
+                        .border_color(theme.mockup_border)
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.remove_attachment(index, cx);
+                        }))
+                        .child(
+                            div()
+                                .font_family(theme.font_mono()[0].clone())
+                                .text_size(px(MockupTypeScale::HINT_SIZE))
+                                .text_color(theme.mockup_text_muted)
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(MockupTypeScale::HINT_SIZE))
+                                .text_color(theme.mockup_text_dim)
+                                .child("✕"),
+                        ),
+                );
+            }
+            Some(chips_row)
         };
 
         // Input row: 16/20 text, the focus target and editor action surface.
@@ -3040,14 +3252,27 @@ impl ChatView {
                 placeholder,
             });
 
-        // Toolbar (mockup gap 8): model pill, spacer, send. The mockup's
-        // attach / Auto / mic controls stay out until they do something.
+        // Toolbar (mockup gap 8): attach, model pill, spacer, send. Attach
+        // returned in DX4 with a real file picker; Auto/mic stay out — they
+        // still do nothing honest.
         let toolbar = div()
             .w_full()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(8.0))
+            .child(
+                div()
+                    .id("composer_attach")
+                    .on_click(cx.listener(Self::open_file_picker))
+                    .child(mockup_icon_button(
+                        theme,
+                        "attach",
+                        16.0,
+                        theme.mockup_text_muted,
+                        None,
+                    )),
+            )
             .child(
                 div()
                     .id("model_pill_button")
@@ -3074,12 +3299,18 @@ impl ChatView {
                     .child(send_btn.render(theme)),
             );
 
+        let mut input_area = div().w_full().flex().flex_col();
+        if let Some(chips) = attachment_chips {
+            input_area = input_area.child(chips);
+        }
+        input_area = input_area.child(input_row);
+
         let column = div()
             .w_full()
             .flex()
             .flex_col()
             .gap(px(COMPOSER_COLUMN_GAP))
-            .child(input_row)
+            .child(input_area)
             .child(toolbar);
 
         let glow = glow_card(column, theme);

@@ -28,4 +28,5 @@ pub use ui::{
     ThinkingDisclosure, TokenGaugeWidget, ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult,
     ToolCallCard, ToolStatus, UserMessageCard,
 };
+pub use ui::feed::{ApprovalCard, ApprovalCardState};
 pub use window::WindowConfig;

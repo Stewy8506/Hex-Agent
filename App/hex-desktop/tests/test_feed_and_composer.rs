@@ -5,9 +5,9 @@ use gpui::*;
 use hex_desktop::theme::HermesTheme;
 use hex_desktop::ui::{
     format_reasoning_elapsed, format_token_number, line_background, line_foreground, line_prefix,
-    provider_dot_color, render_ascii_progress_bar, AppShell, DiffView, GaugeThreshold,
-    MessageFeed, MessageItem, PromptComposer, ThinkingDisclosure, TokenGaugeWidget,
-    ToolCallCard, ToolStatus,
+    provider_dot_color, render_ascii_progress_bar, ApprovalCard, ApprovalCardState, AppShell,
+    DiffView, GaugeThreshold, MessageFeed, MessageItem, PromptComposer, ThinkingDisclosure,
+    TokenGaugeWidget, ToolCallCard, ToolStatus, UserMessageCard,
 };
 use hex_protocol::diff::DiffLineType;
 
@@ -235,4 +235,75 @@ async fn test_full_app_shell_in_gpui_context(cx: &mut TestAppContext) {
         shell.toggle_sidebar();
         assert!(!shell.sidebar_collapsed);
     });
+}
+
+#[test]
+fn test_approval_card_lifecycle_in_feed() {
+    assert_eq!(ApprovalCardState::Pending.label(), "Needs you");
+    assert_eq!(ApprovalCardState::Approved.label(), "Approved");
+    assert_eq!(ApprovalCardState::Denied.label(), "Denied");
+
+    let mut feed = MessageFeed::new();
+    feed.add_approval_card(ApprovalCard::new("appr_1", "bash", "rm -rf build/", "R4"));
+    let last = feed.messages.last().unwrap();
+    assert!(
+        matches!(last, MessageItem::Approval(card)
+            if card.approval_id == "appr_1"
+                && card.tool_name == "bash"
+                && card.state == ApprovalCardState::Pending),
+        "expected pending approval card, got {last:?}"
+    );
+
+    assert!(feed.update_approval_state("appr_1", ApprovalCardState::Approved));
+    assert!(
+        matches!(feed.messages.last(), Some(MessageItem::Approval(card))
+            if card.state == ApprovalCardState::Approved)
+    );
+    assert!(!feed.update_approval_state("appr_missing", ApprovalCardState::Denied));
+}
+
+#[test]
+fn test_update_tool_result_attaches_diff_view() {
+    let mut feed = MessageFeed::new();
+    feed.add_tool_call(ToolCallCard::new("call_1", "write_file", r#"{"path":"x.txt"}"#));
+    feed.update_tool_result(
+        "call_1",
+        "wrote x.txt",
+        false,
+        Some("--- a/x.txt\n+++ b/x.txt\n@@ -1 +1 @@\n-old\n+new"),
+    );
+    let tool = match feed.messages.last() {
+        Some(MessageItem::Assistant(view)) => &view.tool_calls[0],
+        other => panic!("expected assistant with tool card, got {other:?}"),
+    };
+    assert_eq!(tool.status, ToolStatus::Success);
+    assert_eq!(tool.output_text.as_deref(), Some("wrote x.txt"));
+    assert!(tool.diff.is_some(), "diff should be attached as a DiffView");
+
+    // Error outcome marks failure; a later call without diff leaves the
+    // already-attached diff intact.
+    feed.update_tool_result("call_1", "failed", true, None);
+    let tool = match feed.messages.last() {
+        Some(MessageItem::Assistant(view)) => &view.tool_calls[0],
+        other => panic!("expected assistant with tool card, got {other:?}"),
+    };
+    assert_eq!(tool.status, ToolStatus::Failed);
+    assert!(tool.diff.is_some());
+    assert!(!feed.messages.is_empty());
+}
+
+#[test]
+fn test_user_message_with_attachments_keeps_paths() {
+    let mut feed = MessageFeed::new();
+    feed.add_user_message_with_attachments(
+        "review these",
+        vec!["C:/repo/src/main.rs".to_string(), "C:/repo/README.md".to_string()],
+    );
+    let card = match feed.messages.last() {
+        Some(MessageItem::User(card)) => card,
+        other => panic!("expected user message, got {other:?}"),
+    };
+    assert_eq!(card.content, "review these");
+    assert_eq!(card.attachments.len(), 2);
+    assert_eq!(card.attachments[0], "C:/repo/src/main.rs");
 }

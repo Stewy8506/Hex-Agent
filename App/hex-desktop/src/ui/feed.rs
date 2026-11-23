@@ -13,9 +13,10 @@ use std::time::Duration;
 use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
+use crate::ui::icon_svg;
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView, UserMessageCard};
 use crate::ui::motion;
-use crate::ui::tool_card::{ToolCallCard, ToolStatus};
+use crate::ui::tool_card::{tool_icon, ToolCallCard, ToolStatus};
 
 /// Vertical gap between feed items (mockup `gap:20px`).
 pub const FEED_GAP: f32 = 20.0;
@@ -48,6 +49,115 @@ pub enum MessageItem {
     User(UserMessageCard),
     Assistant(AssistantMessageView),
     SystemNotice(String),
+    Approval(ApprovalCard),
+}
+
+/// Operator decision state of an approval surfaced in the feed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalCardState {
+    /// Awaiting the operator's decision (the modal holds the controls).
+    Pending,
+    /// Runtime confirmed the approval.
+    Approved,
+    /// Runtime confirmed the denial.
+    Denied,
+}
+
+impl ApprovalCardState {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ApprovalCardState::Pending => "Needs you",
+            ApprovalCardState::Approved => "Approved",
+            ApprovalCardState::Denied => "Denied",
+        }
+    }
+}
+
+/// An in-feed mirror of a tool approval request. The interactive decision
+/// controls stay in the approval modal; the card keeps the stream honest
+/// about what was asked and how it resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalCard {
+    pub approval_id: String,
+    pub tool_name: String,
+    /// Bounded parameters / command summary from the runtime.
+    pub summary: String,
+    pub risk_level: String,
+    pub state: ApprovalCardState,
+}
+
+impl ApprovalCard {
+    pub fn new(
+        approval_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        summary: impl Into<String>,
+        risk_level: impl Into<String>,
+    ) -> Self {
+        Self {
+            approval_id: approval_id.into(),
+            tool_name: tool_name.into(),
+            summary: summary.into(),
+            risk_level: risk_level.into(),
+            state: ApprovalCardState::Pending,
+        }
+    }
+
+    /// Renders the approval card in the mockup token language (derived —
+    /// approvals-as-feed-cards are not in the mockup): `#171717` surface,
+    /// `#262626` border, amber risk accent while pending.
+    pub fn render(&self, theme: &HermesTheme) -> Div {
+        let state_color = match self.state {
+            ApprovalCardState::Pending => theme.warning_amber(),
+            ApprovalCardState::Approved => theme.sage_fg(),
+            ApprovalCardState::Denied => theme.rose_fg(),
+        };
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .rounded(px(crate::ui::tool_card::TOOL_CARD_RADIUS))
+            .border_1()
+            .border_color(theme.mockup_border_strong)
+            .bg(theme.mockup_surface)
+            .overflow_hidden()
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px(px(16.0))
+                    .py(px(8.0))
+                    .child(icon_svg(tool_icon(&self.tool_name), 14.0).text_color(theme.mockup_text_muted))
+                    .child(
+                        div()
+                            .font_family(theme.font_mono()[0].clone())
+                            .text_size(px(crate::ui::tool_card::TOOL_NAME_SIZE))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.mockup_text)
+                            .child(self.tool_name.clone()),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(px(crate::ui::tool_card::TOOL_META_SIZE))
+                            .text_color(state_color)
+                            .child(self.state.label()),
+                    ),
+            )
+            .child(
+                div()
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(crate::ui::tool_card::TOOL_BODY_SIZE))
+                    .line_height(px(crate::ui::tool_card::TOOL_BODY_LINE_HEIGHT))
+                    .px(px(16.0))
+                    .pb(px(10.0))
+                    .whitespace_nowrap()
+                    .text_color(theme.mockup_text_muted)
+                    .child(self.summary.clone()),
+            )
+    }
 }
 
 /// Message feed state shared with `ChatView`; rendering happens through
@@ -118,6 +228,19 @@ impl MessageFeed {
         id
     }
 
+    /// Adds a user message carrying attached file names (chip display).
+    pub fn add_user_message_with_attachments(
+        &mut self,
+        content: impl Into<String>,
+        attachments: Vec<String>,
+    ) -> String {
+        let id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
+        let card = UserMessageCard::new(id.clone(), content).with_attachments(attachments);
+        self.messages.push(MessageItem::User(card));
+        self.auto_scroll_bottom = true;
+        id
+    }
+
     pub fn add_assistant_message(&mut self, content: impl Into<String>) -> String {
         let id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
         let view = AssistantMessageView::new(id.clone(), content);
@@ -163,7 +286,13 @@ impl MessageFeed {
         }
     }
 
-    pub fn update_tool_result(&mut self, call_id: &str, output: &str, is_error: bool) {
+    pub fn update_tool_result(
+        &mut self,
+        call_id: &str,
+        output: &str,
+        is_error: bool,
+        diff: Option<&str>,
+    ) {
         for msg in self.messages.iter_mut().rev() {
             if let MessageItem::Assistant(ref mut assistant) = msg {
                 for tool in &mut assistant.tool_calls {
@@ -174,11 +303,40 @@ impl MessageFeed {
                         } else {
                             ToolStatus::Success
                         };
+                        if let Some(patch) = diff {
+                            tool.diff = Some(crate::ui::diff_view::DiffView::from_patch(patch));
+                        }
                         return;
                     }
                 }
             }
         }
+    }
+
+    /// Appends an approval card to the feed (approvals surface in the stream
+    /// as well as the decision modal).
+    pub fn add_approval_card(&mut self, card: ApprovalCard) {
+        self.messages.push(MessageItem::Approval(card));
+        self.auto_scroll_bottom = true;
+    }
+
+    /// Marks every card matching `approval_id` with the confirmed outcome.
+    /// Returns true when at least one card was updated.
+    pub fn update_approval_state(
+        &mut self,
+        approval_id: &str,
+        state: ApprovalCardState,
+    ) -> bool {
+        let mut updated = false;
+        for msg in self.messages.iter_mut() {
+            if let MessageItem::Approval(card) = msg {
+                if card.approval_id == approval_id {
+                    card.state = state;
+                    updated = true;
+                }
+            }
+        }
+        updated
     }
 
     pub fn clear(&mut self) {
@@ -340,6 +498,7 @@ impl MessageFeed {
                             .line_height(px(MockupTypeScale::CHIP_LINE_HEIGHT))
                             .text_color(theme.mockup_text_dim)
                             .child(notice.clone()),
+                        Some(MessageItem::Approval(card)) => card.render(&theme),
                         None => div(),
                     };
                     if ix + 1 >= count {
@@ -462,6 +621,9 @@ impl MessageFeed {
                             .text_color(theme.mockup_text_dim)
                             .child(notice.clone()),
                     );
+                }
+                MessageItem::Approval(card) => {
+                    feed_container = feed_container.child(card.render(theme));
                 }
             }
         }

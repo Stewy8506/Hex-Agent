@@ -1,10 +1,35 @@
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import os
 import re
 from pathlib import Path
 from typing import Any
+
+# Display bound for tool-result diffs carried to UI clients.
+DIFF_MAX_LINES = 240
+
+
+def unified_diff_bounded(
+    path: str, before: str, after: str, *, max_lines: int = DIFF_MAX_LINES
+) -> str | None:
+    """Bounded unified diff for UI display; ``None`` when content is unchanged."""
+    if before == after:
+        return None
+    diff_lines = list(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            lineterm="",
+        )
+    )
+    if len(diff_lines) > max_lines:
+        diff_lines = diff_lines[:max_lines]
+        diff_lines.append(f"[...diff truncated at {max_lines} lines]")
+    return "\n".join(diff_lines)
 
 
 class FileToolsMixin:
@@ -135,15 +160,23 @@ class FileToolsMixin:
         from harness_core.gateway import sha256_hex
 
         target = self._resolve_confined_path(workspace_dir, str(args["path"]))
+        rel_p = str(args["path"]).replace("\\", "/").lstrip("./")
         target.parent.mkdir(parents=True, exist_ok=True)
         content = str(args.get("content", ""))
+        before_content = ""
+        if target.is_file():
+            before_content = target.read_text(encoding="utf-8", errors="replace")
         target.write_text(content, encoding="utf-8")
-        return {
+        res = {
             "ok": True,
             "path": str(args["path"]),
             "bytes_written": len(content.encode("utf-8")),
             "sha256": sha256_hex(content),
         }
+        diff = unified_diff_bounded(rel_p, before_content, content)
+        if diff:
+            res["diff"] = diff
+        return res
 
     @staticmethod
     def _apply_unified_diff(original: str, diff_text: str) -> tuple[bool, str, str]:
@@ -287,6 +320,9 @@ class FileToolsMixin:
             "bytes_written": len(after_content.encode("utf-8")),
             "sha256": sha256_hex(after_content),
         }
+        diff = unified_diff_bounded(rel_p, before_content, after_content)
+        if diff:
+            res["diff"] = diff
         if blast_info:
             res["blast_radius"] = blast_info
         return res

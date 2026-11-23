@@ -469,6 +469,10 @@ pub struct PagedSessionLoad {
 pub struct SessionPromptParams {
     pub session_id: String,
     pub prompt: serde_json::Value,
+    /// Operator-attached local file paths; the runtime reads each one with a
+    /// size budget and appends it to the prompt. Empty means no attachments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
 }
 
 impl SessionPromptParams {
@@ -476,6 +480,19 @@ impl SessionPromptParams {
         Self {
             session_id: session_id.into(),
             prompt: serde_json::Value::String(prompt_text.into()),
+            attachments: Vec::new(),
+        }
+    }
+
+    pub fn new_text_with_attachments(
+        session_id: impl Into<String>,
+        prompt_text: impl Into<String>,
+        attachments: Vec<String>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            prompt: serde_json::Value::String(prompt_text.into()),
+            attachments,
         }
     }
 }
@@ -849,6 +866,8 @@ impl ToolCallResponse {
 /// Canonical wire contract emitted by the Python ACP server
 /// (`harness_core.client.acp`), shared by all HEX Rust clients:
 /// - `updateType=agent_response` with `delta`: streaming assistant text.
+/// - `updateType=agent_thought` with `delta`: streaming `<think>` reasoning;
+///   only emitted when the model actually produced think-tag content.
 /// - `updateType=tool` with nested `tool` ([`ToolUpdate`]): tool lifecycle.
 /// - `updateType=stream_end` with `status=Ready`: token stream finished.
 /// - `updateType=status` with `status=Ready` (and `delta` when nothing
@@ -904,7 +923,8 @@ impl SessionUpdateNotification {
 ///
 /// `event_type` is `start`, `complete`, or `error`; `call_id` correlates the
 /// start event with its completion, and `payload` is a truncated JSON/text
-/// rendering of the tool arguments (start) or result (complete/error).
+/// rendering of the tool arguments (start) or result (complete/error). File
+/// edit tools attach a bounded unified diff to their completion event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolUpdate {
@@ -915,6 +935,8 @@ pub struct ToolUpdate {
     pub duration_ms: u64,
     #[serde(default)]
     pub payload: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
 }
 
 /// Parameters for `session/approvalRequest` notification sent from server to client.
@@ -1247,5 +1269,54 @@ mod tests {
         }"#;
         let resp: SessionLoadResponse = serde_json::from_str(raw).unwrap();
         assert!(resp.history.is_empty());
+    }
+
+    #[test]
+    fn tool_update_diff_is_optional_on_the_wire() {
+        let without: ToolUpdate = serde_json::from_value(serde_json::json!({
+            "eventType": "complete",
+            "toolId": "t1",
+            "callId": "c1",
+            "payload": "wrote file"
+        }))
+        .unwrap();
+        assert!(without.diff.is_none());
+
+        let with: ToolUpdate = serde_json::from_value(serde_json::json!({
+            "eventType": "complete",
+            "toolId": "t1",
+            "callId": "c1",
+            "payload": "wrote file",
+            "diff": "--- a/x.txt\n+++ b/x.txt\n@@ -1 +1 @@\n-old\n+new"
+        }))
+        .unwrap();
+        assert_eq!(
+            with.diff.as_deref(),
+            Some("--- a/x.txt\n+++ b/x.txt\n@@ -1 +1 @@\n-old\n+new")
+        );
+
+        let serialized = serde_json::to_value(&without).unwrap();
+        assert!(serialized.get("diff").is_none());
+    }
+
+    #[test]
+    fn session_prompt_attachments_roundtrip() {
+        let plain = SessionPromptParams::new_text("ses_1", "hi");
+        let plain_json = serde_json::to_value(&plain).unwrap();
+        assert!(plain_json.get("attachments").is_none());
+
+        let attached = SessionPromptParams::new_text_with_attachments(
+            "ses_1",
+            "review this",
+            vec!["C:/tmp/a.py".to_string(), "C:/tmp/b.md".to_string()],
+        );
+        let attached_json = serde_json::to_value(&attached).unwrap();
+        assert_eq!(
+            attached_json.get("attachments").unwrap(),
+            &serde_json::json!(["C:/tmp/a.py", "C:/tmp/b.md"])
+        );
+
+        let de: SessionPromptParams = serde_json::from_value(attached_json).unwrap();
+        assert_eq!(de.attachments.len(), 2);
     }
 }

@@ -182,6 +182,116 @@ def _bounded_tool_preview(payload: Any, *, error: bool = False) -> str:
     return visit(payload, limit, 0)[0]
 
 
+_TOOL_DIFF_MAX_CHARS = 16_000
+
+
+def _extract_tool_diff(payload: Any) -> str | None:
+    """Pull the display diff out of a tool result so it survives separately.
+
+    File-edit tools attach a bounded unified diff under ``result["diff"]``;
+    removing it from the payload first keeps the tiny JSON preview budget for
+    the fields that actually summarize the call.
+    """
+    if not isinstance(payload, dict):
+        return None
+    diff = payload.pop("diff", None)
+    if not isinstance(diff, str) or not diff.strip():
+        return None
+    if len(diff) <= _TOOL_DIFF_MAX_CHARS:
+        return diff
+    return diff[:_TOOL_DIFF_MAX_CHARS] + "\n[...diff truncated]"
+
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+class _ThinkSplitter:
+    """Routes ``<think>`` blocks to thought deltas, the rest to answer deltas.
+
+    Tags may split across chunk boundaries, so a short tail always stays
+    buffered until a full tag is seen; an unterminated thought flushes as
+    thought text when the stream ends. Models without think tags stream
+    entirely as answer text and no thought deltas are ever emitted.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self.in_thought = False
+
+    def feed(self, chunk: str) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        self._buf += chunk
+        while self._buf:
+            open_tag, close_tag = (
+                (_THINK_CLOSE, _THINK_OPEN) if self.in_thought else (_THINK_OPEN, _THINK_CLOSE)
+            )
+            idx = self._buf.find(open_tag)
+            if idx == -1:
+                # Defer only a suffix that could still be a partial tag.
+                tail = ""
+                for size in range(min(len(self._buf), len(open_tag) - 1), 0, -1):
+                    if self._buf.endswith(open_tag[:size]):
+                        tail = self._buf[-size:]
+                        break
+                keep_len = len(self._buf) - len(tail)
+                if keep_len:
+                    out.append(("thought" if self.in_thought else "answer", self._buf[:keep_len]))
+                    self._buf = tail
+                break
+            kind = "thought" if self.in_thought else "answer"
+            if idx:
+                out.append((kind, self._buf[:idx]))
+            self._buf = self._buf[idx + len(open_tag):]
+            self.in_thought = not self.in_thought
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        if self._buf:
+            out.append(("thought" if self.in_thought else "answer", self._buf))
+            self._buf = ""
+        return out
+
+
+_MAX_ATTACHMENTS = 10
+_MAX_ATTACHMENT_BYTES = 65_536
+_MAX_ATTACHMENT_TOTAL_BYTES = 262_144
+
+
+def _render_attachments(attachments: Any) -> str:
+    """Render client-picked files as bounded fenced blocks appended to the prompt.
+
+    Paths come from the operator's own machine via the desktop file picker —
+    the same trust domain that chose them — but each file is size-bounded and
+    the total budget is enforced before anything reaches the model.
+    """
+    if attachments is None:
+        return ""
+    if not isinstance(attachments, list) or any(
+        not isinstance(item, str) for item in attachments
+    ):
+        raise ValueError("attachments must be a list of file paths")
+    if len(attachments) > _MAX_ATTACHMENTS:
+        raise ValueError(f"Too many attachments; max is {_MAX_ATTACHMENTS} files")
+    blocks: list[str] = []
+    total = 0
+    for raw in attachments:
+        path = Path(raw).expanduser()
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"Attachment unreadable: {raw} ({exc})") from None
+        total += len(data)
+        if total > _MAX_ATTACHMENT_TOTAL_BYTES:
+            raise ValueError("Attachments exceed the total size budget (256 KiB)")
+        text = data[:_MAX_ATTACHMENT_BYTES].decode("utf-8", errors="replace")
+        blocks.append(f"[Attached file: {path}]\n```text\n{text}\n```")
+    if not blocks:
+        return ""
+    return "\n\n" + "\n\n".join(blocks)
+
+
 def build_conversation_history(
     records: Sequence[dict[str, Any]], limit: int = 10
 ) -> list[dict[str, Any]]:
@@ -1149,6 +1259,7 @@ class ACPServer:
                     prompt_text += part.get("text", "")
         elif isinstance(prompt_data, dict):
             prompt_text = prompt_data.get("text", str(prompt_data))
+        prompt_text += _render_attachments(params.get("attachments"))
 
         # Cancellation is per-turn: a cancelled turn does not poison the session.
         sess.cancelled = False
@@ -1189,24 +1300,48 @@ class ACPServer:
 
         paged_response = params.get("pagedResponse", False)
         streamed = False
+        splitter = _ThinkSplitter()
 
         def stream_cb(chunk: str) -> None:
             nonlocal streamed
             if not chunk or sess.cancelled:
                 return
             # Iterate slices lazily; model callbacks may contain an entire answer.
-            step = 4096 if paged_response else len(chunk)
-            for offset in range(0, len(chunk), step):
-                if sess.cancelled:
+            # <think> blocks route to agent_thought deltas, everything else to
+            # agent_response, so the client can fold reasoning separately.
+            for kind, text in splitter.feed(chunk):
+                if not text or sess.cancelled:
                     return
                 streamed = True
+                update_type = "agent_thought" if kind == "thought" else "agent_response"
+                step = 4096 if (paged_response and kind == "answer") else len(text)
+                for offset in range(0, len(text), step):
+                    if sess.cancelled:
+                        return
+                    self._emit({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": sess.session_id,
+                            "updateType": update_type,
+                            "delta": text[offset:offset + step],
+                        },
+                    })
+
+        def flush_splitter() -> None:
+            nonlocal streamed
+            for kind, text in splitter.flush():
+                if not text or sess.cancelled:
+                    return
+                streamed = True
+                update_type = "agent_thought" if kind == "thought" else "agent_response"
                 self._emit({
                     "jsonrpc": "2.0",
                     "method": "session/update",
                     "params": {
                         "sessionId": sess.session_id,
-                        "updateType": "agent_response",
-                        "delta": chunk[offset:offset + step] if paged_response else chunk,
+                        "updateType": update_type,
+                        "delta": text,
                     },
                 })
 
@@ -1229,6 +1364,9 @@ class ACPServer:
                 "durationMs": dur_ms,
                 "payload": _bounded_tool_preview(payload, error=event_type == "error"),
             }
+            diff = _extract_tool_diff(payload) if event_type != "start" else None
+            if diff:
+                tool["diff"] = diff
             if event_type != "start":
                 # Durable, bounded record of the call outcome for later turns (B41).
                 turn_tool_events.append({
@@ -1265,6 +1403,9 @@ class ACPServer:
             stream_callback=stream_cb,
             tool_callback=tool_cb,
         )
+        # Any buffered tail (split tags or an unterminated thought) must land
+        # before the stream_end notification below.
+        flush_splitter()
 
         raw_status = exec_res.get("status", "COMPLETED")
         status_str = "completed" if raw_status in ("SUCCEEDED", "COMPLETED") else raw_status.lower()

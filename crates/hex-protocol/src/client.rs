@@ -623,6 +623,22 @@ impl AcpClient {
         self.send_request("session/prompt", params).await
     }
 
+    /// Send a prompt with operator-attached local file paths; the runtime
+    /// reads each one (size-bounded) and includes the content in the turn.
+    pub async fn session_prompt_with_attachments(
+        &self,
+        session_id: &str,
+        prompt_text: &str,
+        attachments: &[String],
+    ) -> Result<SessionPromptResponse, AcpError> {
+        let params = SessionPromptParams::new_text_with_attachments(
+            session_id,
+            prompt_text,
+            attachments.to_vec(),
+        );
+        self.send_request("session/prompt", params).await
+    }
+
     /// Cancel prompt execution on an active session.
     pub async fn session_cancel(
         &self,

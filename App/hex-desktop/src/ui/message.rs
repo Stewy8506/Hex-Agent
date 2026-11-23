@@ -473,6 +473,8 @@ fn file_label_from_tool(tool: &ToolCallCard) -> String {
 pub struct UserMessageCard {
     pub id: String,
     pub content: String,
+    /// Names of files attached to this prompt (display-only chips).
+    pub attachments: Vec<String>,
 }
 
 impl UserMessageCard {
@@ -480,31 +482,63 @@ impl UserMessageCard {
         Self {
             id: id.into(),
             content: content.into(),
+            attachments: Vec::new(),
         }
+    }
+
+    pub fn with_attachments(mut self, attachments: Vec<String>) -> Self {
+        self.attachments = attachments;
+        self
     }
 
     /// Renders the exact mockup bubble: right-aligned `#1e1e1e` pill, radius
     /// 18, padding 10px 18px, max-width 440, 15/26 `#e6e6e6` — no border,
-    /// avatar, header, or timestamp.
+    /// avatar, header, or timestamp. Attached files render as small mono
+    /// chips above the prose (derived — not in the mockup).
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        div()
-            .w_full()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .child(
-                div()
-                    .max_w(px(USER_BUBBLE_MAX_WIDTH))
-                    .rounded(px(USER_BUBBLE_RADIUS))
-                    .bg(theme.mockup_hover)
-                    .px(px(USER_BUBBLE_PADDING_X))
-                    .py(px(USER_BUBBLE_PADDING_Y))
-                    .text_size(px(MockupTypeScale::BASE_SIZE))
-                    .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
-                    .text_color(theme.mockup_text)
-                    .child(self.content.clone()),
-            )
+        let mut bubble = div()
+            .max_w(px(USER_BUBBLE_MAX_WIDTH))
+            .rounded(px(USER_BUBBLE_RADIUS))
+            .bg(theme.mockup_hover)
+            .px(px(USER_BUBBLE_PADDING_X))
+            .py(px(USER_BUBBLE_PADDING_Y))
+            .text_size(px(MockupTypeScale::BASE_SIZE))
+            .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
+            .text_color(theme.mockup_text);
+        if !self.attachments.is_empty() {
+            let mut chips = div()
+                .w_full()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.0))
+                .pb(px(6.0));
+            for name in &self.attachments {
+                chips = chips.child(
+                    div()
+                        .font_family(theme.font_mono()[0].clone())
+                        .text_size(px(MockupTypeScale::HINT_SIZE))
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(6.0))
+                        .bg(theme.mockup_chip)
+                        .text_color(theme.mockup_text_muted)
+                        .child(file_display_name(name)),
+                );
+            }
+            bubble = bubble.child(chips);
+        }
+        bubble = bubble.child(self.content.clone());
+        div().w_full().flex().flex_row().justify_end().child(bubble)
     }
+}
+
+/// Strips a path down to its file name for chip display.
+fn file_display_name(path: &str) -> String {
+    path.rsplit(['/', '\\'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(path)
+        .to_string()
 }
 
 /// Assistant response view hosting prose, reasoning, tool calls, action bar,

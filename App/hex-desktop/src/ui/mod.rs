@@ -19,7 +19,7 @@ pub use composer::{
     context_bar, context_label, glow_card, PromptComposer, SESSION_PLACEHOLDER,
 };
 pub use diff_view::{line_background, line_foreground, line_prefix, DiffView};
-pub use feed::{MessageFeed, MessageItem};
+pub use feed::{ApprovalCard, ApprovalCardState, MessageFeed, MessageItem};
 pub use message::{AssistantMessageView, UserMessageCard};
 pub use modals::{
     render_modal_container, ActiveModal, CommandPaletteModal, ModelEntry, ModelPickerModal,

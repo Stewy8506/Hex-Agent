@@ -37,6 +37,9 @@ pub enum AcpEvent {
     Disconnected { reason: String },
     /// Live streaming text chunk for a conversation session
     TokenChunk { session_id: String, text: String },
+    /// Streaming `<think>` reasoning chunk; only emitted when the model
+    /// actually produced think-tag content.
+    ThoughtChunk { session_id: String, text: String },
     /// Turn generation completed for the active prompt
     TurnComplete { session_id: String },
     /// Token usage of the completed turn (terminal status `usage` payload);
@@ -61,6 +64,8 @@ pub enum AcpEvent {
         call_id: String,
         output_text: String,
         is_error: bool,
+        /// Bounded unified diff for file-edit tools, when the runtime sent one.
+        diff: Option<String>,
     },
     /// Runtime requests operator approval for privileged tool execution
     ApprovalRequest {
@@ -304,7 +309,16 @@ impl AcpBridge {
             "session/update" => {
                 if let Some(ref params_val) = notif.params {
                     if let Ok(update) = serde_json::from_value::<SessionUpdateNotification>(params_val.clone()) {
-                        if let Some(delta) = update.delta.clone() {
+                        if update.update_type == "agent_thought" {
+                            if let Some(delta) = update.delta.clone() {
+                                if !delta.is_empty() {
+                                    let _ = event_tx.send(AcpEvent::ThoughtChunk {
+                                        session_id: update.session_id.clone(),
+                                        text: delta,
+                                    });
+                                }
+                            }
+                        } else if let Some(delta) = update.delta.clone() {
                             if !delta.is_empty() {
                                 let _ = event_tx.send(AcpEvent::TokenChunk {
                                     session_id: update.session_id.clone(),
@@ -331,6 +345,7 @@ impl AcpBridge {
                                                 call_id: tool.call_id,
                                                 output_text: tool.payload,
                                                 is_error: tool.event_type == "error",
+                                                diff: tool.diff,
                                             });
                                         }
                                         _ => {}
@@ -674,6 +689,24 @@ impl AcpBridge {
         }
     }
 
+    /// Send a prompt with operator-attached local file paths; the runtime
+    /// reads each one (size-bounded) and includes it in the turn.
+    pub async fn send_prompt_with_attachments(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        attachments: &[String],
+    ) -> Result<hex_protocol::models::SessionPromptResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client
+                .session_prompt_with_attachments(session_id, prompt, attachments)
+                .await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Cancel active generation on a session.
     pub async fn cancel_session(&self, session_id: &str) -> Result<(), AcpError> {
         let client_opt = self.client.lock().await.clone();
@@ -936,6 +969,62 @@ mod tests {
                 description: Some("Deleting build artifacts".to_string()),
             }
         );
+    }
+
+    #[test]
+    fn test_dispatch_thought_and_diff_routing() {
+        let (tx, mut rx) = broadcast::channel(16);
+
+        // agent_thought routes to ThoughtChunk, never TokenChunk.
+        let notif = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "session/update".to_string(),
+            params: Some(serde_json::json!({
+                "sessionId": "ses_9",
+                "updateType": "agent_thought",
+                "delta": "considering the diff shape"
+            })),
+        };
+        AcpBridge::dispatch_notification(&notif, &tx);
+        let evt = rx.try_recv().unwrap();
+        assert_eq!(
+            evt,
+            AcpEvent::ThoughtChunk {
+                session_id: "ses_9".to_string(),
+                text: "considering the diff shape".to_string(),
+            }
+        );
+        assert!(rx.try_recv().is_err(), "thought must not double-route as TokenChunk");
+
+        // tool complete with a diff carries it through to ToolResult.
+        let notif_tool = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "session/update".to_string(),
+            params: Some(serde_json::json!({
+                "sessionId": "ses_9",
+                "updateType": "tool",
+                "tool": {
+                    "eventType": "complete",
+                    "toolId": "write_file",
+                    "callId": "call_7",
+                    "durationMs": 12,
+                    "payload": "wrote notes.txt",
+                    "diff": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-old\n+new"
+                }
+            })),
+        };
+        AcpBridge::dispatch_notification(&notif_tool, &tx);
+        let evt_tool = rx.try_recv().unwrap();
+        match evt_tool {
+            AcpEvent::ToolResult { call_id, diff, .. } => {
+                assert_eq!(call_id, "call_7");
+                assert_eq!(
+                    diff.as_deref(),
+                    Some("--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-old\n+new")
+                );
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 
     /// Load a wire fixture captured from the real Python ACP server
