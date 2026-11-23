@@ -78,6 +78,8 @@ Current state (inventory 2026-11-23): chat shell, sessions (new/open/switch/page
 
 Suggested order: DX1 → DX2 → DX3 → DX4 → DX5 → DX6 → DX7, with Phase D desktop work (Team pane) interleaved when Phase D lands.
 
+Motion track (separate plan): see [`ANIMATIONS_PLAN.md`](ANIMATIONS_PLAN.md) — Apple-style spring motion (AN1–AN4), one commit per phase, runs alongside the DX track.
+
 ---
 
 ## Done (reference)
