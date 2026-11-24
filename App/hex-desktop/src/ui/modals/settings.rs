@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
 use hex_protocol::models::ConfigGetResponse;
@@ -19,6 +20,7 @@ pub enum SettingField {
         key: &'static str,
         label: &'static str,
         value: String,
+        cursor: usize,
         required: bool,
     },
     /// Single-choice value cycled with Enter / ← / →; None = not set.
@@ -70,7 +72,7 @@ pub struct SettingsModal {
     pub originals: HashMap<String, String>,
     pub selected: usize, // index into fields; fields.len() == Save row
     pub editing: bool,
-    edit_snapshot: Option<String>,
+    edit_snapshot: Option<(String, usize)>,
     pub busy: bool,
     pub error: Option<String>,
     pub status: Option<String>,
@@ -102,10 +104,12 @@ impl SettingsModal {
         required: bool,
         config: Option<&str>,
     ) -> SettingField {
+        let value = config.unwrap_or_default().to_string();
         SettingField::Text {
             key,
             label,
-            value: config.unwrap_or_default().to_string(),
+            cursor: value.len(),
+            value,
             required,
         }
     }
@@ -224,6 +228,31 @@ impl SettingsModal {
         true
     }
 
+    fn commit_edit(&mut self) {
+        self.editing = false;
+        self.edit_snapshot = None;
+    }
+
+    fn move_text_cursor(&mut self, delta: isize) -> bool {
+        let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected)
+        else {
+            return false;
+        };
+        *cursor = if delta < 0 {
+            value
+                .grapheme_indices(true)
+                .rev()
+                .find_map(|(index, _)| (index < *cursor).then_some(index))
+                .unwrap_or(0)
+        } else {
+            value
+                .grapheme_indices(true)
+                .find_map(|(index, _)| (index > *cursor).then_some(index))
+                .unwrap_or(value.len())
+        };
+        true
+    }
+
     /// Non-printable keys; printable characters route through `push_char`.
     pub fn handle_key(&mut self, key: &str) -> Option<SettingsAction> {
         if self.busy {
@@ -231,22 +260,34 @@ impl SettingsModal {
         }
         match key {
             "up" | "arrowup" => {
+                self.commit_edit();
                 self.move_selection(-1);
                 None
             }
             "down" | "arrowdown" => {
+                self.commit_edit();
                 self.move_selection(1);
                 None
             }
             "left" | "arrowleft" => {
-                if self.cycle_choice(-1) {
-                    self.editing = false;
+                if !(self.editing && self.move_text_cursor(-1)) && self.cycle_choice(-1) {
+                    self.commit_edit();
                 }
                 None
             }
             "right" | "arrowright" => {
-                if self.cycle_choice(1) {
-                    self.editing = false;
+                if !(self.editing && self.move_text_cursor(1)) && self.cycle_choice(1) {
+                    self.commit_edit();
+                }
+                None
+            }
+            "home" | "end" => {
+                if self.editing {
+                    if let Some(SettingField::Text { value, cursor, .. }) =
+                        self.fields.get_mut(self.selected)
+                    {
+                        *cursor = if key == "home" { 0 } else { value.len() };
+                    }
                 }
                 None
             }
@@ -258,18 +299,19 @@ impl SettingsModal {
                     self.busy = true;
                     return Some(SettingsAction::Save);
                 }
-                match self.fields.get(self.selected) {
-                    Some(SettingField::Text { value, .. }) => {
+                match self.fields.get_mut(self.selected) {
+                    Some(SettingField::Text { value, cursor, .. }) => {
                         if self.editing {
-                            self.editing = false;
-                            self.edit_snapshot = None;
+                            self.commit_edit();
                         } else {
                             self.editing = true;
-                            self.edit_snapshot = Some(value.clone());
+                            *cursor = value.len();
+                            self.edit_snapshot = Some((value.clone(), value.len()));
                         }
                         None
                     }
                     Some(SettingField::Choice { .. }) => {
+                        self.commit_edit();
                         self.cycle_choice(1);
                         None
                     }
@@ -286,9 +328,12 @@ impl SettingsModal {
             return;
         }
         self.editing = false;
-        if let Some(snapshot) = self.edit_snapshot.take() {
-            if let Some(SettingField::Text { value, .. }) = self.fields.get_mut(self.selected) {
+        if let Some((snapshot, cursor)) = self.edit_snapshot.take() {
+            if let Some(SettingField::Text { value, cursor: current, .. }) =
+                self.fields.get_mut(self.selected)
+            {
                 *value = snapshot;
+                *current = cursor;
             }
         }
     }
@@ -297,8 +342,9 @@ impl SettingsModal {
         if self.busy || !self.editing {
             return;
         }
-        if let Some(SettingField::Text { value, .. }) = self.fields.get_mut(self.selected) {
-            value.push_str(ch);
+        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
+            value.insert_str(*cursor, ch);
+            *cursor += ch.len();
         }
     }
 
@@ -306,8 +352,27 @@ impl SettingsModal {
         if self.busy || !self.editing {
             return;
         }
-        if let Some(SettingField::Text { value, .. }) = self.fields.get_mut(self.selected) {
-            value.pop();
+        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
+            let previous = value
+                .grapheme_indices(true)
+                .rev()
+                .find_map(|(index, _)| (index < *cursor).then_some(index))
+                .unwrap_or(0);
+            value.replace_range(previous..*cursor, "");
+            *cursor = previous;
+        }
+    }
+
+    pub fn delete(&mut self) {
+        if self.busy || !self.editing {
+            return;
+        }
+        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
+            let next = value
+                .grapheme_indices(true)
+                .find_map(|(index, _)| (index > *cursor).then_some(index))
+                .unwrap_or(value.len());
+            value.replace_range(*cursor..next, "");
         }
     }
 
@@ -476,9 +541,9 @@ impl SettingsModal {
             let dirty = field.display()
                 != self.originals.get(field.key()).cloned().unwrap_or_default();
             let value_text = match field {
-                SettingField::Text { value, required, .. } => {
+                SettingField::Text { value, cursor, required, .. } => {
                     if is_editing {
-                        format!("{value}▌")
+                        format!("{}▌{}", &value[..*cursor], &value[*cursor..])
                     } else if value.is_empty() {
                         if *required {
                             "required".to_string()
@@ -611,7 +676,7 @@ impl SettingsModal {
                 .font_family(theme.font_mono()[0].clone())
                 .text_size(px(MockupTypeScale::HINT_SIZE))
                 .text_color(theme.mockup_text_dim)
-                .child("↑↓ — select · Enter — edit / cycle · ←→ — cycle choice · Esc — cancel / close"),
+                .child("↑↓ — select · Enter — edit / cycle · ←→ — move / cycle · Home/End — jump · Del — forward · Esc — cancel / close"),
         )
     }
 }
@@ -715,6 +780,81 @@ mod tests {
         modal.cancel_edit();
         assert_eq!(modal.dirty_count(), 1); // only the committed edit remains
         assert_eq!(modal.fields[provider_idx].display(), "ant");
+    }
+
+    #[test]
+    fn test_text_cursor_editing_and_grapheme_deletion() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        let provider_idx = modal
+            .fields
+            .iter()
+            .position(|f| f.key() == "model.cloudProvider")
+            .unwrap();
+        modal.selected = provider_idx;
+        modal.handle_key("enter");
+
+        modal.handle_key("left");
+        modal.handle_key("left");
+        modal.push_char("x");
+        assert_eq!(modal.fields[provider_idx].display(), "gemixni");
+        modal.backspace();
+        assert_eq!(modal.fields[provider_idx].display(), "gemini");
+        modal.delete();
+        assert_eq!(modal.fields[provider_idx].display(), "gemii");
+
+        modal.handle_key("home");
+        modal.push_char("a");
+        modal.handle_key("end");
+        modal.push_char("z");
+        assert_eq!(modal.fields[provider_idx].display(), "agemiiz");
+        modal.cancel_edit();
+        assert_eq!(modal.fields[provider_idx].display(), "gemini");
+        let SettingField::Text { cursor, .. } = &modal.fields[provider_idx] else {
+            panic!("text field");
+        };
+        assert_eq!(*cursor, "gemini".len());
+
+        let value = "e\u{301}👩\u{200d}💻x".to_string();
+        modal.fields[provider_idx] = SettingField::Text {
+            key: "model.cloudProvider",
+            label: "Provider",
+            cursor: value.len(),
+            value,
+            required: true,
+        };
+        modal.handle_key("enter");
+        modal.handle_key("left");
+        modal.push_char("!");
+        assert_eq!(modal.fields[provider_idx].display(), "e\u{301}👩\u{200d}💻!x");
+        modal.backspace();
+        modal.handle_key("left");
+        modal.delete();
+        assert_eq!(modal.fields[provider_idx].display(), "e\u{301}x");
+    }
+
+    #[test]
+    fn test_row_navigation_commits_text_and_preserves_choice_cycling() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        modal.handle_key("enter");
+        modal.push_char("x");
+        modal.handle_key("down");
+        assert!(!modal.editing);
+        assert_eq!(modal.selected, 1);
+        assert_eq!(modal.fields[0].display(), "geminix");
+        assert_eq!(modal.fields[1].display(), "gemini-2.5-pro");
+
+        let effort_idx = modal
+            .fields
+            .iter()
+            .position(|f| f.key() == "model.reasoningEffort")
+            .unwrap();
+        modal.selected = effort_idx;
+        modal.handle_key("left");
+        assert_eq!(modal.fields[effort_idx].display(), "none");
+        modal.handle_key("right");
+        assert_eq!(modal.fields[effort_idx].display(), "low");
     }
 
     #[test]

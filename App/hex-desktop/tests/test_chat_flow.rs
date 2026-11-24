@@ -692,6 +692,7 @@ async fn test_undo_redo_actions_restore_composer_and_modal_text(cx: &mut TestApp
         key: "model.cloudProvider",
         label: "Provider",
         value: "gemini".to_string(),
+        cursor: "gemini".len(),
         required: true,
     });
     settings.selected = 0;
@@ -733,6 +734,51 @@ async fn test_undo_redo_actions_restore_composer_and_modal_text(cx: &mut TestApp
             panic!("expected text field");
         };
         assert_eq!(value, "geminix");
+    });
+
+    vc.simulate_keystrokes("left left x");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, cursor, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "geminxix");
+        assert_eq!(*cursor, 6);
+    });
+    vc.dispatch_action(Undo);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, cursor, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "geminix");
+        assert_eq!(*cursor, 5);
+    });
+    vc.dispatch_action(Redo);
+    vc.simulate_keystrokes("home delete");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, cursor, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "eminxix");
+        assert_eq!(*cursor, 0);
+    });
+    vc.dispatch_action(Undo);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "geminxix");
     });
     assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draft");
 }
@@ -829,6 +875,7 @@ async fn test_modal_enter_is_single_step_and_isolated(cx: &mut TestAppContext) {
                 key: "model.cloudModelId",
                 label: "Model ID",
                 value: "gpt-4o".to_string(),
+                cursor: "gpt-4o".len(),
                 required: true,
             });
             view.shell.active_modal = ActiveModal::Settings(settings);

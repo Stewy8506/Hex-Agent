@@ -2685,7 +2685,7 @@ impl ChatView {
                 if matches!(
                     key,
                     "up" | "arrowup" | "down" | "arrowdown" | "left" | "arrowleft" | "right"
-                        | "arrowright" | "enter" | "backspace"
+                        | "arrowright" | "enter" | "backspace" | "home" | "end" | "delete"
                 ) {
                     cx.notify();
                     true
@@ -3122,7 +3122,7 @@ impl ChatView {
                         }
                         return;
                     }
-                    if keystroke.key == "backspace" {
+                    if matches!(keystroke.key.as_str(), "backspace" | "delete") {
                         let editing = matches!(
                             &self.shell.active_modal,
                             ActiveModal::Settings(modal) if modal.editing && !modal.busy
@@ -3132,7 +3132,11 @@ impl ChatView {
                         }
                         if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
                             if modal.editing {
-                                modal.backspace();
+                                if keystroke.key == "backspace" {
+                                    modal.backspace();
+                                } else {
+                                    modal.delete();
+                                }
                                 cx.notify();
                                 cx.stop_propagation();
                             }
