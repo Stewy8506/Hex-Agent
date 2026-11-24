@@ -93,43 +93,6 @@ pub fn spinner_frame(elapsed: Duration) -> char {
     SPINNER_FRAMES[(ms / 90) as usize % SPINNER_FRAMES.len()]
 }
 
-/// Whether the OS asks for reduced motion (Windows "Show animations" off or
-/// macOS Accessibility → Reduce Motion; fail-open when undetectable).
-pub fn reduced_motion() -> bool {
-    #[cfg(windows)]
-    {
-        const SPI_GETCLIENTAREAANIMATION: u32 = 0x1042;
-        #[link(name = "user32")]
-        extern "system" {
-            fn SystemParametersInfoW(
-                action: u32,
-                uiparam: u32,
-                pvparam: *mut core::ffi::c_void,
-                winini: u32,
-            ) -> i32;
-        }
-        let mut animations_enabled: i32 = 1;
-        let ok = unsafe {
-            SystemParametersInfoW(
-                SPI_GETCLIENTAREAANIMATION,
-                0,
-                (&mut animations_enabled as *mut i32).cast(),
-                0,
-            )
-        };
-        return ok != 0 && animations_enabled == 0;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use objc2_app_kit::NSWorkspace;
-        NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,11 +167,5 @@ mod tests {
             let o = pulse_opacity(Duration::from_millis(step as u64 * 20));
             assert!((PULSE_MIN - 1e-6..=1.0 + 1e-6).contains(&o));
         }
-    }
-
-    #[test]
-    fn test_reduced_motion_probe_does_not_panic() {
-        // Environment-dependent; the contract is a boolean without panicking.
-        let _ = reduced_motion();
     }
 }

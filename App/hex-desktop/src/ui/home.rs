@@ -97,13 +97,10 @@ pub fn render_logo(theme: &HermesTheme) -> AnyElement {
     } else {
         logo.with_animation(
             "home_logo_rise",
-            Animation::new(motion::RISE_DURATION),
+            Animation::new(std::time::Duration::from_secs_f32(motion::SMOOTH.duration)),
             |el, phase| {
-                let elapsed =
-                    std::time::Duration::from_secs_f32(phase * motion::RISE_DURATION.as_secs_f32());
-                let progress = motion::rise_progress(elapsed);
-                el.opacity(progress)
-                    .mt(px(RISE_OFFSET * (1.0 - progress)))
+                let progress = motion::spring_easing(motion::SMOOTH, phase);
+                el.opacity(progress).mt(px(RISE_OFFSET * (1.0 - progress)))
             },
         )
         .into_any_element()

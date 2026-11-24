@@ -116,6 +116,7 @@ pub fn init_app(cx: &mut App) {
         log::warn!("failed to load embedded brand fonts: {err}");
     }
     HermesTheme::init(cx);
+    cx.set_global(motion::MotionSystem::new());
     init_shortcuts(cx);
     init_menus(cx);
     cx.bind_keys(composer_keybindings());
