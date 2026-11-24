@@ -36,7 +36,7 @@ use hex_protocol::models::{
 use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
-use crate::shortcuts::{self, init_shortcuts};
+use crate::shortcuts::{self, CloseWindow, Hide, Quit, init_shortcuts};
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{ApprovalCard, ApprovalCardState, MessageFeed, MessageItem};
@@ -111,6 +111,14 @@ pub fn init_app(cx: &mut App) {
     init_shortcuts(cx);
     init_menus(cx);
     cx.bind_keys(composer_keybindings());
+    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Hide, cx| cx.hide());
+    cx.on_window_closed(|cx| {
+        if cx.windows().is_empty() {
+            cx.quit();
+        }
+    })
+    .detach();
 }
 
 /// Process-wide tokio runtime backing the ACP bridge (which spawns tokio tasks).
@@ -2547,6 +2555,15 @@ impl ChatView {
     // Action handlers
     // ------------------------------------------------------------------
 
+    fn on_close_window(
+        &mut self,
+        _: &CloseWindow,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        window.remove_window();
+    }
+
     fn on_submit(&mut self, _: &shortcuts::SubmitPrompt, _: &mut Window, cx: &mut Context<Self>) {
         if self.handle_modal_key("enter", cx) {
             return;
@@ -4031,6 +4048,7 @@ impl Render for ChatView {
                 .key_context("ChatView")
                 .on_action(cx.listener(Self::on_submit))
                 .on_action(cx.listener(Self::on_new_chat))
+                .on_action(cx.listener(Self::on_close_window))
                 .on_action(cx.listener(Self::on_toggle_palette))
                 .on_action(cx.listener(Self::on_toggle_sidebar))
                 .on_action(cx.listener(Self::on_open_settings))
@@ -4125,6 +4143,7 @@ impl Render for ChatView {
             .key_context("ChatView")
             .on_action(cx.listener(Self::on_submit))
             .on_action(cx.listener(Self::on_new_chat))
+            .on_action(cx.listener(Self::on_close_window))
             .on_action(cx.listener(Self::on_toggle_palette))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_open_settings))

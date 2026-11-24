@@ -536,3 +536,32 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         ]
     );
 }
+
+#[gpui::test]
+async fn test_cmd_w_closes_window(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let state = Arc::new(MockState::default());
+    rt.spawn(run_mock_server(server_read, server_write, state));
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+
+    cx.update(|cx| {
+        init_app(cx);
+        cx.set_global(GlowCardProbe::default());
+        cx.set_global(FeedPaintProbe::default());
+    });
+    let (_view, vc) = cx.add_window_view(|_window, cx| {
+        ChatView::new(bridge.clone(), rt.handle().clone(), std::env::temp_dir(), cx)
+    });
+
+    vc.simulate_keystrokes("cmd-w");
+    vc.run_until_parked();
+    assert!(cx.windows().is_empty(), "Cmd+W left the window open");
+}
