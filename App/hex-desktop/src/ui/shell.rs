@@ -136,7 +136,17 @@ impl AppShell {
     /// Open Model Picker over the live backend catalog (B32).
     pub fn open_model_picker(&mut self, models: Vec<crate::ui::modals::ModelEntry>) {
         let current_model = self.composer.model_pill.model_name.clone();
-        self.push_modal(ActiveModal::ModelPicker(ModelPickerModal::new(current_model, models)));
+        self.show_model_picker(ModelPickerModal::new(current_model, models));
+    }
+
+    pub fn show_model_picker(&mut self, picker: ModelPickerModal) {
+        self.modal_queue
+            .retain(|modal| !matches!(modal, ActiveModal::ModelPicker(_)));
+        if matches!(self.active_modal, ActiveModal::ModelPicker(_)) {
+            self.active_modal = ActiveModal::ModelPicker(picker);
+        } else {
+            self.push_modal(ActiveModal::ModelPicker(picker));
+        }
     }
 
     /// Open the application identity panel.

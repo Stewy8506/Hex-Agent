@@ -47,7 +47,7 @@ use crate::ui::modals::account::{AccountAction, AccountMode};
 use crate::ui::modals::approval::{
     ApprovalHandler, ApprovalInteraction, ToolApprovalChoice, ToolApprovalResult,
 };
-use crate::ui::modals::model_picker::ModelSelectHandler;
+use crate::ui::modals::model_picker::{ModelPickerModal, ModelRetryHandler, ModelSelectHandler};
 use crate::ui::modals::palette::PaletteActionHandler;
 use crate::ui::modals::session_actions::{
     SessionActionHandler, SessionActionModal, SessionActionMode, SessionActionOutcome,
@@ -383,6 +383,7 @@ pub struct ChatView {
     sessions: HashMap<String, SessionState>,
     session_load_generation: u64,
     session_list_generation: u64,
+    model_picker_generation: u64,
     creating_session: bool,
     running_turns: HashSet<String>,
     /// Assistant message id created for each session's current/most recent turn.
@@ -495,6 +496,7 @@ impl ChatView {
             sessions: HashMap::new(),
             session_load_generation: 0,
             session_list_generation: 0,
+            model_picker_generation: 0,
             creating_session: false,
             running_turns: HashSet::new(),
             turn_assistants: HashMap::new(),
@@ -1223,6 +1225,13 @@ impl ChatView {
 
     fn begin_session_navigation(&mut self) -> u64 {
         self.session_load_generation = self.session_load_generation.wrapping_add(1);
+        self.model_picker_generation = self.model_picker_generation.wrapping_add(1);
+        self.shell
+            .modal_queue
+            .retain(|modal| !matches!(modal, ActiveModal::ModelPicker(_)));
+        if matches!(self.shell.active_modal, ActiveModal::ModelPicker(_)) {
+            self.shell.dismiss_modal();
+        }
         self.session_load_generation
     }
 
@@ -2460,61 +2469,82 @@ impl ChatView {
         cx.notify();
     }
 
-    /// B32: open the picker over the live backend catalog, never a hardcoded list.
+    /// B32: open the picker immediately, then populate it from the live backend catalog.
     fn request_model_picker(&mut self, cx: &mut Context<Self>) {
-        if !self.bridge.is_connected() {
-            self.shell.feed.add_system_notice(
-                "Not connected to the HEX runtime — cannot load the model catalog.",
+        let search_query = match &self.shell.active_modal {
+            ActiveModal::ModelPicker(picker) => picker.search_query.clone(),
+            _ => String::new(),
+        };
+        let session_id = self.shell.active_session_id.clone();
+        let sid = session_id.clone().unwrap_or_else(|| "default".to_string());
+        self.model_picker_generation = self.model_picker_generation.wrapping_add(1);
+        let request_id = self.model_picker_generation;
+        let mut picker = ModelPickerModal::loading(
+            self.shell.composer.model_pill.model_name.clone(),
+            request_id,
+            session_id,
             );
+        if !search_query.is_empty() {
+            picker.set_search(search_query);
+        }
+        self.shell.show_model_picker(picker);
+
+        if !self.bridge.is_connected() {
+            if let Some(picker) = self.model_picker_mut(request_id) {
+                picker
+                    .set_error("Not connected to the HEX runtime — cannot load the model catalog.");
+            }
             cx.notify();
             return;
         }
+
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
-        let sid = self
-            .shell
-            .active_session_id
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
         cx.spawn(async move |this, cx| {
             let res = rt
                 .spawn(async move { bridge.list_models(&sid).await })
                 .await;
             this.update(cx, |view, cx| {
+                if view.model_picker_generation != request_id {
+                    return;
+                }
+                let Some(picker) = view.model_picker_mut(request_id) else {
+                    return;
+                };
                 match res {
                     Ok(Ok(catalog)) => {
-                        if let Some(err) = &catalog.error {
-                            view.shell.feed.add_system_notice(format!(
-                                "Some providers could not be queried: {err}"
-                            ));
-                        }
-                        if catalog.models.is_empty() {
-                            view.shell
-                                .feed
-                                .add_system_notice("The backend reported no available models.");
-                        } else {
                             let entries = catalog
                                 .models
                                 .iter()
                                 .map(ModelEntry::from_catalog)
                                 .collect();
-                            view.shell.open_model_picker(entries);
+                        picker.set_catalog(entries, catalog.error.clone());
                         }
+                    Ok(Err(err)) => {
+                        picker.set_error(format!("Could not load the model catalog: {err}"))
                     }
-                    Ok(Err(err)) => view
-                        .shell
-                        .feed
-                        .add_system_notice(format!("Could not load the model catalog: {err}")),
-                    Err(err) => view
-                        .shell
-                        .feed
-                        .add_system_notice(format!("Model catalog task aborted: {err}")),
+                    Err(err) => picker.set_error(format!("Model catalog task aborted: {err}")),
                 }
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    fn model_picker_mut(&mut self, request_id: u64) -> Option<&mut ModelPickerModal> {
+        if let ActiveModal::ModelPicker(picker) = &mut self.shell.active_modal {
+            if picker.request_id == request_id {
+                return Some(picker);
+            }
+        }
+        self.shell
+            .modal_queue
+            .iter_mut()
+            .find_map(|modal| match modal {
+                ActiveModal::ModelPicker(picker) if picker.request_id == request_id => Some(picker),
+                _ => None,
+            })
     }
 
     // ------------------------------------------------------------------
@@ -2869,6 +2899,16 @@ impl ChatView {
             self.record_modal_edit(TextEditKind::Delete);
         }
 
+        if key == "enter"
+            && matches!(
+                &self.shell.active_modal,
+                ActiveModal::ModelPicker(picker) if picker.error().is_some()
+            )
+        {
+            self.request_model_picker(cx);
+            return true;
+        }
+
         // Live filtering needs `&mut self` (SessionListView::filter_sessions),
         // so resolve the results before the match takes a borrow on the modal.
         let search_results = match &self.shell.active_modal {
@@ -2941,7 +2981,10 @@ impl ChatView {
                     self.apply_model_choice(model_id, cx);
                     return true;
                 }
-                if key == "enter" || matches!(key, "up" | "arrowup" | "down" | "arrowdown") {
+                if matches!(
+                    key,
+                    "enter" | "up" | "arrowup" | "down" | "arrowdown" | "home" | "end"
+                ) {
                     cx.notify();
                     true
                 } else {
@@ -5604,11 +5647,22 @@ impl ChatView {
                 palette.render(theme, motion, on_action)
             }
             ActiveModal::ModelPicker(picker) => {
+                let request_id = picker.request_id;
+                let session_id = picker.session_id.clone();
                 let view = cx.entity().downgrade();
+                let retry_view = view.clone();
+                let retry_session_id = session_id.clone();
                 let on_select: ModelSelectHandler =
                     std::rc::Rc::new(move |model_id, _event, _window, cx| {
                         view.update(cx, |this, cx| {
-                            if !matches!(this.shell.active_modal, ActiveModal::ModelPicker(_)) {
+                            let current = match &this.shell.active_modal {
+                                ActiveModal::ModelPicker(picker) => picker,
+                                _ => return,
+                            };
+                            if current.request_id != request_id
+                                || current.session_id != session_id
+                                || !current.is_ready()
+                            {
                                 return;
                             }
                             this.shell.dismiss_modal();
@@ -5616,7 +5670,24 @@ impl ChatView {
                         })
                         .ok();
                     });
-                picker.render(theme, motion, on_select)
+                let on_retry: ModelRetryHandler = std::rc::Rc::new(move |_event, _window, cx| {
+                    retry_view
+                        .update(cx, |this, cx| {
+                            let current = match &this.shell.active_modal {
+                                ActiveModal::ModelPicker(picker) => picker,
+                                _ => return,
+                            };
+                            if current.request_id != request_id
+                                || current.session_id != retry_session_id
+                                || current.error().is_none()
+                            {
+                                return;
+                            }
+                            this.request_model_picker(cx);
+                        })
+                        .ok();
+                });
+                picker.render(theme, motion, on_select, on_retry)
             }
             ActiveModal::Account(modal) => modal.render(theme),
             ActiveModal::SessionAction(modal) => {

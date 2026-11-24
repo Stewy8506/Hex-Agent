@@ -857,6 +857,98 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_model_picker_virtualizes_catalog_and_scrolls_keyboard_selection(
+    cx: &mut TestAppContext,
+) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    cx.update(|cx| init_app(cx));
+    let workspace = std::env::temp_dir();
+    let (view, mut vc) = cx.add_window_view(|_window, cx| {
+        ChatView::new(AcpBridge::new(), rt.handle().clone(), workspace.clone(), cx)
+    });
+    let models = (0..200)
+        .map(|index| {
+            ModelEntry::new(
+                format!("model-{index}"),
+                format!("Model {index}"),
+                if index < 100 { "OpenAI" } else { "Anthropic" },
+                false,
+            )
+        })
+        .collect();
+    vc.update(|_window, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_modal =
+                ActiveModal::ModelPicker(ModelPickerModal::new("model-0", models));
+            cx.notify();
+        });
+    });
+    finish_motion(&mut vc, &view);
+
+    let list_bounds = vc
+        .debug_bounds("model_picker_list")
+        .expect("virtualized picker list should be mounted");
+    assert!(vc.debug_bounds("model_0").is_some());
+    assert!(
+        vc.debug_bounds("model_199").is_none(),
+        "offscreen catalog rows must not be mounted"
+    );
+
+    vc.simulate_keystrokes("end");
+    finish_motion(&mut vc, &view);
+    snap(&vc, &view, |view| {
+        let ActiveModal::ModelPicker(picker) = &view.shell.active_modal else {
+            panic!("picker should remain open");
+        };
+        assert_eq!(picker.highlighted_model().unwrap().id, "model-199");
+    });
+    let last_bounds = vc
+        .debug_bounds("model_199")
+        .expect("keyboard navigation should reveal the highlighted row");
+    assert!(list_bounds.contains(&last_bounds.center()));
+}
+
+#[gpui::test]
+async fn test_model_picker_disconnected_error_is_inline(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    cx.update(|cx| init_app(cx));
+    let workspace = std::env::temp_dir();
+    let (view, mut vc) = cx.add_window_view(|_window, cx| {
+        ChatView::new(AcpBridge::new(), rt.handle().clone(), workspace.clone(), cx)
+    });
+    finish_motion(&mut vc, &view);
+
+    click_debug_element(&mut vc, "model_pill_button");
+    let failed_request_id = snap(&vc, &view, |view| {
+        let ActiveModal::ModelPicker(picker) = &view.shell.active_modal else {
+            panic!("picker should stay open with the connection error");
+        };
+        assert!(picker
+            .error()
+            .is_some_and(|error| error.contains("Not connected to the HEX runtime")));
+        assert!(!last_notice(view)
+            .is_some_and(|notice| notice.contains("Could not load the model catalog")));
+        picker.request_id
+    });
+    click_debug_element(&mut vc, "model_picker_retry");
+    snap(&vc, &view, |view| {
+        let ActiveModal::ModelPicker(picker) = &view.shell.active_modal else {
+            panic!("retry should keep the inline error open");
+        };
+        assert!(picker.request_id > failed_request_id);
+        assert!(picker.error().is_some());
+    });
+}
+
+#[gpui::test]
 async fn test_view_zoom_actions_adjust_and_reset_scale(cx: &mut TestAppContext) {
     let (_rt, _view, vc) = launch_connected_chat(cx);
     vc.dispatch_action(ZoomIn);

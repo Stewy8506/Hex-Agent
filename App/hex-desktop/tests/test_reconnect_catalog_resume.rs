@@ -33,6 +33,9 @@ struct MockState {
     catalog_models: StdMutex<Vec<Value>>,
     catalog_error: StdMutex<Option<String>>,
     catalog_fail: AtomicBool,
+    catalog_started: AtomicUsize,
+    catalog_finished: AtomicUsize,
+    catalog_gates: StdMutex<std::collections::HashMap<usize, Arc<Notify>>>,
     switch_model: StdMutex<Option<String>>,
     switch_provider: StdMutex<Option<String>>,
     switch_error: AtomicBool,
@@ -222,8 +225,19 @@ async fn handle_request(
             state.load_finished.fetch_add(1, Ordering::SeqCst);
         }
         "session/models" => {
-            let sid = params["sessionId"].as_str().unwrap_or("ses_unknown").to_string();
-            if state.catalog_fail.load(Ordering::SeqCst) {
+            let sid = params["sessionId"]
+                .as_str()
+                .unwrap_or("ses_unknown")
+                .to_string();
+            let request = state.catalog_started.fetch_add(1, Ordering::SeqCst) + 1;
+            let gate = state.catalog_gates.lock().unwrap().get(&request).cloned();
+            let failed = state.catalog_fail.load(Ordering::SeqCst);
+            let models = state.catalog_models.lock().unwrap().clone();
+            let error = state.catalog_error.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
+            if failed {
                 send_line(
                     writer,
                     json!({
@@ -232,10 +246,9 @@ async fn handle_request(
                     }),
                 )
                 .await;
+                state.catalog_finished.fetch_add(1, Ordering::SeqCst);
                 return;
             }
-            let models = state.catalog_models.lock().unwrap().clone();
-            let error = state.catalog_error.lock().unwrap().clone();
             let mut result = json!({
                 "sessionId": sid,
                 "activeModel": "claude-3-7-sonnet",
@@ -245,7 +258,12 @@ async fn handle_request(
             if let Some(err) = error {
                 result["error"] = json!(err);
             }
-            send_line(writer, json!({"jsonrpc": "2.0", "id": id, "result": result})).await;
+            send_line(
+                writer,
+                json!({"jsonrpc": "2.0", "id": id, "result": result}),
+            )
+            .await;
+            state.catalog_finished.fetch_add(1, Ordering::SeqCst);
         }
         "session/command" => {
             let sid = params["sessionId"].as_str().unwrap_or("ses_unknown").to_string();
@@ -472,6 +490,12 @@ async fn test_model_catalog_fetch_and_confirmed_switch(cx: &mut TestAppContext) 
         .unwrap();
 
     let state = MockState::new();
+    let catalog_gate = Arc::new(Notify::new());
+    state
+        .catalog_gates
+        .lock()
+        .unwrap()
+        .insert(1, catalog_gate.clone());
     *state.catalog_models.lock().unwrap() = vec![
         catalog_model("gpt-4o", "GPT-4o", "OpenAI", false),
         catalog_model("o3-mini", "o3-mini", "OpenAI", false),
@@ -484,7 +508,12 @@ async fn test_model_catalog_fetch_and_confirmed_switch(cx: &mut TestAppContext) 
     let (client_read, server_write) = tokio::io::duplex(64 * 1024);
     let (server_read, client_write) = tokio::io::duplex(64 * 1024);
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    rt.spawn(run_mock_server(server_read, server_write, state.clone(), shutdown_rx));
+    rt.spawn(run_mock_server(
+        server_read,
+        server_write,
+        state.clone(),
+        shutdown_rx,
+    ));
 
     let bridge = AcpBridge::new();
     rt.block_on(bridge.connect_streams(client_read, client_write))
@@ -496,18 +525,37 @@ async fn test_model_catalog_fetch_and_confirmed_switch(cx: &mut TestAppContext) 
     vc.simulate_keystrokes("cmd-k");
     vc.simulate_input("switch model");
     vc.simulate_keystrokes("enter");
-    pump_until(&mut vc, &view, "live catalog picker open", |v| {
-        matches!(v.shell.active_modal, ActiveModal::ModelPicker(_))
+    snap(&vc, &view, |v| {
+        let ActiveModal::ModelPicker(p) = &v.shell.active_modal else {
+            panic!("picker should open before the catalog request completes");
+        };
+        assert!(p.is_loading());
+        assert!(p.models.is_empty());
+        assert_eq!(p.session_id.as_deref(), Some("ses_test_1"));
+    });
+    pump_until(&mut vc, &view, "catalog request started", |_| {
+        state.catalog_started.load(Ordering::SeqCst) == 1
+    });
+    catalog_gate.notify_one();
+    pump_until(&mut vc, &view, "live catalog picker ready", |v| {
+        matches!(
+            &v.shell.active_modal,
+            ActiveModal::ModelPicker(picker) if picker.is_ready()
+        )
     });
     snap(&vc, &view, |v| {
-        // Partial discovery failure is surfaced honestly, not hidden.
-        assert!(has_notice(v, "Some providers could not be queried"));
         let ActiveModal::ModelPicker(p) = &v.shell.active_modal else {
             panic!("picker should be open");
         };
+        // Partial discovery failure is surfaced inline, not hidden behind a notice.
+        assert_eq!(p.warning.as_deref(), Some("Local probe timed out"));
+        assert!(!has_notice(v, "Some providers could not be queried"));
         // Entries come from the backend catalog, including the local origin tag.
         assert_eq!(p.models.len(), 3);
-        assert!(p.models.iter().any(|m| m.id == "qwen2.5-coder-32b" && m.is_local));
+        assert!(p
+            .models
+            .iter()
+            .any(|m| m.id == "qwen2.5-coder-32b" && m.is_local));
         assert!(!p.models.iter().any(|m| m.id == "claude-3-7-sonnet"));
     });
 
@@ -541,7 +589,14 @@ async fn test_model_catalog_fetch_and_confirmed_switch(cx: &mut TestAppContext) 
         assert_eq!(v.shell.active_modal, ActiveModal::None);
         assert_eq!(v.shell.composer.model_pill.provider_name, "OpenAI");
         assert_eq!(v.shell.sidebar.provider_status.model_name, "gpt-4o");
-        let item = v.shell.sidebar.session_list.sessions.iter().find(|s| s.id == "ses_test_1").unwrap();
+        let item = v
+            .shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter()
+            .find(|s| s.id == "ses_test_1")
+            .unwrap();
         assert_eq!(item.model_name.as_deref(), Some("gpt-4o"));
     });
 
@@ -552,7 +607,10 @@ async fn test_model_catalog_fetch_and_confirmed_switch(cx: &mut TestAppContext) 
     vc.simulate_input("switch model");
     vc.simulate_keystrokes("enter");
     pump_until(&mut vc, &view, "picker reopen for failed switch", |v| {
-        matches!(v.shell.active_modal, ActiveModal::ModelPicker(_))
+        matches!(
+            &v.shell.active_modal,
+            ActiveModal::ModelPicker(picker) if picker.is_ready()
+        )
     });
     vc.simulate_keystrokes("down enter"); // highlight o3-mini, select
     pump_until(&mut vc, &view, "failed switch notice", |v| {
@@ -575,12 +633,29 @@ async fn test_model_catalog_total_failure_is_honest(cx: &mut TestAppContext) {
         .unwrap();
 
     let state = MockState::new();
+    let first_gate = Arc::new(Notify::new());
+    let retry_gate = Arc::new(Notify::new());
+    state
+        .catalog_gates
+        .lock()
+        .unwrap()
+        .insert(1, first_gate.clone());
+    state
+        .catalog_gates
+        .lock()
+        .unwrap()
+        .insert(2, retry_gate.clone());
     state.catalog_fail.store(true, Ordering::SeqCst);
 
     let (client_read, server_write) = tokio::io::duplex(64 * 1024);
     let (server_read, client_write) = tokio::io::duplex(64 * 1024);
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    rt.spawn(run_mock_server(server_read, server_write, state.clone(), shutdown_rx));
+    rt.spawn(run_mock_server(
+        server_read,
+        server_write,
+        state.clone(),
+        shutdown_rx,
+    ));
 
     let bridge = AcpBridge::new();
     rt.block_on(bridge.connect_streams(client_read, client_write))
@@ -591,12 +666,172 @@ async fn test_model_catalog_total_failure_is_honest(cx: &mut TestAppContext) {
     vc.simulate_keystrokes("cmd-k");
     vc.simulate_input("switch model");
     vc.simulate_keystrokes("enter");
-    pump_until(&mut vc, &view, "honest catalog failure notice", |v| {
-        has_notice(v, "Could not load the model catalog")
+    snap(&vc, &view, |v| {
+        assert!(matches!(
+            &v.shell.active_modal,
+            ActiveModal::ModelPicker(picker) if picker.is_loading()
+        ));
+    });
+    pump_until(&mut vc, &view, "failed catalog request started", |_| {
+        state.catalog_started.load(Ordering::SeqCst) == 1
+    });
+    first_gate.notify_one();
+    pump_until(&mut vc, &view, "inline catalog error", |v| {
+        matches!(
+            &v.shell.active_modal,
+            ActiveModal::ModelPicker(picker)
+                if picker.error().is_some_and(|error| error.contains("Could not load the model catalog"))
+        )
+    });
+    let failed_request_id = snap(&vc, &view, |v| match &v.shell.active_modal {
+        ActiveModal::ModelPicker(picker) => picker.request_id,
+        _ => panic!("error picker should remain open"),
     });
     snap(&vc, &view, |v| {
-        assert_eq!(v.shell.active_modal, ActiveModal::None);
+        assert!(!has_notice(v, "Could not load the model catalog"));
         assert_eq!(v.shell.composer.model_pill.model_name, "claude-3-7-sonnet");
+    });
+
+    state.catalog_fail.store(false, Ordering::SeqCst);
+    *state.catalog_models.lock().unwrap() =
+        vec![catalog_model("gpt-4o", "GPT-4o", "OpenAI", false)];
+    vc.simulate_input("gpt");
+    vc.simulate_keystrokes("enter");
+    snap(&vc, &view, |v| {
+        let ActiveModal::ModelPicker(picker) = &v.shell.active_modal else {
+            panic!("retry should keep the picker open");
+        };
+        assert!(picker.is_loading());
+        assert!(picker.request_id > failed_request_id);
+        assert_eq!(picker.search_query, "gpt");
+    });
+    pump_until(&mut vc, &view, "retry catalog request started", |_| {
+        state.catalog_started.load(Ordering::SeqCst) == 2
+    });
+    retry_gate.notify_one();
+    pump_until(&mut vc, &view, "retried catalog ready", |v| {
+        matches!(
+            &v.shell.active_modal,
+            ActiveModal::ModelPicker(picker)
+                if picker.is_ready() && picker.models.len() == 1 && picker.search_query == "gpt"
+        )
+    });
+    snap(&vc, &view, |v| {
+        let ActiveModal::ModelPicker(picker) = &v.shell.active_modal else {
+            panic!("retried picker should remain open");
+        };
+        assert_eq!(picker.highlighted_model().unwrap().id, "gpt-4o");
+        assert_eq!(v.shell.composer.model_pill.model_name, "claude-3-7-sonnet");
+    });
+}
+
+#[gpui::test]
+async fn test_model_catalog_stale_responses_and_navigation_are_rejected(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    let first_gate = Arc::new(Notify::new());
+    let navigation_gate = Arc::new(Notify::new());
+    state
+        .catalog_gates
+        .lock()
+        .unwrap()
+        .insert(1, first_gate.clone());
+    state
+        .catalog_gates
+        .lock()
+        .unwrap()
+        .insert(3, navigation_gate.clone());
+    *state.catalog_models.lock().unwrap() =
+        vec![catalog_model("gpt-4o", "GPT-4o", "OpenAI", false)];
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(
+        server_read,
+        server_write,
+        state.clone(),
+        shutdown_rx,
+    ));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    submit_initial_prompt(&mut vc, &view, "start a conversation");
+
+    vc.simulate_keystrokes("cmd-k");
+    vc.simulate_input("switch model");
+    vc.simulate_keystrokes("enter");
+    pump_until(&mut vc, &view, "first catalog request started", |_| {
+        state.catalog_started.load(Ordering::SeqCst) == 1
+    });
+
+    *state.catalog_models.lock().unwrap() = vec![catalog_model(
+        "claude-sonnet-4",
+        "Claude Sonnet 4",
+        "Anthropic",
+        false,
+    )];
+    vc.simulate_keystrokes("escape");
+    vc.simulate_keystrokes("cmd-k");
+    vc.simulate_input("switch model");
+    vc.simulate_keystrokes("enter");
+    pump_until(&mut vc, &view, "newer catalog ready", |v| {
+        matches!(
+            &v.shell.active_modal,
+            ActiveModal::ModelPicker(picker)
+                if picker.is_ready() && picker.models.iter().any(|model| model.id == "claude-sonnet-4")
+        )
+    });
+    let current_request_id = snap(&vc, &view, |v| match &v.shell.active_modal {
+        ActiveModal::ModelPicker(picker) => picker.request_id,
+        _ => panic!("newer picker should remain open"),
+    });
+
+    first_gate.notify_one();
+    pump_until(&mut vc, &view, "stale catalog response delivered", |_| {
+        state.catalog_finished.load(Ordering::SeqCst) == 2
+    });
+    vc.run_until_parked();
+    snap(&vc, &view, |v| {
+        let ActiveModal::ModelPicker(picker) = &v.shell.active_modal else {
+            panic!("stale response must not dismiss the current picker");
+        };
+        assert_eq!(picker.request_id, current_request_id);
+        assert!(picker.is_ready());
+        assert_eq!(picker.models.len(), 1);
+        assert_eq!(picker.models[0].id, "claude-sonnet-4");
+    });
+
+    vc.simulate_keystrokes("escape");
+    vc.simulate_keystrokes("cmd-k");
+    vc.simulate_input("switch model");
+    vc.simulate_keystrokes("enter");
+    pump_until(&mut vc, &view, "navigation catalog request started", |_| {
+        state.catalog_started.load(Ordering::SeqCst) == 3
+    });
+    vc.simulate_keystrokes("cmd-n");
+    snap(&vc, &view, |v| {
+        assert_eq!(v.shell.active_modal, ActiveModal::None);
+        assert!(v.shell.active_session_id.is_none());
+        assert!(v.shell.feed.is_empty());
+    });
+    navigation_gate.notify_one();
+    pump_until(
+        &mut vc,
+        &view,
+        "navigation catalog response delivered",
+        |_| state.catalog_finished.load(Ordering::SeqCst) == 3,
+    );
+    vc.run_until_parked();
+    snap(&vc, &view, |v| {
+        assert_eq!(v.shell.active_modal, ActiveModal::None);
     });
 }
 
