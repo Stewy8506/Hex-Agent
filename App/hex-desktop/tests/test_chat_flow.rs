@@ -393,13 +393,25 @@ fn click_debug_element(vc: &mut VisualTestContext, selector: &'static str) {
 fn finish_motion(vc: &mut VisualTestContext, view: &Entity<ChatView>) {
     vc.run_until_parked();
     vc.update(|window, app| {
+        view.update(app, |_, cx| cx.notify());
+        window.refresh();
+    });
+    vc.run_until_parked();
+    vc.update(|window, app| {
         let window_id = window.window_handle().window_id();
-        for _ in 0..30 {
+        for _ in 0..120 {
+            if !app.global::<MotionSystem>().driver_active(window_id) {
+                break;
+            }
             app.global_mut::<MotionSystem>()
                 .tick(window_id, Duration::from_millis(16));
         }
         view.update(app, |_, cx| cx.notify());
         window.refresh();
+    });
+    vc.run_until_parked();
+    vc.update(|_window, app| {
+        view.update(app, |_, cx| cx.notify());
     });
     vc.run_until_parked();
 }
@@ -558,6 +570,91 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         "fade must span the feed area, got {:?}",
         fades[0].size.width
     );
+    let main_bounds = vc
+        .debug_bounds("session_main_pane")
+        .expect("session main pane geometry");
+    let sidebar_bounds = vc
+        .debug_bounds("animated_sidebar")
+        .expect("sidebar geometry");
+    let viewport = vc.update(|window, _| window.viewport_size());
+    assert_px_close(main_bounds.size.width, viewport.width - sidebar_bounds.size.width);
+    assert_px_close(
+        paints[0].card.origin.x,
+        main_bounds.origin.x + (main_bounds.size.width - paints[0].card.size.width) / 2.0,
+    );
+    let toggle = vc.debug_bounds("header_toggle").unwrap();
+    let indicator = vc.debug_bounds("segment_chat").unwrap();
+    let more = vc.debug_bounds("header_more").unwrap();
+    assert!(
+        toggle.right() < indicator.left(),
+        "header toggle {:?} overlaps Chat indicator {:?}",
+        toggle,
+        indicator
+    );
+    assert!(indicator.right() < more.left());
+    assert!(toggle.left() >= px(80.0));
+
+    // At the minimum supported width the pane still fills the window and the
+    // composer, feed, and header retain safe gutters without overlapping.
+    vc.simulate_resize(size(px(900.0), px(600.0)));
+    finish_motion(vc, &view);
+    clear_glow_probe(vc);
+    let narrow = glow_paints(vc, &view);
+    assert_eq!(narrow.len(), 1);
+    assert_px_close(narrow[0].card.size.width, px(560.0));
+    let narrow_main = vc.debug_bounds("session_main_pane").unwrap();
+    let narrow_sidebar = vc.debug_bounds("animated_sidebar").unwrap();
+    assert_px_close(narrow_sidebar.size.width, px(260.0));
+    assert_px_close(narrow_main.size.width, px(640.0));
+    assert_px_close(
+        narrow[0].card.origin.x,
+        narrow_main.origin.x + (narrow_main.size.width - px(560.0)) / 2.0,
+    );
+    let feed = vc.debug_bounds("feed_column").unwrap();
+    assert_px_close(feed.size.width, px(560.0));
+    assert!(feed.left() >= px(16.0));
+    assert!(feed.right() <= px(884.0));
+
+    click_debug_element(vc, "header_toggle");
+    finish_motion(vc, &view);
+    assert_eq!(
+        vc.read(|app| {
+            MotionSystem::value(
+                app,
+                hex_desktop::ui::motion::SpringKey::new(view.entity_id(), "sidebar_width"),
+            )
+        }),
+        0.0,
+    );
+    assert!(vc.debug_bounds("header_toggle").unwrap().left() >= px(80.0));
+    assert_px_close(
+        vc.debug_bounds("session_main_pane").unwrap().size.width,
+        px(900.0),
+    );
+    click_debug_element(vc, "header_toggle");
+    finish_motion(vc, &view);
+    assert_px_close(
+        vc.debug_bounds("animated_sidebar").unwrap().size.width,
+        px(260.0),
+    );
+    assert!(vc.debug_bounds("sidebar_new_chat").unwrap().top() >= px(60.0));
+
+    // Home keeps the 640px composer at the minimum width, leaves room for the
+    // window controls, and provides a vertical scroll viewport.
+    vc.simulate_keystrokes("cmd-n");
+    finish_motion(vc, &view);
+    assert!(vc.debug_bounds("home_center_scroll").is_some());
+    clear_glow_probe(vc);
+    let home = glow_paints(vc, &view);
+    assert_eq!(home.len(), 1);
+    assert_px_close(home[0].card.size.width, px(640.0));
+    assert!(vc.debug_bounds("home_sidebar_toggle").unwrap().left() >= px(80.0));
+    click_debug_element(vc, "continue_ses_test_1");
+    pump_until(vc, &view, "return from Home to first session", |v| {
+        v.shell.active_session_id.as_deref() == Some("ses_test_1")
+    });
+    vc.simulate_resize(size(px(1920.0), px(1080.0)));
+    finish_motion(vc, &view);
 
     // 3. Cmd+C copies the assistant answer (composer focused, no selection).
     vc.simulate_keystrokes("cmd-c");

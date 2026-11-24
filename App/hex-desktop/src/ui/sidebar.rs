@@ -103,6 +103,10 @@ impl ProviderStatus {
 
 /// Sidebar width in px.
 pub const SIDEBAR_WIDTH: f32 = 296.0;
+/// Compact sidebar width used when the whole window leaves too little room for chat.
+pub const SIDEBAR_COMPACT_WIDTH: f32 = 260.0;
+/// Window-width breakpoint below which the compact sidebar is used.
+pub const SIDEBAR_COMPACT_BREAKPOINT: f32 = 1100.0;
 /// Sidebar padding: 18px top, 12px x, 14px bottom.
 pub const SIDEBAR_PADDING_TOP: f32 = 18.0;
 pub const SIDEBAR_PADDING_X: f32 = 12.0;
@@ -323,6 +327,7 @@ impl SidebarView {
     fn render_new_chat_row(&self, theme: &HermesTheme, handlers: &SidebarHandlers) -> Stateful<Div> {
         let mut row = Self::mockup_row(theme)
             .id("sidebar_new_chat")
+            .debug_selector(|| "sidebar_new_chat".to_string())
             .mb(px(NEW_CHAT_MARGIN_BOTTOM))
             .cursor_pointer()
             .child(Self::tinted_icon("plus", NEW_CHAT_ICON, theme.mockup_text))
@@ -789,12 +794,21 @@ impl SidebarView {
 
     /// Renders the mockup 296px sidebar.
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        self.render_with_actions(theme, &SidebarHandlers::default())
+        self.render_with_width(theme, &SidebarHandlers::default(), SIDEBAR_WIDTH)
     }
 
     /// Renders the sidebar with the interactive handlers `ChatView` wires to
     /// real backend operations.
     pub fn render_with_actions(&self, theme: &HermesTheme, handlers: &SidebarHandlers) -> Div {
+        self.render_with_width(theme, handlers, SIDEBAR_WIDTH)
+    }
+
+    pub fn render_with_width(
+        &self,
+        theme: &HermesTheme,
+        handlers: &SidebarHandlers,
+        width: f32,
+    ) -> Div {
         // Active rows honor the live search query and exclude archived
         // sessions (both driven by SessionListView::filter_sessions).
         let mut ordered: Vec<&SessionItem> = self.session_list.filter_sessions();
@@ -853,11 +867,14 @@ impl SidebarView {
         }
 
         div()
-            .w(px(SIDEBAR_WIDTH))
+            .debug_selector(|| "sidebar_content".to_string())
+            .w(px(width))
             .h_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .flex_none()
+            .overflow_hidden()
             .bg(theme.mockup_sidebar)
             .border_r_1()
             .border_color(theme.mockup_border)
@@ -865,6 +882,15 @@ impl SidebarView {
             .px(px(SIDEBAR_PADDING_X))
             .pb(px(SIDEBAR_PADDING_BOTTOM))
             .font_family(theme.font_sans()[0].clone())
+            .when(cfg!(target_os = "macos"), |sidebar| {
+                sidebar.child(
+                    div()
+                        .h(px(
+                            crate::ui::shell::HEADER_HEIGHT - SIDEBAR_PADDING_TOP,
+                        ))
+                        .flex_none(),
+                )
+            })
             .child(self.render_new_chat_row(theme, handlers))
             .child(self.render_search_row(theme, handlers))
             .child(self.render_projects_header(theme))

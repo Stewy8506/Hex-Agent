@@ -28,6 +28,8 @@ pub const FEED_PAD_BOTTOM: f32 = 6.0;
 pub const FEED_FADE_HEIGHT: f32 = 28.0;
 /// Feed column width (mockup `width:560px`).
 pub const FEED_COLUMN_WIDTH: f32 = 560.0;
+/// Minimum horizontal canvas gutter retained in narrow windows.
+pub const FEED_GUTTER: f32 = 16.0;
 
 /// Painted bounds of the feed fade overlay, recorded for tests. Production
 /// never sets this global, so the paint listener is a no-op read.
@@ -526,7 +528,8 @@ impl MessageFeed {
             .w_full()
             .flex()
             .flex_col()
-            .justify_center()
+            .items_center()
+            .px(px(FEED_GUTTER))
             .pt(px(FEED_PAD_TOP))
             .on_children_prepainted(|children, _window, cx| {
                 if let Some(probe) = cx.try_global::<FeedPaintProbe>() {
@@ -537,8 +540,10 @@ impl MessageFeed {
             });
 
         let mut column = div()
+            .debug_selector(|| "feed_column".to_string())
             .w(px(FEED_COLUMN_WIDTH))
             .max_w_full()
+            .min_w_0()
             .h_full()
             .flex()
             .flex_col();

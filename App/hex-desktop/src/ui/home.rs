@@ -233,6 +233,7 @@ pub fn render_continue_row(
 
     div()
         .id(SharedString::from(format!("continue_{}", row.id)))
+        .debug_selector(move || format!("continue_{}", row.id))
         .cursor_pointer()
         .w_full()
         .flex()
@@ -260,6 +261,9 @@ pub fn render_continue_row(
                 .font_family(theme.font_mono()[0].clone())
                 .text_size(px(CONTINUE_PROJECT_SIZE))
                 .text_color(theme.mockup_text_dim)
+                .min_w_0()
+                .max_w(px(160.0))
+                .truncate()
                 .flex_none()
                 .child(row.project.clone()),
         )

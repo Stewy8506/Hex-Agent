@@ -44,6 +44,8 @@ impl ShellView {
 
 /// Header height in px.
 pub const HEADER_HEIGHT: f32 = 60.0;
+/// Space reserved for macOS window controls when no sidebar covers them.
+pub const TRAFFIC_LIGHT_GUTTER: f32 = 80.0;
 /// Header horizontal padding.
 pub const HEADER_PADDING_X: f32 = 20.0;
 /// Header icon-button SVG size.

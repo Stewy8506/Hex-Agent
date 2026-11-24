@@ -50,6 +50,7 @@ pub fn mockup_pill_base(theme: &HermesTheme) -> Div {
         .text_size(px(PILL_TEXT_SIZE))
         .line_height(px(PILL_LINE_HEIGHT))
         .text_color(rgb(PILL_TEXT_HEX))
+        .min_w_0()
         .cursor_pointer()
 }
 
