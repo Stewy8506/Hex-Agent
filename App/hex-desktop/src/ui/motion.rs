@@ -93,8 +93,8 @@ pub fn spinner_frame(elapsed: Duration) -> char {
     SPINNER_FRAMES[(ms / 90) as usize % SPINNER_FRAMES.len()]
 }
 
-/// Whether the OS asks for reduced motion (Windows "Show animations" off via
-/// SPI_GETCLIENTAREAANIMATION; fail-open to motion allowed when undetectable).
+/// Whether the OS asks for reduced motion (Windows "Show animations" off or
+/// macOS Accessibility → Reduce Motion; fail-open when undetectable).
 pub fn reduced_motion() -> bool {
     #[cfg(windows)]
     {
@@ -119,7 +119,12 @@ pub fn reduced_motion() -> bool {
         };
         return ok != 0 && animations_enabled == 0;
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWorkspace;
+        NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         false
     }
