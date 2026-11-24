@@ -5,8 +5,8 @@
 //! (`@keyframes breathe` in DesktopSession.dc.html). The halo is the mockup's
 //! `.glow::before` (inset -2px, radius 26, 120° accent gradient, blur 16px)
 //! approximated with GPUI primitives: a gradient div plus two stacked
-//! blur-16 box shadows, animated with `with_animation` +
-//! `Animation::repeat()` between opacity 0.32 and 0.7.
+//! blur-16 box shadows, with a short one-shot entrance fade. The halo rests at
+//! a static opacity afterward so an idle composer does not request frames.
 
 use std::sync::{Arc, Mutex};
 
@@ -16,8 +16,8 @@ use crate::theme::HermesTheme;
 use crate::ui::motion;
 use crate::ui::token_gauge::TokenGaugeWidget;
 
-/// Breathing glow period in seconds, matching the mockup's 5s `breathe` loop.
-pub const GLOW_PERIOD_SECS: f64 = 5.0;
+/// One-shot glow entrance duration in milliseconds.
+pub const GLOW_ENTRANCE_DURATION_MS: u64 = 600;
 
 /// Minimum glow alpha (exhale) from the mockup's breathe keyframes.
 pub const GLOW_MIN_ALPHA: f32 = 0.32;
@@ -88,6 +88,11 @@ pub fn breathe_easing(t: f32) -> f32 {
 /// Interpolates the glow alpha for an animation phase.
 pub fn glow_alpha(phase: f32) -> f32 {
     GLOW_MIN_ALPHA + (GLOW_MAX_ALPHA - GLOW_MIN_ALPHA) * breathe_easing(phase)
+}
+
+/// Opacity for the finite glow entrance, ending at the resting halo value.
+pub fn glow_entrance_opacity(phase: f32) -> f32 {
+    GLOW_MIN_ALPHA + (HALO_STATIC_OPACITY - GLOW_MIN_ALPHA) * phase.clamp(0.0, 1.0)
 }
 
 /// The two gradient stops backing [`glow_halo_gradient`], exposed for tests
@@ -177,9 +182,10 @@ pub fn glow_card(inner: Div, theme: &HermesTheme) -> Div {
         halo.opacity(HALO_STATIC_OPACITY).into_any_element()
     } else {
         halo.with_animation(
-            "glow-breathe",
-            Animation::new(std::time::Duration::from_secs_f64(GLOW_PERIOD_SECS)).repeat(),
-            |el, phase| el.opacity(glow_alpha(phase)),
+            "glow-entrance",
+            Animation::new(std::time::Duration::from_millis(GLOW_ENTRANCE_DURATION_MS))
+                .with_easing(|phase| phase * phase * (3.0 - 2.0 * phase)),
+            |el, phase| el.opacity(glow_entrance_opacity(phase)),
         )
         .into_any_element()
     };
@@ -312,8 +318,9 @@ impl PromptComposer {
 #[cfg(test)]
 mod glow_tests {
     use super::{
-        breathe_easing, context_label, glow_alpha, glow_gradient_stops, glow_shadow_stack,
-        GLOW_END_ALPHA, GLOW_MAX_ALPHA, GLOW_MIN_ALPHA, GLOW_START_ALPHA, HALO_BLUR,
+        breathe_easing, context_label, glow_alpha, glow_entrance_opacity, glow_gradient_stops,
+        glow_shadow_stack, GLOW_END_ALPHA, GLOW_ENTRANCE_DURATION_MS, GLOW_MAX_ALPHA,
+        GLOW_MIN_ALPHA, GLOW_START_ALPHA, HALO_BLUR, HALO_STATIC_OPACITY,
     };
 
     #[test]
@@ -336,6 +343,18 @@ mod glow_tests {
         }
         // Monotonic on the inhale leg.
         assert!(breathe_easing(0.1) < breathe_easing(0.2));
+    }
+
+    #[test]
+    fn test_glow_entrance_is_finite_and_monotonic() {
+        assert!(GLOW_ENTRANCE_DURATION_MS <= 1_000);
+        assert!((glow_entrance_opacity(0.0) - GLOW_MIN_ALPHA).abs() < 1e-4);
+        assert!((glow_entrance_opacity(1.0) - HALO_STATIC_OPACITY).abs() < 1e-4);
+        for i in 0..=100 {
+            let phase = i as f32 / 100.0;
+            let next = (i + 1) as f32 / 100.0;
+            assert!(glow_entrance_opacity(phase) <= glow_entrance_opacity(next));
+        }
     }
 
     #[test]

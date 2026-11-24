@@ -5925,15 +5925,6 @@ enum ComposerVariant {
     Session,
 }
 
-/// Milliseconds since first use, driving the caret blink phase.
-fn caret_epoch_ms() -> u64 {
-    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
-    EPOCH
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_millis() as u64
-}
-
 struct ComposerElement {
     view: Entity<ChatView>,
     /// Placeholder shown while the buffer is empty (Start vs Session wording).
@@ -6076,16 +6067,13 @@ impl Element for ComposerElement {
 
         let mut selections = Vec::new();
         let mut cursor_quad = None;
-        // Mockup caret: 2×20 accent, 1.1s steps(1) blink; reduced motion
-        // keeps it solid. The glow's breathe animation supplies the repaints.
-        let caret_on = motion::reduced_motion()
-            || motion::blink_visible(std::time::Duration::from_millis(caret_epoch_ms()));
+        // Keep the caret solid: blinking would require a perpetual frame loop.
         let mut start = 0usize;
         for (i, shaped) in lines.iter().enumerate() {
             let line_end = start + shaped.text.len();
             let y = bounds.top() + line_height * i as f32;
             if selected_range.is_empty() {
-                if caret_on && cursor >= start && cursor <= line_end {
+                if cursor >= start && cursor <= line_end {
                     let x = shaped.x_for_index(cursor - start);
                     cursor_quad = Some(fill(
                         Bounds::new(point(bounds.left() + x, y), size(px(2.0), line_height)),
