@@ -286,6 +286,7 @@ pub struct ChatView {
     workspace: PathBuf,
 
     sessions: HashMap<String, SessionState>,
+    session_load_generation: u64,
     running_turns: HashSet<String>,
     /// Assistant message id created for each session's current/most recent turn.
     /// The prompt response and the streamed `session/update` notifications race
@@ -364,6 +365,7 @@ impl ChatView {
             rt,
             workspace,
             sessions: HashMap::new(),
+            session_load_generation: 0,
             running_turns: HashSet::new(),
             turn_assistants: HashMap::new(),
             current_model: String::new(),
@@ -602,6 +604,7 @@ impl ChatView {
     /// After a reconnect the backend may be a fresh process: restore the
     /// previous session from durable history, or start a new one honestly.
     fn recover_session(&mut self, cx: &mut Context<Self>) {
+        let generation = self.begin_session_navigation();
         let previous = self.shell.active_session_id.clone();
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
@@ -629,6 +632,9 @@ impl ChatView {
                 None
             };
             this.update(cx, |view, cx| {
+                if view.session_load_generation != generation {
+                    return;
+                }
                 match restored {
                     Some((load, feed)) => view.adopt_loaded_session(load, feed, cx),
                     None => match fresh {
@@ -1008,6 +1014,11 @@ impl ChatView {
     // Sessions
     // ------------------------------------------------------------------
 
+    fn begin_session_navigation(&mut self) -> u64 {
+        self.session_load_generation = self.session_load_generation.wrapping_add(1);
+        self.session_load_generation
+    }
+
     fn save_active_session(&mut self) {
         if let Some(current) = self.shell.active_session_id.clone() {
             let feed = std::mem::replace(&mut self.shell.feed, MessageFeed::new());
@@ -1022,6 +1033,7 @@ impl ChatView {
         opens_view: bool,
         cx: &mut Context<Self>,
     ) {
+        self.begin_session_navigation();
         self.save_active_session();
         let id = resp.session_id.clone();
         self.shell.feed = MessageFeed::new();
@@ -1061,6 +1073,7 @@ impl ChatView {
         feed: MessageFeed,
         cx: &mut Context<Self>,
     ) {
+        self.begin_session_navigation();
         self.save_active_session();
         let id = load.session_id.clone();
         self.running_turns.remove(&id);
@@ -1107,6 +1120,7 @@ impl ChatView {
         {
             return;
         }
+        let generation = self.begin_session_navigation();
         if let Some(state) = self.sessions.remove(&id) {
             self.save_active_session();
             self.shell.feed = state.feed;
@@ -1137,13 +1151,18 @@ impl ChatView {
                 }
                 _ => None,
             };
-            this.update(cx, |view, cx| match restored {
-                Some((load, feed)) => view.adopt_loaded_session(load, feed, cx),
-                None => {
-                    view.shell.feed.add_system_notice(format!(
-                        "Could not resume session {id}: durable history was unavailable."
-                    ));
-                    cx.notify();
+            this.update(cx, |view, cx| {
+                if view.session_load_generation != generation {
+                    return;
+                }
+                match restored {
+                    Some((load, feed)) => view.adopt_loaded_session(load, feed, cx),
+                    None => {
+                        view.shell.feed.add_system_notice(format!(
+                            "Could not resume session {id}: durable history was unavailable."
+                        ));
+                        cx.notify();
+                    }
                 }
             })
             .ok();
@@ -1479,6 +1498,7 @@ impl ChatView {
     }
 
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
+        self.begin_session_navigation();
         // Phase 2: New chat returns to the Home start screen. A prompt already
         // queued from the Home composer (set in submit_text) must survive this
         // reset so adopt_session can submit it once the session exists.
@@ -3881,6 +3901,7 @@ impl ChatView {
         self.sessions.remove(session_id);
         self.shell.sidebar.session_list.delete_session(session_id);
         if was_active {
+            self.begin_session_navigation();
             self.shell.feed = MessageFeed::new();
             self.shell.active_session_id = None;
             self.feed_synced_count = 0;
@@ -3942,6 +3963,7 @@ impl ChatView {
             item.is_archived = archived;
         }
         if archived && self.shell.active_session_id.as_deref() == Some(session_id) {
+            self.begin_session_navigation();
             // Archiving the visible chat returns to Home; the session stays
             // resumable from the archived section.
             self.shell.feed = MessageFeed::new();

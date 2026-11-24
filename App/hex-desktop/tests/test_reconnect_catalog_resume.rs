@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
-use tokio::sync::{watch, Mutex as AsyncMutex};
+use tokio::sync::{watch, Mutex as AsyncMutex, Notify};
 
 #[derive(Default)]
 struct MockState {
@@ -37,6 +37,10 @@ struct MockState {
     switch_unconfirmed: AtomicBool,
     list_sessions: StdMutex<Vec<Value>>,
     load_history: StdMutex<Vec<(String, String)>>,
+    load_histories: StdMutex<std::collections::HashMap<String, Vec<(String, String)>>>,
+    load_gates: StdMutex<std::collections::HashMap<String, Arc<Notify>>>,
+    load_started: AtomicUsize,
+    load_finished: AtomicUsize,
     load_model: StdMutex<String>,
 }
 
@@ -117,11 +121,19 @@ async fn handle_request(
         }
         "session/load" => {
             let sid = params["sessionId"].as_str().unwrap_or("ses_unknown").to_string();
+            state.load_started.fetch_add(1, Ordering::SeqCst);
+            let gate = state.load_gates.lock().unwrap().get(&sid).cloned();
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
             let model = state.load_model.lock().unwrap().clone();
             let history: Vec<Value> = state
-                .load_history
+                .load_histories
                 .lock()
                 .unwrap()
+                .get(&sid)
+                .cloned()
+                .unwrap_or_else(|| state.load_history.lock().unwrap().clone())
                 .iter()
                 .enumerate()
                 .map(|(i, (prompt, response))| {
@@ -147,6 +159,7 @@ async fn handle_request(
                 }),
             )
             .await;
+            state.load_finished.fetch_add(1, Ordering::SeqCst);
         }
         "session/models" => {
             let sid = params["sessionId"].as_str().unwrap_or("ses_unknown").to_string();
@@ -245,7 +258,11 @@ async fn run_mock_server(
                         let method = req["method"].as_str().unwrap().to_string();
                         let id = req.get("id").cloned();
                         let params = req.get("params").cloned().unwrap_or(json!({}));
-                        handle_request(&method, id, params, &writer, &state).await;
+                        let writer = writer.clone();
+                        let state = state.clone();
+                        tokio::spawn(async move {
+                            handle_request(&method, id, params, &writer, &state).await;
+                        });
                     }
                     _ => break,
                 }
@@ -574,5 +591,78 @@ async fn test_resume_durable_session_from_backend(cx: &mut TestAppContext) {
     snap(&vc, &view, |v| {
         assert_eq!(last_user(v).as_deref(), Some("Resumed prompt"));
         assert_eq!(v.shell.composer.model_pill.model_name, "claude-3-7-sonnet");
+    });
+}
+
+#[gpui::test]
+async fn test_latest_session_resume_wins_out_of_order(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    *state.list_sessions.lock().unwrap() = vec![
+        session_item("ses_test_1", "claude-3-7-sonnet"),
+        session_item("ses_disk_a", "claude-3-7-sonnet"),
+        session_item("ses_disk_b", "claude-3-7-sonnet"),
+    ];
+    let gate = Arc::new(Notify::new());
+    state
+        .load_gates
+        .lock()
+        .unwrap()
+        .insert("ses_disk_a".to_string(), gate.clone());
+    let mut histories = state.load_histories.lock().unwrap();
+    histories.insert(
+        "ses_disk_a".to_string(),
+        vec![("Prompt A".to_string(), "Answer A".to_string())],
+    );
+    histories.insert(
+        "ses_disk_b".to_string(),
+        vec![("Prompt B".to_string(), "Answer B".to_string())],
+    );
+    drop(histories);
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(server_read, server_write, state.clone(), shutdown_rx));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    pump_until(&mut vc, &view, "initial session adoption", |v| {
+        v.shell.active_session_id.as_deref() == Some("ses_test_1")
+    });
+    pump_until(&mut vc, &view, "durable sessions listed", |v| {
+        v.shell.sidebar.session_list.sessions.iter().any(|s| s.id == "ses_disk_b")
+    });
+
+    vc.simulate_keystrokes("cmd-k");
+    vc.simulate_input("disk_a");
+    vc.simulate_keystrokes("enter");
+    pump_until(&mut vc, &view, "first resume request started", |_| {
+        state.load_started.load(Ordering::SeqCst) == 1
+    });
+
+    vc.simulate_keystrokes("cmd-k");
+    vc.simulate_input("disk_b");
+    vc.simulate_keystrokes("enter");
+    pump_until(&mut vc, &view, "newer session resumed", |v| {
+        v.shell.active_session_id.as_deref() == Some("ses_disk_b")
+            && last_assistant(v).map(|a| a.content.as_str()) == Some("Answer B")
+    });
+
+    gate.notify_one();
+    pump_until(&mut vc, &view, "stale resume response delivered", |_| {
+        state.load_finished.load(Ordering::SeqCst) == 2
+    });
+    vc.run_until_parked();
+    snap(&vc, &view, |v| {
+        assert_eq!(v.shell.active_session_id.as_deref(), Some("ses_disk_b"));
+        assert_eq!(last_assistant(v).unwrap().content, "Answer B");
     });
 }
