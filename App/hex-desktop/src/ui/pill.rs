@@ -34,6 +34,10 @@ pub const PILL_CHEVRON_HEX: u32 = 0x858585;
 /// Mockup `.pill` base: bg `#1f1f1f`, radius 99, padding 5px 14px, 14/20
 /// `#cfcfcf`, hover `#272727`.
 pub fn mockup_pill(theme: &HermesTheme) -> Div {
+    mockup_pill_base(theme).hover(|s| s.bg(theme.mockup_pill_hover))
+}
+
+pub fn mockup_pill_base(theme: &HermesTheme) -> Div {
     div()
         .flex()
         .flex_row()
@@ -47,7 +51,6 @@ pub fn mockup_pill(theme: &HermesTheme) -> Div {
         .line_height(px(PILL_LINE_HEIGHT))
         .text_color(rgb(PILL_TEXT_HEX))
         .cursor_pointer()
-        .hover(|s| s.bg(theme.mockup_pill_hover))
 }
 
 /// Pill chevron: bundled chevron-down SVG sized 12px in `#858585`.
@@ -75,27 +78,57 @@ pub fn mockup_icon_button(
 ) -> Div {
     let hover_bg = theme.mockup_hover;
     let hover_stroke = hover_tint.unwrap_or(theme.mockup_text);
+    icon_button(
+        icon,
+        icon_size,
+        tint.into(),
+        transparent_black(),
+        Some(hover_stroke.into()),
+    )
+    .hover(move |s| s.bg(hover_bg))
+}
+
+pub fn mockup_icon_button_motion(
+    theme: &HermesTheme,
+    icon: &str,
+    icon_size: f32,
+    tint: Rgba,
+    hover_tint: Option<Rgba>,
+    motion: crate::ui::motion::ControlValues,
+) -> Div {
+    let hover_stroke: Hsla = hover_tint.unwrap_or(theme.mockup_text).into();
+    let background = motion.color(transparent_black(), theme.mockup_hover.into());
+    let stroke = motion.color(tint.into(), hover_stroke);
+    icon_button(icon, icon_size, stroke, background, None)
+}
+
+fn icon_button(
+    icon: &str,
+    icon_size: f32,
+    stroke: Hsla,
+    background: Hsla,
+    hover_stroke: Option<Hsla>,
+) -> Div {
+    let mut icon = svg()
+        .path(format!("icons/{icon}.svg"))
+        .w(px(icon_size))
+        .h(px(icon_size))
+        .flex_none()
+        .text_color(stroke);
+    if let Some(hover_stroke) = hover_stroke {
+        icon = icon.group_hover("icon_button", move |s| s.text_color(hover_stroke));
+    }
     div()
         .group("icon_button")
         .w(px(ICON_BUTTON_SIZE))
         .h(px(ICON_BUTTON_SIZE))
         .rounded(px(ICON_BUTTON_RADIUS))
+        .bg(background)
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .hover(move |s| s.bg(hover_bg))
-        .child(
-            // gpui does not flow container text color into svg children; the
-            // icon carries its own tint and swaps it via group_hover.
-            svg()
-                .path(format!("icons/{icon}.svg"))
-                .w(px(icon_size))
-                .h(px(icon_size))
-                .flex_none()
-                .text_color(tint)
-                .group_hover("icon_button", move |s| s.text_color(hover_stroke)),
-        )
+        .child(icon)
 }
 
 #[cfg(test)]

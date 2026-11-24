@@ -19,8 +19,8 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use crate::ui::home::{ContinueRow, COMING_SOON_DOCK};
 use crate::ui::home;
+use crate::ui::home::{ContinueRow, COMING_SOON_DOCK};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -29,19 +29,19 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use hex_protocol::error::AcpError;
 use hex_protocol::models::{
-    ApprovalDecisionResponse, CloudAuthStatus, CloudUpdatePlan, PagedSessionLoad, SessionNewResponse,
-    SessionPromptResponse,
+    ApprovalDecisionResponse, CloudAuthStatus, CloudUpdatePlan, PagedSessionLoad,
+    SessionNewResponse, SessionPromptResponse,
 };
 
 use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
 use crate::shortcuts::{
-    self, About, ActualSize, CloseWindow, Hide, Quit, Redo, Undo, ZoomIn, ZoomOut, init_shortcuts,
+    self, init_shortcuts, About, ActualSize, CloseWindow, Hide, Quit, Redo, Undo, ZoomIn, ZoomOut,
 };
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
-use crate::ui::feed::{ApprovalCard, ApprovalCardState, MessageFeed, MessageItem};
+use crate::ui::feed::{ApprovalCard, ApprovalCardState, ApprovalVisual, MessageFeed, MessageItem};
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
 use crate::ui::modals::account::{AccountAction, AccountMode};
 use crate::ui::modals::approval::{
@@ -50,17 +50,19 @@ use crate::ui::modals::approval::{
 use crate::ui::modals::model_picker::ModelSelectHandler;
 use crate::ui::modals::palette::PaletteActionHandler;
 use crate::ui::modals::session_actions::{
-    SessionActionHandler, SessionActionMode, SessionActionModal, SessionActionOutcome,
+    SessionActionHandler, SessionActionModal, SessionActionMode, SessionActionOutcome,
     SessionSearchModal,
 };
 use crate::ui::modals::settings::{SettingsAction, SettingsModal, SettingsSaveHandler};
 use crate::ui::modals::{
-    render_about, render_modal_container, ActiveModal, AccountModal, ModalMotion, ModelEntry,
+    render_about, render_modal_container, AccountModal, ActiveModal, ModalMotion, ModelEntry,
     PaletteAction, ToolApprovalModal,
 };
 use crate::ui::model_pill::SendButton;
 use crate::ui::motion;
-use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
+use crate::ui::pill::{
+    mockup_icon_button, mockup_icon_button_motion, mockup_pill_base, mockup_pill_chevron,
+};
 use crate::ui::reasoning::ThinkingDisclosure;
 use crate::ui::session_list::SessionItem;
 use crate::ui::shell::{AppShell, ShellView};
@@ -186,7 +188,10 @@ enum TextEditKind {
     Replace,
 }
 
-fn find_assistant_mut<'a>(feed: &'a mut MessageFeed, id: &str) -> Option<&'a mut AssistantMessageView> {
+fn find_assistant_mut<'a>(
+    feed: &'a mut MessageFeed,
+    id: &str,
+) -> Option<&'a mut AssistantMessageView> {
     feed.messages.iter_mut().rev().find_map(|m| match m {
         MessageItem::Assistant(a) if a.id == id => Some(a),
         _ => None,
@@ -224,26 +229,50 @@ fn apply_authoritative_final(
 
 /// Rebuild a feed from durable history, fetching canonical pages for any
 /// turn whose inline preview was truncated (B28 recovery / resume).
-async fn build_restored_feed(bridge: &AcpBridge, rt: &Handle, load: &PagedSessionLoad) -> MessageFeed {
+async fn build_restored_feed(
+    bridge: &AcpBridge,
+    rt: &Handle,
+    load: &PagedSessionLoad,
+) -> MessageFeed {
     let mut feed = MessageFeed::new();
     let mut incomplete = false;
     for paged in &load.page.history {
         let prompt = match full_history_field(
-            bridge, rt, &load.session_id, paged.turn_index, "prompt",
-            paged.prompt_chars, &paged.turn.prompt,
-        ).await {
+            bridge,
+            rt,
+            &load.session_id,
+            paged.turn_index,
+            "prompt",
+            paged.prompt_chars,
+            &paged.turn.prompt,
+        )
+        .await
+        {
             Some(text) => text,
-            None => { incomplete = true; paged.turn.prompt.clone() }
+            None => {
+                incomplete = true;
+                paged.turn.prompt.clone()
+            }
         };
         if !prompt.is_empty() {
             feed.add_user_message(prompt);
         }
         let response = match full_history_field(
-            bridge, rt, &load.session_id, paged.turn_index, "response",
-            paged.response_chars, &paged.turn.response,
-        ).await {
+            bridge,
+            rt,
+            &load.session_id,
+            paged.turn_index,
+            "response",
+            paged.response_chars,
+            &paged.turn.response,
+        )
+        .await
+        {
             Some(text) => text,
-            None => { incomplete = true; paged.turn.response.clone() }
+            None => {
+                incomplete = true;
+                paged.turn.response.clone()
+            }
         };
         if !response.is_empty() {
             feed.add_assistant_message(response);
@@ -254,7 +283,7 @@ async fn build_restored_feed(bridge: &AcpBridge, rt: &Handle, load: &PagedSessio
             "Some restored turns may be incomplete: canonical history pages could not be validated.",
         );
     }
-    feed
+    MessageFeed::with_messages(feed.messages)
 }
 
 /// Fetch and validate every page of one turn field; None on any inconsistency.
@@ -360,6 +389,9 @@ pub struct ChatView {
     feed_synced_count: usize,
     /// Operator-attached local file paths pending inclusion in the next prompt.
     attachments: Vec<String>,
+    /// Removed chips stay mounted until their exit springs settle.
+    outgoing_attachments: Vec<String>,
+    approval_visuals: HashMap<String, ApprovalVisual>,
     /// When the first reasoning chunk arrived per session, for the
     /// "Thought for Ns" header on turn completion.
     thought_starts: HashMap<String, Instant>,
@@ -436,6 +468,8 @@ impl ChatView {
             feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             feed_synced_count: 0,
             attachments: Vec::new(),
+            outgoing_attachments: Vec::new(),
+            approval_visuals: HashMap::new(),
             thought_starts: HashMap::new(),
         };
         view.start_event_pump(cx);
@@ -450,7 +484,9 @@ impl ChatView {
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
-            let res = rt.spawn(async move { bridge.cloud_auth_status().await }).await;
+            let res = rt
+                .spawn(async move { bridge.cloud_auth_status().await })
+                .await;
             this.update(cx, |view, cx| {
                 if let Ok(Ok(status)) = res {
                     view.cloud_status = Some(status.clone());
@@ -461,7 +497,9 @@ impl ChatView {
                         );
                         view.refresh_cloud_update(cx);
                     } else {
-                        view.shell.sidebar.set_account_status("Account", "Local mode");
+                        view.shell
+                            .sidebar
+                            .set_account_status("Account", "Local mode");
                     }
                     cx.notify();
                 }
@@ -477,7 +515,9 @@ impl ChatView {
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
-            let res = rt.spawn(async move { bridge.cloud_update_check().await }).await;
+            let res = rt
+                .spawn(async move { bridge.cloud_update_check().await })
+                .await;
             this.update(cx, |view, cx| {
                 view.cloud_update = match res {
                     Ok(Ok(plan)) => Some(plan),
@@ -504,7 +544,11 @@ impl ChatView {
     /// Aggregate notification count driving the header bell badge.
     fn notification_count(&self) -> usize {
         self.pending_approval_count()
-            + if self.update_banner_line().is_some() { 1 } else { 0 }
+            + if self.update_banner_line().is_some() {
+                1
+            } else {
+                0
+            }
     }
 
     /// One-line banner summary for the verified update plan, if any:
@@ -940,14 +984,18 @@ impl ChatView {
         let turn_assistant = self.turn_assistants.get(&sid).cloned();
         // Elapsed reasoning time only when this notification ends the turn.
         let thought_elapsed = if matches!(event, AcpEvent::TurnComplete { .. }) {
-            self.thought_starts.remove(&sid).map(|t| t.elapsed().as_secs_f64())
+            self.thought_starts
+                .remove(&sid)
+                .map(|t| t.elapsed().as_secs_f64())
         } else {
             None
         };
         // Stamp the reasoning clock before the feed borrow (same field can't
         // be touched while `feed` aliases into `self`).
         if matches!(event, AcpEvent::ThoughtChunk { .. }) {
-            self.thought_starts.entry(sid.clone()).or_insert_with(Instant::now);
+            self.thought_starts
+                .entry(sid.clone())
+                .or_insert_with(Instant::now);
         }
 
         {
@@ -985,9 +1033,9 @@ impl ChatView {
                         .as_deref()
                         .and_then(|id| find_assistant_mut(feed, id))
                     {
-                        let disclosure = assistant
-                            .reasoning
-                            .get_or_insert_with(|| ThinkingDisclosure::new("").with_generating(true));
+                        let disclosure = assistant.reasoning.get_or_insert_with(|| {
+                            ThinkingDisclosure::new("").with_generating(true)
+                        });
                         disclosure.append_chunk(&text);
                     }
                 }
@@ -1079,7 +1127,14 @@ impl ChatView {
             let feed = std::mem::replace(&mut self.shell.feed, MessageFeed::new());
             let draft = self.content.clone();
             let attachments = self.attachments.clone();
-            self.sessions.insert(current, SessionState { feed, draft, attachments });
+            self.sessions.insert(
+                current,
+                SessionState {
+                    feed,
+                    draft,
+                    attachments,
+                },
+            );
         }
     }
 
@@ -1179,6 +1234,7 @@ impl ChatView {
         let generation = self.begin_session_navigation();
         if let Some(state) = self.sessions.remove(&id) {
             self.save_active_session();
+            self.clear_attachment_motion(cx);
             self.shell.feed = state.feed;
             self.set_editor_content(state.draft, cx);
             self.attachments = state.attachments;
@@ -1200,7 +1256,9 @@ impl ChatView {
         let sid = id.clone();
         cx.spawn(async move |this, cx| {
             let b = bridge.clone();
-            let loaded = rt.spawn(async move { b.load_session_paged(&sid).await }).await;
+            let loaded = rt
+                .spawn(async move { b.load_session_paged(&sid).await })
+                .await;
             let restored = match loaded {
                 Ok(Ok(load)) => {
                     let feed = build_restored_feed(&bridge, &rt, &load).await;
@@ -1233,7 +1291,12 @@ impl ChatView {
     /// chips, compact times) and the bottom feature dock. Submitting a prompt
     /// requests a new session (adopted on creation) and opens it; a dock item
     /// that is not built yet surfaces its Coming soon notice.
-    fn render_home(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
+    fn render_home(
+        &mut self,
+        theme: &HermesTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         // Continue list: the five most recent real sessions, with honest
         // running (live turn) and Review (pending approval) state, synced
         // by sync_sidebar_live_state each frame.
@@ -1252,7 +1315,8 @@ impl ChatView {
                 id: s.id.clone(),
                 title: s.title.clone(),
                 relative_time: crate::ui::session_list::format_compact_relative_time(
-                    s.updated_at, now,
+                    s.updated_at,
+                    now,
                 ),
                 location_chip: "This Mac",
                 project: workspace.clone(),
@@ -1385,12 +1449,7 @@ impl ChatView {
                     .gap(px(4.0))
                     .child(provider_chip)
                     .child(search_button)
-                    .child(
-                        div()
-                            .relative()
-                            .child(bell_button)
-                            .child(bell_dot),
-                    )
+                    .child(div().relative().child(bell_button).child(bell_dot))
                     .child(settings_button),
             );
 
@@ -1419,26 +1478,23 @@ impl ChatView {
                         // Pulsating glowing prompt card wrapping the composer
                         // body (mode/model pills + attach/send) re-rendered here
                         // without the session-only context bar.
-                        self.render_home_composer(theme, cx),
+                        self.render_home_composer(theme, window, cx),
                     )
-                    .when_some(
-                        self.home_connection_error.clone(),
-                        |c, msg| {
-                            c.child(
-                                div()
-                                    .mt(px(12.0))
-                                    .px(px(14.0))
-                                    .py(px(8.0))
-                                    .rounded(px(10.0))
-                                    .bg(theme.mockup_surface)
-                                    .border_1()
-                                    .border_color(theme.mockup_border)
-                                    .text_sm()
-                                    .text_color(theme.mockup_text_dim)
-                                    .child(SharedString::from(msg)),
-                            )
-                        },
-                    ),
+                    .when_some(self.home_connection_error.clone(), |c, msg| {
+                        c.child(
+                            div()
+                                .mt(px(12.0))
+                                .px(px(14.0))
+                                .py(px(8.0))
+                                .rounded(px(10.0))
+                                .bg(theme.mockup_surface)
+                                .border_1()
+                                .border_color(theme.mockup_border)
+                                .text_sm()
+                                .text_color(theme.mockup_text_dim)
+                                .child(SharedString::from(msg)),
+                        )
+                    }),
             )
             .child(
                 // Continue list: w600, margin-top 48, `.sl` header padding
@@ -1499,13 +1555,14 @@ impl ChatView {
                     .children(COMING_SOON_DOCK.iter().map(|(label, glyph)| {
                         let this = cx.entity().downgrade();
                         let name: &'static str = label;
-                        crate::ui::home::render_dock_item(theme, label, label, glyph)
-                            .on_click(move |_, _, cx| {
+                        crate::ui::home::render_dock_item(theme, label, label, glyph).on_click(
+                            move |_, _, cx| {
                                 let _ = this.update(cx, |view, cx| {
                                     view.home_coming_soon = Some(name);
                                     cx.notify();
                                 });
-                            })
+                            },
+                        )
                     })),
             );
 
@@ -1537,10 +1594,7 @@ impl ChatView {
                                 .py(px(8.0))
                                 .text_sm()
                                 .text_color(theme.mockup_text_dim)
-                                .child(SharedString::from(format!(
-                                    "{} — coming soon",
-                                    label
-                                ))),
+                                .child(SharedString::from(format!("{} — coming soon", label))),
                         ),
                 )
             })
@@ -1550,8 +1604,13 @@ impl ChatView {
     /// Delegates to the shared composer in its Home variant so Home and
     /// Session stay visually identical; submit routes into the session (see
     /// adopt_session).
-    fn render_home_composer(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
-        self.render_composer(theme, cx, ComposerVariant::Home)
+    fn render_home_composer(
+        &mut self,
+        theme: &HermesTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        self.render_composer(theme, window, cx, ComposerVariant::Home)
     }
 
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
@@ -1647,6 +1706,10 @@ impl ChatView {
         };
 
         let attachments = std::mem::take(&mut self.attachments);
+        for path in &attachments {
+            self.attachment_reveal(cx, path).remove(cx);
+        }
+        self.outgoing_attachments.clear();
         self.reset_editor(cx);
         self.shell
             .feed
@@ -1726,7 +1789,12 @@ impl ChatView {
             Ok(Ok(resp)) => {
                 if resp.is_completed() {
                     let text = resp.text_content();
-                    apply_authoritative_final(feed, turn_assistant.as_deref(), &text, &self.current_model);
+                    apply_authoritative_final(
+                        feed,
+                        turn_assistant.as_deref(),
+                        &text,
+                        &self.current_model,
+                    );
                     if resp.turn_index.is_some() && resp.response_chars.is_some() {
                         let bridge = self.bridge.clone();
                         let rt = self.rt.clone();
@@ -1735,10 +1803,17 @@ impl ChatView {
                         cx.spawn(async move |this, cx| {
                             let sid2 = sid.clone();
                             let res = rt
-                                .spawn(async move { bridge.fetch_canonical_final(&sid2, &resp).await })
+                                .spawn(
+                                    async move { bridge.fetch_canonical_final(&sid2, &resp).await },
+                                )
                                 .await;
                             this.update(cx, |view, cx| {
-                                view.reconcile_canonical_final(&sid, assistant_id.as_deref(), res, cx);
+                                view.reconcile_canonical_final(
+                                    &sid,
+                                    assistant_id.as_deref(),
+                                    res,
+                                    cx,
+                                );
                             })
                             .ok();
                         })
@@ -1747,10 +1822,7 @@ impl ChatView {
                 } else if resp.status.eq_ignore_ascii_case("cancelled") {
                     feed.add_system_notice("Turn cancelled.");
                 } else {
-                    feed.add_system_notice(format!(
-                        "Turn ended with status \"{}\".",
-                        resp.status
-                    ));
+                    feed.add_system_notice(format!("Turn ended with status \"{}\".", resp.status));
                 }
             }
             Ok(Err(err)) => {
@@ -1765,7 +1837,7 @@ impl ChatView {
             if let Some(pos) = feed.messages.iter().position(|m| {
                 matches!(m, MessageItem::Assistant(a) if a.id == id && a.content.is_empty() && a.tool_calls.is_empty())
             }) {
-                feed.messages.remove(pos);
+                feed.remove_message_at(pos);
             }
         }
         self.sync_transport_state();
@@ -1853,9 +1925,10 @@ impl ChatView {
 
     fn regenerate(&mut self, assistant_id: &str, cx: &mut Context<Self>) {
         let messages = &self.shell.feed.messages;
-        let Some(pos) = messages.iter().position(
-            |m| matches!(m, MessageItem::Assistant(a) if a.id == assistant_id),
-        ) else {
+        let Some(pos) = messages
+            .iter()
+            .position(|m| matches!(m, MessageItem::Assistant(a) if a.id == assistant_id))
+        else {
             return;
         };
         let prompt = messages[..pos].iter().rev().find_map(|m| match m {
@@ -1963,7 +2036,8 @@ impl ChatView {
                 self.shell.dismiss_modal();
                 let notice = if outcome == "DENY" {
                     "Approval denied; the runtime blocked the action.".to_string()
-                } else if let (Some(lease_id), Some(ttl)) = (&resp.lease_id, resp.lease_ttl_seconds) {
+                } else if let (Some(lease_id), Some(ttl)) = (&resp.lease_id, resp.lease_ttl_seconds)
+                {
                     format!("Approved for this session; lease {lease_id} expires in {ttl}s.")
                 } else if choice == ToolApprovalChoice::Session {
                     "Approved for this session with the default scoped lease.".to_string()
@@ -2030,9 +2104,9 @@ impl ChatView {
             PaletteAction::OpenSettings => self.open_settings_modal(cx),
             PaletteAction::ExportTranscript => self.export_transcript(cx),
             PaletteAction::Custom(label) => {
-                self.shell.feed.add_system_notice(format!(
-                    "{label} is not available in the desktop yet."
-                ));
+                self.shell
+                    .feed
+                    .add_system_notice(format!("{label} is not available in the desktop yet."));
                 cx.notify();
             }
         }
@@ -2129,7 +2203,9 @@ impl ChatView {
             .clone()
             .unwrap_or_else(|| "default".to_string());
         cx.spawn(async move |this, cx| {
-            let res = rt.spawn(async move { bridge.list_models(&sid).await }).await;
+            let res = rt
+                .spawn(async move { bridge.list_models(&sid).await })
+                .await;
             this.update(cx, |view, cx| {
                 match res {
                     Ok(Ok(catalog)) => {
@@ -2143,8 +2219,11 @@ impl ChatView {
                                 .feed
                                 .add_system_notice("The backend reported no available models.");
                         } else {
-                            let entries =
-                                catalog.models.iter().map(ModelEntry::from_catalog).collect();
+                            let entries = catalog
+                                .models
+                                .iter()
+                                .map(ModelEntry::from_catalog)
+                                .collect();
                             view.shell.open_model_picker(entries);
                         }
                     }
@@ -2171,7 +2250,8 @@ impl ChatView {
     /// Open the account modal over cached status, then refresh live status
     /// and, when signed in, the device roster.
     fn open_account_modal(&mut self, cx: &mut Context<Self>) {
-        self.shell.active_modal = ActiveModal::Account(AccountModal::new(self.cloud_status.clone()));
+        self.shell.active_modal =
+            ActiveModal::Account(AccountModal::new(self.cloud_status.clone()));
         cx.notify();
         self.refresh_account_modal_data(cx);
     }
@@ -2199,7 +2279,9 @@ impl ChatView {
                             view.cloud_status = Some(status);
                         }
                         Ok(Err(err)) => modal.error = Some(format!("{err}")),
-                        Err(err) => modal.error = Some(format!("Account status task aborted: {err}")),
+                        Err(err) => {
+                            modal.error = Some(format!("Account status task aborted: {err}"))
+                        }
                     }
                 } else {
                     return;
@@ -2211,7 +2293,10 @@ impl ChatView {
             // Devices are only fetched when the fresh status says signed in.
             let signed_in = this
                 .read_with(cx, |view, _| {
-                    view.cloud_status.as_ref().map(|s| s.logged_in).unwrap_or(false)
+                    view.cloud_status
+                        .as_ref()
+                        .map(|s| s.logged_in)
+                        .unwrap_or(false)
                 })
                 .ok()
                 .unwrap_or(false);
@@ -2322,7 +2407,9 @@ impl ChatView {
             }
             AccountAction::Logout => {
                 cx.spawn(async move |this, cx| {
-                    let res = rt.spawn(async move { bridge.cloud_auth_logout().await }).await;
+                    let res = rt
+                        .spawn(async move { bridge.cloud_auth_logout().await })
+                        .await;
                     this.update(cx, |view, cx| {
                         if let ActiveModal::Account(modal) = &mut view.shell.active_modal {
                             match res {
@@ -2393,9 +2480,9 @@ impl ChatView {
             return;
         };
         if !self.bridge.is_connected() {
-            self.shell.feed.add_system_notice(
-                "Not connected to the HEX runtime — cannot switch model.",
-            );
+            self.shell
+                .feed
+                .add_system_notice("Not connected to the HEX runtime — cannot switch model.");
             cx.notify();
             return;
         }
@@ -2415,10 +2502,10 @@ impl ChatView {
                             if let Some(prov) = resp.provider {
                                 view.current_provider = prov;
                             }
-                            view.shell.composer.model_pill.set_model(
-                                view.current_provider.clone(),
-                                confirmed.clone(),
-                            );
+                            view.shell
+                                .composer
+                                .model_pill
+                                .set_model(view.current_provider.clone(), confirmed.clone());
                             view.shell.sidebar.provider_status.provider_name =
                                 view.current_provider.clone();
                             view.shell.sidebar.provider_status.model_name = confirmed.clone();
@@ -2483,8 +2570,18 @@ impl ChatView {
         }
         if matches!(
             key,
-            "up" | "arrowup" | "down" | "arrowdown" | "left" | "arrowleft" | "right"
-                | "arrowright" | "home" | "end" | "enter" | "tab" | "shift-tab"
+            "up" | "arrowup"
+                | "down"
+                | "arrowdown"
+                | "left"
+                | "arrowleft"
+                | "right"
+                | "arrowright"
+                | "home"
+                | "end"
+                | "enter"
+                | "tab"
+                | "shift-tab"
         ) {
             self.modal_undo_break = true;
         }
@@ -2517,10 +2614,7 @@ impl ChatView {
                     modal.is_submitting = true;
                     self.send_approval_result(result, cx);
                     true
-                } else if matches!(
-                    key,
-                    "y" | "a" | "n" | "l" | "1" | "2" | "3"
-                ) {
+                } else if matches!(key, "y" | "a" | "n" | "l" | "1" | "2" | "3") {
                     cx.notify();
                     true
                 } else {
@@ -2573,9 +2667,7 @@ impl ChatView {
                     self.apply_model_choice(model_id, cx);
                     return true;
                 }
-                if key == "enter"
-                    || matches!(key, "up" | "arrowup" | "down" | "arrowdown")
-                {
+                if key == "enter" || matches!(key, "up" | "arrowup" | "down" | "arrowdown") {
                     cx.notify();
                     true
                 } else {
@@ -2699,8 +2791,18 @@ impl ChatView {
                 // Consume navigation keys so they never reach the composer.
                 if matches!(
                     key,
-                    "up" | "arrowup" | "down" | "arrowdown" | "left" | "arrowleft" | "right"
-                        | "arrowright" | "enter" | "backspace" | "home" | "end" | "delete"
+                    "up" | "arrowup"
+                        | "down"
+                        | "arrowdown"
+                        | "left"
+                        | "arrowleft"
+                        | "right"
+                        | "arrowright"
+                        | "enter"
+                        | "backspace"
+                        | "home"
+                        | "end"
+                        | "delete"
                 ) {
                     cx.notify();
                     true
@@ -2716,12 +2818,7 @@ impl ChatView {
     // Action handlers
     // ------------------------------------------------------------------
 
-    fn on_close_window(
-        &mut self,
-        _: &CloseWindow,
-        window: &mut Window,
-        _: &mut Context<Self>,
-    ) {
+    fn on_close_window(&mut self, _: &CloseWindow, window: &mut Window, _: &mut Context<Self>) {
         window.remove_window();
     }
 
@@ -2730,12 +2827,7 @@ impl ChatView {
         cx.notify();
     }
 
-    fn on_actual_size(
-        &mut self,
-        _: &ActualSize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_actual_size(&mut self, _: &ActualSize, window: &mut Window, cx: &mut Context<Self>) {
         window.set_rem_size(px(DEFAULT_REM_SIZE));
         cx.notify();
     }
@@ -2856,12 +2948,7 @@ impl ChatView {
         }
     }
 
-    fn on_select_all(
-        &mut self,
-        _: &shortcuts::SelectAll,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_select_all(&mut self, _: &shortcuts::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         if self.shell.active_modal.is_open() {
             return;
         }
@@ -3191,12 +3278,7 @@ impl ChatView {
         cx.notify();
     }
 
-    fn on_mouse_move(
-        &mut self,
-        event: &MouseMoveEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.is_selecting {
             self.select_to(self.index_for_mouse_position(event.position), cx);
         }
@@ -3221,7 +3303,101 @@ impl ChatView {
 
     fn reset_editor(&mut self, cx: &mut Context<Self>) {
         self.set_editor_content(String::new(), cx);
+        self.clear_attachment_motion(cx);
+    }
+
+    fn attachment_reveal(&self, cx: &Context<Self>, path: &str) -> motion::RevealMotion {
+        motion::RevealMotion::for_identity(cx.entity().entity_id(), "attachment_reveal", path)
+    }
+
+    fn approval_spring(&self, cx: &Context<Self>, approval_id: &str) -> motion::SpringKey {
+        motion::SpringKey::for_slot(
+            cx.entity().entity_id(),
+            "approval_state",
+            motion::slot(approval_id),
+        )
+    }
+
+    fn sync_approval_motion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut current = HashSet::new();
+        for item in &self.shell.feed.messages {
+            let MessageItem::Approval(card) = item else {
+                continue;
+            };
+            current.insert(card.approval_id.clone());
+            let key = self.approval_spring(cx, &card.approval_id);
+            match self.approval_visuals.get(&card.approval_id).copied() {
+                None => {
+                    self.approval_visuals.insert(
+                        card.approval_id.clone(),
+                        ApprovalVisual {
+                            from_state: card.state,
+                            state: card.state,
+                            from_color: card.state.color(&HermesTheme::get(cx)),
+                        },
+                    );
+                    motion::MotionSystem::snap(window, cx, key, 1.0, motion::SNAPPY);
+                }
+                Some(visual) if visual.state != card.state => {
+                    let progress = motion::MotionSystem::value(cx, key);
+                    let theme = HermesTheme::get(cx);
+                    let from_color = visual.color(theme, progress);
+                    self.approval_visuals.insert(
+                        card.approval_id.clone(),
+                        ApprovalVisual {
+                            from_state: visual.state,
+                            state: card.state,
+                            from_color,
+                        },
+                    );
+                    motion::MotionSystem::snap(window, cx, key, 0.0, motion::SNAPPY);
+                    motion::MotionSystem::set_opacity_target(window, cx, key, 1.0, motion::SNAPPY);
+                }
+                Some(_) => {}
+            }
+        }
+
+        let stale: Vec<String> = self
+            .approval_visuals
+            .keys()
+            .filter(|approval_id| !current.contains(*approval_id))
+            .cloned()
+            .collect();
+        for approval_id in stale {
+            let key = self.approval_spring(cx, &approval_id);
+            motion::MotionSystem::remove(cx, key);
+            self.approval_visuals.remove(&approval_id);
+        }
+    }
+
+    fn prune_outgoing_attachments(&mut self, cx: &mut Context<Self>) {
+        let settled: Vec<String> = self
+            .outgoing_attachments
+            .iter()
+            .filter(|path| {
+                let reveal = self.attachment_reveal(cx, path);
+                motion::MotionSystem::is_settled(cx, reveal.spatial)
+                    && motion::MotionSystem::is_settled(cx, reveal.opacity)
+            })
+            .cloned()
+            .collect();
+        for path in &settled {
+            self.attachment_reveal(cx, path).remove(cx);
+        }
+        self.outgoing_attachments
+            .retain(|path| !settled.contains(path));
+    }
+
+    fn clear_attachment_motion(&mut self, cx: &mut Context<Self>) {
+        for path in self
+            .attachments
+            .iter()
+            .chain(self.outgoing_attachments.iter())
+        {
+            self.attachment_reveal(cx, path).remove(cx);
+        }
         self.attachments.clear();
+        self.outgoing_attachments.clear();
     }
 
     fn composer_snapshot(&self) -> ComposerSnapshot {
@@ -3311,14 +3487,9 @@ impl ChatView {
     }
 
     fn record_modal_edit(&mut self, kind: TextEditKind) {
-        if self
-            .modal_undo
-            .last()
-            .is_some_and(|previous| {
-                std::mem::discriminant(previous)
-                    != std::mem::discriminant(&self.shell.active_modal)
-            })
-        {
+        if self.modal_undo.last().is_some_and(|previous| {
+            std::mem::discriminant(previous) != std::mem::discriminant(&self.shell.active_modal)
+        }) {
             self.clear_modal_history();
         }
         let continues = !self.modal_undo_break
@@ -3375,26 +3546,47 @@ impl ChatView {
 
     /// Opens the native file picker and stages the picked files as prompt
     /// attachments (deduped; the runtime enforces its own count/size budget).
-    fn open_file_picker(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn open_file_picker(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let picked = rfd::FileDialog::new()
             .set_title("Attach files")
             .pick_files();
         if let Some(paths) = picked {
             for path in paths {
-                let as_str = path.to_string_lossy().to_string();
-                if !self.attachments.contains(&as_str) {
-                    self.attachments.push(as_str);
-                }
+                self.stage_attachment(path.to_string_lossy().to_string(), window, cx);
             }
             cx.notify();
         }
     }
 
-    fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index < self.attachments.len() {
-            self.attachments.remove(index);
-            cx.notify();
+    fn stage_attachment(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.attachments.contains(&path) {
+            return;
         }
+        self.outgoing_attachments
+            .retain(|outgoing| outgoing != &path);
+        self.attachments.push(path.clone());
+        self.attachment_reveal(cx, &path).enter(window, cx);
+        cx.notify();
+    }
+
+    fn remove_attachment(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .attachments
+            .iter()
+            .position(|attached| attached == path)
+        else {
+            return;
+        };
+        self.attachments.remove(index);
+        if !self
+            .outgoing_attachments
+            .iter()
+            .any(|outgoing| outgoing == path)
+        {
+            self.outgoing_attachments.push(path.to_string());
+        }
+        self.attachment_reveal(cx, path).exit(window, cx);
+        cx.notify();
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -3539,16 +3731,33 @@ impl ChatView {
     // Rendering
     // ------------------------------------------------------------------
 
-    fn toggle_reasoning(&mut self, assistant_id: &str, cx: &mut Context<Self>) {
+    fn toggle_reasoning(
+        &mut self,
+        assistant_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(assistant) = find_assistant_mut(&mut self.shell.feed, assistant_id) {
             if let Some(reasoning) = &mut assistant.reasoning {
                 reasoning.toggle();
+                motion::RevealMotion::for_identity(
+                    cx.entity().entity_id(),
+                    "reasoning_reveal",
+                    &format!("reasoning_{assistant_id}"),
+                )
+                .set(window, cx, reasoning.is_expanded);
                 cx.notify();
             }
         }
     }
 
-    fn toggle_tool_input(&mut self, assistant_id: &str, call_id: &str, cx: &mut Context<Self>) {
+    fn toggle_tool_input(
+        &mut self,
+        assistant_id: &str,
+        call_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(tool) =
             find_assistant_mut(&mut self.shell.feed, assistant_id).and_then(|assistant| {
                 assistant
@@ -3558,11 +3767,23 @@ impl ChatView {
             })
         {
             tool.toggle_input();
+            motion::RevealMotion::for_identity(
+                cx.entity().entity_id(),
+                "tool_reveal",
+                &format!("{call_id}:input"),
+            )
+            .set(window, cx, tool.input_expanded);
             cx.notify();
         }
     }
 
-    fn toggle_tool_output(&mut self, assistant_id: &str, call_id: &str, cx: &mut Context<Self>) {
+    fn toggle_tool_output(
+        &mut self,
+        assistant_id: &str,
+        call_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(tool) =
             find_assistant_mut(&mut self.shell.feed, assistant_id).and_then(|assistant| {
                 assistant
@@ -3572,14 +3793,26 @@ impl ChatView {
             })
         {
             tool.toggle_output();
+            motion::RevealMotion::for_identity(
+                cx.entity().entity_id(),
+                "tool_reveal",
+                &format!("{call_id}:output"),
+            )
+            .set(window, cx, tool.output_expanded);
             cx.notify();
         }
     }
 
     /// Expands or collapses the Changes card on an assistant message (P4).
-    fn toggle_changes(&mut self, assistant_id: &str, cx: &mut Context<Self>) {
+    fn toggle_changes(&mut self, assistant_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(assistant) = find_assistant_mut(&mut self.shell.feed, assistant_id) {
             assistant.changes_expanded = !assistant.changes_expanded;
+            motion::RevealMotion::for_identity(
+                cx.entity().entity_id(),
+                "changes_reveal",
+                &format!("changes_{assistant_id}"),
+            )
+            .set(window, cx, assistant.changes_expanded);
             cx.notify();
         }
     }
@@ -3591,7 +3824,10 @@ impl ChatView {
         if gauge.current_tokens == 0 {
             None
         } else {
-            Some(format!("{} tokens", format_token_number(gauge.current_tokens)))
+            Some(format!(
+                "{} tokens",
+                format_token_number(gauge.current_tokens)
+            ))
         }
     }
 
@@ -3625,27 +3861,29 @@ impl ChatView {
                                 .update(cx, |this, cx| this.regenerate(&retry_id, cx))
                                 .ok();
                         })),
-                        changes: Some(Rc::new(move |_, _, cx| {
+                        changes: Some(Rc::new(move |_, window, cx| {
                             weak_changes
-                                .update(cx, |this, cx| this.toggle_changes(&changes_id, cx))
+                                .update(cx, |this, cx| this.toggle_changes(&changes_id, window, cx))
                                 .ok();
                         })),
-                        reasoning: Some(Rc::new(move |_, _, cx| {
+                        reasoning: Some(Rc::new(move |_, window, cx| {
                             weak_reasoning
-                                .update(cx, |this, cx| this.toggle_reasoning(&reasoning_id, cx))
-                                .ok();
-                        })),
-                        tool_input: Some(Rc::new(move |call_id, _, _, cx| {
-                            weak_tool_input
                                 .update(cx, |this, cx| {
-                                    this.toggle_tool_input(&tool_input_id, call_id, cx)
+                                    this.toggle_reasoning(&reasoning_id, window, cx)
                                 })
                                 .ok();
                         })),
-                        tool_output: Some(Rc::new(move |call_id, _, _, cx| {
+                        tool_input: Some(Rc::new(move |call_id, _, window, cx| {
+                            weak_tool_input
+                                .update(cx, |this, cx| {
+                                    this.toggle_tool_input(&tool_input_id, call_id, window, cx)
+                                })
+                                .ok();
+                        })),
+                        tool_output: Some(Rc::new(move |call_id, _, window, cx| {
                             weak_tool_output
                                 .update(cx, |this, cx| {
-                                    this.toggle_tool_output(&tool_output_id, call_id, cx)
+                                    this.toggle_tool_output(&tool_output_id, call_id, window, cx)
                                 })
                                 .ok();
                         })),
@@ -3659,9 +3897,12 @@ impl ChatView {
     fn render_composer(
         &mut self,
         theme: &HermesTheme,
+        window: &mut Window,
         cx: &mut Context<Self>,
         variant: ComposerVariant,
     ) -> Div {
+        self.prune_outgoing_attachments(cx);
+
         let running = self.active_turn_running();
         let can_send =
             (!self.content.trim().is_empty() || !self.attachments.is_empty()) && !running;
@@ -3673,57 +3914,69 @@ impl ChatView {
             self.shell.composer.placeholder.clone()
         };
 
-        // Staged attachment chips sit above the input row; the attach icon in
-        // the toolbar returns with a real file picker (DX4).
-        let attachment_chips = if self.attachments.is_empty() {
-            None
-        } else {
-            let mut chips_row = div()
-                .w_full()
-                .flex()
-                .flex_wrap()
-                .gap(px(6.0))
-                .pb(px(8.0));
-            for (index, path) in self.attachments.iter().enumerate() {
-                let name: String = path
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(path)
-                    .to_string();
-                chips_row = chips_row.child(
-                    div()
-                        .id(SharedString::from(format!("attach_chip_{index}")))
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .px(px(8.0))
-                        .py(px(3.0))
-                        .rounded(px(6.0))
-                        .bg(theme.mockup_chip)
-                        .border_1()
-                        .border_color(theme.mockup_border)
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.remove_attachment(index, cx);
-                        }))
-                        .child(
-                            div()
-                                .font_family(theme.font_mono()[0].clone())
-                                .text_size(px(MockupTypeScale::HINT_SIZE))
-                                .text_color(theme.mockup_text_muted)
-                                .child(name),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(MockupTypeScale::HINT_SIZE))
-                                .text_color(theme.mockup_text_dim)
-                                .child("✕"),
-                        ),
-                );
+        let mut chips_row = div().w_full().flex().flex_wrap().gap(px(6.0)).pb(px(8.0));
+        for path in self
+            .attachments
+            .iter()
+            .chain(self.outgoing_attachments.iter())
+        {
+            let path = path.clone();
+            let outgoing = self.outgoing_attachments.contains(&path);
+            let reveal = self.attachment_reveal(cx, &path);
+            if !outgoing {
+                reveal.ensure(window, cx, 1.0);
             }
-            Some(chips_row)
-        };
+            let selector = SharedString::from(format!(
+                "attach_chip_{}",
+                motion::slot(&format!("attachment_reveal:{path}"))
+            ));
+            let name: String = path
+                .rsplit(['/', '\\'])
+                .next()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&path)
+                .to_string();
+            let mut chip = div()
+                .id(selector.clone())
+                .debug_selector(move || selector.to_string())
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .px(px(8.0))
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .bg(theme.mockup_chip)
+                .border_1()
+                .border_color(theme.mockup_border);
+            if !outgoing {
+                chip = chip
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.remove_attachment(&path, window, cx);
+                    }));
+            }
+            chips_row = chips_row.child(
+                reveal
+                    .values(cx)
+                    .apply(chip)
+                    .child(
+                        div()
+                            .font_family(theme.font_mono()[0].clone())
+                            .text_size(px(MockupTypeScale::HINT_SIZE))
+                            .text_color(theme.mockup_text_muted)
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(MockupTypeScale::HINT_SIZE))
+                            .text_color(theme.mockup_text_dim)
+                            .child("✕"),
+                    ),
+            );
+        }
+        let attachment_chips = (!self.attachments.is_empty()
+            || !self.outgoing_attachments.is_empty())
+        .then_some(chips_row);
 
         // Input row: 16/20 text, the focus target and editor action surface.
         let input_row = div()
@@ -3754,6 +4007,19 @@ impl ChatView {
                 placeholder,
             });
 
+        let owner = cx.entity().entity_id();
+        let attach = motion::ControlMotion::for_identity(owner, "composer_control", "attach");
+        let model = motion::ControlMotion::for_identity(owner, "composer_control", "model");
+        let send = motion::ControlMotion::for_identity(owner, "composer_control", "send");
+        let attach_values = attach.values(cx);
+        let model_values = model.values(cx);
+        let send_values = send.values(cx);
+        let send_background: Hsla = if running {
+            theme.rose_fg().into()
+        } else {
+            rgb(0x2a2a2a).into()
+        };
+
         // Toolbar (mockup gap 8): attach, model pill, spacer, send. Attach
         // returned in DX4 with a real file picker; Auto/mic stay out — they
         // still do nothing honest.
@@ -3764,41 +4030,70 @@ impl ChatView {
             .items_center()
             .gap(px(8.0))
             .child(
-                div()
-                    .id("composer_attach")
-                    .on_click(cx.listener(Self::open_file_picker))
-                    .child(mockup_icon_button(
-                        theme,
-                        "attach",
-                        16.0,
-                        theme.mockup_text_muted,
-                        None,
-                    )),
+                motion::hover_feedback(
+                    motion::press_feedback(
+                        div()
+                            .id("composer_attach")
+                            .debug_selector(|| "composer_attach".into()),
+                        attach,
+                        cx,
+                    ),
+                    attach,
+                )
+                .on_click(cx.listener(Self::open_file_picker))
+                .child(mockup_icon_button_motion(
+                    theme,
+                    "attach",
+                    16.0,
+                    theme.mockup_text_muted,
+                    None,
+                    attach_values,
+                )),
             )
             .child(
-                div()
-                    .id("model_pill_button")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.request_model_picker(cx);
-                    }))
-                    .child(
-                        mockup_pill(theme)
-                            .child(self.shell.composer.model_pill.model_name.clone())
-                            .child(mockup_pill_chevron()),
+                motion::hover_feedback(
+                    motion::press_feedback(
+                        div()
+                            .id("model_pill_button")
+                            .debug_selector(|| "model_pill_button".into()),
+                        model,
+                        cx,
                     ),
+                    model,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.request_model_picker(cx);
+                }))
+                .child(
+                    mockup_pill_base(theme)
+                        .bg(model_values
+                            .color(theme.mockup_pill.into(), theme.mockup_pill_hover.into()))
+                        .child(self.shell.composer.model_pill.model_name.clone())
+                        .child(mockup_pill_chevron()),
+                ),
             )
             .child(div().flex_1())
             .child(
-                div()
-                    .id("composer_send")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if this.active_turn_running() {
-                            this.cancel_turn(cx);
-                        } else {
-                            this.submit_prompt(cx);
-                        }
-                    }))
-                    .child(send_btn.render(theme)),
+                motion::hover_feedback(
+                    motion::press_feedback(
+                        div()
+                            .id("composer_send")
+                            .debug_selector(|| "composer_send".into()),
+                        send,
+                        cx,
+                    ),
+                    send,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if this.active_turn_running() {
+                        this.cancel_turn(cx);
+                    } else {
+                        this.submit_prompt(cx);
+                    }
+                }))
+                .child(send_btn.render_with_background(
+                    send_values.color(send_background, theme.mockup_pill_hover.into()),
+                )),
             );
 
         let mut input_area = div().w_full().flex().flex_col();
@@ -3837,7 +4132,12 @@ impl ChatView {
         }
     }
 
-    fn render_main_pane(&mut self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
+    fn render_main_pane(
+        &mut self,
+        theme: &HermesTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         // Non-Chat segments show a Coming soon empty state instead of the feed.
         let coming_soon_pane = self.shell.active_view != ShellView::Chat;
         // Re-splice the list whenever the item count changes or a turn is
@@ -3852,10 +4152,16 @@ impl ChatView {
         } else {
             self.action_bar_handlers(cx)
         };
-        let feed = self
-            .shell
-            .feed
-            .render_scrolled(theme, &self.feed_list, bars, self.action_token_count());
+        let motion_owner = cx.entity().entity_id();
+        let feed = self.shell.feed.render_scrolled(
+            theme,
+            &self.feed_list,
+            bars,
+            self.action_token_count(),
+            cx,
+            motion_owner,
+            &self.approval_visuals,
+        );
 
         div()
             .flex()
@@ -4041,7 +4347,7 @@ impl ChatView {
                 feed
             })
             .when(!coming_soon_pane, |c| {
-                c.child(self.render_composer(theme, cx, ComposerVariant::Session))
+                c.child(self.render_composer(theme, window, cx, ComposerVariant::Session))
             })
     }
 
@@ -4152,9 +4458,9 @@ impl ChatView {
                 if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
                     match res {
                         Ok(Ok(cfg)) => modal.apply_view(&cfg),
-                        _ => modal.mark_load_failed(
-                            load_error.unwrap_or_else(|| "Could not read settings from the runtime.".to_string()),
-                        ),
+                        _ => modal.mark_load_failed(load_error.unwrap_or_else(|| {
+                            "Could not read settings from the runtime.".to_string()
+                        })),
                     }
                 }
                 cx.notify();
@@ -4213,7 +4519,10 @@ impl ChatView {
         &mut self,
         modal: &SessionSearchModal,
     ) -> Vec<crate::ui::session_list::SessionItem> {
-        self.shell.sidebar.session_list.set_search_query(modal.query.clone());
+        self.shell
+            .sidebar
+            .session_list
+            .set_search_query(modal.query.clone());
         let results: Vec<crate::ui::session_list::SessionItem> = self
             .shell
             .sidebar
@@ -4388,7 +4697,8 @@ impl ChatView {
         let sid_revert = sid.clone();
         cx.spawn(async move |this, cx| {
             let res = if kind == "pin_session" {
-                rt.spawn(async move { bridge.pin_session(&sid, value).await }).await
+                rt.spawn(async move { bridge.pin_session(&sid, value).await })
+                    .await
             } else {
                 rt.spawn(async move { bridge.archive_session(&sid, value).await })
                     .await
@@ -4509,6 +4819,7 @@ impl Render for ChatView {
             self.shell.sidebar.set_pending_approvals(pending);
         }
         self.sync_sidebar_live_state();
+        self.sync_approval_motion(window, cx);
         let theme = HermesTheme::get(cx).clone();
 
         // Phase 2: the app opens on the Home / start screen; any submit or
@@ -4534,7 +4845,7 @@ impl Render for ChatView {
             self.last_modal_open = modal_open;
 
             let home = self
-                .render_home(&theme, cx)
+                .render_home(&theme, window, cx)
                 .key_context("ChatView")
                 .on_action(cx.listener(Self::on_submit))
                 .on_action(cx.listener(Self::on_new_chat))
@@ -4660,11 +4971,14 @@ impl Render for ChatView {
             .on_key_down(cx.listener(Self::on_key_down));
 
         if !self.shell.sidebar_collapsed {
-            root = root
-                .child(self.shell.sidebar.render_with_actions(&theme, &sidebar_handlers));
+            root = root.child(
+                self.shell
+                    .sidebar
+                    .render_with_actions(&theme, &sidebar_handlers),
+            );
         }
 
-        root = root.child(self.render_main_pane(&theme, cx));
+        root = root.child(self.render_main_pane(&theme, window, cx));
 
         if let Some(modal) = self.render_modal_layer(&theme, window, cx) {
             root = root.child(modal);
@@ -4776,8 +5090,8 @@ impl ChatView {
             ActiveModal::Approval(modal) => {
                 let request_id = modal.request_id.clone();
                 let view = cx.entity().downgrade();
-                let on_action: ApprovalHandler = std::rc::Rc::new(
-                    move |interaction, _event, _window, cx| {
+                let on_action: ApprovalHandler =
+                    std::rc::Rc::new(move |interaction, _event, _window, cx| {
                         view.update(cx, |this, cx| {
                             let mut submit = None;
                             if let ActiveModal::Approval(current) = &mut this.shell.active_modal {
@@ -4806,14 +5120,13 @@ impl ChatView {
                             cx.notify();
                         })
                         .ok();
-                    },
-                );
+                    });
                 modal.render(theme, motion, on_action)
             }
             ActiveModal::Palette(palette) => {
                 let view = cx.entity().downgrade();
-                let on_action: PaletteActionHandler = std::rc::Rc::new(
-                    move |action, _event, _window, cx| {
+                let on_action: PaletteActionHandler =
+                    std::rc::Rc::new(move |action, _event, _window, cx| {
                         view.update(cx, |this, cx| {
                             if !matches!(this.shell.active_modal, ActiveModal::Palette(_)) {
                                 return;
@@ -4822,14 +5135,13 @@ impl ChatView {
                             this.execute_palette_action(action, cx);
                         })
                         .ok();
-                    },
-                );
+                    });
                 palette.render(theme, motion, on_action)
             }
             ActiveModal::ModelPicker(picker) => {
                 let view = cx.entity().downgrade();
-                let on_select: ModelSelectHandler = std::rc::Rc::new(
-                    move |model_id, _event, _window, cx| {
+                let on_select: ModelSelectHandler =
+                    std::rc::Rc::new(move |model_id, _event, _window, cx| {
                         view.update(cx, |this, cx| {
                             if !matches!(this.shell.active_modal, ActiveModal::ModelPicker(_)) {
                                 return;
@@ -4838,16 +5150,15 @@ impl ChatView {
                             this.apply_model_choice(model_id, cx);
                         })
                         .ok();
-                    },
-                );
+                    });
                 picker.render(theme, motion, on_select)
             }
             ActiveModal::Account(modal) => modal.render(theme),
             ActiveModal::SessionAction(modal) => {
                 let session_id = modal.session_id.clone();
                 let view = cx.entity().downgrade();
-                let on_action: SessionActionHandler = std::rc::Rc::new(
-                    move |action, _event, _window, cx| {
+                let on_action: SessionActionHandler =
+                    std::rc::Rc::new(move |action, _event, _window, cx| {
                         view.update(cx, |this, cx| {
                             let outcome = if let ActiveModal::SessionAction(current) =
                                 &mut this.shell.active_modal
@@ -4865,18 +5176,15 @@ impl ChatView {
                             cx.notify();
                         })
                         .ok();
-                    },
-                );
+                    });
                 modal.render(theme, motion, on_action)
             }
             ActiveModal::Settings(modal) => {
                 let view = cx.entity().downgrade();
-                let on_save: SettingsSaveHandler = std::rc::Rc::new(
-                    move |_event, _window, cx| {
-                        view.update(cx, |this, cx| {
-                            let save = if let ActiveModal::Settings(current) =
-                                &mut this.shell.active_modal
-                            {
+                let on_save: SettingsSaveHandler = std::rc::Rc::new(move |_event, _window, cx| {
+                    view.update(cx, |this, cx| {
+                        let save =
+                            if let ActiveModal::Settings(current) = &mut this.shell.active_modal {
                                 if current.busy {
                                     return;
                                 }
@@ -4885,14 +5193,13 @@ impl ChatView {
                             } else {
                                 return;
                             };
-                            if save {
-                                this.execute_settings_save(cx);
-                            }
-                            cx.notify();
-                        })
-                        .ok();
-                    },
-                );
+                        if save {
+                            this.execute_settings_save(cx);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                });
                 modal.render(theme, motion, on_save)
             }
             ActiveModal::About => render_about(theme),
@@ -5099,7 +5406,10 @@ enum ComposerVariant {
 /// Milliseconds since first use, driving the caret blink phase.
 fn caret_epoch_ms() -> u64 {
     static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
-    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+    EPOCH
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
 }
 
 struct ComposerElement {
@@ -5308,7 +5618,10 @@ impl Element for ComposerElement {
         }
         for (i, line) in prepaint.lines.iter().enumerate() {
             line.paint(
-                point(bounds.left(), bounds.top() + prepaint.line_height * i as f32),
+                point(
+                    bounds.left(),
+                    bounds.top() + prepaint.line_height * i as f32,
+                ),
                 prepaint.line_height,
                 window,
                 cx,
@@ -5372,6 +5685,15 @@ mod tests {
             app.global_mut::<motion::MotionSystem>()
                 .tick(window_id, Duration::from_millis(16));
         }
+    }
+
+    fn advance_visual_motion(vc: &mut VisualTestContext, view: &Entity<ChatView>, frames: usize) {
+        vc.update(|window, app| {
+            advance_motion(app, window.window_handle().window_id(), frames);
+            view.update(app, |_, cx| cx.notify());
+            window.refresh();
+        });
+        vc.run_until_parked();
     }
 
     #[gpui::test]
@@ -5537,6 +5859,201 @@ mod tests {
     }
 
     #[gpui::test]
+    fn attachment_exit_reverses_without_resetting_the_chip(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            let window_id = window.window_handle().window_id();
+            let reveal = view.update(app, |view, cx| {
+                view.stage_attachment("/tmp/an3.txt".to_string(), window, cx);
+                view.attachment_reveal(cx, "/tmp/an3.txt")
+            });
+            advance_motion(app, window_id, 4);
+            let entering = reveal.values(app);
+            assert!(entering.spatial > 0.0 && entering.spatial < 1.0);
+
+            view.update(app, |view, cx| {
+                view.remove_attachment("/tmp/an3.txt", window, cx);
+                assert!(view.attachments.is_empty());
+                assert_eq!(view.outgoing_attachments, vec!["/tmp/an3.txt"]);
+                assert_eq!(reveal.values(cx), entering);
+            });
+            advance_motion(app, window_id, 16);
+            let exiting = reveal.values(app);
+            assert!(exiting.opacity < entering.opacity);
+
+            view.update(app, |view, cx| {
+                view.stage_attachment("/tmp/an3.txt".to_string(), window, cx);
+                assert_eq!(view.attachments, vec!["/tmp/an3.txt"]);
+                assert!(view.outgoing_attachments.is_empty());
+                assert_eq!(reveal.values(cx), exiting);
+            });
+            advance_motion(app, window_id, 600);
+            assert_eq!(reveal.values(app).spatial, 1.0);
+            assert_eq!(reveal.values(app).opacity, 1.0);
+
+            view.update(app, |view, cx| {
+                view.remove_attachment("/tmp/an3.txt", window, cx);
+            });
+            advance_motion(app, window_id, 600);
+            view.update(app, |view, cx| {
+                view.prune_outgoing_attachments(cx);
+                assert!(view.outgoing_attachments.is_empty());
+                assert!(!motion::MotionSystem::has(cx, reveal.spatial));
+                assert!(!motion::MotionSystem::has(cx, reveal.opacity));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn approval_retarget_samples_the_current_color(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            let window_id = window.window_handle().window_id();
+            let key = view.update(app, |view, cx| {
+                view.shell.feed.add_approval_card(ApprovalCard::new(
+                    "approval_an3",
+                    "bash",
+                    "cargo test",
+                    "R2",
+                ));
+                view.sync_approval_motion(window, cx);
+                assert_eq!(
+                    motion::MotionSystem::value(cx, view.approval_spring(cx, "approval_an3")),
+                    1.0
+                );
+                view.approval_spring(cx, "approval_an3")
+            });
+            advance_motion(app, window_id, 4);
+
+            view.update(app, |view, cx| {
+                view.shell
+                    .feed
+                    .update_approval_state("approval_an3", ApprovalCardState::Approved);
+                view.sync_approval_motion(window, cx);
+                assert_eq!(motion::MotionSystem::value(cx, key), 0.0);
+            });
+            advance_motion(app, window_id, 4);
+            let (progress, color) = view.update(app, |view, cx| {
+                let progress = motion::MotionSystem::value(cx, key);
+                assert!(progress > 0.0 && progress < 1.0);
+                let visual = view.approval_visuals["approval_an3"];
+                let color = visual.color(HermesTheme::get(cx), progress);
+                view.shell
+                    .feed
+                    .update_approval_state("approval_an3", ApprovalCardState::Denied);
+                view.sync_approval_motion(window, cx);
+                let next = view.approval_visuals["approval_an3"];
+                assert_eq!(next.from_state, ApprovalCardState::Approved);
+                assert_eq!(next.state, ApprovalCardState::Denied);
+                assert_eq!(next.from_color, color);
+                assert_eq!(motion::MotionSystem::value(cx, key), 0.0);
+                (progress, color)
+            });
+            assert!(progress > 0.0 && progress < 1.0);
+            assert_ne!(color, HermesTheme::get(app).warning_amber().into());
+
+            advance_motion(app, window_id, 600);
+            view.update(app, |view, cx| {
+                assert_eq!(motion::MotionSystem::value(cx, key), 1.0);
+                view.shell.feed.clear();
+                view.sync_approval_motion(window, cx);
+                assert!(view.approval_visuals.is_empty());
+                assert!(!motion::MotionSystem::has(cx, key));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn feed_disclosures_retarget_during_rapid_toggles(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            let window_id = window.window_handle().window_id();
+            let (reasoning, input, output) = view.update(app, |view, cx| {
+                view.shell.feed.messages.push(MessageItem::Assistant(
+                    AssistantMessageView::new("assistant_an3", "Answer")
+                        .with_reasoning(ThinkingDisclosure::new("Thinking"))
+                        .with_tool_call(
+                            ToolCallCard::new("call_an3", "bash", "{}").with_output("ok"),
+                        ),
+                ));
+                let theme = HermesTheme::get(cx).clone();
+                let owner = cx.entity().entity_id();
+                if let MessageItem::Assistant(assistant) = &view.shell.feed.messages[0] {
+                    let _ = assistant
+                        .render_with_action_bar_motion(&theme, None, None, window, cx, owner);
+                }
+                (
+                    motion::RevealMotion::for_identity(
+                        owner,
+                        "reasoning_reveal",
+                        "reasoning_assistant_an3",
+                    ),
+                    motion::RevealMotion::for_identity(owner, "tool_reveal", "call_an3:input"),
+                    motion::RevealMotion::for_identity(owner, "tool_reveal", "call_an3:output"),
+                )
+            });
+            assert_eq!(output.values(app).spatial, 1.0);
+
+            view.update(app, |view, cx| {
+                view.toggle_reasoning("assistant_an3", window, cx);
+                view.toggle_tool_input("assistant_an3", "call_an3", window, cx);
+                view.toggle_tool_output("assistant_an3", "call_an3", window, cx);
+            });
+            advance_motion(app, window_id, 4);
+            let entering = reasoning.values(app);
+            assert!(entering.spatial > 0.0 && entering.spatial < 1.0);
+            assert!(output.values(app).spatial > 0.0 && output.values(app).spatial < 1.0);
+
+            view.update(app, |view, cx| {
+                view.toggle_reasoning("assistant_an3", window, cx);
+                view.toggle_tool_input("assistant_an3", "call_an3", window, cx);
+                view.toggle_tool_output("assistant_an3", "call_an3", window, cx);
+                assert_eq!(reasoning.values(cx), entering);
+                assert_eq!(input.values(cx).spatial, entering.spatial);
+                assert!(output.values(cx).spatial < 1.0);
+                view.toggle_reasoning("assistant_an3", window, cx);
+                view.toggle_tool_input("assistant_an3", "call_an3", window, cx);
+                assert_eq!(reasoning.values(cx), entering);
+                assert_eq!(input.values(cx).spatial, entering.spatial);
+            });
+            advance_motion(app, window_id, 600);
+            assert_eq!(reasoning.values(app).spatial, 1.0);
+            assert_eq!(input.values(app).spatial, 1.0);
+            assert_eq!(output.values(app).spatial, 1.0);
+        });
+    }
+
+    #[gpui::test]
+    fn composer_controls_have_independent_hover_and_press_springs(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.run_until_parked();
+        let bounds = vc
+            .debug_bounds("composer_send")
+            .expect("rendered send control");
+        let owner = view.entity_id();
+        let send = motion::ControlMotion::for_identity(owner, "composer_control", "send");
+        let attach = motion::ControlMotion::for_identity(owner, "composer_control", "attach");
+
+        vc.simulate_mouse_move(bounds.center(), None, Modifiers::none());
+        advance_visual_motion(vc, &view, 4);
+        assert!(vc.read(|app| send.values(app).hover) > 0.0);
+        assert_eq!(vc.read(|app| attach.values(app).hover), 0.0);
+
+        vc.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::none());
+        advance_visual_motion(vc, &view, 2);
+        assert!(vc.read(|app| send.values(app).press) > 0.0);
+        assert_eq!(vc.read(|app| attach.values(app).press), 0.0);
+
+        vc.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::none());
+        advance_visual_motion(vc, &view, 600);
+        assert_eq!(vc.read(|app| send.values(app).press), 0.0);
+        let window_id = vc.update(|window, _| window.window_handle().window_id());
+        assert!(!vc.read(|app| app
+            .global::<motion::MotionSystem>()
+            .driver_active(window_id)));
+    }
+
+    #[gpui::test]
     fn cached_session_switch_preserves_attachments(cx: &mut TestAppContext) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -5544,12 +6061,21 @@ mod tests {
             .unwrap();
         cx.update(init_app);
         let (view, vc) = cx.add_window_view(|_, cx| {
-            ChatView::new(AcpBridge::new(), rt.handle().clone(), std::env::temp_dir(), cx)
+            ChatView::new(
+                AcpBridge::new(),
+                rt.handle().clone(),
+                std::env::temp_dir(),
+                cx,
+            )
         });
         vc.update(|_, app| {
             view.update(app, |view, cx| {
-                view.shell.sidebar.add_session(SessionItem::new("a", "Chat A"));
-                view.shell.sidebar.add_session(SessionItem::new("b", "Chat B"));
+                view.shell
+                    .sidebar
+                    .add_session(SessionItem::new("a", "Chat A"));
+                view.shell
+                    .sidebar
+                    .add_session(SessionItem::new("b", "Chat B"));
                 view.shell.select_session("a".to_string());
                 view.content = "Draft A".to_string();
                 view.attachments = vec!["a.txt".to_string()];

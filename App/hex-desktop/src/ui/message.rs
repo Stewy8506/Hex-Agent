@@ -15,7 +15,7 @@ use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::feed::FEED_GAP;
-use crate::ui::motion;
+use crate::ui::motion::{self, RevealMotion, RevealValues};
 use crate::ui::reasoning::{DisclosureClickHandler, ThinkingDisclosure};
 use crate::ui::tool_card::{ToolCallCard, ToolFoldClickHandler};
 
@@ -148,7 +148,8 @@ pub fn parse_inline_rich(content: &str) -> (String, Vec<RichSpan>) {
         let code_marker = bytes[i] == b'`';
         // Consume an opener only when it has a closer; otherwise it stays
         // literal so a half-streamed message never loses characters.
-        let close_bold = bold_marker && (open_bold.is_some() || find_marker(content, i + 2, "**").is_some());
+        let close_bold =
+            bold_marker && (open_bold.is_some() || find_marker(content, i + 2, "**").is_some());
         let close_code = code_marker && (open_code.is_some() || content[i + 1..].contains('`'));
 
         if close_bold {
@@ -219,11 +220,7 @@ impl RichTextStyle {
 }
 
 /// Maps rich spans to shaped `TextRun`s covering exactly `text`.
-pub fn rich_text_runs(
-    text: &str,
-    spans: &[RichSpan],
-    style: &RichTextStyle,
-) -> Vec<TextRun> {
+pub fn rich_text_runs(text: &str, spans: &[RichSpan], style: &RichTextStyle) -> Vec<TextRun> {
     let style_at = |pos: usize| -> (bool, bool) {
         let bold = spans
             .iter()
@@ -509,12 +506,7 @@ impl UserMessageCard {
             .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
             .text_color(theme.mockup_text);
         if !self.attachments.is_empty() {
-            let mut chips = div()
-                .w_full()
-                .flex()
-                .flex_wrap()
-                .gap(px(6.0))
-                .pb(px(6.0));
+            let mut chips = div().w_full().flex().flex_wrap().gap(px(6.0)).pb(px(6.0));
             for name in &self.attachments {
                 chips = chips.child(
                     div()
@@ -611,27 +603,59 @@ impl AssistantMessageView {
         handlers: Option<&ActionBarHandlers>,
         token_count: Option<String>,
     ) -> Div {
+        self.render_inner(theme, handlers, token_count, None)
+    }
+
+    pub fn render_with_action_bar_motion(
+        &self,
+        theme: &HermesTheme,
+        handlers: Option<&ActionBarHandlers>,
+        token_count: Option<String>,
+        window: &mut Window,
+        cx: &mut App,
+        owner: EntityId,
+    ) -> Div {
+        self.render_inner(theme, handlers, token_count, Some((window, cx, owner)))
+    }
+
+    fn render_inner(
+        &self,
+        theme: &HermesTheme,
+        handlers: Option<&ActionBarHandlers>,
+        token_count: Option<String>,
+        mut motion: Option<(&mut Window, &mut App, EntityId)>,
+    ) -> Div {
         let mut card = div().w_full().flex().flex_col().gap(px(FEED_GAP));
 
-        // 1. Thinking / Reasoning Fold
         if let Some(reasoning) = &self.reasoning {
-            card = card.child(reasoning.render_with_click(
-                theme,
-                Some(ElementId::Name(SharedString::from(format!(
-                    "reasoning_{}",
-                    self.id
-                )))),
-                handlers.and_then(|h| h.reasoning.clone()),
-            ));
+            let id = Some(ElementId::Name(SharedString::from(format!(
+                "reasoning_{}",
+                self.id
+            ))));
+            let on_click = handlers.and_then(|h| h.reasoning.clone());
+            if let Some((window, cx, owner)) = motion.as_mut() {
+                let reveal = RevealMotion::for_identity(
+                    *owner,
+                    "reasoning_reveal",
+                    &format!("reasoning_{}", self.id),
+                );
+                reveal.ensure(window, cx, f32::from(reasoning.is_expanded));
+                card = card.child(reasoning.render_reveal(theme, id, on_click, reveal, cx));
+            } else {
+                card = card.child(reasoning.render_with_click(theme, id, on_click));
+            }
         }
 
-        // 2. Tool Call Cards
         for tool in &self.tool_calls {
-            card = card.child(tool.render_with_fold_handlers(
-                theme,
-                handlers.and_then(|h| h.tool_input.clone()),
-                handlers.and_then(|h| h.tool_output.clone()),
-            ));
+            let on_input = handlers.and_then(|h| h.tool_input.clone());
+            let on_output = handlers.and_then(|h| h.tool_output.clone());
+            if let Some((window, cx, owner)) = motion.as_mut() {
+                card = card.child(tool.render_with_fold_handlers_motion(
+                    theme, on_input, on_output, window, cx, *owner,
+                ));
+            } else {
+                card = card.child(tool.render_with_fold_handlers(theme, on_input, on_output));
+            }
         }
 
         // 3. Prose / Text Content (fenced code blocks render as structured
@@ -662,7 +686,13 @@ impl AssistantMessageView {
             };
             card = card.child(bar);
             let changes_click = handlers.and_then(|h| h.changes.as_ref());
-            if let Some(changes) = self.render_changes_button(theme, changes_click) {
+            if let Some((window, cx, owner)) = motion.as_mut() {
+                if let Some(changes) =
+                    self.render_changes_button_motion(theme, changes_click, window, cx, *owner)
+                {
+                    card = card.child(changes);
+                }
+            } else if let Some(changes) = self.render_changes_button(theme, changes_click) {
                 card = card.child(changes);
             }
         }
@@ -687,8 +717,9 @@ impl AssistantMessageView {
                     ElementId::Name(SharedString::from(format!("feed_sp_{}", self.id))),
                     Animation::new(motion::SPIN_PERIOD).repeat(),
                     |el, phase| {
-                        let elapsed =
-                            std::time::Duration::from_secs_f32(phase * motion::SPIN_PERIOD.as_secs_f32());
+                        let elapsed = std::time::Duration::from_secs_f32(
+                            phase * motion::SPIN_PERIOD.as_secs_f32(),
+                        );
                         el.child(motion::spinner_frame(elapsed).to_string())
                     },
                 )
@@ -701,7 +732,34 @@ impl AssistantMessageView {
     /// "N files, +A −D" flex-1 `#9a9a9a`, chevron-down 14. Expanded, the
     /// turn's diff cards render below the button. Returns `None` when the
     /// turn touched no files.
-    fn render_changes_button(&self, theme: &HermesTheme, on_toggle: Option<&ClickHandler>) -> Option<AnyElement> {
+    fn render_changes_button(
+        &self,
+        theme: &HermesTheme,
+        on_toggle: Option<&ClickHandler>,
+    ) -> Option<AnyElement> {
+        self.render_changes_button_inner(theme, on_toggle, None)
+    }
+
+    fn render_changes_button_motion(
+        &self,
+        theme: &HermesTheme,
+        on_toggle: Option<&ClickHandler>,
+        window: &mut Window,
+        cx: &mut App,
+        owner: EntityId,
+    ) -> Option<AnyElement> {
+        let reveal =
+            RevealMotion::for_identity(owner, "changes_reveal", &format!("changes_{}", self.id));
+        reveal.ensure(window, cx, f32::from(self.changes_expanded));
+        self.render_changes_button_inner(theme, on_toggle, Some((reveal, cx)))
+    }
+
+    fn render_changes_button_inner(
+        &self,
+        theme: &HermesTheme,
+        on_toggle: Option<&ClickHandler>,
+        reveal: Option<(RevealMotion, &App)>,
+    ) -> Option<AnyElement> {
         let mut files: Vec<(String, usize, usize)> = Vec::new();
         for tool in &self.tool_calls {
             let Some(view) = tool.diff_view() else {
@@ -719,6 +777,28 @@ impl AssistantMessageView {
         let file_count = files.len();
         let adds: usize = files.iter().map(|f| f.1).sum();
         let dels: usize = files.iter().map(|f| f.2).sum();
+        let values = reveal.map(|(reveal, cx)| reveal.values(cx));
+        let caret: AnyElement = if let Some(values) = values {
+            svg()
+                .path("icons/chevron-right.svg")
+                .w(px(CHANGES_CHEV_SIZE))
+                .h(px(CHANGES_CHEV_SIZE))
+                .flex_none()
+                .text_color(theme.mockup_text_dim)
+                .with_transformation(Transformation::rotate(radians(
+                    values.spatial.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2,
+                )))
+                .into_any_element()
+        } else {
+            action_icon(
+                "chevron-down",
+                CHANGES_CHEV_SIZE,
+                "changes_hdr",
+                theme.mockup_text_dim,
+                theme.mockup_text,
+            )
+            .into_any_element()
+        };
 
         let button = div()
             .w_full()
@@ -741,19 +821,13 @@ impl AssistantMessageView {
                 theme.mockup_text_dim,
                 theme.mockup_text,
             ))
+            .child(div().text_color(theme.mockup_text).child("Changes"))
             .child(
                 div()
-                    .text_color(theme.mockup_text)
-                    .child("Changes"),
+                    .flex_1()
+                    .child(changes_summary(file_count, adds, dels)),
             )
-            .child(div().flex_1().child(changes_summary(file_count, adds, dels)))
-            .child(action_icon(
-                "chevron-down",
-                CHANGES_CHEV_SIZE,
-                "changes_hdr",
-                theme.mockup_text_dim,
-                theme.mockup_text,
-            ));
+            .child(caret);
         let button: AnyElement = match on_toggle {
             Some(handler) => {
                 let handler = handler.clone();
@@ -767,12 +841,17 @@ impl AssistantMessageView {
         };
 
         let mut column = div().w_full().flex().flex_col().gap(px(8.0)).child(button);
-        if self.changes_expanded {
+        if values.map_or(self.changes_expanded, RevealValues::is_visible) {
+            let mut body = div().w_full().flex().flex_col().gap(px(8.0));
             for tool in &self.tool_calls {
                 if let Some(view) = tool.diff_view() {
-                    column = column.child(view.render(theme));
+                    body = body.child(view.render(theme));
                 }
             }
+            if let Some(values) = values {
+                body = values.apply(body);
+            }
+            column = column.child(body);
         }
         Some(column.into_any_element())
     }
@@ -843,7 +922,9 @@ mod tests {
         let segments = split_content_segments("Just prose.\nSecond line.");
         assert_eq!(
             segments,
-            vec![ContentSegment::Prose("Just prose.\nSecond line.".to_string())]
+            vec![ContentSegment::Prose(
+                "Just prose.\nSecond line.".to_string()
+            )]
         );
         assert!(split_content_segments("").is_empty());
     }
@@ -940,10 +1021,7 @@ mod tests {
     #[test]
     fn test_message_render_smoke_with_code_and_unknown_model() {
         let theme = HermesTheme::default();
-        let view = AssistantMessageView::new(
-            "msg_1",
-            "Answer:\n```bash\nls -la\n```\nDone.",
-        );
+        let view = AssistantMessageView::new("msg_1", "Answer:\n```bash\nls -la\n```\nDone.");
         let _ = view.render(&theme);
         let _ = view.with_model("claude-3-7-sonnet").render(&theme);
         let streaming = AssistantMessageView::new("msg_2", "partial").with_streaming(true);

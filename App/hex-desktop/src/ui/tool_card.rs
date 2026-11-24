@@ -14,7 +14,7 @@ use gpui::*;
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::diff_view::DiffView;
 use crate::ui::icon_svg;
-use crate::ui::motion;
+use crate::ui::motion::{self, RevealMotion, RevealValues};
 
 pub type ToolFoldClickHandler = Rc<dyn Fn(&str, &ClickEvent, &mut Window, &mut App)>;
 
@@ -229,8 +229,16 @@ impl ToolCallCard {
         label: &str,
         expanded: bool,
         on_click: Option<&ToolFoldClickHandler>,
+        reveal: Option<(RevealMotion, &App)>,
     ) -> AnyElement {
-        let caret_icon = if expanded { "chevron-down" } else { "chevron-right" };
+        let progress = reveal
+            .map(|(reveal, cx)| reveal.values(cx).spatial)
+            .unwrap_or(f32::from(expanded));
+        let caret = icon_svg("chevron-right", 12.0)
+            .text_color(theme.mockup_text_dim)
+            .with_transformation(Transformation::rotate(radians(
+                progress.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2,
+            )));
         let header = div()
             .flex()
             .flex_row()
@@ -238,7 +246,7 @@ impl ToolCallCard {
             .gap_1()
             .px(px(TOOL_BLOCK_PADDING_X))
             .py(px(6.0))
-            .child(icon_svg(caret_icon, 12.0).text_color(theme.mockup_text_dim))
+            .child(caret)
             .child(
                 div()
                     .text_size(px(TOOL_META_SIZE))
@@ -266,6 +274,7 @@ impl ToolCallCard {
         &self,
         theme: &HermesTheme,
         on_click: Option<&ToolFoldClickHandler>,
+        reveal: Option<(RevealMotion, &App)>,
     ) -> Div {
         let mut section = div().w_full().flex().flex_col();
         section = section.child(self.render_fold_header(
@@ -274,10 +283,16 @@ impl ToolCallCard {
             "Parameters",
             self.input_expanded,
             on_click,
+            reveal,
         ));
 
-        if self.input_expanded {
-            section = section.child(self.render_mono_block(theme, &self.arguments_json, false));
+        let values = reveal.map(|(reveal, cx)| reveal.values(cx));
+        if values.map_or(self.input_expanded, RevealValues::is_visible) {
+            let mut body = self.render_mono_block(theme, &self.arguments_json, false);
+            if let Some(values) = values {
+                body = values.apply(body);
+            }
+            section = section.child(body);
         }
 
         section
@@ -288,6 +303,7 @@ impl ToolCallCard {
         &self,
         theme: &HermesTheme,
         on_click: Option<&ToolFoldClickHandler>,
+        reveal: Option<(RevealMotion, &App)>,
     ) -> Option<Div> {
         let output = self.output_text.as_ref()?;
         let mut section = div().w_full().flex().flex_col();
@@ -297,10 +313,16 @@ impl ToolCallCard {
             "Output",
             self.output_expanded,
             on_click,
+            reveal,
         ));
 
-        if self.output_expanded {
-            section = section.child(self.render_mono_block(theme, output, true));
+        let values = reveal.map(|(reveal, cx)| reveal.values(cx));
+        if values.map_or(self.output_expanded, RevealValues::is_visible) {
+            let mut body = self.render_mono_block(theme, output, true);
+            if let Some(values) = values {
+                body = values.apply(body);
+            }
+            section = section.child(body);
         }
 
         Some(section)
@@ -341,6 +363,41 @@ impl ToolCallCard {
         on_input: Option<ToolFoldClickHandler>,
         on_output: Option<ToolFoldClickHandler>,
     ) -> Div {
+        self.render_inner(theme, on_input, on_output, None, None)
+    }
+
+    pub fn render_with_fold_handlers_motion(
+        &self,
+        theme: &HermesTheme,
+        on_input: Option<ToolFoldClickHandler>,
+        on_output: Option<ToolFoldClickHandler>,
+        window: &mut Window,
+        cx: &mut App,
+        owner: EntityId,
+    ) -> Div {
+        let input =
+            RevealMotion::for_identity(owner, "tool_reveal", &format!("{}:input", self.call_id));
+        let output =
+            RevealMotion::for_identity(owner, "tool_reveal", &format!("{}:output", self.call_id));
+        input.ensure(window, cx, f32::from(self.input_expanded));
+        output.ensure(window, cx, f32::from(self.output_expanded));
+        self.render_inner(
+            theme,
+            on_input,
+            on_output,
+            Some((input, cx)),
+            Some((output, cx)),
+        )
+    }
+
+    fn render_inner(
+        &self,
+        theme: &HermesTheme,
+        on_input: Option<ToolFoldClickHandler>,
+        on_output: Option<ToolFoldClickHandler>,
+        input_reveal: Option<(RevealMotion, &App)>,
+        output_reveal: Option<(RevealMotion, &App)>,
+    ) -> Div {
         let mut card = div()
             .w_full()
             .flex()
@@ -351,7 +408,7 @@ impl ToolCallCard {
             .bg(theme.mockup_surface)
             .overflow_hidden()
             .child(self.render_header(theme))
-            .child(self.render_input_fold(theme, on_input.as_ref()));
+            .child(self.render_input_fold(theme, on_input.as_ref(), input_reveal));
 
         if let Some(diff_view) = &self.diff {
             card = card.child(
@@ -363,7 +420,8 @@ impl ToolCallCard {
             );
         }
 
-        if let Some(output_fold) = self.render_output_fold(theme, on_output.as_ref()) {
+        if let Some(output_fold) = self.render_output_fold(theme, on_output.as_ref(), output_reveal)
+        {
             card = card.child(output_fold);
         }
 

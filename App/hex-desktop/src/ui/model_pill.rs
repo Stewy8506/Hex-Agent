@@ -16,9 +16,9 @@ use crate::ui::icon_svg;
 pub fn provider_dot_color(provider_name: &str, theme: &HermesTheme) -> Rgba {
     match provider_name.to_lowercase().as_str() {
         "anthropic" | "claude" => rgb(0xd97706), // Amber-600
-        "openai" | "gpt" => rgb(0x10b981),      // Emerald-500
-        "google" | "gemini" => rgb(0x3b82f6),   // Blue-500
-        _ => theme.accent_blue(),               // Electric Blue #7aa7ff
+        "openai" | "gpt" => rgb(0x10b981),       // Emerald-500
+        "google" | "gemini" => rgb(0x3b82f6),    // Blue-500
+        _ => theme.accent_blue(),                // Electric Blue #7aa7ff
     }
 }
 
@@ -99,14 +99,15 @@ impl SendButton {
 
     /// Renders the circular send/stop button (mockup: 36px circle, #2a2a2a bg).
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        let bg_color = if self.is_streaming {
-            theme.rose_fg()
-        } else if self.can_send {
-            rgb(0x2a2a2a)
+        let bg_color: Hsla = if self.is_streaming {
+            theme.rose_fg().into()
         } else {
-            rgb(0x2a2a2a)
+            rgb(0x2a2a2a).into()
         };
+        self.render_with_background(bg_color)
+    }
 
+    pub fn render_with_background(&self, bg_color: Hsla) -> Div {
         div()
             .w(px(36.0))
             .h(px(36.0))

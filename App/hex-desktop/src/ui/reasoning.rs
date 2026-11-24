@@ -11,6 +11,7 @@ use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::icon_svg;
+use crate::ui::motion::{RevealMotion, RevealValues};
 
 pub type DisclosureClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -114,16 +115,40 @@ impl ThinkingDisclosure {
         id: Option<ElementId>,
         on_click: Option<DisclosureClickHandler>,
     ) -> Div {
-        let caret_icon = if self.is_expanded {
-            "chevron-down"
-        } else {
-            "chevron-right"
-        };
+        self.render_inner(theme, id, on_click, None)
+    }
+
+    pub fn render_reveal(
+        &self,
+        theme: &HermesTheme,
+        id: Option<ElementId>,
+        on_click: Option<DisclosureClickHandler>,
+        reveal: RevealMotion,
+        cx: &App,
+    ) -> Div {
+        self.render_inner(theme, id, on_click, Some((reveal, cx)))
+    }
+
+    fn render_inner(
+        &self,
+        theme: &HermesTheme,
+        id: Option<ElementId>,
+        on_click: Option<DisclosureClickHandler>,
+        reveal: Option<(RevealMotion, &App)>,
+    ) -> Div {
+        let reveal_values = reveal.map(|(reveal, cx)| reveal.values(cx));
+        let expanded_progress = reveal_values
+            .map(|values| values.spatial)
+            .unwrap_or(f32::from(self.is_expanded));
+        let caret = icon_svg("chevron-right", 14.0)
+            .text_color(theme.mockup_text_dim)
+            .with_transformation(Transformation::rotate(radians(
+                expanded_progress.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2,
+            )));
         let label = self.header_label();
 
         let mut container = div().w_full().flex().flex_col().gap(px(6.0));
 
-        // Header Row
         let header = div()
             .flex()
             .flex_row()
@@ -132,7 +157,7 @@ impl ThinkingDisclosure {
             .py(px(4.0))
             .px(px(8.0))
             .rounded(px(8.0))
-            .child(icon_svg(caret_icon, 14.0).text_color(theme.mockup_text_dim))
+            .child(caret)
             .child(
                 div()
                     .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
@@ -158,9 +183,9 @@ impl ThinkingDisclosure {
 
         container = container.child(header);
 
-        // Expandable Content Body
-        if self.is_expanded {
-            let body = div()
+        let body_visible = reveal_values.map_or(self.is_expanded, RevealValues::is_visible);
+        if body_visible {
+            let mut body = div()
                 .w_full()
                 .rounded(px(8.0))
                 .bg(theme.mockup_sidebar)
@@ -174,7 +199,9 @@ impl ThinkingDisclosure {
                 .whitespace_nowrap()
                 .text_color(theme.mockup_text_muted)
                 .child(self.thought_text.clone());
-
+            if let Some(values) = reveal_values {
+                body = values.apply(body);
+            }
             container = container.child(body);
         }
 

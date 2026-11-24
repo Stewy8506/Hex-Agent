@@ -69,6 +69,18 @@ impl MotionSystem {
         }
     }
 
+    pub fn has(cx: &App, key: SpringKey) -> bool {
+        cx.try_global::<Self>()
+            .is_some_and(|system| system.springs.contains_key(&key))
+    }
+
+    pub fn policy(cx: &App) -> MotionPolicy {
+        cx.try_global::<Self>().map_or_else(
+            || MotionPolicy::new(reduced_motion()),
+            |system| system.policy,
+        )
+    }
+
     pub fn value(cx: &App, key: SpringKey) -> f32 {
         Self::value_or(cx, key, 1.0)
     }
@@ -89,6 +101,23 @@ impl MotionSystem {
         if cx.has_global::<Self>() {
             cx.global_mut::<Self>().springs.remove(&key);
         }
+    }
+
+    pub fn snap(
+        window: &mut Window,
+        cx: &mut App,
+        key: SpringKey,
+        target: f32,
+        preset: SpringPreset,
+    ) {
+        let window_id = window.window_handle().window_id();
+        let system = cx.default_global::<Self>();
+        let entry = system.springs.entry(key).or_insert_with(|| SpringEntry {
+            spring: Spring::new(target, preset),
+            window_id,
+        });
+        entry.window_id = window_id;
+        entry.spring.snap(target);
     }
 
     pub fn set_target(

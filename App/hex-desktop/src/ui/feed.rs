@@ -6,7 +6,7 @@
 //! Scrolling is a GPUI `list` anchored to `ListAlignment::Bottom`, so short
 //! conversations hug the composer and long ones scroll internally.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -71,6 +71,27 @@ impl ApprovalCardState {
             ApprovalCardState::Denied => "Denied",
         }
     }
+
+    pub fn color(&self, theme: &HermesTheme) -> Hsla {
+        match self {
+            ApprovalCardState::Pending => theme.warning_amber().into(),
+            ApprovalCardState::Approved => theme.sage_fg().into(),
+            ApprovalCardState::Denied => theme.rose_fg().into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ApprovalVisual {
+    pub from_state: ApprovalCardState,
+    pub state: ApprovalCardState,
+    pub from_color: Hsla,
+}
+
+impl ApprovalVisual {
+    pub fn color(&self, theme: &HermesTheme, progress: f32) -> Hsla {
+        motion::lerp_hsla(self.from_color, self.state.color(theme), progress)
+    }
 }
 
 /// An in-feed mirror of a tool approval request. The interactive decision
@@ -106,11 +127,51 @@ impl ApprovalCard {
     /// approvals-as-feed-cards are not in the mockup): `#171717` surface,
     /// `#262626` border, amber risk accent while pending.
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        let state_color = match self.state {
-            ApprovalCardState::Pending => theme.warning_amber(),
-            ApprovalCardState::Approved => theme.sage_fg(),
-            ApprovalCardState::Denied => theme.rose_fg(),
+        self.render_card(theme, self.static_label(theme))
+    }
+
+    pub fn render_motion(&self, theme: &HermesTheme, visual: ApprovalVisual, progress: f32) -> Div {
+        let progress = progress.clamp(0.0, 1.0);
+        let label = if visual.from_state == visual.state {
+            self.static_label(theme)
+        } else {
+            div()
+                .relative()
+                .w(px(64.0))
+                .h(px(16.0))
+                .flex_none()
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .whitespace_nowrap()
+                        .text_size(px(crate::ui::tool_card::TOOL_META_SIZE))
+                        .text_color(visual.color(theme, progress))
+                        .opacity(progress)
+                        .child(visual.state.label()),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .whitespace_nowrap()
+                        .text_size(px(crate::ui::tool_card::TOOL_META_SIZE))
+                        .text_color(visual.color(theme, progress))
+                        .opacity(1.0 - progress)
+                        .child(visual.from_state.label()),
+                )
         };
+        self.render_card(theme, label)
+    }
+
+    fn static_label(&self, theme: &HermesTheme) -> Div {
+        div()
+            .text_size(px(crate::ui::tool_card::TOOL_META_SIZE))
+            .text_color(self.state.color(theme))
+            .child(self.state.label())
+    }
+
+    fn render_card(&self, theme: &HermesTheme, label: Div) -> Div {
         div()
             .w_full()
             .flex()
@@ -129,7 +190,10 @@ impl ApprovalCard {
                     .gap_2()
                     .px(px(16.0))
                     .py(px(8.0))
-                    .child(icon_svg(tool_icon(&self.tool_name), 14.0).text_color(theme.mockup_text_muted))
+                    .child(
+                        icon_svg(tool_icon(&self.tool_name), 14.0)
+                            .text_color(theme.mockup_text_muted),
+                    )
                     .child(
                         div()
                             .font_family(theme.font_mono()[0].clone())
@@ -139,12 +203,7 @@ impl ApprovalCard {
                             .child(self.tool_name.clone()),
                     )
                     .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(px(crate::ui::tool_card::TOOL_META_SIZE))
-                            .text_color(state_color)
-                            .child(self.state.label()),
-                    ),
+                    .child(label),
             )
             .child(
                 div()
@@ -173,6 +232,7 @@ pub struct MessageFeed {
     /// Set while the supervised reconnect with backoff is in progress; the
     /// feed shows an inline reconnect notice instead of failing silently.
     pub reconnect_notice: Option<String>,
+    pending_entrances: HashSet<usize>,
 }
 
 impl Default for MessageFeed {
@@ -189,6 +249,7 @@ impl MessageFeed {
             is_streaming: false,
             is_connecting: false,
             reconnect_notice: None,
+            pending_entrances: HashSet::new(),
         }
     }
 
@@ -199,7 +260,28 @@ impl MessageFeed {
             is_streaming: false,
             is_connecting: false,
             reconnect_notice: None,
+            pending_entrances: HashSet::new(),
         }
+    }
+
+    fn mark_entrance(&mut self) {
+        self.pending_entrances
+            .insert(self.messages.len().saturating_sub(1));
+    }
+
+    /// Removes a row while preserving entrance markers for shifted rows.
+    pub fn remove_message_at(&mut self, index: usize) -> MessageItem {
+        let removed = self.messages.remove(index);
+        let mut shifted = HashSet::with_capacity(self.pending_entrances.len());
+        for pending in self.pending_entrances.drain() {
+            if pending < index {
+                shifted.insert(pending);
+            } else if pending > index {
+                shifted.insert(pending - 1);
+            }
+        }
+        self.pending_entrances = shifted;
+        removed
     }
 
     /// Sets the inline reconnect/error notice shown above the feed content.
@@ -224,6 +306,7 @@ impl MessageFeed {
         let id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
         let card = UserMessageCard::new(id.clone(), content);
         self.messages.push(MessageItem::User(card));
+        self.mark_entrance();
         self.auto_scroll_bottom = true;
         id
     }
@@ -237,6 +320,7 @@ impl MessageFeed {
         let id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
         let card = UserMessageCard::new(id.clone(), content).with_attachments(attachments);
         self.messages.push(MessageItem::User(card));
+        self.mark_entrance();
         self.auto_scroll_bottom = true;
         id
     }
@@ -245,18 +329,21 @@ impl MessageFeed {
         let id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
         let view = AssistantMessageView::new(id.clone(), content);
         self.messages.push(MessageItem::Assistant(view));
+        self.mark_entrance();
         self.auto_scroll_bottom = true;
         id
     }
 
     pub fn add_system_notice(&mut self, notice: impl Into<String>) {
         self.messages.push(MessageItem::SystemNotice(notice.into()));
+        self.mark_entrance();
     }
 
     pub fn start_assistant_streaming(&mut self) -> String {
         let id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
         let view = AssistantMessageView::new(id.clone(), "").with_streaming(true);
         self.messages.push(MessageItem::Assistant(view));
+        self.mark_entrance();
         self.is_streaming = true;
         self.auto_scroll_bottom = true;
         id
@@ -280,9 +367,13 @@ impl MessageFeed {
         if let Some(MessageItem::Assistant(ref mut assistant)) = self.messages.last_mut() {
             assistant.tool_calls.push(tool);
         } else {
-            let mut view = AssistantMessageView::new(format!("msg_{}", chrono::Utc::now().timestamp_millis()), "");
+            let mut view = AssistantMessageView::new(
+                format!("msg_{}", chrono::Utc::now().timestamp_millis()),
+                "",
+            );
             view.tool_calls.push(tool);
             self.messages.push(MessageItem::Assistant(view));
+            self.mark_entrance();
         }
     }
 
@@ -317,16 +408,13 @@ impl MessageFeed {
     /// as well as the decision modal).
     pub fn add_approval_card(&mut self, card: ApprovalCard) {
         self.messages.push(MessageItem::Approval(card));
+        self.mark_entrance();
         self.auto_scroll_bottom = true;
     }
 
     /// Marks every card matching `approval_id` with the confirmed outcome.
     /// Returns true when at least one card was updated.
-    pub fn update_approval_state(
-        &mut self,
-        approval_id: &str,
-        state: ApprovalCardState,
-    ) -> bool {
+    pub fn update_approval_state(&mut self, approval_id: &str, state: ApprovalCardState) -> bool {
         let mut updated = false;
         for msg in self.messages.iter_mut() {
             if let MessageItem::Approval(card) = msg {
@@ -341,6 +429,7 @@ impl MessageFeed {
 
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.pending_entrances.clear();
         self.is_streaming = false;
     }
 
@@ -351,12 +440,18 @@ impl MessageFeed {
     /// `token_count` is the honest gauge total ("24.5k tokens") or `None`
     /// while unknown (hidden).
     pub fn render_scrolled(
-        &self,
+        &mut self,
         theme: &HermesTheme,
         list_state: &ListState,
         bars: HashMap<String, ActionBarHandlers>,
         token_count: Option<String>,
+        cx: &mut App,
+        motion_owner: EntityId,
+        approval_visuals: &HashMap<String, ApprovalVisual>,
     ) -> Div {
+        let pending_entrances = std::mem::take(&mut self.pending_entrances);
+        let entrance_policy = motion::MotionSystem::policy(cx);
+        let approval_visuals = approval_visuals.clone();
         let mut root = div()
             .flex_1()
             .min_h_0()
@@ -369,21 +464,16 @@ impl MessageFeed {
         // reconnect with backoff is in progress.
         if let Some(notice) = &self.reconnect_notice {
             root = root.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .pb_2()
-                    .child(
-                        div()
-                            .rounded(px(8.0))
-                            .bg(theme.mockup_diff_del_bg)
-                            .px_3()
-                            .py(px(6.0))
-                            .text_size(px(MockupTypeScale::HINT_SIZE))
-                            .text_color(theme.rose_fg())
-                            .child(notice.clone()),
-                    ),
+                div().w_full().flex().justify_center().pb_2().child(
+                    div()
+                        .rounded(px(8.0))
+                        .bg(theme.mockup_diff_del_bg)
+                        .px_3()
+                        .py(px(6.0))
+                        .text_size(px(MockupTypeScale::HINT_SIZE))
+                        .text_color(theme.rose_fg())
+                        .child(notice.clone()),
+                ),
             );
         }
 
@@ -480,34 +570,88 @@ impl MessageFeed {
                     ),
             );
         } else {
-            let list = list(
-                list_state.clone(),
-                move |ix, _window, _cx| {
-                    let theme = list_theme.clone();
-                    let item = match messages.get(ix) {
-                        Some(MessageItem::User(card)) => card.render(&theme),
-                        Some(MessageItem::Assistant(view)) => {
-                            let handlers = bars.get(&view.id);
-                            view.render_with_action_bar(&theme, handlers, token_count.clone())
-                        }
-                        Some(MessageItem::SystemNotice(notice)) => div()
-                            .w_full()
-                            .flex()
-                            .justify_center()
-                            .text_size(px(MockupTypeScale::HINT_SIZE))
-                            .line_height(px(MockupTypeScale::CHIP_LINE_HEIGHT))
-                            .text_color(theme.mockup_text_dim)
-                            .child(notice.clone()),
-                        Some(MessageItem::Approval(card)) => card.render(&theme),
-                        None => div(),
-                    };
-                    if ix + 1 >= count {
-                        item.into_any_element()
-                    } else {
-                        item.pb(px(FEED_GAP)).into_any_element()
+            let list = list(list_state.clone(), move |ix, window, cx| {
+                let theme = list_theme.clone();
+                let entrance_id = match messages.get(ix) {
+                    Some(MessageItem::User(card)) => format!("user_{}", card.id),
+                    Some(MessageItem::Assistant(view)) => format!("assistant_{}", view.id),
+                    Some(MessageItem::SystemNotice(notice)) => {
+                        format!("notice_{}_{ix}", motion::slot(notice))
                     }
-                },
-            );
+                    Some(MessageItem::Approval(card)) => format!("approval_{}", card.approval_id),
+                    None => format!("empty_{ix}"),
+                };
+                let item: Div = match messages.get(ix) {
+                    Some(MessageItem::User(card)) => card.render(&theme),
+                    Some(MessageItem::Assistant(view)) => {
+                        let handlers = bars.get(&view.id);
+                        view.render_with_action_bar_motion(
+                            &theme,
+                            handlers,
+                            token_count.clone(),
+                            window,
+                            cx,
+                            motion_owner,
+                        )
+                    }
+                    Some(MessageItem::SystemNotice(notice)) => div()
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .text_size(px(MockupTypeScale::HINT_SIZE))
+                        .line_height(px(MockupTypeScale::CHIP_LINE_HEIGHT))
+                        .text_color(theme.mockup_text_dim)
+                        .child(notice.clone()),
+                    Some(MessageItem::Approval(card)) => {
+                        if let Some(visual) = approval_visuals.get(&card.approval_id) {
+                            let key = motion::SpringKey::for_slot(
+                                motion_owner,
+                                "approval_state",
+                                motion::slot(&card.approval_id),
+                            );
+                            card.render_motion(
+                                &theme,
+                                *visual,
+                                motion::MotionSystem::value_or(cx, key, 1.0),
+                            )
+                        } else {
+                            card.render(&theme)
+                        }
+                    }
+                    None => div(),
+                };
+                let item: AnyElement = if pending_entrances.contains(&ix) {
+                    let policy = entrance_policy;
+                    let reduced = policy.is_reduced();
+                    let preset = policy.preset(motion::MotionKind::Opacity, motion::SMOOTH);
+                    let duration = policy.duration(
+                        motion::MotionKind::Opacity,
+                        std::time::Duration::from_secs_f32(motion::SMOOTH.duration),
+                    );
+                    item.with_animation(
+                        ElementId::Name(SharedString::from(format!("feed_entrance_{entrance_id}"))),
+                        Animation::new(duration),
+                        move |element, phase| {
+                            let progress = motion::spring_easing(preset, phase);
+                            if reduced {
+                                element.opacity(progress)
+                            } else {
+                                element
+                                    .opacity(progress)
+                                    .mt(px(motion::REVEAL_RISE * (1.0 - progress)))
+                            }
+                        },
+                    )
+                    .into_any_element()
+                } else {
+                    item.into_any_element()
+                };
+                if ix + 1 >= count {
+                    item
+                } else {
+                    div().pb(px(FEED_GAP)).child(item).into_any_element()
+                }
+            });
             column = column.child(list.flex_1());
         }
 
@@ -535,20 +679,16 @@ impl MessageFeed {
 
         if let Some(notice) = &self.reconnect_notice {
             feed_container = feed_container.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        div()
-                            .rounded(px(8.0))
-                            .bg(theme.mockup_diff_del_bg)
-                            .px_3()
-                            .py(px(6.0))
-                            .text_size(px(MockupTypeScale::HINT_SIZE))
-                            .text_color(theme.rose_fg())
-                            .child(notice.clone()),
-                    ),
+                div().w_full().flex().justify_center().child(
+                    div()
+                        .rounded(px(8.0))
+                        .bg(theme.mockup_diff_del_bg)
+                        .px_3()
+                        .py(px(6.0))
+                        .text_size(px(MockupTypeScale::HINT_SIZE))
+                        .text_color(theme.rose_fg())
+                        .child(notice.clone()),
+                ),
             );
         }
 
@@ -643,7 +783,11 @@ pub fn fade_overlay(theme: &HermesTheme) -> Div {
         .left_0()
         .right_0()
         .h(px(FEED_FADE_HEIGHT))
-        .bg(linear_gradient(180.0, linear_color_stop(opaque, 0.0), linear_color_stop(transparent, 1.0)))
+        .bg(linear_gradient(
+            180.0,
+            linear_color_stop(opaque, 0.0),
+            linear_color_stop(transparent, 1.0),
+        ))
 }
 
 #[cfg(test)]
@@ -676,6 +820,41 @@ mod tests {
         } else {
             panic!("Expected Assistant message");
         }
+    }
+
+    #[test]
+    fn test_removing_a_placeholder_shifts_pending_entrances() {
+        let mut feed = MessageFeed::new();
+        feed.add_user_message("Hello");
+        feed.start_assistant_streaming();
+        feed.add_system_notice("No response");
+        assert_eq!(feed.pending_entrances, HashSet::from([0, 1, 2]));
+
+        feed.remove_message_at(1);
+
+        assert_eq!(feed.len(), 2);
+        assert_eq!(feed.pending_entrances, HashSet::from([0, 1]));
+        assert!(matches!(feed.messages[1], MessageItem::SystemNotice(_)));
+    }
+
+    #[test]
+    fn test_only_new_feed_rows_request_an_entrance() {
+        let mut feed = MessageFeed::new();
+        feed.add_user_message("Hello");
+        feed.start_assistant_streaming();
+        assert_eq!(feed.pending_entrances, HashSet::from([0, 1]));
+
+        feed.append_streaming_chunk("first");
+        feed.append_streaming_chunk(" second");
+        feed.finish_streaming();
+        assert_eq!(feed.pending_entrances, HashSet::from([0, 1]));
+
+        let restored = MessageFeed::with_messages(feed.messages.clone());
+        assert!(restored.pending_entrances.is_empty());
+
+        feed.pending_entrances.clear();
+        feed.append_streaming_chunk(" third");
+        assert!(feed.pending_entrances.is_empty());
     }
 
     #[test]
