@@ -11,7 +11,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
-use crate::ui::motion;
+use crate::ui::motion::{self, ControlMotion};
 
 /// The mockup's ASCII wordmark (56px mono block art), byte-exact.
 pub const ASCII_LOGO: &str = "█ █ █▀▀ ▀▄▀\n█▀█ ██▄ ▄▀▄";
@@ -77,21 +77,16 @@ pub fn dock_icon_path(glyph: &str) -> String {
 /// cubic-bezier(.2,.7,.2,1), opacity 0→1 and a 6px→0 upward settle simulated
 /// via margin-top), centered. Skipped entirely under reduced motion.
 pub fn render_logo(theme: &HermesTheme) -> AnyElement {
-    let logo = div()
-        .flex()
-        .flex_col()
-        .items_center()
-        .mb(px(46.0))
-        .child(
-            div()
-                .font_family(theme.font_mono()[0].clone())
-                .text_size(px(MockupTypeScale::LOGO_SIZE))
-                .line_height(px(MockupTypeScale::LOGO_LINE_HEIGHT))
-                .font_weight(MockupTypeScale::LOGO_WEIGHT)
-                .text_color(theme.mockup_text_bright)
-                .whitespace_nowrap()
-                .child(ASCII_LOGO),
-        );
+    let logo = div().flex().flex_col().items_center().mb(px(46.0)).child(
+        div()
+            .font_family(theme.font_mono()[0].clone())
+            .text_size(px(MockupTypeScale::LOGO_SIZE))
+            .line_height(px(MockupTypeScale::LOGO_LINE_HEIGHT))
+            .font_weight(MockupTypeScale::LOGO_WEIGHT)
+            .text_color(theme.mockup_text_bright)
+            .whitespace_nowrap()
+            .child(ASCII_LOGO),
+    );
     if motion::reduced_motion() {
         logo.into_any_element()
     } else {
@@ -147,32 +142,32 @@ pub fn render_dock_item(
     id: &'static str,
     label: &'static str,
     glyph: &'static str,
+    control: ControlMotion,
+    cx: &App,
 ) -> Stateful<Div> {
-    let tint = theme.mockup_text_muted;
-    let hover_tint = theme.mockup_text;
-    div()
+    let values = control.values(cx);
+    let background = values.color(hsla(0.0, 0.0, 0.0, 0.0), theme.mockup_hover.into());
+    let tint = values.color(theme.mockup_text_muted.into(), theme.mockup_text.into());
+    let button = div()
         .id(SharedString::from(id))
-        .group("dock_item")
+        .debug_selector(move || format!("dock_{id}"))
         .cursor_pointer()
         .size(px(DOCK_ITEM_SIZE))
         .flex()
         .items_center()
         .justify_center()
         .rounded(px(DOCK_ITEM_RADIUS))
-        .hover(|s| s.bg(theme.mockup_hover))
+        .bg(background)
         .tooltip(move |window, cx| crate::ui::home_tooltip(label, window, cx))
         .child(
-            // gpui computes each element's style from its own refinements —
-            // text color does not flow from the container, so the svg carries
-            // its own tint and swaps it via group_hover.
             svg()
                 .path(dock_icon_path(glyph))
                 .w(px(DOCK_ICON_SIZE))
                 .h(px(DOCK_ICON_SIZE))
                 .flex_none()
-                .text_color(tint)
-                .group_hover("dock_item", move |s| s.text_color(hover_tint)),
-        )
+                .text_color(tint),
+        );
+    motion::hover_feedback(motion::press_feedback(button, control, cx), control)
 }
 
 /// A "Continue" session row: title, project column, location chip, compact
@@ -206,10 +201,7 @@ pub fn render_continue_row(
 ) -> Stateful<Div> {
     let (chip_label, chip_accent) = continue_chip(row);
     let dot_slot = if row.running {
-        let dot = div()
-            .size_full()
-            .rounded_full()
-            .bg(theme.accent_blue);
+        let dot = div().size_full().rounded_full().bg(theme.accent_blue);
         let animated = if motion::reduced_motion() {
             dot.into_any_element()
         } else {

@@ -66,7 +66,7 @@ use crate::ui::pill::{
 use crate::ui::reasoning::ThinkingDisclosure;
 use crate::ui::session_list::SessionItem;
 use crate::ui::shell::{AppShell, ShellView};
-use crate::ui::sidebar::{ProviderState, SidebarHandlers};
+use crate::ui::sidebar::{ProviderState, SidebarHandlers, SIDEBAR_WIDTH};
 use crate::ui::token_gauge::{format_token_number, DEFAULT_CONTEXT_LIMIT};
 use crate::ui::tool_card::ToolCallCard;
 use crate::window::WindowConfig;
@@ -171,6 +171,17 @@ struct SessionState {
     feed: MessageFeed,
     draft: String,
     attachments: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateBannerVisual {
+    line: String,
+    mandatory: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SessionTransition {
+    outgoing: Option<MessageFeed>,
 }
 
 #[derive(Debug, Clone)]
@@ -377,16 +388,31 @@ pub struct ChatView {
     pending_home_prompt: Option<String>,
     /// Dock feature the user clicked that is not built yet (Coming soon).
     home_coming_soon: Option<&'static str>,
+    /// Current or exiting toast content kept mounted until its springs settle.
+    home_toast_visual: Option<&'static str>,
     home_connection_error: Option<String>,
     /// Cached `cloud/auth/status` for the sidebar footer and header device chip.
     cloud_status: Option<CloudAuthStatus>,
     /// Latest verified update plan from `cloud/update/check` (signed in only).
     cloud_update: Option<CloudUpdatePlan>,
+    /// Current or exiting banner content kept mounted until its springs settle.
+    update_banner_visual: Option<UpdateBannerVisual>,
     /// Scroll state of the bottom-anchored message list; owned here because
     /// `AppShell` derives Debug/Clone/PartialEq and `ListState` cannot.
     feed_list: ListState,
+    /// Scroll state for the outgoing session crossfade layer.
+    outgoing_feed_list: ListState,
     /// Feed item count currently spliced into `feed_list`.
     feed_synced_count: usize,
+    /// Outgoing feed captured by the latest completed session swap.
+    pending_session_transition: Option<SessionTransition>,
+    /// Outgoing feed captured while an uncached session is still loading.
+    deferred_session_transition: Option<SessionTransition>,
+    /// Previous session kept mounted while its crossfade exits.
+    outgoing_session_feed: Option<MessageFeed>,
+    /// Reused layer springs preserve momentum across rapid session switches.
+    session_incoming_motion: Option<motion::RevealMotion>,
+    session_outgoing_motion: Option<motion::RevealMotion>,
     /// Operator-attached local file paths pending inclusion in the next prompt.
     attachments: Vec<String>,
     /// Removed chips stay mounted until their exit springs settle.
@@ -462,11 +488,19 @@ impl ChatView {
             show_home: true,
             pending_home_prompt: None,
             home_coming_soon: None,
+            home_toast_visual: None,
             home_connection_error: None,
             cloud_status: None,
             cloud_update: None,
+            update_banner_visual: None,
             feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
+            outgoing_feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             feed_synced_count: 0,
+            pending_session_transition: None,
+            deferred_session_transition: None,
+            outgoing_session_feed: None,
+            session_incoming_motion: None,
+            session_outgoing_motion: None,
             attachments: Vec::new(),
             outgoing_attachments: Vec::new(),
             approval_visuals: HashMap::new(),
@@ -1122,6 +1156,111 @@ impl ChatView {
         self.session_load_generation
     }
 
+    fn capture_session_transition(&self, visible: bool) -> SessionTransition {
+        let has_conversation = self.shell.feed.messages.iter().any(|item| {
+            matches!(
+                item,
+                MessageItem::User(_) | MessageItem::Assistant(_) | MessageItem::Approval(_)
+            )
+        });
+        SessionTransition {
+            outgoing: (visible && has_conversation)
+                .then(|| self.shell.feed.snapshot_without_entrances()),
+        }
+    }
+
+    fn session_motion_layers(
+        &mut self,
+        cx: &Context<Self>,
+    ) -> (motion::RevealMotion, motion::RevealMotion) {
+        let owner = cx.entity().entity_id();
+        if self.session_incoming_motion.is_none() {
+            self.session_incoming_motion = Some(motion::RevealMotion::for_identity(
+                owner,
+                "session_transition",
+                "incoming",
+            ));
+        }
+        if self.session_outgoing_motion.is_none() {
+            self.session_outgoing_motion = Some(motion::RevealMotion::for_identity(
+                owner,
+                "session_transition",
+                "outgoing",
+            ));
+        }
+        (
+            self.session_incoming_motion
+                .expect("incoming layer initialized"),
+            self.session_outgoing_motion
+                .expect("outgoing layer initialized"),
+        )
+    }
+
+    fn clear_session_transition(&mut self, cx: &mut Context<Self>) {
+        if let Some(motion) = self.session_incoming_motion.take() {
+            motion.remove(cx);
+        }
+        if let Some(motion) = self.session_outgoing_motion.take() {
+            motion.remove(cx);
+        }
+        self.pending_session_transition = None;
+        self.deferred_session_transition = None;
+        self.outgoing_session_feed = None;
+        self.outgoing_feed_list.reset(0);
+    }
+
+    fn sync_session_transition(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(transition) = self.pending_session_transition.take() {
+            let (mut incoming, mut outgoing) = self.session_motion_layers(cx);
+            let has_outgoing =
+                transition.outgoing.is_some() || self.outgoing_session_feed.is_some();
+            if transition.outgoing.is_some() && self.outgoing_session_feed.is_some() {
+                std::mem::swap(
+                    &mut self.session_incoming_motion,
+                    &mut self.session_outgoing_motion,
+                );
+                (incoming, outgoing) = self.session_motion_layers(cx);
+            }
+            if let Some(feed) = transition.outgoing {
+                self.outgoing_feed_list.reset(feed.len());
+                self.outgoing_session_feed = Some(feed);
+                outgoing.exit(window, cx);
+            } else if let Some(motion) = self.session_outgoing_motion {
+                motion.exit(window, cx);
+            }
+            if has_outgoing {
+                incoming.enter(window, cx);
+            } else {
+                incoming.ensure(window, cx, 1.0);
+            }
+        }
+
+        if let Some(motion) = self.session_outgoing_motion {
+            let settled = motion::MotionSystem::is_settled(&*cx, motion.spatial)
+                && motion::MotionSystem::is_settled(&*cx, motion.opacity);
+            if settled && !motion.values(&*cx).is_visible() {
+                motion.remove(cx);
+                self.session_outgoing_motion = None;
+                self.outgoing_session_feed = None;
+                self.outgoing_feed_list.reset(0);
+            }
+        }
+        if self.outgoing_session_feed.is_none() {
+            if let Some(motion) = self.session_incoming_motion {
+                if motion::MotionSystem::is_settled(&*cx, motion.spatial)
+                    && motion::MotionSystem::is_settled(&*cx, motion.opacity)
+                {
+                    motion.remove(cx);
+                    self.session_incoming_motion = None;
+                }
+            }
+        }
+    }
+
+    fn force_feed_resync(&mut self) {
+        self.feed_synced_count = usize::MAX;
+    }
+
     fn save_active_session(&mut self) {
         if let Some(current) = self.shell.active_session_id.clone() {
             let feed = std::mem::replace(&mut self.shell.feed, MessageFeed::new());
@@ -1145,9 +1284,12 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) {
         self.begin_session_navigation();
+        self.deferred_session_transition = None;
+        self.pending_session_transition = Some(self.capture_session_transition(!self.show_home));
         self.save_active_session();
         let id = resp.session_id.clone();
         self.shell.feed = MessageFeed::new();
+        self.force_feed_resync();
         self.reset_editor(cx);
         self.shell
             .sidebar
@@ -1185,11 +1327,17 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) {
         self.begin_session_navigation();
+        let transition = self
+            .deferred_session_transition
+            .take()
+            .unwrap_or_else(|| self.capture_session_transition(!self.show_home));
+        self.pending_session_transition = Some(transition);
         self.save_active_session();
         let id = load.session_id.clone();
         self.running_turns.remove(&id);
         self.turn_assistants.remove(&id);
         self.shell.feed = feed;
+        self.force_feed_resync();
         self.reset_editor(cx);
         let title = self
             .shell
@@ -1231,11 +1379,16 @@ impl ChatView {
         {
             return;
         }
+        let was_home = self.show_home;
+        let transition = self.capture_session_transition(!was_home);
+        self.show_home = false;
         let generation = self.begin_session_navigation();
         if let Some(state) = self.sessions.remove(&id) {
+            self.pending_session_transition = Some(transition);
             self.save_active_session();
             self.clear_attachment_motion(cx);
             self.shell.feed = state.feed;
+            self.force_feed_resync();
             self.set_editor_content(state.draft, cx);
             self.attachments = state.attachments;
             self.shell.select_session(id);
@@ -1245,12 +1398,17 @@ impl ChatView {
         }
         // Never hydrated in this process: resume from durable backend history.
         if !self.bridge.is_connected() {
-            self.shell.feed.add_system_notice(
-                "Not connected to the HEX runtime — cannot resume that session.",
-            );
+            self.show_home = was_home;
+            let message =
+                "Not connected to the HEX runtime — cannot resume that session.".to_string();
+            if was_home {
+                self.home_connection_error = Some(message.clone());
+            }
+            self.shell.feed.add_system_notice(message);
             cx.notify();
             return;
         }
+        self.deferred_session_transition = Some(transition);
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         let sid = id.clone();
@@ -1273,6 +1431,7 @@ impl ChatView {
                 match restored {
                     Some((load, feed)) => view.adopt_loaded_session(load, feed, cx),
                     None => {
+                        view.deferred_session_transition = None;
                         view.shell.feed.add_system_notice(format!(
                             "Could not resume session {id}: durable history was unavailable."
                         ));
@@ -1325,7 +1484,14 @@ impl ChatView {
             })
             .collect();
 
-        let home_coming_soon = self.home_coming_soon;
+        let (toast_spatial, toast_opacity) = self.home_toast_keys(cx);
+        let home_coming_soon = self.home_toast_visual.map(|label| {
+            (
+                label,
+                motion::MotionSystem::value(cx, toast_spatial),
+                motion::MotionSystem::value(cx, toast_opacity).clamp(0.0, 1.0),
+            )
+        });
 
         // Top bar: h60, padding 0 20px; panel toggle left; right gap 4 =
         // search, bell (+ pulsing accent dot when needs-you > 0), settings.
@@ -1523,7 +1689,6 @@ impl ChatView {
                             let this = cx.entity().downgrade();
                             move |_, _, cx| {
                                 let _ = this.update(cx, |view, cx| {
-                                    view.show_home = false;
                                     view.switch_session(id.clone(), cx);
                                     cx.notify();
                                 });
@@ -1534,6 +1699,7 @@ impl ChatView {
 
         // Bottom feature dock: absolute, bottom 28, centered; container
         // bg #191919, border #232323, radius 16, padding 5, gap 2.
+        let dock_owner = cx.entity().entity_id();
         let dock = div()
             .absolute()
             .left_0()
@@ -1555,14 +1721,16 @@ impl ChatView {
                     .children(COMING_SOON_DOCK.iter().map(|(label, glyph)| {
                         let this = cx.entity().downgrade();
                         let name: &'static str = label;
-                        crate::ui::home::render_dock_item(theme, label, label, glyph).on_click(
-                            move |_, _, cx| {
+                        let control =
+                            motion::ControlMotion::for_identity(dock_owner, "dock_control", name);
+                        crate::ui::home::render_dock_item(theme, label, label, glyph, control, &*cx)
+                            .on_click(move |_, _, cx| {
                                 let _ = this.update(cx, |view, cx| {
+                                    view.home_toast_visual = None;
                                     view.home_coming_soon = Some(name);
                                     cx.notify();
                                 });
-                            },
-                        )
+                            })
                     })),
             );
 
@@ -1575,15 +1743,17 @@ impl ChatView {
             .child(top_bar)
             .child(center)
             .child(dock)
-            .when_some(home_coming_soon, |c, label| {
+            .when_some(home_coming_soon, |c, (label, spatial, opacity)| {
+                let rise = motion::REVEAL_RISE * (1.0 - spatial);
                 c.child(
                     div()
                         .absolute()
-                        .bottom(px(home::NOTICE_BOTTOM))
+                        .bottom(px(home::NOTICE_BOTTOM + rise))
                         .left_0()
                         .right_0()
                         .flex()
                         .justify_center()
+                        .opacity(opacity)
                         .child(
                             div()
                                 .bg(theme.mockup_surface)
@@ -1615,6 +1785,7 @@ impl ChatView {
 
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
         self.begin_session_navigation();
+        self.clear_session_transition(cx);
         // Phase 2: New chat returns to the Home start screen. A prompt already
         // queued from the Home composer (set in submit_text) must survive this
         // reset so adopt_session can submit it once the session exists.
@@ -4162,6 +4333,79 @@ impl ChatView {
             motion_owner,
             &self.approval_visuals,
         );
+        let feed = if coming_soon_pane {
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.mockup_text)
+                        .child(SharedString::from(format!(
+                            "{} — coming soon",
+                            self.shell.active_view.pane_title()
+                        ))),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme.mockup_text_dim)
+                        .child("This pane isn't built yet."),
+                )
+        } else {
+            let incoming_values = self
+                .session_incoming_motion
+                .map(|motion| motion.values(&*cx))
+                .unwrap_or(motion::RevealValues {
+                    spatial: 1.0,
+                    opacity: 1.0,
+                });
+            let mut layer = div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .flex()
+                .flex_col()
+                .overflow_hidden();
+            layer = layer.child(
+                incoming_values.apply(feed.debug_selector(|| "session_feed_incoming".to_string())),
+            );
+            if let Some(outgoing) = self.outgoing_session_feed.as_mut() {
+                let outgoing_values = self
+                    .session_outgoing_motion
+                    .expect("outgoing feed has a motion layer")
+                    .values(&*cx);
+                let outgoing_feed = outgoing.render_scrolled(
+                    theme,
+                    &self.outgoing_feed_list,
+                    HashMap::new(),
+                    None,
+                    cx,
+                    motion_owner,
+                    &HashMap::new(),
+                );
+                let rise = motion::REVEAL_RISE * (1.0 - outgoing_values.spatial);
+                layer = layer.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(rise))
+                        .bottom_0()
+                        .opacity(outgoing_values.opacity.clamp(0.0, 1.0))
+                        .child(
+                            outgoing_feed.debug_selector(|| "session_feed_outgoing".to_string()),
+                        ),
+                );
+            }
+            layer
+        };
 
         div()
             .flex()
@@ -4318,34 +4562,8 @@ impl ChatView {
                             ),
                     ),
             )
-            .children(self.render_update_banner(theme))
-            .child(if coming_soon_pane {
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.mockup_text)
-                            .child(SharedString::from(format!(
-                                "{} — coming soon",
-                                self.shell.active_view.pane_title()
-                            ))),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.mockup_text_dim)
-                            .child("This pane isn't built yet."),
-                    )
-            } else {
-                feed
-            })
+            .children(self.render_update_banner(theme, cx))
+            .child(feed)
             .when(!coming_soon_pane, |c| {
                 c.child(self.render_composer(theme, window, cx, ComposerVariant::Session))
             })
@@ -4754,12 +4972,54 @@ impl ChatView {
         }
     }
 
+    fn update_banner_keys(&self, cx: &Context<Self>) -> (motion::SpringKey, motion::SpringKey) {
+        let owner = cx.entity().entity_id();
+        (
+            motion::SpringKey::new(owner, "update_banner_spatial"),
+            motion::SpringKey::new(owner, "update_banner_opacity"),
+        )
+    }
+
+    fn sync_update_banner_motion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (spatial, opacity) = self.update_banner_keys(cx);
+        let current = self
+            .update_banner_line()
+            .map(|(line, mandatory)| UpdateBannerVisual { line, mandatory });
+        if let Some(visual) = current {
+            if self.update_banner_visual.as_ref() != Some(&visual) {
+                self.update_banner_visual = Some(visual);
+                if !motion::MotionSystem::has(&*cx, spatial)
+                    || (motion::MotionSystem::is_settled(&*cx, spatial)
+                        && motion::MotionSystem::is_settled(&*cx, opacity))
+                {
+                    motion::MotionSystem::snap(window, cx, spatial, 0.0, motion::BOUNCY);
+                    motion::MotionSystem::snap(window, cx, opacity, 0.0, motion::BOUNCY);
+                }
+            }
+            motion::MotionSystem::set_target(window, cx, spatial, 1.0, motion::BOUNCY);
+            motion::MotionSystem::set_opacity_target(window, cx, opacity, 1.0, motion::BOUNCY);
+        } else if self.update_banner_visual.is_some() {
+            motion::MotionSystem::set_target(window, cx, spatial, 0.0, motion::BOUNCY);
+            motion::MotionSystem::set_opacity_target(window, cx, opacity, 0.0, motion::BOUNCY);
+            if motion::MotionSystem::is_settled(&*cx, spatial)
+                && motion::MotionSystem::is_settled(&*cx, opacity)
+            {
+                motion::MotionSystem::remove(cx, spatial);
+                motion::MotionSystem::remove(cx, opacity);
+                self.update_banner_visual = None;
+            }
+        }
+    }
+
     /// Signed-update pill between the header and the feed (absent when up to
     /// date or signed out). Mandatory/incompatible plans use the deletion
     /// tint; eligible updates use the addition tint.
-    fn render_update_banner(&self, theme: &HermesTheme) -> Option<AnyElement> {
-        let (line, mandatory) = self.update_banner_line()?;
-        let (bg, fg) = if mandatory {
+    fn render_update_banner(&self, theme: &HermesTheme, cx: &Context<Self>) -> Option<AnyElement> {
+        let visual = self.update_banner_visual.as_ref()?;
+        let (spatial, opacity) = self.update_banner_keys(cx);
+        let rise = 10.0 * (1.0 - motion::MotionSystem::value(cx, spatial));
+        let alpha = motion::MotionSystem::value(cx, opacity).clamp(0.0, 1.0);
+        let (bg, fg) = if visual.mandatory {
             (theme.mockup_diff_del_bg, theme.rose_fg())
         } else {
             (theme.mockup_diff_add_bg, theme.mockup_diff_add_fg)
@@ -4767,7 +5027,8 @@ impl ChatView {
         Some(
             div()
                 .mx(px(crate::ui::shell::HEADER_PADDING_X))
-                .mt(px(6.0))
+                .mt(px(6.0 + rise))
+                .opacity(alpha)
                 .child(
                     div()
                         .rounded(px(8.0))
@@ -4776,10 +5037,16 @@ impl ChatView {
                         .py(px(6.0))
                         .text_size(px(MockupTypeScale::HINT_SIZE))
                         .text_color(fg)
-                        .child(SharedString::from(if mandatory {
-                            format!("Update required — {line}. Run `hex update`, then restart.")
+                        .child(SharedString::from(if visual.mandatory {
+                            format!(
+                                "Update required — {}. Run `hex update`, then restart.",
+                                visual.line
+                            )
                         } else {
-                            format!("Update available — {line}. Run `hex update` to apply.")
+                            format!(
+                                "Update available — {}. Run `hex update` to apply.",
+                                visual.line
+                            )
                         })),
                 )
                 .into_any_element(),
@@ -4808,6 +5075,62 @@ impl ChatView {
         }
         self.shell.sidebar.set_review_sessions(review);
     }
+
+    fn sidebar_motion_keys(&self, cx: &Context<Self>) -> (motion::SpringKey, motion::SpringKey) {
+        let owner = cx.entity().entity_id();
+        (
+            motion::SpringKey::new(owner, "sidebar_width"),
+            motion::SpringKey::new(owner, "sidebar_opacity"),
+        )
+    }
+
+    fn sync_sidebar_motion(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let (width, opacity) = self.sidebar_motion_keys(cx);
+        let target = f32::from(!self.shell.sidebar_collapsed);
+        if !motion::MotionSystem::has(&*cx, width) {
+            motion::MotionSystem::snap(window, cx, width, target, motion::SMOOTH);
+            motion::MotionSystem::snap(window, cx, opacity, target, motion::SMOOTH);
+        } else {
+            motion::MotionSystem::set_target(window, cx, width, target, motion::SMOOTH);
+            motion::MotionSystem::set_opacity_target(window, cx, opacity, target, motion::SMOOTH);
+        }
+    }
+
+    fn home_toast_keys(&self, cx: &Context<Self>) -> (motion::SpringKey, motion::SpringKey) {
+        let owner = cx.entity().entity_id();
+        (
+            motion::SpringKey::new(owner, "home_toast_spatial"),
+            motion::SpringKey::new(owner, "home_toast_opacity"),
+        )
+    }
+
+    fn sync_home_toast_motion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (spatial, opacity) = self.home_toast_keys(cx);
+        if let Some(label) = self.home_coming_soon {
+            if self.home_toast_visual != Some(label) {
+                self.home_toast_visual = Some(label);
+                if !motion::MotionSystem::has(&*cx, spatial)
+                    || (motion::MotionSystem::is_settled(&*cx, spatial)
+                        && motion::MotionSystem::is_settled(&*cx, opacity))
+                {
+                    motion::MotionSystem::snap(window, cx, spatial, 0.0, motion::BOUNCY);
+                    motion::MotionSystem::snap(window, cx, opacity, 0.0, motion::BOUNCY);
+                }
+            }
+            motion::MotionSystem::set_target(window, cx, spatial, 1.0, motion::BOUNCY);
+            motion::MotionSystem::set_opacity_target(window, cx, opacity, 1.0, motion::BOUNCY);
+        } else if self.home_toast_visual.is_some() {
+            motion::MotionSystem::set_target(window, cx, spatial, 0.0, motion::BOUNCY);
+            motion::MotionSystem::set_opacity_target(window, cx, opacity, 0.0, motion::BOUNCY);
+            if motion::MotionSystem::is_settled(&*cx, spatial)
+                && motion::MotionSystem::is_settled(&*cx, opacity)
+            {
+                motion::MotionSystem::remove(cx, spatial);
+                motion::MotionSystem::remove(cx, opacity);
+                self.home_toast_visual = None;
+            }
+        }
+    }
 }
 
 impl Render for ChatView {
@@ -4819,6 +5142,14 @@ impl Render for ChatView {
             self.shell.sidebar.set_pending_approvals(pending);
         }
         self.sync_sidebar_live_state();
+        self.sync_sidebar_motion(window, cx);
+        self.sync_home_toast_motion(window, cx);
+        self.sync_update_banner_motion(window, cx);
+        if self.show_home {
+            self.pending_session_transition = None;
+        } else {
+            self.sync_session_transition(window, cx);
+        }
         self.sync_approval_motion(window, cx);
         let theme = HermesTheme::get(cx).clone();
 
@@ -4970,11 +5301,23 @@ impl Render for ChatView {
             .on_action(cx.listener(Self::on_select_all))
             .on_key_down(cx.listener(Self::on_key_down));
 
-        if !self.shell.sidebar_collapsed {
+        let (sidebar_width, sidebar_opacity) = self.sidebar_motion_keys(cx);
+        let sidebar_progress = motion::MotionSystem::value(cx, sidebar_width).clamp(0.0, 1.0);
+        let sidebar_alpha = motion::MotionSystem::value(cx, sidebar_opacity).clamp(0.0, 1.0);
+        if !self.shell.sidebar_collapsed || sidebar_progress > 0.0 || sidebar_alpha > 0.0 {
             root = root.child(
-                self.shell
-                    .sidebar
-                    .render_with_actions(&theme, &sidebar_handlers),
+                div()
+                    .debug_selector(|| "animated_sidebar".to_string())
+                    .w(px(SIDEBAR_WIDTH * sidebar_progress))
+                    .h_full()
+                    .flex_none()
+                    .overflow_hidden()
+                    .opacity(sidebar_alpha)
+                    .child(
+                        self.shell
+                            .sidebar
+                            .render_with_actions(&theme, &sidebar_handlers),
+                    ),
             );
         }
 
@@ -6048,6 +6391,375 @@ mod tests {
         advance_visual_motion(vc, &view, 600);
         assert_eq!(vc.read(|app| send.values(app).press), 0.0);
         let window_id = vc.update(|window, _| window.window_handle().window_id());
+        assert!(!vc.read(|app| app
+            .global::<motion::MotionSystem>()
+            .driver_active(window_id)));
+    }
+
+    #[gpui::test]
+    fn sidebar_width_retargets_without_a_layout_jump(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|_, app| {
+            view.update(app, |view, cx| {
+                view.show_home = false;
+                cx.notify();
+            });
+        });
+        vc.run_until_parked();
+        let initial = vc
+            .debug_bounds("animated_sidebar")
+            .expect("expanded sidebar rendered");
+        assert_eq!(initial.size.width, px(SIDEBAR_WIDTH));
+
+        let (width, opacity) =
+            vc.update(|_, app| view.update(app, |view, cx| view.sidebar_motion_keys(cx)));
+        vc.update(|_, app| {
+            view.update(app, |view, cx| {
+                view.shell.toggle_sidebar();
+                cx.notify();
+            });
+        });
+        advance_visual_motion(vc, &view, 4);
+        let collapsing = vc
+            .debug_bounds("animated_sidebar")
+            .expect("collapsing sidebar stays mounted");
+        assert!(collapsing.size.width > px(0.0));
+        assert!(collapsing.size.width < initial.size.width);
+        let before_retarget = vc.read(|app| motion::MotionSystem::value(app, width));
+
+        vc.update(|_, app| {
+            view.update(app, |view, cx| {
+                view.shell.toggle_sidebar();
+                assert_eq!(motion::MotionSystem::value(cx, width), before_retarget);
+                cx.notify();
+            });
+        });
+        advance_visual_motion(vc, &view, 600);
+        let expanded = vc
+            .debug_bounds("animated_sidebar")
+            .expect("reopened sidebar rendered");
+        assert_eq!(expanded.size.width, initial.size.width);
+        assert_eq!(vc.read(|app| motion::MotionSystem::value(app, width)), 1.0);
+        assert_eq!(
+            vc.read(|app| motion::MotionSystem::value(app, opacity)),
+            1.0
+        );
+        let window_id = vc.update(|window, _| window.window_handle().window_id());
+        assert!(!vc.read(|app| app
+            .global::<motion::MotionSystem>()
+            .driver_active(window_id)));
+    }
+
+    #[gpui::test]
+    fn rapid_session_swaps_reuse_the_two_crossfade_layers(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            view.update(app, |view, cx| {
+                view.show_home = false;
+                view.shell.feed.add_user_message("From A");
+                for id in ["a", "b", "c"] {
+                    view.shell
+                        .sidebar
+                        .add_session(SessionItem::new(id, format!("Chat {id}")));
+                }
+                view.shell.select_session("a".to_string());
+                let mut feed_b = MessageFeed::new();
+                feed_b.add_user_message("From B");
+                let mut feed_c = MessageFeed::new();
+                feed_c.add_user_message("From C");
+                view.sessions.insert(
+                    "b".to_string(),
+                    SessionState {
+                        feed: feed_b,
+                        draft: String::new(),
+                        attachments: Vec::new(),
+                    },
+                );
+                view.sessions.insert(
+                    "c".to_string(),
+                    SessionState {
+                        feed: feed_c,
+                        draft: String::new(),
+                        attachments: Vec::new(),
+                    },
+                );
+                view.sync_session_transition(window, cx);
+                cx.notify();
+            });
+        });
+        vc.run_until_parked();
+
+        vc.update(|_, app| {
+            view.update(app, |view, cx| view.switch_session("b".to_string(), cx));
+        });
+        advance_visual_motion(vc, &view, 4);
+        let (first_incoming, first_outgoing, incoming_value, outgoing_value) = vc.read(|app| {
+            let view = view.read(app);
+            (
+                view.session_incoming_motion.expect("incoming layer"),
+                view.session_outgoing_motion.expect("outgoing layer"),
+                view.session_incoming_motion
+                    .expect("incoming layer")
+                    .values(app)
+                    .spatial,
+                view.session_outgoing_motion
+                    .expect("outgoing layer")
+                    .values(app)
+                    .spatial,
+            )
+        });
+        assert!(incoming_value > 0.0 && incoming_value < 1.0);
+        assert!(outgoing_value > 0.0 && outgoing_value < 1.0);
+
+        vc.update(|window, app| {
+            view.update(app, |view, cx| {
+                view.switch_session("c".to_string(), cx);
+                view.sync_session_transition(window, cx);
+                assert_eq!(
+                    view.session_outgoing_motion
+                        .expect("outgoing layer")
+                        .spatial,
+                    first_incoming.spatial
+                );
+                assert_eq!(
+                    view.session_incoming_motion
+                        .expect("incoming layer")
+                        .spatial,
+                    first_outgoing.spatial
+                );
+                assert_eq!(
+                    motion::MotionSystem::value(cx, first_incoming.spatial),
+                    incoming_value
+                );
+                assert_eq!(
+                    motion::MotionSystem::value(cx, first_outgoing.spatial),
+                    outgoing_value
+                );
+                let outgoing = view.outgoing_session_feed.as_ref().expect("outgoing feed");
+                assert!(matches!(
+                    outgoing.messages.first(),
+                    Some(MessageItem::User(card)) if card.content == "From B"
+                ));
+            });
+        });
+        advance_visual_motion(vc, &view, 600);
+        assert!(vc.read(|app| view.read(app).outgoing_session_feed.is_none()));
+        let window_id = vc.update(|window, _| window.window_handle().window_id());
+        assert!(!vc.read(|app| app
+            .global::<motion::MotionSystem>()
+            .driver_active(window_id)));
+    }
+
+    #[gpui::test]
+    fn dock_controls_have_independent_hover_and_press_springs(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.run_until_parked();
+        let bounds = vc
+            .debug_bounds("dock_Notebooks")
+            .expect("rendered dock item");
+        let notebooks =
+            motion::ControlMotion::for_identity(view.entity_id(), "dock_control", "Notebooks");
+        let design =
+            motion::ControlMotion::for_identity(view.entity_id(), "dock_control", "Design");
+
+        vc.simulate_mouse_move(bounds.center(), None, Modifiers::none());
+        advance_visual_motion(vc, &view, 4);
+        assert!(vc.read(|app| notebooks.values(app).hover) > 0.0);
+        assert_eq!(vc.read(|app| design.values(app).hover), 0.0);
+
+        vc.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::none());
+        advance_visual_motion(vc, &view, 2);
+        assert!(vc.read(|app| notebooks.values(app).press) > 0.0);
+        assert_eq!(vc.read(|app| design.values(app).press), 0.0);
+
+        vc.update(|window, app| {
+            view.update(app, |_, cx| {
+                notebooks.set_hovered(window, cx, false);
+                notebooks.set_pressed(window, cx, false);
+            });
+        });
+        advance_visual_motion(vc, &view, 600);
+        assert_eq!(vc.read(|app| notebooks.values(app).hover), 0.0);
+        assert_eq!(vc.read(|app| notebooks.values(app).press), 0.0);
+        let window_id = vc.update(|window, _| window.window_handle().window_id());
+        assert!(!vc.read(|app| app
+            .global::<motion::MotionSystem>()
+            .driver_active(window_id)));
+    }
+
+    fn update_plan() -> CloudUpdatePlan {
+        CloudUpdatePlan {
+            apply_allowed: Some(true),
+            reason: None,
+            mandatory_upgrade_required: Some(false),
+            channel: None,
+            updates: Some(vec![hex_protocol::models::CloudUpdateItem {
+                component: "hex-desktop".to_string(),
+                installed_version: Some("1.0.0".to_string()),
+                target_version: Some("1.1.0".to_string()),
+                mandatory: Some(false),
+                release_notes: None,
+                rollback_to: None,
+            }]),
+            rollbacks: None,
+            compatibility_issues: None,
+        }
+    }
+
+    #[gpui::test]
+    fn toast_and_banner_bounce_then_exit_from_their_live_state(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        let window_id = vc.update(|window, _| window.window_handle().window_id());
+        let (toast_spatial, toast_opacity, banner_spatial, banner_opacity) =
+            vc.update(|window, app| {
+                view.update(app, |view, cx| {
+                    view.home_coming_soon = Some("Notebooks");
+                    view.sync_home_toast_motion(window, cx);
+                    let (toast_spatial, toast_opacity) = view.home_toast_keys(cx);
+                    assert_eq!(motion::MotionSystem::value(cx, toast_spatial), 0.0);
+                    assert_eq!(motion::MotionSystem::value(cx, toast_opacity), 0.0);
+
+                    view.cloud_update = Some(update_plan());
+                    view.sync_update_banner_motion(window, cx);
+                    let (banner_spatial, banner_opacity) = view.update_banner_keys(cx);
+                    assert_eq!(motion::MotionSystem::value(cx, banner_spatial), 0.0);
+                    assert_eq!(motion::MotionSystem::value(cx, banner_opacity), 0.0);
+                    (toast_spatial, toast_opacity, banner_spatial, banner_opacity)
+                })
+            });
+
+        let mut toast_peak: f32 = 0.0;
+        let mut banner_peak: f32 = 0.0;
+        vc.update(|_, app| {
+            for _ in 0..600 {
+                app.global_mut::<motion::MotionSystem>()
+                    .tick(window_id, Duration::from_millis(16));
+                toast_peak = toast_peak.max(motion::MotionSystem::value(app, toast_spatial));
+                banner_peak = banner_peak.max(motion::MotionSystem::value(app, banner_spatial));
+            }
+        });
+        assert!(toast_peak > 1.0 && toast_peak < 1.5);
+        assert!(banner_peak > 1.0 && banner_peak < 1.5);
+
+        let (toast_before_exit, banner_before_exit) = vc.update(|window, app| {
+            view.update(app, |view, cx| {
+                view.home_toast_visual = None;
+                view.sync_home_toast_motion(window, cx);
+                assert_eq!(motion::MotionSystem::value(cx, toast_spatial), 0.0);
+                for _ in 0..4 {
+                    cx.global_mut::<motion::MotionSystem>()
+                        .tick(window_id, Duration::from_millis(16));
+                }
+                let toast_before_exit = motion::MotionSystem::value(cx, toast_spatial);
+
+                view.update_banner_visual = None;
+                view.sync_update_banner_motion(window, cx);
+                assert_eq!(motion::MotionSystem::value(cx, banner_spatial), 0.0);
+                for _ in 0..4 {
+                    cx.global_mut::<motion::MotionSystem>()
+                        .tick(window_id, Duration::from_millis(16));
+                }
+                let banner_before_exit = motion::MotionSystem::value(cx, banner_spatial);
+
+                view.home_coming_soon = None;
+                view.sync_home_toast_motion(window, cx);
+                let toast_during_exit = motion::MotionSystem::value(cx, toast_spatial);
+                assert!(toast_during_exit > 0.0 && toast_during_exit < 1.5);
+                view.cloud_update = None;
+                view.sync_update_banner_motion(window, cx);
+                let banner_during_exit = motion::MotionSystem::value(cx, banner_spatial);
+                assert!(banner_during_exit > 0.0 && banner_during_exit < 1.5);
+                assert!(view.home_toast_visual.is_some());
+                assert!(view.update_banner_visual.is_some());
+                (toast_before_exit, banner_before_exit)
+            })
+        });
+        assert!(toast_before_exit > 0.0 && toast_before_exit < 1.0);
+        assert!(banner_before_exit > 0.0 && banner_before_exit < 1.5);
+
+        vc.update(|window, app| {
+            advance_motion(app, window_id, 600);
+            view.update(app, |view, cx| {
+                view.sync_home_toast_motion(window, cx);
+                view.sync_update_banner_motion(window, cx);
+                assert_eq!(view.home_toast_visual, None);
+                assert_eq!(view.update_banner_visual, None);
+                assert!(!motion::MotionSystem::has(cx, toast_spatial));
+                assert!(!motion::MotionSystem::has(cx, toast_opacity));
+                assert!(!motion::MotionSystem::has(cx, banner_spatial));
+                assert!(!motion::MotionSystem::has(cx, banner_opacity));
+            });
+        });
+        assert!(!vc.read(|app| app
+            .global::<motion::MotionSystem>()
+            .driver_active(window_id)));
+    }
+
+    #[gpui::test]
+    fn reduced_shell_motion_snaps_space_and_fades_opacity(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, true);
+        let window_id = vc.update(|window, _| window.window_handle().window_id());
+        let (
+            sidebar_width,
+            sidebar_opacity,
+            toast_spatial,
+            toast_opacity,
+            banner_spatial,
+            banner_opacity,
+        ) = vc.update(|window, app| {
+            view.update(app, |view, cx| {
+                view.sync_sidebar_motion(window, cx);
+                let (sidebar_width, sidebar_opacity) = view.sidebar_motion_keys(cx);
+                view.shell.toggle_sidebar();
+                view.sync_sidebar_motion(window, cx);
+                assert_eq!(motion::MotionSystem::value(cx, sidebar_width), 0.0);
+                assert!(motion::MotionSystem::value(cx, sidebar_opacity) > 0.0);
+
+                view.home_coming_soon = Some("Design");
+                view.sync_home_toast_motion(window, cx);
+                let (toast_spatial, toast_opacity) = view.home_toast_keys(cx);
+                assert_eq!(motion::MotionSystem::value(cx, toast_spatial), 1.0);
+                assert_eq!(motion::MotionSystem::value(cx, toast_opacity), 0.0);
+
+                view.cloud_update = Some(update_plan());
+                view.sync_update_banner_motion(window, cx);
+                let (banner_spatial, banner_opacity) = view.update_banner_keys(cx);
+                assert_eq!(motion::MotionSystem::value(cx, banner_spatial), 1.0);
+                assert_eq!(motion::MotionSystem::value(cx, banner_opacity), 0.0);
+                (
+                    sidebar_width,
+                    sidebar_opacity,
+                    toast_spatial,
+                    toast_opacity,
+                    banner_spatial,
+                    banner_opacity,
+                )
+            })
+        });
+        assert!(vc.read(|app| app
+            .global::<motion::MotionSystem>()
+            .driver_active(window_id)));
+
+        vc.update(|_, app| advance_motion(app, window_id, 600));
+        for key in [toast_opacity, banner_opacity] {
+            assert_eq!(vc.read(|app| motion::MotionSystem::value(app, key)), 1.0);
+        }
+        assert_eq!(
+            vc.read(|app| motion::MotionSystem::value(app, sidebar_opacity)),
+            0.0
+        );
+        assert_eq!(
+            vc.read(|app| motion::MotionSystem::value(app, sidebar_width)),
+            0.0
+        );
+        assert_eq!(
+            vc.read(|app| motion::MotionSystem::value(app, toast_spatial)),
+            1.0
+        );
+        assert_eq!(
+            vc.read(|app| motion::MotionSystem::value(app, banner_spatial)),
+            1.0
+        );
         assert!(!vc.read(|app| app
             .global::<motion::MotionSystem>()
             .driver_active(window_id)));

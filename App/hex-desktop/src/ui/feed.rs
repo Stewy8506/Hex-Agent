@@ -264,6 +264,13 @@ impl MessageFeed {
         }
     }
 
+    /// Clones the feed for an outgoing transition without replaying row entrances.
+    pub fn snapshot_without_entrances(&self) -> Self {
+        let mut snapshot = self.clone();
+        snapshot.pending_entrances.clear();
+        snapshot
+    }
+
     fn mark_entrance(&mut self) {
         self.pending_entrances
             .insert(self.messages.len().saturating_sub(1));
@@ -855,6 +862,20 @@ mod tests {
         feed.pending_entrances.clear();
         feed.append_streaming_chunk(" third");
         assert!(feed.pending_entrances.is_empty());
+    }
+
+    #[test]
+    fn test_crossfade_snapshot_does_not_replay_entrances() {
+        let mut feed = MessageFeed::new();
+        feed.add_user_message("Hello");
+        feed.start_assistant_streaming();
+        assert_eq!(feed.pending_entrances, HashSet::from([0, 1]));
+
+        let snapshot = feed.snapshot_without_entrances();
+
+        assert!(snapshot.pending_entrances.is_empty());
+        assert_eq!(snapshot.messages, feed.messages);
+        assert_eq!(feed.pending_entrances, HashSet::from([0, 1]));
     }
 
     #[test]
