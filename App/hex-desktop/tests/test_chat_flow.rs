@@ -17,7 +17,7 @@ use core::prelude::v1::test;
 use gpui::*;
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{init_app, ChatView};
-use hex_desktop::shortcuts::About;
+use hex_desktop::shortcuts::{About, ActualSize, ZoomIn, ZoomOut};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::{FeedPaintProbe, MessageItem};
 use hex_desktop::ui::message::AssistantMessageView;
@@ -623,6 +623,28 @@ async fn test_about_action_opens_and_dismisses(cx: &mut TestAppContext) {
     snap(vc, &view, |view| {
         assert_eq!(view.shell.active_modal, ActiveModal::None);
     });
+}
+
+#[gpui::test]
+async fn test_view_zoom_actions_adjust_and_reset_scale(cx: &mut TestAppContext) {
+    let (_rt, _view, vc) = launch_connected_chat(cx);
+    vc.dispatch_action(ZoomIn);
+    vc.update(|window, _| assert_eq!(window.rem_size(), px(18.0)));
+    vc.dispatch_action(ZoomOut);
+    vc.update(|window, _| assert_eq!(window.rem_size(), px(16.0)));
+    vc.dispatch_action(ZoomOut);
+    vc.update(|window, _| assert_eq!(window.rem_size(), px(14.0)));
+    vc.dispatch_action(ActualSize);
+    vc.update(|window, _| assert_eq!(window.rem_size(), px(16.0)));
+
+    for _ in 0..10 {
+        vc.dispatch_action(ZoomIn);
+    }
+    vc.update(|window, _| assert_eq!(window.rem_size(), px(24.0)));
+    for _ in 0..10 {
+        vc.dispatch_action(ZoomOut);
+    }
+    vc.update(|window, _| assert_eq!(window.rem_size(), px(12.0)));
 }
 
 #[gpui::test]

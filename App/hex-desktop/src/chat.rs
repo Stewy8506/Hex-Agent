@@ -36,7 +36,9 @@ use hex_protocol::models::{
 use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
-use crate::shortcuts::{self, About, CloseWindow, Hide, Quit, init_shortcuts};
+use crate::shortcuts::{
+    self, About, ActualSize, CloseWindow, Hide, Quit, ZoomIn, ZoomOut, init_shortcuts,
+};
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{ApprovalCard, ApprovalCardState, MessageFeed, MessageItem};
@@ -99,6 +101,11 @@ pub fn composer_keybindings() -> Vec<KeyBinding> {
         KeyBinding::new("down", Down, Some("Modal")),
     ]
 }
+
+const DEFAULT_REM_SIZE: f32 = 16.0;
+const ZOOM_STEP: f32 = 2.0;
+const MIN_REM_SIZE: f32 = 12.0;
+const MAX_REM_SIZE: f32 = 24.0;
 
 /// Register embedded brand fonts, theme, menus, global shortcuts, and
 /// composer bindings. Shared by the real `main` entry point and the
@@ -2639,6 +2646,28 @@ impl ChatView {
         cx.notify();
     }
 
+    fn on_actual_size(
+        &mut self,
+        _: &ActualSize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.set_rem_size(px(DEFAULT_REM_SIZE));
+        cx.notify();
+    }
+
+    fn on_zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
+        let next = (window.rem_size() + px(ZOOM_STEP)).min(px(MAX_REM_SIZE));
+        window.set_rem_size(next);
+        cx.notify();
+    }
+
+    fn on_zoom_out(&mut self, _: &ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
+        let next = (window.rem_size() - px(ZOOM_STEP)).max(px(MIN_REM_SIZE));
+        window.set_rem_size(next);
+        cx.notify();
+    }
+
     fn on_submit(&mut self, _: &shortcuts::SubmitPrompt, _: &mut Window, cx: &mut Context<Self>) {
         if self.handle_modal_key("enter", cx) || self.shell.active_modal.is_open() {
             return;
@@ -4215,6 +4244,9 @@ impl Render for ChatView {
                 .on_action(cx.listener(Self::on_new_chat))
                 .on_action(cx.listener(Self::on_close_window))
                 .on_action(cx.listener(Self::on_about))
+                .on_action(cx.listener(Self::on_actual_size))
+                .on_action(cx.listener(Self::on_zoom_in))
+                .on_action(cx.listener(Self::on_zoom_out))
                 .on_action(cx.listener(Self::on_toggle_palette))
                 .on_action(cx.listener(Self::on_toggle_sidebar))
                 .on_action(cx.listener(Self::on_open_settings))
@@ -4311,6 +4343,9 @@ impl Render for ChatView {
             .on_action(cx.listener(Self::on_new_chat))
             .on_action(cx.listener(Self::on_close_window))
             .on_action(cx.listener(Self::on_about))
+            .on_action(cx.listener(Self::on_actual_size))
+            .on_action(cx.listener(Self::on_zoom_in))
+            .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_toggle_palette))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_open_settings))
