@@ -22,6 +22,10 @@ pub enum SessionMenuAction {
     Delete,
 }
 
+pub type SessionActionHandler = std::rc::Rc<
+    dyn Fn(SessionMenuAction, &ClickEvent, &mut Window, &mut App),
+>;
+
 const MENU: [SessionMenuAction; 4] = [
     SessionMenuAction::Rename,
     SessionMenuAction::TogglePin,
@@ -124,27 +128,7 @@ impl SessionActionModal {
                 None
             }
             "enter" => match &self.mode {
-                SessionActionMode::Menu { selected } => match MENU[*selected] {
-                    SessionMenuAction::Rename => {
-                        self.mode = SessionActionMode::Rename;
-                        self.draft = self.session_title.clone();
-                        None
-                    }
-                    SessionMenuAction::TogglePin => {
-                        let target = !self.is_pinned;
-                        self.busy = true;
-                        Some(SessionActionOutcome::TogglePin(target))
-                    }
-                    SessionMenuAction::ToggleArchive => {
-                        let target = !self.is_archived;
-                        self.busy = true;
-                        Some(SessionActionOutcome::ToggleArchive(target))
-                    }
-                    SessionMenuAction::Delete => {
-                        self.mode = SessionActionMode::DeleteConfirm;
-                        None
-                    }
-                },
+                SessionActionMode::Menu { selected } => self.activate_menu(MENU[*selected]),
                 SessionActionMode::Rename => {
                     let title = self.draft.trim().to_string();
                     if title.is_empty() {
@@ -159,6 +143,33 @@ impl SessionActionModal {
                 }
             },
             _ => None,
+        }
+    }
+
+    pub fn activate_menu(&mut self, action: SessionMenuAction) -> Option<SessionActionOutcome> {
+        if self.busy || !matches!(self.mode, SessionActionMode::Menu { .. }) {
+            return None;
+        }
+        match action {
+            SessionMenuAction::Rename => {
+                self.mode = SessionActionMode::Rename;
+                self.draft = self.session_title.clone();
+                None
+            }
+            SessionMenuAction::TogglePin => {
+                let target = !self.is_pinned;
+                self.busy = true;
+                Some(SessionActionOutcome::TogglePin(target))
+            }
+            SessionMenuAction::ToggleArchive => {
+                let target = !self.is_archived;
+                self.busy = true;
+                Some(SessionActionOutcome::ToggleArchive(target))
+            }
+            SessionMenuAction::Delete => {
+                self.mode = SessionActionMode::DeleteConfirm;
+                None
+            }
         }
     }
 
@@ -192,7 +203,12 @@ impl SessionActionModal {
     }
 
     /// Renders the modal card content for the current mode.
-    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
+    pub fn render(
+        &self,
+        theme: &HermesTheme,
+        motion: ModalMotion<'_>,
+        on_action: SessionActionHandler,
+    ) -> Div {
         let mut card = div()
             .w(px(crate::ui::modals::MODAL_CARD_WIDTH_WIDE))
             .flex()
@@ -223,6 +239,7 @@ impl SessionActionModal {
                     let label = self.menu_label(*action);
                     let mut row = div()
                             .id(SharedString::from(format!("session_menu_{}", index)))
+                            .debug_selector(move || format!("session_menu_{index}"))
                             .w_full()
                             .flex()
                             .flex_row()
@@ -232,6 +249,12 @@ impl SessionActionModal {
                             .py(px(8.0))
                             .rounded(px(8.0))
                             .cursor_pointer()
+                            .on_click({
+                                let on_action = on_action.clone();
+                                move |event, window, cx| {
+                                    on_action(*action, event, window, cx)
+                                }
+                            })
                             .when(is_selected, |c| c.bg(theme.mockup_hover))
                             .when(!is_selected, |c| c.hover(|s| s.bg(theme.mockup_hover)))
                             .text_size(px(MockupTypeScale::BASE_SIZE))

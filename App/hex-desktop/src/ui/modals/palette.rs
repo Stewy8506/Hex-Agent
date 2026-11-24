@@ -46,6 +46,10 @@ pub enum PaletteAction {
     Custom(String),
 }
 
+pub type PaletteActionHandler = std::rc::Rc<
+    dyn Fn(PaletteAction, &ClickEvent, &mut Window, &mut App),
+>;
+
 /// Single executable item inside the command palette.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaletteItem {
@@ -263,7 +267,12 @@ impl CommandPaletteModal {
     }
 
     /// Render the command palette modal card.
-    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
+    pub fn render(
+        &self,
+        theme: &HermesTheme,
+        motion: ModalMotion<'_>,
+        on_action: PaletteActionHandler,
+    ) -> Div {
         let filtered = self.filtered_items();
 
         div()
@@ -350,6 +359,7 @@ impl CommandPaletteModal {
 
                         for (idx, item) in filtered.iter().enumerate() {
                             let is_selected = idx == self.selected_index;
+                            let debug_id = format!("palette_{}", item.id);
 
                             // Insert category header if new
                             if current_cat != Some(item.category) {
@@ -389,6 +399,15 @@ impl CommandPaletteModal {
                                     })
                                     .hover(|s| s.bg(theme.mockup_row_hover))
                                     .cursor_pointer()
+                                    .id(SharedString::from(format!("palette_{}", item.id)))
+                                    .debug_selector(move || debug_id.clone())
+                                    .on_click({
+                                        let on_action = on_action.clone();
+                                        let action = item.action.clone();
+                                        move |event, window, cx| {
+                                            on_action(action.clone(), event, window, cx)
+                                        }
+                                    })
                                     .child(
                                         div()
                                             .flex()

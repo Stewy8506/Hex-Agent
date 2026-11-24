@@ -16,14 +16,17 @@
 use core::prelude::v1::test;
 use gpui::*;
 use hex_desktop::acp_bridge::AcpBridge;
-use hex_desktop::chat::{init_app, ChatView};
+use hex_desktop::chat::{app_runtime, init_app, ChatView};
 use hex_desktop::shortcuts::{About, ActualSize, Redo, Undo, ZoomIn, ZoomOut};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::{FeedPaintProbe, MessageItem};
 use hex_desktop::ui::message::AssistantMessageView;
+use hex_desktop::ui::modals::approval::{ToolApprovalChoice, ToolApprovalModal};
+use hex_desktop::ui::modals::model_picker::ModelPickerModal;
 use hex_desktop::ui::modals::session_actions::{SessionActionMode, SessionActionModal};
 use hex_desktop::ui::modals::settings::{SettingField, SettingsModal};
-use hex_desktop::ui::modals::ActiveModal;
+use hex_desktop::ui::modals::{ActiveModal, ModelEntry};
+use hex_desktop::ui::motion::{MotionPolicy, MotionSystem};
 use hex_desktop::ui::reasoning::ThinkingDisclosure;
 use hex_desktop::ui::sidebar::ProviderState;
 use hex_desktop::ui::tool_card::{ToolCallCard, ToolStatus};
@@ -324,6 +327,20 @@ fn click_debug_element(vc: &mut VisualTestContext, selector: &'static str) {
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing rendered element {selector}"));
     vc.simulate_click(bounds.center(), Modifiers::none());
+    vc.run_until_parked();
+}
+
+fn finish_motion(vc: &mut VisualTestContext, view: &Entity<ChatView>) {
+    vc.run_until_parked();
+    vc.update(|window, app| {
+        let window_id = window.window_handle().window_id();
+        for _ in 0..30 {
+            app.global_mut::<MotionSystem>()
+                .tick(window_id, Duration::from_millis(16));
+        }
+        view.update(app, |_, cx| cx.notify());
+        window.refresh();
+    });
     vc.run_until_parked();
 }
 
@@ -631,6 +648,125 @@ async fn test_about_action_opens_and_dismisses(cx: &mut TestAppContext) {
     vc.simulate_keystrokes("enter");
     snap(vc, &view, |view| {
         assert_eq!(view.shell.active_modal, ActiveModal::None);
+    });
+}
+
+#[gpui::test]
+fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        init_app(cx);
+        cx.set_global(MotionSystem::with_policy(MotionPolicy::new(true)));
+    });
+    let (view, vc) = cx.add_window_view(|_, cx| {
+        ChatView::new(
+            AcpBridge::new(),
+            app_runtime().handle().clone(),
+            std::env::temp_dir(),
+            cx,
+        )
+    });
+
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
+            view.shell.open_command_palette();
+            cx.notify();
+        });
+    });
+    finish_motion(vc, &view);
+    snap(vc, &view, |view| {
+        assert!(matches!(view.shell.active_modal, ActiveModal::Palette(_)));
+    });
+    let sidebar_before = snap(vc, &view, |view| view.shell.sidebar_collapsed);
+    click_debug_element(vc, "palette_nav_sidebar");
+    snap(vc, &view, |view| {
+        assert_eq!(view.shell.active_modal, ActiveModal::None);
+        assert_ne!(view.shell.sidebar_collapsed, sidebar_before);
+    });
+
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_modal = ActiveModal::ModelPicker(ModelPickerModal::new(
+                "gpt-4o",
+                vec![
+                    ModelEntry::new("gpt-4o", "GPT-4o", "OpenAI", false),
+                    ModelEntry::new("o3-mini", "o3-mini", "OpenAI", false),
+                ],
+            ));
+            cx.notify();
+        });
+    });
+    finish_motion(vc, &view);
+    click_debug_element(vc, "model_1");
+    snap(vc, &view, |view| {
+        assert_eq!(view.shell.active_modal, ActiveModal::None);
+        assert!(last_notice(view).unwrap().contains("cannot switch model"));
+    });
+
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_modal = ActiveModal::Approval(ToolApprovalModal::new(
+                "req_pointer",
+                "bash",
+                "cargo test",
+                "R3",
+            ));
+            cx.notify();
+        });
+    });
+    finish_motion(vc, &view);
+    click_debug_element(vc, "approval_choice_session");
+    click_debug_element(vc, "approval_lease");
+    snap(vc, &view, |view| {
+        let ActiveModal::Approval(modal) = &view.shell.active_modal else {
+            panic!("approval should remain open");
+        };
+        assert_eq!(modal.choice, ToolApprovalChoice::Session);
+        assert!(modal.lease_15m);
+    });
+    click_debug_element(vc, "approval_deny");
+    pump_until(vc, &view, "pointer approval decision", |view| {
+        last_notice(view).is_some_and(|notice| notice.starts_with("Approval decision failed"))
+    });
+
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_modal = ActiveModal::SessionAction(
+                SessionActionModal::open_menu("ses_pointer", "Pointer session", false, false),
+            );
+            cx.notify();
+        });
+    });
+    finish_motion(vc, &view);
+    click_debug_element(vc, "session_menu_0");
+    snap(vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("session actions should remain open");
+        };
+        assert_eq!(modal.mode, SessionActionMode::Rename);
+        assert_eq!(modal.draft, "Pointer session");
+    });
+
+    let mut settings = SettingsModal::default();
+    settings.fields.push(SettingField::Text {
+        key: "model.name",
+        label: "Model",
+        value: "new-model".into(),
+        cursor: 0,
+        required: false,
+    });
+    settings
+        .originals
+        .insert("model.name".into(), "old-model".into());
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_modal = ActiveModal::Settings(settings);
+            cx.notify();
+        });
+    });
+    finish_motion(vc, &view);
+    click_debug_element(vc, "settings_save_row");
+    pump_until(vc, &view, "pointer settings save", |view| {
+        matches!(&view.shell.active_modal, ActiveModal::Settings(modal) if modal.error.as_deref().is_some_and(|error| error.starts_with("Save failed")))
     });
 }
 

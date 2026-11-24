@@ -44,11 +44,16 @@ use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_P
 use crate::ui::feed::{ApprovalCard, ApprovalCardState, MessageFeed, MessageItem};
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
 use crate::ui::modals::account::{AccountAction, AccountMode};
-use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
-use crate::ui::modals::session_actions::{
-    SessionActionMode, SessionActionModal, SessionActionOutcome, SessionSearchModal,
+use crate::ui::modals::approval::{
+    ApprovalHandler, ApprovalInteraction, ToolApprovalChoice, ToolApprovalResult,
 };
-use crate::ui::modals::settings::{SettingsAction, SettingsModal};
+use crate::ui::modals::model_picker::ModelSelectHandler;
+use crate::ui::modals::palette::PaletteActionHandler;
+use crate::ui::modals::session_actions::{
+    SessionActionHandler, SessionActionMode, SessionActionModal, SessionActionOutcome,
+    SessionSearchModal,
+};
+use crate::ui::modals::settings::{SettingsAction, SettingsModal, SettingsSaveHandler};
 use crate::ui::modals::{
     render_about, render_modal_container, ActiveModal, AccountModal, ModalMotion, ModelEntry,
     PaletteAction, ToolApprovalModal,
@@ -4768,12 +4773,128 @@ impl ChatView {
 
         match active {
             ActiveModal::None => div(),
-            ActiveModal::Approval(modal) => modal.render(theme, motion),
-            ActiveModal::Palette(palette) => palette.render(theme, motion),
-            ActiveModal::ModelPicker(picker) => picker.render(theme, motion),
+            ActiveModal::Approval(modal) => {
+                let request_id = modal.request_id.clone();
+                let view = cx.entity().downgrade();
+                let on_action: ApprovalHandler = std::rc::Rc::new(
+                    move |interaction, _event, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            let mut submit = None;
+                            if let ActiveModal::Approval(current) = &mut this.shell.active_modal {
+                                if current.request_id != request_id || current.is_submitting {
+                                    return;
+                                }
+                                match interaction {
+                                    ApprovalInteraction::Choose(choice) => {
+                                        current.set_choice(choice);
+                                    }
+                                    ApprovalInteraction::ToggleLease => {
+                                        current.toggle_lease();
+                                    }
+                                    ApprovalInteraction::Submit(result) => {
+                                        if result.request_id != current.request_id {
+                                            return;
+                                        }
+                                        current.is_submitting = true;
+                                        submit = Some(result);
+                                    }
+                                }
+                            }
+                            if let Some(result) = submit {
+                                this.send_approval_result(result, cx);
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    },
+                );
+                modal.render(theme, motion, on_action)
+            }
+            ActiveModal::Palette(palette) => {
+                let view = cx.entity().downgrade();
+                let on_action: PaletteActionHandler = std::rc::Rc::new(
+                    move |action, _event, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            if !matches!(this.shell.active_modal, ActiveModal::Palette(_)) {
+                                return;
+                            }
+                            this.shell.dismiss_modal();
+                            this.execute_palette_action(action, cx);
+                        })
+                        .ok();
+                    },
+                );
+                palette.render(theme, motion, on_action)
+            }
+            ActiveModal::ModelPicker(picker) => {
+                let view = cx.entity().downgrade();
+                let on_select: ModelSelectHandler = std::rc::Rc::new(
+                    move |model_id, _event, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            if !matches!(this.shell.active_modal, ActiveModal::ModelPicker(_)) {
+                                return;
+                            }
+                            this.shell.dismiss_modal();
+                            this.apply_model_choice(model_id, cx);
+                        })
+                        .ok();
+                    },
+                );
+                picker.render(theme, motion, on_select)
+            }
             ActiveModal::Account(modal) => modal.render(theme),
-            ActiveModal::SessionAction(modal) => modal.render(theme, motion),
-            ActiveModal::Settings(modal) => modal.render(theme, motion),
+            ActiveModal::SessionAction(modal) => {
+                let session_id = modal.session_id.clone();
+                let view = cx.entity().downgrade();
+                let on_action: SessionActionHandler = std::rc::Rc::new(
+                    move |action, _event, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            let outcome = if let ActiveModal::SessionAction(current) =
+                                &mut this.shell.active_modal
+                            {
+                                if current.session_id != session_id || current.busy {
+                                    return;
+                                }
+                                current.activate_menu(action)
+                            } else {
+                                return;
+                            };
+                            if let Some(outcome) = outcome {
+                                this.execute_session_action(outcome, cx);
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    },
+                );
+                modal.render(theme, motion, on_action)
+            }
+            ActiveModal::Settings(modal) => {
+                let view = cx.entity().downgrade();
+                let on_save: SettingsSaveHandler = std::rc::Rc::new(
+                    move |_event, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            let save = if let ActiveModal::Settings(current) =
+                                &mut this.shell.active_modal
+                            {
+                                if current.busy {
+                                    return;
+                                }
+                                current.selected = current.fields.len();
+                                current.handle_key("enter") == Some(SettingsAction::Save)
+                            } else {
+                                return;
+                            };
+                            if save {
+                                this.execute_settings_save(cx);
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    },
+                );
+                modal.render(theme, motion, on_save)
+            }
             ActiveModal::About => render_about(theme),
             ActiveModal::SessionSearch(_) => unreachable!("handled above"),
         }

@@ -56,6 +56,9 @@ impl ModelEntry {
     }
 }
 
+pub type ModelSelectHandler =
+    std::rc::Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)>;
+
 /// Model Picker modal state and rendering.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelPickerModal {
@@ -149,7 +152,12 @@ impl ModelPickerModal {
     }
 
     /// Render the model picker modal card.
-    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
+    pub fn render(
+        &self,
+        theme: &HermesTheme,
+        motion: ModalMotion<'_>,
+        on_select: ModelSelectHandler,
+    ) -> Div {
         let filtered = self.filtered_models();
 
         div()
@@ -274,6 +282,15 @@ impl ModelPickerModal {
                                         gpui::rgba(0x00000000)
                                     })
                                     .cursor_pointer()
+                                    .id(SharedString::from(format!("model_{idx}")))
+                                    .debug_selector(move || format!("model_{idx}"))
+                                    .on_click({
+                                        let on_select = on_select.clone();
+                                        let model_id = model.id.clone();
+                                        move |event, window, cx| {
+                                            on_select(model_id.clone(), event, window, cx)
+                                        }
+                                    })
                                     .child(
                                         div()
                                             .flex()

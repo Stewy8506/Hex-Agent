@@ -72,6 +72,17 @@ impl ToolApprovalResult {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum ApprovalInteraction {
+    Choose(ToolApprovalChoice),
+    ToggleLease,
+    Submit(ToolApprovalResult),
+}
+
+pub type ApprovalHandler = std::rc::Rc<
+    dyn Fn(ApprovalInteraction, &ClickEvent, &mut Window, &mut App),
+>;
+
 /// Tool Approval modal state and rendering.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolApprovalModal {
@@ -162,10 +173,14 @@ impl ToolApprovalModal {
 
     /// Confirm and produce the final approval decision result.
     pub fn confirm(&self) -> ToolApprovalResult {
-        let scoped_lease = self.lease_15m && self.choice == ToolApprovalChoice::Session;
+        self.confirm_choice(self.choice)
+    }
+
+    fn confirm_choice(&self, choice: ToolApprovalChoice) -> ToolApprovalResult {
+        let scoped_lease = self.lease_15m && choice == ToolApprovalChoice::Session;
         ToolApprovalResult {
             request_id: self.request_id.clone(),
-            choice: self.choice,
+            choice,
             lease_15m: scoped_lease,
             lease_duration_seconds: if scoped_lease { Some(900) } else { None },
         }
@@ -261,7 +276,7 @@ impl ToolApprovalModal {
             )
     }
 
-    fn render_decision_box(&self, theme: &HermesTheme) -> Div {
+    fn render_decision_box(&self, theme: &HermesTheme, on_action: &ApprovalHandler) -> Div {
         div()
             .flex()
             .flex_col()
@@ -278,12 +293,12 @@ impl ToolApprovalModal {
                     .text_color(theme.mockup_text_dim)
                     .child("DECISION:"),
             )
-            .child(self.render_radio_option(ToolApprovalChoice::Once, theme))
-            .child(self.render_radio_option(ToolApprovalChoice::Session, theme))
-            .child(self.render_radio_option(ToolApprovalChoice::Deny, theme))
+            .child(self.render_radio_option(ToolApprovalChoice::Once, theme, on_action))
+            .child(self.render_radio_option(ToolApprovalChoice::Session, theme, on_action))
+            .child(self.render_radio_option(ToolApprovalChoice::Deny, theme, on_action))
     }
 
-    fn render_lease_box(&self, theme: &HermesTheme) -> Div {
+    fn render_lease_box(&self, theme: &HermesTheme, on_action: &ApprovalHandler) -> Stateful<Div> {
         let lease_active = self.lease_15m && self.choice == ToolApprovalChoice::Session;
         div()
             .flex()
@@ -302,6 +317,15 @@ impl ToolApprovalModal {
                 rgba(0x7aa7ff59)
             } else {
                 theme.mockup_border
+            })
+            .id("approval_lease")
+            .debug_selector(|| "approval_lease".into())
+            .cursor_pointer()
+            .on_click({
+                let on_action = on_action.clone();
+                move |event, window, cx| {
+                    on_action(ApprovalInteraction::ToggleLease, event, window, cx)
+                }
             })
             .child(
                 div()
@@ -367,7 +391,12 @@ impl ToolApprovalModal {
             )
     }
 
-    fn render_action_buttons(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
+    fn render_action_buttons(
+        &self,
+        theme: &HermesTheme,
+        motion: ModalMotion<'_>,
+        on_action: &ApprovalHandler,
+    ) -> Div {
         div()
             .flex()
             .items_center()
@@ -377,6 +406,7 @@ impl ToolApprovalModal {
             .child(modal_press(
                 div()
                     .id("approval_deny")
+                    .debug_selector(|| "approval_deny".into())
                     .px_3()
                     .py_1p5()
                     .rounded(px(6.0))
@@ -384,6 +414,18 @@ impl ToolApprovalModal {
                     .border_color(rgba(0xc98b8b66))
                     .bg(theme.rose_bg())
                     .cursor_pointer()
+                    .on_click({
+                        let on_action = on_action.clone();
+                        let result = self.confirm_choice(ToolApprovalChoice::Deny);
+                        move |event, window, cx| {
+                            on_action(
+                                ApprovalInteraction::Submit(result.clone()),
+                                event,
+                                window,
+                                cx,
+                            )
+                        }
+                    })
                     .flex()
                     .items_center()
                     .gap_1()
@@ -405,11 +447,24 @@ impl ToolApprovalModal {
             .child(modal_press(
                 div()
                     .id("approval_approve")
+                    .debug_selector(|| "approval_approve".into())
                     .px_4()
                     .py_1p5()
                     .rounded(px(6.0))
                     .bg(theme.accent_blue())
                     .cursor_pointer()
+                    .on_click({
+                        let on_action = on_action.clone();
+                        let result = self.confirm();
+                        move |event, window, cx| {
+                            on_action(
+                                ApprovalInteraction::Submit(result.clone()),
+                                event,
+                                window,
+                                cx,
+                            )
+                        }
+                    })
                     .flex()
                     .items_center()
                     .gap_1()
@@ -436,7 +491,12 @@ impl ToolApprovalModal {
     }
 
     /// Render the tool approval modal card.
-    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
+    pub fn render(
+        &self,
+        theme: &HermesTheme,
+        motion: ModalMotion<'_>,
+        on_action: ApprovalHandler,
+    ) -> Div {
         let mut root = div()
             .w(px(520.0))
             .p_5()
@@ -455,12 +515,17 @@ impl ToolApprovalModal {
         }
 
         root.child(self.render_command_box(theme))
-            .child(self.render_decision_box(theme))
-            .child(self.render_lease_box(theme))
-            .child(self.render_action_buttons(theme, motion))
+            .child(self.render_decision_box(theme, &on_action))
+            .child(self.render_lease_box(theme, &on_action))
+            .child(self.render_action_buttons(theme, motion, &on_action))
     }
 
-    fn render_radio_option(&self, option: ToolApprovalChoice, theme: &HermesTheme) -> Div {
+    fn render_radio_option(
+        &self,
+        option: ToolApprovalChoice,
+        theme: &HermesTheme,
+        on_action: &ApprovalHandler,
+    ) -> Stateful<Div> {
         let is_selected = self.choice == option;
         let active_fg = if option == ToolApprovalChoice::Deny {
             theme.rose_fg()
@@ -481,6 +546,30 @@ impl ToolApprovalModal {
                 gpui::rgba(0x00000000)
             })
             .cursor_pointer()
+            .id(match option {
+                ToolApprovalChoice::Once => "approval_choice_once",
+                ToolApprovalChoice::Session => "approval_choice_session",
+                ToolApprovalChoice::Deny => "approval_choice_deny",
+            })
+            .debug_selector(move || {
+                match option {
+                    ToolApprovalChoice::Once => "approval_choice_once",
+                    ToolApprovalChoice::Session => "approval_choice_session",
+                    ToolApprovalChoice::Deny => "approval_choice_deny",
+                }
+                .into()
+            })
+            .on_click({
+                let on_action = on_action.clone();
+                move |event, window, cx| {
+                    on_action(
+                        ApprovalInteraction::Choose(option),
+                        event,
+                        window,
+                        cx,
+                    )
+                }
+            })
             .child(
                 div()
                     .flex()

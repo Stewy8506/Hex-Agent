@@ -60,6 +60,9 @@ pub enum SettingsAction {
     Save,
 }
 
+pub type SettingsSaveHandler =
+    std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
 /// Editable settings modal (DX3). Fields are rebuilt from each `config/get`
 /// response so the view never drifts from the file; `originals` snapshots the
 /// loaded values to compute the dirty diff for Save.
@@ -441,7 +444,12 @@ impl SettingsModal {
     }
 
     /// Renders the modal card content.
-    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
+    pub fn render(
+        &self,
+        theme: &HermesTheme,
+        motion: ModalMotion<'_>,
+        on_save: SettingsSaveHandler,
+    ) -> Div {
         let mut card = div()
             .w(px(560.0))
             .max_w_full()
@@ -615,6 +623,7 @@ impl SettingsModal {
         card = card.child(modal_press(
             div()
                 .id("settings_save_row")
+                .debug_selector(|| "settings_save_row".into())
                 .mt(px(12.0))
                 .w_full()
                 .flex()
@@ -631,6 +640,8 @@ impl SettingsModal {
                 })
                 .when(save_selected, |c| c.bg(theme.mockup_hover))
                 .when(!save_selected, |c| c.hover(|s| s.bg(theme.mockup_hover)))
+                .cursor_pointer()
+                .on_click(move |event, window, cx| on_save(event, window, cx))
                 .child(
                     div()
                         .text_size(px(MockupTypeScale::BASE_SIZE))
