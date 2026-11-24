@@ -209,7 +209,6 @@ fn test_window_config_defaults_and_metal_options() {
     assert_eq!(config.height, px(900.0));
     assert_eq!(config.min_width, px(900.0));
     assert_eq!(config.min_height, px(600.0));
-    assert_eq!(config.target_fps, 120);
 
     // Verify default bounds calculations
     let bounds = config.default_bounds();

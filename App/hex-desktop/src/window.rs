@@ -19,8 +19,6 @@ pub struct WindowConfig {
     pub traffic_light_y: Pixels,
     /// Window title.
     pub title: Option<String>,
-    /// Target frame rate (e.g. 120 FPS on ProMotion Apple Silicon displays).
-    pub target_fps: u32,
 }
 
 impl Default for WindowConfig {
@@ -33,7 +31,6 @@ impl Default for WindowConfig {
             traffic_light_x: px(14.0),
             traffic_light_y: px(16.0),
             title: Some("HEX Autonomous AI Workbench".to_string()),
-            target_fps: 120,
         }
     }
 }
@@ -70,8 +67,8 @@ impl WindowConfig {
         }
     }
 
-    /// Construct `WindowOptions` targeting native macOS Metal rendering at 120 FPS
-    /// with the opaque mockup canvas (no vibrancy).
+    /// Construct `WindowOptions` for native macOS Metal rendering with the
+    /// opaque mockup canvas (no vibrancy).
     pub fn window_options(&self, bounds: Option<Bounds<Pixels>>) -> WindowOptions {
         let b = bounds.unwrap_or_else(|| self.default_bounds());
         WindowOptions {
