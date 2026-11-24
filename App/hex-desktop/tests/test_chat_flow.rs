@@ -17,7 +17,7 @@ use core::prelude::v1::test;
 use gpui::*;
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{init_app, ChatView};
-use hex_desktop::shortcuts::{About, ActualSize, ZoomIn, ZoomOut};
+use hex_desktop::shortcuts::{About, ActualSize, Redo, Undo, ZoomIn, ZoomOut};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::{FeedPaintProbe, MessageItem};
 use hex_desktop::ui::message::AssistantMessageView;
@@ -645,6 +645,96 @@ async fn test_view_zoom_actions_adjust_and_reset_scale(cx: &mut TestAppContext) 
         vc.dispatch_action(ZoomOut);
     }
     vc.update(|window, _| assert_eq!(window.rem_size(), px(12.0)));
+}
+
+#[gpui::test]
+async fn test_undo_redo_actions_restore_composer_and_modal_text(cx: &mut TestAppContext) {
+    let (_rt, view, vc) = launch_connected_chat(cx);
+    pump_until(vc, &view, "startup session prewarm", |view| {
+        view.shell.active_session_id.as_deref() == Some("ses_test_1")
+    });
+
+    vc.simulate_input("draft");
+    vc.dispatch_action(Undo);
+    assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "");
+    vc.dispatch_action(Redo);
+    assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draft");
+
+    vc.simulate_keystrokes("backspace");
+    assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draf");
+    vc.simulate_keystrokes("cmd-z");
+    assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draft");
+    vc.simulate_keystrokes("cmd-shift-z");
+    assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draf");
+
+    vc.simulate_keystrokes("cmd-k");
+    vc.simulate_input("settings");
+    vc.dispatch_action(Undo);
+    snap(vc, &view, |view| {
+        let ActiveModal::Palette(palette) = &view.shell.active_modal else {
+            panic!("palette should be open");
+        };
+        assert_eq!(palette.query, "");
+    });
+    vc.dispatch_action(Redo);
+    snap(vc, &view, |view| {
+        let ActiveModal::Palette(palette) = &view.shell.active_modal else {
+            panic!("palette should be open");
+        };
+        assert_eq!(palette.query, "settings");
+    });
+    vc.simulate_keystrokes("escape");
+    vc.dispatch_action(Undo);
+    assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draft");
+
+    let mut settings = SettingsModal::default();
+    settings.fields.push(SettingField::Text {
+        key: "model.cloudProvider",
+        label: "Provider",
+        value: "gemini".to_string(),
+        required: true,
+    });
+    settings.selected = 0;
+    settings.editing = true;
+    vc.update(|_window, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_modal = ActiveModal::Settings(settings);
+            cx.notify();
+        });
+    });
+    vc.run_until_parked();
+
+    vc.simulate_keystrokes("x");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "geminix");
+    });
+    vc.dispatch_action(Undo);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "gemini");
+    });
+    vc.dispatch_action(Redo);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "geminix");
+    });
+    assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draft");
 }
 
 #[gpui::test]

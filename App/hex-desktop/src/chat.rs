@@ -37,16 +37,16 @@ use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
 use crate::shortcuts::{
-    self, About, ActualSize, CloseWindow, Hide, Quit, ZoomIn, ZoomOut, init_shortcuts,
+    self, About, ActualSize, CloseWindow, Hide, Quit, Redo, Undo, ZoomIn, ZoomOut, init_shortcuts,
 };
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{ApprovalCard, ApprovalCardState, MessageFeed, MessageItem};
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
-use crate::ui::modals::account::AccountAction;
+use crate::ui::modals::account::{AccountAction, AccountMode};
 use crate::ui::modals::approval::{ToolApprovalChoice, ToolApprovalResult};
 use crate::ui::modals::session_actions::{
-    SessionActionModal, SessionActionOutcome, SessionSearchModal,
+    SessionActionMode, SessionActionModal, SessionActionOutcome, SessionSearchModal,
 };
 use crate::ui::modals::settings::{SettingsAction, SettingsModal};
 use crate::ui::modals::{render_about, render_modal_container, ActiveModal, AccountModal, ModelEntry, PaletteAction, ToolApprovalModal};
@@ -106,6 +106,7 @@ const DEFAULT_REM_SIZE: f32 = 16.0;
 const ZOOM_STEP: f32 = 2.0;
 const MIN_REM_SIZE: f32 = 12.0;
 const MAX_REM_SIZE: f32 = 24.0;
+const MAX_UNDO_HISTORY: usize = 100;
 
 /// Register embedded brand fonts, theme, menus, global shortcuts, and
 /// composer bindings. Shared by the real `main` entry point and the
@@ -159,6 +160,21 @@ struct SessionState {
     feed: MessageFeed,
     draft: String,
     attachments: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ComposerSnapshot {
+    content: String,
+    selected_range: Range<usize>,
+    selection_reversed: bool,
+    marked_range: Option<Range<usize>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextEditKind {
+    Insert,
+    Delete,
+    Replace,
 }
 
 fn find_assistant_mut<'a>(feed: &'a mut MessageFeed, id: &str) -> Option<&'a mut AssistantMessageView> {
@@ -288,6 +304,14 @@ pub struct ChatView {
     last_bounds: Option<Bounds<Pixels>>,
     last_line_height: Pixels,
     is_selecting: bool,
+    composer_undo: Vec<ComposerSnapshot>,
+    composer_redo: Vec<ComposerSnapshot>,
+    composer_edit_group: Option<(TextEditKind, Instant)>,
+    composer_undo_break: bool,
+    modal_undo: Vec<ActiveModal>,
+    modal_redo: Vec<ActiveModal>,
+    modal_edit_group: Option<(TextEditKind, Instant)>,
+    modal_undo_break: bool,
 
     bridge: AcpBridge,
     rt: Handle,
@@ -369,6 +393,14 @@ impl ChatView {
             last_bounds: None,
             last_line_height: px(20.0),
             is_selecting: false,
+            composer_undo: Vec::new(),
+            composer_redo: Vec::new(),
+            composer_edit_group: None,
+            composer_undo_break: false,
+            modal_undo: Vec::new(),
+            modal_redo: Vec::new(),
+            modal_edit_group: None,
+            modal_undo_break: false,
             bridge,
             rt,
             workspace,
@@ -2414,6 +2446,43 @@ impl ChatView {
 
     /// Route a key to the open modal. Returns true when the modal consumed it.
     fn handle_modal_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        if self.shell.active_modal.is_open() && matches!(key, "cmd-z" | "cmd-shift-z") {
+            let busy = match &self.shell.active_modal {
+                ActiveModal::Account(modal) => modal.busy,
+                ActiveModal::SessionAction(modal) => modal.busy,
+                ActiveModal::Settings(modal) => modal.busy,
+                _ => false,
+            };
+            if busy {
+                return true;
+            }
+            let restored = if key == "cmd-z" {
+                self.undo_modal()
+            } else {
+                self.redo_modal()
+            };
+            if restored {
+                cx.notify();
+            }
+            return true;
+        }
+        if matches!(
+            key,
+            "up" | "arrowup" | "down" | "arrowdown" | "left" | "arrowleft" | "right"
+                | "arrowright" | "home" | "end" | "enter" | "tab" | "shift-tab"
+        ) {
+            self.modal_undo_break = true;
+        }
+        if key == "backspace"
+            && self.modal_accepts_text_edit()
+            && !matches!(
+                self.shell.active_modal,
+                ActiveModal::Settings(_) | ActiveModal::SessionSearch(_)
+            )
+        {
+            self.record_modal_edit(TextEditKind::Delete);
+        }
+
         // Live filtering needs `&mut self` (SessionListView::filter_sessions),
         // so resolve the results before the match takes a borrow on the modal.
         let search_results = match &self.shell.active_modal {
@@ -2724,6 +2793,20 @@ impl ChatView {
         self.cancel_turn(cx);
     }
 
+    fn on_undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.handle_modal_key("cmd-z", cx) || self.shell.active_modal.is_open() {
+            return;
+        }
+        self.undo_composer(cx);
+    }
+
+    fn on_redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.handle_modal_key("cmd-shift-z", cx) || self.shell.active_modal.is_open() {
+            return;
+        }
+        self.redo_composer(cx);
+    }
+
     fn on_copy(&mut self, _: &shortcuts::Copy, window: &mut Window, cx: &mut Context<Self>) {
         if self.shell.active_modal.is_open() {
             return;
@@ -2886,6 +2969,9 @@ impl ChatView {
                     (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
                 });
                 if let Some(ch) = typed {
+                    if self.modal_accepts_text_edit() {
+                        self.record_modal_edit(TextEditKind::Insert);
+                    }
                     let ActiveModal::Palette(palette) = &mut self.shell.active_modal else {
                         return;
                     };
@@ -2901,6 +2987,9 @@ impl ChatView {
                         (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
                     });
                     if let Some(ch) = typed {
+                        if self.modal_accepts_text_edit() {
+                            self.record_modal_edit(TextEditKind::Insert);
+                        }
                         if let ActiveModal::ModelPicker(modal) = &mut self.shell.active_modal {
                             let query = format!("{}{}", modal.search_query, ch);
                             modal.set_search(query);
@@ -2910,6 +2999,9 @@ impl ChatView {
                         return;
                     }
                     if keystroke.key == "backspace" {
+                        if self.modal_accepts_text_edit() {
+                            self.record_modal_edit(TextEditKind::Delete);
+                        }
                         if let ActiveModal::ModelPicker(modal) = &mut self.shell.active_modal {
                             let mut query = modal.search_query.clone();
                             query.pop();
@@ -2935,6 +3027,9 @@ impl ChatView {
                         (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
                     });
                     if let Some(ch) = typed {
+                        if self.modal_accepts_text_edit() {
+                            self.record_modal_edit(TextEditKind::Insert);
+                        }
                         if let ActiveModal::Account(modal) = &mut self.shell.active_modal {
                             modal.push_char(&ch);
                             cx.notify();
@@ -2953,6 +3048,9 @@ impl ChatView {
                         (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
                     });
                     if let Some(ch) = typed {
+                        if self.modal_accepts_text_edit() {
+                            self.record_modal_edit(TextEditKind::Insert);
+                        }
                         if let ActiveModal::SessionAction(modal) = &mut self.shell.active_modal {
                             modal.push_char(&ch);
                             cx.notify();
@@ -2976,6 +3074,9 @@ impl ChatView {
                         (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
                     });
                     if let Some(ch) = typed {
+                        if self.modal_accepts_text_edit() {
+                            self.record_modal_edit(TextEditKind::Insert);
+                        }
                         if let ActiveModal::SessionSearch(modal) = &mut self.shell.active_modal {
                             modal.push_char(&ch);
                             cx.notify();
@@ -2984,6 +3085,9 @@ impl ChatView {
                         return;
                     }
                     if keystroke.key == "backspace" {
+                        if self.modal_accepts_text_edit() {
+                            self.record_modal_edit(TextEditKind::Delete);
+                        }
                         if let ActiveModal::SessionSearch(modal) = &mut self.shell.active_modal {
                             modal.backspace();
                             cx.notify();
@@ -3002,6 +3106,13 @@ impl ChatView {
                         (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
                     });
                     if let Some(ch) = typed {
+                        let editing = matches!(
+                            &self.shell.active_modal,
+                            ActiveModal::Settings(modal) if modal.editing && !modal.busy
+                        );
+                        if editing {
+                            self.record_modal_edit(TextEditKind::Insert);
+                        }
                         if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
                             if modal.editing {
                                 modal.push_char(&ch);
@@ -3012,6 +3123,13 @@ impl ChatView {
                         return;
                     }
                     if keystroke.key == "backspace" {
+                        let editing = matches!(
+                            &self.shell.active_modal,
+                            ActiveModal::Settings(modal) if modal.editing && !modal.busy
+                        );
+                        if editing {
+                            self.record_modal_edit(TextEditKind::Delete);
+                        }
                         if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
                             if modal.editing {
                                 modal.backspace();
@@ -3070,6 +3188,10 @@ impl ChatView {
     // ------------------------------------------------------------------
 
     fn set_editor_content(&mut self, text: String, cx: &mut Context<Self>) {
+        self.composer_undo.clear();
+        self.composer_redo.clear();
+        self.composer_edit_group = None;
+        self.composer_undo_break = false;
         self.content = text;
         let len = self.content.len();
         self.selected_range = len..len;
@@ -3081,6 +3203,155 @@ impl ChatView {
     fn reset_editor(&mut self, cx: &mut Context<Self>) {
         self.set_editor_content(String::new(), cx);
         self.attachments.clear();
+    }
+
+    fn composer_snapshot(&self) -> ComposerSnapshot {
+        ComposerSnapshot {
+            content: self.content.clone(),
+            selected_range: self.selected_range.clone(),
+            selection_reversed: self.selection_reversed,
+            marked_range: self.marked_range.clone(),
+        }
+    }
+
+    fn record_composer_edit(&mut self, range: &Range<usize>, new_text: &str) {
+        let kind = if new_text.is_empty() {
+            TextEditKind::Delete
+        } else if range.is_empty() {
+            TextEditKind::Insert
+        } else {
+            TextEditKind::Replace
+        };
+        let continues = !self.composer_undo_break
+            && new_text.chars().count() <= 1
+            && self.composer_edit_group.is_some_and(|(previous, at)| {
+                previous == kind && at.elapsed() < Duration::from_millis(750)
+            });
+        if !continues {
+            self.composer_undo.push(self.composer_snapshot());
+            if self.composer_undo.len() > MAX_UNDO_HISTORY {
+                self.composer_undo.remove(0);
+            }
+        }
+        self.composer_redo.clear();
+        self.composer_edit_group = Some((kind, Instant::now()));
+        self.composer_undo_break =
+            !continues && (kind == TextEditKind::Replace || new_text.chars().count() > 1);
+    }
+
+    fn restore_composer_snapshot(&mut self, snapshot: ComposerSnapshot, cx: &mut Context<Self>) {
+        self.content = snapshot.content;
+        self.selected_range = snapshot.selected_range;
+        self.selection_reversed = snapshot.selection_reversed;
+        self.marked_range = snapshot.marked_range;
+        cx.notify();
+    }
+
+    fn undo_composer(&mut self, cx: &mut Context<Self>) {
+        if let Some(previous) = self.composer_undo.pop() {
+            self.composer_redo.push(self.composer_snapshot());
+            self.composer_edit_group = None;
+            self.composer_undo_break = true;
+            self.restore_composer_snapshot(previous, cx);
+        }
+    }
+
+    fn redo_composer(&mut self, cx: &mut Context<Self>) {
+        if let Some(next) = self.composer_redo.pop() {
+            self.composer_undo.push(self.composer_snapshot());
+            if self.composer_undo.len() > MAX_UNDO_HISTORY {
+                self.composer_undo.remove(0);
+            }
+            self.composer_edit_group = None;
+            self.composer_undo_break = true;
+            self.restore_composer_snapshot(next, cx);
+        }
+    }
+
+    fn modal_accepts_text_edit(&self) -> bool {
+        match &self.shell.active_modal {
+            ActiveModal::Palette(_)
+            | ActiveModal::ModelPicker(_)
+            | ActiveModal::SessionSearch(_) => true,
+            ActiveModal::Account(modal) => {
+                !modal.busy && !matches!(modal.mode, AccountMode::Devices)
+            }
+            ActiveModal::SessionAction(modal) => {
+                !modal.busy && matches!(modal.mode, SessionActionMode::Rename)
+            }
+            ActiveModal::Settings(modal) => !modal.busy && modal.editing,
+            _ => false,
+        }
+    }
+
+    fn clear_modal_history(&mut self) {
+        self.modal_undo.clear();
+        self.modal_redo.clear();
+        self.modal_edit_group = None;
+        self.modal_undo_break = true;
+    }
+
+    fn record_modal_edit(&mut self, kind: TextEditKind) {
+        if self
+            .modal_undo
+            .last()
+            .is_some_and(|previous| {
+                std::mem::discriminant(previous)
+                    != std::mem::discriminant(&self.shell.active_modal)
+            })
+        {
+            self.clear_modal_history();
+        }
+        let continues = !self.modal_undo_break
+            && self.modal_edit_group.is_some_and(|(previous, at)| {
+                previous == kind && at.elapsed() < Duration::from_millis(750)
+            });
+        if !continues {
+            self.modal_undo.push(self.shell.active_modal.clone());
+            if self.modal_undo.len() > MAX_UNDO_HISTORY {
+                self.modal_undo.remove(0);
+            }
+        }
+        self.modal_redo.clear();
+        self.modal_edit_group = Some((kind, Instant::now()));
+        self.modal_undo_break = false;
+    }
+
+    fn undo_modal(&mut self) -> bool {
+        if self.modal_undo.last().is_some_and(|previous| {
+            std::mem::discriminant(previous) != std::mem::discriminant(&self.shell.active_modal)
+        }) {
+            self.clear_modal_history();
+            return false;
+        }
+        let Some(previous) = self.modal_undo.pop() else {
+            return false;
+        };
+        self.modal_redo.push(self.shell.active_modal.clone());
+        self.modal_edit_group = None;
+        self.modal_undo_break = true;
+        self.shell.active_modal = previous;
+        true
+    }
+
+    fn redo_modal(&mut self) -> bool {
+        if self.modal_redo.last().is_some_and(|next| {
+            std::mem::discriminant(next) != std::mem::discriminant(&self.shell.active_modal)
+        }) {
+            self.clear_modal_history();
+            return false;
+        }
+        let Some(next) = self.modal_redo.pop() else {
+            return false;
+        };
+        self.modal_undo.push(self.shell.active_modal.clone());
+        if self.modal_undo.len() > MAX_UNDO_HISTORY {
+            self.modal_undo.remove(0);
+        }
+        self.modal_edit_group = None;
+        self.modal_undo_break = true;
+        self.shell.active_modal = next;
+        true
     }
 
     /// Opens the native file picker and stages the picked files as prompt
@@ -3108,6 +3379,7 @@ impl ChatView {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.composer_undo_break = true;
         self.selected_range = offset..offset;
         cx.notify();
     }
@@ -3121,6 +3393,7 @@ impl ChatView {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.composer_undo_break = true;
         if self.selection_reversed {
             self.selected_range.start = offset;
         } else {
@@ -3893,8 +4166,9 @@ impl ChatView {
             this.update(cx, |view, cx| {
                 if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
                     match res {
-                        Ok(Ok(view)) => {
-                            modal.apply_saved(&view);
+                        Ok(Ok(saved)) => {
+                            modal.apply_saved(&saved);
+                            view.clear_modal_history();
                         }
                         Ok(Err(err)) => {
                             modal.busy = false;
@@ -4228,6 +4502,9 @@ impl Render for ChatView {
             // an active caret); focus it so typing works without a click.
             // Modal focus follows the same rules as the session path.
             let modal_open = self.shell.active_modal.is_open();
+            if modal_open != self.last_modal_open {
+                self.clear_modal_history();
+            }
             if modal_open {
                 if !self.last_modal_open {
                     self.modal_focus_handle.focus(window);
@@ -4244,6 +4521,8 @@ impl Render for ChatView {
                 .on_action(cx.listener(Self::on_new_chat))
                 .on_action(cx.listener(Self::on_close_window))
                 .on_action(cx.listener(Self::on_about))
+                .on_action(cx.listener(Self::on_undo))
+                .on_action(cx.listener(Self::on_redo))
                 .on_action(cx.listener(Self::on_actual_size))
                 .on_action(cx.listener(Self::on_zoom_in))
                 .on_action(cx.listener(Self::on_zoom_out))
@@ -4268,6 +4547,9 @@ impl Render for ChatView {
         // Predictable focus: opening a modal moves focus to it, closing returns
         // focus to the composer. Background activity never steals focus.
         let modal_open = self.shell.active_modal.is_open();
+        if modal_open != self.last_modal_open {
+            self.clear_modal_history();
+        }
         if modal_open {
             if !self.last_modal_open {
                 self.modal_focus_handle.focus(window);
@@ -4343,6 +4625,8 @@ impl Render for ChatView {
             .on_action(cx.listener(Self::on_new_chat))
             .on_action(cx.listener(Self::on_close_window))
             .on_action(cx.listener(Self::on_about))
+            .on_action(cx.listener(Self::on_undo))
+            .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_actual_size))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
@@ -4492,6 +4776,9 @@ impl EntityInputHandler for ChatView {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        if self.content.get(range.clone()) != Some(new_text) {
+            self.record_composer_edit(&range, new_text);
+        }
         self.content =
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
@@ -4516,6 +4803,9 @@ impl EntityInputHandler for ChatView {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        if self.content.get(range.clone()) != Some(new_text) {
+            self.record_composer_edit(&range, new_text);
+        }
         self.content =
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
         if !new_text.is_empty() {
