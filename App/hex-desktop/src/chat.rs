@@ -151,6 +151,7 @@ pub fn open_chat_window(
 struct SessionState {
     feed: MessageFeed,
     draft: String,
+    attachments: Vec<String>,
 }
 
 fn find_assistant_mut<'a>(feed: &'a mut MessageFeed, id: &str) -> Option<&'a mut AssistantMessageView> {
@@ -1023,7 +1024,8 @@ impl ChatView {
         if let Some(current) = self.shell.active_session_id.clone() {
             let feed = std::mem::replace(&mut self.shell.feed, MessageFeed::new());
             let draft = self.content.clone();
-            self.sessions.insert(current, SessionState { feed, draft });
+            let attachments = self.attachments.clone();
+            self.sessions.insert(current, SessionState { feed, draft, attachments });
         }
     }
 
@@ -1125,6 +1127,7 @@ impl ChatView {
             self.save_active_session();
             self.shell.feed = state.feed;
             self.set_editor_content(state.draft, cx);
+            self.attachments = state.attachments;
             self.shell.select_session(id);
             self.sync_transport_state();
             cx.notify();
@@ -4718,6 +4721,43 @@ fn late_approval_notice(status: &str, approval_id: &str) -> String {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[gpui::test]
+    fn cached_session_switch_preserves_attachments(cx: &mut TestAppContext) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(init_app);
+        let (view, vc) = cx.add_window_view(|_, cx| {
+            ChatView::new(AcpBridge::new(), rt.handle().clone(), std::env::temp_dir(), cx)
+        });
+        vc.update(|_, app| {
+            view.update(app, |view, cx| {
+                view.shell.sidebar.add_session(SessionItem::new("a", "Chat A"));
+                view.shell.sidebar.add_session(SessionItem::new("b", "Chat B"));
+                view.shell.select_session("a".to_string());
+                view.content = "Draft A".to_string();
+                view.attachments = vec!["a.txt".to_string()];
+                view.sessions.insert(
+                    "b".to_string(),
+                    SessionState {
+                        feed: MessageFeed::new(),
+                        draft: "Draft B".to_string(),
+                        attachments: vec!["b.txt".to_string()],
+                    },
+                );
+
+                view.switch_session("b".to_string(), cx);
+                assert_eq!(view.content, "Draft B");
+                assert_eq!(view.attachments, vec!["b.txt".to_string()]);
+
+                view.switch_session("a".to_string(), cx);
+                assert_eq!(view.content, "Draft A");
+                assert_eq!(view.attachments, vec!["a.txt".to_string()]);
+            });
+        });
+    }
 
     #[test]
     fn late_approval_notice_distinguishes_closed_from_unknown() {
