@@ -159,7 +159,11 @@ pub fn open_chat_window(
     rt: Handle,
     workspace: PathBuf,
 ) -> anyhow::Result<WindowHandle<ChatView>> {
-    let options = WindowConfig::default().window_options(None);
+    let config = WindowConfig::default();
+    let bounds = cx
+        .primary_display()
+        .map(|display| config.centered_on_display(display.bounds()));
+    let options = config.window_options(bounds);
     cx.open_window(options, move |_window, cx| {
         cx.new(|cx| ChatView::new(bridge.clone(), rt.clone(), workspace.clone(), cx))
     })

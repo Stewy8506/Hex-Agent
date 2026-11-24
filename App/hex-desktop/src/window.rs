@@ -2,6 +2,9 @@
 
 use gpui::*;
 
+/// Keep the initial window clear of screen edges, the menu bar, and the Dock.
+pub const DISPLAY_MARGIN: f32 = 24.0;
+
 /// Window dimensions and macOS Metal acceleration configuration.
 #[derive(Debug, Clone)]
 pub struct WindowConfig {
@@ -36,25 +39,30 @@ impl Default for WindowConfig {
 }
 
 impl WindowConfig {
-    /// Returns default centered window bounds (calculated for a standard 1920x1080 display).
+    /// Returns default centered window bounds for a standard 1920×1080 display.
     pub fn default_bounds(&self) -> Bounds<Pixels> {
-        let default_screen_w = px(1920.0);
-        let default_screen_h = px(1080.0);
-        let origin_x = (default_screen_w - self.width) / 2.0;
-        let origin_y = (default_screen_h - self.height) / 2.0;
-        Bounds {
-            origin: point(origin_x.max(px(0.0)), origin_y.max(px(0.0))),
-            size: size(self.width, self.height),
-        }
+        self.centered_on_display(Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(1920.0), px(1080.0)),
+        })
     }
 
-    /// Calculates centered bounds on a specific display bounds rectangle.
+    /// Fits and centers the initial window on a specific display.
     pub fn centered_on_display(&self, display: Bounds<Pixels>) -> Bounds<Pixels> {
-        let origin_x = display.origin.x + (display.size.width - self.width) / 2.0;
-        let origin_y = display.origin.y + (display.size.height - self.height) / 2.0;
+        let margin = px(DISPLAY_MARGIN * 2.0);
+        let available = size(
+            (display.size.width - margin).max(px(1.0)),
+            (display.size.height - margin).max(px(1.0)),
+        );
+        let window_size = size(
+            self.width.min(available.width),
+            self.height.min(available.height),
+        );
+        let origin_x = display.origin.x + (display.size.width - window_size.width) / 2.0;
+        let origin_y = display.origin.y + (display.size.height - window_size.height) / 2.0;
         Bounds {
-            origin: point(origin_x.max(display.origin.x), origin_y.max(display.origin.y)),
-            size: size(self.width, self.height),
+            origin: point(origin_x, origin_y),
+            size: window_size,
         }
     }
 
@@ -75,7 +83,10 @@ impl WindowConfig {
             window_bounds: Some(WindowBounds::Windowed(b)),
             titlebar: Some(self.titlebar_options()),
             window_background: WindowBackgroundAppearance::Opaque,
-            window_min_size: Some(size(self.min_width, self.min_height)),
+            window_min_size: Some(size(
+                self.min_width.min(b.size.width),
+                self.min_height.min(b.size.height),
+            )),
             focus: true,
             show: true,
             ..Default::default()

@@ -243,6 +243,42 @@ fn test_window_config_defaults_and_metal_options() {
     assert!(win_opts.show);
 }
 
+#[test]
+fn test_window_fits_small_and_offset_displays() {
+    let config = WindowConfig::default();
+    let small_display = Bounds {
+        origin: point(px(0.0), px(0.0)),
+        size: size(px(1000.0), px(700.0)),
+    };
+    let fitted = config.centered_on_display(small_display);
+    assert_eq!(fitted.size, size(px(952.0), px(652.0)));
+    assert_eq!(fitted.origin, point(px(24.0), px(24.0)));
+
+    let offset_display = Bounds {
+        origin: point(px(-1728.0), px(120.0)),
+        size: size(px(1728.0), px(1117.0)),
+    };
+    let centered = config.centered_on_display(offset_display);
+    assert_eq!(centered.size, size(px(1440.0), px(900.0)));
+    assert_eq!(centered.origin, point(px(-1584.0), px(228.5)));
+
+    let options = config.window_options(Some(fitted));
+    assert_eq!(
+        options.window_min_size,
+        Some(size(px(900.0), px(600.0)))
+    );
+
+    let tiny_display = Bounds {
+        origin: point(px(200.0), px(100.0)),
+        size: size(px(800.0), px(500.0)),
+    };
+    let tiny = config.window_options(Some(config.centered_on_display(tiny_display)));
+    assert_eq!(
+        tiny.window_min_size,
+        Some(size(px(752.0), px(452.0)))
+    );
+}
+
 #[gpui::test]
 async fn test_app_shell_state_in_test_context(cx: &mut TestAppContext) {
     // Test theme initialization on GPUI context
