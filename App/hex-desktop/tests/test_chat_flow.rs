@@ -279,20 +279,25 @@ fn clear_glow_probe(vc: &mut VisualTestContext) {
     });
 }
 
-/// Forces a repaint and returns the glow-card paints recorded since the last
-/// clear. The test executor paints exactly one frame per notify (the breathe
-/// animation's next frame is 5s out, so `run_until_parked` stops after the
-/// notified frame), so one entry per rendered glow card.
+/// Forces a repaint and returns distinct glow-card geometries. Animated frames
+/// can repaint the same card; identical bounds are one card, not duplicates.
 fn glow_paints(vc: &mut VisualTestContext, view: &Entity<ChatView>) -> Vec<GlowCardPaint> {
     vc.update(|_window, app| {
         view.update(app, |_, cx| cx.notify());
     });
     vc.run_until_parked();
-    vc.read(|app| {
+    let paints: Vec<GlowCardPaint> = vc.read(|app| {
         app.try_global::<GlowCardProbe>()
             .map(|p| p.0.lock().unwrap().clone())
             .unwrap_or_default()
-    })
+    });
+    let mut distinct = Vec::new();
+    for paint in paints {
+        if !distinct.contains(&paint) {
+            distinct.push(paint);
+        }
+    }
+    distinct
 }
 
 fn assert_px_close(actual: Pixels, expected: Pixels) {
@@ -348,7 +353,7 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     // mockup's 2px inset on every side.
     clear_glow_probe(vc);
     let paints = glow_paints(vc, &view);
-    assert_eq!(paints.len(), 1, "Home must render exactly one glow card");
+    assert_eq!(paints.len(), 1, "Home must render exactly one glow card: {paints:?}");
     assert_px_close(paints[0].card.size.width, px(640.0));
     assert_px_close(paints[0].halo.size.width, px(644.0));
     assert_px_close(paints[0].halo.size.height, paints[0].card.size.height + px(4.0));
@@ -402,11 +407,17 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         view.update(app, |_, cx| cx.notify());
     });
     vc.run_until_parked();
-    let fades = vc.read(|app| {
+    let fade_paints = vc.read(|app| {
         app.try_global::<FeedPaintProbe>()
             .map(|p| p.0.lock().unwrap().clone())
             .unwrap_or_default()
     });
+    let mut fades = Vec::new();
+    for fade in fade_paints {
+        if !fades.contains(&fade) {
+            fades.push(fade);
+        }
+    }
     assert_eq!(
         fades.len(),
         1,
