@@ -416,10 +416,24 @@ impl SettingsModal {
             card = card.child(
                 div()
                     .text_size(px(MockupTypeScale::BASE_SIZE))
-                    .text_color(theme.mockup_text_dim)
-                    .child("Runtime offline — settings unavailable until HEX connects."),
+                    .text_color(theme.mockup_text)
+                    .child("Settings could not be loaded."),
             );
-            return card;
+            if let Some(error) = &self.error {
+                card = card.child(
+                    div()
+                        .text_size(px(MockupTypeScale::HINT_SIZE))
+                        .text_color(theme.rose_fg())
+                        .child(error.clone()),
+                );
+            }
+            return card.child(
+                div()
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(MockupTypeScale::HINT_SIZE))
+                    .text_color(theme.mockup_text_dim)
+                    .child("Esc — close"),
+            );
         }
 
         card = card.child(
@@ -628,6 +642,14 @@ mod tests {
             }
         }))
         .expect("valid view")
+    }
+
+    #[test]
+    fn test_load_failure_retains_detail() {
+        let mut modal = SettingsModal::loading();
+        modal.mark_load_failed("config/get failed: permission denied");
+        assert!(modal.load_failed);
+        assert_eq!(modal.error.as_deref(), Some("config/get failed: permission denied"));
     }
 
     #[test]

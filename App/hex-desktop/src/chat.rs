@@ -3746,21 +3746,20 @@ impl ChatView {
         cx.spawn(async move |this, cx| {
             let res = rt.spawn(async move { bridge.get_config().await }).await;
             this.update(cx, |view, cx| {
-                let view_result = match res {
-                    Ok(Ok(view)) => Some(view),
-                    Ok(Err(err)) => {
-                        view.shell.feed.add_system_notice(format!("config/get failed: {err}"));
-                        None
-                    }
-                    Err(err) => {
-                        view.shell.feed.add_system_notice(format!("config task aborted: {err}"));
-                        None
-                    }
+                let load_error = match &res {
+                    Ok(Err(err)) => Some(format!("config/get failed: {err}")),
+                    Err(err) => Some(format!("config task aborted: {err}")),
+                    Ok(Ok(_)) => None,
                 };
+                if let Some(error) = &load_error {
+                    view.shell.feed.add_system_notice(error.clone());
+                }
                 if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
-                    match view_result {
-                        Some(cfg) => modal.apply_view(&cfg),
-                        None => modal.mark_load_failed("Could not read settings from the runtime."),
+                    match res {
+                        Ok(Ok(cfg)) => modal.apply_view(&cfg),
+                        _ => modal.mark_load_failed(
+                            load_error.unwrap_or_else(|| "Could not read settings from the runtime.".to_string()),
+                        ),
                     }
                 }
                 cx.notify();
