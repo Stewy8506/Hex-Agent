@@ -1329,3 +1329,35 @@ async fn test_modal_enter_is_single_step_and_isolated(cx: &mut TestAppContext) {
         assert_eq!(view.composer_text(), "keep draft");
     });
 }
+
+#[gpui::test]
+async fn test_tall_modal_stays_inside_viewport_and_scrolls(cx: &mut TestAppContext) {
+    let (_rt, view, vc) = launch_connected_chat(cx);
+    vc.simulate_resize(size(px(480.0), px(360.0)));
+    vc.update(|_window, app| {
+        view.update(app, |view, cx| {
+            let mut settings = SettingsModal::default();
+            for _ in 0..24 {
+                settings.fields.push(SettingField::Text {
+                    key: "model.cloudModelId",
+                    label: "Model ID",
+                    value: "configured-model".into(),
+                    cursor: 0,
+                    required: true,
+                });
+            }
+            view.shell.active_modal = ActiveModal::Settings(settings);
+            cx.notify();
+        });
+    });
+    finish_motion(vc, &view);
+
+    let card = vc.debug_bounds("modal_card_scroll").unwrap();
+    let content = vc.debug_bounds("settings_content").unwrap();
+    assert!(card.left() >= px(16.0));
+    assert!(card.top() >= px(16.0));
+    assert!(card.right() <= px(464.0));
+    assert!(card.bottom() <= px(344.0));
+    assert!(content.size.height > card.size.height);
+    assert!(vc.debug_bounds("settings_save_row").is_some());
+}

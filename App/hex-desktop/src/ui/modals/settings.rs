@@ -451,6 +451,7 @@ impl SettingsModal {
         on_save: SettingsSaveHandler,
     ) -> Div {
         let mut card = div()
+            .debug_selector(|| "settings_content".to_string())
             .w(px(560.0))
             .max_w_full()
             .flex()

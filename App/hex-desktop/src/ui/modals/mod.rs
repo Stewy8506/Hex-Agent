@@ -83,6 +83,9 @@ pub const MODAL_CARD_WIDTH_WIDE: f32 = 440.0;
 /// Vertical card travel during modal entrance and exit.
 pub const MODAL_CARD_RISE: f32 = 12.0;
 
+/// Minimum space retained between a modal card and the viewport edges.
+pub const MODAL_VIEWPORT_GUTTER: f32 = 16.0;
+
 #[derive(Clone, Copy)]
 pub struct ModalMotion<'a> {
     pub owner: EntityId,
@@ -127,11 +130,15 @@ pub fn render_modal_container(
     theme: &HermesTheme,
     card_progress: f32,
     scrim_progress: f32,
+    viewport_height: Pixels,
+    instance: u64,
 ) -> Div {
     let card_progress = card_progress.clamp(0.0, 1.0);
     let scrim_progress = scrim_progress.clamp(0.0, 1.0);
     let mut scrim = MODAL_SCRIM;
     scrim.a *= scrim_progress;
+    let gutter = px(MODAL_VIEWPORT_GUTTER);
+    let max_height = (viewport_height - gutter * 2.0).max(px(1.0));
 
     div()
         .absolute()
@@ -141,6 +148,7 @@ pub fn render_modal_container(
             div()
                 .absolute()
                 .inset_0()
+                .p(gutter)
                 .flex()
                 .items_center()
                 .justify_center()
@@ -148,14 +156,22 @@ pub fn render_modal_container(
                     div()
                         .mt(px(MODAL_CARD_RISE * (1.0 - card_progress)))
                         .opacity(scrim_progress)
+                        .max_h(max_height)
+                        .max_w_full()
                         .child(
                             div()
+                                .id(SharedString::from(format!(
+                                    "modal_card_scroll_{instance}"
+                                )))
+                                .debug_selector(|| "modal_card_scroll".to_string())
+                                .max_h(max_height)
+                                .max_w_full()
+                                .overflow_y_scroll()
                                 .bg(theme.mockup_surface)
                                 .border_1()
                                 .border_color(theme.mockup_border_strong)
                                 .rounded(px(MODAL_CARD_RADIUS))
                                 .shadow_lg()
-                                .overflow_hidden()
                                 .child(content),
                         ),
                 ),

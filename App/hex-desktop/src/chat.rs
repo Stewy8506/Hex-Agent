@@ -5922,6 +5922,8 @@ impl ChatView {
                 theme,
                 card_progress,
                 scrim_progress,
+                window.viewport_size().height,
+                instance,
             ));
         }
         Some(self.modal_overlay(stack, cx))
