@@ -48,8 +48,8 @@ pub const SMOOTH: SpringPreset = SpringPreset {
 };
 
 pub const SNAPPY: SpringPreset = SpringPreset {
-    duration: 0.35,
-    bounce: 0.15,
+    duration: 0.18,
+    bounce: 0.0,
 };
 
 pub const BOUNCY: SpringPreset = SpringPreset {
@@ -92,10 +92,10 @@ mod tests {
             assert!((c / (2.0 * k.sqrt()) - preset.zeta()).abs() < 1e-5);
         }
         assert_eq!(SMOOTH.duration, 0.45);
-        assert_eq!(SNAPPY.duration, 0.35);
+        assert_eq!(SNAPPY.duration, 0.18);
         assert_eq!(BOUNCY.duration, 0.45);
         assert_eq!(SMOOTH.zeta(), 1.0);
-        assert!((SNAPPY.zeta() - 0.85).abs() < 1e-6);
+        assert_eq!(SNAPPY.zeta(), 1.0);
         assert!((BOUNCY.zeta() - 0.70).abs() < 1e-6);
     }
 
@@ -113,18 +113,30 @@ mod tests {
     }
 
     #[test]
-    fn underdamped_presets_overshoot_within_bounds() {
-        for preset in [SNAPPY, BOUNCY] {
-            let mut peak: f32 = 1.0;
-            for step in 0..=1000 {
-                let value = spring_easing(preset, step as f32 / 1000.0);
-                assert!(value.is_finite());
-                assert!(value >= -1e-5);
-                assert!(value < 1.5);
-                peak = peak.max(value);
-            }
-            assert!(peak > 1.001, "{} did not overshoot", preset.bounce);
+    fn snappy_is_monotonic_and_quick() {
+        assert_eq!(spring_easing(SNAPPY, 0.0), 0.0);
+        assert_eq!(spring_easing(SNAPPY, 1.0), 1.0);
+        let mut previous = 0.0;
+        for step in 0..=1000 {
+            let value = spring_easing(SNAPPY, step as f32 / 1000.0);
+            assert!((0.0..=1.0).contains(&value));
+            assert!(value >= previous - 1e-6);
+            previous = value;
         }
+        assert!(SNAPPY.duration <= 0.25);
+    }
+
+    #[test]
+    fn bouncy_preset_overshoots_within_bounds() {
+        let mut peak: f32 = 1.0;
+        for step in 0..=1000 {
+            let value = spring_easing(BOUNCY, step as f32 / 1000.0);
+            assert!(value.is_finite());
+            assert!(value >= -1e-5);
+            assert!(value < 1.5);
+            peak = peak.max(value);
+        }
+        assert!(peak > 1.001, "bouncy did not overshoot");
     }
 
     #[test]

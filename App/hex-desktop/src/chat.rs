@@ -5667,8 +5667,8 @@ impl ChatView {
         target: f32,
     ) {
         let (card, scrim) = Self::modal_spring_keys(cx, instance);
-        motion::MotionSystem::set_target(window, cx, card, target, motion::SMOOTH);
-        motion::MotionSystem::set_opacity_target(window, cx, scrim, target, motion::SMOOTH);
+        motion::MotionSystem::set_target(window, cx, card, target, motion::SNAPPY);
+        motion::MotionSystem::set_opacity_target(window, cx, scrim, target, motion::SNAPPY);
     }
 
     fn sync_modal_motion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6418,6 +6418,57 @@ mod tests {
                 assert!(view.outgoing_modals.is_empty());
                 assert_eq!(motion::MotionSystem::value_or(cx, card, -1.0), -1.0);
                 assert_eq!(motion::MotionSystem::value_or(cx, scrim, -1.0), -1.0);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn modal_motion_settles_quickly_in_both_directions(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            let window_id = window.window_handle().window_id();
+            let (instance, card, scrim) = view.update(app, |view, cx| {
+                view.shell.active_modal = ActiveModal::About;
+                view.sync_modal_motion(window, cx);
+                let (instance, _) = view.rendered_modal.clone().expect("modal rendered");
+                let (card, scrim) = ChatView::modal_spring_keys(cx, instance);
+                (instance, card, scrim)
+            });
+
+            let mut opening_frames = 0;
+            while app.global::<motion::MotionSystem>().driver_active(window_id)
+                && opening_frames < 60
+            {
+                advance_motion(app, window_id, 1);
+                opening_frames += 1;
+            }
+            assert!(
+                opening_frames <= 28,
+                "modal entrance took {opening_frames} frames"
+            );
+            assert_eq!(motion::MotionSystem::value(app, card), 1.0);
+            assert_eq!(motion::MotionSystem::value(app, scrim), 1.0);
+
+            view.update(app, |view, cx| {
+                view.shell.active_modal = ActiveModal::None;
+                view.sync_modal_motion(window, cx);
+                assert_eq!(view.outgoing_modals, vec![(instance, ActiveModal::About)]);
+            });
+
+            let mut closing_frames = 0;
+            while app.global::<motion::MotionSystem>().driver_active(window_id)
+                && closing_frames < 60
+            {
+                advance_motion(app, window_id, 1);
+                closing_frames += 1;
+            }
+            assert!(
+                closing_frames <= 28,
+                "modal exit took {closing_frames} frames"
+            );
+            view.update(app, |view, cx| {
+                view.sync_modal_motion(window, cx);
+                assert!(view.outgoing_modals.is_empty());
             });
         });
     }
