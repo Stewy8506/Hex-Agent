@@ -10,6 +10,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
+use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::session_list::{format_relative_time, SessionItem};
 
 /// One entry of the session action menu.
@@ -26,6 +27,13 @@ const MENU: [SessionMenuAction; 4] = [
     SessionMenuAction::TogglePin,
     SessionMenuAction::ToggleArchive,
     SessionMenuAction::Delete,
+];
+
+const MENU_PRESS_KEYS: [&str; 4] = [
+    "session_action_rename_press",
+    "session_action_pin_press",
+    "session_action_archive_press",
+    "session_action_delete_press",
 ];
 
 /// What the operator confirmed; executed by `ChatView` against the runtime.
@@ -184,7 +192,7 @@ impl SessionActionModal {
     }
 
     /// Renders the modal card content for the current mode.
-    pub fn render(&self, theme: &HermesTheme) -> Div {
+    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
         let mut card = div()
             .w(px(crate::ui::modals::MODAL_CARD_WIDTH_WIDE))
             .flex()
@@ -213,8 +221,7 @@ impl SessionActionModal {
                 for (index, action) in MENU.iter().enumerate() {
                     let is_selected = *selected == index;
                     let label = self.menu_label(*action);
-                    card = card.child(
-                        div()
+                    let mut row = div()
                             .id(SharedString::from(format!("session_menu_{}", index)))
                             .w_full()
                             .flex()
@@ -236,8 +243,11 @@ impl SessionActionModal {
                                 *action == SessionMenuAction::Delete,
                                 |c| c.text_color(theme.rose_fg()),
                             )
-                            .child(label),
-                    );
+                            .child(label);
+                    if is_selected {
+                        row = modal_press(row, MENU_PRESS_KEYS[index], motion);
+                    }
+                    card = card.child(row);
                 }
             }
             SessionActionMode::Rename => {
@@ -339,6 +349,7 @@ impl SessionSearchModal {
         results: &[&SessionItem],
         now: DateTime<Utc>,
         on_open: std::rc::Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)>,
+        motion: ModalMotion<'_>,
     ) -> Div {
         let mut card = div()
             .w(px(520.0))
@@ -417,6 +428,7 @@ impl SessionSearchModal {
                             .child(format_relative_time(session.updated_at, now)),
                     );
                 if is_selected {
+                    row = modal_press(row, "session_search_selected_press", motion);
                     let on_open_id = id.clone();
                     let on_open = on_open.clone();
                     row = row.on_click(move |event, window, cx| {

@@ -11,6 +11,21 @@ use super::spring::Spring;
 pub struct SpringKey {
     pub owner: EntityId,
     pub name: &'static str,
+    pub slot: u64,
+}
+
+impl SpringKey {
+    pub fn new(owner: EntityId, name: &'static str) -> Self {
+        Self {
+            owner,
+            name,
+            slot: 0,
+        }
+    }
+
+    pub fn for_slot(owner: EntityId, name: &'static str, slot: u64) -> Self {
+        Self { owner, name, slot }
+    }
 }
 
 struct SpringEntry {
@@ -46,10 +61,34 @@ impl MotionSystem {
         }
     }
 
+    pub fn with_policy(policy: MotionPolicy) -> Self {
+        Self {
+            springs: HashMap::new(),
+            drivers: HashMap::new(),
+            policy,
+        }
+    }
+
     pub fn value(cx: &App, key: SpringKey) -> f32 {
+        Self::value_or(cx, key, 1.0)
+    }
+
+    pub fn value_or(cx: &App, key: SpringKey, default: f32) -> f32 {
         cx.try_global::<Self>()
             .and_then(|system| system.springs.get(&key))
-            .map_or(1.0, |entry| entry.spring.value())
+            .map_or(default, |entry| entry.spring.value())
+    }
+
+    pub fn is_settled(cx: &App, key: SpringKey) -> bool {
+        cx.try_global::<Self>()
+            .and_then(|system| system.springs.get(&key))
+            .is_none_or(|entry| entry.spring.is_settled())
+    }
+
+    pub fn remove(cx: &mut App, key: SpringKey) {
+        if cx.has_global::<Self>() {
+            cx.global_mut::<Self>().springs.remove(&key);
+        }
     }
 
     pub fn set_target(
@@ -198,10 +237,7 @@ mod tests {
     use core::prelude::v1::test;
 
     fn key(owner: u64, name: &'static str) -> SpringKey {
-        SpringKey {
-            owner: EntityId::from(owner),
-            name,
-        }
+        SpringKey::new(EntityId::from(owner), name)
     }
 
     #[test]
@@ -251,8 +287,10 @@ mod tests {
         let other_owner = key(11, "opacity");
         for entry in [first, second, other_owner] {
             let target = match entry {
-                SpringKey { owner, name } if owner == first.owner && name == first.name => 1.0,
-                SpringKey { owner, name } if owner == second.owner && name == second.name => 0.5,
+                SpringKey { owner, name, .. } if owner == first.owner && name == first.name => 1.0,
+                SpringKey { owner, name, .. } if owner == second.owner && name == second.name => {
+                    0.5
+                }
                 _ => 0.25,
             };
             system.retarget_for_window(window_id, entry, target, SMOOTH, MotionKind::Spatial);
@@ -266,6 +304,28 @@ mod tests {
             system.springs[&first].spring.value(),
             system.springs[&other_owner].spring.value()
         );
+    }
+
+    #[test]
+    fn press_springs_are_isolated_and_release_retargets_in_place() {
+        let mut system = MotionSystem::new();
+        system.policy = MotionPolicy::new(false);
+        let window_id = WindowId::from(1);
+        let approve = key(10, "approval_approve_press");
+        let deny = key(10, "approval_deny_press");
+        system.retarget_for_window(window_id, approve, 1.0, SNAPPY, MotionKind::Spatial);
+        system.tick(window_id, Duration::from_millis(16));
+        let pressed = system.springs[&approve].spring.value();
+        assert!(pressed > 0.0);
+
+        system.retarget_for_window(window_id, deny, 1.0, SNAPPY, MotionKind::Spatial);
+        assert_eq!(system.springs[&approve].spring.value(), pressed);
+        assert_eq!(system.springs[&deny].spring.value(), 0.0);
+
+        system.retarget_for_window(window_id, approve, 0.0, SNAPPY, MotionKind::Spatial);
+        assert_eq!(system.springs[&approve].spring.value(), pressed);
+        assert_eq!(system.springs[&approve].spring.target(), 0.0);
+        assert_eq!(system.springs[&deny].spring.target(), 1.0);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use gpui::*;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
+use crate::ui::modals::{modal_press, ModalMotion};
 use hex_protocol::models::ConfigGetResponse;
 
 /// One editable row in the settings modal.
@@ -440,7 +441,7 @@ impl SettingsModal {
     }
 
     /// Renders the modal card content.
-    pub fn render(&self, theme: &HermesTheme) -> Div {
+    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
         let mut card = div()
             .w(px(560.0))
             .max_w_full()
@@ -611,7 +612,7 @@ impl SettingsModal {
 
         let dirty = self.dirty_count();
         let save_selected = self.selected == self.fields.len();
-        card = card.child(
+        card = card.child(modal_press(
             div()
                 .id("settings_save_row")
                 .mt(px(12.0))
@@ -652,7 +653,9 @@ impl SettingsModal {
                         .text_color(theme.mockup_text_dim)
                         .child("Enter"),
                 ),
-        );
+            "settings_save_press",
+            motion,
+        ));
 
         if let Some(status) = &self.status {
             card = card.child(

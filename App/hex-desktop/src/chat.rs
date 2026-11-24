@@ -49,7 +49,10 @@ use crate::ui::modals::session_actions::{
     SessionActionMode, SessionActionModal, SessionActionOutcome, SessionSearchModal,
 };
 use crate::ui::modals::settings::{SettingsAction, SettingsModal};
-use crate::ui::modals::{render_about, render_modal_container, ActiveModal, AccountModal, ModelEntry, PaletteAction, ToolApprovalModal};
+use crate::ui::modals::{
+    render_about, render_modal_container, ActiveModal, AccountModal, ModalMotion, ModelEntry,
+    PaletteAction, ToolApprovalModal,
+};
 use crate::ui::model_pill::SendButton;
 use crate::ui::motion;
 use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
@@ -295,6 +298,9 @@ pub struct ChatView {
     focus_handle: FocusHandle,
     modal_focus_handle: FocusHandle,
     last_modal_open: bool,
+    rendered_modal: Option<(u64, ActiveModal)>,
+    outgoing_modals: Vec<(u64, ActiveModal)>,
+    next_modal_instance: u64,
 
     // Composer editor state (utf8 byte offsets, mirroring gpui examples/input.rs).
     content: String,
@@ -386,6 +392,9 @@ impl ChatView {
             focus_handle: cx.focus_handle(),
             modal_focus_handle: cx.focus_handle(),
             last_modal_open: false,
+            rendered_modal: None,
+            outgoing_modals: Vec::new(),
+            next_modal_instance: 0,
             content: String::new(),
             selected_range: 0..0,
             selection_reversed: false,
@@ -4541,7 +4550,7 @@ impl Render for ChatView {
                 .on_action(cx.listener(Self::on_select_all))
                 .on_key_down(cx.listener(Self::on_key_down));
 
-            let modal = self.render_modal_layer(&theme, cx);
+            let modal = self.render_modal_layer(&theme, window, cx);
             return if let Some(modal) = modal {
                 home.child(modal).into_any_element()
             } else {
@@ -4652,7 +4661,7 @@ impl Render for ChatView {
 
         root = root.child(self.render_main_pane(&theme, cx));
 
-        if let Some(modal) = self.render_modal_layer(&theme, cx) {
+        if let Some(modal) = self.render_modal_layer(&theme, window, cx) {
             root = root.child(modal);
         }
 
@@ -4661,19 +4670,91 @@ impl Render for ChatView {
 }
 
 impl ChatView {
-    /// The overlay modal layer (approval, palette, model picker), or `None`
-    /// when no modal is open. Shared by the Session and Home render paths.
-    fn render_modal_layer(
+    fn modal_spring_keys(
+        cx: &Context<Self>,
+        instance: u64,
+    ) -> (motion::SpringKey, motion::SpringKey) {
+        let owner = cx.entity().entity_id();
+        (
+            motion::SpringKey::for_slot(owner, "modal_card", instance),
+            motion::SpringKey::for_slot(owner, "modal_scrim", instance),
+        )
+    }
+
+    fn set_modal_target(
         &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        instance: u64,
+        target: f32,
+    ) {
+        let (card, scrim) = Self::modal_spring_keys(cx, instance);
+        motion::MotionSystem::set_target(window, cx, card, target, motion::SMOOTH);
+        motion::MotionSystem::set_opacity_target(window, cx, scrim, target, motion::SMOOTH);
+    }
+
+    fn sync_modal_motion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self.shell.active_modal.clone();
+
+        if let Some((instance, current)) = self.rendered_modal.as_ref() {
+            if matches!(&active, ActiveModal::None) {
+                let outgoing = self.rendered_modal.take().expect("rendered modal present");
+                self.set_modal_target(window, cx, outgoing.0, 0.0);
+                self.outgoing_modals.push(outgoing);
+            } else if !current.same_instance(&active) {
+                let outgoing = self.rendered_modal.take().expect("rendered modal present");
+                self.set_modal_target(window, cx, outgoing.0, 0.0);
+                self.outgoing_modals.push(outgoing);
+                self.next_modal_instance += 1;
+                let instance = self.next_modal_instance;
+                self.rendered_modal = Some((instance, active));
+                self.set_modal_target(window, cx, instance, 1.0);
+            } else {
+                self.rendered_modal = Some((*instance, active));
+            }
+        } else if !matches!(active, ActiveModal::None) {
+            if let Some(index) = self
+                .outgoing_modals
+                .iter()
+                .rposition(|(_, outgoing)| outgoing.same_instance(&active))
+            {
+                let (instance, _) = self.outgoing_modals.remove(index);
+                self.rendered_modal = Some((instance, active));
+                self.set_modal_target(window, cx, instance, 1.0);
+            } else {
+                self.next_modal_instance += 1;
+                let instance = self.next_modal_instance;
+                self.rendered_modal = Some((instance, active));
+                self.set_modal_target(window, cx, instance, 1.0);
+            }
+        }
+
+        self.outgoing_modals.retain(|(instance, _)| {
+            let (card, scrim) = Self::modal_spring_keys(cx, *instance);
+            let settled = motion::MotionSystem::is_settled(cx, card)
+                && motion::MotionSystem::is_settled(cx, scrim);
+            if settled {
+                motion::MotionSystem::remove(cx, card);
+                motion::MotionSystem::remove(cx, scrim);
+            }
+            !settled
+        });
+    }
+
+    fn render_modal_content(
+        &mut self,
+        active: &ActiveModal,
         theme: &HermesTheme,
         cx: &mut Context<Self>,
-    ) -> Option<Div> {
-        // SessionSearch resolves live results through `&mut self` (the modal
-        // drives SessionListView::filter_sessions), so it cannot borrow the
-        // active modal while doing so; clone the tiny state and return early.
-        if let ActiveModal::SessionSearch(state) = self.shell.active_modal.clone() {
+    ) -> Div {
+        let motion = ModalMotion {
+            owner: cx.entity().entity_id(),
+            cx: &**cx,
+        };
+
+        if let ActiveModal::SessionSearch(state) = active {
             let now = chrono::Utc::now();
-            let results = self.search_results(&state);
+            let results = self.search_results(state);
             let refs: Vec<&crate::ui::session_list::SessionItem> = results.iter().collect();
             let view = cx.entity().downgrade();
             let on_open: std::rc::Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)> =
@@ -4682,34 +4763,53 @@ impl ChatView {
                         view.update(cx, |this, cx| this.switch_session(id, cx)).ok();
                     },
                 );
-            let modal = render_modal_container(state.render(theme, &refs, now, on_open), theme);
-            return Some(self.modal_overlay(modal, cx));
+            return state.render(theme, &refs, now, on_open, motion);
         }
 
-        let modal = match &self.shell.active_modal {
-            ActiveModal::None => None,
-            ActiveModal::Approval(modal) => {
-                Some(render_modal_container(modal.render(theme), theme))
-            }
-            ActiveModal::Palette(palette) => {
-                Some(render_modal_container(palette.render(theme), theme))
-            }
-            ActiveModal::ModelPicker(picker) => {
-                Some(render_modal_container(picker.render(theme), theme))
-            }
-            ActiveModal::Account(modal) => {
-                Some(render_modal_container(modal.render(theme), theme))
-            }
-            ActiveModal::SessionAction(modal) => {
-                Some(render_modal_container(modal.render(theme), theme))
-            }
-            ActiveModal::Settings(modal) => {
-                Some(render_modal_container(modal.render(theme), theme))
-            }
-            ActiveModal::About => Some(render_modal_container(render_about(theme), theme)),
+        match active {
+            ActiveModal::None => div(),
+            ActiveModal::Approval(modal) => modal.render(theme, motion),
+            ActiveModal::Palette(palette) => palette.render(theme, motion),
+            ActiveModal::ModelPicker(picker) => picker.render(theme, motion),
+            ActiveModal::Account(modal) => modal.render(theme),
+            ActiveModal::SessionAction(modal) => modal.render(theme, motion),
+            ActiveModal::Settings(modal) => modal.render(theme, motion),
+            ActiveModal::About => render_about(theme),
             ActiveModal::SessionSearch(_) => unreachable!("handled above"),
-        }?;
-        Some(self.modal_overlay(modal, cx))
+        }
+    }
+
+    /// The shared animated modal layer, including outgoing content during exit.
+    fn render_modal_layer(
+        &mut self,
+        theme: &HermesTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        self.sync_modal_motion(window, cx);
+
+        let mut modals = self.outgoing_modals.clone();
+        if let Some(active) = self.rendered_modal.clone() {
+            modals.push(active);
+        }
+        if modals.is_empty() {
+            return None;
+        }
+
+        let mut stack = div().absolute().inset_0();
+        for (instance, active) in modals {
+            let content = self.render_modal_content(&active, theme, cx);
+            let (card, scrim) = Self::modal_spring_keys(cx, instance);
+            let card_progress = motion::MotionSystem::value_or(cx, card, 0.0);
+            let scrim_progress = motion::MotionSystem::value_or(cx, scrim, 0.0);
+            stack = stack.child(render_modal_container(
+                content,
+                theme,
+                card_progress,
+                scrim_progress,
+            ));
+        }
+        Some(self.modal_overlay(stack, cx))
     }
 
     /// Focus-tracked overlay wrapper shared by every modal surface.
@@ -5127,6 +5227,193 @@ fn late_approval_notice(status: &str, approval_id: &str) -> String {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    fn modal_test_view<'a>(
+        cx: &'a mut TestAppContext,
+        reduced_motion: bool,
+    ) -> (Entity<ChatView>, &'a mut VisualTestContext) {
+        cx.update(init_app);
+        cx.set_global(motion::MotionSystem::with_policy(
+            motion::MotionPolicy::new(reduced_motion),
+        ));
+        cx.add_window_view(|_, cx| {
+            ChatView::new(
+                AcpBridge::new(),
+                app_runtime().handle().clone(),
+                std::env::temp_dir(),
+                cx,
+            )
+        })
+    }
+
+    fn advance_motion(app: &mut App, window_id: WindowId, frames: usize) {
+        for _ in 0..frames {
+            app.global_mut::<motion::MotionSystem>()
+                .tick(window_id, Duration::from_millis(16));
+        }
+    }
+
+    #[gpui::test]
+    fn modal_motion_reverses_and_reuses_outgoing_instance(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            let window_id = window.window_handle().window_id();
+            let (instance, card, scrim) = view.update(app, |view, cx| {
+                view.shell.active_modal = ActiveModal::About;
+                view.sync_modal_motion(window, cx);
+                let (instance, _) = view.rendered_modal.clone().expect("modal rendered");
+                let (card, scrim) = ChatView::modal_spring_keys(cx, instance);
+                (instance, card, scrim)
+            });
+
+            advance_motion(app, window_id, 4);
+            let before_close = motion::MotionSystem::value(app, card);
+            assert!(before_close > 0.0 && before_close < 1.0);
+
+            view.update(app, |view, cx| {
+                view.shell.active_modal = ActiveModal::None;
+                view.sync_modal_motion(window, cx);
+                assert_eq!(view.rendered_modal, None);
+                assert_eq!(view.outgoing_modals, vec![(instance, ActiveModal::About)]);
+                assert_eq!(motion::MotionSystem::value(cx, card), before_close);
+                assert!(!motion::MotionSystem::is_settled(cx, card));
+                assert!(!motion::MotionSystem::is_settled(cx, scrim));
+            });
+
+            view.update(app, |view, cx| {
+                view.shell.active_modal = ActiveModal::About;
+                view.sync_modal_motion(window, cx);
+                assert_eq!(view.rendered_modal, Some((instance, ActiveModal::About)));
+                assert!(view.outgoing_modals.is_empty());
+                assert_eq!(motion::MotionSystem::value(cx, card), before_close);
+            });
+
+            view.update(app, |view, cx| {
+                view.shell.active_modal = ActiveModal::None;
+                view.sync_modal_motion(window, cx);
+            });
+            advance_motion(app, window_id, 600);
+            view.update(app, |view, cx| {
+                view.sync_modal_motion(window, cx);
+                assert!(view.outgoing_modals.is_empty());
+                assert_eq!(motion::MotionSystem::value_or(cx, card, -1.0), -1.0);
+                assert_eq!(motion::MotionSystem::value_or(cx, scrim, -1.0), -1.0);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn modal_state_updates_keep_the_entrance_instance(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            let window_id = window.window_handle().window_id();
+            let (instance, card) = view.update(app, |view, cx| {
+                view.shell.open_command_palette();
+                view.sync_modal_motion(window, cx);
+                let (instance, _) = view.rendered_modal.clone().expect("palette rendered");
+                let (card, _) = ChatView::modal_spring_keys(cx, instance);
+                (instance, card)
+            });
+            advance_motion(app, window_id, 4);
+            let before_edit = motion::MotionSystem::value(app, card);
+
+            view.update(app, |view, cx| {
+                if let ActiveModal::Palette(palette) = &mut view.shell.active_modal {
+                    palette.set_query("settings");
+                }
+                view.sync_modal_motion(window, cx);
+                assert_eq!(
+                    view.rendered_modal.as_ref().map(|(instance, _)| *instance),
+                    Some(instance)
+                );
+                assert!(view.outgoing_modals.is_empty());
+                assert_eq!(motion::MotionSystem::value(cx, card), before_edit);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn queued_modal_promotion_gets_a_distinct_entrance(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            let window_id = window.window_handle().window_id();
+            let (first, first_card, first_modal) = view.update(app, |view, cx| {
+                let first_modal = ToolApprovalModal::new("req_1", "bash", "cargo build", "R3");
+                let second_modal = ToolApprovalModal::new("req_2", "bash", "cargo test", "R3");
+                view.shell.open_approval(first_modal.clone());
+                view.shell.open_approval(second_modal.clone());
+                view.sync_modal_motion(window, cx);
+                let (instance, _) = view
+                    .rendered_modal
+                    .clone()
+                    .expect("first approval rendered");
+                let (card, _) = ChatView::modal_spring_keys(cx, instance);
+                (instance, card, first_modal)
+            });
+            advance_motion(app, window_id, 4);
+
+            let (second, second_card) = view.update(app, |view, cx| {
+                view.shell.dismiss_modal();
+                view.sync_modal_motion(window, cx);
+                let (instance, active) = view
+                    .rendered_modal
+                    .clone()
+                    .expect("second approval promoted");
+                match &active {
+                    ActiveModal::Approval(modal) => assert_eq!(modal.request_id, "req_2"),
+                    _ => panic!("expected the queued approval"),
+                }
+                let (card, _) = ChatView::modal_spring_keys(cx, instance);
+                assert_eq!(
+                    view.outgoing_modals,
+                    vec![(first, ActiveModal::Approval(first_modal))]
+                );
+                assert_ne!(instance, first);
+                (instance, card)
+            });
+
+            assert_ne!(second, first);
+            assert_eq!(motion::MotionSystem::value_or(app, second_card, -1.0), 0.0);
+            assert!(motion::MotionSystem::value(app, first_card) > 0.0);
+            advance_motion(app, window_id, 1);
+            assert!(motion::MotionSystem::value(app, second_card) > 0.0);
+        });
+    }
+
+    #[gpui::test]
+    fn reduced_motion_snaps_card_and_fades_scrim(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, true);
+        vc.update(|window, app| {
+            let window_id = window.window_handle().window_id();
+            let (instance, card, scrim) = view.update(app, |view, cx| {
+                view.shell.active_modal = ActiveModal::About;
+                view.sync_modal_motion(window, cx);
+                let (instance, _) = view.rendered_modal.clone().expect("modal rendered");
+                let (card, scrim) = ChatView::modal_spring_keys(cx, instance);
+                assert_eq!(motion::MotionSystem::value(cx, card), 1.0);
+                assert_eq!(motion::MotionSystem::value(cx, scrim), 0.0);
+                (instance, card, scrim)
+            });
+            assert!(app
+                .global::<motion::MotionSystem>()
+                .driver_active(window_id));
+
+            advance_motion(app, window_id, 600);
+            view.update(app, |view, cx| {
+                view.shell.active_modal = ActiveModal::None;
+                view.sync_modal_motion(window, cx);
+                assert_eq!(motion::MotionSystem::value(cx, card), 0.0);
+                assert!(motion::MotionSystem::value(cx, scrim) > 0.0);
+                assert!(!motion::MotionSystem::is_settled(cx, scrim));
+                assert_eq!(view.outgoing_modals, vec![(instance, ActiveModal::About)]);
+            });
+            advance_motion(app, window_id, 600);
+            view.update(app, |view, cx| {
+                view.sync_modal_motion(window, cx);
+                assert!(view.outgoing_modals.is_empty());
+            });
+        });
+    }
 
     #[gpui::test]
     fn cached_session_switch_preserves_attachments(cx: &mut TestAppContext) {

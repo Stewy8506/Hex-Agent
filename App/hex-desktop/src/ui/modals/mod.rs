@@ -24,6 +24,7 @@ pub use settings::{SettingsAction, SettingsModal};
 
 use gpui::*;
 use crate::theme::HermesTheme;
+use crate::ui::motion::{MotionSystem, SpringKey, SNAPPY};
 
 /// Active modal state within the application cockpit.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -55,6 +56,18 @@ impl ActiveModal {
         !matches!(self, ActiveModal::None)
     }
 
+    pub fn same_instance(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Approval(current), Self::Approval(other)) => {
+                current.request_id == other.request_id
+            }
+            (Self::SessionAction(current), Self::SessionAction(other)) => {
+                current.session_id == other.session_id
+            }
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+
     /// Dismiss/close the active modal.
     pub fn close(&mut self) {
         *self = ActiveModal::None;
@@ -66,6 +79,36 @@ pub const MODAL_CARD_RADIUS: f32 = 16.0;
 
 /// Width for form modals (account sign-in / device list).
 pub const MODAL_CARD_WIDTH_WIDE: f32 = 440.0;
+
+/// Vertical card travel during modal entrance and exit.
+pub const MODAL_CARD_RISE: f32 = 12.0;
+
+#[derive(Clone, Copy)]
+pub struct ModalMotion<'a> {
+    pub owner: EntityId,
+    pub cx: &'a App,
+}
+
+pub fn modal_press<T: InteractiveElement + Styled>(
+    button: T,
+    name: &'static str,
+    motion: ModalMotion<'_>,
+) -> T {
+    let key = SpringKey::new(motion.owner, name);
+    let press = MotionSystem::value_or(motion.cx, key, 0.0).clamp(0.0, 1.0);
+    button
+        .mt(px(press))
+        .opacity(1.0 - 0.18 * press)
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            MotionSystem::set_target(window, cx, key, 1.0, SNAPPY);
+        })
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            MotionSystem::set_target(window, cx, key, 0.0, SNAPPY);
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
+            MotionSystem::set_target(window, cx, key, 0.0, SNAPPY);
+        })
+}
 
 /// Backdrop scrim: 70% black over the `#141414` canvas (derived — modals are
 /// not in the mockup).
@@ -79,23 +122,43 @@ pub const MODAL_SCRIM: Rgba = Rgba {
 /// Helper function to wrap modal content with the backdrop scrim and centered
 /// card: `#171717` card with a `#262626` border (derived — modals are not in
 /// the mockup).
-pub fn render_modal_container(content: Div, theme: &HermesTheme) -> Div {
+pub fn render_modal_container(
+    content: Div,
+    theme: &HermesTheme,
+    card_progress: f32,
+    scrim_progress: f32,
+) -> Div {
+    let card_progress = card_progress.clamp(0.0, 1.0);
+    let scrim_progress = scrim_progress.clamp(0.0, 1.0);
+    let mut scrim = MODAL_SCRIM;
+    scrim.a *= scrim_progress;
+
     div()
         .absolute()
         .inset_0()
-        .bg(MODAL_SCRIM)
-        .flex()
-        .items_center()
-        .justify_center()
+        .child(div().absolute().inset_0().bg(scrim))
         .child(
             div()
-                .bg(theme.mockup_surface)
-                .border_1()
-                .border_color(theme.mockup_border_strong)
-                .rounded(px(MODAL_CARD_RADIUS))
-                .shadow_lg()
-                .overflow_hidden()
-                .child(content),
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .mt(px(MODAL_CARD_RISE * (1.0 - card_progress)))
+                        .opacity(scrim_progress)
+                        .child(
+                            div()
+                                .bg(theme.mockup_surface)
+                                .border_1()
+                                .border_color(theme.mockup_border_strong)
+                                .rounded(px(MODAL_CARD_RADIUS))
+                                .shadow_lg()
+                                .overflow_hidden()
+                                .child(content),
+                        ),
+                ),
         )
 }
 

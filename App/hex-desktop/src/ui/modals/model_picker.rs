@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
 use crate::ui::icon_svg;
+use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::model_pill::provider_dot_color;
 
 /// Model entry representation in the picker dialog.
@@ -148,7 +149,7 @@ impl ModelPickerModal {
     }
 
     /// Render the model picker modal card.
-    pub fn render(&self, theme: &HermesTheme) -> Div {
+    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
         let filtered = self.filtered_models();
 
         div()
@@ -260,8 +261,7 @@ impl ModelPickerModal {
                             let dot_color = provider_dot_color(&model.provider, theme);
 
                             // Model Row
-                            container = container.child(
-                                div()
+                            let mut row = div()
                                     .flex()
                                     .items_center()
                                     .justify_between()
@@ -342,8 +342,11 @@ impl ModelPickerModal {
                                                     })
                                                     .child(if is_selected { "✓" } else { "" }),
                                             ),
-                                    ),
-                            );
+                                    );
+                            if is_highlighted {
+                                row = modal_press(row, "model_picker_selected_press", motion);
+                            }
+                            container = container.child(row);
                         }
                         container
                     }),

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
 use crate::ui::icon_svg;
+use crate::ui::modals::{modal_press, ModalMotion};
 
 /// Operator decision choice for privileged tool approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,16 +367,16 @@ impl ToolApprovalModal {
             )
     }
 
-    fn render_action_buttons(&self, theme: &HermesTheme) -> Div {
+    fn render_action_buttons(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
         div()
             .flex()
             .items_center()
             .justify_end()
             .gap_2()
             .pt_2()
-            .child(
-                // Deny Button
+            .child(modal_press(
                 div()
+                    .id("approval_deny")
                     .px_3()
                     .py_1p5()
                     .rounded(px(6.0))
@@ -398,10 +399,12 @@ impl ToolApprovalModal {
                             .text_color(theme.rose_fg())
                             .child("(Esc)"),
                     ),
-            )
-            .child(
-                // Approve Button
+                "approval_deny_press",
+                motion,
+            ))
+            .child(modal_press(
                 div()
+                    .id("approval_approve")
                     .px_4()
                     .py_1p5()
                     .rounded(px(6.0))
@@ -427,11 +430,13 @@ impl ToolApprovalModal {
                             .text_color(theme.mockup_body)
                             .child("↵"),
                     ),
-            )
+                "approval_approve_press",
+                motion,
+            ))
     }
 
     /// Render the tool approval modal card.
-    pub fn render(&self, theme: &HermesTheme) -> Div {
+    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
         let mut root = div()
             .w(px(520.0))
             .p_5()
@@ -452,7 +457,7 @@ impl ToolApprovalModal {
         root.child(self.render_command_box(theme))
             .child(self.render_decision_box(theme))
             .child(self.render_lease_box(theme))
-            .child(self.render_action_buttons(theme))
+            .child(self.render_action_buttons(theme, motion))
     }
 
     fn render_radio_option(&self, option: ToolApprovalChoice, theme: &HermesTheme) -> Div {

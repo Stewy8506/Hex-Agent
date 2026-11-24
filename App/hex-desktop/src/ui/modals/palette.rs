@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
 use crate::ui::icon_svg;
+use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::session_list::SessionItem;
 
 /// Category grouping for command palette entries.
@@ -262,7 +263,7 @@ impl CommandPaletteModal {
     }
 
     /// Render the command palette modal card.
-    pub fn render(&self, theme: &HermesTheme) -> Div {
+    pub fn render(&self, theme: &HermesTheme, motion: ModalMotion<'_>) -> Div {
         let filtered = self.filtered_items();
 
         div()
@@ -368,9 +369,8 @@ impl CommandPaletteModal {
                             // Render item row (mockup `.row` language: radius 8,
                             // hover `#1a1a1a`; the selection carries the accent
                             // chip wash + accent border as the focus indicator).
-                            container = container.child(
-                                div()
-                                    .flex()
+                            let mut row = div()
+                                .flex()
                                     .items_center()
                                     .justify_between()
                                     .px(px(12.0))
@@ -447,8 +447,11 @@ impl CommandPaletteModal {
                                                 })
                                                 .child(sc.clone()),
                                         )
-                                    }),
-                            );
+                                    });
+                            if is_selected {
+                                row = modal_press(row, "palette_selected_press", motion);
+                            }
+                            container = container.child(row);
                         }
                         container
                     }),
