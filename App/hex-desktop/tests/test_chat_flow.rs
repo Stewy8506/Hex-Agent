@@ -1061,7 +1061,7 @@ async fn test_model_picker_disconnected_error_is_inline(cx: &mut TestAppContext)
 
 #[gpui::test]
 async fn test_view_zoom_actions_adjust_and_reset_scale(cx: &mut TestAppContext) {
-    let (_rt, _view, vc) = launch_connected_chat(cx);
+    let (_rt, view, vc) = launch_connected_chat(cx);
     vc.dispatch_action(ZoomIn);
     vc.update(|window, _| assert_eq!(window.rem_size(), px(18.0)));
     vc.dispatch_action(ZoomOut);
@@ -1079,6 +1079,47 @@ async fn test_view_zoom_actions_adjust_and_reset_scale(cx: &mut TestAppContext) 
         vc.dispatch_action(ZoomOut);
     }
     vc.update(|window, _| assert_eq!(window.rem_size(), px(12.0)));
+
+    vc.simulate_input("Zoom layout");
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "zoom fixture session", |v| {
+        last_assistant(v).is_some_and(|assistant| assistant.content == "Hello world")
+    });
+    vc.simulate_resize(size(px(900.0), px(600.0)));
+
+    for rem_size in [12.0, 16.0, 24.0] {
+        vc.update(|window, _| window.set_rem_size(px(rem_size)));
+        finish_motion(vc, &view);
+        vc.update(|window, _| assert_eq!(window.rem_size(), px(rem_size)));
+
+        let sidebar = vc.debug_bounds("sidebar_content").unwrap();
+        let main = vc.debug_bounds("session_main_pane").unwrap();
+        let feed = vc.debug_bounds("feed_column").unwrap();
+        let toggle = vc.debug_bounds("header_toggle").unwrap();
+        let indicator = vc.debug_bounds("segment_chat").unwrap();
+        let more = vc.debug_bounds("header_more").unwrap();
+        let attach = vc.debug_bounds("composer_attach").unwrap();
+        let send = vc.debug_bounds("composer_send").unwrap();
+
+        assert_px_close(sidebar.size.width, px(260.0));
+        assert_px_close(main.size.width, px(640.0));
+        assert_px_close(feed.size.width, px(560.0));
+        assert!(feed.left() >= main.left() + px(16.0));
+        assert!(feed.right() <= main.right() - px(16.0));
+        assert!(toggle.left() >= px(80.0));
+        assert!(toggle.right() <= indicator.left());
+        assert!(indicator.right() <= more.left());
+        assert!(more.right() <= main.right());
+        assert!(attach.left() >= feed.left());
+        assert!(send.right() <= feed.right());
+
+        clear_glow_probe(vc);
+        let paints = glow_paints(vc, &view);
+        assert_eq!(paints.len(), 1, "one composer at rem size {rem_size}");
+        assert_px_close(paints[0].card.size.width, px(560.0));
+        assert!(paints[0].card.top() >= px(0.0));
+        assert!(paints[0].card.bottom() <= px(600.0));
+    }
 }
 
 #[gpui::test]
