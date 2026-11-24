@@ -7,12 +7,16 @@
 //! success paints the derived `check.svg` in sage, failure paints `x.svg` in
 //! rose — never the ⏳✓✗ glyphs (D21).
 
+use std::rc::Rc;
+
 use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::diff_view::DiffView;
 use crate::ui::icon_svg;
 use crate::ui::motion;
+
+pub type ToolFoldClickHandler = Rc<dyn Fn(&str, &ClickEvent, &mut Window, &mut App)>;
 
 /// Tool card corner radius (derived token language, plan P5).
 pub const TOOL_CARD_RADIUS: f32 = 14.0;
@@ -218,30 +222,59 @@ impl ToolCallCard {
     }
 
     /// Renders one fold header (caret chevron + label).
-    fn render_fold_header(&self, theme: &HermesTheme, label: &str, expanded: bool) -> Div {
+    fn render_fold_header(
+        &self,
+        theme: &HermesTheme,
+        fold_id: &str,
+        label: &str,
+        expanded: bool,
+        on_click: Option<&ToolFoldClickHandler>,
+    ) -> AnyElement {
         let caret_icon = if expanded { "chevron-down" } else { "chevron-right" };
-        div()
+        let header = div()
             .flex()
             .flex_row()
             .items_center()
             .gap_1()
             .px(px(TOOL_BLOCK_PADDING_X))
             .py(px(6.0))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.mockup_hover))
             .child(icon_svg(caret_icon, 12.0).text_color(theme.mockup_text_dim))
             .child(
                 div()
                     .text_size(px(TOOL_META_SIZE))
                     .text_color(theme.mockup_text_dim)
                     .child(label.to_string()),
-            )
+            );
+        if let Some(on_click) = on_click {
+            let call_id = self.call_id.clone();
+            let on_click = on_click.clone();
+            let selector = format!("tool_{fold_id}_{call_id}");
+            header
+                .id(SharedString::from(format!("tool_{fold_id}_{}", call_id)))
+                .debug_selector(move || selector)
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.mockup_hover))
+                .on_click(move |event, window, cx| on_click(&call_id, event, window, cx))
+                .into_any_element()
+        } else {
+            header.into_any_element()
+        }
     }
 
     /// Renders the tool input / parameters fold.
-    fn render_input_fold(&self, theme: &HermesTheme) -> Div {
+    fn render_input_fold(
+        &self,
+        theme: &HermesTheme,
+        on_click: Option<&ToolFoldClickHandler>,
+    ) -> Div {
         let mut section = div().w_full().flex().flex_col();
-        section = section.child(self.render_fold_header(theme, "Parameters", self.input_expanded));
+        section = section.child(self.render_fold_header(
+            theme,
+            "input",
+            "Parameters",
+            self.input_expanded,
+            on_click,
+        ));
 
         if self.input_expanded {
             section = section.child(self.render_mono_block(theme, &self.arguments_json, false));
@@ -251,10 +284,20 @@ impl ToolCallCard {
     }
 
     /// Renders the output / observation fold.
-    fn render_output_fold(&self, theme: &HermesTheme) -> Option<Div> {
+    fn render_output_fold(
+        &self,
+        theme: &HermesTheme,
+        on_click: Option<&ToolFoldClickHandler>,
+    ) -> Option<Div> {
         let output = self.output_text.as_ref()?;
         let mut section = div().w_full().flex().flex_col();
-        section = section.child(self.render_fold_header(theme, "Output", self.output_expanded));
+        section = section.child(self.render_fold_header(
+            theme,
+            "output",
+            "Output",
+            self.output_expanded,
+            on_click,
+        ));
 
         if self.output_expanded {
             section = section.child(self.render_mono_block(theme, output, true));
@@ -289,6 +332,15 @@ impl ToolCallCard {
     }
 
     pub fn render(&self, theme: &HermesTheme) -> Div {
+        self.render_with_fold_handlers(theme, None, None)
+    }
+
+    pub fn render_with_fold_handlers(
+        &self,
+        theme: &HermesTheme,
+        on_input: Option<ToolFoldClickHandler>,
+        on_output: Option<ToolFoldClickHandler>,
+    ) -> Div {
         let mut card = div()
             .w_full()
             .flex()
@@ -299,7 +351,7 @@ impl ToolCallCard {
             .bg(theme.mockup_surface)
             .overflow_hidden()
             .child(self.render_header(theme))
-            .child(self.render_input_fold(theme));
+            .child(self.render_input_fold(theme, on_input.as_ref()));
 
         if let Some(diff_view) = &self.diff {
             card = card.child(
@@ -311,7 +363,7 @@ impl ToolCallCard {
             );
         }
 
-        if let Some(output_fold) = self.render_output_fold(theme) {
+        if let Some(output_fold) = self.render_output_fold(theme, on_output.as_ref()) {
             card = card.child(output_fold);
         }
 

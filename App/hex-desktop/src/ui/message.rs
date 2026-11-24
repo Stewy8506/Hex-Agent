@@ -16,8 +16,8 @@ use gpui::*;
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::feed::FEED_GAP;
 use crate::ui::motion;
-use crate::ui::reasoning::ThinkingDisclosure;
-use crate::ui::tool_card::ToolCallCard;
+use crate::ui::reasoning::{DisclosureClickHandler, ThinkingDisclosure};
+use crate::ui::tool_card::{ToolCallCard, ToolFoldClickHandler};
 
 /// Handler signature for the interactive message action bar.
 pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -29,6 +29,9 @@ pub struct ActionBarHandlers {
     pub copy: Option<ClickHandler>,
     pub retry: Option<ClickHandler>,
     pub changes: Option<ClickHandler>,
+    pub reasoning: Option<DisclosureClickHandler>,
+    pub tool_input: Option<ToolFoldClickHandler>,
+    pub tool_output: Option<ToolFoldClickHandler>,
 }
 
 /// Gap between action-bar buttons (mockup `gap:18px`).
@@ -612,12 +615,23 @@ impl AssistantMessageView {
 
         // 1. Thinking / Reasoning Fold
         if let Some(reasoning) = &self.reasoning {
-            card = card.child(reasoning.render(theme));
+            card = card.child(reasoning.render_with_click(
+                theme,
+                Some(ElementId::Name(SharedString::from(format!(
+                    "reasoning_{}",
+                    self.id
+                )))),
+                handlers.and_then(|h| h.reasoning.clone()),
+            ));
         }
 
         // 2. Tool Call Cards
         for tool in &self.tool_calls {
-            card = card.child(tool.render(theme));
+            card = card.child(tool.render_with_fold_handlers(
+                theme,
+                handlers.and_then(|h| h.tool_input.clone()),
+                handlers.and_then(|h| h.tool_output.clone()),
+            ));
         }
 
         // 3. Prose / Text Content (fenced code blocks render as structured

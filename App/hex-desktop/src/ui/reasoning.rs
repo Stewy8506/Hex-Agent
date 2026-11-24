@@ -5,10 +5,14 @@
 //! mockup token language (plan P5, derived surface): chevron SVG carets
 //! instead of ▾/▸ (D21), dim 12.5px labels, and a mono `#101010` body.
 
+use std::rc::Rc;
+
 use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::icon_svg;
+
+pub type DisclosureClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 /// Formats an elapsed duration in seconds into human-readable timing text.
 pub fn format_reasoning_elapsed(seconds: f64) -> String {
@@ -101,6 +105,15 @@ impl ThinkingDisclosure {
 
     /// Renders the collapsible thinking fold.
     pub fn render(&self, theme: &HermesTheme) -> Div {
+        self.render_with_click(theme, None, None)
+    }
+
+    pub fn render_with_click(
+        &self,
+        theme: &HermesTheme,
+        id: Option<ElementId>,
+        on_click: Option<DisclosureClickHandler>,
+    ) -> Div {
         let caret_icon = if self.is_expanded {
             "chevron-down"
         } else {
@@ -119,8 +132,6 @@ impl ThinkingDisclosure {
             .py(px(4.0))
             .px(px(8.0))
             .rounded(px(8.0))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.mockup_hover))
             .child(icon_svg(caret_icon, 14.0).text_color(theme.mockup_text_dim))
             .child(
                 div()
@@ -132,6 +143,18 @@ impl ThinkingDisclosure {
                     })
                     .child(label),
             );
+        let header = if let (Some(id), Some(on_click)) = (id, on_click) {
+            let selector = id.to_string();
+            header
+                .id(id)
+                .debug_selector(move || selector)
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.mockup_hover))
+                .on_click(move |event, window, cx| on_click(event, window, cx))
+                .into_any_element()
+        } else {
+            header.into_any_element()
+        };
 
         container = container.child(header);
 

@@ -19,11 +19,13 @@ use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{init_app, ChatView};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::{FeedPaintProbe, MessageItem};
+use hex_desktop::ui::message::AssistantMessageView;
 use hex_desktop::ui::modals::session_actions::{SessionActionMode, SessionActionModal};
 use hex_desktop::ui::modals::settings::{SettingField, SettingsModal};
 use hex_desktop::ui::modals::ActiveModal;
+use hex_desktop::ui::reasoning::ThinkingDisclosure;
 use hex_desktop::ui::sidebar::ProviderState;
-use hex_desktop::ui::tool_card::ToolStatus;
+use hex_desktop::ui::tool_card::{ToolCallCard, ToolStatus};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -307,6 +309,14 @@ fn assert_px_close(actual: Pixels, expected: Pixels) {
     );
 }
 
+fn click_debug_element(vc: &mut VisualTestContext, selector: &'static str) {
+    let bounds = vc
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing rendered element {selector}"));
+    vc.simulate_click(bounds.center(), Modifiers::none());
+    vc.run_until_parked();
+}
+
 #[gpui::test]
 async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -584,6 +594,59 @@ async fn test_cmd_w_closes_window(cx: &mut TestAppContext) {
     vc.simulate_keystrokes("cmd-w");
     vc.run_until_parked();
     assert!(cx.windows().is_empty(), "Cmd+W left the window open");
+}
+
+#[gpui::test]
+async fn test_streaming_disclosures_toggle_by_click(cx: &mut TestAppContext) {
+    let (_rt, view, vc) = launch_connected_chat(cx);
+    pump_until(vc, &view, "initial session adoption", |v| {
+        v.shell.active_session_id.as_deref() == Some("ses_test_1")
+    });
+    // Startup pre-warms a session while Home is still visible.
+    vc.simulate_keystrokes("cmd-n");
+    pump_until(vc, &view, "session view", |v| {
+        v.shell.active_session_id.as_deref() == Some("ses_test_2")
+    });
+    vc.update(|_window, app| {
+        view.update(app, |view, cx| {
+            view.shell.feed.messages.clear();
+            view.shell.feed.messages.push(MessageItem::Assistant(
+                AssistantMessageView::new("msg_disclosures", "Working on it")
+                    .with_reasoning(
+                        ThinkingDisclosure::new("Inspect the request and choose a tool")
+                            .with_generating(true),
+                    )
+                    .with_tool_call(
+                        ToolCallCard::new(
+                            "tc_disclosures",
+                            "read_file",
+                            r#"{"path":"src/main.rs"}"#,
+                        )
+                        .with_output("fn main() {}")
+                        .with_duration(12),
+                    )
+                    .with_streaming(true),
+            ));
+            cx.notify();
+        });
+    });
+    vc.run_until_parked();
+
+    click_debug_element(vc, "reasoning_msg_disclosures");
+    snap(vc, &view, |view| {
+        let assistant = last_assistant(view).unwrap();
+        assert!(assistant.reasoning.as_ref().unwrap().is_expanded);
+    });
+
+    click_debug_element(vc, "tool_input_tc_disclosures");
+    snap(vc, &view, |view| {
+        assert!(last_assistant(view).unwrap().tool_calls[0].input_expanded);
+    });
+
+    click_debug_element(vc, "tool_output_tc_disclosures");
+    snap(vc, &view, |view| {
+        assert!(!last_assistant(view).unwrap().tool_calls[0].output_expanded);
+    });
 }
 
 #[gpui::test]

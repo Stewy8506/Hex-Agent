@@ -3204,6 +3204,43 @@ impl ChatView {
     // Rendering
     // ------------------------------------------------------------------
 
+    fn toggle_reasoning(&mut self, assistant_id: &str, cx: &mut Context<Self>) {
+        if let Some(assistant) = find_assistant_mut(&mut self.shell.feed, assistant_id) {
+            if let Some(reasoning) = &mut assistant.reasoning {
+                reasoning.toggle();
+                cx.notify();
+            }
+        }
+    }
+
+    fn toggle_tool_input(&mut self, assistant_id: &str, call_id: &str, cx: &mut Context<Self>) {
+        if let Some(tool) =
+            find_assistant_mut(&mut self.shell.feed, assistant_id).and_then(|assistant| {
+                assistant
+                    .tool_calls
+                    .iter_mut()
+                    .find(|tool| tool.call_id == call_id)
+            })
+        {
+            tool.toggle_input();
+            cx.notify();
+        }
+    }
+
+    fn toggle_tool_output(&mut self, assistant_id: &str, call_id: &str, cx: &mut Context<Self>) {
+        if let Some(tool) =
+            find_assistant_mut(&mut self.shell.feed, assistant_id).and_then(|assistant| {
+                assistant
+                    .tool_calls
+                    .iter_mut()
+                    .find(|tool| tool.call_id == call_id)
+            })
+        {
+            tool.toggle_output();
+            cx.notify();
+        }
+    }
+
     /// Expands or collapses the Changes card on an assistant message (P4).
     fn toggle_changes(&mut self, assistant_id: &str, cx: &mut Context<Self>) {
         if let Some(assistant) = find_assistant_mut(&mut self.shell.feed, assistant_id) {
@@ -3223,20 +3260,24 @@ impl ChatView {
         }
     }
 
-    /// Per-assistant action-bar handlers for the session feed: Copy, Retry
-    /// and the Changes toggle. Built per render because they capture the
-    /// message content and the weak entity handle.
+    /// Per-assistant handlers for the session feed: Copy, Retry, Changes,
+    /// and the reasoning/tool disclosures. Built per render because they
+    /// capture message state and the weak entity handle.
     fn action_bar_handlers(&self, cx: &mut Context<Self>) -> HashMap<String, ActionBarHandlers> {
         let mut bars: HashMap<String, ActionBarHandlers> = HashMap::new();
         for item in &self.shell.feed.messages {
             if let MessageItem::Assistant(view) = item {
-                if view.is_streaming {
-                    continue;
-                }
-                let weak_retry = cx.entity().downgrade();
-                let weak_changes = cx.entity().downgrade();
+                let weak = cx.entity().downgrade();
+                let weak_retry = weak.clone();
+                let weak_changes = weak.clone();
+                let weak_reasoning = weak.clone();
+                let weak_tool_input = weak.clone();
+                let weak_tool_output = weak;
                 let retry_id = view.id.clone();
                 let changes_id = view.id.clone();
+                let reasoning_id = view.id.clone();
+                let tool_input_id = view.id.clone();
+                let tool_output_id = view.id.clone();
                 let content = view.content.clone();
                 bars.insert(
                     view.id.clone(),
@@ -3252,6 +3293,25 @@ impl ChatView {
                         changes: Some(Rc::new(move |_, _, cx| {
                             weak_changes
                                 .update(cx, |this, cx| this.toggle_changes(&changes_id, cx))
+                                .ok();
+                        })),
+                        reasoning: Some(Rc::new(move |_, _, cx| {
+                            weak_reasoning
+                                .update(cx, |this, cx| this.toggle_reasoning(&reasoning_id, cx))
+                                .ok();
+                        })),
+                        tool_input: Some(Rc::new(move |call_id, _, _, cx| {
+                            weak_tool_input
+                                .update(cx, |this, cx| {
+                                    this.toggle_tool_input(&tool_input_id, call_id, cx)
+                                })
+                                .ok();
+                        })),
+                        tool_output: Some(Rc::new(move |call_id, _, _, cx| {
+                            weak_tool_output
+                                .update(cx, |this, cx| {
+                                    this.toggle_tool_output(&tool_output_id, call_id, cx)
+                                })
                                 .ok();
                         })),
                     },
