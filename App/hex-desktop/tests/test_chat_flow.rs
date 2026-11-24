@@ -41,9 +41,12 @@ use tokio::sync::Mutex as AsyncMutex;
 #[derive(Default)]
 struct MockState {
     session_counter: AtomicUsize,
+    list_requests: AtomicUsize,
     cancel_flag: AtomicBool,
     cancel_requests: AtomicUsize,
     prompts: StdMutex<Vec<(String, String)>>,
+    sessions: StdMutex<Vec<Value>>,
+    renames: StdMutex<Vec<(String, String)>>,
 }
 
 async fn send_line(writer: &Arc<AsyncMutex<DuplexStream>>, value: Value) {
@@ -89,12 +92,27 @@ async fn handle_request(
         }
         "session/new" => {
             let n = state.session_counter.fetch_add(1, Ordering::SeqCst) + 1;
+            let session_id = format!("ses_test_{n}");
+            let cwd = params
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .unwrap_or("/workspace")
+                .to_string();
+            state.sessions.lock().unwrap().push(json!({
+                "sessionId": session_id,
+                "cwd": cwd,
+                "model": "claude-3-7-sonnet",
+                "createdAt": 1_700_000_000.0 + n as f64,
+                "turns": 0,
+                "archived": false,
+                "pinned": false
+            }));
             send_line(
                 &writer,
                 json!({
                     "jsonrpc": "2.0", "id": id,
                     "result": {
-                        "sessionId": format!("ses_test_{n}"),
+                        "sessionId": session_id,
                         "cwd": params.get("cwd").and_then(|v| v.as_str()).unwrap_or("/workspace"),
                         "model": "claude-3-7-sonnet",
                         "provider": "Anthropic"
@@ -103,10 +121,52 @@ async fn handle_request(
             )
             .await;
         }
+        "session/list" => {
+            state.list_requests.fetch_add(1, Ordering::SeqCst);
+            let sessions = state.sessions.lock().unwrap().clone();
+            send_line(
+                &writer,
+                json!({"jsonrpc": "2.0", "id": id, "result": {"sessions": sessions}}),
+            )
+            .await;
+        }
+        "session/rename" => {
+            let session_id = params["sessionId"].as_str().unwrap().to_string();
+            let title = params["title"].as_str().unwrap().to_string();
+            state
+                .renames
+                .lock()
+                .unwrap()
+                .push((session_id.clone(), title.clone()));
+            {
+                let mut sessions = state.sessions.lock().unwrap();
+                if let Some(session) = sessions
+                    .iter_mut()
+                    .find(|session| session["sessionId"] == session_id)
+                {
+                    session["title"] = json!(title);
+                }
+            }
+            send_line(
+                &writer,
+                json!({"jsonrpc": "2.0", "id": id, "result": {"sessionId": session_id, "title": title}}),
+            )
+            .await;
+        }
         "session/prompt" => {
             let sid = params["sessionId"].as_str().unwrap().to_string();
             let text = params["prompt"].as_str().unwrap().to_string();
             state.prompts.lock().unwrap().push((sid.clone(), text.clone()));
+            {
+                let mut sessions = state.sessions.lock().unwrap();
+                if let Some(session) = sessions
+                    .iter_mut()
+                    .find(|session| session["sessionId"] == sid)
+                {
+                    let turns = session["turns"].as_u64().unwrap_or(0) + 1;
+                    session["turns"] = json!(turns);
+                }
+            }
 
             if text.contains("fail") {
                 send_update(
@@ -373,16 +433,21 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         ChatView::new(bridge.clone(), rt.handle().clone(), workspace.clone(), cx)
     });
 
-    // 1. Backend session adopted with real model identity from session/new.
-    pump_until(vc, &view, "initial session adoption", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_1")
+    // 1. Startup connects and lists durable sessions without creating a chat.
+    pump_until(vc, &view, "session list refresh", |v| {
+        v.shell.active_session_id.is_none()
+            && v.shell.feed.is_empty()
+            && state.list_requests.load(Ordering::SeqCst) >= 1
     });
     snap(vc, &view, |v| {
+        assert_eq!(state.session_counter.load(Ordering::SeqCst), 0);
+        assert!(state.sessions.lock().unwrap().is_empty());
+        assert_eq!(v.shell.active_session_id, None);
+        assert!(v.shell.feed.is_empty());
         assert_eq!(v.shell.sidebar.provider_status.state, ProviderState::Connected);
-        assert_eq!(v.shell.sidebar.provider_status.provider_name, "Anthropic");
-        assert_eq!(v.shell.composer.model_pill.model_name, "claude-3-7-sonnet");
-        assert_eq!(v.shell.sidebar.session_list.sessions.len(), 1);
-        assert_eq!(v.shell.sidebar.session_list.sessions[0].title, "New Chat");
+        assert_eq!(v.shell.composer.model_pill.provider_name, "HEX");
+        assert_eq!(v.shell.composer.model_pill.model_name, "ready");
+        assert!(v.shell.sidebar.session_list.sessions.is_empty());
     });
 
     // 1b. Composer parity: the Home screen renders exactly one glow card at
@@ -399,6 +464,8 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     vc.simulate_input("Hello HEX");
     assert_eq!(snap(vc, &view, |v| v.composer_text().to_string()), "Hello HEX");
     vc.simulate_keystrokes("enter");
+    // A duplicate submit while session/new is in flight must not create a chat.
+    vc.simulate_keystrokes("enter");
     pump_until(vc, &view, "streamed turn completion", |v| {
         !v.shell.composer.is_streaming
             && last_assistant(v)
@@ -409,7 +476,18 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
                 })
                 .unwrap_or(false)
     });
+    pump_until(vc, &view, "persisted first-prompt title", |_| {
+        state
+            .renames
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(session_id, title)| session_id == "ses_test_1" && title == "Hello HEX")
+    });
     snap(vc, &view, |v| {
+        assert_eq!(v.shell.active_session_id.as_deref(), Some("ses_test_1"));
+        assert_eq!(state.session_counter.load(Ordering::SeqCst), 1);
+        assert_eq!(state.prompts.lock().unwrap().len(), 1);
         assert!(matches!(&v.shell.feed.messages[0], MessageItem::User(u) if u.content == "Hello HEX"));
         let assistant = last_assistant(v).unwrap();
         assert!(!assistant.is_streaming);
@@ -474,24 +552,37 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         "Hello world"
     );
 
-    // 4. Cmd+N creates a second real backend session.
+    // 4. Cmd+N opens a local Home draft without creating a backend session.
     vc.simulate_keystrokes("cmd-n");
-    pump_until(vc, &view, "second session adoption", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_2")
-    });
     snap(vc, &view, |v| {
         assert!(v.shell.feed.is_empty());
+        assert_eq!(v.shell.active_session_id, None);
+        assert!(v.shell.feed.is_empty());
+        assert_eq!(v.shell.sidebar.session_list.sessions.len(), 1);
+        assert_eq!(state.session_counter.load(Ordering::SeqCst), 1);
+    });
+
+    // 5. The first prompt in that draft creates and adopts the second session.
+    vc.simulate_input("slow task");
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "second session creation and streaming", |v| {
+        v.shell.active_session_id.as_deref() == Some("ses_test_2")
+            && v.shell.composer.is_streaming
+            && last_assistant(v).map(|a| a.content.as_str()) == Some("Working...")
+    });
+    snap(vc, &view, |v| {
+        assert_eq!(state.session_counter.load(Ordering::SeqCst), 2);
         assert_eq!(v.shell.sidebar.session_list.sessions.len(), 2);
     });
 
-    // 5. Draft typed in session 2 must survive switching away and back.
+    // 6. Draft typed in session 2 must survive switching away and back.
     vc.simulate_input("draft for later");
     assert_eq!(
         snap(vc, &view, |v| v.composer_text().to_string()),
         "draft for later"
     );
 
-    // 6. Cmd+K palette: typing routes to the query, Enter switches session.
+    // 7. Cmd+K palette: typing routes to the query, Enter switches session.
     vc.simulate_keystrokes("cmd-k");
     assert!(snap(vc, &view, |v| matches!(v.shell.active_modal, ActiveModal::Palette(_))));
     // Opening a modal moves focus off the composer onto the overlay.
@@ -518,20 +609,19 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         assert_eq!(v.composer_text(), "");
     });
 
-    // 7. Switch back via palette navigation; the draft is restored.
+    // 8. Switch back by its persisted auto-title; the draft is restored.
     vc.simulate_keystrokes("cmd-k");
-    vc.simulate_input("New Chat");
-    // Items: "New Chat" command first, then the "New Chat" session — move down.
-    vc.simulate_keystrokes("down enter");
+    vc.simulate_input("slow task");
+    vc.simulate_keystrokes("enter");
     pump_until(vc, &view, "palette switch back to second session", |v| {
         v.shell.active_session_id.as_deref() == Some("ses_test_2")
     });
     snap(vc, &view, |v| {
         assert_eq!(v.composer_text(), "draft for later");
-        assert!(v.shell.feed.is_empty());
+        assert_eq!(last_assistant(v).unwrap().content, "Working...");
     });
 
-    // 7b. Escape dismisses the palette without touching the draft; up/down
+    // 8b. Escape dismisses the palette without touching the draft; up/down
     //     inside the palette never move the composer caret or edit text.
     vc.simulate_keystrokes("cmd-k down up backspace escape");
     snap(vc, &view, |v| {
@@ -540,18 +630,12 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     });
     assert!(focus_state(vc, &view) == (true, false));
 
-    // 8. Select-all + backspace clears the draft through real editor actions.
+    // 9. Select-all + backspace clears the draft through real editor actions.
     vc.simulate_keystrokes("cmd-a backspace");
     assert_eq!(snap(vc, &view, |v| v.composer_text().to_string()), "");
 
-    // 9. Escape cancels a running turn; the runtime acknowledges and the feed
-    //    shows the authoritative cancelled state.
-    vc.simulate_input("slow task");
-    vc.simulate_keystrokes("enter");
-    pump_until(vc, &view, "slow turn streaming", |v| {
-        v.shell.composer.is_streaming
-            && last_assistant(v).map(|a| a.content.as_str()) == Some("Working...")
-    });
+    // 10. Escape cancels the running turn; the runtime acknowledges and the feed
+    //     shows the authoritative cancelled state.
     vc.simulate_keystrokes("escape");
     pump_until(vc, &view, "turn cancellation", |v| {
         !v.shell.composer.is_streaming && last_notice(v).as_deref() == Some("Turn cancelled.")
@@ -637,9 +721,11 @@ async fn test_about_action_opens_and_dismisses(cx: &mut TestAppContext) {
         assert_eq!(view.shell.active_modal, ActiveModal::None);
     });
 
-    vc.simulate_keystrokes("cmd-n");
+    vc.simulate_input("open about in a session");
+    vc.simulate_keystrokes("enter");
     pump_until(vc, &view, "session view", |view| {
-        view.shell.active_session_id.as_deref() == Some("ses_test_2")
+        view.shell.active_session_id.as_deref() == Some("ses_test_1")
+            && !view.shell.composer.is_streaming
     });
     vc.dispatch_action(About);
     snap(vc, &view, |view| {
@@ -795,9 +881,6 @@ async fn test_view_zoom_actions_adjust_and_reset_scale(cx: &mut TestAppContext) 
 #[gpui::test]
 async fn test_undo_redo_actions_restore_composer_and_modal_text(cx: &mut TestAppContext) {
     let (_rt, view, vc) = launch_connected_chat(cx);
-    pump_until(vc, &view, "startup session prewarm", |view| {
-        view.shell.active_session_id.as_deref() == Some("ses_test_1")
-    });
 
     vc.simulate_input("draft");
     vc.dispatch_action(Undo);
@@ -931,13 +1014,12 @@ async fn test_undo_redo_actions_restore_composer_and_modal_text(cx: &mut TestApp
 #[gpui::test]
 async fn test_streaming_disclosures_toggle_by_click(cx: &mut TestAppContext) {
     let (_rt, view, vc) = launch_connected_chat(cx);
-    pump_until(vc, &view, "initial session adoption", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_1")
-    });
-    // Startup pre-warms a session while Home is still visible.
-    vc.simulate_keystrokes("cmd-n");
+    vc.simulate_input("show details");
+    vc.simulate_keystrokes("enter");
     pump_until(vc, &view, "session view", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_2")
+        v.shell.active_session_id.as_deref() == Some("ses_test_1")
+            && !v.shell.composer.is_streaming
+            && last_assistant(v).is_some()
     });
     vc.update(|_window, app| {
         view.update(app, |view, cx| {
@@ -984,9 +1066,6 @@ async fn test_streaming_disclosures_toggle_by_click(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_modal_enter_is_single_step_and_isolated(cx: &mut TestAppContext) {
     let (_rt, view, vc) = launch_connected_chat(cx);
-    pump_until(vc, &view, "initial session adoption", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_1")
-    });
     vc.simulate_input("keep draft");
     assert_eq!(snap(vc, &view, |v| v.composer_text().to_string()), "keep draft");
     vc.update(|_window, app| {

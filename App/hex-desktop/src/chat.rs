@@ -5,8 +5,8 @@
 //! - a focusable multiline composer driven by the platform input system
 //!   (`EntityInputHandler` + `window.handle_input`, mirroring gpui's canonical
 //!   text input pattern),
-//! - the live `AcpBridge` connection (connect on startup, real `session/new`,
-//!   `session/prompt`, `session/cancel`, `session/approvalDecision`),
+//! - the live `AcpBridge` connection (connect on startup, create a session on
+//!   the first prompt, then `session/prompt`, `session/cancel`, `session/approvalDecision`),
 //! - per-session feeds and composer drafts so switching sessions preserves
 //!   conversation state (Hermes `use-composer-submit.ts` draft semantics),
 //! - authoritative turn completion from the `session/prompt` response, with
@@ -209,6 +209,16 @@ fn find_assistant_mut<'a>(
     })
 }
 
+fn session_title_from_prompt(text: &str) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title: String = normalized.chars().take(48).collect();
+    if title.trim().is_empty() {
+        "Untitled chat".to_string()
+    } else {
+        title
+    }
+}
+
 /// Replace the turn's streamed preview with the authoritative final text (B31).
 ///
 /// The final answer wins even when the preview is non-empty: lost or truncated
@@ -371,6 +381,8 @@ pub struct ChatView {
 
     sessions: HashMap<String, SessionState>,
     session_load_generation: u64,
+    session_list_generation: u64,
+    creating_session: bool,
     running_turns: HashSet<String>,
     /// Assistant message id created for each session's current/most recent turn.
     /// The prompt response and the streamed `session/update` notifications race
@@ -479,6 +491,8 @@ impl ChatView {
             workspace,
             sessions: HashMap::new(),
             session_load_generation: 0,
+            session_list_generation: 0,
+            creating_session: false,
             running_turns: HashSet::new(),
             turn_assistants: HashMap::new(),
             current_model: String::new(),
@@ -650,7 +664,6 @@ impl ChatView {
     fn start_backend(&mut self, cx: &mut Context<Self>) {
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
-        let cwd = self.workspace.to_string_lossy().to_string();
         cx.spawn(async move |this, cx| {
             if !bridge.is_connected() {
                 let b = bridge.clone();
@@ -661,38 +674,21 @@ impl ChatView {
                             .composer
                             .model_pill
                             .set_model("HEX", "not connected");
-                        view.shell.feed.add_system_notice(
-                            "Could not connect to the HEX runtime. Install it (install.sh) or start `hex acp`; retrying automatically.",
-                        );
+                        let message = "Could not connect to the HEX runtime. Install it (install.sh) or start `hex acp`; retrying automatically.".to_string();
+                        view.home_connection_error = Some(message.clone());
+                        view.shell.feed.add_system_notice(message);
                         view.begin_supervision(cx);
                     })
                     .ok();
                     return;
                 }
             }
-            let b = bridge.clone();
-            let res = rt
-                .spawn(async move { b.new_session_full(Some(&cwd), None).await })
-                .await;
-            this.update(cx, |view, cx| match res {
-                Ok(Ok(resp)) => {
-                    view.adopt_session(resp, false, cx);
-                    view.refresh_session_list(cx);
-                }
-                Ok(Err(err)) => {
-                    view.shell.composer.model_pill.set_model("HEX", "no session");
-                    view.shell
-                        .feed
-                        .add_system_notice(format!("Could not create a session: {err}"));
-                    cx.notify();
-                }
-                Err(err) => {
-                    view.shell.composer.model_pill.set_model("HEX", "no session");
-                    view.shell
-                        .feed
-                        .add_system_notice(format!("Session task aborted: {err}"));
-                    cx.notify();
-                }
+            this.update(cx, |view, cx| {
+                view.shell.composer.model_pill.set_model("HEX", "ready");
+                view.shell.sidebar.provider_status.model_name = "Ready".to_string();
+                view.sync_transport_state();
+                view.refresh_session_list(cx);
+                cx.notify();
             })
             .ok();
         })
@@ -735,55 +731,46 @@ impl ChatView {
     }
 
     /// After a reconnect the backend may be a fresh process: restore the
-    /// previous session from durable history, or start a new one honestly.
+    /// previous session from durable history, or return to a local Home draft.
     fn recover_session(&mut self, cx: &mut Context<Self>) {
         let generation = self.begin_session_navigation();
-        let previous = self.shell.active_session_id.clone();
+        let Some(previous) = self.shell.active_session_id.clone() else {
+            self.shell.sidebar.provider_status.state = ProviderState::Connected;
+            self.refresh_session_list(cx);
+            cx.notify();
+            return;
+        };
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
-        let cwd = self.workspace.to_string_lossy().to_string();
-        let model = self.model_id.clone();
         cx.spawn(async move |this, cx| {
-            let mut restored = None;
-            if let Some(sid) = previous {
-                let b = bridge.clone();
-                if let Ok(Ok(load)) = rt
-                    .spawn(async move { b.load_session_paged(&sid).await })
-                    .await
-                {
+            let b = bridge.clone();
+            let restored = match rt
+                .spawn(async move { b.load_session_paged(&previous).await })
+                .await
+            {
+                Ok(Ok(load)) => {
                     let feed = build_restored_feed(&bridge, &rt, &load).await;
-                    restored = Some((load, feed));
+                    Some((load, feed))
                 }
-            }
-            let fresh = if restored.is_none() {
-                let b = bridge.clone();
-                rt.spawn(async move { b.new_session_full(Some(&cwd), model.as_deref()).await })
-                    .await
-                    .ok()
-                    .and_then(|r| r.ok())
-            } else {
-                None
+                _ => None,
             };
             this.update(cx, |view, cx| {
                 if view.session_load_generation != generation {
                     return;
                 }
-                match restored {
-                    Some((load, feed)) => view.adopt_loaded_session(load, feed, cx),
-                    None => match fresh {
-                        Some(resp) => {
-                            view.adopt_session(resp, true, cx);
-                            view.shell.feed.add_system_notice(
-                                "Started a new session; the previous conversation was not recoverable.",
-                            );
-                        }
-                        None => {
-                            view.shell.sidebar.provider_status.state = ProviderState::Offline;
-                            view.shell
-                                .feed
-                                .add_system_notice("Reconnected, but no session could be established.");
-                        }
-                    },
+                if let Some((load, feed)) = restored {
+                    view.adopt_loaded_session(load, feed, cx);
+                } else {
+                    view.clear_session_transition(cx);
+                    view.show_home = true;
+                    view.shell.active_session_id = None;
+                    view.shell.sidebar.session_list.selected_session_id = None;
+                    view.shell.feed = MessageFeed::new();
+                    view.force_feed_resync();
+                    view.home_connection_error = Some(
+                        "Reconnected, but the previous conversation could not be restored. Your draft is still here.".to_string(),
+                    );
+                    view.sync_transport_state();
                 }
                 view.refresh_session_list(cx);
                 cx.notify();
@@ -799,57 +786,109 @@ impl ChatView {
         if !self.bridge.is_connected() {
             return;
         }
+        self.session_list_generation = self.session_list_generation.wrapping_add(1);
+        let generation = self.session_list_generation;
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
             let res = rt.spawn(async move { bridge.list_sessions().await }).await;
-            if let Ok(Ok(items)) = res {
-                this.update(cx, |view, cx| {
-                    for item in items {
-                        let tail: String = item
-                            .session_id
-                            .chars()
-                            .skip(item.session_id.chars().count().saturating_sub(6))
-                            .collect();
-                        let fallback_title = format!("Chat …{tail}");
-                        let session_title = match item.title.as_deref() {
-                            Some(t) if !t.trim().is_empty() => t.to_string(),
-                            _ => fallback_title,
-                        };
-                        if let Some(existing) = view
+            let Ok(Ok(items)) = res else {
+                return;
+            };
+            this.update(cx, |view, cx| {
+                if view.session_list_generation != generation {
+                    return;
+                }
+                let active_id = view.shell.active_session_id.clone();
+                let now = chrono::Utc::now();
+                let mut listed_ids = HashSet::new();
+                let mut sessions = Vec::new();
+                for item in items {
+                    let backend_title = item
+                        .title
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|title| !title.is_empty())
+                        .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "));
+                    if item.turns == 0
+                        && backend_title.is_none()
+                        && active_id.as_deref() != Some(item.session_id.as_str())
+                    {
+                        continue;
+                    }
+                    let existing = view
+                        .shell
+                        .sidebar
+                        .session_list
+                        .sessions
+                        .iter()
+                        .find(|session| session.id == item.session_id)
+                        .cloned();
+                    let created_at = item
+                        .created_at
+                        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds as i64, 0))
+                        .unwrap_or_else(|| {
+                            existing
+                                .as_ref()
+                                .map(|session| session.created_at)
+                                .unwrap_or(now)
+                        });
+                    let title = backend_title
+                        .or_else(|| {
+                            existing
+                                .as_ref()
+                                .map(|session| session.title.clone())
+                                .filter(|title| !title.trim().is_empty() && title != "Untitled chat")
+                        })
+                        .unwrap_or_else(|| "Untitled chat".to_string());
+                    let mut session = SessionItem::with_timestamps(
+                        item.session_id.clone(),
+                        title,
+                        created_at,
+                        existing
+                            .as_ref()
+                            .map(|session| session.updated_at)
+                            .unwrap_or(created_at),
+                    )
+                    .with_pinned(item.pinned)
+                    .with_model(item.model.clone());
+                    session.is_archived = item.archived;
+                    session.message_count = item.turns;
+                    listed_ids.insert(item.session_id.clone());
+                    sessions.push(session);
+                }
+                if let Some(active_id) = active_id {
+                    if !listed_ids.contains(&active_id) {
+                        if let Some(active) = view
                             .shell
                             .sidebar
                             .session_list
                             .sessions
-                            .iter_mut()
-                            .find(|s| s.id == item.session_id)
+                            .iter()
+                            .find(|session| session.id == active_id)
+                            .cloned()
                         {
-                            existing.title = session_title;
-                            existing.is_archived = item.archived;
-                            existing.is_pinned = item.pinned;
-                            existing.model_name = Some(item.model.clone());
-                            continue;
-                        }
-                        view.shell.sidebar.add_session(
-                            SessionItem::new(item.session_id.clone(), session_title)
-                                .with_pinned(item.pinned)
-                                .with_model(item.model.clone()),
-                        );
-                        let added = view
-                            .shell
-                            .sidebar
-                            .session_list
-                            .sessions
-                            .iter_mut()
-                            .find(|s| s.id == item.session_id);
-                        if let Some(added) = added {
-                            added.is_archived = item.archived;
+                            listed_ids.insert(active_id);
+                            sessions.push(active);
                         }
                     }
-                    cx.notify();
-                })
-                .ok();
-            }
+                }
+                sessions.sort_by(|a, b| {
+                    b.is_pinned
+                        .cmp(&a.is_pinned)
+                        .then_with(|| b.updated_at.cmp(&a.updated_at))
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+                view.shell.sidebar.session_list.sessions = sessions;
+                view.shell.sidebar.session_list.selected_session_id = view
+                    .shell
+                    .active_session_id
+                    .clone()
+                    .filter(|id| listed_ids.contains(id));
+                view.sessions.retain(|id, _| listed_ids.contains(id));
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }
@@ -1297,9 +1336,13 @@ impl ChatView {
         self.shell.select_session(id);
         self.current_model = resp.model.clone();
         self.model_id = Some(resp.model.clone());
-        // Phase 2: a prompt submitted on Home opens the session it created, and
-        // an explicit new chat opens the blank session view. The startup
-        // pre-warm keeps the user on Home until they submit.
+        self.current_provider = resp.provider.clone().unwrap_or_else(|| "HEX".to_string());
+        self.shell
+            .composer
+            .model_pill
+            .set_model(self.current_provider.clone(), resp.model.clone());
+        self.shell.sidebar.provider_status.provider_name = self.current_provider.clone();
+        self.shell.sidebar.provider_status.model_name = resp.model.clone();
         self.home_connection_error = None;
         let home_prompt = self.pending_home_prompt.take();
         if let Some(text) = home_prompt {
@@ -1308,13 +1351,6 @@ impl ChatView {
         } else if opens_view {
             self.show_home = false;
         }
-        self.current_provider = resp.provider.clone().unwrap_or_else(|| "HEX".to_string());
-        self.shell
-            .composer
-            .model_pill
-            .set_model(self.current_provider.clone(), resp.model.clone());
-        self.shell.sidebar.provider_status.provider_name = self.current_provider.clone();
-        self.shell.sidebar.provider_status.model_name = resp.model;
         self.sync_transport_state();
         cx.notify();
     }
@@ -1339,7 +1375,15 @@ impl ChatView {
         self.shell.feed = feed;
         self.force_feed_resync();
         self.reset_editor(cx);
-        let title = self
+        let existing = self
+            .shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .cloned();
+        let prompted_title = self
             .shell
             .feed
             .messages
@@ -1348,11 +1392,25 @@ impl ChatView {
                 MessageItem::User(u) => Some(u.content.clone()),
                 _ => None,
             })
-            .unwrap_or_else(|| "Resumed Chat".to_string());
-        let title: String = title.chars().take(48).collect();
-        self.shell
-            .sidebar
-            .add_session(SessionItem::new(id.clone(), title).with_model(load.model.clone()));
+            .map(|text| session_title_from_prompt(&text))
+            .filter(|title| title != "Untitled chat");
+        let title = existing
+            .as_ref()
+            .map(|session| session.title.clone())
+            .filter(|title| {
+                !title.trim().is_empty()
+                    && !matches!(title.as_str(), "New Chat" | "Untitled chat" | "Resumed Chat")
+            })
+            .or(prompted_title)
+            .unwrap_or_else(|| "Untitled chat".to_string());
+        let mut item = existing.unwrap_or_else(|| {
+            let now = chrono::Utc::now();
+            SessionItem::with_timestamps(id.clone(), title.clone(), now, now)
+        });
+        item.title = title;
+        item.model_name = Some(load.model.clone());
+        item.message_count = item.message_count.max(load.page.history_count);
+        self.shell.sidebar.add_session(item);
         self.shell.select_session(id);
         self.current_model = load.model.clone();
         self.model_id = Some(load.model.clone());
@@ -1366,7 +1424,7 @@ impl ChatView {
     }
 
     fn switch_session(&mut self, id: String, cx: &mut Context<Self>) {
-        if self.shell.active_session_id.as_deref() == Some(id.as_str()) {
+        if self.creating_session || self.shell.active_session_id.as_deref() == Some(id.as_str()) {
             return;
         }
         if !self
@@ -1462,27 +1520,38 @@ impl ChatView {
         let now = chrono::Utc::now();
         let workspace = self.shell.sidebar.workspace_name.clone();
         let pending_sessions = self.shell.sidebar.review_sessions.clone();
-        let rows: Vec<ContinueRow> = self
-            .shell
-            .sidebar
-            .session_list
-            .sessions
-            .iter()
-            .filter(|s| !s.is_archived)
-            .take(5)
-            .map(|s| ContinueRow {
-                id: s.id.clone(),
-                title: s.title.clone(),
-                relative_time: crate::ui::session_list::format_compact_relative_time(
-                    s.updated_at,
-                    now,
-                ),
-                location_chip: "This Mac",
-                project: workspace.clone(),
-                running: self.running_turns.contains(&s.id),
-                pending_review: pending_sessions.contains(&s.id),
-            })
-            .collect();
+        let rows: Vec<ContinueRow> = {
+            let mut recent: Vec<_> = self
+                .shell
+                .sidebar
+                .session_list
+                .sessions
+                .iter()
+                .filter(|s| !s.is_archived)
+                .collect();
+            recent.sort_by(|a, b| {
+                b.is_pinned
+                    .cmp(&a.is_pinned)
+                    .then_with(|| b.updated_at.cmp(&a.updated_at))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            recent
+                .into_iter()
+                .take(5)
+                .map(|s| ContinueRow {
+                    id: s.id.clone(),
+                    title: s.title.clone(),
+                    relative_time: crate::ui::session_list::format_compact_relative_time(
+                        s.updated_at,
+                        now,
+                    ),
+                    location_chip: "This Mac",
+                    project: workspace.clone(),
+                    running: self.running_turns.contains(&s.id),
+                    pending_review: pending_sessions.contains(&s.id),
+                })
+                .collect()
+        };
 
         let (toast_spatial, toast_opacity) = self.home_toast_keys(cx);
         let home_coming_soon = self.home_toast_visual.map(|label| {
@@ -1784,40 +1853,41 @@ impl ChatView {
     }
 
     fn request_new_chat(&mut self, cx: &mut Context<Self>) {
+        if self.creating_session {
+            return;
+        }
         self.begin_session_navigation();
         self.clear_session_transition(cx);
-        // Phase 2: New chat returns to the Home start screen. A prompt already
-        // queued from the Home composer (set in submit_text) must survive this
-        // reset so adopt_session can submit it once the session exists.
+        self.save_active_session();
+        self.shell.active_session_id = None;
+        self.shell.sidebar.session_list.selected_session_id = None;
+        self.shell.feed = MessageFeed::new();
+        self.force_feed_resync();
+        self.reset_editor(cx);
+        self.attachments.clear();
+        self.outgoing_attachments.clear();
+        self.pending_home_prompt = None;
         self.show_home = true;
         self.home_connection_error = None;
+        self.sync_transport_state();
+        cx.notify();
+    }
+
+    fn create_session_for_prompt(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.creating_session {
+            return;
+        }
         if !self.bridge.is_connected() {
-            let msg = "Not connected to the HEX runtime — cannot start a new chat.".to_string();
-            // Surface on Home itself, where the user actually is.
-            self.home_connection_error = Some(msg.clone());
-            self.shell.feed.add_system_notice(msg);
+            self.home_connection_error = Some(
+                "Not connected to the HEX runtime — cannot start a new chat.".to_string(),
+            );
             cx.notify();
             return;
         }
-        // start_backend pre-warms a session at launch; while it is still
-        // untouched, the first Home prompt must adopt it rather than orphan
-        // it in the sidebar as an empty "New Chat" entry.
-        if self.pending_home_prompt.is_some()
-            && self.shell.feed.is_empty()
-            && !self.active_turn_running()
-            && self
-                .shell
-                .sidebar
-                .session_list
-                .selected_session()
-                .map(|s| s.title == "New Chat")
-                .unwrap_or(false)
-        {
-            let text = self.pending_home_prompt.take().unwrap();
-            self.show_home = false;
-            self.submit_text(text, cx);
-            return;
-        }
+        self.pending_home_prompt = Some(text);
+        self.creating_session = true;
+        self.home_connection_error = None;
+        let generation = self.begin_session_navigation();
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         let cwd = self.workspace.to_string_lossy().to_string();
@@ -1826,20 +1896,24 @@ impl ChatView {
             let res = rt
                 .spawn(async move { bridge.new_session_full(Some(&cwd), model.as_deref()).await })
                 .await;
-            this.update(cx, |view, cx| match res {
-                Ok(Ok(resp)) => view.adopt_session(resp, true, cx),
-                Ok(Err(err)) => {
-                    view.home_connection_error = Some(format!("Could not create session: {err}"));
-                    view.shell
-                        .feed
-                        .add_system_notice(format!("Could not create session: {err}"));
-                    cx.notify();
+            this.update(cx, |view, cx| {
+                view.creating_session = false;
+                if view.session_load_generation != generation {
+                    view.pending_home_prompt = None;
+                    return;
                 }
-                Err(err) => {
-                    view.shell
-                        .feed
-                        .add_system_notice(format!("Session task aborted: {err}"));
-                    cx.notify();
+                match res {
+                    Ok(Ok(resp)) => view.adopt_session(resp, true, cx),
+                    Ok(Err(err)) => {
+                        view.pending_home_prompt = None;
+                        view.home_connection_error = Some(format!("Could not create session: {err}"));
+                        cx.notify();
+                    }
+                    Err(err) => {
+                        view.pending_home_prompt = None;
+                        view.home_connection_error = Some(format!("Session task aborted: {err}"));
+                        cx.notify();
+                    }
                 }
             })
             .ok();
@@ -1864,8 +1938,7 @@ impl ChatView {
             return;
         }
         if self.show_home {
-            self.pending_home_prompt = Some(text);
-            self.request_new_chat(cx);
+            self.create_session_for_prompt(text, cx);
             return;
         }
         let Some(session_id) = self.shell.active_session_id.clone() else {
@@ -1892,20 +1965,28 @@ impl ChatView {
         self.turn_assistants
             .insert(session_id.clone(), assistant_id);
 
-        // Hermes-style auto title from the first prompt.
         if self
             .shell
             .sidebar
             .session_list
             .selected_session()
-            .map(|s| s.title == "New Chat")
+            .map(|session| {
+                matches!(session.title.as_str(), "New Chat" | "Untitled chat")
+            })
             .unwrap_or(false)
         {
-            let title: String = text.chars().take(48).collect();
-            self.shell
-                .sidebar
-                .session_list
-                .rename_session(&session_id, title);
+            let title = session_title_from_prompt(&text);
+            self.apply_session_rename(&session_id, &title, cx);
+        }
+        if let Some(session) = self
+            .shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.message_count += 1;
         }
 
         self.running_turns.insert(session_id.clone());

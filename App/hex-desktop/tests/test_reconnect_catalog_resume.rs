@@ -28,6 +28,8 @@ use tokio::sync::{watch, Mutex as AsyncMutex, Notify};
 #[derive(Default)]
 struct MockState {
     session_counter: AtomicUsize,
+    list_requests: AtomicUsize,
+    renames: StdMutex<Vec<(String, String)>>,
     catalog_models: StdMutex<Vec<Value>>,
     catalog_error: StdMutex<Option<String>>,
     catalog_fail: AtomicBool,
@@ -67,7 +69,7 @@ fn catalog_model(id: &str, display: &str, provider: &str, is_local: bool) -> Val
 }
 
 fn session_item(id: &str, model: &str) -> Value {
-    json!({"sessionId": id, "cwd": "/workspace", "model": model, "turns": 1})
+    json!({"sessionId": id, "cwd": "/workspace", "model": model, "turns": 1, "title": id})
 }
 
 async fn handle_request(
@@ -97,12 +99,20 @@ async fn handle_request(
         }
         "session/new" => {
             let n = state.session_counter.fetch_add(1, Ordering::SeqCst) + 1;
+            let session_id = format!("ses_test_{n}");
+            state.list_sessions.lock().unwrap().push(json!({
+                "sessionId": session_id,
+                "cwd": "/workspace",
+                "model": "claude-3-7-sonnet",
+                "createdAt": 1_700_000_000.0 + n as f64,
+                "turns": 0
+            }));
             send_line(
                 writer,
                 json!({
                     "jsonrpc": "2.0", "id": id,
                     "result": {
-                        "sessionId": format!("ses_test_{n}"),
+                        "sessionId": session_id,
                         "cwd": params.get("cwd").and_then(|v| v.as_str()).unwrap_or("/workspace"),
                         "model": "claude-3-7-sonnet",
                         "provider": "Anthropic"
@@ -112,10 +122,60 @@ async fn handle_request(
             .await;
         }
         "session/list" => {
+            state.list_requests.fetch_add(1, Ordering::SeqCst);
             let sessions = state.list_sessions.lock().unwrap().clone();
             send_line(
                 writer,
                 json!({"jsonrpc": "2.0", "id": id, "result": {"sessions": sessions}}),
+            )
+            .await;
+        }
+        "session/rename" => {
+            let session_id = params["sessionId"].as_str().unwrap().to_string();
+            let title = params["title"].as_str().unwrap().to_string();
+            state
+                .renames
+                .lock()
+                .unwrap()
+                .push((session_id.clone(), title.clone()));
+            {
+                let mut sessions = state.list_sessions.lock().unwrap();
+                if let Some(session) = sessions
+                    .iter_mut()
+                    .find(|session| session["sessionId"] == session_id)
+                {
+                    session["title"] = json!(title);
+                }
+            }
+            send_line(
+                writer,
+                json!({"jsonrpc": "2.0", "id": id, "result": {"sessionId": session_id, "title": title}}),
+            )
+            .await;
+        }
+        "session/prompt" => {
+            let session_id = params["sessionId"].as_str().unwrap().to_string();
+            {
+                let mut sessions = state.list_sessions.lock().unwrap();
+                if let Some(session) = sessions
+                    .iter_mut()
+                    .find(|session| session["sessionId"] == session_id)
+                {
+                    let turns = session["turns"].as_u64().unwrap_or(0) + 1;
+                    session["turns"] = json!(turns);
+                }
+            }
+            send_line(
+                writer,
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {
+                        "sessionId": session_id,
+                        "status": "completed",
+                        "taskId": "tsk_test",
+                        "content": []
+                    }
+                }),
             )
             .await;
         }
@@ -327,6 +387,16 @@ fn build_view(
     (view, vc.clone())
 }
 
+fn submit_initial_prompt(vc: &mut VisualTestContext, view: &Entity<ChatView>, text: &str) {
+    vc.simulate_input(text);
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, view, "first prompt creates a session", |v| {
+        v.shell.active_session_id.as_deref() == Some("ses_test_1")
+            && !v.shell.composer.is_streaming
+            && last_user(v).as_deref() == Some(text)
+    });
+}
+
 /// B28: a transport loss arms one supervised reconnect loop (Reconnecting);
 /// once the transport is back the previous session is restored from durable
 /// history rather than silently dropped or duplicated.
@@ -350,9 +420,7 @@ async fn test_supervised_reconnect_restores_session(cx: &mut TestAppContext) {
         .expect("ACP handshake");
 
     let (view, mut vc) = build_view(cx, &rt, &bridge);
-    pump_until(&mut vc, &view, "initial session adoption", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_1")
-    });
+    submit_initial_prompt(&mut vc, &view, "start a conversation");
     snap(&vc, &view, |v| {
         assert_eq!(v.shell.sidebar.provider_status.state, ProviderState::Connected);
     });
@@ -422,9 +490,7 @@ async fn test_model_catalog_fetch_and_confirmed_switch(cx: &mut TestAppContext) 
     rt.block_on(bridge.connect_streams(client_read, client_write))
         .expect("ACP handshake");
     let (view, mut vc) = build_view(cx, &rt, &bridge);
-    pump_until(&mut vc, &view, "initial session adoption", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_1")
-    });
+    submit_initial_prompt(&mut vc, &view, "start a conversation");
 
     // Open the picker through the real palette action; it must fetch the catalog.
     vc.simulate_keystrokes("cmd-k");
@@ -520,9 +586,7 @@ async fn test_model_catalog_total_failure_is_honest(cx: &mut TestAppContext) {
     rt.block_on(bridge.connect_streams(client_read, client_write))
         .expect("ACP handshake");
     let (view, mut vc) = build_view(cx, &rt, &bridge);
-    pump_until(&mut vc, &view, "initial session adoption", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_1")
-    });
+    submit_initial_prompt(&mut vc, &view, "start a conversation");
 
     vc.simulate_keystrokes("cmd-k");
     vc.simulate_input("switch model");
@@ -564,16 +628,15 @@ async fn test_resume_durable_session_from_backend(cx: &mut TestAppContext) {
     rt.block_on(bridge.connect_streams(client_read, client_write))
         .expect("ACP handshake");
     let (view, mut vc) = build_view(cx, &rt, &bridge);
-    pump_until(&mut vc, &view, "initial session adoption", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_1")
-    });
 
-    // The inactive on-disk session is listed in the sidebar without being adopted.
-    pump_until(&mut vc, &view, "durable session listed", |v| {
-        v.shell.sidebar.session_list.sessions.iter().any(|s| s.id == "ses_disk_99")
+    // Startup lists durable sessions but stays on Home without creating a chat.
+    pump_until(&mut vc, &view, "durable sessions listed", |v| {
+        v.shell.active_session_id.is_none()
+            && v.shell.feed.is_empty()
+            && v.shell.sidebar.session_list.sessions.len() == 2
     });
     snap(&vc, &view, |v| {
-        assert_eq!(v.shell.active_session_id.as_deref(), Some("ses_test_1"));
+        assert_eq!(state.session_counter.load(Ordering::SeqCst), 0);
         let item = v.shell.sidebar.session_list.sessions.iter().find(|s| s.id == "ses_disk_99").unwrap();
         assert_eq!(item.model_name.as_deref(), Some("claude-3-7-sonnet"));
         assert!(v.shell.feed.is_empty(), "listing must not load a transcript");
@@ -634,12 +697,12 @@ async fn test_latest_session_resume_wins_out_of_order(cx: &mut TestAppContext) {
     rt.block_on(bridge.connect_streams(client_read, client_write))
         .expect("ACP handshake");
     let (view, mut vc) = build_view(cx, &rt, &bridge);
-    pump_until(&mut vc, &view, "initial session adoption", |v| {
-        v.shell.active_session_id.as_deref() == Some("ses_test_1")
-    });
     pump_until(&mut vc, &view, "durable sessions listed", |v| {
-        v.shell.sidebar.session_list.sessions.iter().any(|s| s.id == "ses_disk_b")
+        v.shell.active_session_id.is_none()
+            && v.shell.feed.is_empty()
+            && v.shell.sidebar.session_list.sessions.len() == 3
     });
+    assert_eq!(state.session_counter.load(Ordering::SeqCst), 0);
 
     vc.simulate_keystrokes("cmd-k");
     vc.simulate_input("disk_a");
@@ -665,4 +728,109 @@ async fn test_latest_session_resume_wins_out_of_order(cx: &mut TestAppContext) {
         assert_eq!(v.shell.active_session_id.as_deref(), Some("ses_disk_b"));
         assert_eq!(last_assistant(v).unwrap().content, "Answer B");
     });
+}
+
+#[gpui::test]
+async fn test_session_list_reconciles_stale_entries_after_reconnect(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state_a = MockState::new();
+    *state_a.list_sessions.lock().unwrap() = vec![
+        session_item("ses_stale", "claude-3-7-sonnet"),
+        session_item("ses_keep", "claude-3-7-sonnet"),
+    ];
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(server_read, server_write, state_a.clone(), shutdown_rx));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    pump_until(&mut vc, &view, "initial durable sessions", |v| {
+        v.shell.active_session_id.is_none()
+            && v.shell.sidebar.session_list.sessions.len() == 2
+    });
+
+    let state_b = MockState::new();
+    *state_b.list_sessions.lock().unwrap() = vec![
+        session_item("ses_keep", "claude-3-7-sonnet"),
+        session_item("ses_new", "claude-3-7-sonnet"),
+    ];
+    let (client_read_b, server_write_b) = tokio::io::duplex(64 * 1024);
+    let (server_read_b, client_write_b) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx_b, shutdown_rx_b) = watch::channel(false);
+    rt.spawn(run_mock_server(server_read_b, server_write_b, state_b, shutdown_rx_b));
+
+    shutdown_tx.send(true).unwrap();
+    pump_until(&mut vc, &view, "reconnect armed on Home", |v| {
+        v.shell.sidebar.provider_status.state == ProviderState::Reconnecting
+    });
+    rt.block_on(bridge.connect_streams(client_read_b, client_write_b))
+        .expect("reconnect handshake");
+    pump_until(&mut vc, &view, "reconciled durable sessions", |v| {
+        v.shell.active_session_id.is_none()
+            && v.shell.sidebar.session_list.sessions.iter().any(|s| s.id == "ses_new")
+            && !v.shell.sidebar.session_list.sessions.iter().any(|s| s.id == "ses_stale")
+    });
+    snap(&vc, &view, |v| {
+        assert_eq!(v.shell.sidebar.session_list.sessions.len(), 2);
+        assert!(v.shell.sidebar.session_list.sessions.iter().any(|s| s.id == "ses_keep"));
+    });
+    assert_eq!(state_a.session_counter.load(Ordering::SeqCst), 0);
+}
+
+#[gpui::test]
+async fn test_session_list_metadata_order_and_empty_filtering(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    *state.list_sessions.lock().unwrap() = vec![
+        json!({"sessionId": "ses_empty", "cwd": "/workspace", "model": "claude-3-7-sonnet", "createdAt": 50.0, "turns": 0}),
+        json!({"sessionId": "ses_older", "cwd": "/workspace", "model": "claude-3-7-sonnet", "createdAt": 100.0, "turns": 3, "title": "Older"}),
+        json!({"sessionId": "ses_newer", "cwd": "/workspace", "model": "claude-3-7-sonnet", "createdAt": 200.0, "turns": 1, "title": "  Newer   chat  "}),
+        json!({"sessionId": "ses_pinned", "cwd": "/workspace", "model": "claude-3-7-sonnet", "createdAt": 10.0, "turns": 1, "title": "Pinned", "pinned": true}),
+    ];
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(server_read, server_write, state.clone(), shutdown_rx));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    pump_until(&mut vc, &view, "ordered durable sessions", |v| {
+        v.shell.active_session_id.is_none()
+            && v.shell.feed.is_empty()
+            && v.shell.sidebar.session_list.sessions.len() == 3
+    });
+    snap(&vc, &view, |v| {
+        let sessions = &v.shell.sidebar.session_list.sessions;
+        assert_eq!(
+            sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>(),
+            vec!["ses_pinned", "ses_newer", "ses_older"]
+        );
+        assert_eq!(sessions[0].created_at.timestamp(), 10);
+        assert_eq!(sessions[1].created_at.timestamp(), 200);
+        assert_eq!(sessions[2].created_at.timestamp(), 100);
+        assert_eq!(sessions[1].title, "Newer chat");
+        assert_eq!(sessions[1].message_count, 1);
+        assert_eq!(sessions[2].message_count, 3);
+        assert!(sessions[0].is_pinned);
+        assert!(!sessions.iter().any(|session| session.id == "ses_empty"));
+        assert!(v.shell.feed.is_empty());
+    });
+    assert_eq!(state.session_counter.load(Ordering::SeqCst), 0);
+    assert!(state.list_requests.load(Ordering::SeqCst) >= 1);
 }
