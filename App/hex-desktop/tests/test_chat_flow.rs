@@ -283,7 +283,7 @@ fn clear_glow_probe(vc: &mut VisualTestContext) {
 }
 
 /// Forces a repaint and returns distinct glow-card geometries. Animated frames
-/// can repaint the same card; identical bounds are one card, not duplicates.
+/// can repaint the same card with subpixel drift; nearby bounds are one card.
 fn glow_paints(vc: &mut VisualTestContext, view: &Entity<ChatView>) -> Vec<GlowCardPaint> {
     vc.update(|_window, app| {
         view.update(app, |_, cx| cx.notify());
@@ -294,13 +294,22 @@ fn glow_paints(vc: &mut VisualTestContext, view: &Entity<ChatView>) -> Vec<GlowC
             .map(|p| p.0.lock().unwrap().clone())
             .unwrap_or_default()
     });
-    let mut distinct = Vec::new();
+    let mut distinct: Vec<GlowCardPaint> = Vec::new();
     for paint in paints {
-        if !distinct.contains(&paint) {
+        if !distinct.iter().any(|existing| {
+            bounds_close(existing.card, paint.card) && bounds_close(existing.halo, paint.halo)
+        }) {
             distinct.push(paint);
         }
     }
     distinct
+}
+
+fn bounds_close(actual: Bounds<Pixels>, expected: Bounds<Pixels>) -> bool {
+    (actual.origin.x - expected.origin.x).abs() <= px(1.0)
+        && (actual.origin.y - expected.origin.y).abs() <= px(1.0)
+        && (actual.size.width - expected.size.width).abs() <= px(1.0)
+        && (actual.size.height - expected.size.height).abs() <= px(1.0)
 }
 
 fn assert_px_close(actual: Pixels, expected: Pixels) {
