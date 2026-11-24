@@ -939,11 +939,39 @@ impl ChatView {
     }
 
     fn route_events(&mut self, events: Vec<AcpEvent>, cx: &mut Context<Self>) {
+        let before = (
+            self.shell.feed.revision(),
+            self.shell.composer.is_streaming,
+            self.shell.composer.token_gauge.current_tokens,
+            self.shell.composer.token_gauge.max_tokens,
+            self.shell.sidebar.provider_status.state,
+            std::mem::discriminant(&self.shell.active_modal),
+            self.shell.modal_queue.len(),
+            self.supervisor_active,
+        );
+        let provider_updated = events.iter().any(|event| {
+            matches!(
+                event,
+                AcpEvent::Connected { .. } | AcpEvent::StatusUpdate { .. }
+            )
+        });
         for event in events {
             self.route_event(event, cx);
         }
         self.sync_transport_state();
-        cx.notify();
+        let after = (
+            self.shell.feed.revision(),
+            self.shell.composer.is_streaming,
+            self.shell.composer.token_gauge.current_tokens,
+            self.shell.composer.token_gauge.max_tokens,
+            self.shell.sidebar.provider_status.state,
+            std::mem::discriminant(&self.shell.active_modal),
+            self.shell.modal_queue.len(),
+            self.supervisor_active,
+        );
+        if provider_updated || before != after {
+            cx.notify();
+        }
     }
 
     fn route_event(&mut self, event: AcpEvent, cx: &mut Context<Self>) {
