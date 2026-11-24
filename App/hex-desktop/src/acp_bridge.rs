@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use hex_protocol::client::AcpClient;
@@ -21,7 +21,7 @@ use hex_protocol::models::{
     JsonRpcNotification, SessionUpdateNotification,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{mpsc, Mutex};
 
 use crate::ui::modals::approval::ToolApprovalChoice;
 
@@ -86,11 +86,64 @@ pub enum AcpEvent {
     CloudAccount(hex_protocol::models::CloudEvent),
 }
 
+impl AcpEvent {
+    pub(crate) fn coalesce(&mut self, next: &AcpEvent) -> bool {
+        match (self, next) {
+            (
+                AcpEvent::TokenChunk { session_id, text },
+                AcpEvent::TokenChunk {
+                    session_id: next_session,
+                    text: next_text,
+                },
+            ) if session_id == next_session => {
+                text.push_str(next_text);
+                true
+            }
+            (
+                AcpEvent::ThoughtChunk { session_id, text },
+                AcpEvent::ThoughtChunk {
+                    session_id: next_session,
+                    text: next_text,
+                },
+            ) if session_id == next_session => {
+                text.push_str(next_text);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Lossless fan-out for UI events. The ACP reader already applies transport
+/// backpressure; the desktop queue must not introduce a second dropping hop.
+#[derive(Debug, Clone, Default)]
+pub struct AcpEventBus {
+    subscribers: Arc<StdMutex<Vec<mpsc::UnboundedSender<AcpEvent>>>>,
+}
+
+impl AcpEventBus {
+    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<AcpEvent> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.subscribers.lock().unwrap().push(tx);
+        rx
+    }
+
+    pub fn send(&self, event: AcpEvent) {
+        self.subscribers.lock().unwrap().retain(|tx| {
+            if tx.is_closed() {
+                false
+            } else {
+                tx.send(event.clone()).is_ok()
+            }
+        });
+    }
+}
+
 /// ACP client bridge connecting the desktop cockpit to `harness_core`.
 #[derive(Clone)]
 pub struct AcpBridge {
     client: Arc<Mutex<Option<AcpClient>>>,
-    event_tx: broadcast::Sender<AcpEvent>,
+    event_tx: AcpEventBus,
     is_connected: Arc<AtomicBool>,
     workspace_root: Option<PathBuf>,
 }
@@ -119,10 +172,9 @@ impl Default for AcpBridge {
 impl AcpBridge {
     /// Construct a new detached ACP bridge.
     pub fn new() -> Self {
-        let (event_tx, _) = broadcast::channel(512);
         Self {
             client: Arc::new(Mutex::new(None)),
-            event_tx,
+            event_tx: AcpEventBus::default(),
             is_connected: Arc::new(AtomicBool::new(false)),
             workspace_root: None,
         }
@@ -130,17 +182,16 @@ impl AcpBridge {
 
     /// Construct bridge with an explicit workspace directory root.
     pub fn with_workspace(workspace_root: impl Into<PathBuf>) -> Self {
-        let (event_tx, _) = broadcast::channel(512);
         Self {
             client: Arc::new(Mutex::new(None)),
-            event_tx,
+            event_tx: AcpEventBus::default(),
             is_connected: Arc::new(AtomicBool::new(false)),
             workspace_root: Some(workspace_root.into()),
         }
     }
 
     /// Subscribe to high-level UI events (tokens, tool cards, approvals).
-    pub fn subscribe(&self) -> broadcast::Receiver<AcpEvent> {
+    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<AcpEvent> {
         self.event_tx.subscribe()
     }
 
@@ -150,40 +201,11 @@ impl AcpBridge {
     }
 
     /// Initialize bridge wrapping an existing initialized `AcpClient`.
-    pub fn from_client(client: AcpClient) -> Self {
+    pub async fn from_client(client: AcpClient) -> Self {
         let bridge = Self::new();
-        if let Ok(mut lock) = bridge.client.try_lock() {
-            *lock = Some(client.clone());
-        }
-        let mut notif_rx = client.subscribe();
-        let mut closed_rx = client.subscribe_closed();
-        let event_tx = bridge.event_tx.clone();
-        let is_connected = Arc::clone(&bridge.is_connected);
-        is_connected.store(true, Ordering::SeqCst);
-        let _ = event_tx.send(AcpEvent::Connected {
-            server_name: "HEX Runtime".to_string(),
-            server_version: "unknown".to_string(),
-        });
-        let demux_tx = event_tx.clone();
-        tokio::spawn(async move {
-            loop {
-                match notif_rx.recv().await {
-                    Ok(notif) => Self::dispatch_notification(&notif, &demux_tx),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-        let close_tx = event_tx.clone();
-        let close_connected = Arc::clone(&is_connected);
-        tokio::spawn(async move {
-            if closed_rx.recv().await.is_ok() {
-                close_connected.store(false, Ordering::SeqCst);
-                let _ = close_tx.send(AcpEvent::Disconnected {
-                    reason: "ACP connection closed".to_string(),
-                });
-            }
-        });
+        bridge
+            .attach_client(client, "HEX Runtime", "unknown")
+            .await;
         bridge
     }
 
@@ -256,7 +278,7 @@ impl AcpBridge {
 
     /// Attach active client and spawn notification subscriber task.
     async fn attach_client(&self, client: AcpClient, server_name: &str, server_version: &str) {
-        let mut notif_rx = client.subscribe();
+        let mut notif_rx = client.subscribe_lossless().await;
         let mut closed_rx = client.subscribe_closed();
         let event_tx = self.event_tx.clone();
         let is_connected = Arc::clone(&self.is_connected);
@@ -272,16 +294,12 @@ impl AcpBridge {
             server_version: server_version.to_string(),
         });
 
-        // Demux JSON-RPC notifications into AcpEvent. A lagged broadcast is not a
-        // disconnect; keep demuxing. Transport loss is announced by closed_rx.
+        // Demux JSON-RPC notifications into AcpEvent. The lossless ACP path
+        // waits for capacity instead of discarding streamed deltas.
         let demux_tx = event_tx.clone();
         tokio::spawn(async move {
-            loop {
-                match notif_rx.recv().await {
-                    Ok(notif) => Self::dispatch_notification(&notif, &demux_tx),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
+            while let Some(packet) = notif_rx.recv().await {
+                Self::dispatch_notification(&packet.notification, &demux_tx);
             }
         });
 
@@ -304,7 +322,7 @@ impl AcpBridge {
     /// `hex_protocol::models::SessionUpdateNotification`): text deltas, nested
     /// tool lifecycle payloads, `stream_end`, and terminal `status` updates all
     /// arrive as `session/update` notifications.
-    pub fn dispatch_notification(notif: &JsonRpcNotification, event_tx: &broadcast::Sender<AcpEvent>) {
+    pub fn dispatch_notification(notif: &JsonRpcNotification, event_tx: &AcpEventBus) {
         match notif.method.as_str() {
             "session/update" => {
                 if let Some(ref params_val) = notif.params {
@@ -919,9 +937,114 @@ mod tests {
         assert_eq!(appr_resp.decision, "approve");
     }
 
+    #[tokio::test]
+    async fn lossless_bridge_preserves_large_stream_bursts() {
+        let (client_read, mut server_write) = tokio::io::duplex(64 * 1024);
+        let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+        let bridge = AcpBridge::new();
+        let mut events = bridge.subscribe();
+
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let method = req["method"].as_str().unwrap();
+                let id = req.get("id").cloned();
+                let response = match method {
+                    "initialize" => serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {
+                                "session": {"streaming": true, "cancel": true, "history": true},
+                                "tools": {"listChanged": false}
+                            },
+                            "serverInfo": {"name": "burst_mock", "version": "1"}
+                        }
+                    }),
+                    "session/list" => {
+                        for index in 0..600 {
+                            let update = serde_json::json!({
+                                "jsonrpc": "2.0", "method": "session/update",
+                                "params": {
+                                    "sessionId": "ses_burst",
+                                    "updateType": "agent_response",
+                                    "delta": format!("{index},")
+                                }
+                            });
+                            server_write
+                                .write_all((serde_json::to_string(&update).unwrap() + "\n").as_bytes())
+                                .await
+                                .unwrap();
+                        }
+                        let terminal = serde_json::json!({
+                            "jsonrpc": "2.0", "method": "session/update",
+                            "params": {
+                                "sessionId": "ses_burst",
+                                "updateType": "stream_end",
+                                "status": "Ready"
+                            }
+                        });
+                        server_write
+                            .write_all((serde_json::to_string(&terminal).unwrap() + "\n").as_bytes())
+                            .await
+                            .unwrap();
+                        serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {"sessions": []}
+                        })
+                    }
+                    _ => continue,
+                };
+                server_write
+                    .write_all((serde_json::to_string(&response).unwrap() + "\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        bridge.connect_streams(client_read, client_write).await.unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(AcpEvent::Connected { .. })
+        ));
+        bridge.list_sessions().await.unwrap();
+
+        let mut expected = String::new();
+        for index in 0..600 {
+            let chunk = format!("{index},");
+            expected.push_str(&chunk);
+            let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                event,
+                AcpEvent::TokenChunk {
+                    session_id: "ses_burst".to_string(),
+                    text: chunk,
+                }
+            );
+        }
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            AcpEvent::TurnComplete {
+                session_id: "ses_burst".to_string()
+            }
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(50), events.recv())
+            .await
+            .is_err());
+        assert_eq!(expected.chars().filter(|ch| *ch == ',').count(), 600);
+    }
+
     #[test]
     fn test_dispatch_notification_to_events() {
-        let (tx, mut rx) = broadcast::channel(16);
+        let tx = AcpEventBus::default();
+        let mut rx = tx.subscribe();
 
         // 1. Token chunk (canonical server shape: updateType=agent_response)
         let notif = JsonRpcNotification {
@@ -973,7 +1096,8 @@ mod tests {
 
     #[test]
     fn test_dispatch_thought_and_diff_routing() {
-        let (tx, mut rx) = broadcast::channel(16);
+        let tx = AcpEventBus::default();
+        let mut rx = tx.subscribe();
 
         // agent_thought routes to ThoughtChunk, never TokenChunk.
         let notif = JsonRpcNotification {
@@ -1027,6 +1151,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn event_bus_preserves_bursts_beyond_old_broadcast_capacity() {
+        let bus = AcpEventBus::default();
+        let mut rx = bus.subscribe();
+        let mut expected = String::new();
+        for index in 0..1024 {
+            let chunk = format!("{index},");
+            expected.push_str(&chunk);
+            bus.send(AcpEvent::TokenChunk {
+                session_id: "ses_burst".to_string(),
+                text: chunk,
+            });
+        }
+        bus.send(AcpEvent::TurnComplete {
+            session_id: "ses_burst".to_string(),
+        });
+
+        let mut streamed = String::new();
+        for _ in 0..1024 {
+            match rx.try_recv().unwrap() {
+                AcpEvent::TokenChunk { text, .. } => streamed.push_str(&text),
+                other => panic!("expected token chunk, got {other:?}"),
+            }
+        }
+        assert_eq!(streamed, expected);
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AcpEvent::TurnComplete {
+                session_id: "ses_burst".to_string()
+            }
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn adjacent_chunks_coalesce_without_crossing_event_boundaries() {
+        let mut token = AcpEvent::TokenChunk {
+            session_id: "ses_1".to_string(),
+            text: "Hello".to_string(),
+        };
+        assert!(token.coalesce(&AcpEvent::TokenChunk {
+            session_id: "ses_1".to_string(),
+            text: " world".to_string(),
+        }));
+        assert_eq!(
+            token,
+            AcpEvent::TokenChunk {
+                session_id: "ses_1".to_string(),
+                text: "Hello world".to_string(),
+            }
+        );
+        assert!(!token.coalesce(&AcpEvent::TokenChunk {
+            session_id: "ses_2".to_string(),
+            text: "other".to_string(),
+        }));
+        assert!(!token.coalesce(&AcpEvent::TurnComplete {
+            session_id: "ses_1".to_string(),
+        }));
+    }
+
     /// Load a wire fixture captured from the real Python ACP server
     /// (tests/fixtures/acp_wire, regenerated by tests/client/test_acp_wire_contract.py).
     fn wire_fixture(name: &str) -> Vec<serde_json::Value> {
@@ -1045,7 +1229,8 @@ mod tests {
 
     fn dispatch_fixture(name: &str) -> (Vec<AcpEvent>, hex_protocol::models::SessionPromptResponse) {
         let lines = wire_fixture(name);
-        let (tx, mut rx) = broadcast::channel(64);
+        let tx = AcpEventBus::default();
+        let mut rx = tx.subscribe();
         let mut final_response = None;
         for line in &lines {
             if line.get("method").is_some() {

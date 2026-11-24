@@ -1013,7 +1013,7 @@ async fn test_undo_redo_actions_restore_composer_and_modal_text(cx: &mut TestApp
 
 #[gpui::test]
 async fn test_streaming_disclosures_toggle_by_click(cx: &mut TestAppContext) {
-    let (_rt, view, vc) = launch_connected_chat(cx);
+    let (rt, view, vc) = launch_connected_chat(cx);
     vc.simulate_input("show details");
     vc.simulate_keystrokes("enter");
     pump_until(vc, &view, "session view", |v| {
@@ -1021,6 +1021,11 @@ async fn test_streaming_disclosures_toggle_by_click(cx: &mut TestAppContext) {
             && !v.shell.composer.is_streaming
             && last_assistant(v).is_some()
     });
+    // Let the frame-coalesced notification pump drain before replacing the feed.
+    rt.block_on(async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    });
+    vc.run_until_parked();
     vc.update(|_window, app| {
         view.update(app, |view, cx| {
             view.shell.feed.messages.clear();
@@ -1045,19 +1050,23 @@ async fn test_streaming_disclosures_toggle_by_click(cx: &mut TestAppContext) {
         });
     });
     vc.run_until_parked();
+    finish_motion(vc, &view);
 
     click_debug_element(vc, "reasoning_msg_disclosures");
+    finish_motion(vc, &view);
     snap(vc, &view, |view| {
         let assistant = last_assistant(view).unwrap();
         assert!(assistant.reasoning.as_ref().unwrap().is_expanded);
     });
 
     click_debug_element(vc, "tool_input_tc_disclosures");
+    finish_motion(vc, &view);
     snap(vc, &view, |view| {
         assert!(last_assistant(view).unwrap().tool_calls[0].input_expanded);
     });
 
     click_debug_element(vc, "tool_output_tc_disclosures");
+    finish_motion(vc, &view);
     snap(vc, &view, |view| {
         assert!(!last_assistant(view).unwrap().tool_calls[0].output_expanded);
     });

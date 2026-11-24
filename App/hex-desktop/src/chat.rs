@@ -237,6 +237,7 @@ fn apply_authoritative_final(
             assistant.content = text.to_string();
             assistant.is_streaming = false;
             assistant.model_name = model_name.to_string();
+            feed.mark_changed();
         }
         None => {
             feed.add_assistant_message(text.to_string());
@@ -416,6 +417,8 @@ pub struct ChatView {
     outgoing_feed_list: ListState,
     /// Feed item count currently spliced into `feed_list`.
     feed_synced_count: usize,
+    /// Feed content revision whose row measurements are reflected in `feed_list`.
+    feed_synced_revision: u64,
     /// Outgoing feed captured by the latest completed session swap.
     pending_session_transition: Option<SessionTransition>,
     /// Outgoing feed captured while an uncached session is still loading.
@@ -510,6 +513,7 @@ impl ChatView {
             feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             outgoing_feed_list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             feed_synced_count: 0,
+            feed_synced_revision: 0,
             pending_session_transition: None,
             deferred_session_transition: None,
             outgoing_session_feed: None,
@@ -895,28 +899,49 @@ impl ChatView {
 
     fn start_event_pump(&mut self, cx: &mut Context<Self>) {
         let mut rx = self.bridge.subscribe();
+        let rt = self.rt.clone();
         cx.spawn(async move |this, cx| loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if this
-                        .update(cx, |view, cx| view.route_event(event, cx))
-                        .is_err()
-                    {
-                        break;
+            let first = match rx.recv().await {
+                Some(event) => event,
+                None => break,
+            };
+            let mut batch = vec![first];
+            rt.spawn(async { tokio::time::sleep(Duration::from_millis(16)).await })
+                .await
+                .ok();
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        let coalesced = batch
+                            .last_mut()
+                            .is_some_and(|last| last.coalesce(&event));
+                        if !coalesced {
+                            batch.push(event);
+                        }
                     }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
-                    if this
-                        .update(cx, |view, cx| view.note_stream_lag(dropped, cx))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+            if this
+                .update(cx, |view, cx| view.route_events(batch, cx))
+                .is_err()
+            {
+                break;
+            }
+            if rx.is_closed() {
+                break;
             }
         })
         .detach();
+    }
+
+    fn route_events(&mut self, events: Vec<AcpEvent>, cx: &mut Context<Self>) {
+        for event in events {
+            self.route_event(event, cx);
+        }
+        self.sync_transport_state();
+        cx.notify();
     }
 
     fn route_event(&mut self, event: AcpEvent, cx: &mut Context<Self>) {
@@ -941,7 +966,6 @@ impl ChatView {
             };
             self.shell.feed.add_system_notice(notice);
             self.refresh_cloud_status(cx);
-            cx.notify();
             return;
         }
 
@@ -961,12 +985,12 @@ impl ChatView {
                     .token_gauge
                     .set_tokens(*input_tokens as usize, limit as usize);
             }
-            cx.notify();
             return;
         }
 
         let session_id = match &event {
             AcpEvent::TokenChunk { session_id, .. }
+            | AcpEvent::ThoughtChunk { session_id, .. }
             | AcpEvent::TurnComplete { session_id }
             | AcpEvent::ToolCall { session_id, .. }
             | AcpEvent::ToolResult { session_id, .. }
@@ -981,12 +1005,10 @@ impl ChatView {
                 ));
                 self.shell.handle_acp_event(event);
                 self.begin_supervision(cx);
-                cx.notify();
                 return;
             }
             self.shell.handle_acp_event(event);
             self.sync_transport_state();
-            cx.notify();
             return;
         };
 
@@ -1036,7 +1058,6 @@ impl ChatView {
                             // The modal still carries the request even when no
                             // feed exists yet for this session.
                             self.sync_transport_state();
-                            cx.notify();
                             return;
                         }
                     }
@@ -1048,7 +1069,6 @@ impl ChatView {
                 risk_level,
             ));
             self.sync_transport_state();
-            cx.notify();
             return;
         }
 
@@ -1078,12 +1098,12 @@ impl ChatView {
                 &mut state.feed
             } else {
                 self.sync_transport_state();
-                cx.notify();
                 return;
             };
 
             match event {
                 AcpEvent::TokenChunk { text, .. } => {
+                    let mut changed = false;
                     if let Some(assistant) = turn_assistant
                         .as_deref()
                         .and_then(|id| find_assistant_mut(feed, id))
@@ -1093,12 +1113,16 @@ impl ChatView {
                         // (late deltas must not duplicate the final text).
                         if running || assistant.content.is_empty() {
                             assistant.content.push_str(&text);
+                            changed = true;
                         }
                     } else if running {
                         if !feed.is_streaming {
                             feed.start_assistant_streaming();
                         }
                         feed.append_streaming_chunk(&text);
+                    }
+                    if changed {
+                        feed.mark_changed();
                     }
                 }
                 AcpEvent::ThoughtChunk { text, .. } => {
@@ -1110,6 +1134,7 @@ impl ChatView {
                             ThinkingDisclosure::new("").with_generating(true)
                         });
                         disclosure.append_chunk(&text);
+                        feed.mark_changed();
                     }
                 }
                 AcpEvent::TurnComplete { .. } => {
@@ -1132,12 +1157,19 @@ impl ChatView {
                     ..
                 } => {
                     let card = ToolCallCard::new(call_id, tool_name, arguments_json);
+                    let mut changed = false;
                     match turn_assistant
                         .as_deref()
                         .and_then(|id| find_assistant_mut(feed, id))
                     {
-                        Some(assistant) => assistant.tool_calls.push(card),
+                        Some(assistant) => {
+                            assistant.tool_calls.push(card);
+                            changed = true;
+                        }
                         None => feed.add_tool_call(card),
+                    }
+                    if changed {
+                        feed.mark_changed();
                     }
                 }
                 AcpEvent::ToolResult {
@@ -1161,7 +1193,6 @@ impl ChatView {
         }
 
         self.sync_transport_state();
-        cx.notify();
     }
 
     fn sync_transport_state(&mut self) {
@@ -2137,15 +2168,6 @@ impl ChatView {
             }
         };
         apply_authoritative_final(feed, assistant_id, &text, &self.current_model);
-        cx.notify();
-    }
-
-    /// A lagged broadcast means deltas were dropped; say so instead of silently
-    /// presenting a truncated preview as the answer (B31).
-    fn note_stream_lag(&mut self, dropped: u64, cx: &mut Context<Self>) {
-        self.shell.feed.add_system_notice(format!(
-            "Live stream lagged ({dropped} events dropped); the authoritative final answer will replace the preview."
-        ));
         cx.notify();
     }
 
@@ -3998,6 +4020,7 @@ impl ChatView {
                     &format!("reasoning_{assistant_id}"),
                 )
                 .set(window, cx, reasoning.is_expanded);
+                self.shell.feed.mark_changed();
                 cx.notify();
             }
         }
@@ -4025,6 +4048,7 @@ impl ChatView {
                 &format!("{call_id}:input"),
             )
             .set(window, cx, tool.input_expanded);
+            self.shell.feed.mark_changed();
             cx.notify();
         }
     }
@@ -4051,6 +4075,7 @@ impl ChatView {
                 &format!("{call_id}:output"),
             )
             .set(window, cx, tool.output_expanded);
+            self.shell.feed.mark_changed();
             cx.notify();
         }
     }
@@ -4065,6 +4090,7 @@ impl ChatView {
                 &format!("changes_{assistant_id}"),
             )
             .set(window, cx, assistant.changes_expanded);
+            self.shell.feed.mark_changed();
             cx.notify();
         }
     }
@@ -4392,12 +4418,25 @@ impl ChatView {
     ) -> Div {
         // Non-Chat segments show a Coming soon empty state instead of the feed.
         let coming_soon_pane = self.shell.active_view != ShellView::Chat;
-        // Re-splice the list whenever the item count changes or a turn is
-        // streaming (streamed items grow taller per chunk).
+        // Structural changes remeasure the list. While a turn streams, only the
+        // active assistant row grows, so keep every other row's measurement.
         let item_count = self.shell.feed.len();
-        if item_count != self.feed_synced_count || self.shell.feed.is_streaming {
+        let feed_revision = self.shell.feed.revision();
+        if item_count != self.feed_synced_count {
             self.feed_list.reset(item_count);
             self.feed_synced_count = item_count;
+            self.feed_synced_revision = feed_revision;
+        } else if feed_revision != self.feed_synced_revision {
+            if self.shell.feed.is_streaming {
+                if let Some(index) = self.shell.feed.streaming_row_index() {
+                    self.feed_list.splice(index..index + 1, 1);
+                } else {
+                    self.feed_list.reset(item_count);
+                }
+            } else {
+                self.feed_list.reset(item_count);
+            }
+            self.feed_synced_revision = feed_revision;
         }
         let bars = if coming_soon_pane {
             HashMap::new()
@@ -4911,6 +4950,7 @@ impl ChatView {
             self.shell.feed = MessageFeed::new();
             self.shell.active_session_id = None;
             self.feed_synced_count = 0;
+            self.feed_synced_revision = 0;
             self.sync_transport_state();
         }
         let bridge = self.bridge.clone();
@@ -4975,6 +5015,7 @@ impl ChatView {
             self.shell.feed = MessageFeed::new();
             self.shell.active_session_id = None;
             self.feed_synced_count = 0;
+            self.feed_synced_revision = 0;
             self.sync_transport_state();
         }
         self.spawn_session_flag(session_id, archived, cx, "Archive", "archive_session");

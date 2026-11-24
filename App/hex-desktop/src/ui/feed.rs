@@ -233,6 +233,7 @@ pub struct MessageFeed {
     /// feed shows an inline reconnect notice instead of failing silently.
     pub reconnect_notice: Option<String>,
     pending_entrances: HashSet<usize>,
+    revision: u64,
 }
 
 impl Default for MessageFeed {
@@ -250,6 +251,7 @@ impl MessageFeed {
             is_connecting: false,
             reconnect_notice: None,
             pending_entrances: HashSet::new(),
+            revision: 0,
         }
     }
 
@@ -261,6 +263,7 @@ impl MessageFeed {
             is_connecting: false,
             reconnect_notice: None,
             pending_entrances: HashSet::new(),
+            revision: 0,
         }
     }
 
@@ -271,7 +274,25 @@ impl MessageFeed {
         snapshot
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn mark_changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub fn streaming_row_index(&self) -> Option<usize> {
+        self.messages.iter().rposition(|item| {
+            matches!(
+                item,
+                MessageItem::Assistant(assistant) if assistant.is_streaming
+            )
+        })
+    }
+
     fn mark_entrance(&mut self) {
+        self.mark_changed();
         self.pending_entrances
             .insert(self.messages.len().saturating_sub(1));
     }
@@ -279,6 +300,7 @@ impl MessageFeed {
     /// Removes a row while preserving entrance markers for shifted rows.
     pub fn remove_message_at(&mut self, index: usize) -> MessageItem {
         let removed = self.messages.remove(index);
+        self.mark_changed();
         let mut shifted = HashSet::with_capacity(self.pending_entrances.len());
         for pending in self.pending_entrances.drain() {
             if pending < index {
@@ -359,6 +381,7 @@ impl MessageFeed {
     pub fn append_streaming_chunk(&mut self, chunk: &str) {
         if let Some(MessageItem::Assistant(ref mut assistant)) = self.messages.last_mut() {
             assistant.content.push_str(chunk);
+            self.mark_changed();
             self.auto_scroll_bottom = true;
         }
     }
@@ -368,11 +391,13 @@ impl MessageFeed {
             assistant.is_streaming = false;
         }
         self.is_streaming = false;
+        self.mark_changed();
     }
 
     pub fn add_tool_call(&mut self, tool: ToolCallCard) {
         if let Some(MessageItem::Assistant(ref mut assistant)) = self.messages.last_mut() {
             assistant.tool_calls.push(tool);
+            self.mark_changed();
         } else {
             let mut view = AssistantMessageView::new(
                 format!("msg_{}", chrono::Utc::now().timestamp_millis()),
@@ -404,6 +429,7 @@ impl MessageFeed {
                         if let Some(patch) = diff {
                             tool.diff = Some(crate::ui::diff_view::DiffView::from_patch(patch));
                         }
+                        self.mark_changed();
                         return;
                     }
                 }
@@ -431,6 +457,9 @@ impl MessageFeed {
                 }
             }
         }
+        if updated {
+            self.mark_changed();
+        }
         updated
     }
 
@@ -438,6 +467,7 @@ impl MessageFeed {
         self.messages.clear();
         self.pending_entrances.clear();
         self.is_streaming = false;
+        self.mark_changed();
     }
 
     /// Renders the full feed area: the 560px bottom-anchored scroll column,
@@ -827,6 +857,24 @@ mod tests {
         } else {
             panic!("Expected Assistant message");
         }
+    }
+
+    #[test]
+    fn streaming_revision_tracks_only_the_active_row() {
+        let mut feed = MessageFeed::new();
+        feed.add_user_message("Hello");
+        let initial_revision = feed.revision();
+        feed.start_assistant_streaming();
+        assert_eq!(feed.streaming_row_index(), Some(1));
+        let streaming_revision = feed.revision();
+        assert!(streaming_revision > initial_revision);
+
+        feed.append_streaming_chunk("First");
+        assert!(feed.revision() > streaming_revision);
+        assert_eq!(feed.streaming_row_index(), Some(1));
+
+        feed.finish_streaming();
+        assert_eq!(feed.streaming_row_index(), None);
     }
 
     #[test]
