@@ -428,6 +428,26 @@ async fn test_model_catalog_fetch_and_confirmed_switch(cx: &mut TestAppContext) 
         assert!(!p.models.iter().any(|m| m.id == "claude-3-7-sonnet"));
     });
 
+    // Typing belongs to the picker, never the composer hidden behind it.
+    vc.simulate_input("o3");
+    snap(&vc, &view, |v| {
+        let ActiveModal::ModelPicker(p) = &v.shell.active_modal else {
+            panic!("picker should be open");
+        };
+        assert_eq!(p.search_query, "o3");
+        assert_eq!(p.filtered_models().len(), 1);
+        assert_eq!(p.highlighted_model().unwrap().id, "o3-mini");
+        assert_eq!(v.composer_text(), "");
+    });
+    vc.simulate_keystrokes("backspace backspace");
+    snap(&vc, &view, |v| {
+        let ActiveModal::ModelPicker(p) = &v.shell.active_modal else {
+            panic!("picker should be open");
+        };
+        assert_eq!(p.search_query, "");
+        assert_eq!(v.composer_text(), "");
+    });
+
     // The active model is absent from the catalog, so the first entry (gpt-4o)
     // is highlighted; Enter selects it and dispatches the backend switch.
     vc.simulate_keystrokes("enter");

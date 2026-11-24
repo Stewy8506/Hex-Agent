@@ -2403,8 +2403,14 @@ impl ChatView {
                     modal.is_submitting = true;
                     self.send_approval_result(result, cx);
                     true
+                } else if matches!(
+                    key,
+                    "y" | "a" | "n" | "l" | "1" | "2" | "3"
+                ) {
+                    cx.notify();
+                    true
                 } else {
-                    matches!(key, "y" | "a" | "n" | "l" | "1" | "2" | "3")
+                    false
                 }
             }
             ActiveModal::Palette(palette) => {
@@ -2421,7 +2427,7 @@ impl ChatView {
                 match key {
                     // handle_key already moved the highlight; consume the key so
                     // it never reaches the editor underneath the modal.
-                    "up" | "down" => {
+                    "up" | "down" | "enter" => {
                         cx.notify();
                         true
                     }
@@ -2441,12 +2447,26 @@ impl ChatView {
                     cx.notify();
                     return true;
                 }
+                if key == "backspace" {
+                    let mut query = picker.search_query.clone();
+                    query.pop();
+                    picker.set_search(query);
+                    cx.notify();
+                    return true;
+                }
                 if let Some(model_id) = picker.handle_key(key) {
                     self.shell.dismiss_modal();
                     self.apply_model_choice(model_id, cx);
                     return true;
                 }
-                matches!(key, "up" | "down")
+                if key == "enter"
+                    || matches!(key, "up" | "arrowup" | "down" | "arrowdown")
+                {
+                    cx.notify();
+                    true
+                } else {
+                    false
+                }
             }
             ActiveModal::Account(modal) => {
                 if key == "escape" {
@@ -2467,7 +2487,15 @@ impl ChatView {
                     return true;
                 }
                 // Consume navigation keys so they never reach the composer.
-                matches!(key, "tab" | "shift-tab" | "up" | "arrowup" | "down" | "arrowdown")
+                if matches!(
+                    key,
+                    "tab" | "shift-tab" | "up" | "arrowup" | "down" | "arrowdown" | "enter"
+                ) {
+                    cx.notify();
+                    true
+                } else {
+                    false
+                }
             }
             ActiveModal::SessionAction(modal) => {
                 if key == "escape" {
@@ -2487,7 +2515,12 @@ impl ChatView {
                     self.execute_session_action(outcome, cx);
                     return true;
                 }
-                matches!(key, "up" | "arrowup" | "down" | "arrowdown")
+                if matches!(key, "up" | "arrowup" | "down" | "arrowdown" | "enter") {
+                    cx.notify();
+                    true
+                } else {
+                    false
+                }
             }
             ActiveModal::SessionSearch(modal) => {
                 if key == "escape" {
@@ -2541,11 +2574,16 @@ impl ChatView {
                     return true;
                 }
                 // Consume navigation keys so they never reach the composer.
-                matches!(
+                if matches!(
                     key,
                     "up" | "arrowup" | "down" | "arrowdown" | "left" | "arrowleft" | "right"
-                        | "arrowright" | "enter"
-                )
+                        | "arrowright" | "enter" | "backspace"
+                ) {
+                    cx.notify();
+                    true
+                } else {
+                    false
+                }
             }
             ActiveModal::None => false,
         }
@@ -2565,7 +2603,7 @@ impl ChatView {
     }
 
     fn on_submit(&mut self, _: &shortcuts::SubmitPrompt, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("enter", cx) {
+        if self.handle_modal_key("enter", cx) || self.shell.active_modal.is_open() {
             return;
         }
         self.submit_prompt(cx);
@@ -2614,7 +2652,7 @@ impl ChatView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.handle_modal_key("escape", cx) {
+        if self.handle_modal_key("escape", cx) || self.shell.active_modal.is_open() {
             return;
         }
         self.cancel_turn(cx);
@@ -2634,7 +2672,7 @@ impl ChatView {
     }
 
     fn on_cut(&mut self, _: &shortcuts::Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("cmd-x", cx) {
+        if self.handle_modal_key("cmd-x", cx) || self.shell.active_modal.is_open() {
             return;
         }
         if !self.selected_range.is_empty() {
@@ -2673,14 +2711,14 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.handle_modal_key("shift-enter", cx) {
+        if self.handle_modal_key("shift-enter", cx) || self.shell.active_modal.is_open() {
             return;
         }
         self.replace_text_in_range(None, "\n", window, cx);
     }
 
     fn on_backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("backspace", cx) {
+        if self.handle_modal_key("backspace", cx) || self.shell.active_modal.is_open() {
             return;
         }
         if self.selected_range.is_empty() {
@@ -2690,7 +2728,7 @@ impl ChatView {
     }
 
     fn on_delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("delete", cx) {
+        if self.handle_modal_key("delete", cx) || self.shell.active_modal.is_open() {
             return;
         }
         if self.selected_range.is_empty() {
@@ -2700,7 +2738,7 @@ impl ChatView {
     }
 
     fn on_left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("left", cx) {
+        if self.handle_modal_key("left", cx) || self.shell.active_modal.is_open() {
             return;
         }
         if self.selected_range.is_empty() {
@@ -2711,7 +2749,7 @@ impl ChatView {
     }
 
     fn on_right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("right", cx) {
+        if self.handle_modal_key("right", cx) || self.shell.active_modal.is_open() {
             return;
         }
         if self.selected_range.is_empty() {
@@ -2722,21 +2760,21 @@ impl ChatView {
     }
 
     fn on_select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("shift-left", cx) {
+        if self.handle_modal_key("shift-left", cx) || self.shell.active_modal.is_open() {
             return;
         }
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
     }
 
     fn on_select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("shift-right", cx) {
+        if self.handle_modal_key("shift-right", cx) || self.shell.active_modal.is_open() {
             return;
         }
         self.select_to(self.next_boundary(self.cursor_offset()), cx);
     }
 
     fn on_home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("home", cx) {
+        if self.handle_modal_key("home", cx) || self.shell.active_modal.is_open() {
             return;
         }
         let (line, _) = self.line_col(self.cursor_offset());
@@ -2744,7 +2782,7 @@ impl ChatView {
     }
 
     fn on_end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("end", cx) {
+        if self.handle_modal_key("end", cx) || self.shell.active_modal.is_open() {
             return;
         }
         let (line, _) = self.line_col(self.cursor_offset());
@@ -2753,14 +2791,14 @@ impl ChatView {
     }
 
     fn on_up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("up", cx) {
+        if self.handle_modal_key("up", cx) || self.shell.active_modal.is_open() {
             return;
         }
         self.move_vertically(true, cx);
     }
 
     fn on_down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        if self.handle_modal_key("down", cx) {
+        if self.handle_modal_key("down", cx) || self.shell.active_modal.is_open() {
             return;
         }
         self.move_vertically(false, cx);
@@ -2788,6 +2826,35 @@ impl ChatView {
                     let query = format!("{}{}", palette.query, ch);
                     palette.set_query(query);
                     cx.notify();
+                    cx.stop_propagation();
+                }
+            }
+            ActiveModal::ModelPicker(_) => {
+                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
+                    let typed = keystroke.key_char.clone().or_else(|| {
+                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
+                    });
+                    if let Some(ch) = typed {
+                        if let ActiveModal::ModelPicker(modal) = &mut self.shell.active_modal {
+                            let query = format!("{}{}", modal.search_query, ch);
+                            modal.set_search(query);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }
+                        return;
+                    }
+                    if keystroke.key == "backspace" {
+                        if let ActiveModal::ModelPicker(modal) = &mut self.shell.active_modal {
+                            let mut query = modal.search_query.clone();
+                            query.pop();
+                            modal.set_search(query);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }
+                        return;
+                    }
+                }
+                if self.handle_modal_key(keystroke.key.as_str(), cx) {
                     cx.stop_propagation();
                 }
             }
@@ -4280,6 +4347,9 @@ impl EntityInputHandler for ChatView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.shell.active_modal.is_open() {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -4301,6 +4371,9 @@ impl EntityInputHandler for ChatView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.shell.active_modal.is_open() {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))

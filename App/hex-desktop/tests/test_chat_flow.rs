@@ -19,6 +19,8 @@ use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{init_app, ChatView};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::{FeedPaintProbe, MessageItem};
+use hex_desktop::ui::modals::session_actions::{SessionActionMode, SessionActionModal};
+use hex_desktop::ui::modals::settings::{SettingField, SettingsModal};
 use hex_desktop::ui::modals::ActiveModal;
 use hex_desktop::ui::sidebar::ProviderState;
 use hex_desktop::ui::tool_card::ToolStatus;
@@ -27,6 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+use tokio::runtime::Runtime;
 use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Default)]
@@ -537,8 +540,9 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui::test]
-async fn test_cmd_w_closes_window(cx: &mut TestAppContext) {
+fn launch_connected_chat<'a>(
+    cx: &'a mut TestAppContext,
+) -> (Runtime, Entity<ChatView>, &'a mut VisualTestContext) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -557,11 +561,73 @@ async fn test_cmd_w_closes_window(cx: &mut TestAppContext) {
         cx.set_global(GlowCardProbe::default());
         cx.set_global(FeedPaintProbe::default());
     });
-    let (_view, vc) = cx.add_window_view(|_window, cx| {
+    let (view, vc) = cx.add_window_view(|_window, cx| {
         ChatView::new(bridge.clone(), rt.handle().clone(), std::env::temp_dir(), cx)
     });
+    (rt, view, vc)
+}
 
+#[gpui::test]
+async fn test_cmd_w_closes_window(cx: &mut TestAppContext) {
+    let (_rt, _view, vc) = launch_connected_chat(cx);
     vc.simulate_keystrokes("cmd-w");
     vc.run_until_parked();
     assert!(cx.windows().is_empty(), "Cmd+W left the window open");
+}
+
+#[gpui::test]
+async fn test_modal_enter_is_single_step_and_isolated(cx: &mut TestAppContext) {
+    let (_rt, view, vc) = launch_connected_chat(cx);
+    pump_until(vc, &view, "initial session adoption", |v| {
+        v.shell.active_session_id.as_deref() == Some("ses_test_1")
+    });
+    vc.simulate_input("keep draft");
+    assert_eq!(snap(vc, &view, |v| v.composer_text().to_string()), "keep draft");
+    vc.update(|_window, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_modal = ActiveModal::SessionAction(SessionActionModal::open_menu(
+                "ses_test_1",
+                "Existing title",
+                false,
+                false,
+            ));
+            cx.notify();
+        });
+    });
+    vc.run_until_parked();
+
+    vc.simulate_keystrokes("enter");
+    snap(&vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("session action modal should still be open");
+        };
+        assert_eq!(modal.mode, SessionActionMode::Rename);
+        assert!(!modal.busy);
+        assert_eq!(view.composer_text(), "keep draft");
+    });
+    vc.simulate_keystrokes("escape");
+
+    vc.update(|_window, app| {
+        view.update(app, |view, cx| {
+            let mut settings = SettingsModal::default();
+            settings.fields.push(SettingField::Text {
+                key: "model.cloudModelId",
+                label: "Model ID",
+                value: "gpt-4o".to_string(),
+                required: true,
+            });
+            view.shell.active_modal = ActiveModal::Settings(settings);
+            cx.notify();
+        });
+    });
+    vc.run_until_parked();
+
+    vc.simulate_keystrokes("enter");
+    snap(&vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings modal should still be open");
+        };
+        assert!(modal.editing, "one Enter must enter settings edit mode");
+        assert_eq!(view.composer_text(), "keep draft");
+    });
 }
