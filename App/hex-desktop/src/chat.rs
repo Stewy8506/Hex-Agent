@@ -4574,10 +4574,9 @@ impl ChatView {
             .flex()
             .flex_col()
             .bg(theme.mockup_canvas)
-            // Header h60, padding 0 20px: hamburger ib left; the icon
-            // segmented control is absolute-centered per the mockup (it
-            // paints below the side row, whose corners stay clickable);
-            // right gap 4: Device / Team / More ibs.
+            // Header h60, padding 0 20px: hamburger button left; the live
+            // Chat view indicator is absolute-centered per the mockup; right
+            // gap 4: Device / Team / More buttons.
             .child(
                 div()
                     .relative()
@@ -4594,7 +4593,7 @@ impl ChatView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(self.render_segmented_header(theme, cx)),
+                            .child(self.render_chat_header_indicator(theme)),
                     )
                     .child(
                         div()
@@ -4732,48 +4731,35 @@ impl ChatView {
             })
     }
 
-    /// Segmented Chat/Files/Browser/Terminal header control: bg `#191919`,
-    /// border `#232323`, radius 12, padding 3, gap 2; four 32×32 icon buttons
-    /// (Chat bubble / Files / Browser globe / Terminal); active button bg
-    /// `#262626`, icon tint unchanged. Only Chat is live; the other panes
-    /// render a coming-soon empty state when picked.
-    fn render_segmented_header(&self, theme: &HermesTheme, cx: &mut Context<Self>) -> Div {
-        let segments: [(&str, ShellView); 4] = [
-            ("chat", ShellView::Chat),
-            ("files", ShellView::Files),
-            ("browser", ShellView::Browser),
-            ("terminal", ShellView::Terminal),
-        ];
-
+    /// Static Chat view indicator: bg `#191919`, border `#232323`, radius 12,
+    /// padding 3; active 32×32 icon button with radius 8 and bg `#262626`.
+    /// Files, Browser, and Terminal stay hidden until their panes are functional.
+    fn render_chat_header_indicator(&self, theme: &HermesTheme) -> Div {
         div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(crate::ui::shell::SEGMENTED_GAP))
             .p(px(crate::ui::shell::SEGMENTED_PADDING))
             .rounded(px(crate::ui::shell::SEGMENTED_RADIUS))
             .bg(theme.mockup_dock)
             .border_1()
             .border_color(theme.mockup_dock_border)
-            .children(segments.map(|(icon, view)| {
-                let active = self.shell.active_view == view;
+            .child(
                 div()
-                    .id(SharedString::from(format!("segment_{icon}")))
-                    .cursor_pointer()
+                    .id("segment_chat")
+                    .debug_selector(|| "segment_chat".to_string())
                     .size(px(crate::ui::shell::SEGMENT_BUTTON))
                     .flex()
                     .items_center()
                     .justify_center()
                     .rounded(px(crate::ui::shell::SEGMENT_BUTTON_RADIUS))
                     .text_color(theme.mockup_text_muted)
-                    .when(active, |s| s.bg(theme.mockup_seg_active))
-                    .when(!active, |s| s.hover(|s| s.bg(theme.mockup_hover)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.shell.active_view = view;
-                        cx.notify();
-                    }))
-                    .child(crate::ui::icon_svg(icon, crate::ui::shell::SEGMENT_ICON))
-            }))
+                    .bg(theme.mockup_seg_active)
+                    .child(crate::ui::icon_svg(
+                        "chat",
+                        crate::ui::shell::SEGMENT_ICON,
+                    )),
+            )
     }
 
     // ------------------------------------------------------------------

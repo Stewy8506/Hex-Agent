@@ -114,7 +114,7 @@ pub const ROW_PADDING_Y: f32 = 6.0;
 pub const ROW_RADIUS: f32 = 10.0;
 /// New chat row bottom margin.
 pub const NEW_CHAT_MARGIN_BOTTOM: f32 = 8.0;
-/// New chat row icons (plus and folder) in px.
+/// New chat row plus icon in px.
 pub const NEW_CHAT_ICON: f32 = 16.0;
 /// Search box: padding 7px 12px, gap 10, margin-bottom 22, icons 16.
 pub const SEARCH_PADDING_X: f32 = 12.0;
@@ -122,8 +122,6 @@ pub const SEARCH_PADDING_Y: f32 = 7.0;
 pub const SEARCH_GAP: f32 = 10.0;
 pub const SEARCH_MARGIN_BOTTOM: f32 = 22.0;
 pub const SEARCH_ICON: f32 = 16.0;
-/// Projects header: padding 0 10px 4px; plus icon 14.
-pub const PROJECTS_HEADER_ICON: f32 = 14.0;
 /// Project/session row icons: folder, chevrons, feature icons.
 pub const PROJECT_ICON: f32 = 16.0;
 pub const CHEVRON_ICON: f32 = 14.0;
@@ -321,7 +319,7 @@ impl SidebarView {
     }
 
     /// New chat `.row`, margin-bottom 8: plus 16 `#e6e6e6` · label flex-1
-    /// 14.5 `#e6e6e6` · folder 16 `#858585`.
+    /// 14.5 `#e6e6e6`.
     fn render_new_chat_row(&self, theme: &HermesTheme, handlers: &SidebarHandlers) -> Stateful<Div> {
         let mut row = Self::mockup_row(theme)
             .id("sidebar_new_chat")
@@ -335,12 +333,7 @@ impl SidebarView {
                     .text_size(px(MockupTypeScale::FEATURE_LABEL_SIZE))
                     .text_color(theme.mockup_text)
                     .child("New chat"),
-            )
-            .child(Self::tinted_icon(
-                "folder",
-                NEW_CHAT_ICON,
-                theme.mockup_text_dim,
-            ));
+            );
         if let Some(on_new_chat) = &handlers.on_new_chat {
             let on_new_chat = on_new_chat.clone();
             row = row.on_click(move |event, window, cx| on_new_chat(event, window, cx));
@@ -392,7 +385,7 @@ impl SidebarView {
         row
     }
 
-    /// Projects header: padding 0 10px 4px, 13.5 `#858585`, plus 14 right.
+    /// Projects header: padding 0 10px 4px, label 13.5 `#858585`.
     fn render_projects_header(&self, theme: &HermesTheme) -> Div {
         div()
             .w_full()
@@ -408,11 +401,6 @@ impl SidebarView {
                     .text_color(theme.mockup_text_dim)
                     .child("Projects"),
             )
-            .child(Self::tinted_icon(
-                "plus",
-                PROJECTS_HEADER_ICON,
-                theme.mockup_text_dim,
-            ))
     }
 
     /// Project `.row`: folder 16 (`#e6e6e6` expanded / `#9a9a9a` collapsed) ·
@@ -941,7 +929,6 @@ mod tests {
         assert_eq!(SEARCH_GAP, 10.0);
         assert_eq!(SEARCH_MARGIN_BOTTOM, 22.0);
         assert_eq!(SEARCH_ICON, 16.0);
-        assert_eq!(PROJECTS_HEADER_ICON, 14.0);
         assert_eq!(PROJECT_ICON, 16.0);
         assert_eq!(CHEVRON_ICON, 14.0);
         assert_eq!(FEATURE_ICON, 16.0);

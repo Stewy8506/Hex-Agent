@@ -505,6 +505,20 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         assert_eq!(v.composer_text(), "");
     });
 
+    // 2a. Only the live Chat view is exposed. Files, Browser, and Terminal
+    // remain hidden until they have functional panes instead of dead links.
+    vc.run_until_parked();
+    assert!(
+        vc.debug_bounds("segment_chat").is_some(),
+        "the live Chat view indicator must remain visible"
+    );
+    for selector in ["segment_files", "segment_browser", "segment_terminal"] {
+        assert!(
+            vc.debug_bounds(selector).is_none(),
+            "nonfunctional pane navigation must not render: {selector}"
+        );
+    }
+
     // 2b. Composer parity: the Session screen also renders exactly one glow
     // card, now at the mockup's 560px session width (fixes D4's missing
     // session glow).
