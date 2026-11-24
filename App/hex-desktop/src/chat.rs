@@ -36,7 +36,7 @@ use hex_protocol::models::{
 use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
-use crate::shortcuts::{self, CloseWindow, Hide, Quit, init_shortcuts};
+use crate::shortcuts::{self, About, CloseWindow, Hide, Quit, init_shortcuts};
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{ApprovalCard, ApprovalCardState, MessageFeed, MessageItem};
@@ -47,7 +47,7 @@ use crate::ui::modals::session_actions::{
     SessionActionModal, SessionActionOutcome, SessionSearchModal,
 };
 use crate::ui::modals::settings::{SettingsAction, SettingsModal};
-use crate::ui::modals::{render_modal_container, ActiveModal, AccountModal, ModelEntry, PaletteAction, ToolApprovalModal};
+use crate::ui::modals::{render_about, render_modal_container, ActiveModal, AccountModal, ModelEntry, PaletteAction, ToolApprovalModal};
 use crate::ui::model_pill::SendButton;
 use crate::ui::motion;
 use crate::ui::pill::{mockup_icon_button, mockup_pill, mockup_pill_chevron};
@@ -2579,6 +2579,15 @@ impl ChatView {
                     _ => false,
                 }
             }
+            ActiveModal::About => {
+                if matches!(key, "escape" | "enter") {
+                    self.shell.dismiss_modal();
+                    cx.notify();
+                    true
+                } else {
+                    false
+                }
+            }
             ActiveModal::Settings(modal) => {
                 if modal.busy {
                     return true;
@@ -2623,6 +2632,11 @@ impl ChatView {
         _: &mut Context<Self>,
     ) {
         window.remove_window();
+    }
+
+    fn on_about(&mut self, _: &About, _: &mut Window, cx: &mut Context<Self>) {
+        self.shell.open_about();
+        cx.notify();
     }
 
     fn on_submit(&mut self, _: &shortcuts::SubmitPrompt, _: &mut Window, cx: &mut Context<Self>) {
@@ -4200,6 +4214,7 @@ impl Render for ChatView {
                 .on_action(cx.listener(Self::on_submit))
                 .on_action(cx.listener(Self::on_new_chat))
                 .on_action(cx.listener(Self::on_close_window))
+                .on_action(cx.listener(Self::on_about))
                 .on_action(cx.listener(Self::on_toggle_palette))
                 .on_action(cx.listener(Self::on_toggle_sidebar))
                 .on_action(cx.listener(Self::on_open_settings))
@@ -4295,6 +4310,7 @@ impl Render for ChatView {
             .on_action(cx.listener(Self::on_submit))
             .on_action(cx.listener(Self::on_new_chat))
             .on_action(cx.listener(Self::on_close_window))
+            .on_action(cx.listener(Self::on_about))
             .on_action(cx.listener(Self::on_toggle_palette))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_open_settings))
@@ -4366,6 +4382,7 @@ impl ChatView {
             ActiveModal::Settings(modal) => {
                 Some(render_modal_container(modal.render(theme), theme))
             }
+            ActiveModal::About => Some(render_modal_container(render_about(theme), theme)),
             ActiveModal::SessionSearch(_) => unreachable!("handled above"),
         }?;
         Some(self.modal_overlay(modal, cx))

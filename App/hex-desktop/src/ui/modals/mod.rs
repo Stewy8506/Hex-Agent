@@ -45,6 +45,8 @@ pub enum ActiveModal {
     SessionSearch(SessionSearchModal),
     /// Editable settings backed by ACP config/get + config/set (DX3).
     Settings(SettingsModal),
+    /// Application identity and version information.
+    About,
 }
 
 impl ActiveModal {
@@ -94,6 +96,46 @@ pub fn render_modal_container(content: Div, theme: &HermesTheme) -> Div {
                 .shadow_lg()
                 .overflow_hidden()
                 .child(content),
+        )
+}
+
+pub fn render_about(theme: &HermesTheme) -> Div {
+    div()
+        .w(px(420.0))
+        .max_w_full()
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .px(px(24.0))
+        .py(px(22.0))
+        .child(
+            div()
+                .text_size(px(22.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.mockup_text)
+                .child("HEX Desktop"),
+        )
+        .child(
+            div()
+                .text_size(px(14.0))
+                .text_color(theme.mockup_text_muted)
+                .child("Autonomous AI workbench"),
+        )
+        .child(
+            div()
+                .mt(px(4.0))
+                .font_family(theme.font_mono()[0].clone())
+                .text_size(px(12.0))
+                .text_color(theme.mockup_text_dim)
+                .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+        )
+        .child(
+            div()
+                .mt(px(8.0))
+                .font_family(theme.font_mono()[0].clone())
+                .text_size(px(12.0))
+                .text_color(theme.mockup_text_dim)
+                .child("Enter or Esc to close"),
         )
 }
 

@@ -139,6 +139,11 @@ impl AppShell {
         self.push_modal(ActiveModal::ModelPicker(ModelPickerModal::new(current_model, models)));
     }
 
+    /// Open the application identity panel.
+    pub fn open_about(&mut self) {
+        self.push_modal(ActiveModal::About);
+    }
+
     /// Open Tool Approval modal.
     ///
     /// B29: a second approval (or any modal opened over an unresolved one) is

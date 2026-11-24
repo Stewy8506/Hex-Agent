@@ -17,6 +17,7 @@ use core::prelude::v1::test;
 use gpui::*;
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{init_app, ChatView};
+use hex_desktop::shortcuts::About;
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::{FeedPaintProbe, MessageItem};
 use hex_desktop::ui::message::AssistantMessageView;
@@ -594,6 +595,34 @@ async fn test_cmd_w_closes_window(cx: &mut TestAppContext) {
     vc.simulate_keystrokes("cmd-w");
     vc.run_until_parked();
     assert!(cx.windows().is_empty(), "Cmd+W left the window open");
+}
+
+#[gpui::test]
+async fn test_about_action_opens_and_dismisses(cx: &mut TestAppContext) {
+    let (_rt, view, vc) = launch_connected_chat(cx);
+    vc.dispatch_action(About);
+    vc.run_until_parked();
+    snap(vc, &view, |view| {
+        assert_eq!(view.shell.active_modal, ActiveModal::About);
+    });
+
+    vc.simulate_keystrokes("escape");
+    snap(vc, &view, |view| {
+        assert_eq!(view.shell.active_modal, ActiveModal::None);
+    });
+
+    vc.simulate_keystrokes("cmd-n");
+    pump_until(vc, &view, "session view", |view| {
+        view.shell.active_session_id.as_deref() == Some("ses_test_2")
+    });
+    vc.dispatch_action(About);
+    snap(vc, &view, |view| {
+        assert_eq!(view.shell.active_modal, ActiveModal::About);
+    });
+    vc.simulate_keystrokes("enter");
+    snap(vc, &view, |view| {
+        assert_eq!(view.shell.active_modal, ActiveModal::None);
+    });
 }
 
 #[gpui::test]
