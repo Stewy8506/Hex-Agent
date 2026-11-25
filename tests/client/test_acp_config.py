@@ -50,9 +50,12 @@ class TestConfigSurface(unittest.TestCase):
 
     def test_config_get_returns_whitelisted_view_with_options(self) -> None:
         view = self._get()
-        self.assertEqual(view["path"], str(self.cfg))
-        self.assertEqual(view["workspace"], str(self.ws))
-        self.assertEqual(view["dataDir"], str(self.ws / ".hex" / "data"))
+        self.assertEqual(view["path"], str(self.cfg.resolve()))
+        self.assertEqual(view["workspace"], str(self.ws.resolve()))
+        self.assertEqual(
+            view["dataDir"],
+            str((self.ws / ".hex" / "data").resolve()),
+        )
 
         self.assertEqual(view["config"]["model"]["cloudProvider"], "gemini")
         self.assertEqual(view["config"]["model"]["reasoningEffort"], "low")
