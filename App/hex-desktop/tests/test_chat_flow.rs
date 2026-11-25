@@ -19,8 +19,9 @@ use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{app_runtime, init_app, ChatView};
 use hex_desktop::shortcuts::{About, ActualSize, Redo, Undo, ZoomIn, ZoomOut};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
-use hex_desktop::ui::feed::{FeedPaintProbe, MessageItem};
+use hex_desktop::ui::feed::{ApprovalCard, FeedPaintProbe, MessageItem};
 use hex_desktop::ui::message::AssistantMessageView;
+use hex_desktop::ui::DiffView;
 use hex_desktop::ui::modals::approval::{ToolApprovalChoice, ToolApprovalModal};
 use hex_desktop::ui::modals::model_picker::ModelPickerModal;
 use hex_desktop::ui::modals::session_actions::{SessionActionMode, SessionActionModal};
@@ -1506,6 +1507,107 @@ async fn test_streaming_disclosures_toggle_by_click(cx: &mut TestAppContext) {
     snap(vc, &view, |view| {
         assert!(!last_assistant(view).unwrap().tool_calls[0].output_expanded);
     });
+}
+
+#[gpui::test]
+async fn test_phase3_markdown_links_payload_copy_and_approval_risk(cx: &mut TestAppContext) {
+    let (_rt, view, vc) = launch_connected_chat(cx);
+    vc.simulate_input("phase 3 content");
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "phase 3 session", |view| {
+        view.shell.active_session_id.is_some() && !view.shell.composer.is_streaming
+    });
+    vc.simulate_resize(size(px(1280.0), px(1200.0)));
+
+    let content = "# Result\n\n[unsafe](javascript:alert(1)) [docs](https://example.com/docs)\n\n```rust\nlet answer = 42;\n```";
+    let reasoning_text = "Inspect the request and choose the safest implementation.";
+    let input_text = r#"{"path":"src/main.rs"}"#;
+    let output_text = (0..500)
+        .map(|index| format!("line {index:04}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let patch = "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n";
+    let mut tool = ToolCallCard::new("tc_phase3", "edit_file", input_text)
+        .with_output(output_text.clone())
+        .with_diff(DiffView::from_patch(patch));
+    tool.input_expanded = true;
+    tool.output_expanded = false;
+    let assistant = AssistantMessageView::new("msg_phase3", content)
+        .with_reasoning(ThinkingDisclosure::new(reasoning_text).with_expanded(true))
+        .with_tool_call(tool);
+    let approval_summary = "Run the verified command against the selected workspace. ".repeat(12);
+
+    vc.update(|_window, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_session_id = Some("ses_phase3".into());
+            view.shell.feed.messages.clear();
+            view.shell
+                .feed
+                .messages
+                .push(MessageItem::Assistant(assistant));
+            view.shell
+                .feed
+                .messages
+                .push(MessageItem::Approval(ApprovalCard::new(
+                    "appr_phase3",
+                    "run_command",
+                    approval_summary,
+                    "R4",
+                )));
+            cx.notify();
+        });
+    });
+    vc.run_until_parked();
+    finish_motion(vc, &view);
+
+    assert!(vc.debug_bounds("markdown_link_msg_phase3_1_0").is_none());
+    click_debug_element(vc, "markdown_link_msg_phase3_1_1");
+    assert_eq!(vc.opened_url().as_deref(), Some("https://example.com/docs"));
+
+    click_debug_element(vc, "payload_copy_code_msg_phase3_2");
+    assert_eq!(
+        vc.read_from_clipboard().unwrap().text().unwrap(),
+        "let answer = 42;"
+    );
+
+    click_debug_element(vc, "payload_copy_reasoning_msg_phase3");
+    assert_eq!(
+        vc.read_from_clipboard().unwrap().text().unwrap(),
+        reasoning_text
+    );
+    snap(vc, &view, |view| {
+        assert!(
+            last_assistant(view)
+                .unwrap()
+                .reasoning
+                .as_ref()
+                .unwrap()
+                .is_expanded
+        );
+    });
+
+    click_debug_element(vc, "payload_copy_tool_input_tc_phase3");
+    assert_eq!(
+        vc.read_from_clipboard().unwrap().text().unwrap(),
+        input_text
+    );
+    click_debug_element(vc, "payload_copy_tool_output_tc_phase3");
+    assert_eq!(
+        vc.read_from_clipboard().unwrap().text().unwrap(),
+        output_text
+    );
+    snap(vc, &view, |view| {
+        let tool = &last_assistant(view).unwrap().tool_calls[0];
+        assert!(tool.input_expanded);
+        assert!(!tool.output_expanded);
+    });
+
+    click_debug_element(vc, "payload_copy_diff_tool_diff_tc_phase3_0");
+    assert_eq!(vc.read_from_clipboard().unwrap().text().unwrap(), patch);
+
+    assert!(vc.debug_bounds("approval_risk_appr_phase3").is_some());
+    assert!(vc.debug_bounds("action_up_msg_phase3").is_none());
+    assert!(vc.debug_bounds("action_down_msg_phase3").is_none());
 }
 
 #[gpui::test]

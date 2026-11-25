@@ -16,6 +16,7 @@ use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::icon_svg;
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView, UserMessageCard};
 use crate::ui::motion;
+use crate::ui::payload::ScrollablePayload;
 use crate::ui::tool_card::{tool_icon, ToolCallCard, ToolStatus};
 
 /// Vertical gap between feed items (mockup `gap:20px`).
@@ -174,6 +175,19 @@ impl ApprovalCard {
     }
 
     fn render_card(&self, theme: &HermesTheme, label: Div) -> Div {
+        let critical = self.risk_level.trim().eq_ignore_ascii_case("r4")
+            || self.risk_level.to_ascii_lowercase().contains("critical");
+        let risk_color = if critical {
+            theme.rose_fg()
+        } else {
+            theme.warning_amber()
+        };
+        let risk_text = if self.risk_level.trim().is_empty() {
+            "RISK".to_string()
+        } else {
+            self.risk_level.trim().to_ascii_uppercase()
+        };
+        let risk_selector = format!("approval_risk_{}", self.approval_id);
         div()
             .w_full()
             .flex()
@@ -204,17 +218,35 @@ impl ApprovalCard {
                             .text_color(theme.mockup_text)
                             .child(self.tool_name.clone()),
                     )
+                    .child(
+                        div()
+                            .id(SharedString::from(risk_selector.clone()))
+                            .debug_selector(move || risk_selector)
+                            .flex_none()
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded(px(5.0))
+                            .border_1()
+                            .border_color(risk_color)
+                            .text_size(px(crate::ui::tool_card::TOOL_META_SIZE))
+                            .text_color(risk_color)
+                            .child(risk_text),
+                    )
                     .child(div().flex_1())
                     .child(label),
             )
             .child(
                 div()
+                    .w_full()
+                    .min_w_0()
+                    .max_h(px(140.0))
+                    .scroll_y(&format!("approval_{}_summary_scroll", self.approval_id))
                     .font_family(theme.font_mono()[0].clone())
                     .text_size(px(crate::ui::tool_card::TOOL_BODY_SIZE))
                     .line_height(px(crate::ui::tool_card::TOOL_BODY_LINE_HEIGHT))
                     .px(px(16.0))
                     .pb(px(10.0))
-                    .whitespace_nowrap()
+                    .whitespace_normal()
                     .text_color(theme.mockup_text_muted)
                     .child(self.summary.clone()),
             )

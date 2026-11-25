@@ -4855,6 +4855,9 @@ impl ChatView {
                         copy: Some(Rc::new(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(content.clone()));
                         })),
+                        copy_payload: Some(Rc::new(move |text: &str, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+                        })),
                         retry: Some(Rc::new(move |_, _, cx| {
                             weak_retry
                                 .update(cx, |this, cx| this.regenerate(&retry_id, cx))

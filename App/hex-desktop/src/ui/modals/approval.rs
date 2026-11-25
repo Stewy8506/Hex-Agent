@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::theme::HermesTheme;
 use crate::ui::icon_svg;
 use crate::ui::modals::{modal_press, ModalMotion};
+use crate::ui::payload::ScrollablePayload;
 
 /// Operator decision choice for privileged tool approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,9 +80,8 @@ pub enum ApprovalInteraction {
     Submit(ToolApprovalResult),
 }
 
-pub type ApprovalHandler = std::rc::Rc<
-    dyn Fn(ApprovalInteraction, &ClickEvent, &mut Window, &mut App),
->;
+pub type ApprovalHandler =
+    std::rc::Rc<dyn Fn(ApprovalInteraction, &ClickEvent, &mut Window, &mut App)>;
 
 /// Tool Approval modal state and rendering.
 #[derive(Debug, Clone, PartialEq)]
@@ -187,7 +187,8 @@ impl ToolApprovalModal {
     }
 
     fn render_header(&self, theme: &HermesTheme) -> Div {
-        let is_high_risk = self.risk_class.contains("R4") || self.risk_class.to_uppercase().contains("CRITICAL");
+        let is_high_risk =
+            self.risk_class.contains("R4") || self.risk_class.to_uppercase().contains("CRITICAL");
         let badge_bg = if is_high_risk {
             theme.rose_bg()
         } else {
@@ -262,8 +263,10 @@ impl ToolApprovalModal {
             )
             .child(
                 div()
-                    .max_h(px(160.0))
-                    .overflow_y_hidden()
+                    .w_full()
+                    .min_w_0()
+                    .max_h(px(200.0))
+                    .scroll_both(&format!("approval_{}_command_scroll", self.request_id))
                     .p_3()
                     .rounded(px(6.0))
                     .bg(theme.mockup_body)
@@ -272,6 +275,7 @@ impl ToolApprovalModal {
                     .font_family(theme.typography.font_mono[0].clone())
                     .text_size(px(11.5))
                     .text_color(theme.mockup_text_bright)
+                    .whitespace_nowrap()
                     .child(self.command.clone()),
             )
     }
@@ -562,12 +566,7 @@ impl ToolApprovalModal {
             .on_click({
                 let on_action = on_action.clone();
                 move |event, window, cx| {
-                    on_action(
-                        ApprovalInteraction::Choose(option),
-                        event,
-                        window,
-                        cx,
-                    )
+                    on_action(ApprovalInteraction::Choose(option), event, window, cx)
                 }
             })
             .child(
@@ -651,12 +650,7 @@ mod tests {
 
     #[test]
     fn test_tool_approval_modal_lease_toggle_and_shortcuts() {
-        let mut modal = ToolApprovalModal::new(
-            "req_456",
-            "bash",
-            "cargo test --workspace",
-            "R3",
-        );
+        let mut modal = ToolApprovalModal::new("req_456", "bash", "cargo test --workspace", "R3");
 
         // Press 'a' to select Session
         assert!(modal.handle_key("a").is_none());
@@ -675,12 +669,8 @@ mod tests {
 
     #[test]
     fn test_tool_approval_deny_clears_lease() {
-        let mut modal = ToolApprovalModal::new(
-            "req_789",
-            "write_file",
-            "writing sensitive file",
-            "R3",
-        );
+        let mut modal =
+            ToolApprovalModal::new("req_789", "write_file", "writing sensitive file", "R3");
         modal.set_lease(true);
         modal.set_choice(ToolApprovalChoice::Deny);
 

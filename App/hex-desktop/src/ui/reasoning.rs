@@ -12,6 +12,10 @@ use gpui::*;
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::icon_svg;
 use crate::ui::motion::{RevealMotion, RevealValues};
+use crate::ui::payload::{
+    copy_button, preview_notice, preview_text, ScrollablePayload, TextCopyHandler,
+    PAYLOAD_MAX_HEIGHT,
+};
 
 pub type DisclosureClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -115,7 +119,18 @@ impl ThinkingDisclosure {
         id: Option<ElementId>,
         on_click: Option<DisclosureClickHandler>,
     ) -> Div {
-        self.render_inner(theme, id, on_click, None)
+        self.render_with_click_and_copy(theme, id, on_click, None, "reasoning")
+    }
+
+    pub fn render_with_click_and_copy(
+        &self,
+        theme: &HermesTheme,
+        id: Option<ElementId>,
+        on_click: Option<DisclosureClickHandler>,
+        on_copy: Option<TextCopyHandler>,
+        copy_id: &str,
+    ) -> Div {
+        self.render_inner(theme, id, on_click, on_copy, copy_id, None)
     }
 
     pub fn render_reveal(
@@ -126,7 +141,20 @@ impl ThinkingDisclosure {
         reveal: RevealMotion,
         cx: &App,
     ) -> Div {
-        self.render_inner(theme, id, on_click, Some((reveal, cx)))
+        self.render_reveal_with_copy(theme, id, on_click, None, "reasoning", reveal, cx)
+    }
+
+    pub fn render_reveal_with_copy(
+        &self,
+        theme: &HermesTheme,
+        id: Option<ElementId>,
+        on_click: Option<DisclosureClickHandler>,
+        on_copy: Option<TextCopyHandler>,
+        copy_id: &str,
+        reveal: RevealMotion,
+        cx: &App,
+    ) -> Div {
+        self.render_inner(theme, id, on_click, on_copy, copy_id, Some((reveal, cx)))
     }
 
     fn render_inner(
@@ -134,6 +162,8 @@ impl ThinkingDisclosure {
         theme: &HermesTheme,
         id: Option<ElementId>,
         on_click: Option<DisclosureClickHandler>,
+        on_copy: Option<TextCopyHandler>,
+        copy_id: &str,
         reveal: Option<(RevealMotion, &App)>,
     ) -> Div {
         let reveal_values = reveal.map(|(reveal, cx)| reveal.values(cx));
@@ -160,6 +190,8 @@ impl ThinkingDisclosure {
             .child(caret)
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
                     .text_color(if self.is_generating {
                         theme.accent_blue()
@@ -167,7 +199,13 @@ impl ThinkingDisclosure {
                         theme.mockup_text_dim
                     })
                     .child(label),
-            );
+            )
+            .child(copy_button(
+                copy_id,
+                &self.thought_text,
+                on_copy.as_ref(),
+                theme,
+            ));
         let header = if let (Some(id), Some(on_click)) = (id, on_click) {
             let selector = id.to_string();
             header
@@ -185,8 +223,14 @@ impl ThinkingDisclosure {
 
         let body_visible = reveal_values.map_or(self.is_expanded, RevealValues::is_visible);
         if body_visible {
+            let (preview, truncated) = on_copy
+                .as_ref()
+                .map(|_| preview_text(&self.thought_text, 400))
+                .unwrap_or_else(|| (self.thought_text.clone(), false));
             let mut body = div()
                 .w_full()
+                .max_h(px(PAYLOAD_MAX_HEIGHT))
+                .scroll_y(&format!("reasoning_{copy_id}_scroll"))
                 .rounded(px(8.0))
                 .bg(theme.mockup_sidebar)
                 .border_l_2()
@@ -196,13 +240,16 @@ impl ThinkingDisclosure {
                 .font_family(theme.font_mono()[0].clone())
                 .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
                 .line_height(px(MockupTypeScale::DIFF_LINE_HEIGHT))
-                .whitespace_nowrap()
+                .whitespace_normal()
                 .text_color(theme.mockup_text_muted)
-                .child(self.thought_text.clone());
+                .child(preview);
             if let Some(values) = reveal_values {
                 body = values.apply(body);
             }
             container = container.child(body);
+            if truncated {
+                container = container.child(preview_notice(theme));
+            }
         }
 
         container

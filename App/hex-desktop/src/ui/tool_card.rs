@@ -15,6 +15,10 @@ use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::diff_view::DiffView;
 use crate::ui::icon_svg;
 use crate::ui::motion::{self, RevealMotion, RevealValues};
+use crate::ui::payload::{
+    copy_button, preview_notice, preview_text, ScrollablePayload, TextCopyHandler,
+    PAYLOAD_MAX_HEIGHT,
+};
 
 pub type ToolFoldClickHandler = Rc<dyn Fn(&str, &ClickEvent, &mut Window, &mut App)>;
 
@@ -227,8 +231,10 @@ impl ToolCallCard {
         theme: &HermesTheme,
         fold_id: &str,
         label: &str,
+        text: &str,
         expanded: bool,
         on_click: Option<&ToolFoldClickHandler>,
+        on_copy: Option<&TextCopyHandler>,
         reveal: Option<(RevealMotion, &App)>,
     ) -> AnyElement {
         let progress = reveal
@@ -240,6 +246,7 @@ impl ToolCallCard {
                 progress.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2,
             )));
         let header = div()
+            .w_full()
             .flex()
             .flex_row()
             .items_center()
@@ -249,10 +256,18 @@ impl ToolCallCard {
             .child(caret)
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_size(px(TOOL_META_SIZE))
                     .text_color(theme.mockup_text_dim)
                     .child(label.to_string()),
-            );
+            )
+            .child(copy_button(
+                &format!("tool_{fold_id}_{}", self.call_id),
+                text,
+                on_copy,
+                theme,
+            ));
         if let Some(on_click) = on_click {
             let call_id = self.call_id.clone();
             let on_click = on_click.clone();
@@ -274,6 +289,7 @@ impl ToolCallCard {
         &self,
         theme: &HermesTheme,
         on_click: Option<&ToolFoldClickHandler>,
+        on_copy: Option<&TextCopyHandler>,
         reveal: Option<(RevealMotion, &App)>,
     ) -> Div {
         let mut section = div().w_full().flex().flex_col();
@@ -281,14 +297,16 @@ impl ToolCallCard {
             theme,
             "input",
             "Parameters",
+            &self.arguments_json,
             self.input_expanded,
             on_click,
+            on_copy,
             reveal,
         ));
 
         let values = reveal.map(|(reveal, cx)| reveal.values(cx));
         if values.map_or(self.input_expanded, RevealValues::is_visible) {
-            let mut body = self.render_mono_block(theme, &self.arguments_json, false);
+            let mut body = self.render_mono_block(theme, &self.arguments_json, false, on_copy);
             if let Some(values) = values {
                 body = values.apply(body);
             }
@@ -303,6 +321,7 @@ impl ToolCallCard {
         &self,
         theme: &HermesTheme,
         on_click: Option<&ToolFoldClickHandler>,
+        on_copy: Option<&TextCopyHandler>,
         reveal: Option<(RevealMotion, &App)>,
     ) -> Option<Div> {
         let output = self.output_text.as_ref()?;
@@ -311,14 +330,16 @@ impl ToolCallCard {
             theme,
             "output",
             "Output",
+            output,
             self.output_expanded,
             on_click,
+            on_copy,
             reveal,
         ));
 
         let values = reveal.map(|(reveal, cx)| reveal.values(cx));
         if values.map_or(self.output_expanded, RevealValues::is_visible) {
-            let mut body = self.render_mono_block(theme, output, true);
+            let mut body = self.render_mono_block(theme, output, true, on_copy);
             if let Some(values) = values {
                 body = values.apply(body);
             }
@@ -328,11 +349,25 @@ impl ToolCallCard {
         Some(section)
     }
 
-    /// A mono `#101010` block: 12.5/21 Geist Mono, whitespace preserved;
-    /// failure output tints rose.
-    fn render_mono_block(&self, theme: &HermesTheme, text: &str, is_output: bool) -> Div {
-        div()
+    fn render_mono_block(
+        &self,
+        theme: &HermesTheme,
+        text: &str,
+        is_output: bool,
+        on_copy: Option<&TextCopyHandler>,
+    ) -> Div {
+        let (preview, truncated) = on_copy
+            .map(|_| preview_text(text, 400))
+            .unwrap_or_else(|| (text.to_string(), false));
+        let mut block = div()
             .w_full()
+            .min_w_0()
+            .max_h(px(PAYLOAD_MAX_HEIGHT))
+            .scroll_both(&format!(
+                "tool_{}_{}_scroll",
+                self.call_id,
+                if is_output { "output" } else { "input" }
+            ))
             .font_family(theme.font_mono()[0].clone())
             .text_size(px(TOOL_BODY_SIZE))
             .line_height(px(TOOL_BODY_LINE_HEIGHT))
@@ -345,7 +380,11 @@ impl ToolCallCard {
             } else {
                 theme.mockup_text_muted
             })
-            .child(text.to_string())
+            .child(preview);
+        if truncated {
+            block = block.child(preview_notice(theme));
+        }
+        block
     }
 
     /// The diff view hosted by this card, when the tool call produced a diff.
@@ -354,7 +393,7 @@ impl ToolCallCard {
     }
 
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        self.render_with_fold_handlers(theme, None, None)
+        self.render_with_fold_handlers(theme, None, None, None)
     }
 
     pub fn render_with_fold_handlers(
@@ -362,8 +401,9 @@ impl ToolCallCard {
         theme: &HermesTheme,
         on_input: Option<ToolFoldClickHandler>,
         on_output: Option<ToolFoldClickHandler>,
+        on_copy: Option<TextCopyHandler>,
     ) -> Div {
-        self.render_inner(theme, on_input, on_output, None, None)
+        self.render_inner(theme, on_input, on_output, on_copy, None, None)
     }
 
     pub fn render_with_fold_handlers_motion(
@@ -371,6 +411,7 @@ impl ToolCallCard {
         theme: &HermesTheme,
         on_input: Option<ToolFoldClickHandler>,
         on_output: Option<ToolFoldClickHandler>,
+        on_copy: Option<TextCopyHandler>,
         window: &mut Window,
         cx: &mut App,
         owner: EntityId,
@@ -385,6 +426,7 @@ impl ToolCallCard {
             theme,
             on_input,
             on_output,
+            on_copy,
             Some((input, cx)),
             Some((output, cx)),
         )
@@ -395,11 +437,13 @@ impl ToolCallCard {
         theme: &HermesTheme,
         on_input: Option<ToolFoldClickHandler>,
         on_output: Option<ToolFoldClickHandler>,
+        on_copy: Option<TextCopyHandler>,
         input_reveal: Option<(RevealMotion, &App)>,
         output_reveal: Option<(RevealMotion, &App)>,
     ) -> Div {
         let mut card = div()
             .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .rounded(px(TOOL_CARD_RADIUS))
@@ -408,19 +452,30 @@ impl ToolCallCard {
             .bg(theme.mockup_surface)
             .overflow_hidden()
             .child(self.render_header(theme))
-            .child(self.render_input_fold(theme, on_input.as_ref(), input_reveal));
+            .child(self.render_input_fold(
+                theme,
+                on_input.as_ref(),
+                on_copy.as_ref(),
+                input_reveal,
+            ));
 
         if let Some(diff_view) = &self.diff {
             card = card.child(
                 div()
                     .w_full()
+                    .min_w_0()
                     .border_t_1()
                     .border_color(theme.mockup_border)
-                    .child(diff_view.render(theme)),
+                    .child(diff_view.render_with_copy(
+                        theme,
+                        on_copy.as_ref(),
+                        &format!("tool_diff_{}", self.call_id),
+                    )),
             );
         }
 
-        if let Some(output_fold) = self.render_output_fold(theme, on_output.as_ref(), output_reveal)
+        if let Some(output_fold) =
+            self.render_output_fold(theme, on_output.as_ref(), on_copy.as_ref(), output_reveal)
         {
             card = card.child(output_fold);
         }

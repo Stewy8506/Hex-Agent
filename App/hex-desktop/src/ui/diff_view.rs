@@ -10,9 +10,12 @@
 
 use gpui::*;
 
-use hex_protocol::diff::{DiffFile, DiffHunk, DiffLine, DiffLineType, UnifiedDiff};
+use hex_protocol::diff::{DiffFile, DiffLine, DiffLineType, UnifiedDiff};
 
 use crate::theme::{HermesTheme, MockupTypeScale};
+use crate::ui::payload::{
+    copy_button, preview_notice, ScrollablePayload, TextCopyHandler, PAYLOAD_MAX_HEIGHT,
+};
 
 /// Diff card corner radius (mockup `border-radius:14px`).
 pub const DIFF_CARD_RADIUS: f32 = 14.0;
@@ -29,6 +32,7 @@ pub const DIFF_HEADER_STATS_GAP: f32 = 6.0;
 pub const MINUS_SIGN: char = '\u{2212}';
 /// Spaces between the gutter symbol and the code (mockup `±    code`).
 const GUTTER_CODE_GAP: &str = "    ";
+const DIFF_MAX_LINES: usize = 400;
 
 /// Determines the background tint for a diff line type.
 pub fn line_background(line_type: DiffLineType, theme: &HermesTheme) -> Option<Rgba> {
@@ -144,6 +148,23 @@ impl DiffView {
         self.diff.total_deletions()
     }
 
+    pub fn patch_text(&self) -> String {
+        self.raw_patch
+            .clone()
+            .unwrap_or_else(|| reconstruct_files(&self.diff.files))
+    }
+
+    fn file_patch_text(&self, index: usize) -> String {
+        if self.diff.files.len() == 1 {
+            return self.patch_text();
+        }
+        self.diff
+            .files
+            .get(index)
+            .map(|file| reconstruct_files(std::slice::from_ref(file)))
+            .unwrap_or_default()
+    }
+
     /// Renders a single diff line: full-width tinted row, mono 12.5/21,
     /// whitespace preserved, single gutter.
     fn render_diff_line(&self, line: &DiffLine, theme: &HermesTheme) -> Div {
@@ -165,43 +186,26 @@ impl DiffView {
         row.child(StyledText::new(text).with_runs(runs))
     }
 
-    /// Renders a diff hunk with its header and lines.
-    fn render_hunk(&self, hunk: &DiffHunk, theme: &HermesTheme) -> Div {
-        let mut hunk_container = div().w_full().flex().flex_col();
-
-        if let Some(heading) = &hunk.heading {
-            hunk_container = hunk_container.child(
-                div()
-                    .w_full()
-                    .px(px(DIFF_LINE_PADDING_X))
-                    .font_family(theme.font_mono()[0].clone())
-                    .text_size(px(MockupTypeScale::DIFF_SIZE))
-                    .line_height(px(MockupTypeScale::DIFF_LINE_HEIGHT))
-                    .whitespace_nowrap()
-                    .text_color(theme.mockup_text_dim)
-                    .child(format!("@@ {heading}")),
-            );
-        }
-
-        for line in &hunk.lines {
-            hunk_container = hunk_container.child(self.render_diff_line(line, theme));
-        }
-
-        hunk_container
-    }
-
     /// Renders one diff file as the mockup diff card.
-    fn render_file(&self, file: &DiffFile, theme: &HermesTheme) -> Div {
+    fn render_file(
+        &self,
+        file: &DiffFile,
+        index: usize,
+        theme: &HermesTheme,
+        on_copy: Option<&TextCopyHandler>,
+        id_prefix: &str,
+    ) -> Div {
         let file_path = file.path().to_string();
         let adds = file.total_additions();
         let dels = file.total_deletions();
+        let patch_text = self.file_patch_text(index);
 
         let header = div()
             .w_full()
             .flex()
             .flex_row()
             .items_center()
-            .justify_between()
+            .gap_2()
             .px(px(DIFF_HEADER_PADDING_X))
             .py(px(DIFF_HEADER_PADDING_Y))
             .border_b_1()
@@ -209,32 +213,79 @@ impl DiffView {
             .font_family(theme.font_mono()[0].clone())
             .text_size(px(MockupTypeScale::DIFF_SIZE))
             .text_color(theme.mockup_text_base)
-            .child(file_path)
+            .child(div().flex_1().min_w_0().truncate().child(file_path))
             .child(
                 div()
+                    .flex_none()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(DIFF_HEADER_STATS_GAP))
-                    .child(
-                        div()
-                            .text_color(theme.sage_fg())
-                            .child(format!("+{adds}")),
-                    )
+                    .child(div().text_color(theme.sage_fg()).child(format!("+{adds}")))
                     .child(
                         div()
                             .text_color(theme.rose_fg())
                             .child(format!("{MINUS_SIGN}{dels}")),
                     ),
-            );
+            )
+            .child(copy_button(
+                &format!("diff_{id_prefix}_{index}"),
+                &patch_text,
+                on_copy,
+                theme,
+            ));
 
-        let mut body = div().w_full().flex().flex_col().py(px(DIFF_BODY_PADDING_Y));
+        let total_lines = file
+            .hunks
+            .iter()
+            .map(|hunk| hunk.lines.len())
+            .sum::<usize>();
+        let visible_lines = if on_copy.is_some() {
+            total_lines.min(DIFF_MAX_LINES)
+        } else {
+            total_lines
+        };
+        let mut rendered_lines = 0usize;
+        let mut body = div()
+            .w_full()
+            .min_w_0()
+            .max_h(px(PAYLOAD_MAX_HEIGHT))
+            .scroll_both(&format!("diff_{id_prefix}_{index}_scroll"))
+            .flex()
+            .flex_col()
+            .py(px(DIFF_BODY_PADDING_Y));
         for hunk in &file.hunks {
-            body = body.child(self.render_hunk(hunk, theme));
+            if rendered_lines >= visible_lines {
+                break;
+            }
+            if let Some(heading) = &hunk.heading {
+                body = body.child(
+                    div()
+                        .w_full()
+                        .px(px(DIFF_LINE_PADDING_X))
+                        .font_family(theme.font_mono()[0].clone())
+                        .text_size(px(MockupTypeScale::DIFF_SIZE))
+                        .line_height(px(MockupTypeScale::DIFF_LINE_HEIGHT))
+                        .whitespace_nowrap()
+                        .text_color(theme.mockup_text_dim)
+                        .child(format!("@@ {heading}")),
+                );
+            }
+            for line in &hunk.lines {
+                if rendered_lines >= visible_lines {
+                    break;
+                }
+                body = body.child(self.render_diff_line(line, theme));
+                rendered_lines += 1;
+            }
+        }
+        if total_lines > visible_lines {
+            body = body.child(preview_notice(theme));
         }
 
         div()
             .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .rounded(px(DIFF_CARD_RADIUS))
@@ -246,15 +297,94 @@ impl DiffView {
             .child(body)
     }
 
-    /// Renders the complete diff view (one card per file).
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        let mut container = div().w_full().flex().flex_col().gap_3();
+        self.render_with_copy(theme, None, "diff")
+    }
 
-        for file in &self.diff.files {
-            container = container.child(self.render_file(file, theme));
+    pub fn render_with_copy(
+        &self,
+        theme: &HermesTheme,
+        on_copy: Option<&TextCopyHandler>,
+        id_prefix: &str,
+    ) -> Div {
+        let mut container = div().w_full().min_w_0().flex().flex_col().gap_3();
+
+        for (index, file) in self.diff.files.iter().enumerate() {
+            container = container.child(self.render_file(file, index, theme, on_copy, id_prefix));
         }
 
         container
+    }
+}
+
+fn reconstruct_files(files: &[DiffFile]) -> String {
+    let mut patch = String::new();
+    for file in files {
+        let old_path = file.old_path.as_deref().unwrap_or("/dev/null");
+        let new_path = file.new_path.as_deref().unwrap_or("/dev/null");
+        if !patch.is_empty() {
+            patch.push('\n');
+        }
+        patch.push_str(&format!("diff --git a/{old_path} b/{new_path}\n"));
+        if file.is_new {
+            patch.push_str("new file mode 100644\n");
+        } else if file.is_deleted {
+            patch.push_str("deleted file mode 100644\n");
+        }
+        if file.is_binary {
+            patch.push_str(&format!(
+                "Binary files a/{old_path} and b/{new_path} differ\n"
+            ));
+            continue;
+        }
+        patch.push_str(&format!(
+            "--- {}\n+++ {}\n",
+            patch_path(old_path, "a"),
+            patch_path(new_path, "b")
+        ));
+        for hunk in &file.hunks {
+            patch.push_str(&format!(
+                "@@ -{},{} +{},{} @@",
+                hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+            ));
+            if let Some(heading) = &hunk.heading {
+                patch.push(' ');
+                patch.push_str(heading);
+            }
+            patch.push('\n');
+            for line in &hunk.lines {
+                match line.line_type {
+                    DiffLineType::Added => {
+                        patch.push('+');
+                        patch.push_str(&line.content);
+                    }
+                    DiffLineType::Deleted => {
+                        patch.push('-');
+                        patch.push_str(&line.content);
+                    }
+                    DiffLineType::Context => {
+                        patch.push(' ');
+                        patch.push_str(&line.content);
+                    }
+                    DiffLineType::Meta => {
+                        patch.push_str(&line.content);
+                    }
+                    DiffLineType::HunkHeader => {
+                        patch.push_str(&line.content);
+                    }
+                }
+                patch.push('\n');
+            }
+        }
+    }
+    patch
+}
+
+fn patch_path(path: &str, prefix: &str) -> String {
+    if path == "/dev/null" {
+        path.to_string()
+    } else {
+        format!("{prefix}/{path}")
     }
 }
 
@@ -334,14 +464,8 @@ mod tests {
         let del_text = diff_line_text(deleted);
         let add_text = diff_line_text(added);
         // 4-space separator gap plus the source's own 4-space indent.
-        assert_eq!(
-            del_text,
-            " 2 −        println!(\"Hello, old world!\");"
-        );
-        assert_eq!(
-            add_text,
-            " 2 +        println!(\"Hello, new world!\");"
-        );
+        assert_eq!(del_text, " 2 −        println!(\"Hello, old world!\");");
+        assert_eq!(add_text, " 2 +        println!(\"Hello, new world!\");");
         // The second added line gets the next new-file lineno.
         let added_second = hunk
             .lines
@@ -387,5 +511,17 @@ mod tests {
         let theme = HermesTheme::default();
         let view = DiffView::from_patch(SAMPLE_PATCH);
         let _ = view.render(&theme);
+    }
+
+    #[test]
+    fn test_patch_copy_uses_raw_or_reconstructed_text() {
+        let raw = DiffView::from_patch(SAMPLE_PATCH);
+        assert_eq!(raw.patch_text(), SAMPLE_PATCH);
+
+        let reconstructed = DiffView::new(raw.diff.clone());
+        let patch = reconstructed.patch_text();
+        assert!(patch.contains("--- a/src/main.rs\n+++ b/src/main.rs\n"));
+        assert!(patch.contains("-    println!(\"Hello, old world!\");"));
+        assert!(patch.contains("+    println!(\"Hello, new world!\");"));
     }
 }

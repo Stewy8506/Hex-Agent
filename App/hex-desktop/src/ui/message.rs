@@ -8,14 +8,19 @@
 //!   (Copy / thumbs / Retry, 13.5px `#858585`, no emoji), and a collapsed
 //!   "Changes" button that expands into the turn's diff cards.
 
-use std::ops::Range;
 use std::rc::Rc;
 
+use gpui::prelude::{InteractiveElement, StatefulInteractiveElement};
 use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::feed::FEED_GAP;
+use crate::ui::markdown::{parse_inline, parse_markdown, InlineToken, MarkdownBlock};
 use crate::ui::motion::{self, RevealMotion, RevealValues};
+use crate::ui::payload::{
+    copy_button, preview_notice, preview_text, ScrollablePayload, TextCopyHandler,
+    PAYLOAD_MAX_HEIGHT,
+};
 use crate::ui::reasoning::{DisclosureClickHandler, ThinkingDisclosure};
 use crate::ui::tool_card::{ToolCallCard, ToolFoldClickHandler};
 
@@ -32,6 +37,7 @@ pub struct ActionBarHandlers {
     pub reasoning: Option<DisclosureClickHandler>,
     pub tool_input: Option<ToolFoldClickHandler>,
     pub tool_output: Option<ToolFoldClickHandler>,
+    pub copy_payload: Option<TextCopyHandler>,
 }
 
 /// Gap between action-bar buttons (mockup `gap:18px`).
@@ -64,252 +70,333 @@ pub const USER_BUBBLE_MAX_WIDTH: f32 = 440.0;
 /// Mockup action-bar labels — plain text, never emoji (D5).
 pub const ACTION_BAR_LABELS: [&str; 2] = ["Copy", "Retry"];
 
-/// A stretch of assistant content: plain prose or a fenced code block.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ContentSegment {
-    Prose(String),
-    Code { language: String, code: String },
-}
-
-/// Splits assistant text into prose and fenced code blocks. An unterminated
-/// fence (still streaming) renders its accumulated lines as code rather than
-/// leaking raw backticks into prose.
-pub fn split_content_segments(content: &str) -> Vec<ContentSegment> {
-    let mut segments = Vec::new();
-    let mut prose = String::new();
-    let mut code: Option<(String, String)> = None;
-
-    for line in content.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if let Some((language, body)) = code.as_mut() {
-            if trimmed.trim_end() == "```" {
-                segments.push(ContentSegment::Code {
-                    language: language.clone(),
-                    code: body.trim_end_matches('\n').to_string(),
-                });
-                code = None;
-            } else {
-                body.push_str(line);
-            }
-        } else if let Some(rest) = trimmed.strip_prefix("```") {
-            if !prose.is_empty() {
-                segments.push(ContentSegment::Prose(std::mem::take(&mut prose)));
-            }
-            code = Some((rest.trim().to_string(), String::new()));
-        } else {
-            prose.push_str(line);
-        }
-    }
-
-    if let Some((language, body)) = code {
-        segments.push(ContentSegment::Code {
-            language,
-            code: body.trim_end_matches('\n').to_string(),
-        });
-    }
-    if !prose.is_empty() {
-        segments.push(ContentSegment::Prose(prose));
-    }
-    segments
-}
-
 // --------------------------------------------------------------------------
-// Inline rich text (bold lead-ins + `.cd` code chips)
+// Structured Markdown
 // --------------------------------------------------------------------------
 
-/// The flavour of an inline rich-text span in assistant prose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RichSpanKind {
-    Bold,
-    Code,
-}
-
-/// One styled span within the flattened rich text; ranges index the flattened
-/// string (markers stripped).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RichSpan {
-    pub kind: RichSpanKind,
-    pub range: Range<usize>,
-}
-
-/// Parses assistant prose into flattened text plus bold/`code` spans.
-/// `**bold**` and `` `code` `` markers are stripped; unmatched markers stay
-/// literal (streaming), and spans may nest (code inside bold).
-pub fn parse_inline_rich(content: &str) -> (String, Vec<RichSpan>) {
-    let mut out = String::with_capacity(content.len());
-    let mut spans: Vec<RichSpan> = Vec::new();
-    let bytes = content.as_bytes();
-    let mut i = 0usize;
-    let mut open_bold: Option<usize> = None;
-    let mut open_code: Option<usize> = None;
-
-    while i < bytes.len() {
-        let bold_marker = bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'*';
-        let code_marker = bytes[i] == b'`';
-        // Consume an opener only when it has a closer; otherwise it stays
-        // literal so a half-streamed message never loses characters.
-        let close_bold =
-            bold_marker && (open_bold.is_some() || find_marker(content, i + 2, "**").is_some());
-        let close_code = code_marker && (open_code.is_some() || content[i + 1..].contains('`'));
-
-        if close_bold {
-            if let Some(start) = open_bold.take() {
-                if out.len() > start {
-                    spans.push(RichSpan {
-                        kind: RichSpanKind::Bold,
-                        range: start..out.len(),
-                    });
-                }
-            } else {
-                open_bold = Some(out.len());
-            }
-            i += 2;
-        } else if close_code {
-            if let Some(start) = open_code.take() {
-                if out.len() > start {
-                    spans.push(RichSpan {
-                        kind: RichSpanKind::Code,
-                        range: start..out.len(),
-                    });
-                }
-            } else {
-                open_code = Some(out.len());
-            }
-            i += 1;
+fn prose_style(theme: &HermesTheme, level: u8) -> Div {
+    let size = match level {
+        1 => 24.0,
+        2 => 20.0,
+        3 => 17.0,
+        _ => MockupTypeScale::BASE_SIZE,
+    };
+    let mut prose = div()
+        .w_full()
+        .text_size(px(size))
+        .line_height(px(size * 1.45))
+        .text_color(if level > 0 {
+            theme.mockup_text
         } else {
-            let ch = content[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-        }
+            theme.mockup_text_base
+        })
+        .whitespace_normal();
+    if level > 0 {
+        prose = prose.font_weight(FontWeight::BOLD);
     }
-
-    (out, spans)
+    prose
 }
 
-fn find_marker(content: &str, from: usize, marker: &str) -> Option<usize> {
-    if from > content.len() {
-        return None;
-    }
-    content[from..].find(marker).map(|rel| from + rel)
-}
-
-/// Typography and palette used to shape [`rich_text_runs`]: plain prose 15px
-/// sans `#d9d9d9`, bold weight 700 `#fff`, code mono 12.5px `#e6e6e6` on the
-/// `#202020` chip background.
-pub struct RichTextStyle {
-    pub base_font: Font,
-    pub mono_font: Font,
-    pub base_color: Hsla,
-    pub bold_color: Hsla,
-    pub code_color: Hsla,
-    pub code_bg: Hsla,
-}
-
-impl RichTextStyle {
-    /// The mockup's prose style resolved from the theme.
-    pub fn mockup(theme: &HermesTheme) -> Self {
-        Self {
-            base_font: gpui::font(theme.font_sans()[0].clone()),
-            mono_font: gpui::font(theme.font_mono()[0].clone()),
-            base_color: theme.mockup_text_base.into(),
-            bold_color: rgb(0xffffff).into(),
-            code_color: theme.mockup_text.into(),
-            code_bg: theme.mockup_inline_code_bg.into(),
-        }
-    }
-}
-
-/// Maps rich spans to shaped `TextRun`s covering exactly `text`.
-pub fn rich_text_runs(text: &str, spans: &[RichSpan], style: &RichTextStyle) -> Vec<TextRun> {
-    let style_at = |pos: usize| -> (bool, bool) {
-        let bold = spans
-            .iter()
-            .any(|s| s.kind == RichSpanKind::Bold && s.range.contains(&pos));
-        let code = spans
-            .iter()
-            .any(|s| s.kind == RichSpanKind::Code && s.range.contains(&pos));
-        (bold, code)
-    };
-
-    let make_run = |len: usize, bold: bool, code: bool| -> TextRun {
-        let mut font = style.base_font.clone();
-        let mut color = style.base_color;
-        let mut background_color = None;
-        if code {
-            font = style.mono_font.clone();
-            color = style.code_color;
-            background_color = Some(style.code_bg);
-        }
-        if bold {
-            font = font.bold();
-            if !code {
-                color = style.bold_color;
-            }
-        }
-        TextRun {
-            len,
-            font,
-            color,
-            background_color,
-            underline: None,
-            strikethrough: None,
-        }
-    };
-
-    let mut runs = Vec::new();
-    let mut current: Option<(bool, bool)> = None;
-    let mut run_len = 0usize;
-    for (idx, ch) in text.char_indices() {
-        let style = style_at(idx);
-        match current {
-            None => current = Some(style),
-            Some(prev) if prev != style => {
-                runs.push(make_run(run_len, prev.0, prev.1));
-                run_len = 0;
-                current = Some(style);
-            }
-            _ => {}
-        }
-        run_len += ch.len_utf8();
-    }
-    if let Some(prev) = current {
-        if run_len > 0 {
-            runs.push(make_run(run_len, prev.0, prev.1));
-        }
-    }
-    runs
-}
-
-/// Renders one assistant prose paragraph at the mockup's 15/26 `#d9d9d9` with
-/// bold lead-ins and inline code chips.
-pub fn render_rich_prose(content: &str, theme: &HermesTheme) -> Div {
-    let (text, spans) = parse_inline_rich(content);
-    let runs = rich_text_runs(&text, &spans, &RichTextStyle::mockup(theme));
-    div()
+fn render_inline_tokens(tokens: &[InlineToken], theme: &HermesTheme, id_prefix: &str) -> Div {
+    let mut row = div()
         .w_full()
-        .text_size(px(MockupTypeScale::BASE_SIZE))
-        .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
-        .text_color(theme.mockup_text_base)
-        .child(StyledText::new(text).with_runs(runs))
+        .min_w_0()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_baseline();
+
+    for (index, token) in tokens.iter().enumerate() {
+        let mut token_view = div().max_w_full().whitespace_normal();
+        if token.code {
+            token_view = token_view
+                .px(px(3.0))
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .bg(theme.mockup_inline_code_bg)
+                .font_family(theme.font_mono()[0].clone())
+                .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
+                .text_color(theme.mockup_text);
+        }
+        if token.bold {
+            token_view = token_view
+                .font_weight(FontWeight::BOLD)
+                .text_color(theme.mockup_text);
+        }
+        if token.italic {
+            token_view = token_view.italic();
+        }
+
+        if let Some(url) = &token.link {
+            let selector = format!("markdown_link_{id_prefix}_{index}");
+            let url = url.clone();
+            let mut link = token_view
+                .id(SharedString::from(selector.clone()))
+                .debug_selector(move || selector)
+                .text_color(theme.accent_blue())
+                .underline()
+                .cursor_pointer()
+                .hover(|this| this.text_color(theme.mockup_text));
+            link.interactivity()
+                .on_click(move |_, _, cx| cx.open_url(&url));
+            row = row.child(link);
+        } else {
+            row = row.child(token_view.child(token.text.clone()));
+        }
+    }
+
+    row
 }
 
-/// Renders one fenced code block: mono 12.5/21 on `#101010` with a `#222`
-/// border, no language label (mockup parity).
-fn render_code_block(code: &str, theme: &HermesTheme) -> Div {
-    div()
+fn render_markdown_table(
+    headers: &[String],
+    rows: &[Vec<String>],
+    theme: &HermesTheme,
+    id_prefix: &str,
+) -> Div {
+    let columns = headers
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0))
+        .max(1);
+    let width = (columns as f32 * 150.0).max(280.0);
+    let mut table = div()
         .w_full()
+        .min_w_0()
+        .max_h(px(PAYLOAD_MAX_HEIGHT))
+        .scroll_both(&format!("table_{id_prefix}_scroll"))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(theme.mockup_border)
+        .child(
+            div()
+                .min_w(px(width))
+                .flex()
+                .flex_col()
+                .text_size(px(MockupTypeScale::DIFF_SIZE))
+                .line_height(px(20.0)),
+        );
+
+    let mut header = div().flex().flex_row().bg(theme.mockup_sidebar);
+    for index in 0..columns {
+        let text = headers.get(index).map(String::as_str).unwrap_or("");
+        header = header.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .px(px(10.0))
+                .py(px(7.0))
+                .border_r_1()
+                .border_color(theme.mockup_border)
+                .font_weight(FontWeight::BOLD)
+                .text_color(theme.mockup_text)
+                .child(render_inline_tokens(
+                    &parse_inline(text),
+                    theme,
+                    &format!("{id_prefix}_header_{index}"),
+                )),
+        );
+    }
+    table = table.child(header);
+
+    for (row_index, row) in rows.iter().enumerate() {
+        let mut table_row = div().flex().flex_row();
+        for column in 0..columns {
+            let text = row.get(column).map(String::as_str).unwrap_or("");
+            table_row = table_row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .border_r_1()
+                    .border_t_1()
+                    .border_color(theme.mockup_border)
+                    .text_color(theme.mockup_text_base)
+                    .child(render_inline_tokens(
+                        &parse_inline(text),
+                        theme,
+                        &format!("{id_prefix}_row_{row_index}_{column}"),
+                    )),
+            );
+        }
+        table = table.child(table_row);
+    }
+    table
+}
+
+fn render_markdown_block(
+    block: &MarkdownBlock,
+    theme: &HermesTheme,
+    id_prefix: &str,
+    on_copy: Option<&TextCopyHandler>,
+) -> Div {
+    match block {
+        MarkdownBlock::Paragraph(text) => {
+            prose_style(theme, 0).child(render_inline_tokens(&parse_inline(text), theme, id_prefix))
+        }
+        MarkdownBlock::Heading { level, text } => {
+            let level = (*level).min(4);
+            prose_style(theme, level).child(render_inline_tokens(
+                &parse_inline(text),
+                theme,
+                id_prefix,
+            ))
+        }
+        MarkdownBlock::List { items } => {
+            let mut list = div().w_full().min_w_0().flex().flex_col().gap_1();
+            for (index, item) in items.iter().enumerate() {
+                let marker = if item.ordered {
+                    format!("{}.", item.number)
+                } else {
+                    "•".to_string()
+                };
+                list = list.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .gap_2()
+                        .ml(px((item.indent.min(8) as f32) * 16.0))
+                        .child(
+                            div()
+                                .w(px(24.0))
+                                .flex_none()
+                                .text_size(px(MockupTypeScale::BASE_SIZE))
+                                .line_height(px(MockupTypeScale::BASE_LINE_HEIGHT))
+                                .text_color(theme.mockup_text_dim)
+                                .child(marker),
+                        )
+                        .child(prose_style(theme, 0).flex_1().min_w_0().child(
+                            render_inline_tokens(
+                                &parse_inline(&item.text),
+                                theme,
+                                &format!("{id_prefix}_{index}"),
+                            ),
+                        )),
+                );
+            }
+            list
+        }
+        MarkdownBlock::BlockQuote(blocks) => div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .border_l_2()
+            .border_color(theme.mockup_border_strong)
+            .pl(px(12.0))
+            .text_color(theme.mockup_text_muted)
+            .child(render_markdown_blocks(
+                blocks,
+                theme,
+                &format!("{id_prefix}_quote"),
+                on_copy,
+            )),
+        MarkdownBlock::Code { language, code } => {
+            render_code_block(code, language, &format!("code_{id_prefix}"), theme, on_copy)
+        }
+        MarkdownBlock::Table { headers, rows } => {
+            render_markdown_table(headers, rows, theme, id_prefix)
+        }
+        MarkdownBlock::Rule => div()
+            .w_full()
+            .h(px(1.0))
+            .my(px(4.0))
+            .bg(theme.mockup_border),
+    }
+}
+
+fn render_markdown_blocks(
+    blocks: &[MarkdownBlock],
+    theme: &HermesTheme,
+    id_prefix: &str,
+    on_copy: Option<&TextCopyHandler>,
+) -> Div {
+    let mut container = div().w_full().min_w_0().flex().flex_col().gap_3();
+    for (index, block) in blocks.iter().enumerate() {
+        container = container.child(render_markdown_block(
+            block,
+            theme,
+            &format!("{id_prefix}_{index}"),
+            on_copy,
+        ));
+    }
+    container
+}
+
+pub fn render_markdown(
+    content: &str,
+    theme: &HermesTheme,
+    id_prefix: &str,
+    on_copy: Option<&TextCopyHandler>,
+) -> Div {
+    render_markdown_blocks(&parse_markdown(content), theme, id_prefix, on_copy)
+}
+
+fn render_code_block(
+    code: &str,
+    language: &str,
+    id: &str,
+    theme: &HermesTheme,
+    on_copy: Option<&TextCopyHandler>,
+) -> Div {
+    let (preview, truncated) = on_copy
+        .map(|_| preview_text(code, 400))
+        .unwrap_or_else(|| (code.to_string(), false));
+    let label = if language.is_empty() {
+        "code"
+    } else {
+        language
+    };
+    let mut block = div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
         .rounded(px(8.0))
         .border_1()
         .border_color(theme.mockup_border)
         .bg(theme.mockup_sidebar)
-        .px(px(12.0))
-        .py(px(10.0))
-        .font_family(theme.font_mono()[0].clone())
-        .text_size(px(MockupTypeScale::DIFF_SIZE))
-        .line_height(px(MockupTypeScale::DIFF_LINE_HEIGHT))
-        .text_color(theme.mockup_text_base)
-        .whitespace_nowrap()
-        .child(code.to_string())
+        .overflow_hidden()
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px(px(10.0))
+                .py(px(5.0))
+                .border_b_1()
+                .border_color(theme.mockup_border)
+                .text_size(px(MockupTypeScale::HINT_SIZE))
+                .text_color(theme.mockup_text_dim)
+                .child(div().min_w_0().truncate().child(label.to_string()))
+                .child(copy_button(id, code, on_copy, theme)),
+        )
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .max_h(px(PAYLOAD_MAX_HEIGHT))
+                .scroll_both(&format!("code_{id}_scroll"))
+                .px(px(12.0))
+                .py(px(10.0))
+                .font_family(theme.font_mono()[0].clone())
+                .text_size(px(MockupTypeScale::DIFF_SIZE))
+                .line_height(px(MockupTypeScale::DIFF_LINE_HEIGHT))
+                .text_color(theme.mockup_text_base)
+                .whitespace_nowrap()
+                .child(preview),
+        );
+    if truncated {
+        block = block.child(preview_notice(theme));
+    }
+    block
 }
 
 // --------------------------------------------------------------------------
@@ -384,10 +471,8 @@ fn action_button(
     }
 }
 
-/// Builds the mockup action bar for one assistant message: Copy (files icon +
-/// label), thumbs-up, thumbs-down (rotation baked into the SVG), Retry
-/// (rotate-ccw + label + chevron-down), then the real token count (13px,
-/// hidden when unknown). No emoji anywhere (D5).
+/// Builds the mockup action bar for one assistant message: Copy, Retry, then
+/// the real token count when known. Controls without handlers stay noninteractive.
 pub fn mockup_action_bar(
     theme: &HermesTheme,
     id: &str,
@@ -407,22 +492,6 @@ pub fn mockup_action_bar(
         handlers.copy.as_ref(),
         "files",
         Some(ACTION_BAR_LABELS[0]),
-        None,
-    ));
-    row = row.child(action_button(
-        theme,
-        format!("action_up_{id}"),
-        None,
-        "thumbs-up",
-        None,
-        None,
-    ));
-    row = row.child(action_button(
-        theme,
-        format!("action_down_{id}"),
-        None,
-        "thumbs-down",
-        None,
         None,
     ));
     row = row.child(action_button(
@@ -633,6 +702,7 @@ impl AssistantMessageView {
                 self.id
             ))));
             let on_click = handlers.and_then(|h| h.reasoning.clone());
+            let on_copy = handlers.and_then(|h| h.copy_payload.clone());
             if let Some((window, cx, owner)) = motion.as_mut() {
                 let reveal = RevealMotion::for_identity(
                     *owner,
@@ -640,37 +710,47 @@ impl AssistantMessageView {
                     &format!("reasoning_{}", self.id),
                 );
                 reveal.ensure(window, cx, f32::from(reasoning.is_expanded));
-                card = card.child(reasoning.render_reveal(theme, id, on_click, reveal, cx));
+                card = card.child(reasoning.render_reveal_with_copy(
+                    theme,
+                    id,
+                    on_click,
+                    on_copy,
+                    &format!("reasoning_{}", self.id),
+                    reveal,
+                    cx,
+                ));
             } else {
-                card = card.child(reasoning.render_with_click(theme, id, on_click));
+                card = card.child(reasoning.render_with_click_and_copy(
+                    theme,
+                    id,
+                    on_click,
+                    on_copy,
+                    &format!("reasoning_{}", self.id),
+                ));
             }
         }
 
         for tool in &self.tool_calls {
             let on_input = handlers.and_then(|h| h.tool_input.clone());
             let on_output = handlers.and_then(|h| h.tool_output.clone());
+            let on_copy = handlers.and_then(|h| h.copy_payload.clone());
             if let Some((window, cx, owner)) = motion.as_mut() {
                 card = card.child(tool.render_with_fold_handlers_motion(
-                    theme, on_input, on_output, window, cx, *owner,
+                    theme, on_input, on_output, on_copy, window, cx, *owner,
                 ));
             } else {
-                card = card.child(tool.render_with_fold_handlers(theme, on_input, on_output));
+                card =
+                    card.child(tool.render_with_fold_handlers(theme, on_input, on_output, on_copy));
             }
         }
 
-        // 3. Prose / Text Content (fenced code blocks render as structured
-        // blocks; prose gets bold lead-ins and inline code chips).
-        for segment in split_content_segments(&self.content) {
-            match segment {
-                ContentSegment::Prose(text) => {
-                    if !text.trim().is_empty() {
-                        card = card.child(render_rich_prose(&text, theme));
-                    }
-                }
-                ContentSegment::Code { code, .. } => {
-                    card = card.child(render_code_block(&code, theme));
-                }
-            }
+        if !self.content.trim().is_empty() {
+            card = card.child(render_markdown(
+                &self.content,
+                theme,
+                &self.id,
+                handlers.and_then(|h| h.copy_payload.as_ref()),
+            ));
         }
 
         // 4. Streaming braille spinner at the tail (mockup `.sp`).
@@ -686,13 +766,21 @@ impl AssistantMessageView {
             };
             card = card.child(bar);
             let changes_click = handlers.and_then(|h| h.changes.as_ref());
+            let copy_payload = handlers.and_then(|h| h.copy_payload.clone());
             if let Some((window, cx, owner)) = motion.as_mut() {
-                if let Some(changes) =
-                    self.render_changes_button_motion(theme, changes_click, window, cx, *owner)
-                {
+                if let Some(changes) = self.render_changes_button_motion(
+                    theme,
+                    changes_click,
+                    copy_payload,
+                    window,
+                    cx,
+                    *owner,
+                ) {
                     card = card.child(changes);
                 }
-            } else if let Some(changes) = self.render_changes_button(theme, changes_click) {
+            } else if let Some(changes) =
+                self.render_changes_button(theme, changes_click, copy_payload)
+            {
                 card = card.child(changes);
             }
         }
@@ -736,14 +824,16 @@ impl AssistantMessageView {
         &self,
         theme: &HermesTheme,
         on_toggle: Option<&ClickHandler>,
+        on_copy: Option<TextCopyHandler>,
     ) -> Option<AnyElement> {
-        self.render_changes_button_inner(theme, on_toggle, None)
+        self.render_changes_button_inner(theme, on_toggle, on_copy, None)
     }
 
     fn render_changes_button_motion(
         &self,
         theme: &HermesTheme,
         on_toggle: Option<&ClickHandler>,
+        on_copy: Option<TextCopyHandler>,
         window: &mut Window,
         cx: &mut App,
         owner: EntityId,
@@ -751,13 +841,14 @@ impl AssistantMessageView {
         let reveal =
             RevealMotion::for_identity(owner, "changes_reveal", &format!("changes_{}", self.id));
         reveal.ensure(window, cx, f32::from(self.changes_expanded));
-        self.render_changes_button_inner(theme, on_toggle, Some((reveal, cx)))
+        self.render_changes_button_inner(theme, on_toggle, on_copy, Some((reveal, cx)))
     }
 
     fn render_changes_button_inner(
         &self,
         theme: &HermesTheme,
         on_toggle: Option<&ClickHandler>,
+        on_copy: Option<TextCopyHandler>,
         reveal: Option<(RevealMotion, &App)>,
     ) -> Option<AnyElement> {
         let mut files: Vec<(String, usize, usize)> = Vec::new();
@@ -843,9 +934,13 @@ impl AssistantMessageView {
         let mut column = div().w_full().flex().flex_col().gap(px(8.0)).child(button);
         if values.map_or(self.changes_expanded, RevealValues::is_visible) {
             let mut body = div().w_full().flex().flex_col().gap(px(8.0));
-            for tool in &self.tool_calls {
+            for (index, tool) in self.tool_calls.iter().enumerate() {
                 if let Some(view) = tool.diff_view() {
-                    body = body.child(view.render(theme));
+                    body = body.child(view.render_with_copy(
+                        theme,
+                        on_copy.as_ref(),
+                        &format!("changes_{}_{}", self.id, index),
+                    ));
                 }
             }
             if let Some(values) = values {
@@ -886,118 +981,28 @@ mod tests {
     }
 
     #[test]
-    fn test_split_content_segments_prose_and_code() {
-        let content = "Here is a fix:\n```rust\nfn main() {}\n```\nRun it with cargo.";
-        let segments = split_content_segments(content);
-        assert_eq!(
-            segments,
-            vec![
-                ContentSegment::Prose("Here is a fix:\n".to_string()),
-                ContentSegment::Code {
-                    language: "rust".to_string(),
-                    code: "fn main() {}".to_string(),
-                },
-                ContentSegment::Prose("Run it with cargo.".to_string()),
-            ]
-        );
+    fn test_markdown_content_renders_structured_blocks() {
+        let content =
+            "# Result\n\n**Done** with `cargo test`.\n\n- one\n- two\n\n```rust\nfn main() {}\n```";
+        let blocks = parse_markdown(content);
+        assert!(matches!(blocks[0], MarkdownBlock::Heading { level: 1, .. }));
+        assert!(matches!(blocks[1], MarkdownBlock::Paragraph(_)));
+        assert!(matches!(blocks[2], MarkdownBlock::List { .. }));
+        assert!(matches!(blocks[3], MarkdownBlock::Code { .. }));
+
+        let theme = HermesTheme::default();
+        let view = AssistantMessageView::new("msg_markdown", content);
+        let _ = view.render(&theme);
     }
 
     #[test]
-    fn test_split_content_segments_unterminated_fence_streams_as_code() {
-        let segments = split_content_segments("Writing code:\n```python\nprint(1)\n");
-        assert_eq!(
-            segments,
-            vec![
-                ContentSegment::Prose("Writing code:\n".to_string()),
-                ContentSegment::Code {
-                    language: "python".to_string(),
-                    code: "print(1)".to_string(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn test_split_content_segments_plain_prose_unchanged() {
-        let segments = split_content_segments("Just prose.\nSecond line.");
-        assert_eq!(
-            segments,
-            vec![ContentSegment::Prose(
-                "Just prose.\nSecond line.".to_string()
-            )]
-        );
-        assert!(split_content_segments("").is_empty());
-    }
-
-    #[test]
-    fn test_parse_inline_rich_bold_and_code_boundaries() {
-        let content = "**The change:** `GraphBuilder.edges()` now streams.";
-        let (text, spans) = parse_inline_rich(content);
-        assert_eq!(text, "The change: GraphBuilder.edges() now streams.");
-        // The space between the bold lead-in and the code chip is preserved
-        // (mockup: `<b>The change:</b> <span class="cd">…</span>`).
-        assert_eq!(
-            spans,
-            vec![
-                RichSpan {
-                    kind: RichSpanKind::Bold,
-                    range: 0..11,
-                },
-                RichSpan {
-                    kind: RichSpanKind::Code,
-                    range: 12..32,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn test_parse_inline_rich_nested_code_inside_bold() {
-        let (text, spans) = parse_inline_rich("**bold `code` tail** rest");
-        assert_eq!(text, "bold code tail rest");
-        let bold = spans.iter().find(|s| s.kind == RichSpanKind::Bold).unwrap();
-        let code = spans.iter().find(|s| s.kind == RichSpanKind::Code).unwrap();
-        assert_eq!(bold.clone().range, 0..14);
-        assert_eq!(code.clone().range, 5..9);
-    }
-
-    #[test]
-    fn test_parse_inline_rich_unmatched_markers_stay_literal() {
-        for content in ["a ** b", "**bold", "tick ` x", "lone `"] {
-            let (text, spans) = parse_inline_rich(content);
-            assert_eq!(text, content, "markers must survive when unmatched");
-            assert!(spans.is_empty(), "{content:?} must produce no spans");
-        }
-    }
-
-    #[test]
-    fn test_rich_text_runs_cover_text_with_styles() {
-        let (text, spans) = parse_inline_rich("**Lead:** `x()` plain");
-        let style = RichTextStyle {
-            base_font: gpui::font("Apfel Grotezk"),
-            mono_font: gpui::font("Geist Mono"),
-            base_color: rgb(0xd9d9d9).into(),
-            bold_color: rgb(0xffffff).into(),
-            code_color: rgb(0xe6e6e6).into(),
-            code_bg: rgb(0x202020).into(),
-        };
-        let runs = rich_text_runs(&text, &spans, &style);
-        let total: usize = runs.iter().map(|r| r.len).sum();
-        assert_eq!(total, text.len(), "runs must cover the flattened text");
-
-        // First run = bold lead-in ("Lead:"), white + bold sans.
-        assert_eq!(&text[..runs[0].len], "Lead:");
-        assert_eq!(runs[0].font.weight, FontWeight::BOLD);
-        let bold_rgb = gpui::Rgba::from(runs[0].color);
-        assert!((bold_rgb.r * 255.0).round() as u8 == 0xff);
-        // The code run uses the mono font with the chip background.
-        let code_run = runs
+    fn test_inline_tokens_preserve_streaming_markers() {
+        let tokens = parse_inline("**partial `code");
+        let text = tokens
             .iter()
-            .find(|r| r.background_color.is_some())
-            .expect("code run must carry the chip background");
-        assert_eq!(code_run.font.family.as_ref(), "Geist Mono");
-        let chip_bg = gpui::Rgba::from(code_run.background_color.unwrap());
-        assert_eq!((chip_bg.r * 255.0).round() as u8, 0x20);
+            .map(|token| token.text.as_str())
+            .collect::<String>();
+        assert_eq!(text, "**partial `code");
     }
 
     #[test]
