@@ -1,12 +1,8 @@
-//! Global macOS keyboard shortcuts and GPUI actions for HEX Desktop.
+//! Global keyboard shortcuts and GPUI actions for HEX Desktop.
 //!
-//! Maps key combinations to actions matching macOS human interface guidelines and Hermes Desktop:
-//! - `cmd-k`: Toggles Command Palette modal
-//! - `cmd-n`: Starts a new chat conversation
-//! - `cmd-enter`: Submits prompt from message composer
-//! - `cmd-b`: Toggles left sidebar collapse
-//! - `cmd-,`: Opens settings and preferences
-//! - `escape`: Closes open modal / cancels active prompt generation
+//! `secondary` is the platform primary modifier: Command on macOS, Ctrl on
+//! Windows and Linux. Bindings that only make sense on one platform are added
+//! per target.
 
 use gpui::*;
 
@@ -79,23 +75,32 @@ declare_actions!(
 
 /// Returns the standard set of keyboard bindings for the HEX Desktop Cockpit.
 pub fn desktop_keybindings() -> Vec<KeyBinding> {
-    vec![
-        KeyBinding::new("cmd-k", ToggleCommandPalette, None),
-        KeyBinding::new("cmd-n", NewChat, None),
-        KeyBinding::new("cmd-enter", SubmitPrompt, None),
-        KeyBinding::new("cmd-b", ToggleSidebar, None),
-        KeyBinding::new("cmd-,", OpenSettings, None),
+    let mut bindings = vec![
+        KeyBinding::new("secondary-k", ToggleCommandPalette, None),
+        KeyBinding::new("secondary-n", NewChat, None),
+        KeyBinding::new("secondary-enter", SubmitPrompt, None),
+        KeyBinding::new("secondary-b", ToggleSidebar, None),
+        KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("escape", CancelOrDismiss, None),
-        KeyBinding::new("cmd-z", Undo, None),
-        KeyBinding::new("cmd-shift-z", Redo, None),
-        KeyBinding::new("cmd-x", Cut, None),
-        KeyBinding::new("cmd-c", Copy, None),
-        KeyBinding::new("cmd-v", Paste, None),
-        KeyBinding::new("cmd-a", SelectAll, None),
-        KeyBinding::new("cmd-w", CloseWindow, None),
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-h", Hide, None),
-    ]
+        KeyBinding::new("secondary-z", Undo, None),
+        KeyBinding::new("secondary-shift-z", Redo, None),
+        KeyBinding::new("secondary-x", Cut, None),
+        KeyBinding::new("secondary-c", Copy, None),
+        KeyBinding::new("secondary-v", Paste, None),
+        KeyBinding::new("secondary-a", SelectAll, None),
+        KeyBinding::new("secondary-w", CloseWindow, None),
+    ];
+    #[cfg(target_os = "macos")]
+    {
+        bindings.push(KeyBinding::new("secondary-q", Quit, None));
+        bindings.push(KeyBinding::new("secondary-h", Hide, None));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        bindings.push(KeyBinding::new("secondary-y", Redo, None));
+        bindings.push(KeyBinding::new("alt-f4", CloseWindow, None));
+    }
+    bindings
 }
 
 /// Register desktop keyboard bindings on the GPUI application context.
@@ -139,5 +144,16 @@ mod tests {
                 "unsupported zoom binding must not be advertised: {unsupported}"
             );
         }
+
+        let uses_platform_modifier = bindings.iter().any(|binding| {
+            binding
+                .keystrokes()
+                .iter()
+                .any(|keystroke| keystroke.modifiers().platform || keystroke.modifiers().control)
+        });
+        assert!(
+            uses_platform_modifier,
+            "global shortcuts must use the platform primary modifier"
+        );
     }
 }

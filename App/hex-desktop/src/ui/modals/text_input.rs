@@ -144,6 +144,106 @@ pub fn select_all(value: &str, cursor: &mut usize, anchor: &mut usize) {
     *cursor = value.len();
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextUnit {
+    Character,
+    Word,
+    Line,
+    Document,
+}
+
+pub fn move_target(value: &str, cursor: usize, unit: TextUnit, forward: bool) -> usize {
+    let cursor = boundary(value, cursor);
+    match unit {
+        TextUnit::Character => {
+            if forward {
+                next_grapheme(value, cursor)
+            } else {
+                previous_grapheme(value, cursor)
+            }
+        }
+        TextUnit::Word => {
+            if forward {
+                next_word_end(value, cursor)
+            } else {
+                previous_word_start(value, cursor)
+            }
+        }
+        TextUnit::Line => {
+            if forward {
+                line_end(value, cursor)
+            } else {
+                line_start(value, cursor)
+            }
+        }
+        TextUnit::Document => {
+            if forward {
+                value.len()
+            } else {
+                0
+            }
+        }
+    }
+}
+
+pub fn previous_word_start(value: &str, offset: usize) -> usize {
+    let offset = boundary(value, offset);
+    value
+        .split_word_bound_indices()
+        .filter_map(|(index, word)| (!word.trim().is_empty()).then_some(index))
+        .take_while(|&index| index < offset)
+        .last()
+        .unwrap_or(0)
+}
+
+pub fn next_word_end(value: &str, offset: usize) -> usize {
+    let offset = boundary(value, offset);
+    for (index, word) in value.split_word_bound_indices() {
+        if word.trim().is_empty() {
+            continue;
+        }
+        if index + word.len() > offset {
+            return index + word.len();
+        }
+    }
+    value.len()
+}
+
+pub fn line_start(value: &str, offset: usize) -> usize {
+    let offset = boundary(value, offset);
+    value[..offset]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0)
+}
+
+pub fn line_end(value: &str, offset: usize) -> usize {
+    let offset = boundary(value, offset);
+    value[offset..]
+        .find('\n')
+        .map(|index| offset + index)
+        .unwrap_or(value.len())
+}
+
+pub fn delete_target(
+    value: &str,
+    cursor: usize,
+    anchor: usize,
+    unit: TextUnit,
+    forward: bool,
+) -> Range<usize> {
+    let selection = selected_range(value, cursor, anchor);
+    if !selection.is_empty() {
+        return selection;
+    }
+    let target = move_target(value, cursor, unit, forward);
+    if target <= cursor {
+        target..cursor
+    } else {
+        cursor..target
+    }
+}
+
 fn caret(accent: Rgba) -> Div {
     div()
         .w(px(1.0))
@@ -361,5 +461,34 @@ mod tests {
         assert_eq!((cursor, anchor), (1, 1));
         move_horizontal(&value, &mut cursor, &mut anchor, 1, false);
         assert_eq!((cursor, anchor), (2, 2));
+    }
+
+    #[test]
+    fn word_motion_skips_whitespace_and_handles_cjk() {
+        let value = "hello world";
+        assert_eq!(previous_word_start(value, 10), 6);
+        assert_eq!(previous_word_start(value, 6), 0);
+        assert_eq!(next_word_end(value, 0), 5);
+        assert_eq!(next_word_end(value, 6), 11);
+
+        let cjk = "你好 world";
+        assert_eq!(previous_word_start(cjk, cjk.len()), 7);
+        assert_eq!(next_word_end(cjk, 0), 3);
+    }
+
+    #[test]
+    fn line_motion_uses_line_boundaries() {
+        let value = "first\nsecond\nthird";
+        assert_eq!(line_start(value, 9), 6);
+        assert_eq!(line_end(value, 9), 12);
+        assert_eq!(move_target(value, 9, TextUnit::Document, false), 0);
+        assert_eq!(move_target(value, 9, TextUnit::Document, true), value.len());
+    }
+
+    #[test]
+    fn delete_target_prefers_the_active_selection() {
+        let value = "hello world";
+        assert_eq!(delete_target(value, 5, 0, TextUnit::Word, false), 0..5);
+        assert_eq!(delete_target(value, 0, 0, TextUnit::Word, true), 0..5);
     }
 }

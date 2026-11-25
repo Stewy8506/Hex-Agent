@@ -1806,3 +1806,55 @@ async fn test_tall_modal_stays_inside_viewport_and_scrolls(cx: &mut TestAppConte
     assert!(content.size.height > card.size.height);
     assert!(vc.debug_bounds("settings_save_row").is_some());
 }
+
+#[gpui::test]
+async fn test_header_empty_space_acts_as_a_native_titlebar(cx: &mut TestAppContext) {
+    let (_rt, view, vc) = launch_connected_chat(cx);
+
+    // Home: the traffic-light gutter and the strip around the provider chip
+    // span the full top bar, so any click there is a window drag.
+    let top_bar = vc.debug_bounds("home_top_bar").unwrap();
+    let gutter = vc.debug_bounds("home_traffic_gutter").unwrap();
+    let strip = vc.debug_bounds("home_top_bar_drag").unwrap();
+    let toggle = vc.debug_bounds("home_sidebar_toggle").unwrap();
+    let search = vc.debug_bounds("home_search_button").unwrap();
+    assert_px_close(gutter.size.height, top_bar.size.height);
+    assert_px_close(strip.size.height, top_bar.size.height);
+    assert_px_close(gutter.left(), top_bar.left());
+    assert_px_close(gutter.right(), toggle.left());
+    assert!(strip.left() >= toggle.right());
+    assert!(strip.right() <= search.left());
+
+    vc.simulate_input("draft");
+    vc.simulate_click(gutter.center(), Modifiers::none());
+    vc.simulate_click(strip.center(), Modifiers::none());
+    assert_eq!(snap(vc, &view, |v| v.composer_text().to_string()), "draft");
+    assert!(
+        focus_state(vc, &view) == (true, false),
+        "a titlebar click must leave composer focus alone"
+    );
+    assert!(!snap(vc, &view, |v| v.shell.sidebar_collapsed));
+
+    // Session: the gutter beside the traffic lights, plus everything between
+    // the Chat indicator and the header actions.
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "titlebar fixture session", |v| {
+        last_assistant(v).is_some_and(|assistant| assistant.content == "Hello world")
+    });
+    let header = vc.debug_bounds("session_header").unwrap();
+    let gutter = vc.debug_bounds("header_traffic_gutter").unwrap();
+    let strip = vc.debug_bounds("header_drag_region").unwrap();
+    let toggle = vc.debug_bounds("header_toggle").unwrap();
+    assert_px_close(gutter.size.height, header.size.height);
+    assert_px_close(strip.size.height, header.size.height);
+    assert_px_close(gutter.left(), header.left());
+    assert_px_close(gutter.right(), toggle.left());
+    assert!(strip.left() >= vc.debug_bounds("segment_chat").unwrap().right());
+    assert!(strip.right() <= vc.debug_bounds("header_bell").unwrap().left());
+
+    vc.simulate_click(gutter.center(), Modifiers::none());
+    vc.simulate_click(strip.center(), Modifiers::none());
+    assert_eq!(snap(vc, &view, |v| v.composer_text().to_string()), "");
+    assert!(focus_state(vc, &view) == (true, false));
+    assert!(!snap(vc, &view, |v| v.shell.sidebar_collapsed));
+}

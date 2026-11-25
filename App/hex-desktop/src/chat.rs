@@ -36,6 +36,7 @@ use hex_protocol::models::{
 use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
+use crate::platform;
 use crate::shortcuts::{self, init_shortcuts, About, CloseWindow, Hide, Quit, Redo, Undo};
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
@@ -54,6 +55,7 @@ use crate::ui::modals::session_actions::{
     SessionActionOutcome, SessionSearchModal,
 };
 use crate::ui::modals::settings::{SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal};
+use crate::ui::modals::text_input::{delete_target, move_target, TextUnit};
 use crate::ui::modals::{
     render_about, render_modal_container, AccountModal, ActiveModal, ModalMotion, ModelEntry,
     PaletteAction, ToolApprovalModal,
@@ -82,41 +84,94 @@ gpui::actions!(
         SelectRight,
         Home,
         End,
+        SelectHome,
+        SelectEnd,
         Up,
         Down,
         InsertNewline,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DocumentStart,
+        DocumentEnd,
+        SelectDocumentStart,
+        SelectDocumentEnd,
+        DeleteWordLeft,
+        DeleteWordRight,
+        DeleteLineStart,
     ]
 );
 
+fn editor_keybindings(context: &'static str) -> Vec<KeyBinding> {
+    let mut bindings = vec![
+        KeyBinding::new("backspace", Backspace, Some(context)),
+        KeyBinding::new("delete", Delete, Some(context)),
+        KeyBinding::new("left", Left, Some(context)),
+        KeyBinding::new("right", Right, Some(context)),
+        KeyBinding::new("shift-left", SelectLeft, Some(context)),
+        KeyBinding::new("shift-right", SelectRight, Some(context)),
+        KeyBinding::new("home", Home, Some(context)),
+        KeyBinding::new("end", End, Some(context)),
+        KeyBinding::new("shift-home", SelectHome, Some(context)),
+        KeyBinding::new("shift-end", SelectEnd, Some(context)),
+        KeyBinding::new("up", Up, Some(context)),
+        KeyBinding::new("down", Down, Some(context)),
+        KeyBinding::new("secondary-a", shortcuts::SelectAll, Some(context)),
+        KeyBinding::new("secondary-c", shortcuts::Copy, Some(context)),
+        KeyBinding::new("secondary-x", shortcuts::Cut, Some(context)),
+        KeyBinding::new("secondary-v", shortcuts::Paste, Some(context)),
+        KeyBinding::new("secondary-z", Undo, Some(context)),
+        KeyBinding::new("secondary-shift-z", Redo, Some(context)),
+    ];
+    if cfg!(target_os = "macos") {
+        bindings.extend([
+            KeyBinding::new("secondary-left", Home, Some(context)),
+            KeyBinding::new("secondary-right", End, Some(context)),
+            KeyBinding::new("secondary-shift-left", SelectHome, Some(context)),
+            KeyBinding::new("secondary-shift-right", SelectEnd, Some(context)),
+            KeyBinding::new("alt-left", WordLeft, Some(context)),
+            KeyBinding::new("alt-right", WordRight, Some(context)),
+            KeyBinding::new("alt-shift-left", SelectWordLeft, Some(context)),
+            KeyBinding::new("alt-shift-right", SelectWordRight, Some(context)),
+            KeyBinding::new("secondary-up", DocumentStart, Some(context)),
+            KeyBinding::new("secondary-down", DocumentEnd, Some(context)),
+            KeyBinding::new("secondary-shift-up", SelectDocumentStart, Some(context)),
+            KeyBinding::new("secondary-shift-down", SelectDocumentEnd, Some(context)),
+            KeyBinding::new("secondary-backspace", DeleteLineStart, Some(context)),
+            KeyBinding::new("alt-backspace", DeleteWordLeft, Some(context)),
+            KeyBinding::new("alt-delete", DeleteWordRight, Some(context)),
+        ]);
+    } else {
+        bindings.extend([
+            KeyBinding::new("secondary-left", WordLeft, Some(context)),
+            KeyBinding::new("secondary-right", WordRight, Some(context)),
+            KeyBinding::new("secondary-shift-left", SelectWordLeft, Some(context)),
+            KeyBinding::new("secondary-shift-right", SelectWordRight, Some(context)),
+            KeyBinding::new("secondary-home", DocumentStart, Some(context)),
+            KeyBinding::new("secondary-end", DocumentEnd, Some(context)),
+            KeyBinding::new("secondary-shift-home", SelectDocumentStart, Some(context)),
+            KeyBinding::new("secondary-shift-end", SelectDocumentEnd, Some(context)),
+            KeyBinding::new("secondary-backspace", DeleteWordLeft, Some(context)),
+            KeyBinding::new("secondary-delete", DeleteWordRight, Some(context)),
+            KeyBinding::new("secondary-y", Redo, Some(context)),
+        ]);
+    }
+    bindings
+}
+
 /// Composer-scoped keybindings layered on top of the global desktop shortcuts.
 pub fn composer_keybindings() -> Vec<KeyBinding> {
-    vec![
+    let mut bindings = vec![
         KeyBinding::new("enter", shortcuts::SubmitPrompt, Some("Composer")),
         KeyBinding::new("shift-enter", InsertNewline, Some("Composer")),
-        KeyBinding::new("backspace", Backspace, Some("Composer")),
-        KeyBinding::new("delete", Delete, Some("Composer")),
-        KeyBinding::new("left", Left, Some("Composer")),
-        KeyBinding::new("right", Right, Some("Composer")),
-        KeyBinding::new("shift-left", SelectLeft, Some("Composer")),
-        KeyBinding::new("shift-right", SelectRight, Some("Composer")),
-        KeyBinding::new("home", Home, Some("Composer")),
-        KeyBinding::new("end", End, Some("Composer")),
-        KeyBinding::new("up", Up, Some("Composer")),
-        KeyBinding::new("down", Down, Some("Composer")),
         // Modal overlay owns focus while open; the same keys drive modal
         // navigation/confirmation instead of the editor underneath.
         KeyBinding::new("enter", shortcuts::SubmitPrompt, Some("Modal")),
-        KeyBinding::new("backspace", Backspace, Some("Modal")),
-        KeyBinding::new("delete", Delete, Some("Modal")),
-        KeyBinding::new("left", Left, Some("Modal")),
-        KeyBinding::new("right", Right, Some("Modal")),
-        KeyBinding::new("shift-left", SelectLeft, Some("Modal")),
-        KeyBinding::new("shift-right", SelectRight, Some("Modal")),
-        KeyBinding::new("home", Home, Some("Modal")),
-        KeyBinding::new("end", End, Some("Modal")),
-        KeyBinding::new("up", Up, Some("Modal")),
-        KeyBinding::new("down", Down, Some("Modal")),
-    ]
+    ];
+    bindings.extend(editor_keybindings("Composer"));
+    bindings.extend(editor_keybindings("Modal"));
+    bindings
 }
 
 const MAX_UNDO_HISTORY: usize = 100;
@@ -2116,18 +2171,26 @@ impl ChatView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .pl(px(crate::ui::shell::TRAFFIC_LIGHT_GUTTER))
+                    .child(
+                        platform::titlebar_drag_region("home_traffic_gutter")
+                            .w(px(crate::ui::shell::TRAFFIC_LIGHT_GUTTER))
+                            .flex_none(),
+                    )
                     .child(sidebar_toggle),
             )
             .child(
                 div()
                     .flex_1()
+                    .h_full()
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_center()
                     .min_w_0()
                     .px(px(home::TOP_BAR_PADDING_X))
+                    .debug_selector(|| "home_top_bar_drag".to_string())
+                    .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(MouseButton::Left, platform::on_titlebar_mouse_down)
                     .child(
                         div()
                             .min_w_0()
@@ -3938,6 +4001,83 @@ impl ChatView {
         self.move_vertically(false, cx);
     }
 
+    fn on_select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_motion(TextUnit::Line, false, true, cx);
+    }
+
+    fn on_select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_motion(TextUnit::Line, true, true, cx);
+    }
+
+    fn on_word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_motion(TextUnit::Word, false, false, cx);
+    }
+
+    fn on_word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_motion(TextUnit::Word, true, false, cx);
+    }
+
+    fn on_select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_motion(TextUnit::Word, false, true, cx);
+    }
+
+    fn on_select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_motion(TextUnit::Word, true, true, cx);
+    }
+
+    fn on_document_start(&mut self, _: &DocumentStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_motion(TextUnit::Document, false, false, cx);
+    }
+
+    fn on_document_end(&mut self, _: &DocumentEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_motion(TextUnit::Document, true, false, cx);
+    }
+
+    fn on_select_document_start(
+        &mut self,
+        _: &SelectDocumentStart,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_editor_motion(TextUnit::Document, false, true, cx);
+    }
+
+    fn on_select_document_end(
+        &mut self,
+        _: &SelectDocumentEnd,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_editor_motion(TextUnit::Document, true, true, cx);
+    }
+
+    fn on_delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_editor_delete(TextUnit::Word, false, window, cx);
+    }
+
+    fn on_delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_editor_delete(TextUnit::Word, true, window, cx);
+    }
+
+    fn on_delete_line_start(
+        &mut self,
+        _: &DeleteLineStart,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_editor_delete(TextUnit::Line, false, window, cx);
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         if !self.shell.active_modal.is_open() {
             return;
@@ -4339,6 +4479,77 @@ impl ChatView {
             ActiveModal::Settings(modal) => modal.select_text_range(range),
             _ => {}
         }
+    }
+
+    fn modal_move_cursor_to(&mut self, offset: usize, selecting: bool) {
+        match &mut self.shell.active_modal {
+            ActiveModal::Palette(modal) => modal.move_cursor_to(offset, selecting),
+            ActiveModal::ModelPicker(modal) => modal.move_search_cursor_to(offset, selecting),
+            ActiveModal::SessionSearch(modal) => modal.move_cursor_to(offset, selecting),
+            ActiveModal::Account(modal) => modal.move_cursor_to(offset, selecting),
+            ActiveModal::SessionAction(modal) => modal.move_cursor_to(offset, selecting),
+            ActiveModal::Settings(modal) => modal.move_cursor_to(offset, selecting),
+            _ => {}
+        }
+    }
+
+    fn apply_editor_motion(
+        &mut self,
+        unit: TextUnit,
+        forward: bool,
+        selecting: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shell.active_modal.is_open() {
+            if !self.modal_accepts_text_edit() {
+                return;
+            }
+            self.abort_modal_ime();
+            let Some((value, cursor, _)) = self.modal_text_state() else {
+                return;
+            };
+            let target = move_target(&value, cursor, unit, forward);
+            self.modal_move_cursor_to(target, selecting);
+            self.modal_undo_break = true;
+            cx.notify();
+            return;
+        }
+        let target = move_target(&self.content, self.cursor_offset(), unit, forward);
+        if selecting {
+            self.select_to(target, cx);
+        } else {
+            self.move_to(target, cx);
+        }
+    }
+
+    fn apply_editor_delete(
+        &mut self,
+        unit: TextUnit,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shell.active_modal.is_open() {
+            if !self.modal_accepts_text_edit() {
+                return;
+            }
+            self.abort_modal_ime();
+            let Some((value, cursor, anchor)) = self.modal_text_state() else {
+                return;
+            };
+            let range = delete_target(&value, cursor, anchor, unit, forward);
+            self.record_modal_edit(TextEditKind::Delete);
+            self.modal_replace_range(range, "");
+            cx.notify();
+            return;
+        }
+        let anchor = if self.selection_reversed {
+            self.selected_range.end
+        } else {
+            self.selected_range.start
+        };
+        let range = delete_target(&self.content, self.cursor_offset(), anchor, unit, forward);
+        self.replace_text_in_range(Some(range), "", window, cx);
     }
 
     fn abort_modal_ime(&mut self) {
@@ -4933,6 +5144,19 @@ impl ChatView {
             .on_action(cx.listener(Self::on_select_right))
             .on_action(cx.listener(Self::on_home))
             .on_action(cx.listener(Self::on_end))
+            .on_action(cx.listener(Self::on_select_home))
+            .on_action(cx.listener(Self::on_select_end))
+            .on_action(cx.listener(Self::on_word_left))
+            .on_action(cx.listener(Self::on_word_right))
+            .on_action(cx.listener(Self::on_select_word_left))
+            .on_action(cx.listener(Self::on_select_word_right))
+            .on_action(cx.listener(Self::on_document_start))
+            .on_action(cx.listener(Self::on_document_end))
+            .on_action(cx.listener(Self::on_select_document_start))
+            .on_action(cx.listener(Self::on_select_document_end))
+            .on_action(cx.listener(Self::on_delete_word_left))
+            .on_action(cx.listener(Self::on_delete_word_right))
+            .on_action(cx.listener(Self::on_delete_line_start))
             .on_action(cx.listener(Self::on_up))
             .on_action(cx.listener(Self::on_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
@@ -5227,9 +5451,8 @@ impl ChatView {
             .flex_row()
             .items_center()
             .child(
-                div()
+                platform::titlebar_drag_region("header_traffic_gutter")
                     .w(px(traffic_gutter))
-                    .h_full()
                     .flex_none(),
             )
             .child(
@@ -5267,10 +5490,18 @@ impl ChatView {
                     .flex_row()
                     .items_center()
                     .justify_end()
-                    .pr(px(crate::ui::shell::HEADER_PADDING_X))
-                    .child(self.render_chat_header_indicator(theme)),
+                    .child(self.render_chat_header_indicator(theme))
+                    .child(
+                        platform::titlebar_drag_region("header_indicator_gutter")
+                            .w(px(crate::ui::shell::HEADER_PADDING_X))
+                            .flex_none(),
+                    ),
             )
-            .child(div().flex_1().min_w_0())
+            .child(
+                platform::titlebar_drag_region("header_drag_region")
+                    .flex_1()
+                    .min_w_0(),
+            )
             .child(
                 div()
                     .w(px(crate::ui::shell::HEADER_ACTIONS_WIDTH))
@@ -6361,6 +6592,27 @@ impl ChatView {
             .key_context("Modal")
             .track_focus(&self.modal_focus_handle)
             .on_action(cx.listener(Self::on_backspace))
+            .on_action(cx.listener(Self::on_delete))
+            .on_action(cx.listener(Self::on_left))
+            .on_action(cx.listener(Self::on_right))
+            .on_action(cx.listener(Self::on_select_left))
+            .on_action(cx.listener(Self::on_select_right))
+            .on_action(cx.listener(Self::on_insert_newline))
+            .on_action(cx.listener(Self::on_home))
+            .on_action(cx.listener(Self::on_end))
+            .on_action(cx.listener(Self::on_select_home))
+            .on_action(cx.listener(Self::on_select_end))
+            .on_action(cx.listener(Self::on_word_left))
+            .on_action(cx.listener(Self::on_word_right))
+            .on_action(cx.listener(Self::on_select_word_left))
+            .on_action(cx.listener(Self::on_select_word_right))
+            .on_action(cx.listener(Self::on_document_start))
+            .on_action(cx.listener(Self::on_document_end))
+            .on_action(cx.listener(Self::on_select_document_start))
+            .on_action(cx.listener(Self::on_select_document_end))
+            .on_action(cx.listener(Self::on_delete_word_left))
+            .on_action(cx.listener(Self::on_delete_word_right))
+            .on_action(cx.listener(Self::on_delete_line_start))
             .on_action(cx.listener(Self::on_up))
             .on_action(cx.listener(Self::on_down))
             .child(modal)
@@ -6901,6 +7153,136 @@ mod tests {
             window.refresh();
         });
         vc.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn modal_native_shortcuts_move_and_select(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.simulate_keystrokes("cmd-k");
+        vc.simulate_input("hello world");
+        vc.simulate_keystrokes("cmd-left");
+        vc.update(|_, app| {
+            view.update(app, |view, _| {
+                let ActiveModal::Palette(palette) = &view.shell.active_modal else {
+                    panic!("expected palette");
+                };
+                assert_eq!(palette.cursor, 0);
+            });
+        });
+
+        vc.simulate_keystrokes("alt-right");
+        vc.update(|_, app| {
+            view.update(app, |view, _| {
+                let ActiveModal::Palette(palette) = &view.shell.active_modal else {
+                    panic!("expected palette");
+                };
+                assert_eq!(palette.cursor, 5);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn composer_native_shortcuts_move_and_select(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.simulate_input("hello world");
+        vc.simulate_keystrokes("cmd-left");
+        vc.update(|_, app| {
+            view.update(app, |view, _| assert_eq!(view.cursor_offset(), 0));
+        });
+
+        vc.simulate_keystrokes("cmd-shift-right");
+        vc.update(|_, app| {
+            view.update(app, |view, _| assert_eq!(view.selected_range, 0..11));
+        });
+
+        vc.simulate_keystrokes("cmd-right");
+        vc.simulate_keystrokes("alt-left");
+        vc.update(|_, app| {
+            view.update(app, |view, _| assert_eq!(view.cursor_offset(), 6));
+        });
+    }
+
+    #[gpui::test]
+    fn composer_word_motion_moves_and_selects(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            view.update(app, |view, cx| {
+                view.set_editor_content("hello world".to_string(), cx);
+                view.move_to(6, cx);
+                view.apply_editor_motion(TextUnit::Word, false, false, cx);
+                assert_eq!(view.cursor_offset(), 0);
+
+                view.move_to(0, cx);
+                view.apply_editor_motion(TextUnit::Word, true, true, cx);
+                assert_eq!(view.selected_range, 0..5);
+
+                view.set_editor_content("hello world".to_string(), cx);
+                view.move_to(11, cx);
+                view.apply_editor_delete(TextUnit::Word, false, window, cx);
+                assert_eq!(view.content, "hello ");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn modal_word_motion_and_delete_share_the_editor_rules(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            view.update(app, |view, cx| {
+                let mut palette = crate::ui::modals::CommandPaletteModal::default();
+                palette.set_query("hello world");
+                view.shell.active_modal = ActiveModal::Palette(palette);
+                view.apply_editor_motion(TextUnit::Word, false, false, cx);
+                let ActiveModal::Palette(palette) = &view.shell.active_modal else {
+                    panic!("expected palette");
+                };
+                assert_eq!(palette.cursor, 6);
+
+                view.apply_editor_delete(TextUnit::Word, false, window, cx);
+                let ActiveModal::Palette(palette) = &view.shell.active_modal else {
+                    panic!("expected palette");
+                };
+                assert_eq!(palette.query, "world");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn modal_word_keys_wait_until_the_modal_accepts_edits(cx: &mut TestAppContext) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|window, app| {
+            view.update(app, |view, cx| {
+                let modal = SessionActionModal::open_menu("ses_1", "Native gestures", false, false);
+                view.shell.active_modal = ActiveModal::SessionAction(modal);
+                let menu = view.shell.active_modal.clone();
+
+                // The action menu owns the keyboard and the rename draft is not
+                // editable yet: nothing moves and no undo step is recorded.
+                view.apply_editor_motion(TextUnit::Line, false, true, cx);
+                view.apply_editor_delete(TextUnit::Word, false, window, cx);
+                assert_eq!(view.shell.active_modal, menu);
+                assert!(view.modal_undo.is_empty());
+
+                // Choosing Rename hands the same keys the draft.
+                let ActiveModal::SessionAction(modal) = &mut view.shell.active_modal else {
+                    panic!("expected the session action modal");
+                };
+                modal.activate_menu(crate::ui::modals::session_actions::SessionMenuAction::Rename);
+                view.apply_editor_motion(TextUnit::Word, false, true, cx);
+                let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+                    panic!("expected the session action modal");
+                };
+                assert_eq!(modal.draft_cursor, 7);
+                assert_eq!(modal.draft_anchor, 15);
+
+                view.apply_editor_delete(TextUnit::Word, false, window, cx);
+                let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+                    panic!("expected the session action modal");
+                };
+                assert_eq!(modal.draft, "Native ");
+                assert_eq!(view.modal_undo.len(), 1);
+            });
+        });
     }
 
     #[gpui::test]

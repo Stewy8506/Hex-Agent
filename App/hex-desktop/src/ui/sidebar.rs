@@ -865,10 +865,8 @@ impl SidebarView {
             .font_family(theme.font_sans()[0].clone())
             .when(cfg!(target_os = "macos"), |sidebar| {
                 sidebar.child(
-                    div()
-                        .h(px(
-                            crate::ui::shell::HEADER_HEIGHT - SIDEBAR_PADDING_TOP,
-                        ))
+                    crate::platform::titlebar_drag_region("sidebar_titlebar_strip")
+                        .h(px(crate::ui::shell::HEADER_HEIGHT - SIDEBAR_PADDING_TOP))
                         .flex_none(),
                 )
             })
