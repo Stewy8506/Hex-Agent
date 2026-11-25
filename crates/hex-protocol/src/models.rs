@@ -548,7 +548,7 @@ pub struct SessionListItem {
     pub session_id: String,
     pub cwd: String,
     pub model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "created_at")]
     pub created_at: Option<f64>,
     pub turns: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1178,6 +1178,38 @@ mod tests {
         assert_eq!(init_resp.server_info.name, "HEX");
         assert!(init_resp.capabilities.session.streaming);
         assert!(!init_resp.capabilities.tools.list_changed);
+    }
+
+    #[test]
+    fn test_session_list_accepts_runtime_and_camel_case_creation_times() {
+        let base = serde_json::json!({
+            "sessionId": "ses_1",
+            "cwd": "/workspace",
+            "model": "claude-3-7-sonnet",
+            "turns": 1
+        });
+        let mut runtime_payload = base.clone();
+        runtime_payload["created_at"] = serde_json::json!(123.5);
+        let runtime_item: SessionListItem = serde_json::from_value(runtime_payload).unwrap();
+        assert_eq!(runtime_item.created_at, Some(123.5));
+
+        let mut camel_payload = base;
+        camel_payload["createdAt"] = serde_json::json!(456.0);
+        let camel_item: SessionListItem = serde_json::from_value(camel_payload).unwrap();
+        assert_eq!(camel_item.created_at, Some(456.0));
+
+        let serialized = serde_json::to_value(runtime_item).unwrap();
+        assert_eq!(serialized["createdAt"], serde_json::json!(123.5));
+        assert!(serialized.get("created_at").is_none());
+
+        let missing: SessionListItem = serde_json::from_value(serde_json::json!({
+            "sessionId": "ses_unknown",
+            "cwd": "/workspace",
+            "model": "claude-3-7-sonnet",
+            "turns": 1
+        }))
+        .unwrap();
+        assert_eq!(missing.created_at, None);
     }
 
     #[test]

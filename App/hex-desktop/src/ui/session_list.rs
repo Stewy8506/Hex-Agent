@@ -108,8 +108,8 @@ impl SessionGroupCategory {
 pub struct SessionItem {
     pub id: String,
     pub title: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
     pub is_pinned: bool,
     pub is_archived: bool,
     pub message_count: usize,
@@ -122,8 +122,8 @@ impl SessionItem {
         Self {
             id: id.into(),
             title: title.into(),
-            created_at: now,
-            updated_at: now,
+            created_at: Some(now),
+            updated_at: Some(now),
             is_pinned: false,
             is_archived: false,
             message_count: 0,
@@ -137,6 +137,15 @@ impl SessionItem {
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
     ) -> Self {
+        Self::with_optional_timestamps(id, title, Some(created_at), Some(updated_at))
+    }
+
+    pub fn with_optional_timestamps(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        created_at: Option<DateTime<Utc>>,
+        updated_at: Option<DateTime<Utc>>,
+    ) -> Self {
         Self {
             id: id.into(),
             title: title.into(),
@@ -147,6 +156,20 @@ impl SessionItem {
             message_count: 0,
             model_name: None,
         }
+    }
+
+    pub fn relative_time(&self, now: DateTime<Utc>) -> String {
+        self.updated_at
+            .or(self.created_at)
+            .map(|timestamp| format_relative_time(timestamp, now))
+            .unwrap_or_else(|| "Unknown date".to_string())
+    }
+
+    pub fn compact_relative_time(&self, now: DateTime<Utc>) -> String {
+        self.updated_at
+            .or(self.created_at)
+            .map(|timestamp| format_compact_relative_time(timestamp, now))
+            .unwrap_or_else(|| "Unknown".to_string())
     }
 
     pub fn with_pinned(mut self, pinned: bool) -> Self {
@@ -273,7 +296,12 @@ impl SessionListView {
         let mut older = Vec::new();
 
         for session in unpinned {
-            match classify_session_date(session.updated_at, now) {
+            match session
+                .updated_at
+                .or(session.created_at)
+                .map(|timestamp| classify_session_date(timestamp, now))
+                .unwrap_or(SessionGroupCategory::Older)
+            {
                 SessionGroupCategory::Today => today.push(session),
                 SessionGroupCategory::Yesterday => yesterday.push(session),
                 SessionGroupCategory::Previous7Days => prev_7_days.push(session),
@@ -309,7 +337,7 @@ impl SessionListView {
     pub fn rename_session(&mut self, id: &str, new_title: impl Into<String>) -> bool {
         if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
             session.title = new_title.into();
-            session.updated_at = Utc::now();
+            session.updated_at = Some(Utc::now());
             true
         } else {
             false
@@ -343,7 +371,7 @@ impl SessionListView {
         now: DateTime<Utc>,
         on_select: Option<&Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)>>,
     ) -> Stateful<Div> {
-        let rel_time = format_relative_time(session.updated_at, now);
+        let rel_time = session.relative_time(now);
         let bg_color = if is_selected {
             theme.mockup_row_hover
         } else {
@@ -557,6 +585,30 @@ mod tests {
         let ordered = sort_project_sessions(&sessions);
         let ids: Vec<&str> = ordered.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["pinned", "recent", "old"]);
+    }
+
+    #[test]
+    fn test_unknown_session_time_is_not_fabricated() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 16, 12, 0, 0).unwrap();
+        let known = SessionItem::with_timestamps(
+            "known",
+            "Known",
+            now - Duration::days(30),
+            now - Duration::days(30),
+        );
+        let mut unknown = SessionItem::with_optional_timestamps("unknown", "Unknown", None, None);
+        unknown.is_pinned = true;
+
+        let sessions = [unknown, known];
+        let ordered = sort_project_sessions(&sessions);
+        assert_eq!(ordered[0].id, "unknown");
+        assert_eq!(ordered[0].relative_time(now), "Unknown date");
+        assert_eq!(ordered[0].compact_relative_time(now), "Unknown");
+
+        let unpinned = SessionItem::with_optional_timestamps("unknown", "Unknown", None, None);
+        let list = SessionListView::with_sessions(vec![unpinned]);
+        let groups = list.grouped_recent_sessions(now);
+        assert_eq!(groups[0].0, SessionGroupCategory::Older);
     }
 
     #[test]

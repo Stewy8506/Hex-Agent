@@ -11,7 +11,7 @@ use gpui::*;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::modals::{modal_press, ModalMotion};
-use crate::ui::session_list::{format_relative_time, SessionItem};
+use crate::ui::session_list::SessionItem;
 
 /// One entry of the session action menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,7 +448,7 @@ impl SessionSearchModal {
                             .flex_none()
                             .text_size(px(MockupTypeScale::HINT_SIZE))
                             .text_color(theme.mockup_text_dim)
-                            .child(format_relative_time(session.updated_at, now)),
+                            .child(session.relative_time(now)),
                     );
                 if is_selected {
                     row = modal_press(row, "session_search_selected_press", motion);

@@ -1030,10 +1030,11 @@ async fn test_session_list_metadata_order_and_empty_filtering(cx: &mut TestAppCo
 
     let state = MockState::new();
     *state.list_sessions.lock().unwrap() = vec![
-        json!({"sessionId": "ses_empty", "cwd": "/workspace", "model": "claude-3-7-sonnet", "createdAt": 50.0, "turns": 0}),
-        json!({"sessionId": "ses_older", "cwd": "/workspace", "model": "claude-3-7-sonnet", "createdAt": 100.0, "turns": 3, "title": "Older"}),
+        json!({"sessionId": "ses_empty", "cwd": "/workspace", "model": "claude-3-7-sonnet", "created_at": 50.0, "turns": 0}),
+        json!({"sessionId": "ses_older", "cwd": "/workspace", "model": "claude-3-7-sonnet", "created_at": 100.0, "turns": 3, "title": "Older"}),
         json!({"sessionId": "ses_newer", "cwd": "/workspace", "model": "claude-3-7-sonnet", "createdAt": 200.0, "turns": 1, "title": "  Newer   chat  "}),
-        json!({"sessionId": "ses_pinned", "cwd": "/workspace", "model": "claude-3-7-sonnet", "createdAt": 10.0, "turns": 1, "title": "Pinned", "pinned": true}),
+        json!({"sessionId": "ses_pinned", "cwd": "/workspace", "model": "claude-3-7-sonnet", "created_at": 10.0, "turns": 1, "title": "Pinned", "pinned": true}),
+        json!({"sessionId": "ses_unknown", "cwd": "/workspace", "model": "claude-3-7-sonnet", "turns": 1, "title": "Unknown date"}),
     ];
 
     let (client_read, server_write) = tokio::io::duplex(64 * 1024);
@@ -1048,17 +1049,19 @@ async fn test_session_list_metadata_order_and_empty_filtering(cx: &mut TestAppCo
     pump_until(&mut vc, &view, "ordered durable sessions", |v| {
         v.shell.active_session_id.is_none()
             && v.shell.feed.is_empty()
-            && v.shell.sidebar.session_list.sessions.len() == 3
+            && v.shell.sidebar.session_list.sessions.len() == 4
     });
     snap(&vc, &view, |v| {
         let sessions = &v.shell.sidebar.session_list.sessions;
         assert_eq!(
             sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>(),
-            vec!["ses_pinned", "ses_newer", "ses_older"]
+            vec!["ses_pinned", "ses_newer", "ses_older", "ses_unknown"]
         );
-        assert_eq!(sessions[0].created_at.timestamp(), 10);
-        assert_eq!(sessions[1].created_at.timestamp(), 200);
-        assert_eq!(sessions[2].created_at.timestamp(), 100);
+        assert_eq!(sessions[0].created_at.unwrap().timestamp(), 10);
+        assert_eq!(sessions[1].created_at.unwrap().timestamp(), 200);
+        assert_eq!(sessions[2].created_at.unwrap().timestamp(), 100);
+        assert!(sessions[3].created_at.is_none());
+        assert_eq!(sessions[3].relative_time(chrono::Utc::now()), "Unknown date");
         assert_eq!(sessions[1].title, "Newer chat");
         assert_eq!(sessions[1].message_count, 1);
         assert_eq!(sessions[2].message_count, 3);

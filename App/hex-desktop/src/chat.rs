@@ -810,7 +810,6 @@ impl ChatView {
                     return;
                 }
                 let active_id = view.shell.active_session_id.clone();
-                let now = chrono::Utc::now();
                 let mut listed_ids = HashSet::new();
                 let mut sessions = Vec::new();
                 for item in items {
@@ -837,12 +836,8 @@ impl ChatView {
                     let created_at = item
                         .created_at
                         .and_then(|seconds| chrono::DateTime::from_timestamp(seconds as i64, 0))
-                        .unwrap_or_else(|| {
-                            existing
-                                .as_ref()
-                                .map(|session| session.created_at)
-                                .unwrap_or(now)
-                        });
+                        .or_else(|| existing.as_ref().and_then(|session| session.created_at));
+                    let updated_at = existing.as_ref().and_then(|session| session.updated_at);
                     let title = backend_title
                         .or_else(|| {
                             existing
@@ -851,14 +846,11 @@ impl ChatView {
                                 .filter(|title| !title.trim().is_empty() && title != "Untitled chat")
                         })
                         .unwrap_or_else(|| "Untitled chat".to_string());
-                    let mut session = SessionItem::with_timestamps(
+                    let mut session = SessionItem::with_optional_timestamps(
                         item.session_id.clone(),
                         title,
                         created_at,
-                        existing
-                            .as_ref()
-                            .map(|session| session.updated_at)
-                            .unwrap_or(created_at),
+                        updated_at,
                     )
                     .with_pinned(item.pinned)
                     .with_model(item.model.clone());
@@ -1476,8 +1468,7 @@ impl ChatView {
             .or(prompted_title)
             .unwrap_or_else(|| "Untitled chat".to_string());
         let mut item = existing.unwrap_or_else(|| {
-            let now = chrono::Utc::now();
-            SessionItem::with_timestamps(id.clone(), title.clone(), now, now)
+            SessionItem::with_optional_timestamps(id.clone(), title.clone(), None, None)
         });
         item.title = title;
         item.model_name = Some(load.model.clone());
@@ -1613,10 +1604,7 @@ impl ChatView {
                 .map(|s| ContinueRow {
                     id: s.id.clone(),
                     title: s.title.clone(),
-                    relative_time: crate::ui::session_list::format_compact_relative_time(
-                        s.updated_at,
-                        now,
-                    ),
+                    relative_time: s.compact_relative_time(now),
                     location_chip: "This Mac",
                     project: workspace.clone(),
                     running: self.running_turns.contains(&s.id),
