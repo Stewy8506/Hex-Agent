@@ -42,7 +42,6 @@ from harness_core.config_loader import (
     write_config_yaml_atomic,
 )
 from harness_core.core.reasoning_effort import EFFORT_LADDER
-from harness_core.storage import compute_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -1282,6 +1281,8 @@ class ACPServer:
         conversation_history = build_conversation_history(sess.history)
 
         from harness_core.core.models import TaskSubmitRequest
+        from harness_core.storage import compute_project_id
+
         exec_mode = str(params.get("execution_mode") or "fast_path")
         task_req = TaskSubmitRequest(
             goal=prompt_text,
@@ -2464,6 +2465,8 @@ class ACPServer:
         return "\n".join(lines)
 
     def _cmd_memory(self, sess: ACPSession, args: str) -> str:
+        from harness_core.storage import compute_project_id
+
         memory = getattr(self.orchestrator, "memory", None)
         if memory is None:
             raise ValueError("Governed memory service unavailable on this orchestrator.")
@@ -2481,6 +2484,8 @@ class ACPServer:
         return "\n".join(lines)
 
     def _cmd_remember(self, sess: ACPSession, args: str) -> str:
+        from harness_core.storage import compute_project_id
+
         if ":" not in args:
             raise ValueError("Usage: /remember <subject>: <content>")
         memory = getattr(self.orchestrator, "memory", None)
