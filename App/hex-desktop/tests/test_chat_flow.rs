@@ -331,6 +331,14 @@ fn last_notice(view: &ChatView) -> Option<String> {
     })
 }
 
+fn has_notice(view: &ChatView, prefix: &str) -> bool {
+    view.shell
+        .feed
+        .messages
+        .iter()
+        .any(|m| matches!(m, MessageItem::SystemNotice(notice) if notice.starts_with(prefix)))
+}
+
 fn last_assistant(view: &ChatView) -> Option<&hex_desktop::ui::message::AssistantMessageView> {
     view.shell.feed.messages.iter().rev().find_map(|m| match m {
         MessageItem::Assistant(a) => Some(a),
@@ -928,7 +936,7 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
     });
     click_debug_element(vc, "approval_deny");
     pump_until(vc, &view, "pointer approval decision", |view| {
-        last_notice(view).is_some_and(|notice| notice.starts_with("Approval decision failed"))
+        has_notice(view, "Approval decision failed")
     });
 
     vc.update(|_, app| {
@@ -959,8 +967,7 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
     });
     click_debug_element(vc, "modal_button_rename");
     pump_until(vc, &view, "pointer session rename", |view| {
-        view.shell.active_modal == ActiveModal::None
-            && last_notice(view).is_some_and(|notice| notice.starts_with("Rename failed"))
+        view.shell.active_modal == ActiveModal::None && has_notice(view, "Rename failed")
     });
 
     vc.update(|_, app| {
@@ -993,9 +1000,7 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
     click_debug_element(vc, "modal_button_delete_forever");
     pump_until(vc, &view, "pointer session delete", |view| {
         view.shell.active_modal == ActiveModal::None
-            && last_notice(view).is_some_and(|notice| {
-                notice.starts_with("Delete failed") || notice.starts_with("Delete task aborted")
-            })
+            && (has_notice(view, "Delete failed") || has_notice(view, "Delete task aborted"))
     });
 
     let mut settings = SettingsModal::default();

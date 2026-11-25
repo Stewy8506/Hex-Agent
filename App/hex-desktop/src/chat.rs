@@ -2651,10 +2651,19 @@ impl ChatView {
 
     fn send_approval_result(&mut self, result: ToolApprovalResult, cx: &mut Context<Self>) {
         let bridge = self.bridge.clone();
-        let rt = self.rt.clone();
         let approval_id = result.request_id.clone();
         let choice = result.choice;
         let ttl = result.lease_seconds();
+        if !bridge.is_connected() {
+            self.apply_approval_outcome(
+                &approval_id,
+                choice,
+                Ok(Err(AcpError::ConnectionClosed)),
+                cx,
+            );
+            return;
+        }
+        let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
             let id = approval_id.clone();
             let res = rt
@@ -5454,6 +5463,14 @@ impl ChatView {
             return;
         }
         let bridge = self.bridge.clone();
+        if !bridge.is_connected() {
+            if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+                modal.busy = false;
+                modal.error = Some(format!("Save failed: {}", AcpError::ConnectionClosed));
+            }
+            cx.notify();
+            return;
+        }
         let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
             let res = rt
@@ -5545,11 +5562,24 @@ impl ChatView {
             .session_list
             .rename_session(session_id, title);
         let bridge = self.bridge.clone();
-        let rt = self.rt.clone();
         let sid = session_id.to_string();
         let title_owned = title.to_string();
         let revert = old_title;
         let sid_revert = sid.clone();
+        if !bridge.is_connected() {
+            self.shell
+                .feed
+                .add_system_notice(format!("Rename failed: {}", AcpError::ConnectionClosed));
+            if let Some(old) = revert {
+                self.shell
+                    .sidebar
+                    .session_list
+                    .rename_session(&sid_revert, old);
+            }
+            cx.notify();
+            return;
+        }
+        let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
             let res = rt
                 .spawn(async move { bridge.rename_session(&sid, &title_owned).await })
@@ -5592,6 +5622,14 @@ impl ChatView {
             self.sync_transport_state();
         }
         let bridge = self.bridge.clone();
+        if !bridge.is_connected() {
+            self.shell
+                .feed
+                .add_system_notice(format!("Delete failed: {}", AcpError::ConnectionClosed));
+            self.refresh_session_list(cx);
+            cx.notify();
+            return;
+        }
         let rt = self.rt.clone();
         let sid = session_id.to_string();
         cx.spawn(async move |this, cx| {
