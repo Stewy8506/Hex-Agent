@@ -51,8 +51,16 @@ def test_exact_legacy_migration_restart_list_and_sequence(tmp_path):
     ] + [{"role": "user", "content": "other shape", "response": None}]
     path = legacy(server, "legacy", records)
     listed = request(server, "session/list", {})["result"]["sessions"]
-    assert listed == [{"sessionId": "legacy", "cwd": str(tmp_path), "model": "test-model",
-                       "created_at": 42.5, "turns": len(records)}]
+    assert listed == [{
+        "sessionId": "legacy",
+        "cwd": str(tmp_path.resolve()),
+        "model": "test-model",
+        "created_at": 42.5,
+        "turns": len(records),
+        "title": "",
+        "archived": False,
+        "pinned": False,
+    }]
     assert not server.sessions
     metadata = json.loads(path.read_text())
     assert "history" not in metadata
