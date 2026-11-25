@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
 use crate::ui::icon_svg;
+use crate::ui::modals::text_input::{
+    backspace as text_backspace, delete as text_delete, input_content, insert_text, move_horizontal,
+    move_to as text_move_to, move_to_edge, select_all, selected_text,
+};
 use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::model_pill::provider_dot_color;
 
@@ -117,6 +121,8 @@ pub struct ModelPickerModal {
     pub selected_provider: String,
     pub highlighted_index: usize,
     pub search_query: String,
+    pub search_cursor: usize,
+    pub search_anchor: usize,
     pub status: ModelPickerStatus,
     pub request_id: u64,
     pub session_id: Option<String>,
@@ -131,6 +137,8 @@ impl PartialEq for ModelPickerModal {
             && self.selected_provider == other.selected_provider
             && self.highlighted_index == other.highlighted_index
             && self.search_query == other.search_query
+            && self.search_cursor == other.search_cursor
+            && self.search_anchor == other.search_anchor
             && self.status == other.status
             && self.request_id == other.request_id
             && self.session_id == other.session_id
@@ -161,6 +169,8 @@ impl ModelPickerModal {
             selected_provider,
             highlighted_index,
             search_query: String::new(),
+            search_cursor: 0,
+            search_anchor: 0,
             status: ModelPickerStatus::Ready,
             request_id: 0,
             session_id: None,
@@ -183,6 +193,8 @@ impl ModelPickerModal {
             selected_provider: current_provider.into(),
             highlighted_index: 0,
             search_query: String::new(),
+            search_cursor: 0,
+            search_anchor: 0,
             status: ModelPickerStatus::Loading,
             request_id,
             session_id,
@@ -245,8 +257,85 @@ impl ModelPickerModal {
     /// Set search filter query.
     pub fn set_search(&mut self, query: impl Into<String>) {
         self.search_query = query.into();
+        self.search_cursor = self.search_query.len();
+        self.search_anchor = self.search_cursor;
         self.highlighted_index = 0;
         self.scroll_to_top();
+    }
+
+    pub fn push_search_char(&mut self, text: &str) {
+        insert_text(
+            &mut self.search_query,
+            &mut self.search_cursor,
+            &mut self.search_anchor,
+            text,
+        );
+        self.highlighted_index = 0;
+        self.scroll_to_top();
+    }
+
+    pub fn backspace_search(&mut self) {
+        if text_backspace(
+            &mut self.search_query,
+            &mut self.search_cursor,
+            &mut self.search_anchor,
+        ) {
+            self.highlighted_index = 0;
+            self.scroll_to_top();
+        }
+    }
+
+    pub fn delete_search(&mut self) {
+        if text_delete(
+            &mut self.search_query,
+            &mut self.search_cursor,
+            &mut self.search_anchor,
+        ) {
+            self.highlighted_index = 0;
+            self.scroll_to_top();
+        }
+    }
+
+    pub fn move_search_cursor(&mut self, delta: isize, selecting: bool) {
+        move_horizontal(
+            &self.search_query,
+            &mut self.search_cursor,
+            &mut self.search_anchor,
+            delta,
+            selecting,
+        );
+    }
+
+    pub fn move_search_cursor_to(&mut self, offset: usize, selecting: bool) {
+        text_move_to(
+            &self.search_query,
+            &mut self.search_cursor,
+            &mut self.search_anchor,
+            offset,
+            selecting,
+        );
+    }
+
+    pub fn move_search_cursor_to_edge(&mut self, end: bool, selecting: bool) {
+        move_to_edge(
+            &self.search_query,
+            &mut self.search_cursor,
+            &mut self.search_anchor,
+            end,
+            selecting,
+        );
+    }
+
+    pub fn select_all_search(&mut self) {
+        select_all(
+            &self.search_query,
+            &mut self.search_cursor,
+            &mut self.search_anchor,
+        );
+    }
+
+    pub fn selected_search_text(&self) -> String {
+        selected_text(&self.search_query, self.search_cursor, self.search_anchor)
     }
 
     /// Return filtered models matching current query.
@@ -413,21 +502,18 @@ impl ModelPickerModal {
                             .child(icon_svg("bolt", 14.0)),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(13.5))
-                            .text_color(if self.search_query.is_empty() {
-                                theme.mockup_text_dim
-                            } else {
-                                theme.mockup_text_bright
-                            })
-                            .child(if self.search_query.is_empty() {
-                                "Search models across providers...".to_string()
-                            } else {
-                                self.search_query.clone()
-                            }),
+                        input_content(
+                            &self.search_query,
+                            self.search_cursor,
+                            self.search_anchor,
+                            "Search models across providers...",
+                            false,
+                            true,
+                            theme,
+                        )
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(13.5)),
                     )
                     .child(
                         div()

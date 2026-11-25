@@ -12,15 +12,17 @@ pub mod model_picker;
 pub mod palette;
 pub mod session_actions;
 pub mod settings;
+pub mod text_input;
 
-pub use account::{AccountAction, AccountModal, AccountMode};
+pub use account::{AccountAction, AccountHandler, AccountInteraction, AccountModal, AccountMode};
 pub use approval::{ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult};
 pub use model_picker::{ModelEntry, ModelPickerModal};
 pub use palette::{CommandPaletteModal, PaletteAction, PaletteItem};
 pub use session_actions::{
-    SessionActionModal, SessionActionOutcome, SessionSearchModal,
+    SessionActionHandler, SessionActionInteraction, SessionActionModal, SessionActionOutcome,
+    SessionSearchModal,
 };
-pub use settings::{SettingsAction, SettingsModal};
+pub use settings::{SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal};
 
 use gpui::*;
 use crate::theme::HermesTheme;

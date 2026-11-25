@@ -43,7 +43,7 @@ use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{ApprovalCard, ApprovalCardState, ApprovalVisual, MessageFeed, MessageItem};
 use crate::ui::message::{ActionBarHandlers, AssistantMessageView};
-use crate::ui::modals::account::{AccountAction, AccountMode};
+use crate::ui::modals::account::{AccountAction, AccountHandler};
 use crate::ui::modals::approval::{
     ApprovalHandler, ApprovalInteraction, ToolApprovalChoice, ToolApprovalResult,
 };
@@ -52,10 +52,10 @@ use crate::ui::modals::model_picker::{
 };
 use crate::ui::modals::palette::PaletteActionHandler;
 use crate::ui::modals::session_actions::{
-    SessionActionHandler, SessionActionModal, SessionActionMode, SessionActionOutcome,
-    SessionSearchModal,
+    SessionActionHandler, SessionActionModal, SessionActionMode,
+    SessionActionOutcome, SessionSearchModal,
 };
-use crate::ui::modals::settings::{SettingsAction, SettingsModal, SettingsSaveHandler};
+use crate::ui::modals::settings::{SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal};
 use crate::ui::modals::{
     render_about, render_modal_container, AccountModal, ActiveModal, ModalMotion, ModelEntry,
     PaletteAction, ToolApprovalModal,
@@ -109,6 +109,13 @@ pub fn composer_keybindings() -> Vec<KeyBinding> {
         // navigation/confirmation instead of the editor underneath.
         KeyBinding::new("enter", shortcuts::SubmitPrompt, Some("Modal")),
         KeyBinding::new("backspace", Backspace, Some("Modal")),
+        KeyBinding::new("delete", Delete, Some("Modal")),
+        KeyBinding::new("left", Left, Some("Modal")),
+        KeyBinding::new("right", Right, Some("Modal")),
+        KeyBinding::new("shift-left", SelectLeft, Some("Modal")),
+        KeyBinding::new("shift-right", SelectRight, Some("Modal")),
+        KeyBinding::new("home", Home, Some("Modal")),
+        KeyBinding::new("end", End, Some("Modal")),
         KeyBinding::new("up", Up, Some("Modal")),
         KeyBinding::new("down", Down, Some("Modal")),
     ]
@@ -389,6 +396,8 @@ pub struct ChatView {
     modal_redo: Vec<ActiveModal>,
     modal_edit_group: Option<(TextEditKind, Instant)>,
     modal_undo_break: bool,
+    modal_marked_range: Option<Range<usize>>,
+    modal_ime_snapshot: Option<ActiveModal>,
 
     bridge: AcpBridge,
     rt: Handle,
@@ -511,6 +520,8 @@ impl ChatView {
             modal_redo: Vec::new(),
             modal_edit_group: None,
             modal_undo_break: false,
+            modal_marked_range: None,
+            modal_ime_snapshot: None,
             bridge,
             rt,
             workspace,
@@ -3346,9 +3357,142 @@ impl ChatView {
         .detach();
     }
 
+    fn handle_modal_edit_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        self.abort_modal_ime();
+        if matches!(
+            &self.shell.active_modal,
+            ActiveModal::ModelPicker(picker)
+                if picker.search_query.is_empty() && matches!(key, "home" | "end")
+        ) {
+            return false;
+        }
+        if !self.modal_accepts_text_edit()
+            || !matches!(
+                key,
+                "backspace"
+                    | "delete"
+                    | "left"
+                    | "arrowleft"
+                    | "right"
+                    | "arrowright"
+                    | "shift-left"
+                    | "shift-arrowleft"
+                    | "shift-right"
+                    | "shift-arrowright"
+                    | "home"
+                    | "end"
+                    | "shift-home"
+                    | "shift-end"
+            )
+        {
+            return false;
+        }
+        if matches!(key, "backspace" | "delete") {
+            self.record_modal_edit(TextEditKind::Delete);
+        }
+        let selecting = key.starts_with("shift-");
+        let plain_key = key.trim_start_matches("shift-");
+        match &mut self.shell.active_modal {
+            ActiveModal::Account(modal) => match plain_key {
+                "backspace" => modal.backspace(),
+                "delete" => modal.delete(),
+                "left" | "arrowleft" => modal.move_cursor(-1, selecting),
+                "right" | "arrowright" => modal.move_cursor(1, selecting),
+                "home" | "end" => modal.move_cursor_to_edge(plain_key == "end", selecting),
+                _ => {}
+            },
+            ActiveModal::Palette(palette) => match plain_key {
+                "backspace" => palette.backspace(),
+                "delete" => palette.delete(),
+                "left" | "arrowleft" => palette.move_cursor(-1, selecting),
+                "right" | "arrowright" => palette.move_cursor(1, selecting),
+                "home" | "end" => palette.move_cursor_to_edge(plain_key == "end", selecting),
+                _ => {}
+            },
+            ActiveModal::ModelPicker(picker) => match plain_key {
+                "backspace" => picker.backspace_search(),
+                "delete" => picker.delete_search(),
+                "left" | "arrowleft" => picker.move_search_cursor(-1, selecting),
+                "right" | "arrowright" => picker.move_search_cursor(1, selecting),
+                "home" | "end" => {
+                    picker.move_search_cursor_to_edge(plain_key == "end", selecting)
+                }
+                _ => {}
+            },
+            ActiveModal::SessionSearch(modal) => match plain_key {
+                "backspace" => modal.backspace(),
+                "delete" => modal.delete(),
+                "left" | "arrowleft" => modal.move_cursor(-1, selecting),
+                "right" | "arrowright" => modal.move_cursor(1, selecting),
+                "home" | "end" => modal.move_cursor_to_edge(plain_key == "end", selecting),
+                _ => {}
+            },
+            ActiveModal::SessionAction(modal) => match plain_key {
+                "backspace" => modal.backspace(),
+                "delete" => modal.delete(),
+                "left" | "arrowleft" => modal.move_cursor(-1, selecting),
+                "right" | "arrowright" => modal.move_cursor(1, selecting),
+                "home" | "end" => modal.move_cursor_to_edge(plain_key == "end", selecting),
+                _ => {}
+            },
+            ActiveModal::Settings(modal) => match plain_key {
+                "backspace" => modal.backspace(),
+                "delete" => modal.delete(),
+                "left" | "arrowleft" => {
+                    modal.handle_key(if selecting { "shift-left" } else { "left" });
+                }
+                "right" | "arrowright" => {
+                    modal.handle_key(if selecting { "shift-right" } else { "right" });
+                }
+                "home" | "end" => {
+                    modal.handle_key(if selecting {
+                        if plain_key == "end" {
+                            "shift-end"
+                        } else {
+                            "shift-home"
+                        }
+                    } else {
+                        plain_key
+                    });
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        cx.notify();
+        true
+    }
+
     /// Route a key to the open modal. Returns true when the modal consumed it.
     fn handle_modal_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
-        if self.shell.active_modal.is_open() && matches!(key, "cmd-z" | "cmd-shift-z") {
+        if !self.shell.active_modal.is_open() {
+            return false;
+        }
+        self.abort_modal_ime();
+        if matches!(key, "cmd-c" | "cmd-x" | "cmd-v" | "cmd-a") {
+            match key {
+                "cmd-c" => {
+                    if let Some(text) = self.modal_selected_text().filter(|text| !text.is_empty()) {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                }
+                "cmd-x" => {
+                    if let Some(text) = self.modal_selected_text().filter(|text| !text.is_empty()) {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        self.handle_modal_edit_key("backspace", cx);
+                    }
+                }
+                "cmd-v" => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.modal_insert_text(&text, cx);
+                    }
+                }
+                "cmd-a" => self.modal_select_all(cx),
+                _ => unreachable!(),
+            }
+            return true;
+        }
+        if matches!(key, "cmd-z" | "cmd-shift-z") {
             let busy = match &self.shell.active_modal {
                 ActiveModal::Account(modal) => modal.busy,
                 ActiveModal::SessionAction(modal) => modal.busy,
@@ -3368,6 +3512,9 @@ impl ChatView {
             }
             return true;
         }
+        if self.handle_modal_edit_key(key, cx) {
+            return true;
+        }
         if matches!(
             key,
             "up" | "arrowup"
@@ -3384,15 +3531,6 @@ impl ChatView {
                 | "shift-tab"
         ) {
             self.modal_undo_break = true;
-        }
-        if key == "backspace"
-            && self.modal_accepts_text_edit()
-            && !matches!(
-                self.shell.active_modal,
-                ActiveModal::Settings(_) | ActiveModal::SessionSearch(_)
-            )
-        {
-            self.record_modal_edit(TextEditKind::Delete);
         }
 
         if key == "enter"
@@ -3489,6 +3627,10 @@ impl ChatView {
                 }
             }
             ActiveModal::Account(modal) => {
+                if key == "escape" && !modal.busy && modal.cancel_confirmation() {
+                    cx.notify();
+                    return true;
+                }
                 if key == "escape" {
                     self.shell.dismiss_modal();
                     cx.notify();
@@ -3518,6 +3660,14 @@ impl ChatView {
                 }
             }
             ActiveModal::SessionAction(modal) => {
+                if key == "escape"
+                    && !modal.busy
+                    && matches!(modal.mode, SessionActionMode::DeleteConfirm)
+                {
+                    modal.mode = SessionActionMode::Menu { selected: 3 };
+                    cx.notify();
+                    return true;
+                }
                 if key == "escape" {
                     self.shell.dismiss_modal();
                     cx.notify();
@@ -3613,6 +3763,8 @@ impl ChatView {
                         | "right"
                         | "arrowright"
                         | "enter"
+                        | "tab"
+                        | "shift-tab"
                         | "backspace"
                         | "home"
                         | "end"
@@ -3729,7 +3881,7 @@ impl ChatView {
     }
 
     fn on_copy(&mut self, _: &shortcuts::Copy, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shell.active_modal.is_open() {
+        if self.handle_modal_key("cmd-c", cx) {
             return;
         }
         if self.focus_handle.is_focused(window) && !self.selected_range.is_empty() {
@@ -3754,7 +3906,7 @@ impl ChatView {
     }
 
     fn on_paste(&mut self, _: &shortcuts::Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shell.active_modal.is_open() {
+        if self.handle_modal_key("cmd-v", cx) {
             return;
         }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -3763,7 +3915,7 @@ impl ChatView {
     }
 
     fn on_select_all(&mut self, _: &shortcuts::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
-        if self.shell.active_modal.is_open() {
+        if self.handle_modal_key("cmd-a", cx) {
             return;
         }
         self.move_to(0, cx);
@@ -3870,201 +4022,56 @@ impl ChatView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.shell.active_modal.is_open() {
+            return;
+        }
         let keystroke = &event.keystroke;
-        match &self.shell.active_modal {
-            ActiveModal::Approval(_) => {
-                if self.handle_modal_key(&keystroke.key, cx) {
-                    cx.stop_propagation();
-                }
+        if keystroke.modifiers.platform || keystroke.modifiers.control {
+            return;
+        }
+        let key = if keystroke.key == "tab" && keystroke.modifiers.shift {
+            "shift-tab"
+        } else if matches!(keystroke.key.as_str(), "home" | "end") && keystroke.modifiers.shift {
+            if keystroke.key == "home" {
+                "shift-home"
+            } else {
+                "shift-end"
             }
-            ActiveModal::Palette(_) => {
-                if keystroke.modifiers.platform || keystroke.modifiers.control {
-                    return;
-                }
-                let typed = keystroke.key_char.clone().or_else(|| {
-                    (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
-                });
-                if let Some(ch) = typed {
-                    if self.modal_accepts_text_edit() {
-                        self.record_modal_edit(TextEditKind::Insert);
-                    }
-                    let ActiveModal::Palette(palette) = &mut self.shell.active_modal else {
-                        return;
-                    };
-                    let query = format!("{}{}", palette.query, ch);
-                    palette.set_query(query);
-                    cx.notify();
-                    cx.stop_propagation();
-                }
+        } else {
+            keystroke.key.as_str()
+        };
+        let is_edit_key = matches!(
+            key,
+            "backspace"
+                | "delete"
+                | "left"
+                | "arrowleft"
+                | "right"
+                | "arrowright"
+                | "home"
+                | "end"
+                | "up"
+                | "arrowup"
+                | "down"
+                | "arrowdown"
+                | "enter"
+                | "tab"
+                | "shift-tab"
+                | "escape"
+        );
+        if !is_edit_key && self.modal_accepts_text_edit() {
+            if let Some(text) = keystroke
+                .key_char
+                .clone()
+                .or_else(|| (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone()))
+            {
+                self.modal_insert_text(&text, cx);
+                cx.stop_propagation();
+                return;
             }
-            ActiveModal::ModelPicker(_) => {
-                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
-                    let typed = keystroke.key_char.clone().or_else(|| {
-                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
-                    });
-                    if let Some(ch) = typed {
-                        if self.modal_accepts_text_edit() {
-                            self.record_modal_edit(TextEditKind::Insert);
-                        }
-                        if let ActiveModal::ModelPicker(modal) = &mut self.shell.active_modal {
-                            let query = format!("{}{}", modal.search_query, ch);
-                            modal.set_search(query);
-                            cx.notify();
-                            cx.stop_propagation();
-                        }
-                        return;
-                    }
-                    if keystroke.key == "backspace" {
-                        if self.modal_accepts_text_edit() {
-                            self.record_modal_edit(TextEditKind::Delete);
-                        }
-                        if let ActiveModal::ModelPicker(modal) = &mut self.shell.active_modal {
-                            let mut query = modal.search_query.clone();
-                            query.pop();
-                            modal.set_search(query);
-                            cx.notify();
-                            cx.stop_propagation();
-                        }
-                        return;
-                    }
-                }
-                if self.handle_modal_key(keystroke.key.as_str(), cx) {
-                    cx.stop_propagation();
-                }
-            }
-            ActiveModal::Account(_) => {
-                let key = if keystroke.key == "tab" && keystroke.modifiers.shift {
-                    "shift-tab"
-                } else {
-                    keystroke.key.as_str()
-                };
-                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
-                    let typed = keystroke.key_char.clone().or_else(|| {
-                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
-                    });
-                    if let Some(ch) = typed {
-                        if self.modal_accepts_text_edit() {
-                            self.record_modal_edit(TextEditKind::Insert);
-                        }
-                        if let ActiveModal::Account(modal) = &mut self.shell.active_modal {
-                            modal.push_char(&ch);
-                            cx.notify();
-                            cx.stop_propagation();
-                        }
-                        return;
-                    }
-                }
-                if self.handle_modal_key(key, cx) {
-                    cx.stop_propagation();
-                }
-            }
-            ActiveModal::SessionAction(_) => {
-                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
-                    let typed = keystroke.key_char.clone().or_else(|| {
-                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
-                    });
-                    if let Some(ch) = typed {
-                        if self.modal_accepts_text_edit() {
-                            self.record_modal_edit(TextEditKind::Insert);
-                        }
-                        if let ActiveModal::SessionAction(modal) = &mut self.shell.active_modal {
-                            modal.push_char(&ch);
-                            cx.notify();
-                            cx.stop_propagation();
-                        }
-                        return;
-                    }
-                }
-                let key = if keystroke.key == "tab" && keystroke.modifiers.shift {
-                    "shift-tab"
-                } else {
-                    keystroke.key.as_str()
-                };
-                if self.handle_modal_key(key, cx) {
-                    cx.stop_propagation();
-                }
-            }
-            ActiveModal::SessionSearch(_) => {
-                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
-                    let typed = keystroke.key_char.clone().or_else(|| {
-                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
-                    });
-                    if let Some(ch) = typed {
-                        if self.modal_accepts_text_edit() {
-                            self.record_modal_edit(TextEditKind::Insert);
-                        }
-                        if let ActiveModal::SessionSearch(modal) = &mut self.shell.active_modal {
-                            modal.push_char(&ch);
-                            cx.notify();
-                            cx.stop_propagation();
-                        }
-                        return;
-                    }
-                    if keystroke.key == "backspace" {
-                        if self.modal_accepts_text_edit() {
-                            self.record_modal_edit(TextEditKind::Delete);
-                        }
-                        if let ActiveModal::SessionSearch(modal) = &mut self.shell.active_modal {
-                            modal.backspace();
-                            cx.notify();
-                            cx.stop_propagation();
-                        }
-                        return;
-                    }
-                }
-                if self.handle_modal_key(keystroke.key.as_str(), cx) {
-                    cx.stop_propagation();
-                }
-            }
-            ActiveModal::Settings(_) => {
-                if !keystroke.modifiers.platform && !keystroke.modifiers.control {
-                    let typed = keystroke.key_char.clone().or_else(|| {
-                        (keystroke.key.chars().count() == 1).then(|| keystroke.key.clone())
-                    });
-                    if let Some(ch) = typed {
-                        let editing = matches!(
-                            &self.shell.active_modal,
-                            ActiveModal::Settings(modal) if modal.editing && !modal.busy
-                        );
-                        if editing {
-                            self.record_modal_edit(TextEditKind::Insert);
-                        }
-                        if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
-                            if modal.editing {
-                                modal.push_char(&ch);
-                                cx.notify();
-                                cx.stop_propagation();
-                            }
-                        }
-                        return;
-                    }
-                    if matches!(keystroke.key.as_str(), "backspace" | "delete") {
-                        let editing = matches!(
-                            &self.shell.active_modal,
-                            ActiveModal::Settings(modal) if modal.editing && !modal.busy
-                        );
-                        if editing {
-                            self.record_modal_edit(TextEditKind::Delete);
-                        }
-                        if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
-                            if modal.editing {
-                                if keystroke.key == "backspace" {
-                                    modal.backspace();
-                                } else {
-                                    modal.delete();
-                                }
-                                cx.notify();
-                                cx.stop_propagation();
-                            }
-                            return;
-                        }
-                    }
-                }
-                if self.handle_modal_key(keystroke.key.as_str(), cx) {
-                    cx.stop_propagation();
-                }
-            }
-            _ => {}
+        }
+        if self.handle_modal_key(key, cx) {
+            cx.stop_propagation();
         }
     }
 
@@ -4282,15 +4289,187 @@ impl ChatView {
             ActiveModal::Palette(_)
             | ActiveModal::ModelPicker(_)
             | ActiveModal::SessionSearch(_) => true,
-            ActiveModal::Account(modal) => {
-                !modal.busy && !matches!(modal.mode, AccountMode::Devices)
-            }
-            ActiveModal::SessionAction(modal) => {
-                !modal.busy && matches!(modal.mode, SessionActionMode::Rename)
-            }
+            ActiveModal::Account(modal) => modal.accepts_text_edit(),
+            ActiveModal::SessionAction(modal) => modal.accepts_text_edit(),
             ActiveModal::Settings(modal) => !modal.busy && modal.editing,
             _ => false,
         }
+    }
+
+    fn modal_selected_text(&self) -> Option<String> {
+        match &self.shell.active_modal {
+            ActiveModal::Palette(modal) => Some(modal.selected_text()),
+            ActiveModal::ModelPicker(modal) => Some(modal.selected_search_text()),
+            ActiveModal::SessionSearch(modal) => Some(modal.selected_text()),
+            ActiveModal::Account(modal) => modal.selected_text(),
+            ActiveModal::SessionAction(modal) => modal.selected_text(),
+            ActiveModal::Settings(modal) => modal.selected_text(),
+            _ => None,
+        }
+    }
+
+    fn modal_range_to_utf16(&self, range: &Range<usize>) -> Option<Range<usize>> {
+        let (value, _, _) = self.modal_text_state()?;
+        let convert = |offset: usize| value[..offset].chars().map(char::len_utf16).sum();
+        Some(convert(range.start)..convert(range.end))
+    }
+
+    fn modal_range_from_utf16(&self, range: &Range<usize>) -> Option<Range<usize>> {
+        let (value, _, _) = self.modal_text_state()?;
+        let convert = |offset: usize| {
+            let mut utf8_offset = 0;
+            let mut utf16_offset = 0;
+            for ch in value.chars() {
+                if utf16_offset >= offset {
+                    break;
+                }
+                utf16_offset += ch.len_utf16();
+                utf8_offset += ch.len_utf8();
+            }
+            utf8_offset
+        };
+        Some(convert(range.start)..convert(range.end))
+    }
+
+    fn modal_text_state(&self) -> Option<(String, usize, usize)> {
+        match &self.shell.active_modal {
+            ActiveModal::Palette(modal) => Some((modal.query.clone(), modal.cursor, modal.anchor)),
+            ActiveModal::ModelPicker(modal) => Some((
+                modal.search_query.clone(),
+                modal.search_cursor,
+                modal.search_anchor,
+            )),
+            ActiveModal::SessionSearch(modal) => Some((modal.query.clone(), modal.cursor, modal.anchor)),
+            ActiveModal::Account(modal) => {
+                if modal.focus_password() {
+                    Some((modal.password.clone(), modal.password_cursor, modal.password_anchor))
+                } else {
+                    Some((modal.email.clone(), modal.email_cursor, modal.email_anchor))
+                }
+            }
+            ActiveModal::SessionAction(modal) => Some((
+                modal.draft.clone(),
+                modal.draft_cursor,
+                modal.draft_anchor,
+            )),
+            ActiveModal::Settings(modal) => modal.text_selection(),
+            _ => None,
+        }
+    }
+
+    fn modal_replace_range(&mut self, range: Range<usize>, text: &str) -> bool {
+        let Some((value, _, _)) = self.modal_text_state() else {
+            return false;
+        };
+        let start = crate::ui::modals::text_input::boundary(&value, range.start);
+        let end = crate::ui::modals::text_input::boundary(&value, range.end);
+        match &mut self.shell.active_modal {
+            ActiveModal::Palette(modal) => {
+                modal.move_cursor_to(start, false);
+                modal.move_cursor_to(end, true);
+                modal.push_char(text);
+            }
+            ActiveModal::ModelPicker(modal) => {
+                modal.move_search_cursor_to(start, false);
+                modal.move_search_cursor_to(end, true);
+                modal.push_search_char(text);
+            }
+            ActiveModal::SessionSearch(modal) => {
+                modal.move_cursor_to(start, false);
+                modal.move_cursor_to(end, true);
+                modal.push_char(text);
+            }
+            ActiveModal::Account(modal) => {
+                modal.move_cursor_to(start, false);
+                modal.move_cursor_to(end, true);
+                modal.push_char(text);
+            }
+            ActiveModal::SessionAction(modal) => {
+                modal.move_cursor_to(start, false);
+                modal.move_cursor_to(end, true);
+                modal.push_char(text);
+            }
+            ActiveModal::Settings(modal) => {
+                modal.replace_text_range(start..end, text);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn modal_select_range(&mut self, range: Range<usize>) {
+        match &mut self.shell.active_modal {
+            ActiveModal::Palette(modal) => {
+                modal.move_cursor_to(range.start, false);
+                modal.move_cursor_to(range.end, true);
+            }
+            ActiveModal::ModelPicker(modal) => {
+                modal.move_search_cursor_to(range.start, false);
+                modal.move_search_cursor_to(range.end, true);
+            }
+            ActiveModal::SessionSearch(modal) => {
+                modal.move_cursor_to(range.start, false);
+                modal.move_cursor_to(range.end, true);
+            }
+            ActiveModal::Account(modal) => {
+                modal.move_cursor_to(range.start, false);
+                modal.move_cursor_to(range.end, true);
+            }
+            ActiveModal::SessionAction(modal) => {
+                modal.move_cursor_to(range.start, false);
+                modal.move_cursor_to(range.end, true);
+            }
+            ActiveModal::Settings(modal) => modal.select_text_range(range),
+            _ => {}
+        }
+    }
+
+    fn abort_modal_ime(&mut self) {
+        if let Some(snapshot) = self.modal_ime_snapshot.take() {
+            self.shell.active_modal = snapshot;
+        }
+        self.modal_marked_range = None;
+    }
+
+    fn modal_insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.abort_modal_ime();
+        if !self.modal_accepts_text_edit() {
+            return;
+        }
+        let replacing = self.modal_selected_text().is_some_and(|text| !text.is_empty());
+        let kind = if replacing {
+            TextEditKind::Replace
+        } else if text.chars().count() > 1 {
+            TextEditKind::Replace
+        } else {
+            TextEditKind::Insert
+        };
+        self.record_modal_edit(kind);
+        match &mut self.shell.active_modal {
+            ActiveModal::Palette(modal) => modal.push_char(text),
+            ActiveModal::ModelPicker(modal) => modal.push_search_char(text),
+            ActiveModal::SessionSearch(modal) => modal.push_char(text),
+            ActiveModal::Account(modal) => modal.push_char(text),
+            ActiveModal::SessionAction(modal) => modal.push_char(text),
+            ActiveModal::Settings(modal) => modal.push_char(text),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    fn modal_select_all(&mut self, cx: &mut Context<Self>) {
+        self.abort_modal_ime();
+        self.modal_undo_break = true;
+        match &mut self.shell.active_modal {
+            ActiveModal::Palette(modal) => modal.select_all_text(),
+            ActiveModal::ModelPicker(modal) => modal.select_all_search(),
+            ActiveModal::SessionSearch(modal) => modal.select_all_text(),
+            ActiveModal::Account(modal) => modal.select_all_text(),
+            ActiveModal::SessionAction(modal) => modal.select_all_text(),
+            ActiveModal::Settings(modal) => modal.select_all_text(),
+            _ => return,
+        }
+        cx.notify();
     }
 
     fn clear_modal_history(&mut self) {
@@ -4298,6 +4477,8 @@ impl ChatView {
         self.modal_redo.clear();
         self.modal_edit_group = None;
         self.modal_undo_break = true;
+        self.modal_marked_range = None;
+        self.modal_ime_snapshot = None;
     }
 
     fn record_modal_edit(&mut self, kind: TextEditKind) {
@@ -6254,12 +6435,32 @@ impl ChatView {
                 });
                 picker.render(theme, motion, on_select, on_retry)
             }
-            ActiveModal::Account(modal) => modal.render(theme),
+            ActiveModal::Account(modal) => {
+                let view = cx.entity().downgrade();
+                let on_action: AccountHandler =
+                    std::rc::Rc::new(move |interaction, _event, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            let action = if let ActiveModal::Account(current) =
+                                &mut this.shell.active_modal
+                            {
+                                current.handle_interaction(interaction)
+                            } else {
+                                return;
+                            };
+                            if let Some(action) = action {
+                                this.execute_account_action(action, cx);
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    });
+                modal.render(theme, on_action)
+            }
             ActiveModal::SessionAction(modal) => {
                 let session_id = modal.session_id.clone();
                 let view = cx.entity().downgrade();
                 let on_action: SessionActionHandler =
-                    std::rc::Rc::new(move |action, _event, _window, cx| {
+                    std::rc::Rc::new(move |interaction, _event, _window, cx| {
                         view.update(cx, |this, cx| {
                             let outcome = if let ActiveModal::SessionAction(current) =
                                 &mut this.shell.active_modal
@@ -6267,7 +6468,7 @@ impl ChatView {
                                 if current.session_id != session_id || current.busy {
                                     return;
                                 }
-                                current.activate_menu(action)
+                                current.handle_interaction(interaction)
                             } else {
                                 return;
                             };
@@ -6282,26 +6483,28 @@ impl ChatView {
             }
             ActiveModal::Settings(modal) => {
                 let view = cx.entity().downgrade();
-                let on_save: SettingsSaveHandler = std::rc::Rc::new(move |_event, _window, cx| {
-                    view.update(cx, |this, cx| {
-                        let save =
+                let on_action: SettingsHandler =
+                    std::rc::Rc::new(move |interaction, _event, _window, cx| {
+                        view.update(cx, |this, cx| {
                             if let ActiveModal::Settings(current) = &mut this.shell.active_modal {
                                 if current.busy {
                                     return;
                                 }
-                                current.selected = current.fields.len();
-                                current.handle_key("enter") == Some(SettingsAction::Save)
-                            } else {
-                                return;
-                            };
-                        if save {
-                            this.execute_settings_save(cx);
-                        }
-                        cx.notify();
-                    })
-                    .ok();
-                });
-                modal.render(theme, motion, on_save)
+                                match interaction {
+                                    SettingsInteraction::SelectRow(index) => {
+                                        current.select_row(index);
+                                    }
+                                    SettingsInteraction::Save => {
+                                        current.selected = current.fields.len();
+                                        this.execute_settings_save(cx);
+                                    }
+                                }
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    });
+                modal.render(theme, motion, on_action)
             }
             ActiveModal::About => render_about(theme),
             ActiveModal::SessionSearch(_) => unreachable!("handled above"),
@@ -6365,6 +6568,12 @@ impl EntityInputHandler for ChatView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
+        if self.shell.active_modal.is_open() {
+            let (value, _, _) = self.modal_text_state()?;
+            let range = self.modal_range_from_utf16(&range_utf16)?;
+            actual_range.replace(self.modal_range_to_utf16(&range)?);
+            return value.get(range).map(str::to_string);
+        }
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
         Some(self.content[range].to_string())
@@ -6376,6 +6585,15 @@ impl EntityInputHandler for ChatView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
+        if self.shell.active_modal.is_open() {
+            let (value, cursor, anchor) = self.modal_text_state()?;
+            let range = crate::ui::modals::text_input::selected_range(&value, cursor, anchor);
+            let range = self.modal_range_to_utf16(&range)?;
+            return Some(UTF16Selection {
+                range,
+                reversed: cursor < anchor,
+            });
+        }
         Some(UTF16Selection {
             range: self.range_to_utf16(&self.selected_range),
             reversed: self.selection_reversed,
@@ -6387,12 +6605,21 @@ impl EntityInputHandler for ChatView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
+        if self.shell.active_modal.is_open() {
+            return self
+                .modal_marked_range
+                .as_ref()
+                .and_then(|range| self.modal_range_to_utf16(range));
+        }
         self.marked_range
             .as_ref()
             .map(|range| self.range_to_utf16(range))
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        if self.shell.active_modal.is_open() {
+            self.abort_modal_ime();
+        }
         self.marked_range = None;
     }
 
@@ -6404,6 +6631,35 @@ impl EntityInputHandler for ChatView {
         cx: &mut Context<Self>,
     ) {
         if self.shell.active_modal.is_open() {
+            if !self.modal_accepts_text_edit() {
+                return;
+            }
+            let Some((value, cursor, anchor)) = self.modal_text_state() else {
+                return;
+            };
+            let range = self
+                .modal_marked_range
+                .clone()
+                .or_else(|| {
+                    range_utf16
+                        .as_ref()
+                        .and_then(|range| self.modal_range_from_utf16(range))
+                })
+                .unwrap_or_else(|| {
+                    crate::ui::modals::text_input::selected_range(&value, cursor, anchor)
+                });
+            let composing = self.modal_ime_snapshot.is_some();
+            if !composing && value.get(range.clone()) != Some(new_text) {
+                self.record_modal_edit(if range.is_empty() {
+                    TextEditKind::Insert
+                } else {
+                    TextEditKind::Replace
+                });
+            }
+            self.modal_replace_range(range, new_text);
+            self.modal_marked_range = None;
+            self.modal_ime_snapshot = None;
+            cx.notify();
             return;
         }
         let range = range_utf16
@@ -6431,6 +6687,59 @@ impl EntityInputHandler for ChatView {
         cx: &mut Context<Self>,
     ) {
         if self.shell.active_modal.is_open() {
+            if !self.modal_accepts_text_edit() {
+                return;
+            }
+            let Some((value, cursor, anchor)) = self.modal_text_state() else {
+                return;
+            };
+            if self.modal_ime_snapshot.is_none() {
+                self.record_modal_edit(TextEditKind::Replace);
+                self.modal_ime_snapshot = Some(self.shell.active_modal.clone());
+                self.modal_undo_break = true;
+            }
+            let range = self
+                .modal_marked_range
+                .clone()
+                .or_else(|| {
+                    range_utf16
+                        .as_ref()
+                        .and_then(|range| self.modal_range_from_utf16(range))
+                })
+                .unwrap_or_else(|| {
+                    crate::ui::modals::text_input::selected_range(&value, cursor, anchor)
+                });
+            if !self.modal_replace_range(range.clone(), new_text) {
+                self.abort_modal_ime();
+                return;
+            }
+            self.modal_marked_range = (!new_text.is_empty())
+                .then(|| range.start..range.start + new_text.len());
+            let selected = new_selected_range_utf16
+                .as_ref()
+                .map(|selection| {
+                    let convert = |offset: usize| {
+                        let mut utf8_offset = 0;
+                        let mut utf16_offset = 0;
+                        for ch in new_text.chars() {
+                            if utf16_offset >= offset {
+                                break;
+                            }
+                            utf16_offset += ch.len_utf16();
+                            utf8_offset += ch.len_utf8();
+                        }
+                        utf8_offset
+                    };
+                    range.start + convert(selection.start)
+                        ..range.start + convert(selection.end)
+                })
+                .unwrap_or_else(|| {
+                    self.modal_marked_range
+                        .clone()
+                        .unwrap_or_else(|| range.start..range.start)
+                });
+            self.modal_select_range(selected);
+            cx.notify();
             return;
         }
         let range = range_utf16

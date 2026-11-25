@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
 use crate::ui::icon_svg;
+use crate::ui::modals::text_input::{
+    backspace as text_backspace, delete as text_delete, input_content, insert_text, move_horizontal,
+    move_to as text_move_to, move_to_edge, select_all, selected_text,
+};
 use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::session_list::SessionItem;
 
@@ -126,12 +130,31 @@ fn desc_to_string(s: impl Into<String>) -> String {
     s.into()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaletteRow {
+    Header(PaletteCategory),
+    Item(usize),
+}
+
 /// Command palette modal state and rendering.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct CommandPaletteModal {
     pub query: String,
+    pub cursor: usize,
+    pub anchor: usize,
     pub selected_index: usize,
     pub items: Vec<PaletteItem>,
+    scroll_handle: UniformListScrollHandle,
+}
+
+impl PartialEq for CommandPaletteModal {
+    fn eq(&self, other: &Self) -> bool {
+        self.query == other.query
+            && self.cursor == other.cursor
+            && self.anchor == other.anchor
+            && self.selected_index == other.selected_index
+            && self.items == other.items
+    }
 }
 
 impl Default for CommandPaletteModal {
@@ -178,8 +201,11 @@ impl CommandPaletteModal {
 
         Self {
             query: String::new(),
+            cursor: 0,
+            anchor: 0,
             selected_index: 0,
             items,
+            scroll_handle: UniformListScrollHandle::new(),
         }
     }
 
@@ -208,7 +234,68 @@ impl CommandPaletteModal {
     /// Set search input query.
     pub fn set_query(&mut self, query: impl Into<String>) {
         self.query = query.into();
+        self.cursor = self.query.len();
+        self.anchor = self.cursor;
         self.selected_index = 0;
+        self.scroll_to_top();
+    }
+
+    pub fn push_char(&mut self, text: &str) {
+        insert_text(&mut self.query, &mut self.cursor, &mut self.anchor, text);
+        self.selected_index = 0;
+        self.scroll_to_top();
+    }
+
+    pub fn backspace(&mut self) {
+        if text_backspace(&mut self.query, &mut self.cursor, &mut self.anchor) {
+            self.selected_index = 0;
+            self.scroll_to_top();
+        }
+    }
+
+    pub fn delete(&mut self) {
+        if text_delete(&mut self.query, &mut self.cursor, &mut self.anchor) {
+            self.selected_index = 0;
+            self.scroll_to_top();
+        }
+    }
+
+    pub fn move_cursor(&mut self, delta: isize, selecting: bool) {
+        move_horizontal(
+            &self.query,
+            &mut self.cursor,
+            &mut self.anchor,
+            delta,
+            selecting,
+        );
+    }
+
+    pub fn move_cursor_to(&mut self, offset: usize, selecting: bool) {
+        text_move_to(
+            &self.query,
+            &mut self.cursor,
+            &mut self.anchor,
+            offset,
+            selecting,
+        );
+    }
+
+    pub fn move_cursor_to_edge(&mut self, end: bool, selecting: bool) {
+        move_to_edge(
+            &self.query,
+            &mut self.cursor,
+            &mut self.anchor,
+            end,
+            selecting,
+        );
+    }
+
+    pub fn select_all_text(&mut self) {
+        select_all(&self.query, &mut self.cursor, &mut self.anchor);
+    }
+
+    pub fn selected_text(&self) -> String {
+        selected_text(&self.query, self.cursor, self.anchor)
     }
 
     /// Get list of items matching the current query.
@@ -228,6 +315,7 @@ impl CommandPaletteModal {
             } else {
                 self.selected_index -= 1;
             }
+            self.scroll_selected_into_view();
         }
     }
 
@@ -236,7 +324,37 @@ impl CommandPaletteModal {
         let total = self.filtered_items().len();
         if total > 0 {
             self.selected_index = (self.selected_index + 1) % total;
+            self.scroll_selected_into_view();
         }
+    }
+
+    fn rows(&self, filtered: &[&PaletteItem]) -> Vec<PaletteRow> {
+        let mut rows = Vec::with_capacity(filtered.len() + 3);
+        let mut category = None;
+        for (index, item) in filtered.iter().enumerate() {
+            if category != Some(item.category) {
+                category = Some(item.category);
+                rows.push(PaletteRow::Header(item.category));
+            }
+            rows.push(PaletteRow::Item(index));
+        }
+        rows
+    }
+
+    fn scroll_selected_into_view(&self) {
+        let filtered = self.filtered_items();
+        let rows = self.rows(&filtered);
+        if let Some(index) = rows.iter().position(|row| {
+            matches!(row, PaletteRow::Item(item) if *item == self.selected_index)
+        }) {
+            self.scroll_handle
+                .scroll_to_item(index, ScrollStrategy::Center);
+        }
+    }
+
+    fn scroll_to_top(&self) {
+        self.scroll_handle
+            .scroll_to_item_strict(0, ScrollStrategy::Top);
     }
 
     /// Retrieve the currently selected item, if any.
@@ -274,208 +392,226 @@ impl CommandPaletteModal {
         on_action: PaletteActionHandler,
     ) -> Div {
         let filtered = self.filtered_items();
-
+        let search = div()
+            .flex()
+            .items_center()
+            .px_4()
+            .py_3()
+            .border_b_1()
+            .border_color(theme.mockup_border)
+            .gap_3()
+            .child(icon_svg("search", 14.0).text_color(theme.mockup_text_dim))
+            .child(
+                input_content(
+                    &self.query,
+                    self.cursor,
+                    self.anchor,
+                    "Type a command or search sessions...",
+                    false,
+                    true,
+                    theme,
+                )
+                .flex_1()
+                .min_w_0()
+                .text_size(px(13.5)),
+            )
+            .child(
+                div()
+                    .px_1p5()
+                    .py_0p5()
+                    .rounded(px(3.0))
+                    .bg(theme.mockup_hover)
+                    .border_1()
+                    .border_color(theme.mockup_border)
+                    .text_size(px(10.0))
+                    .font_family(theme.typography.font_mono[0].clone())
+                    .text_color(theme.mockup_text_dim)
+                    .child("Esc"),
+            );
+        let results = if filtered.is_empty() {
+            div()
+                .h(px(280.0))
+                .p_4()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(theme.mockup_text_dim)
+                        .child("No matching commands found"),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme.mockup_text_dim)
+                        .child(format!("No results for \"{}\"", self.query)),
+                )
+        } else {
+            let items: Vec<PaletteItem> = filtered.iter().map(|item| (*item).clone()).collect();
+            let rows = self.rows(&filtered);
+            let selected_index = self.selected_index;
+            let scroll_handle = self.scroll_handle.clone();
+            let theme = theme.clone();
+            let list = uniform_list(
+                "palette_rows",
+                rows.len(),
+                move |range, _window, cx| {
+                    let motion = ModalMotion {
+                        owner: motion.owner,
+                        cx,
+                    };
+                    range
+                        .map(|row_index| match rows[row_index] {
+                            PaletteRow::Header(category) => {
+                                render_palette_header(category, &theme).into_any_element()
+                            }
+                            PaletteRow::Item(index) => render_palette_row(
+                                &items[index],
+                                index == selected_index,
+                                &theme,
+                                motion,
+                                on_action.clone(),
+                            )
+                            .into_any_element(),
+                        })
+                        .collect::<Vec<_>>()
+                },
+            )
+            .track_scroll(scroll_handle)
+            .w_full()
+            .h_full();
+            div()
+                .debug_selector(|| "palette_list".to_string())
+                .h(px(360.0))
+                .w_full()
+                .p_1()
+                .overflow_hidden()
+                .child(list)
+        };
         div()
             .w(px(560.0))
             .max_h(px(480.0))
             .flex()
             .flex_col()
             .bg(theme.mockup_surface)
-            // Top search bar
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(theme.mockup_border)
-                    .gap_3()
-                    .child(icon_svg("search", 14.0).text_color(theme.mockup_text_dim))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(13.5))
-                            .text_color(if self.query.is_empty() {
-                                theme.mockup_text_dim
-                            } else {
-                                theme.mockup_text_bright
-                            })
-                            .child(if self.query.is_empty() {
-                                "Type a command or search sessions...".to_string()
-                            } else {
-                                self.query.clone()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .px_1p5()
-                            .py_0p5()
-                            .rounded(px(3.0))
-                            .bg(theme.mockup_hover)
-                            .border_1()
-                            .border_color(theme.mockup_border)
-                            .text_size(px(10.0))
-                            .font_family(theme.typography.font_mono[0].clone())
-                            .text_color(theme.mockup_text_dim)
-                            .child("Esc"),
-                    ),
-            )
-            // Results list or Empty State
-            .child(
-                div()
-                    .flex_1()
-                    .overflow_y_hidden()
-                    .p_2()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .when(filtered.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .py_8()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .justify_center()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_size(px(13.0))
-                                        .text_color(theme.mockup_text_dim)
-                                        .child("No matching commands found"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(theme.mockup_text_dim)
-                                        .child(format!("No results for \"{}\"", self.query)),
-                                ),
-                        )
-                    })
-                    .when(!filtered.is_empty(), |this| {
-                        let mut container = this;
-                        let mut current_cat = None;
-
-                        for (idx, item) in filtered.iter().enumerate() {
-                            let is_selected = idx == self.selected_index;
-                            let debug_id = format!("palette_{}", item.id);
-
-                            // Insert category header if new
-                            if current_cat != Some(item.category) {
-                                current_cat = Some(item.category);
-                                container = container.child(
-                                    div()
-                                        .px_3()
-                                        .pt_2()
-                                        .pb_1()
-                                        .text_size(px(10.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme.mockup_text_dim)
-                                        .child(item.category.title()),
-                                );
-                            }
-
-                            // Render item row (mockup `.row` language: radius 8,
-                            // hover `#1a1a1a`; the selection carries the accent
-                            // chip wash + accent border as the focus indicator).
-                            let mut row = div()
-                                .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .px(px(12.0))
-                                    .py(px(8.0))
-                                    .rounded(px(8.0))
-                                    .border_1()
-                                    .border_color(if is_selected {
-                                        theme.mockup_accent_border
-                                    } else {
-                                        gpui::rgba(0x00000000)
-                                    })
-                                    .bg(if is_selected {
-                                        theme.mockup_accent_chip_bg
-                                    } else {
-                                        gpui::rgba(0x00000000)
-                                    })
-                                    .hover(|s| s.bg(theme.mockup_row_hover))
-                                    .cursor_pointer()
-                                    .id(SharedString::from(format!("palette_{}", item.id)))
-                                    .debug_selector(move || debug_id.clone())
-                                    .on_click({
-                                        let on_action = on_action.clone();
-                                        let action = item.action.clone();
-                                        move |event, window, cx| {
-                                            on_action(action.clone(), event, window, cx)
-                                        }
-                                    })
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2p5()
-                                            .child(
-                                                div()
-                                                    .text_color(theme.mockup_text_muted)
-                                                    .child(crate::ui::icon_svg(
-                                                        item.icon.as_str(),
-                                                        14.0,
-                                                    )),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(12.5))
-                                                            .font_weight(if is_selected {
-                                                                FontWeight::MEDIUM
-                                                            } else {
-                                                                FontWeight::NORMAL
-                                                            })
-                                                            .text_color(if is_selected {
-                                                                theme.mockup_text_bright
-                                                            } else {
-                                                                theme.mockup_text_muted
-                                                            })
-                                                            .child(item.title.clone()),
-                                                    )
-                                                    .when_some(item.subtitle.as_ref(), |p, sub| {
-                                                        p.child(
-                                                            div()
-                                                                .text_size(px(10.5))
-                                                                .text_color(theme.mockup_text_dim)
-                                                                .child(sub.clone()),
-                                                        )
-                                                    }),
-                                            ),
-                                    )
-                                    .when_some(item.shortcut.as_ref(), |p, sc| {
-                                        p.child(
-                                            div()
-                                                .px_1p5()
-                                                .py_0p5()
-                                                .rounded(px(3.0))
-                                                .bg(theme.mockup_border)
-                                                .font_family(theme.typography.font_mono[0].clone())
-                                                .text_size(px(10.5))
-                                                .text_color(if is_selected {
-                                                    theme.mockup_text_bright
-                                                } else {
-                                                    theme.mockup_text_dim
-                                                })
-                                                .child(sc.clone()),
-                                        )
-                                    });
-                            if is_selected {
-                                row = modal_press(row, "palette_selected_press", motion);
-                            }
-                            container = container.child(row);
-                        }
-                        container
-                    }),
-            )
+            .child(search)
+            .child(results)
     }
+}
+
+fn render_palette_header(category: PaletteCategory, theme: &HermesTheme) -> Div {
+    div()
+        .h(px(52.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .px_3()
+        .text_size(px(10.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.mockup_text_dim)
+        .child(category.title())
+}
+
+fn render_palette_row(
+    item: &PaletteItem,
+    selected: bool,
+    theme: &HermesTheme,
+    motion: ModalMotion<'_>,
+    on_action: PaletteActionHandler,
+) -> Stateful<Div> {
+    let debug_id = format!("palette_{}", item.id);
+    let action = item.action.clone();
+    let mut row = div()
+        .id(SharedString::from(format!("palette_{}", item.id)))
+        .debug_selector(move || debug_id.clone())
+        .h(px(52.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .justify_between()
+        .px(px(12.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(if selected {
+            theme.mockup_accent_border
+        } else {
+            gpui::rgba(0x00000000)
+        })
+        .bg(if selected {
+            theme.mockup_accent_chip_bg
+        } else {
+            gpui::rgba(0x00000000)
+        })
+        .hover(|this| this.bg(theme.mockup_row_hover))
+        .cursor_pointer()
+        .on_click(move |event, window, cx| on_action(action.clone(), event, window, cx))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2p5()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_color(theme.mockup_text_muted)
+                        .child(icon_svg(item.icon.as_str(), 14.0)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .font_weight(if selected {
+                                    FontWeight::MEDIUM
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(if selected {
+                                    theme.mockup_text_bright
+                                } else {
+                                    theme.mockup_text_muted
+                                })
+                                .truncate()
+                                .child(item.title.clone()),
+                        )
+                        .when_some(item.subtitle.as_ref(), |this, subtitle| {
+                            this.child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(theme.mockup_text_dim)
+                                    .truncate()
+                                    .child(subtitle.clone()),
+                            )
+                        }),
+                ),
+        )
+        .when_some(item.shortcut.as_ref(), |this, shortcut| {
+            this.child(
+                div()
+                    .px_1p5()
+                    .py_0p5()
+                    .rounded(px(3.0))
+                    .bg(theme.mockup_border)
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(10.5))
+                    .text_color(if selected {
+                        theme.mockup_text_bright
+                    } else {
+                        theme.mockup_text_dim
+                    })
+                    .child(shortcut.clone()),
+            )
+        });
+    if selected {
+        row = modal_press(row, "palette_selected_press", motion);
+    }
+    row
 }
 
 #[cfg(test)]

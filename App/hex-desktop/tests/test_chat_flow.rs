@@ -14,7 +14,7 @@
 // `gpui::test` into scope, which would otherwise re-expand the `#[test]`
 // attribute emitted by the macro and recurse forever.
 use core::prelude::v1::test;
-use gpui::*;
+use gpui::{EntityInputHandler, *};
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{app_runtime, init_app, ChatView};
 use hex_desktop::shortcuts::{About, ActualSize, Redo, Undo, ZoomIn, ZoomOut};
@@ -875,6 +875,8 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
         assert!(matches!(view.shell.active_modal, ActiveModal::Palette(_)));
     });
     let sidebar_before = snap(vc, &view, |view| view.shell.sidebar_collapsed);
+    vc.simulate_input("sidebar");
+    finish_motion(vc, &view);
     click_debug_element(vc, "palette_nav_sidebar");
     snap(vc, &view, |view| {
         assert_eq!(view.shell.active_modal, ActiveModal::None);
@@ -939,12 +941,61 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
     });
     finish_motion(vc, &view);
     click_debug_element(vc, "session_menu_0");
+    finish_motion(vc, &view);
     snap(vc, &view, |view| {
         let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
             panic!("session actions should remain open");
         };
         assert_eq!(modal.mode, SessionActionMode::Rename);
         assert_eq!(modal.draft, "Pointer session");
+    });
+    click_debug_element(vc, "modal_field_chat_title");
+    vc.simulate_input(" renamed");
+    snap(vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("rename should remain open while editing");
+        };
+        assert_eq!(modal.draft, "Pointer session renamed");
+    });
+    click_debug_element(vc, "modal_button_rename");
+    pump_until(vc, &view, "pointer session rename", |view| {
+        view.shell.active_modal == ActiveModal::None
+            && last_notice(view).is_some_and(|notice| notice.starts_with("Rename failed"))
+    });
+
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_modal = ActiveModal::SessionAction(
+                SessionActionModal::open_menu("ses_pointer", "Pointer session", false, false),
+            );
+            cx.notify();
+        });
+    });
+    finish_motion(vc, &view);
+    click_debug_element(vc, "session_menu_3");
+    finish_motion(vc, &view);
+    snap(vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("delete confirmation should be open");
+        };
+        assert_eq!(modal.mode, SessionActionMode::DeleteConfirm);
+        assert!(modal.confirm_focused);
+    });
+    click_debug_element(vc, "modal_button_cancel");
+    snap(vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("canceling delete should return to the menu");
+        };
+        assert_eq!(modal.mode, SessionActionMode::Menu { selected: 3 });
+    });
+    click_debug_element(vc, "session_menu_3");
+    finish_motion(vc, &view);
+    click_debug_element(vc, "modal_button_delete_forever");
+    pump_until(vc, &view, "pointer session delete", |view| {
+        view.shell.active_modal == ActiveModal::None
+            && last_notice(view).is_some_and(|notice| {
+                notice.starts_with("Delete failed") || notice.starts_with("Delete task aborted")
+            })
     });
 
     let mut settings = SettingsModal::default();
@@ -965,9 +1016,101 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
         });
     });
     finish_motion(vc, &view);
+    click_debug_element(vc, "settings_row_0");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert!(modal.editing);
+        assert_eq!(modal.selected, 0);
+    });
     click_debug_element(vc, "settings_save_row");
     pump_until(vc, &view, "pointer settings save", |view| {
         matches!(&view.shell.active_modal, ActiveModal::Settings(modal) if modal.error.as_deref().is_some_and(|error| error.starts_with("Save failed")))
+    });
+}
+
+#[gpui::test]
+fn test_modal_clipboard_actions_are_isolated_from_composer(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        init_app(cx);
+        cx.set_global(MotionSystem::with_policy(MotionPolicy::new(true)));
+    });
+    let (view, vc) = cx.add_window_view(|_, cx| {
+        ChatView::new(
+            AcpBridge::new(),
+            app_runtime().handle().clone(),
+            std::env::temp_dir(),
+            cx,
+        )
+    });
+    vc.simulate_input("composer draft");
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
+            view.shell.active_modal = ActiveModal::SessionAction(SessionActionModal::open_menu(
+                "ses_clipboard",
+                "Unicode 👩\u{200d}💻 title",
+                false,
+                false,
+            ));
+            cx.notify();
+        });
+    });
+    finish_motion(vc, &view);
+    vc.simulate_keystrokes("enter");
+    finish_motion(vc, &view);
+
+    vc.simulate_keystrokes("cmd-a");
+    vc.simulate_keystrokes("cmd-c");
+    assert_eq!(
+        vc.read_from_clipboard().unwrap().text().unwrap(),
+        "Unicode 👩\u{200d}💻 title"
+    );
+
+    vc.write_to_clipboard(ClipboardItem::new_string("差し替え👩\u{200d}💻".into()));
+    vc.simulate_keystrokes("cmd-v");
+    snap(vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("rename should remain open while pasting");
+        };
+        assert_eq!(modal.draft, "差し替え👩\u{200d}💻");
+    });
+    vc.dispatch_action(Undo);
+    snap(vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("rename should remain open while undoing");
+        };
+        assert_eq!(modal.draft, "Unicode 👩\u{200d}💻 title");
+    });
+    vc.dispatch_action(Redo);
+    snap(vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("rename should remain open while redoing");
+        };
+        assert_eq!(modal.draft, "差し替え👩\u{200d}💻");
+    });
+
+    vc.simulate_keystrokes("cmd-a");
+    vc.simulate_keystrokes("cmd-x");
+    snap(vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("rename should remain open while cutting");
+        };
+        assert_eq!(modal.draft, "");
+    });
+    assert_eq!(
+        vc.read_from_clipboard().unwrap().text().unwrap(),
+        "差し替え👩\u{200d}💻"
+    );
+
+    vc.write_to_clipboard(ClipboardItem::new_string("復元".into()));
+    vc.simulate_keystrokes("cmd-v");
+    snap(vc, &view, |view| {
+        let ActiveModal::SessionAction(modal) = &view.shell.active_modal else {
+            panic!("rename should remain open after paste");
+        };
+        assert_eq!(modal.draft, "復元");
+        assert_eq!(view.composer_text(), "composer draft");
     });
 }
 
@@ -1175,7 +1318,7 @@ async fn test_undo_redo_actions_restore_composer_and_modal_text(cx: &mut TestApp
         required: true,
     });
     settings.selected = 0;
-    settings.editing = true;
+    settings.select_row(0);
     vc.update(|_window, app| {
         view.update(app, |view, cx| {
             view.shell.active_modal = ActiveModal::Settings(settings);
@@ -1259,6 +1402,48 @@ async fn test_undo_redo_actions_restore_composer_and_modal_text(cx: &mut TestApp
         };
         assert_eq!(value, "geminxix");
     });
+    assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draft");
+
+    vc.simulate_keystrokes("end");
+    vc.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.replace_and_mark_text_in_range(None, "に", Some(0..1), window, cx);
+        });
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "geminxixに");
+    });
+    vc.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.replace_text_in_range(None, "日", window, cx);
+        });
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "geminxix日");
+    });
+    vc.dispatch_action(Undo);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should be open");
+        };
+        let SettingField::Text { value, .. } = &modal.fields[0] else {
+            panic!("expected text field");
+        };
+        assert_eq!(value, "geminxix");
+    });
+    vc.dispatch_action(Redo);
     assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draft");
 }
 

@@ -1,20 +1,15 @@
 //! Cloud Account modal: sign in / register / device management.
-//!
-//! Two-field hand-rolled text entry (no GPUI editor element in modals yet):
-//! typed characters arrive through `ChatView::on_key_down` and route into the
-//! focused field. Keys: `tab` moves between fields, `shift+tab` toggles the
-//! login/register mode, `enter` submits; on the device list `up`/`down` move
-//! the selection and `enter` executes the highlighted row (revoke or sign out).
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use hex_protocol::models::{CloudAuthStatus, CloudDevice};
 
 use crate::theme::HermesTheme;
 use crate::ui::icon_svg;
+use crate::ui::modals::text_input::{button, select_all, text_field, ButtonTone, ModalClickHandler};
 use crate::ui::modals::MODAL_CARD_WIDTH_WIDE;
 
-/// Which surface the account modal currently shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountMode {
     Login,
@@ -22,7 +17,6 @@ pub enum AccountMode {
     Devices,
 }
 
-/// Action requested by the modal; executed async by `ChatView`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccountAction {
     SubmitLogin { email: String, password: String },
@@ -31,18 +25,66 @@ pub enum AccountAction {
     RevokeDevice(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccountConfirmation {
+    RevokeDevice(usize),
+    Logout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountInteraction {
+    FocusField(usize),
+    Submit,
+    ToggleMode,
+    ActivateRow(usize),
+    Confirm,
+    Cancel,
+}
+
+pub type AccountHandler = std::rc::Rc<
+    dyn Fn(AccountInteraction, &ClickEvent, &mut Window, &mut App),
+>;
+
+#[derive(Debug, Clone)]
 pub struct AccountModal {
     pub mode: AccountMode,
     pub email: String,
     pub password: String,
-    pub focus_password: bool,
+    pub email_cursor: usize,
+    pub email_anchor: usize,
+    pub password_cursor: usize,
+    pub password_anchor: usize,
+    pub focus_index: usize,
     pub status: Option<CloudAuthStatus>,
     pub devices: Vec<CloudDevice>,
     pub selected_row: usize,
     pub busy: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
+    confirmation: Option<AccountConfirmation>,
+    confirm_focused: bool,
+    scroll_handle: UniformListScrollHandle,
+}
+
+impl PartialEq for AccountModal {
+    fn eq(&self, other: &Self) -> bool {
+        self.mode == other.mode
+            && self.email == other.email
+            && self.password == other.password
+            && self.email_cursor == other.email_cursor
+            && self.email_anchor == other.email_anchor
+            && self.password_cursor == other.password_cursor
+            && self.password_anchor == other.password_anchor
+            && self.focus_index == other.focus_index
+            && self.status == other.status
+            && self.devices == other.devices
+            && self.selected_row == other.selected_row
+            && self.busy == other.busy
+            && self.error == other.error
+            && self.notice == other.notice
+            && self.confirmation == other.confirmation
+            && self.confirm_focused == other.confirm_focused
+    }
 }
 
 impl Default for AccountModal {
@@ -53,96 +95,273 @@ impl Default for AccountModal {
 
 impl AccountModal {
     pub fn new(status: Option<CloudAuthStatus>) -> Self {
-        let logged_in = status.as_ref().map(|s| s.logged_in).unwrap_or(false);
+        let logged_in = status.as_ref().map(|status| status.logged_in).unwrap_or(false);
+        let email = status
+            .as_ref()
+            .and_then(|status| status.email.clone())
+            .unwrap_or_default();
+        let email_cursor = email.len();
         Self {
             mode: if logged_in {
                 AccountMode::Devices
             } else {
                 AccountMode::Login
             },
-            email: status
-                .as_ref()
-                .and_then(|s| s.email.clone())
-                .unwrap_or_default(),
+            email,
             password: String::new(),
-            focus_password: false,
+            email_cursor,
+            email_anchor: email_cursor,
+            password_cursor: 0,
+            password_anchor: 0,
+            focus_index: 0,
             status,
             devices: Vec::new(),
             selected_row: 0,
             busy: false,
             error: None,
             notice: None,
+            confirmation: None,
+            confirm_focused: true,
+            scroll_handle: UniformListScrollHandle::new(),
         }
     }
 
     pub fn set_devices(&mut self, devices: Vec<CloudDevice>) {
         self.devices = devices;
         self.selected_row = self.selected_row.min(self.row_count().saturating_sub(1));
+        self.scroll_selected_into_view();
     }
 
-    /// Rows in the devices view: one per device + the trailing sign-out row.
+    pub fn set_focus_field(&mut self, index: usize) {
+        if !matches!(self.mode, AccountMode::Login | AccountMode::Register) || self.busy {
+            return;
+        }
+        self.focus_index = index.min(3);
+    }
+
+    pub fn focus_password(&self) -> bool {
+        self.focus_index == 1
+    }
+
+    pub fn accepts_text_edit(&self) -> bool {
+        !self.busy
+            && self.confirmation.is_none()
+            && matches!(self.mode, AccountMode::Login | AccountMode::Register)
+            && self.focus_index < 2
+    }
+
+    fn focused_text(&mut self) -> Option<(&mut String, &mut usize, &mut usize)> {
+        if self.busy || self.confirmation.is_some() || self.mode == AccountMode::Devices {
+            return None;
+        }
+        match self.focus_index {
+            0 => Some((&mut self.email, &mut self.email_cursor, &mut self.email_anchor)),
+            1 => Some((&mut self.password, &mut self.password_cursor, &mut self.password_anchor)),
+            _ => None,
+        }
+    }
+
+    pub fn push_char(&mut self, text: &str) {
+        let Some((value, cursor, anchor)) = self.focused_text() else {
+            return;
+        };
+        crate::ui::modals::text_input::insert_text(value, cursor, anchor, text);
+    }
+
+    pub fn backspace(&mut self) {
+        let Some((value, cursor, anchor)) = self.focused_text() else {
+            return;
+        };
+        crate::ui::modals::text_input::backspace(value, cursor, anchor);
+    }
+
+    pub fn delete(&mut self) {
+        let Some((value, cursor, anchor)) = self.focused_text() else {
+            return;
+        };
+        crate::ui::modals::text_input::delete(value, cursor, anchor);
+    }
+
+    pub fn move_cursor(&mut self, delta: isize, selecting: bool) {
+        let Some((value, cursor, anchor)) = self.focused_text() else {
+            return;
+        };
+        crate::ui::modals::text_input::move_horizontal(value, cursor, anchor, delta, selecting);
+    }
+
+    pub fn move_cursor_to(&mut self, offset: usize, selecting: bool) {
+        let Some((value, cursor, anchor)) = self.focused_text() else {
+            return;
+        };
+        crate::ui::modals::text_input::move_to(value, cursor, anchor, offset, selecting);
+    }
+
+    pub fn move_cursor_to_edge(&mut self, end: bool, selecting: bool) {
+        let Some((value, cursor, anchor)) = self.focused_text() else {
+            return;
+        };
+        crate::ui::modals::text_input::move_to_edge(value, cursor, anchor, end, selecting);
+    }
+
+    pub fn select_all_text(&mut self) {
+        let Some((value, cursor, anchor)) = self.focused_text() else {
+            return;
+        };
+        select_all(value, cursor, anchor);
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        if self.busy || self.confirmation.is_some() || self.mode == AccountMode::Devices {
+            return None;
+        }
+        let (value, cursor, anchor) = if self.focus_password() {
+            (&self.password, self.password_cursor, self.password_anchor)
+        } else {
+            (&self.email, self.email_cursor, self.email_anchor)
+        };
+        Some(crate::ui::modals::text_input::selected_text(value, cursor, anchor))
+    }
+
     fn row_count(&self) -> usize {
         self.devices.len() + 1
     }
 
-    pub fn push_char(&mut self, ch: &str) {
-        if self.busy {
+    pub fn select_row(&mut self, row: usize) {
+        if self.mode != AccountMode::Devices || self.busy {
             return;
         }
-        if self.focus_password {
-            self.password.push_str(ch);
-        } else {
-            self.email.push_str(ch);
-        }
-    }
-
-    pub fn backspace(&mut self) {
-        if self.busy {
-            return;
-        }
-        if self.focus_password {
-            self.password.pop();
-        } else {
-            self.email.pop();
-        }
-    }
-
-    fn toggle_focus(&mut self) {
-        self.focus_password = !self.focus_password;
+        self.selected_row = row.min(self.row_count().saturating_sub(1));
+        self.scroll_selected_into_view();
     }
 
     fn move_selection(&mut self, delta: isize) {
-        if self.row_count() == 0 {
-            return;
-        }
         let count = self.row_count() as isize;
         let next = (self.selected_row as isize + delta).rem_euclid(count);
-        self.selected_row = next as usize;
+        self.select_row(next as usize);
     }
 
-    /// Handle non-printable keys. Printable characters and backspace route
-    /// through `push_char`/`backspace` from the key-down listener.
+    fn scroll_selected_into_view(&self) {
+        self.scroll_handle
+            .scroll_to_item(self.selected_row, ScrollStrategy::Center);
+    }
+
+    pub fn toggle_mode(&mut self) {
+        if self.busy || self.mode == AccountMode::Devices {
+            return;
+        }
+        self.mode = match self.mode {
+            AccountMode::Login => AccountMode::Register,
+            AccountMode::Register => AccountMode::Login,
+            AccountMode::Devices => AccountMode::Devices,
+        };
+        self.focus_index = 0;
+    }
+
+    fn submit_credentials(&self) -> Option<AccountAction> {
+        if self.busy || self.mode == AccountMode::Devices {
+            return None;
+        }
+        let email = self.email.trim().to_string();
+        let password = self.password.clone();
+        if email.is_empty() || password.is_empty() {
+            return None;
+        }
+        match self.mode {
+            AccountMode::Login => Some(AccountAction::SubmitLogin { email, password }),
+            AccountMode::Register => Some(AccountAction::SubmitRegister { email, password }),
+            AccountMode::Devices => None,
+        }
+    }
+
+    fn arm_selected_action(&mut self) {
+        if self.busy || self.mode != AccountMode::Devices {
+            return;
+        }
+        self.confirmation = if self.selected_row < self.devices.len() {
+            Some(AccountConfirmation::RevokeDevice(self.selected_row))
+        } else {
+            Some(AccountConfirmation::Logout)
+        };
+        self.confirm_focused = true;
+    }
+
+    pub fn cancel_confirmation(&mut self) -> bool {
+        self.confirmation.take().is_some()
+    }
+
+    fn confirm_action(&mut self) -> Option<AccountAction> {
+        if !self.confirm_focused {
+            self.confirmation = None;
+            return None;
+        }
+        match self.confirmation.take()? {
+            AccountConfirmation::Logout => Some(AccountAction::Logout),
+            AccountConfirmation::RevokeDevice(index) => self
+                .devices
+                .get(index)
+                .map(|device| AccountAction::RevokeDevice(device.device_record_id.clone())),
+        }
+    }
+
+    pub fn handle_interaction(
+        &mut self,
+        interaction: AccountInteraction,
+    ) -> Option<AccountAction> {
+        if self.busy {
+            return None;
+        }
+        match interaction {
+            AccountInteraction::FocusField(index) => {
+                self.set_focus_field(index);
+                None
+            }
+            AccountInteraction::Submit => self.submit_credentials(),
+            AccountInteraction::ToggleMode => {
+                self.toggle_mode();
+                None
+            }
+            AccountInteraction::ActivateRow(index) => {
+                self.select_row(index);
+                self.arm_selected_action();
+                None
+            }
+            AccountInteraction::Confirm => self.confirm_action(),
+            AccountInteraction::Cancel => {
+                self.cancel_confirmation();
+                None
+            }
+        }
+    }
+
     pub fn handle_key(&mut self, key: &str) -> Option<AccountAction> {
+        if self.busy {
+            return None;
+        }
+        if self.confirmation.is_some() {
+            return match key {
+                "escape" => {
+                    self.confirmation = None;
+                    None
+                }
+                "tab" | "shift-tab" | "left" | "arrowleft" | "right" | "arrowright" => {
+                    self.confirm_focused = !self.confirm_focused;
+                    None
+                }
+                "enter" => self.confirm_action(),
+                _ => None,
+            };
+        }
         match key {
-            "escape" => None, // handled by ChatView (closes the modal)
-            "tab" => match self.mode {
-                AccountMode::Devices => None,
-                _ => {
-                    self.toggle_focus();
-                    None
+            "escape" => None,
+            "tab" | "shift-tab" => {
+                if self.mode == AccountMode::Devices {
+                    self.move_selection(if key == "tab" { 1 } else { -1 });
+                } else {
+                    let delta = if key == "tab" { 1 } else { -1 };
+                    self.focus_index = (self.focus_index as isize + delta).rem_euclid(4) as usize;
                 }
-            },
-            "shift-tab" => match self.mode {
-                AccountMode::Devices => None,
-                AccountMode::Login => {
-                    self.mode = AccountMode::Register;
-                    None
-                }
-                AccountMode::Register => {
-                    self.mode = AccountMode::Login;
-                    None
-                }
-            },
+                None
+            }
             "up" | "arrowup" => {
                 if self.mode == AccountMode::Devices {
                     self.move_selection(-1);
@@ -155,43 +374,21 @@ impl AccountModal {
                 }
                 None
             }
-            "enter" => {
-                if self.busy {
-                    return None;
+            "enter" => match self.mode {
+                AccountMode::Devices => {
+                    self.arm_selected_action();
+                    None
                 }
-                let email = self.email.trim().to_string();
-                let password = self.password.clone();
-                match self.mode {
-                    AccountMode::Login => {
-                        if email.is_empty() || password.is_empty() {
-                            return None;
-                        }
-                        Some(AccountAction::SubmitLogin { email, password })
-                    }
-                    AccountMode::Register => {
-                        if email.is_empty() || password.is_empty() {
-                            return None;
-                        }
-                        Some(AccountAction::SubmitRegister { email, password })
-                    }
-                    AccountMode::Devices => {
-                        if self.selected_row < self.devices.len() {
-                            Some(AccountAction::RevokeDevice(
-                                self.devices[self.selected_row]
-                                    .device_record_id
-                                    .clone(),
-                            ))
-                        } else {
-                            Some(AccountAction::Logout)
-                        }
-                    }
+                _ if self.focus_index == 3 => {
+                    self.toggle_mode();
+                    None
                 }
-            }
+                _ => self.submit_credentials(),
+            },
             _ => None,
         }
     }
 
-    /// Titles the header by mode.
     fn title(&self) -> &'static str {
         match self.mode {
             AccountMode::Login => "Sign in to HEX Cloud",
@@ -214,20 +411,22 @@ impl AccountModal {
                 format!("{email} · device {device}")
             }
             (AccountMode::Devices, None) => "Loading account…".to_string(),
-            _ => format!("Backend: {}", self.status.as_ref().map(|s| s.base_url.as_str()).unwrap_or("not connected")),
+            _ => format!(
+                "Backend: {}",
+                self.status
+                    .as_ref()
+                    .map(|status| status.base_url.as_str())
+                    .unwrap_or("not connected")
+            ),
         }
     }
 
-    /// Render the account modal card.
-    pub fn render(&self, theme: &HermesTheme) -> Div {
+    pub fn render(&self, theme: &HermesTheme, on_action: AccountHandler) -> Div {
         let mut card = div()
             .w(px(MODAL_CARD_WIDTH_WIDE))
-            .max_h(px(480.0))
+            .max_h(px(520.0))
             .flex()
-            .flex_col();
-
-        // Header: title, status line, Esc chip.
-        card = card
+            .flex_col()
             .child(
                 div()
                     .flex()
@@ -264,33 +463,37 @@ impl AccountModal {
                             .border_1()
                             .border_color(theme.mockup_border)
                             .text_size(px(10.0))
-                            .font_family(theme.typography.font_mono[0].clone())
+                            .font_family(theme.font_mono()[0].clone())
                             .text_color(theme.mockup_text_dim)
                             .child("Esc"),
                     ),
             );
 
-        // Body per mode.
-        card = card.child(match self.mode {
-            AccountMode::Devices => self.render_devices(theme),
-            _ => self.render_credentials(theme),
+        card = card.child(if let Some(confirmation) = self.confirmation {
+            self.render_confirmation(theme, confirmation, on_action.clone())
+        } else {
+            match self.mode {
+                AccountMode::Devices => self.render_devices(theme, on_action.clone()),
+                _ => self.render_credentials(theme, on_action.clone()),
+            }
         });
 
-        // Footer hints + error/notice line.
-        let hint = match self.mode {
-            AccountMode::Login => {
-                "Enter — sign in · Shift+Tab — create account · Tab — switch field"
+        let hint = if self.confirmation.is_some() {
+            "Tab — choose · Enter — confirm · Esc — cancel"
+        } else {
+            match self.mode {
+                AccountMode::Login | AccountMode::Register => {
+                    "Tab — focus · Enter — sign in / create · Esc — close"
+                }
+                AccountMode::Devices => "↑↓ / Tab — select · Enter — revoke / sign out",
             }
-            AccountMode::Register => {
-                "Enter — create account · Shift+Tab — back to sign in · Tab — switch field"
-            }
-            AccountMode::Devices => "↑↓ — select · Enter — revoke / sign out",
         };
-        card = card.child(
+        card.child(
             div()
                 .flex()
                 .items_center()
                 .justify_between()
+                .gap_3()
                 .px_4()
                 .py_2p5()
                 .border_t_1()
@@ -302,13 +505,12 @@ impl AccountModal {
                         .child(hint),
                 )
                 .child(self.render_status_message(theme)),
-        );
-        card
+        )
     }
 
     fn render_status_message(&self, theme: &HermesTheme) -> Div {
-        let (text, fg) = if let Some(err) = &self.error {
-            (err.clone(), theme.rose_fg)
+        let (text, foreground) = if let Some(error) = &self.error {
+            (error.clone(), theme.rose_fg)
         } else if let Some(notice) = &self.notice {
             (notice.clone(), theme.sage_fg)
         } else if self.busy {
@@ -319,77 +521,53 @@ impl AccountModal {
         div()
             .max_w(px(280.0))
             .text_size(px(10.5))
-            .text_color(fg)
+            .text_color(foreground)
             .text_ellipsis()
             .child(text)
     }
 
-    /// One editable field row: label + value (password dots-masked) with an
-    /// accent border while focused.
-    fn render_field(&self, theme: &HermesTheme, label: &str, value: &str, focused: bool) -> Div {
-        let masked = label == "Password";
-        let display = if masked {
-            "•".repeat(value.chars().count())
-        } else {
-            value.to_string()
-        };
-        div()
-            .w_full()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(if focused {
-                theme.mockup_accent_border
-            } else {
-                theme.mockup_border
-            })
-            .bg(if focused {
-                theme.mockup_accent_chip_bg
-            } else {
-                theme.mockup_hover
-            })
-            .px_3()
-            .py_2()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .text_size(px(10.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.mockup_text_dim)
-                    .child(label.to_string()),
-            )
-            .child(
-                div()
-                    .text_size(px(12.5))
-                    .font_family(theme.typography.font_mono[0].clone())
-                    .text_color(if value.is_empty() {
-                        theme.mockup_text_dim
-                    } else {
-                        theme.mockup_text_bright
-                    })
-                    .child(if value.is_empty() && !focused {
-                        placeholder_for(label).to_string()
-                    } else if focused {
-                        format!("{display}▏")
-                    } else {
-                        display
-                    }),
-            )
+    fn click_handler(
+        on_action: &AccountHandler,
+        interaction: AccountInteraction,
+    ) -> ModalClickHandler {
+        let on_action = on_action.clone();
+        std::rc::Rc::new(move |event, window, cx| on_action(interaction, event, window, cx))
     }
 
-    fn render_credentials(&self, theme: &HermesTheme) -> Div {
+    fn render_credentials(&self, theme: &HermesTheme, on_action: AccountHandler) -> Div {
+        let can_submit = !self.busy && !self.email.trim().is_empty() && !self.password.is_empty();
+        let mode_label = match self.mode {
+            AccountMode::Register => "Back to sign in",
+            _ => "Create account",
+        };
         div()
             .p_4()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_field(theme, "Email", &self.email, !self.focus_password))
-            .child(self.render_field(
+            .child(text_field(
+                "Email",
+                &self.email,
+                self.email_cursor,
+                self.email_anchor,
+                "you@example.com",
+                false,
+                self.focus_index == 0,
+                self.busy,
                 theme,
+                Some(Self::click_handler(&on_action, AccountInteraction::FocusField(0))),
+            ))
+            .child(text_field(
                 "Password",
                 &self.password,
-                self.focus_password,
+                self.password_cursor,
+                self.password_anchor,
+                "••••••••",
+                true,
+                self.focus_index == 1,
+                self.busy,
+                theme,
+                Some(Self::click_handler(&on_action, AccountInteraction::FocusField(1))),
             ))
             .child(
                 div()
@@ -402,169 +580,329 @@ impl AccountModal {
                         _ => "Credentials are verified against your hex-backend; tokens live in the OS keychain.",
                     }),
             )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(button(
+                        mode_label,
+                        ButtonTone::Neutral,
+                        !self.busy,
+                        self.focus_index == 3,
+                        theme,
+                        Self::click_handler(&on_action, AccountInteraction::ToggleMode),
+                    ))
+                    .child(button(
+                        match self.mode {
+                            AccountMode::Register => "Create account",
+                            _ => "Sign in",
+                        },
+                        ButtonTone::Accent,
+                        can_submit,
+                        self.focus_index == 2,
+                        theme,
+                        Self::click_handler(&on_action, AccountInteraction::Submit),
+                    )),
+            )
     }
 
-    fn render_devices(&self, theme: &HermesTheme) -> Div {
-        let mut list = div().p_2().flex().flex_col().gap_1().overflow_y_hidden();
-
-        if self.devices.is_empty() {
-            list = list.child(
-                div()
-                    .py_6()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.mockup_text_dim)
-                            .child(if self.busy {
-                                "Loading devices…"
-                            } else {
-                                "No enrolled devices"
-                            }),
-                    ),
-            );
-        } else {
-            for (idx, device) in self.devices.iter().enumerate() {
-                let is_selected = idx == self.selected_row;
-                let revoked = device.trust_state.as_deref() == Some("revoked");
-                let host_tag = if device.host_eligible {
-                    "host-eligible"
-                } else {
-                    "member"
-                };
-                list = list.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .px_3()
-                        .py(px(7.0))
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(if is_selected {
-                            theme.mockup_accent_border
-                        } else {
-                            gpui::rgba(0x00000000)
-                        })
-                        .bg(if is_selected {
-                            theme.mockup_accent_chip_bg
-                        } else {
-                            gpui::rgba(0x00000000)
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2p5()
-                                .child(
-                                    icon_svg(if revoked { "x" } else { "device" }, 14.0)
-                                        .text_color(if revoked {
-                                            theme.rose_fg
-                                        } else {
-                                            theme.mockup_text_muted
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .child(
-                                            div()
-                                                .text_size(px(12.0))
-                                                .font_family(
-                                                    theme.typography.font_mono[0].clone(),
-                                                )
-                                                .text_color(if is_selected {
-                                                    theme.mockup_text_bright
-                                                } else {
-                                                    theme.mockup_text_muted
-                                                })
-                                                .child(device.device_record_id.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(10.0))
-                                                .text_color(theme.mockup_text_dim)
-                                                .child(format!(
-                                                    "{} · {host_tag}",
-                                                    device
-                                                        .platform
-                                                        .clone()
-                                                        .unwrap_or_else(|| "unknown".into()),
-                                                )),
-                                        ),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .px_1p5()
-                                .py_0p5()
-                                .rounded(px(3.0))
-                                .bg(if revoked {
-                                    theme.rose_bg
-                                } else {
-                                    theme.sage_bg
-                                })
-                                .text_size(px(10.0))
-                                .text_color(if revoked {
-                                    theme.rose_fg
-                                } else {
-                                    theme.sage_fg
-                                })
-                                .child(if revoked { "revoked" } else { "trusted" }),
-                        ),
-                );
+    fn render_confirmation(
+        &self,
+        theme: &HermesTheme,
+        confirmation: AccountConfirmation,
+        on_action: AccountHandler,
+    ) -> Div {
+        let (title, detail, action) = match confirmation {
+            AccountConfirmation::Logout => (
+                "Sign out of HEX Cloud?",
+                "This device will stop using your cloud account. You can sign in again at any time."
+                    .to_string(),
+                "Sign out",
+            ),
+            AccountConfirmation::RevokeDevice(index) => {
+                let id = self
+                    .devices
+                    .get(index)
+                    .map(|device| device.device_record_id.as_str())
+                    .unwrap_or("this device");
+                (
+                    "Revoke this device?",
+                    format!("{id} will lose access immediately. This cannot be undone."),
+                    "Revoke",
+                )
             }
+        };
+        div()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_size(px(15.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.mockup_text)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .text_color(theme.mockup_text_dim)
+                    .child(detail),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(button(
+                        "Cancel",
+                        ButtonTone::Neutral,
+                        true,
+                        !self.confirm_focused,
+                        theme,
+                        Self::click_handler(&on_action, AccountInteraction::Cancel),
+                    ))
+                    .child(button(
+                        action,
+                        ButtonTone::Destructive,
+                        true,
+                        self.confirm_focused,
+                        theme,
+                        Self::click_handler(&on_action, AccountInteraction::Confirm),
+                    )),
+            )
+    }
+
+    fn render_devices(&self, theme: &HermesTheme, on_action: AccountHandler) -> Div {
+        if self.devices.is_empty() && !self.busy {
+            return div()
+                .h(px(300.0))
+                .p_4()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme.mockup_text_dim)
+                        .child("No enrolled devices"),
+                )
+                .child(button(
+                    "Sign out on this device",
+                    ButtonTone::Neutral,
+                    true,
+                    true,
+                    theme,
+                    Self::click_handler(&on_action, AccountInteraction::ActivateRow(0)),
+                ));
         }
 
-        // Trailing sign-out row (selected when selected_row == devices.len()).
-        let sign_out_selected = self.selected_row >= self.devices.len();
-        list = list.child(
+        let devices = self.devices.clone();
+        let selected_row = self.selected_row;
+        let busy = self.busy;
+        let scroll_handle = self.scroll_handle.clone();
+        let theme = theme.clone();
+        let list = uniform_list(
+            "account_device_rows",
+            self.row_count(),
+            move |range, _window, _cx| {
+                let handler = on_action.clone();
+                range
+                    .map(|index| {
+                        if index < devices.len() {
+                            render_device_row(
+                                &devices[index],
+                                index,
+                                index == selected_row,
+                                busy,
+                                &theme,
+                                handler.clone(),
+                            )
+                        } else {
+                            render_sign_out_row(
+                                index == selected_row,
+                                busy,
+                                &theme,
+                                handler.clone(),
+                                devices.len(),
+                            )
+                        }
+                        .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            },
+        )
+        .track_scroll(scroll_handle)
+        .w_full()
+        .h_full();
+        div()
+            .debug_selector(|| "account_device_list".to_string())
+            .h(px(330.0))
+            .w_full()
+            .overflow_hidden()
+            .child(list)
+    }
+}
+
+fn render_device_row(
+    device: &CloudDevice,
+    index: usize,
+    selected: bool,
+    busy: bool,
+    theme: &HermesTheme,
+    on_action: AccountHandler,
+) -> Stateful<Div> {
+    let revoked = device.trust_state.as_deref() == Some("revoked");
+    let host_tag = if device.host_eligible {
+        "host-eligible"
+    } else {
+        "member"
+    };
+    let handler = AccountModal::click_handler(
+        &on_action,
+        AccountInteraction::ActivateRow(index),
+    );
+    div()
+        .id(SharedString::from(format!("account_device_{}", device.device_record_id)))
+        .h(px(56.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .justify_between()
+        .px_3()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(if selected {
+            theme.mockup_accent_border
+        } else {
+            gpui::rgba(0x00000000)
+        })
+        .bg(if selected {
+            theme.mockup_accent_chip_bg
+        } else {
+            gpui::rgba(0x00000000)
+        })
+        .when(!busy, |this| {
+            this.cursor_pointer()
+                .hover(|this| this.bg(theme.mockup_hover))
+                .on_click(move |event, window, cx| handler(event, window, cx))
+        })
+        .child(
             div()
                 .flex()
                 .items_center()
                 .gap_2p5()
-                .px_3()
-                .py(px(7.0))
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(if sign_out_selected {
-                    theme.mockup_accent_border
-                } else {
-                    gpui::rgba(0x00000000)
-                })
-                .bg(if sign_out_selected {
-                    theme.mockup_accent_chip_bg
-                } else {
-                    gpui::rgba(0x00000000)
-                })
+                .min_w_0()
                 .child(
-                    icon_svg("settings", 14.0).text_color(theme.mockup_text_muted),
+                    icon_svg(if revoked { "x" } else { "device" }, 14.0).text_color(if revoked {
+                        theme.rose_fg
+                    } else {
+                        theme.mockup_text_muted
+                    }),
                 )
                 .child(
                     div()
-                        .text_size(px(12.0))
-                        .text_color(if sign_out_selected {
-                            theme.mockup_text_bright
-                        } else {
-                            theme.mockup_text_muted
-                        })
-                        .child("Sign out on this device"),
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .font_family(theme.font_mono()[0].clone())
+                                .text_color(if selected {
+                                    theme.mockup_text_bright
+                                } else {
+                                    theme.mockup_text_muted
+                                })
+                                .truncate()
+                                .child(device.device_record_id.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(theme.mockup_text_dim)
+                                .child(format!(
+                                    "{} · {host_tag}",
+                                    device
+                                        .platform
+                                        .clone()
+                                        .unwrap_or_else(|| "unknown".into()),
+                                )),
+                        ),
                 ),
-        );
-        list
-    }
+        )
+        .child(
+            div()
+                .px_1p5()
+                .py_0p5()
+                .rounded(px(3.0))
+                .bg(if revoked {
+                    theme.rose_bg
+                } else {
+                    theme.sage_bg
+                })
+                .text_size(px(10.0))
+                .text_color(if revoked {
+                    theme.rose_fg
+                } else {
+                    theme.sage_fg
+                })
+                .child(if revoked { "revoked" } else { "trusted" }),
+        )
 }
 
-fn placeholder_for(label: &str) -> &'static str {
-    match label {
-        "Email" => "you@example.com",
-        "Password" => "••••••••",
-        _ => "",
-    }
+fn render_sign_out_row(
+    selected: bool,
+    busy: bool,
+    theme: &HermesTheme,
+    on_action: AccountHandler,
+    index: usize,
+) -> Stateful<Div> {
+    let handler = AccountModal::click_handler(
+        &on_action,
+        AccountInteraction::ActivateRow(index),
+    );
+    div()
+        .id("account_sign_out")
+        .h(px(56.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .gap_2p5()
+        .px_3()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(if selected {
+            theme.mockup_accent_border
+        } else {
+            gpui::rgba(0x00000000)
+        })
+        .bg(if selected {
+            theme.mockup_accent_chip_bg
+        } else {
+            gpui::rgba(0x00000000)
+        })
+        .when(!busy, |this| {
+            this.cursor_pointer()
+                .hover(|this| this.bg(theme.mockup_hover))
+                .on_click(move |event, window, cx| handler(event, window, cx))
+        })
+        .child(icon_svg("settings", 14.0).text_color(theme.mockup_text_muted))
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(if selected {
+                    theme.mockup_text_bright
+                } else {
+                    theme.mockup_text_muted
+                })
+                .child("Sign out on this device"),
+        )
 }
 
 #[cfg(test)]
@@ -602,20 +940,19 @@ mod tests {
         modal.push_char("v");
         assert_eq!(modal.email, "dev");
         assert_eq!(modal.password, "");
-        assert!(!modal.focus_password);
+        assert!(!modal.focus_password());
 
         modal.handle_key("tab");
-        assert!(modal.focus_password);
+        assert!(modal.focus_password());
         modal.push_char("s");
-        modal.backspace(); // pops the "s"
+        modal.backspace();
         modal.push_char("e");
         modal.push_char("c");
         assert_eq!(modal.password, "ec");
 
-        // Enter on login submits; empty email in register mode does not.
-        modal.handle_key("shift-tab");
-        modal.handle_key("shift-tab"); // back to login
+        modal.handle_key("tab");
         let action = modal.handle_key("enter");
+        assert_eq!(modal.focus_index, 2);
         assert_eq!(
             action,
             Some(AccountAction::SubmitLogin {
@@ -629,7 +966,22 @@ mod tests {
     }
 
     #[test]
-    fn test_account_modal_device_selection() {
+    fn test_account_modal_text_selection_and_mode_button() {
+        let mut modal = AccountModal::new(None);
+        modal.push_char("dev@example.com");
+        modal.select_all_text();
+        modal.push_char("new@example.com");
+        assert_eq!(modal.email, "new@example.com");
+        modal.handle_key("tab");
+        modal.handle_key("tab");
+        modal.handle_key("tab");
+        assert_eq!(modal.focus_index, 3);
+        modal.handle_key("enter");
+        assert_eq!(modal.mode, AccountMode::Register);
+    }
+
+    #[test]
+    fn test_account_modal_device_selection_and_confirmation() {
         let mut modal = AccountModal::new(Some(logged_in_status()));
         modal.set_devices(vec![
             CloudDevice {
@@ -659,8 +1011,11 @@ mod tests {
         ]);
 
         modal.handle_key("down");
-        assert_eq!(modal.handle_key("enter"), Some(AccountAction::RevokeDevice("dev_b".into())));
-        modal.handle_key("down"); // row 2 = sign-out row
+        assert_eq!(modal.handle_key("enter"), None);
+        assert!(modal.confirmation.is_some());
+        assert!(modal.cancel_confirmation());
+        modal.handle_key("down");
+        modal.handle_key("enter");
         assert_eq!(modal.handle_key("enter"), Some(AccountAction::Logout));
     }
 }

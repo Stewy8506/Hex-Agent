@@ -7,9 +7,12 @@ use std::collections::HashMap;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{HermesTheme, MockupTypeScale};
+use crate::ui::modals::text_input::{
+    backspace as text_backspace, delete as text_delete, insert_text, move_horizontal,
+    move_to as text_move_to, move_to_edge, select_all, selected_text,
+};
 use crate::ui::modals::{modal_press, ModalMotion};
 use hex_protocol::models::ConfigGetResponse;
 
@@ -60,13 +63,19 @@ pub enum SettingsAction {
     Save,
 }
 
-pub type SettingsSaveHandler =
-    std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsInteraction {
+    SelectRow(usize),
+    Save,
+}
+
+pub type SettingsHandler =
+    std::rc::Rc<dyn Fn(SettingsInteraction, &ClickEvent, &mut Window, &mut App)>;
 
 /// Editable settings modal (DX3). Fields are rebuilt from each `config/get`
 /// response so the view never drifts from the file; `originals` snapshots the
 /// loaded values to compute the dirty diff for Save.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone)]
 pub struct SettingsModal {
     pub path: String,
     pub workspace: String,
@@ -76,11 +85,54 @@ pub struct SettingsModal {
     pub originals: HashMap<String, String>,
     pub selected: usize, // index into fields; fields.len() == Save row
     pub editing: bool,
-    edit_snapshot: Option<(String, usize)>,
+    selection_anchor: usize,
+    edit_snapshot: Option<(String, usize, usize)>,
     pub busy: bool,
     pub error: Option<String>,
     pub status: Option<String>,
     pub load_failed: bool,
+    scroll_handle: UniformListScrollHandle,
+}
+
+impl PartialEq for SettingsModal {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.workspace == other.workspace
+            && self.data_dir == other.data_dir
+            && self.fields == other.fields
+            && self.options == other.options
+            && self.originals == other.originals
+            && self.selected == other.selected
+            && self.editing == other.editing
+            && self.selection_anchor == other.selection_anchor
+            && self.edit_snapshot == other.edit_snapshot
+            && self.busy == other.busy
+            && self.error == other.error
+            && self.status == other.status
+            && self.load_failed == other.load_failed
+    }
+}
+
+impl Default for SettingsModal {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            workspace: String::new(),
+            data_dir: String::new(),
+            fields: Vec::new(),
+            options: serde_json::Value::Null,
+            originals: HashMap::new(),
+            selected: 0,
+            editing: false,
+            selection_anchor: 0,
+            edit_snapshot: None,
+            busy: false,
+            error: None,
+            status: None,
+            load_failed: false,
+            scroll_handle: UniformListScrollHandle::new(),
+        }
+    }
 }
 
 impl SettingsModal {
@@ -197,9 +249,12 @@ impl SettingsModal {
         self.originals = originals;
         self.selected = self.selected.min(self.fields.len());
         self.editing = false;
+        self.selection_anchor = 0;
         self.edit_snapshot = None;
         self.load_failed = false;
         self.error = None;
+        self.scroll_handle
+            .scroll_to_item_strict(0, ScrollStrategy::Top);
     }
 
     pub fn mark_load_failed(&mut self, message: impl Into<String>) {
@@ -208,9 +263,43 @@ impl SettingsModal {
     }
 
     fn move_selection(&mut self, delta: isize) {
-        let count = self.fields.len() as isize + 1; // + the Save row
+        self.commit_edit();
+        let count = self.fields.len() as isize + 1;
         let next = (self.selected as isize + delta).rem_euclid(count);
         self.selected = next as usize;
+        self.selection_anchor = 0;
+        self.scroll_selected_into_view();
+    }
+
+    fn scroll_selected_into_view(&self) {
+        let index = self.selected.min(self.fields.len().saturating_sub(1));
+        self.scroll_handle
+            .scroll_to_item(index, ScrollStrategy::Center);
+    }
+
+    pub fn select_row(&mut self, index: usize) {
+        if self.busy {
+            return;
+        }
+        self.commit_edit();
+        self.selected = index.min(self.fields.len());
+        self.selection_anchor = 0;
+        if self.selected == self.fields.len() {
+            self.scroll_selected_into_view();
+            return;
+        }
+        match &mut self.fields[self.selected] {
+            SettingField::Text { value, cursor, .. } => {
+                self.editing = true;
+                *cursor = value.len();
+                self.selection_anchor = *cursor;
+                self.edit_snapshot = Some((value.clone(), *cursor, *cursor));
+            }
+            SettingField::Choice { .. } => {
+                self.cycle_choice(1);
+            }
+        }
+        self.scroll_selected_into_view();
     }
 
     fn cycle_choice(&mut self, delta: isize) -> bool {
@@ -237,23 +326,18 @@ impl SettingsModal {
         self.edit_snapshot = None;
     }
 
-    fn move_text_cursor(&mut self, delta: isize) -> bool {
+    fn move_text_cursor(&mut self, delta: isize, selecting: bool) -> bool {
         let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected)
         else {
             return false;
         };
-        *cursor = if delta < 0 {
-            value
-                .grapheme_indices(true)
-                .rev()
-                .find_map(|(index, _)| (index < *cursor).then_some(index))
-                .unwrap_or(0)
-        } else {
-            value
-                .grapheme_indices(true)
-                .find_map(|(index, _)| (index > *cursor).then_some(index))
-                .unwrap_or(value.len())
-        };
+        move_horizontal(
+            value,
+            cursor,
+            &mut self.selection_anchor,
+            delta,
+            selecting,
+        );
         true
     }
 
@@ -273,16 +357,28 @@ impl SettingsModal {
                 self.move_selection(1);
                 None
             }
+            "tab" | "shift-tab" => {
+                self.move_selection(if key == "tab" { 1 } else { -1 });
+                None
+            }
             "left" | "arrowleft" => {
-                if !(self.editing && self.move_text_cursor(-1)) && self.cycle_choice(-1) {
+                if !(self.editing && self.move_text_cursor(-1, false)) && self.cycle_choice(-1) {
                     self.commit_edit();
                 }
                 None
             }
             "right" | "arrowright" => {
-                if !(self.editing && self.move_text_cursor(1)) && self.cycle_choice(1) {
+                if !(self.editing && self.move_text_cursor(1, false)) && self.cycle_choice(1) {
                     self.commit_edit();
                 }
+                None
+            }
+            "shift-left" | "shift-arrowleft" => {
+                self.move_text_cursor(-1, true);
+                None
+            }
+            "shift-right" | "shift-arrowright" => {
+                self.move_text_cursor(1, true);
                 None
             }
             "home" | "end" => {
@@ -290,7 +386,29 @@ impl SettingsModal {
                     if let Some(SettingField::Text { value, cursor, .. }) =
                         self.fields.get_mut(self.selected)
                     {
-                        *cursor = if key == "home" { 0 } else { value.len() };
+                        move_to_edge(
+                            value,
+                            cursor,
+                            &mut self.selection_anchor,
+                            key == "end",
+                            false,
+                        );
+                    }
+                }
+                None
+            }
+            "shift-home" | "shift-end" => {
+                if self.editing {
+                    if let Some(SettingField::Text { value, cursor, .. }) =
+                        self.fields.get_mut(self.selected)
+                    {
+                        move_to_edge(
+                            value,
+                            cursor,
+                            &mut self.selection_anchor,
+                            key == "shift-end",
+                            true,
+                        );
                     }
                 }
                 None
@@ -310,7 +428,8 @@ impl SettingsModal {
                         } else {
                             self.editing = true;
                             *cursor = value.len();
-                            self.edit_snapshot = Some((value.clone(), value.len()));
+                            self.selection_anchor = *cursor;
+                            self.edit_snapshot = Some((value.clone(), *cursor, *cursor));
                         }
                         None
                     }
@@ -332,23 +451,45 @@ impl SettingsModal {
             return;
         }
         self.editing = false;
-        if let Some((snapshot, cursor)) = self.edit_snapshot.take() {
+        if let Some((snapshot, cursor, anchor)) = self.edit_snapshot.take() {
             if let Some(SettingField::Text { value, cursor: current, .. }) =
                 self.fields.get_mut(self.selected)
             {
                 *value = snapshot;
                 *current = cursor;
+                self.selection_anchor = anchor;
             }
         }
     }
 
-    pub fn push_char(&mut self, ch: &str) {
+    pub fn text_selection(&self) -> Option<(String, usize, usize)> {
+        let SettingField::Text { value, cursor, .. } = self.fields.get(self.selected)? else {
+            return None;
+        };
+        Some((value.clone(), *cursor, self.selection_anchor))
+    }
+
+    pub fn replace_text_range(&mut self, range: std::ops::Range<usize>, text: &str) -> bool {
+        if self.busy || !self.editing {
+            return false;
+        }
+        self.move_cursor_to(range.start, false);
+        self.move_cursor_to(range.end, true);
+        self.push_char(text);
+        true
+    }
+
+    pub fn select_text_range(&mut self, range: std::ops::Range<usize>) {
+        self.move_cursor_to(range.start, false);
+        self.move_cursor_to(range.end, true);
+    }
+
+    pub fn push_char(&mut self, text: &str) {
         if self.busy || !self.editing {
             return;
         }
         if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
-            value.insert_str(*cursor, ch);
-            *cursor += ch.len();
+            insert_text(value, cursor, &mut self.selection_anchor, text);
         }
     }
 
@@ -357,13 +498,7 @@ impl SettingsModal {
             return;
         }
         if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
-            let previous = value
-                .grapheme_indices(true)
-                .rev()
-                .find_map(|(index, _)| (index < *cursor).then_some(index))
-                .unwrap_or(0);
-            value.replace_range(previous..*cursor, "");
-            *cursor = previous;
+            text_backspace(value, cursor, &mut self.selection_anchor);
         }
     }
 
@@ -372,12 +507,41 @@ impl SettingsModal {
             return;
         }
         if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
-            let next = value
-                .grapheme_indices(true)
-                .find_map(|(index, _)| (index > *cursor).then_some(index))
-                .unwrap_or(value.len());
-            value.replace_range(*cursor..next, "");
+            text_delete(value, cursor, &mut self.selection_anchor);
         }
+    }
+
+    pub fn move_cursor_to(&mut self, offset: usize, selecting: bool) {
+        if !self.editing {
+            return;
+        }
+        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
+            text_move_to(
+                value,
+                cursor,
+                &mut self.selection_anchor,
+                offset,
+                selecting,
+            );
+        }
+    }
+
+    pub fn select_all_text(&mut self) {
+        if !self.editing {
+            return;
+        }
+        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
+            select_all(value, cursor, &mut self.selection_anchor);
+        }
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        self.editing.then(|| {
+            let SettingField::Text { value, cursor, .. } = &self.fields[self.selected] else {
+                return String::new();
+            };
+            selected_text(value, *cursor, self.selection_anchor)
+        })
     }
 
     /// Dotted keys whose committed value differs from the loaded snapshot.
@@ -448,7 +612,7 @@ impl SettingsModal {
         &self,
         theme: &HermesTheme,
         motion: ModalMotion<'_>,
-        on_save: SettingsSaveHandler,
+        on_action: SettingsHandler,
     ) -> Div {
         let mut card = div()
             .debug_selector(|| "settings_content".to_string())
@@ -532,90 +696,57 @@ impl SettingsModal {
             );
         }
 
-        let mut last_section: Option<&str> = None;
-        for (index, field) in self.fields.iter().enumerate() {
-            let section = field.key().split('.').next().unwrap_or(field.key());
-            if last_section != Some(section) {
-                last_section = Some(section);
-                card = card.child(
-                    div()
-                        .mt(px(if index == 0 { 2.0 } else { 10.0 }))
-                        .text_size(px(MockupTypeScale::HINT_SIZE))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.mockup_text_muted)
-                        .child(Self::section_label(field.key())),
-                );
-            }
-            let is_selected = self.selected == index;
-            let is_editing = is_selected && self.editing;
-            let dirty = field.display()
-                != self.originals.get(field.key()).cloned().unwrap_or_default();
-            let value_text = match field {
-                SettingField::Text { value, cursor, required, .. } => {
-                    if is_editing {
-                        format!("{}▌{}", &value[..*cursor], &value[*cursor..])
-                    } else if value.is_empty() {
-                        if *required {
-                            "required".to_string()
-                        } else {
-                            "not set".to_string()
-                        }
-                    } else {
-                        value.clone()
-                    }
-                }
-                SettingField::Choice { value, .. } => {
-                    let current = value
-                        .as_deref()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| "not set".to_string());
-                    if is_selected {
-                        format!("{current}  ‹ ›")
-                    } else {
-                        current
-                    }
-                }
-            };
-            let value_color = if dirty {
-                theme.accent_blue
-            } else if value_text == "not set" || value_text == "required" {
-                theme.mockup_text_dim
-            } else {
-                theme.mockup_text_bright
-            };
+        if !self.fields.is_empty() {
+            let fields = self.fields.clone();
+            let originals = self.originals.clone();
+            let selected = self.selected;
+            let editing = self.editing;
+            let selection_anchor = self.selection_anchor;
+            let busy = self.busy;
+            let scroll_handle = self.scroll_handle.clone();
+            let theme = theme.clone();
+            let on_action = on_action.clone();
+            let list = uniform_list(
+                "settings_rows",
+                fields.len(),
+                move |range, _window, cx| {
+                    let motion = ModalMotion {
+                        owner: motion.owner,
+                        cx,
+                    };
+                    range
+                        .map(|index| {
+                            let show_section = index == 0
+                                || fields[index].key().split('.').next()
+                                    != fields[index - 1].key().split('.').next();
+                            render_setting_row(
+                                &fields[index],
+                                index,
+                                show_section,
+                                index == selected,
+                                editing,
+                                selection_anchor,
+                                busy,
+                                &originals,
+                                &theme,
+                                motion,
+                                on_action.clone(),
+                            )
+                            .into_any_element()
+                        })
+                        .collect::<Vec<_>>()
+                },
+            )
+            .track_scroll(scroll_handle)
+            .w_full()
+            .h_full();
             card = card.child(
                 div()
-                    .id(SharedString::from(format!("settings_row_{}", index)))
+                    .debug_selector(|| "settings_list".to_string())
+                    .h(px(320.0))
                     .w_full()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.0))
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .rounded(px(8.0))
-                    .when(is_selected, |c| c.bg(theme.mockup_hover))
-                    .when(!is_selected, |c| c.hover(|s| s.bg(theme.mockup_hover)))
-                    .child(
-                        div()
-                            .text_size(px(MockupTypeScale::BASE_SIZE))
-                            .text_color(if is_selected {
-                                theme.mockup_text
-                            } else {
-                                theme.mockup_session_inactive
-                            })
-                            .child(field.label()),
-                    )
-                    .child(
-                        div()
-                            .font_family(theme.font_mono()[0].clone())
-                            .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
-                            .text_color(value_color)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .child(value_text),
-                    ),
+                    .overflow_hidden()
+                    .child(list),
             );
         }
 
@@ -642,7 +773,9 @@ impl SettingsModal {
                 .when(save_selected, |c| c.bg(theme.mockup_hover))
                 .when(!save_selected, |c| c.hover(|s| s.bg(theme.mockup_hover)))
                 .cursor_pointer()
-                .on_click(move |event, window, cx| on_save(event, window, cx))
+                .on_click(move |event, window, cx| {
+                    on_action(SettingsInteraction::Save, event, window, cx)
+                })
                 .child(
                     div()
                         .text_size(px(MockupTypeScale::BASE_SIZE))
@@ -694,6 +827,146 @@ impl SettingsModal {
                 .child("↑↓ — select · Enter — edit / cycle · ←→ — move / cycle · Home/End — jump · Del — forward · Esc — cancel / close"),
         )
     }
+}
+
+fn settings_click_handler(
+    on_action: &SettingsHandler,
+    interaction: SettingsInteraction,
+) -> crate::ui::modals::text_input::ModalClickHandler {
+    let on_action = on_action.clone();
+    std::rc::Rc::new(move |event, window, cx| on_action(interaction, event, window, cx))
+}
+
+fn render_setting_row(
+    field: &SettingField,
+    index: usize,
+    show_section: bool,
+    selected: bool,
+    editing: bool,
+    selection_anchor: usize,
+    busy: bool,
+    originals: &HashMap<String, String>,
+    theme: &HermesTheme,
+    motion: ModalMotion<'_>,
+    on_action: SettingsHandler,
+) -> Stateful<Div> {
+    let dirty = field.display() != originals.get(field.key()).cloned().unwrap_or_default();
+    let mut value = match field {
+        SettingField::Text {
+            value,
+            cursor,
+            required,
+            ..
+        } => {
+            if selected && editing {
+                crate::ui::modals::text_input::input_content(
+                    value,
+                    *cursor,
+                    selection_anchor,
+                    if *required { "required" } else { "not set" },
+                    false,
+                    !busy,
+                    theme,
+                )
+            } else if value.is_empty() {
+                div()
+                    .text_color(theme.mockup_text_dim)
+                    .child(if *required { "required" } else { "not set" })
+            } else {
+                div()
+                    .text_color(theme.mockup_text_bright)
+                    .child(value.clone())
+            }
+        }
+        SettingField::Choice { value, .. } => {
+            let current = value
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| "not set".to_string());
+            div()
+                .text_color(if value.is_none() {
+                    theme.mockup_text_dim
+                } else {
+                    theme.mockup_text_bright
+                })
+                .child(if selected {
+                    format!("‹ {current} ›")
+                } else {
+                    current
+                })
+        }
+    };
+    value = value
+        .font_family(theme.font_mono()[0].clone())
+        .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
+        .when(dirty, |this| this.text_color(theme.accent_blue))
+        .flex_1()
+        .min_w_0()
+        .justify_end()
+        .overflow_hidden()
+        .whitespace_nowrap();
+
+    let handler = settings_click_handler(
+        &on_action,
+        SettingsInteraction::SelectRow(index),
+    );
+    let mut row = div()
+        .id(SharedString::from(format!("settings_row_{index}")))
+        .debug_selector(move || format!("settings_row_{index}"))
+        .h(px(64.0))
+        .w_full()
+        .flex()
+        .flex_col()
+        .justify_center()
+        .gap(px(3.0))
+        .px(px(12.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(if selected {
+            theme.accent_blue
+        } else {
+            gpui::rgba(0x00000000)
+        })
+        .when(selected, |this| this.bg(theme.mockup_hover))
+        .when(!selected && !busy, |this| {
+            this.hover(|this| this.bg(theme.mockup_hover))
+        })
+        .when(!busy, |this| {
+            this.cursor_pointer()
+                .on_click(move |event, window, cx| handler(event, window, cx))
+        })
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .text_size(px(MockupTypeScale::BASE_SIZE))
+                        .text_color(if selected {
+                            theme.mockup_text
+                        } else {
+                            theme.mockup_session_inactive
+                        })
+                        .child(field.label()),
+                )
+                .child(value),
+        );
+    if show_section {
+        row = row.child(
+            div()
+                .text_size(px(9.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.mockup_text_muted)
+                .child(SettingsModal::section_label(field.key())),
+        );
+    }
+    if selected {
+        row = modal_press(row, "settings_selected_press", motion);
+    }
+    row
 }
 
 #[cfg(test)]
