@@ -117,6 +117,7 @@ const ZOOM_STEP: f32 = 2.0;
 const MIN_REM_SIZE: f32 = 12.0;
 const MAX_REM_SIZE: f32 = 24.0;
 const MAX_UNDO_HISTORY: usize = 100;
+const SESSION_TITLE_HYDRATION_CONCURRENCY: usize = 4;
 
 /// Register embedded brand fonts, theme, menus, global shortcuts, and
 /// composer bindings. Shared by the real `main` entry point and the
@@ -221,6 +222,10 @@ fn session_title_from_prompt(text: &str) -> String {
     } else {
         title
     }
+}
+
+fn is_placeholder_session_title(title: &str) -> bool {
+    matches!(title.trim(), "Untitled chat" | "New Chat" | "Resumed Chat")
 }
 
 /// Replace the turn's streamed preview with the authoritative final text (B31).
@@ -388,6 +393,10 @@ pub struct ChatView {
     session_load_generation: u64,
     session_list_generation: u64,
     model_picker_generation: u64,
+    session_title_revisions: HashMap<String, u64>,
+    title_hydration_in_flight: HashSet<String>,
+    title_hydration_attempted: HashSet<String>,
+    pending_inferred_session_titles: HashMap<String, String>,
     creating_session: bool,
     running_turns: HashSet<String>,
     /// Assistant message id created for each session's current/most recent turn.
@@ -501,6 +510,10 @@ impl ChatView {
             session_load_generation: 0,
             session_list_generation: 0,
             model_picker_generation: 0,
+            session_title_revisions: HashMap::new(),
+            title_hydration_in_flight: HashSet::new(),
+            title_hydration_attempted: HashSet::new(),
+            pending_inferred_session_titles: HashMap::new(),
             creating_session: false,
             running_turns: HashSet::new(),
             turn_assistants: HashMap::new(),
@@ -797,6 +810,7 @@ impl ChatView {
             return;
         }
         self.session_list_generation = self.session_list_generation.wrapping_add(1);
+        self.title_hydration_attempted.clear();
         let generation = self.session_list_generation;
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
@@ -838,6 +852,11 @@ impl ChatView {
                         .and_then(|seconds| chrono::DateTime::from_timestamp(seconds as i64, 0))
                         .or_else(|| existing.as_ref().and_then(|session| session.created_at));
                     let updated_at = existing.as_ref().and_then(|session| session.updated_at);
+                    let title_is_explicit = backend_title.is_some()
+                        || existing
+                            .as_ref()
+                            .map(|session| session.title_is_explicit)
+                            .unwrap_or(false);
                     let title = backend_title
                         .or_else(|| {
                             existing
@@ -856,6 +875,7 @@ impl ChatView {
                     .with_model(item.model.clone());
                     session.is_archived = item.archived;
                     session.message_count = item.turns;
+                    session.title_is_explicit = title_is_explicit;
                     listed_ids.insert(item.session_id.clone());
                     sessions.push(session);
                 }
@@ -888,6 +908,195 @@ impl ChatView {
                     .clone()
                     .filter(|id| listed_ids.contains(id));
                 view.sessions.retain(|id, _| listed_ids.contains(id));
+                view.schedule_session_title_hydration(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn schedule_session_title_hydration(&mut self, cx: &mut Context<Self>) {
+        if !self.bridge.is_connected() {
+            return;
+        }
+        let available = SESSION_TITLE_HYDRATION_CONCURRENCY
+            .saturating_sub(self.title_hydration_in_flight.len());
+        if available == 0 {
+            return;
+        }
+        let candidates: Vec<String> = self
+            .shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter()
+            .filter(|session| {
+                !session.title_is_explicit
+                    && session.message_count > 0
+                    && is_placeholder_session_title(&session.title)
+            })
+            .filter(|session| {
+                !self.title_hydration_in_flight.contains(&session.id)
+                    && !self.title_hydration_attempted.contains(&session.id)
+            })
+            .take(available)
+            .map(|session| session.id.clone())
+            .collect();
+        for session_id in candidates {
+            self.start_session_title_hydration(session_id, cx);
+        }
+    }
+
+    fn start_session_title_hydration(&mut self, session_id: String, cx: &mut Context<Self>) {
+        self.title_hydration_in_flight.insert(session_id.clone());
+        self.title_hydration_attempted.insert(session_id.clone());
+        let revision = self
+            .session_title_revisions
+            .get(&session_id)
+            .copied()
+            .unwrap_or(0);
+        let generation = self.session_list_generation;
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        let request_session = session_id.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move {
+                    bridge
+                        .history_content_page(&request_session, 0, "prompt", 0)
+                        .await
+                })
+                .await;
+            this.update(cx, |view, cx| {
+                let current_revision = view
+                    .session_title_revisions
+                    .get(&session_id)
+                    .copied()
+                    .unwrap_or(0);
+                let has_pending_title = view
+                    .pending_inferred_session_titles
+                    .contains_key(&session_id);
+                let needs_title = view
+                    .shell
+                    .sidebar
+                    .session_list
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .map(|session| {
+                        !session.title_is_explicit
+                            && session.message_count > 0
+                            && (is_placeholder_session_title(&session.title) || has_pending_title)
+                    })
+                    .unwrap_or(false);
+                if current_revision == revision && needs_title {
+                    if let Some(title) = view.pending_inferred_session_titles.remove(&session_id) {
+                        view.persist_inferred_session_title(&session_id, title, cx);
+                    } else if view.session_list_generation == generation {
+                        if let Ok(Ok(page)) = res {
+                            let title = session_title_from_prompt(&page.content);
+                            if title != "Untitled chat" {
+                                view.persist_inferred_session_title(&session_id, title, cx);
+                            } else {
+                                view.title_hydration_in_flight.remove(&session_id);
+                            }
+                        } else {
+                            view.title_hydration_in_flight.remove(&session_id);
+                        }
+                    } else {
+                        view.title_hydration_in_flight.remove(&session_id);
+                    }
+                } else {
+                    view.pending_inferred_session_titles.remove(&session_id);
+                    view.title_hydration_in_flight.remove(&session_id);
+                }
+                view.schedule_session_title_hydration(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn persist_inferred_session_title(
+        &mut self,
+        session_id: &str,
+        title: String,
+        cx: &mut Context<Self>,
+    ) {
+        let revision = self
+            .session_title_revisions
+            .get(session_id)
+            .copied()
+            .unwrap_or(0);
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        let sid = session_id.to_string();
+        let request_sid = sid.clone();
+        let request_title = title;
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move { bridge.rename_session(&request_sid, &request_title).await })
+                .await;
+            this.update(cx, |view, cx| {
+                view.title_hydration_in_flight.remove(&sid);
+                let pending_title = view.pending_inferred_session_titles.get(&sid).cloned();
+                let current_revision = view
+                    .session_title_revisions
+                    .get(&sid)
+                    .copied()
+                    .unwrap_or(0);
+                if current_revision == revision {
+                    let confirmed_title = match &res {
+                        Ok(Ok(resp)) if !resp.title.trim().is_empty() => Some(resp.title.clone()),
+                        _ => None,
+                    };
+                    if let Some(response_title) = &confirmed_title {
+                        if let Some(session) = view
+                            .shell
+                            .sidebar
+                            .session_list
+                            .sessions
+                            .iter_mut()
+                            .find(|session| session.id == sid)
+                        {
+                            if !session.title_is_explicit
+                                && (is_placeholder_session_title(&session.title)
+                                    || session.title == response_title.as_str())
+                            {
+                                session.title = response_title.clone();
+                            }
+                        }
+                    }
+                    if let Some(pending_title) = pending_title {
+                        let needs_title = view
+                            .shell
+                            .sidebar
+                            .session_list
+                            .sessions
+                            .iter()
+                            .find(|session| session.id == sid)
+                            .map(|session| {
+                                !session.title_is_explicit
+                                    && (is_placeholder_session_title(&session.title)
+                                        || session.title == pending_title)
+                            })
+                            .unwrap_or(false);
+                        if needs_title
+                            && confirmed_title.as_deref() != Some(pending_title.as_str())
+                            && view.title_hydration_in_flight.insert(sid.clone())
+                        {
+                            view.title_hydration_attempted.insert(sid.clone());
+                            view.persist_inferred_session_title(&sid, pending_title, cx);
+                        } else {
+                            view.pending_inferred_session_titles.remove(&sid);
+                        }
+                    }
+                } else {
+                    view.pending_inferred_session_titles.remove(&sid);
+                }
+                view.schedule_session_title_hydration(cx);
                 cx.notify();
             })
             .ok();
@@ -1447,6 +1656,14 @@ impl ChatView {
             .iter()
             .find(|session| session.id == id)
             .cloned();
+        let needs_inferred_title = existing
+            .as_ref()
+            .map(|session| !session.title_is_explicit && is_placeholder_session_title(&session.title))
+            .unwrap_or(true);
+        let title_is_explicit = existing
+            .as_ref()
+            .map(|session| session.title_is_explicit)
+            .unwrap_or(false);
         let prompted_title = self
             .shell
             .feed
@@ -1461,20 +1678,29 @@ impl ChatView {
         let title = existing
             .as_ref()
             .map(|session| session.title.clone())
-            .filter(|title| {
-                !title.trim().is_empty()
-                    && !matches!(title.as_str(), "New Chat" | "Untitled chat" | "Resumed Chat")
-            })
-            .or(prompted_title)
+            .filter(|title| !title.trim().is_empty() && !is_placeholder_session_title(title))
+            .or_else(|| prompted_title.clone())
             .unwrap_or_else(|| "Untitled chat".to_string());
         let mut item = existing.unwrap_or_else(|| {
             SessionItem::with_optional_timestamps(id.clone(), title.clone(), None, None)
         });
         item.title = title;
+        item.title_is_explicit = title_is_explicit;
         item.model_name = Some(load.model.clone());
         item.message_count = item.message_count.max(load.page.history_count);
         self.shell.sidebar.add_session(item);
-        self.shell.select_session(id);
+        self.shell.select_session(id.clone());
+        if needs_inferred_title {
+            if let Some(inferred_title) = prompted_title {
+                self.pending_inferred_session_titles
+                    .insert(id.clone(), inferred_title.clone());
+                if self.title_hydration_in_flight.insert(id.clone()) {
+                    self.pending_inferred_session_titles.remove(&id);
+                    self.title_hydration_attempted.insert(id.clone());
+                    self.persist_inferred_session_title(&id, inferred_title, cx);
+                }
+            }
+        }
         self.current_model = load.model.clone();
         self.model_id = Some(load.model.clone());
         self.shell
@@ -5068,6 +5294,11 @@ impl ChatView {
     }
 
     fn apply_session_rename(&mut self, session_id: &str, title: &str, cx: &mut Context<Self>) {
+        let revision = self
+            .session_title_revisions
+            .entry(session_id.to_string())
+            .or_default();
+        *revision = revision.wrapping_add(1);
         let old_title = self
             .shell
             .sidebar

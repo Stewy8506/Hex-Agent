@@ -30,6 +30,11 @@ struct MockState {
     session_counter: AtomicUsize,
     list_requests: AtomicUsize,
     renames: StdMutex<Vec<(String, String)>>,
+    history_prompts: StdMutex<std::collections::HashMap<String, String>>,
+    history_requests: StdMutex<Vec<Value>>,
+    history_gates: StdMutex<std::collections::HashMap<String, Arc<Notify>>>,
+    history_started: AtomicUsize,
+    history_finished: AtomicUsize,
     catalog_models: StdMutex<Vec<Value>>,
     catalog_error: StdMutex<Option<String>>,
     catalog_fail: AtomicBool,
@@ -293,13 +298,39 @@ async fn handle_request(
             send_line(writer, json!({"jsonrpc": "2.0", "id": id, "result": result})).await;
         }
         "session/historyContent" => {
-            // Previews in session/load are complete, so this is only a safety net.
-            let total = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(0);
+            state.history_requests.lock().unwrap().push(params.clone());
+            let session_id = params["sessionId"].as_str().unwrap().to_string();
+            let gate = state
+                .history_gates
+                .lock()
+                .unwrap()
+                .get(&session_id)
+                .cloned();
+            if let Some(gate) = gate {
+                state.history_started.fetch_add(1, Ordering::SeqCst);
+                gate.notified().await;
+                state.history_finished.fetch_add(1, Ordering::SeqCst);
+            }
+            let content = state
+                .history_prompts
+                .lock()
+                .unwrap()
+                .get(&session_id)
+                .cloned()
+                .unwrap_or_default();
+            let total = content.chars().count();
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as usize;
+            let page: String = content.chars().take(limit).collect();
+            let page_len = page.chars().count();
+            let next_offset = (page_len < total).then_some(page_len);
             send_line(
                 writer,
                 json!({
                     "jsonrpc": "2.0", "id": id,
-                    "result": {"content": "", "nextOffset": null, "totalChars": total}
+                    "result": {"content": page, "nextOffset": next_offset, "totalChars": total}
                 }),
             )
             .await;
@@ -849,10 +880,16 @@ async fn test_resume_durable_session_from_backend(cx: &mut TestAppContext) {
     let state = MockState::new();
     *state.list_sessions.lock().unwrap() = vec![
         session_item("ses_test_1", "claude-3-7-sonnet"),
-        session_item("ses_disk_99", "claude-3-7-sonnet"),
+        json!({"sessionId": "ses_disk_99", "cwd": "/workspace", "model": "claude-3-7-sonnet", "created_at": 100.0, "turns": 1, "title": ""}),
     ];
     *state.load_history.lock().unwrap() =
         vec![("Resumed prompt".to_string(), "Resumed answer".to_string())];
+    let history_gate = Arc::new(Notify::new());
+    state
+        .history_gates
+        .lock()
+        .unwrap()
+        .insert("ses_disk_99".to_string(), history_gate.clone());
 
     let (client_read, server_write) = tokio::io::duplex(64 * 1024);
     let (server_read, client_write) = tokio::io::duplex(64 * 1024);
@@ -876,19 +913,52 @@ async fn test_resume_durable_session_from_backend(cx: &mut TestAppContext) {
         assert_eq!(item.model_name.as_deref(), Some("claude-3-7-sonnet"));
         assert!(v.shell.feed.is_empty(), "listing must not load a transcript");
     });
+    pump_until(&mut vc, &view, "startup title lookup started", |_| {
+        state.history_started.load(Ordering::SeqCst) == 1
+    });
 
     // Switch to the never-hydrated session through the palette; it resumes from
     // durable backend history.
     vc.simulate_keystrokes("cmd-k");
-    vc.simulate_input("isk_99");
+    vc.simulate_input("untitled");
     vc.simulate_keystrokes("enter");
     pump_until(&mut vc, &view, "durable session resumed", |v| {
         v.shell.active_session_id.as_deref() == Some("ses_disk_99")
             && last_assistant(v).map(|a| a.content.as_str()) == Some("Resumed answer")
     });
     snap(&vc, &view, |v| {
+        assert!(state.renames.lock().unwrap().is_empty());
+        assert_eq!(
+            v.shell
+                .sidebar
+                .session_list
+                .sessions
+                .iter()
+                .find(|session| session.id == "ses_disk_99")
+                .unwrap()
+                .title,
+            "Resumed prompt"
+        );
+    });
+    history_gate.notify_one();
+    pump_until(&mut vc, &view, "resumed title persisted", |_| {
+        state.renames.lock().unwrap().as_slice()
+            == [("ses_disk_99".to_string(), "Resumed prompt".to_string())]
+    });
+    snap(&vc, &view, |v| {
         assert_eq!(last_user(v).as_deref(), Some("Resumed prompt"));
         assert_eq!(v.shell.composer.model_pill.model_name, "claude-3-7-sonnet");
+        assert_eq!(
+            v.shell
+                .sidebar
+                .session_list
+                .sessions
+                .iter()
+                .find(|session| session.id == "ses_disk_99")
+                .unwrap()
+                .title,
+            "Resumed prompt"
+        );
     });
 }
 
@@ -1071,4 +1141,217 @@ async fn test_session_list_metadata_order_and_empty_filtering(cx: &mut TestAppCo
     });
     assert_eq!(state.session_counter.load(Ordering::SeqCst), 0);
     assert!(state.list_requests.load(Ordering::SeqCst) >= 1);
+}
+
+#[gpui::test]
+async fn test_historical_titles_hydrate_and_persist_without_loading(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    *state.list_sessions.lock().unwrap() = vec![
+        json!({"sessionId": "ses_untitled", "cwd": "/workspace", "model": "claude-3-7-sonnet", "created_at": 100.0, "turns": 2, "title": ""}),
+        json!({"sessionId": "ses_named", "cwd": "/workspace", "model": "claude-3-7-sonnet", "created_at": 200.0, "turns": 1, "title": "Keep this title"}),
+        json!({"sessionId": "ses_empty", "cwd": "/workspace", "model": "claude-3-7-sonnet", "created_at": 300.0, "turns": 0, "title": ""}),
+    ];
+    state.history_prompts.lock().unwrap().insert(
+        "ses_untitled".to_string(),
+        "  Fix   historical titles \n before opening  ".to_string(),
+    );
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(server_read, server_write, state.clone(), shutdown_rx));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    pump_until(&mut vc, &view, "historical title persisted", |view| {
+        view.shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter()
+            .any(|session| session.id == "ses_untitled" && session.title == "Fix historical titles before opening")
+            && state.renames.lock().unwrap().len() == 1
+    });
+
+    snap(&vc, &view, |view| {
+        let sessions = &view.shell.sidebar.session_list.sessions;
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(
+            sessions
+                .iter()
+                .find(|session| session.id == "ses_named")
+                .unwrap()
+                .title,
+            "Keep this title"
+        );
+        assert!(view.shell.feed.is_empty());
+    });
+    assert_eq!(
+        state.renames.lock().unwrap().as_slice(),
+        &[("ses_untitled".to_string(), "Fix historical titles before opening".to_string())]
+    );
+    let requests = state.history_requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["sessionId"], "ses_untitled");
+    assert_eq!(requests[0]["turnIndex"], 0);
+    assert_eq!(requests[0]["field"], "prompt");
+    assert_eq!(requests[0]["offset"], 0);
+    assert_eq!(requests[0]["limit"], 4096);
+    assert_eq!(state.load_started.load(Ordering::SeqCst), 0);
+    assert_eq!(state.session_counter.load(Ordering::SeqCst), 0);
+}
+
+#[gpui::test]
+async fn test_title_hydration_does_not_overwrite_newer_explicit_title(
+    cx: &mut TestAppContext,
+) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    *state.list_sessions.lock().unwrap() = vec![json!({
+        "sessionId": "ses_racing", "cwd": "/workspace", "model": "claude-3-7-sonnet",
+        "created_at": 100.0, "turns": 1, "title": ""
+    })];
+    state
+        .history_prompts
+        .lock()
+        .unwrap()
+        .insert("ses_racing".to_string(), "Inferred title".to_string());
+    let gate = Arc::new(Notify::new());
+    state
+        .history_gates
+        .lock()
+        .unwrap()
+        .insert("ses_racing".to_string(), gate.clone());
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(server_read, server_write, state.clone(), shutdown_rx));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    pump_until(&mut vc, &view, "title lookup blocked", |_| {
+        state.history_started.load(Ordering::SeqCst) == 1
+    });
+
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
+            let session = view
+                .shell
+                .sidebar
+                .session_list
+                .sessions
+                .iter_mut()
+                .find(|session| session.id == "ses_racing")
+                .unwrap();
+            session.title = "Manual title".to_string();
+            session.title_is_explicit = true;
+            cx.notify();
+        });
+    });
+    gate.notify_one();
+    pump_until(&mut vc, &view, "stale lookup finished", |_| {
+        state.history_finished.load(Ordering::SeqCst) == 1
+    });
+    for _ in 0..3 {
+        vc.run_until_parked();
+    }
+
+    snap(&vc, &view, |view| {
+        assert_eq!(
+            view.shell
+                .sidebar
+                .session_list
+                .sessions
+                .iter()
+                .find(|session| session.id == "ses_racing")
+                .unwrap()
+                .title,
+            "Manual title"
+        );
+    });
+    assert!(state.renames.lock().unwrap().is_empty());
+}
+
+#[gpui::test]
+async fn test_title_hydration_is_bounded_and_drains_the_queue(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    let mut gates = Vec::new();
+    let mut sessions = Vec::new();
+    let mut prompts = state.history_prompts.lock().unwrap();
+    let mut state_gates = state.history_gates.lock().unwrap();
+    for index in 0..6 {
+        let session_id = format!("ses_title_{index}");
+        sessions.push(json!({
+            "sessionId": session_id, "cwd": "/workspace", "model": "claude-3-7-sonnet",
+            "created_at": 100.0 + index as f64, "turns": 1, "title": ""
+        }));
+        prompts.insert(session_id.clone(), format!("Prompt {index}"));
+        let gate = Arc::new(Notify::new());
+        state_gates.insert(session_id.clone(), gate.clone());
+        gates.push(gate);
+    }
+    drop(prompts);
+    drop(state_gates);
+    *state.list_sessions.lock().unwrap() = sessions;
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(server_read, server_write, state.clone(), shutdown_rx));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    pump_until(&mut vc, &view, "four title lookups started", |_| {
+        state.history_started.load(Ordering::SeqCst) == 4
+    });
+    assert_eq!(state.history_started.load(Ordering::SeqCst), 4);
+    assert!(state.renames.lock().unwrap().is_empty());
+
+    gates[0].notify_one();
+    pump_until(&mut vc, &view, "queued title lookup started", |_| {
+        state.history_started.load(Ordering::SeqCst) == 5
+    });
+    for gate in &gates {
+        gate.notify_one();
+    }
+    pump_until(&mut vc, &view, "all titles persisted", |view| {
+        view.shell
+            .sidebar
+            .session_list
+            .sessions
+            .iter()
+            .filter(|session| session.id.starts_with("ses_title_"))
+            .count()
+            == 6
+            && view.shell.sidebar.session_list.sessions.iter().all(|session| {
+                !session.id.starts_with("ses_title_") || !session.title_is_explicit && session.title != "Untitled chat"
+            })
+            && state.renames.lock().unwrap().len() == 6
+    });
+    assert_eq!(state.history_started.load(Ordering::SeqCst), 6);
+    assert_eq!(state.load_started.load(Ordering::SeqCst), 0);
 }

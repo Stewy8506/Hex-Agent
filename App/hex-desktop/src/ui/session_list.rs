@@ -114,6 +114,7 @@ pub struct SessionItem {
     pub is_archived: bool,
     pub message_count: usize,
     pub model_name: Option<String>,
+    pub title_is_explicit: bool,
 }
 
 impl SessionItem {
@@ -128,6 +129,7 @@ impl SessionItem {
             is_archived: false,
             message_count: 0,
             model_name: None,
+            title_is_explicit: false,
         }
     }
 
@@ -155,6 +157,7 @@ impl SessionItem {
             is_archived: false,
             message_count: 0,
             model_name: None,
+            title_is_explicit: false,
         }
     }
 
@@ -337,6 +340,7 @@ impl SessionListView {
     pub fn rename_session(&mut self, id: &str, new_title: impl Into<String>) -> bool {
         if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
             session.title = new_title.into();
+            session.title_is_explicit = true;
             session.updated_at = Some(Utc::now());
             true
         } else {
