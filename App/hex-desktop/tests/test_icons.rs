@@ -67,6 +67,13 @@ fn test_palette_icon_references_resolve() {
 }
 
 #[test]
+fn test_settings_icon_is_a_gear() {
+    let settings = fs::read_to_string(icons_dir().join("settings.svg")).unwrap();
+    assert!(settings.contains(r#"<circle cx="12" cy="12" r="3"/>"#));
+    assert!(settings.contains(r#"d="M19.4 15"#));
+}
+
+#[test]
 fn test_every_icon_asset_parses_as_mockup_svg() {
     let mut count = 0;
     for entry in fs::read_dir(icons_dir()).expect("icons dir readable") {
