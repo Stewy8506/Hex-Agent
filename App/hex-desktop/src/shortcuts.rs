@@ -75,9 +75,6 @@ declare_actions!(
     Quit,
     Hide,
     About,
-    ActualSize,
-    ZoomIn,
-    ZoomOut,
 );
 
 /// Returns the standard set of keyboard bindings for the HEX Desktop Cockpit.
@@ -98,10 +95,6 @@ pub fn desktop_keybindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-w", CloseWindow, None),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-h", Hide, None),
-        KeyBinding::new("cmd-0", ActualSize, None),
-        KeyBinding::new("cmd-=", ZoomIn, None),
-        KeyBinding::new("cmd-+", ZoomIn, None),
-        KeyBinding::new("cmd--", ZoomOut, None),
     ]
 }
 
@@ -134,5 +127,17 @@ mod tests {
             format!("{:?}", b.action()).contains("ToggleSidebar")
         });
         assert!(has_cmd_b, "expected cmd-b binding");
+
+        for unsupported in ["cmd-0", "cmd-=", "cmd-+", "cmd--"] {
+            assert!(
+                bindings.iter().all(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .all(|keystroke| keystroke.to_string() != unsupported)
+                }),
+                "unsupported zoom binding must not be advertised: {unsupported}"
+            );
+        }
     }
 }

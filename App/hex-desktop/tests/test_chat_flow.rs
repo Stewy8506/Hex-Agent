@@ -17,7 +17,7 @@ use core::prelude::v1::test;
 use gpui::{EntityInputHandler, *};
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{app_runtime, init_app, ChatView};
-use hex_desktop::shortcuts::{About, ActualSize, Redo, Undo, ZoomIn, ZoomOut};
+use hex_desktop::shortcuts::{About, Redo, Undo};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::{ApprovalCard, FeedPaintProbe, MessageItem};
 use hex_desktop::ui::message::AssistantMessageView;
@@ -464,14 +464,13 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         assert!(v.shell.sidebar.session_list.sessions.is_empty());
     });
 
-    // 1b. Composer parity: the Home screen renders exactly one glow card at
-    // the mockup's 640px Start width, with the halo overhanging it by the
-    // mockup's 2px inset on every side.
+    // 1b. Home and Session share the same bounded 560px content column.
+    // The halo overhangs the composer card by the mockup's 2px inset.
     clear_glow_probe(vc);
     let paints = glow_paints(vc, &view);
     assert_eq!(paints.len(), 1, "Home must render exactly one glow card: {paints:?}");
-    assert_px_close(paints[0].card.size.width, px(640.0));
-    assert_px_close(paints[0].halo.size.width, px(644.0));
+    assert_px_close(paints[0].card.size.width, px(560.0));
+    assert_px_close(paints[0].halo.size.width, px(564.0));
     assert_px_close(paints[0].halo.size.height, paints[0].card.size.height + px(4.0));
 
     // 2. Type through the real input system and submit with Enter.
@@ -641,15 +640,15 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     );
     assert!(vc.debug_bounds("sidebar_new_chat").unwrap().top() >= px(60.0));
 
-    // Home keeps the 640px composer at the minimum width, leaves room for the
-    // window controls, and provides a vertical scroll viewport.
+    // Home keeps the shared 560px composer at the minimum width, leaves room
+    // for the window controls, and provides a vertical scroll viewport.
     vc.simulate_keystrokes("cmd-n");
     finish_motion(vc, &view);
     assert!(vc.debug_bounds("home_center_scroll").is_some());
     clear_glow_probe(vc);
     let home = glow_paints(vc, &view);
     assert_eq!(home.len(), 1);
-    assert_px_close(home[0].card.size.width, px(640.0));
+    assert_px_close(home[0].card.size.width, px(560.0));
     assert!(vc.debug_bounds("home_sidebar_toggle").unwrap().left() >= px(80.0));
     click_debug_element(vc, "continue_ses_test_1");
     pump_until(vc, &view, "return from Home to first session", |v| {
@@ -1211,65 +1210,168 @@ async fn test_model_picker_disconnected_error_is_inline(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-async fn test_view_zoom_actions_adjust_and_reset_scale(cx: &mut TestAppContext) {
+async fn test_supported_window_sizes_keep_home_and_chat_controls_reachable(
+    cx: &mut TestAppContext,
+) {
     let (_rt, view, vc) = launch_connected_chat(cx);
-    vc.dispatch_action(ZoomIn);
-    vc.update(|window, _| assert_eq!(window.rem_size(), px(18.0)));
-    vc.dispatch_action(ZoomOut);
-    vc.update(|window, _| assert_eq!(window.rem_size(), px(16.0)));
-    vc.dispatch_action(ZoomOut);
-    vc.update(|window, _| assert_eq!(window.rem_size(), px(14.0)));
-    vc.dispatch_action(ActualSize);
-    vc.update(|window, _| assert_eq!(window.rem_size(), px(16.0)));
+    let layouts = [
+        (900.0, 600.0, false, 260.0),
+        (900.0, 600.0, true, 0.0),
+        (1100.0, 760.0, false, 296.0),
+        (1440.0, 900.0, false, 296.0),
+        (1440.0, 900.0, true, 0.0),
+    ];
+    let unfinished = [
+        "dock_Team",
+        "dock_Notebooks",
+        "dock_Design",
+        "dock_Extensions",
+        "dock_Automations",
+        "feature_Team",
+        "feature_Notebooks",
+        "feature_Design",
+        "feature_Extensions",
+        "feature_Automations",
+        "header_team",
+        "segment_files",
+        "segment_browser",
+        "segment_terminal",
+    ];
 
-    for _ in 0..10 {
-        vc.dispatch_action(ZoomIn);
-    }
-    vc.update(|window, _| assert_eq!(window.rem_size(), px(24.0)));
-    for _ in 0..10 {
-        vc.dispatch_action(ZoomOut);
-    }
-    vc.update(|window, _| assert_eq!(window.rem_size(), px(12.0)));
+    for (width, height, collapsed, sidebar_width) in layouts {
+        vc.update(|_window, app| {
+            view.update(app, |view, cx| {
+                view.shell.set_sidebar_collapsed(collapsed);
+                cx.notify();
+            });
+        });
+        vc.simulate_resize(size(px(width), px(height)));
+        finish_motion(vc, &view);
 
-    vc.simulate_input("Zoom layout");
-    vc.simulate_keystrokes("enter");
-    pump_until(vc, &view, "zoom fixture session", |v| {
-        last_assistant(v).is_some_and(|assistant| assistant.content == "Hello world")
+        assert!(vc.debug_bounds("home_center_scroll").is_some());
+        let home_main = vc.debug_bounds("home_top_bar").unwrap();
+        assert!(
+            (home_main.size.width - px(width - sidebar_width)).abs() < px(0.5),
+            "Home width at {width}x{height}, collapsed={collapsed}: expected {}, got {:?}",
+            width - sidebar_width,
+            home_main.size.width
+        );
+        assert_px_close(home_main.left(), px(sidebar_width));
+        let home_controls = [
+            vc.debug_bounds("home_sidebar_toggle").unwrap(),
+            vc.debug_bounds("home_search_button").unwrap(),
+            vc.debug_bounds("home_bell_button").unwrap(),
+            vc.debug_bounds("home_settings_button").unwrap(),
+        ];
+        assert!(home_controls[0].left() >= home_main.left() + px(80.0));
+        for pair in home_controls.windows(2) {
+            assert!(pair[0].right() <= pair[1].left());
+        }
+        assert!(home_controls.last().unwrap().right() <= home_main.right() - px(20.0));
+        clear_glow_probe(vc);
+        let home = glow_paints(vc, &view);
+        assert_eq!(home.len(), 1, "one Home composer at {width}x{height}");
+        assert_px_close(home[0].card.size.width, px(560.0));
+        assert_px_close(home[0].halo.size.width, px(564.0));
+        assert!(home[0].card.left() >= px(0.0));
+        assert!(home[0].card.right() <= px(width));
+        assert!(home[0].halo.left() >= px(0.0));
+        assert!(home[0].halo.right() <= px(width));
+        for selector in unfinished {
+            assert!(
+                vc.debug_bounds(selector).is_none(),
+                "unfinished Home destination must not render: {selector}"
+            );
+        }
+    }
+
+    vc.update(|_window, app| {
+        view.update(app, |view, cx| {
+            view.shell.set_sidebar_collapsed(false);
+            cx.notify();
+        });
     });
     vc.simulate_resize(size(px(900.0), px(600.0)));
+    finish_motion(vc, &view);
+    click_debug_element(vc, "home_sidebar_toggle");
+    finish_motion(vc, &view);
+    assert!(vc.read(|app| view.read(app).shell.sidebar_collapsed));
+    assert_px_close(vc.debug_bounds("home_top_bar").unwrap().size.width, px(900.0));
+    click_debug_element(vc, "home_sidebar_toggle");
+    finish_motion(vc, &view);
+    assert!(!vc.read(|app| view.read(app).shell.sidebar_collapsed));
+    assert_px_close(vc.debug_bounds("home_top_bar").unwrap().size.width, px(640.0));
 
-    for rem_size in [12.0, 16.0, 24.0] {
-        vc.update(|window, _| window.set_rem_size(px(rem_size)));
+    vc.simulate_input("Responsive layout fixture");
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "responsive fixture session", |view| {
+        last_assistant(view).is_some_and(|assistant| assistant.content == "Hello world")
+    });
+
+    for (width, height, collapsed, sidebar_width) in layouts {
+        vc.update(|_window, app| {
+            view.update(app, |view, cx| {
+                view.shell.set_sidebar_collapsed(collapsed);
+                cx.notify();
+            });
+        });
+        vc.simulate_resize(size(px(width), px(height)));
         finish_motion(vc, &view);
-        vc.update(|window, _| assert_eq!(window.rem_size(), px(rem_size)));
+        let sidebar_progress = vc.read(|app| {
+            MotionSystem::value(
+                app,
+                hex_desktop::ui::motion::SpringKey::new(view.entity_id(), "sidebar_width"),
+            )
+        });
+        assert_eq!(
+            sidebar_progress,
+            if collapsed { 0.0 } else { 1.0 },
+            "sidebar motion must settle before measuring {width}x{height}"
+        );
 
-        let sidebar = vc.debug_bounds("sidebar_content").unwrap();
         let main = vc.debug_bounds("session_main_pane").unwrap();
         let feed = vc.debug_bounds("feed_column").unwrap();
-        let toggle = vc.debug_bounds("header_toggle").unwrap();
-        let indicator = vc.debug_bounds("segment_chat").unwrap();
-        let more = vc.debug_bounds("header_more").unwrap();
-        let attach = vc.debug_bounds("composer_attach").unwrap();
-        let send = vc.debug_bounds("composer_send").unwrap();
-
-        assert_px_close(sidebar.size.width, px(260.0));
-        assert_px_close(main.size.width, px(640.0));
+        assert_px_close(main.size.width, px(width - sidebar_width));
+        assert_px_close(main.left(), px(sidebar_width));
         assert_px_close(feed.size.width, px(560.0));
         assert!(feed.left() >= main.left() + px(16.0));
         assert!(feed.right() <= main.right() - px(16.0));
-        assert!(toggle.left() >= px(80.0));
-        assert!(toggle.right() <= indicator.left());
-        assert!(indicator.right() <= more.left());
-        assert!(more.right() <= main.right());
+        if sidebar_width > 0.0 {
+            let sidebar = vc.debug_bounds("sidebar_content").unwrap();
+            assert_px_close(sidebar.size.width, px(sidebar_width));
+        }
+
+        let controls = [
+            vc.debug_bounds("header_toggle").unwrap(),
+            vc.debug_bounds("segment_chat").unwrap(),
+            vc.debug_bounds("header_bell").unwrap(),
+            vc.debug_bounds("header_device").unwrap(),
+            vc.debug_bounds("header_more").unwrap(),
+        ];
+        assert!(controls[0].left() >= px(80.0));
+        for pair in controls.windows(2) {
+            assert!(pair[0].right() <= pair[1].left());
+        }
+        assert!(controls.last().unwrap().right() <= main.right() - px(20.0));
+
+        let attach = vc.debug_bounds("composer_attach").unwrap();
+        let send = vc.debug_bounds("composer_send").unwrap();
         assert!(attach.left() >= feed.left());
         assert!(send.right() <= feed.right());
-
         clear_glow_probe(vc);
         let paints = glow_paints(vc, &view);
-        assert_eq!(paints.len(), 1, "one composer at rem size {rem_size}");
+        assert_eq!(paints.len(), 1, "one Session composer at {width}x{height}");
         assert_px_close(paints[0].card.size.width, px(560.0));
+        assert!(paints[0].card.left() >= main.left());
+        assert!(paints[0].card.right() <= main.right());
         assert!(paints[0].card.top() >= px(0.0));
-        assert!(paints[0].card.bottom() <= px(600.0));
+        assert!(paints[0].card.bottom() <= px(height));
+        for selector in unfinished {
+            assert!(
+                vc.debug_bounds(selector).is_none(),
+                "unfinished Session destination must not render: {selector}"
+            );
+        }
     }
 }
 

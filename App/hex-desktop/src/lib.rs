@@ -24,7 +24,7 @@ pub use ui::{
     render_modal_container, ActiveModal, AppShell, AssistantMessageView, CommandPaletteModal,
     DiffView, GaugeThreshold, MessageFeed, MessageItem, ModelEntry, ModelPickerModal,
     ModelSelectorPill, PaletteAction, PaletteItem, PromptComposer, ProviderState, ProviderStatus,
-    SendButton, SessionGroupCategory, SessionItem, SessionListView, ShellView, SidebarView,
+    SendButton, SessionGroupCategory, SessionItem, SessionListView, SidebarView,
     ThinkingDisclosure, TokenGaugeWidget, ToolApprovalChoice, ToolApprovalModal, ToolApprovalResult,
     ToolCallCard, ToolStatus, UserMessageCard,
 };

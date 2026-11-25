@@ -5,11 +5,11 @@
 //! Projects header plus one project group per workspace (expand/collapse,
 //! folder tint states, session count vs pulsing running dot, chevrons),
 //! session rows with the 16px braille-spinner slot and location/Review chips,
-//! the features block (Needs you accent chip, Team, Notebooks, Design,
-//! Extensions, Automations — no badges) and the Account / Local-mode footer.
+//! the live Needs you feature row, and the Account / Local-mode footer.
 //!
-//! The legacy Hermes workspace header, provider status chip and "Coming
-//! soon" badges are gone (D11); provider state is still tracked for events.
+//! The legacy Hermes workspace header, provider status chip, unfinished
+//! feature destinations, and "Coming soon" badges are not rendered; provider
+//! state is still tracked for events.
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -192,7 +192,6 @@ pub struct SidebarHandlers {
     pub on_needs_you: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     pub on_search: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     pub on_settings: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
-    pub on_feature: Option<Rc<dyn Fn(&'static str, &ClickEvent, &mut Window, &mut App)>>,
     pub on_toggle_project: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     /// Account footer click: opens the cloud account modal.
     pub on_account: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
@@ -645,36 +644,35 @@ impl SidebarView {
         row
     }
 
-    /// Features block: border-top `#222`, padding-top 10, full-bleed
-    /// (margin 0 −12px, padding-x 12), gap 1; rows in the exact mockup
-    /// order — Needs you (accent chip count), Team, Notebooks, Design,
-    /// Extensions, Automations — with no badges.
+    /// Live operator queue: border-top `#222`, padding-top 10, full-bleed
+    /// (margin 0 −12px, padding-x 12), with the unresolved approval count.
     fn render_features_block(&self, theme: &HermesTheme, handlers: &SidebarHandlers) -> Div {
-        let needs_you = self.feature_row(
-            theme,
-            "needs_you_row",
-            "Needs you",
-            "bell",
-            handlers.on_needs_you.clone(),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_size(px(MockupTypeScale::CHIP_SIZE))
-                .line_height(px(MockupTypeScale::CHIP_LINE_HEIGHT))
-                .rounded(px(6.0))
-                .px_2()
-                .when(self.pending_approvals > 0, |c| {
-                    c.text_color(theme.accent_blue)
-                        .bg(theme.mockup_accent_chip_bg)
-                })
-                .when(self.pending_approvals == 0, |c| {
-                    c.text_color(theme.mockup_text_muted).bg(theme.mockup_chip)
-                })
-                .child(self.pending_approvals.to_string()),
-        );
+        let needs_you = self
+            .feature_row(
+                theme,
+                "needs_you_row",
+                "Needs you",
+                "bell",
+                handlers.on_needs_you.clone(),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(MockupTypeScale::CHIP_SIZE))
+                    .line_height(px(MockupTypeScale::CHIP_LINE_HEIGHT))
+                    .rounded(px(6.0))
+                    .px_2()
+                    .when(self.pending_approvals > 0, |c| {
+                        c.text_color(theme.accent_blue)
+                            .bg(theme.mockup_accent_chip_bg)
+                    })
+                    .when(self.pending_approvals == 0, |c| {
+                        c.text_color(theme.mockup_text_muted).bg(theme.mockup_chip)
+                    })
+                    .child(self.pending_approvals.to_string()),
+            );
 
-        let mut block = div()
+        div()
             .w_full()
             .flex()
             .flex_col()
@@ -686,24 +684,7 @@ impl SidebarView {
             .pt(px(10.0))
             .border_t_1()
             .border_color(theme.mockup_border)
-            .child(needs_you);
-        for (label, icon) in [
-            ("Team", "team"),
-            ("Notebooks", "notebooks"),
-            ("Design", "design"),
-            ("Extensions", "extensions"),
-            ("Automations", "bolt"),
-        ] {
-            let click = handlers.on_feature.clone().map(|f| {
-                let f = f.clone();
-                let label: &'static str = label;
-                Rc::new(move |event: &ClickEvent, window: &mut Window, app: &mut App| {
-                    f(label, event, window, app)
-                }) as Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>
-            });
-            block = block.child(self.feature_row(theme, label, label, icon, click));
-        }
-        block
+            .child(needs_you)
     }
 
     /// One standard feature `.row`: icon 16 `#9a9a9a` · label 14.5 `#cfcfcf`
@@ -1017,20 +998,5 @@ mod tests {
             "ctrl K"
         };
         assert_eq!(shortcut_hint(), expected);
-    }
-
-    #[test]
-    fn test_feature_rows_are_in_mockup_order() {
-        // The block is built from this exact sequence; keep it pinned.
-        let order = [
-            "Team",
-            "Notebooks",
-            "Design",
-            "Extensions",
-            "Automations",
-        ];
-        assert_eq!(order.len(), 5);
-        assert_eq!(order.first(), Some(&"Team"));
-        assert_eq!(order.last(), Some(&"Automations"));
     }
 }

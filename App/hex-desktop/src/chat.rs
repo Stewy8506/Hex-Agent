@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::ui::home;
-use crate::ui::home::{ContinueRow, COMING_SOON_DOCK};
+use crate::ui::home::ContinueRow;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -36,9 +36,7 @@ use hex_protocol::models::{
 use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
-use crate::shortcuts::{
-    self, init_shortcuts, About, ActualSize, CloseWindow, Hide, Quit, Redo, Undo, ZoomIn, ZoomOut,
-};
+use crate::shortcuts::{self, init_shortcuts, About, CloseWindow, Hide, Quit, Redo, Undo};
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
 use crate::ui::feed::{ApprovalCard, ApprovalCardState, ApprovalVisual, MessageFeed, MessageItem};
@@ -67,7 +65,7 @@ use crate::ui::pill::{
 };
 use crate::ui::reasoning::ThinkingDisclosure;
 use crate::ui::session_list::SessionItem;
-use crate::ui::shell::{AppShell, ShellView};
+use crate::ui::shell::AppShell;
 use crate::ui::sidebar::{ProviderState, SidebarHandlers, SIDEBAR_WIDTH};
 use crate::ui::token_gauge::{format_token_number, DEFAULT_CONTEXT_LIMIT};
 use crate::ui::tool_card::ToolCallCard;
@@ -121,10 +119,6 @@ pub fn composer_keybindings() -> Vec<KeyBinding> {
     ]
 }
 
-const DEFAULT_REM_SIZE: f32 = 16.0;
-const ZOOM_STEP: f32 = 2.0;
-const MIN_REM_SIZE: f32 = 12.0;
-const MAX_REM_SIZE: f32 = 24.0;
 const MAX_UNDO_HISTORY: usize = 100;
 const SESSION_TITLE_HYDRATION_CONCURRENCY: usize = 4;
 
@@ -430,10 +424,6 @@ pub struct ChatView {
     /// Prompt typed on Home before the first session exists; submitted once
     /// `adopt_session` creates the session.
     pending_home_prompt: Option<String>,
-    /// Dock feature the user clicked that is not built yet (Coming soon).
-    home_coming_soon: Option<&'static str>,
-    /// Current or exiting toast content kept mounted until its springs settle.
-    home_toast_visual: Option<&'static str>,
     home_connection_error: Option<String>,
     /// Cached `cloud/auth/status` for the sidebar footer and header device chip.
     cloud_status: Option<CloudAuthStatus>,
@@ -545,8 +535,6 @@ impl ChatView {
             supervisor_active: false,
             show_home: true,
             pending_home_prompt: None,
-            home_coming_soon: None,
-            home_toast_visual: None,
             home_connection_error: None,
             cloud_status: None,
             cloud_update: None,
@@ -1953,9 +1941,8 @@ impl ChatView {
     /// Phase 2: full Home / start screen — h60 top bar (panel toggle, search,
     /// bell, settings), centered column with the rising ASCII logo and glowing
     /// prompt card, the Continue list of recent sessions (running dots, Review
-    /// chips, compact times) and the bottom feature dock. Submitting a prompt
-    /// requests a new session (adopted on creation) and opens it; a dock item
-    /// that is not built yet surfaces its Coming soon notice.
+    /// chips, compact times). Submitting a prompt requests a new session
+    /// (adopted on creation) and opens it.
     fn render_home(
         &mut self,
         theme: &HermesTheme,
@@ -1998,15 +1985,6 @@ impl ChatView {
                 .collect()
         };
 
-        let (toast_spatial, toast_opacity) = self.home_toast_keys(cx);
-        let home_coming_soon = self.home_toast_visual.map(|label| {
-            (
-                label,
-                motion::MotionSystem::value(cx, toast_spatial),
-                motion::MotionSystem::value(cx, toast_opacity).clamp(0.0, 1.0),
-            )
-        });
-
         // Top bar: h60, padding 0 20px; panel toggle left; right gap 4 =
         // search, bell (+ pulsing accent dot when needs-you > 0), settings.
         let sidebar_toggle = div()
@@ -2025,6 +2003,7 @@ impl ChatView {
             ));
         let search_button = div()
             .id("home_search_button")
+            .debug_selector(|| "home_search_button".to_string())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.on_toggle_palette(&shortcuts::ToggleCommandPalette, window, cx);
             }))
@@ -2037,6 +2016,7 @@ impl ChatView {
             ));
         let bell_button = div()
             .id("home_bell_button")
+            .debug_selector(|| "home_bell_button".to_string())
             .on_click(cx.listener(|this, _, _, cx| {
                 this.open_first_pending_approval(cx);
             }))
@@ -2049,6 +2029,7 @@ impl ChatView {
             ));
         let settings_button = div()
             .id("home_settings_button")
+            .debug_selector(|| "home_settings_button".to_string())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.on_open_settings(&shortcuts::OpenSettings, window, cx);
             }))
@@ -2114,6 +2095,7 @@ impl ChatView {
             );
 
         let top_bar = div()
+            .debug_selector(|| "home_top_bar".to_string())
             .w_full()
             .h(px(home::TOP_BAR_HEIGHT))
             .flex_none()
@@ -2121,6 +2103,7 @@ impl ChatView {
             .flex_row()
             .items_center()
             .justify_between()
+            .pr(px(home::TOP_BAR_PADDING_X))
             .child(
                 div()
                     .w(px(
@@ -2186,7 +2169,10 @@ impl ChatView {
                     .pb(px(home::CENTER_PADDING_BOTTOM))
                     .child(
                         div()
-                            .w(px(640.0 + 2.0 * crate::ui::feed::FEED_GUTTER))
+                            .w(px(
+                                crate::ui::feed::FEED_COLUMN_WIDTH
+                                    + 2.0 * crate::ui::feed::FEED_GUTTER,
+                            ))
                             .max_w_full()
                             .min_w_0()
                             .flex()
@@ -2194,7 +2180,7 @@ impl ChatView {
                             .items_center()
                             .child(
                                 div()
-                                    .w(px(640.0))
+                                    .w(px(crate::ui::feed::FEED_COLUMN_WIDTH))
                                     .max_w_full()
                                     .min_w_0()
                                     .flex()
@@ -2265,46 +2251,10 @@ impl ChatView {
                     ),
             );
 
-        // Bottom feature dock: absolute, bottom 28, centered; container
-        // bg #191919, border #232323, radius 16, padding 5, gap 2.
-        let dock_owner = cx.entity().entity_id();
-        let dock = div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom(px(home::DOCK_BOTTOM))
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(home::DOCK_GAP))
-                    .bg(theme.mockup_dock)
-                    .border_1()
-                    .border_color(theme.mockup_dock_border)
-                    .rounded(px(home::DOCK_RADIUS))
-                    .p(px(home::DOCK_PADDING))
-                    .children(COMING_SOON_DOCK.iter().map(|(label, glyph)| {
-                        let this = cx.entity().downgrade();
-                        let name: &'static str = label;
-                        let control =
-                            motion::ControlMotion::for_identity(dock_owner, "dock_control", name);
-                        crate::ui::home::render_dock_item(theme, label, label, glyph, control, &*cx)
-                            .on_click(move |_, _, cx| {
-                                let _ = this.update(cx, |view, cx| {
-                                    view.home_toast_visual = None;
-                                    view.home_coming_soon = Some(name);
-                                    cx.notify();
-                                });
-                            })
-                    })),
-            );
-
         div()
-            .size_full()
-            .relative()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
             .font_family(theme.font_sans()[0].clone())
@@ -2312,32 +2262,6 @@ impl ChatView {
             .overflow_hidden()
             .child(top_bar)
             .child(center)
-            .child(dock)
-            .when_some(home_coming_soon, |c, (label, spatial, opacity)| {
-                let rise = motion::REVEAL_RISE * (1.0 - spatial);
-                c.child(
-                    div()
-                        .absolute()
-                        .bottom(px(home::NOTICE_BOTTOM + rise))
-                        .left_0()
-                        .right_0()
-                        .flex()
-                        .justify_center()
-                        .opacity(opacity)
-                        .child(
-                            div()
-                                .bg(theme.mockup_surface)
-                                .border_1()
-                                .border_color(theme.mockup_border)
-                                .rounded(px(10.0))
-                                .px(px(14.0))
-                                .py(px(8.0))
-                                .text_sm()
-                                .text_color(theme.mockup_text_dim)
-                                .child(SharedString::from(format!("{} — coming soon", label))),
-                        ),
-                )
-            })
     }
 
     /// Home prompt card: the pulsating glow composer with pills and buttons.
@@ -3793,23 +3717,6 @@ impl ChatView {
         cx.notify();
     }
 
-    fn on_actual_size(&mut self, _: &ActualSize, window: &mut Window, cx: &mut Context<Self>) {
-        window.set_rem_size(px(DEFAULT_REM_SIZE));
-        cx.notify();
-    }
-
-    fn on_zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
-        let next = (window.rem_size() + px(ZOOM_STEP)).min(px(MAX_REM_SIZE));
-        window.set_rem_size(next);
-        cx.notify();
-    }
-
-    fn on_zoom_out(&mut self, _: &ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
-        let next = (window.rem_size() - px(ZOOM_STEP)).max(px(MIN_REM_SIZE));
-        window.set_rem_size(next);
-        cx.notify();
-    }
-
     fn on_submit(&mut self, _: &shortcuts::SubmitPrompt, _: &mut Window, cx: &mut Context<Self>) {
         if self.handle_modal_key("enter", cx) || self.shell.active_modal.is_open() {
             return;
@@ -5164,8 +5071,6 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        // Non-Chat segments show a Coming soon empty state instead of the feed.
-        let coming_soon_pane = self.shell.active_view != ShellView::Chat;
         // Structural changes remeasure the list. While a turn streams, only the
         // active assistant row grows, so keep every other row's measurement.
         let item_count = self.shell.feed.len();
@@ -5186,11 +5091,7 @@ impl ChatView {
             }
             self.feed_synced_revision = feed_revision;
         }
-        let bars = if coming_soon_pane {
-            HashMap::new()
-        } else {
-            self.action_bar_handlers(cx)
-        };
+        let bars = self.action_bar_handlers(cx);
         let motion_owner = cx.entity().entity_id();
         let feed = self.shell.feed.render_scrolled(
             theme,
@@ -5201,79 +5102,53 @@ impl ChatView {
             motion_owner,
             &self.approval_visuals,
         );
-        let feed = if coming_soon_pane {
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.mockup_text)
-                        .child(SharedString::from(format!(
-                            "{} — coming soon",
-                            self.shell.active_view.pane_title()
-                        ))),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.mockup_text_dim)
-                        .child("This pane isn't built yet."),
-                )
-        } else {
-            let incoming_values = self
-                .session_incoming_motion
-                .map(|motion| motion.values(&*cx))
-                .unwrap_or(motion::RevealValues {
-                    spatial: 1.0,
-                    opacity: 1.0,
-                });
-            let mut layer = div()
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .flex()
-                .flex_col()
-                .overflow_hidden();
-            layer = layer.child(
-                incoming_values.apply(feed.debug_selector(|| "session_feed_incoming".to_string())),
+        let incoming_values = self
+            .session_incoming_motion
+            .map(|motion| motion.values(&*cx))
+            .unwrap_or(motion::RevealValues {
+                spatial: 1.0,
+                opacity: 1.0,
+            });
+        let mut layer = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden();
+        layer = layer.child(
+            incoming_values.apply(feed.debug_selector(|| "session_feed_incoming".to_string())),
+        );
+        if let Some(outgoing) = self.outgoing_session_feed.as_mut() {
+            let outgoing_values = self
+                .session_outgoing_motion
+                .expect("outgoing feed has a motion layer")
+                .values(&*cx);
+            let outgoing_feed = outgoing.render_scrolled(
+                theme,
+                &self.outgoing_feed_list,
+                HashMap::new(),
+                None,
+                cx,
+                motion_owner,
+                &HashMap::new(),
             );
-            if let Some(outgoing) = self.outgoing_session_feed.as_mut() {
-                let outgoing_values = self
-                    .session_outgoing_motion
-                    .expect("outgoing feed has a motion layer")
-                    .values(&*cx);
-                let outgoing_feed = outgoing.render_scrolled(
-                    theme,
-                    &self.outgoing_feed_list,
-                    HashMap::new(),
-                    None,
-                    cx,
-                    motion_owner,
-                    &HashMap::new(),
-                );
-                let rise = motion::REVEAL_RISE * (1.0 - outgoing_values.spatial);
-                layer = layer.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(rise))
-                        .bottom_0()
-                        .opacity(outgoing_values.opacity.clamp(0.0, 1.0))
-                        .child(
-                            outgoing_feed.debug_selector(|| "session_feed_outgoing".to_string()),
-                        ),
-                );
-            }
-            layer
-        };
+            let rise = motion::REVEAL_RISE * (1.0 - outgoing_values.spatial);
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(rise))
+                    .bottom_0()
+                    .opacity(outgoing_values.opacity.clamp(0.0, 1.0))
+                    .child(
+                        outgoing_feed.debug_selector(|| "session_feed_outgoing".to_string()),
+                    ),
+            );
+        }
+        let feed = layer;
 
         div()
             .debug_selector(|| "session_main_pane".to_string())
@@ -5289,16 +5164,14 @@ impl ChatView {
             .child(self.render_session_header(theme, window, cx))
             .children(self.render_update_banner(theme, cx))
             .child(feed)
-            .when(!coming_soon_pane, |c| {
-                c.child(
-                    div()
-                        .w_full()
-                        .flex_none()
-                        .flex()
-                        .justify_center()
-                        .child(self.render_composer(theme, window, cx, ComposerVariant::Session)),
-                )
-            })
+            .child(
+                div()
+                    .w_full()
+                    .flex_none()
+                    .flex()
+                    .justify_center()
+                    .child(self.render_composer(theme, window, cx, ComposerVariant::Session)),
+            )
     }
 
     fn render_session_header(
@@ -5364,7 +5237,7 @@ impl ChatView {
             )
             .child(
                 div()
-                    .w(px(96.0))
+                    .w(px(crate::ui::shell::HEADER_VIEW_WIDTH))
                     .h_full()
                     .flex_none()
                     .flex()
@@ -5377,7 +5250,7 @@ impl ChatView {
             .child(div().flex_1().min_w_0())
             .child(
                 div()
-                    .w(px(148.0))
+                    .w(px(crate::ui::shell::HEADER_ACTIONS_WIDTH))
                     .h_full()
                     .flex_none()
                     .flex()
@@ -5438,25 +5311,6 @@ impl ChatView {
                             .child(mockup_icon_button(
                                 theme,
                                 "device",
-                                crate::ui::shell::HEADER_ICON,
-                                theme.mockup_text_muted,
-                                None,
-                            )),
-                    )
-                    .child(
-                        div()
-                            .id("header_team")
-                            .debug_selector(|| "header_team".to_string())
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.shell
-                                    .feed
-                                    .add_system_notice("Team — coming soon");
-                                cx.notify();
-                            }))
-                            .child(mockup_icon_button(
-                                theme,
-                                "team",
                                 crate::ui::shell::HEADER_ICON,
                                 theme.mockup_text_muted,
                                 None,
@@ -6001,42 +5855,6 @@ impl ChatView {
             motion::MotionSystem::set_opacity_target(window, cx, opacity, target, motion::SMOOTH);
         }
     }
-
-    fn home_toast_keys(&self, cx: &Context<Self>) -> (motion::SpringKey, motion::SpringKey) {
-        let owner = cx.entity().entity_id();
-        (
-            motion::SpringKey::new(owner, "home_toast_spatial"),
-            motion::SpringKey::new(owner, "home_toast_opacity"),
-        )
-    }
-
-    fn sync_home_toast_motion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (spatial, opacity) = self.home_toast_keys(cx);
-        if let Some(label) = self.home_coming_soon {
-            if self.home_toast_visual != Some(label) {
-                self.home_toast_visual = Some(label);
-                if !motion::MotionSystem::has(&*cx, spatial)
-                    || (motion::MotionSystem::is_settled(&*cx, spatial)
-                        && motion::MotionSystem::is_settled(&*cx, opacity))
-                {
-                    motion::MotionSystem::snap(window, cx, spatial, 0.0, motion::BOUNCY);
-                    motion::MotionSystem::snap(window, cx, opacity, 0.0, motion::BOUNCY);
-                }
-            }
-            motion::MotionSystem::set_target(window, cx, spatial, 1.0, motion::BOUNCY);
-            motion::MotionSystem::set_opacity_target(window, cx, opacity, 1.0, motion::BOUNCY);
-        } else if self.home_toast_visual.is_some() {
-            motion::MotionSystem::set_target(window, cx, spatial, 0.0, motion::BOUNCY);
-            motion::MotionSystem::set_opacity_target(window, cx, opacity, 0.0, motion::BOUNCY);
-            if motion::MotionSystem::is_settled(&*cx, spatial)
-                && motion::MotionSystem::is_settled(&*cx, opacity)
-            {
-                motion::MotionSystem::remove(cx, spatial);
-                motion::MotionSystem::remove(cx, opacity);
-                self.home_toast_visual = None;
-            }
-        }
-    }
 }
 
 impl Render for ChatView {
@@ -6049,7 +5867,6 @@ impl Render for ChatView {
         }
         self.sync_sidebar_live_state();
         self.sync_sidebar_motion(window, cx);
-        self.sync_home_toast_motion(window, cx);
         self.sync_update_banner_motion(window, cx);
         if self.show_home {
             self.pending_session_transition = None;
@@ -6058,73 +5875,6 @@ impl Render for ChatView {
         }
         self.sync_approval_motion(window, cx);
         let theme = HermesTheme::get(cx).clone();
-
-        // Phase 2: the app opens on the Home / start screen; any submit or
-        // session selection routes to the Session view (show_home=false).
-        // Home still renders inside the shared root (key context, global
-        // actions and the modal layer) so modals raised on Home stay visible
-        // and dismissible.
-        if self.show_home {
-            // The start screen's composer is the primary target (mockup shows
-            // an active caret); focus it so typing works without a click.
-            // Modal focus follows the same rules as the session path.
-            let modal_open = self.shell.active_modal.is_open();
-            if modal_open != self.last_modal_open {
-                self.clear_modal_history();
-            }
-            if modal_open {
-                if !self.last_modal_open {
-                    self.modal_focus_handle.focus(window);
-                }
-            } else if self.last_modal_open || !self.focus_handle.is_focused(window) {
-                self.focus_handle.focus(window);
-            }
-            self.last_modal_open = modal_open;
-
-            let home = self
-                .render_home(&theme, window, cx)
-                .key_context("ChatView")
-                .on_action(cx.listener(Self::on_submit))
-                .on_action(cx.listener(Self::on_new_chat))
-                .on_action(cx.listener(Self::on_close_window))
-                .on_action(cx.listener(Self::on_about))
-                .on_action(cx.listener(Self::on_undo))
-                .on_action(cx.listener(Self::on_redo))
-                .on_action(cx.listener(Self::on_actual_size))
-                .on_action(cx.listener(Self::on_zoom_in))
-                .on_action(cx.listener(Self::on_zoom_out))
-                .on_action(cx.listener(Self::on_toggle_palette))
-                .on_action(cx.listener(Self::on_toggle_sidebar))
-                .on_action(cx.listener(Self::on_open_settings))
-                .on_action(cx.listener(Self::on_cancel_or_dismiss))
-                .on_action(cx.listener(Self::on_copy))
-                .on_action(cx.listener(Self::on_cut))
-                .on_action(cx.listener(Self::on_paste))
-                .on_action(cx.listener(Self::on_select_all))
-                .on_key_down(cx.listener(Self::on_key_down));
-
-            let modal = self.render_modal_layer(&theme, window, cx);
-            return if let Some(modal) = modal {
-                home.child(modal).into_any_element()
-            } else {
-                home.into_any_element()
-            };
-        }
-
-        // Predictable focus: opening a modal moves focus to it, closing returns
-        // focus to the composer. Background activity never steals focus.
-        let modal_open = self.shell.active_modal.is_open();
-        if modal_open != self.last_modal_open {
-            self.clear_modal_history();
-        }
-        if modal_open {
-            if !self.last_modal_open {
-                self.modal_focus_handle.focus(window);
-            }
-        } else if self.last_modal_open || !self.focus_handle.is_focused(window) {
-            self.focus_handle.focus(window);
-        }
-        self.last_modal_open = modal_open;
 
         let on_new_chat: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
             Rc::new(cx.listener(|this, _, _, cx| this.request_new_chat(cx)));
@@ -6142,18 +5892,6 @@ impl Render for ChatView {
             Rc::new(cx.listener(|this, _, window, cx| {
                 this.on_open_settings(&shortcuts::OpenSettings, window, cx);
             }));
-        let on_feature: Rc<dyn Fn(&'static str, &ClickEvent, &mut Window, &mut App)> = {
-            let weak = cx.entity().downgrade();
-            Rc::new(move |label, _event, _window, cx| {
-                weak.update(cx, |view, cx| {
-                    view.shell
-                        .feed
-                        .add_system_notice(format!("{label} — coming soon"));
-                    cx.notify();
-                })
-                .ok();
-            })
-        };
         let on_toggle_project: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
             Rc::new(cx.listener(|this, _, _, cx| {
                 this.shell.sidebar.projects_collapsed = !this.shell.sidebar.projects_collapsed;
@@ -6172,7 +5910,6 @@ impl Render for ChatView {
             on_needs_you: Some(on_needs_you),
             on_search: Some(on_search),
             on_settings: Some(on_settings),
-            on_feature: Some(on_feature),
             on_toggle_project: Some(on_toggle_project),
             on_account: Some(Rc::new(cx.listener(|this, _, _, cx| {
                 this.open_account_modal(cx);
@@ -6194,9 +5931,6 @@ impl Render for ChatView {
             .on_action(cx.listener(Self::on_about))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
-            .on_action(cx.listener(Self::on_actual_size))
-            .on_action(cx.listener(Self::on_zoom_in))
-            .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_toggle_palette))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_open_settings))
@@ -6235,8 +5969,26 @@ impl Render for ChatView {
             );
         }
 
-        root = root.child(self.render_main_pane(&theme, window, cx));
+        // Opening a modal moves focus into it; closing returns focus to the
+        // composer. Background activity never steals focus.
+        let modal_open = self.shell.active_modal.is_open();
+        if modal_open != self.last_modal_open {
+            self.clear_modal_history();
+        }
+        if modal_open {
+            if !self.last_modal_open {
+                self.modal_focus_handle.focus(window);
+            }
+        } else if self.last_modal_open || !self.focus_handle.is_focused(window) {
+            self.focus_handle.focus(window);
+        }
+        self.last_modal_open = modal_open;
 
+        if self.show_home {
+            root = root.child(self.render_home(&theme, window, cx));
+        } else {
+            root = root.child(self.render_main_pane(&theme, window, cx));
+        }
         if let Some(modal) = self.render_modal_layer(&theme, window, cx) {
             root = root.child(modal);
         }
@@ -7667,43 +7419,6 @@ mod tests {
             .driver_active(window_id)));
     }
 
-    #[gpui::test]
-    fn dock_controls_have_independent_hover_and_press_springs(cx: &mut TestAppContext) {
-        let (view, vc) = modal_test_view(cx, false);
-        vc.run_until_parked();
-        let bounds = vc
-            .debug_bounds("dock_Notebooks")
-            .expect("rendered dock item");
-        let notebooks =
-            motion::ControlMotion::for_identity(view.entity_id(), "dock_control", "Notebooks");
-        let design =
-            motion::ControlMotion::for_identity(view.entity_id(), "dock_control", "Design");
-
-        vc.simulate_mouse_move(bounds.center(), None, Modifiers::none());
-        advance_visual_motion(vc, &view, 4);
-        assert!(vc.read(|app| notebooks.values(app).hover) > 0.0);
-        assert_eq!(vc.read(|app| design.values(app).hover), 0.0);
-
-        vc.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::none());
-        advance_visual_motion(vc, &view, 2);
-        assert!(vc.read(|app| notebooks.values(app).press) > 0.0);
-        assert_eq!(vc.read(|app| design.values(app).press), 0.0);
-
-        vc.update(|window, app| {
-            view.update(app, |_, cx| {
-                notebooks.set_hovered(window, cx, false);
-                notebooks.set_pressed(window, cx, false);
-            });
-        });
-        advance_visual_motion(vc, &view, 600);
-        assert_eq!(vc.read(|app| notebooks.values(app).hover), 0.0);
-        assert_eq!(vc.read(|app| notebooks.values(app).press), 0.0);
-        let window_id = vc.update(|window, _| window.window_handle().window_id());
-        assert!(!vc.read(|app| app
-            .global::<motion::MotionSystem>()
-            .driver_active(window_id)));
-    }
-
     fn update_plan() -> CloudUpdatePlan {
         CloudUpdatePlan {
             apply_allowed: Some(true),
@@ -7724,51 +7439,32 @@ mod tests {
     }
 
     #[gpui::test]
-    fn toast_and_banner_bounce_then_exit_from_their_live_state(cx: &mut TestAppContext) {
+    fn update_banner_bounces_then_exits_from_its_live_state(cx: &mut TestAppContext) {
         let (view, vc) = modal_test_view(cx, false);
         let window_id = vc.update(|window, _| window.window_handle().window_id());
-        let (toast_spatial, toast_opacity, banner_spatial, banner_opacity) =
-            vc.update(|window, app| {
-                view.update(app, |view, cx| {
-                    view.home_coming_soon = Some("Notebooks");
-                    view.sync_home_toast_motion(window, cx);
-                    let (toast_spatial, toast_opacity) = view.home_toast_keys(cx);
-                    assert_eq!(motion::MotionSystem::value(cx, toast_spatial), 0.0);
-                    assert_eq!(motion::MotionSystem::value(cx, toast_opacity), 0.0);
+        let (banner_spatial, banner_opacity) = vc.update(|window, app| {
+            view.update(app, |view, cx| {
+                view.cloud_update = Some(update_plan());
+                view.sync_update_banner_motion(window, cx);
+                let (banner_spatial, banner_opacity) = view.update_banner_keys(cx);
+                assert_eq!(motion::MotionSystem::value(cx, banner_spatial), 0.0);
+                assert_eq!(motion::MotionSystem::value(cx, banner_opacity), 0.0);
+                (banner_spatial, banner_opacity)
+            })
+        });
 
-                    view.cloud_update = Some(update_plan());
-                    view.sync_update_banner_motion(window, cx);
-                    let (banner_spatial, banner_opacity) = view.update_banner_keys(cx);
-                    assert_eq!(motion::MotionSystem::value(cx, banner_spatial), 0.0);
-                    assert_eq!(motion::MotionSystem::value(cx, banner_opacity), 0.0);
-                    (toast_spatial, toast_opacity, banner_spatial, banner_opacity)
-                })
-            });
-
-        let mut toast_peak: f32 = 0.0;
         let mut banner_peak: f32 = 0.0;
         vc.update(|_, app| {
             for _ in 0..600 {
                 app.global_mut::<motion::MotionSystem>()
                     .tick(window_id, Duration::from_millis(16));
-                toast_peak = toast_peak.max(motion::MotionSystem::value(app, toast_spatial));
                 banner_peak = banner_peak.max(motion::MotionSystem::value(app, banner_spatial));
             }
         });
-        assert!(toast_peak > 1.0 && toast_peak < 1.5);
         assert!(banner_peak > 1.0 && banner_peak < 1.5);
 
-        let (toast_before_exit, banner_before_exit) = vc.update(|window, app| {
+        let banner_before_exit = vc.update(|window, app| {
             view.update(app, |view, cx| {
-                view.home_toast_visual = None;
-                view.sync_home_toast_motion(window, cx);
-                assert_eq!(motion::MotionSystem::value(cx, toast_spatial), 0.0);
-                for _ in 0..4 {
-                    cx.global_mut::<motion::MotionSystem>()
-                        .tick(window_id, Duration::from_millis(16));
-                }
-                let toast_before_exit = motion::MotionSystem::value(cx, toast_spatial);
-
                 view.update_banner_visual = None;
                 view.sync_update_banner_motion(window, cx);
                 assert_eq!(motion::MotionSystem::value(cx, banner_spatial), 0.0);
@@ -7778,31 +7474,21 @@ mod tests {
                 }
                 let banner_before_exit = motion::MotionSystem::value(cx, banner_spatial);
 
-                view.home_coming_soon = None;
-                view.sync_home_toast_motion(window, cx);
-                let toast_during_exit = motion::MotionSystem::value(cx, toast_spatial);
-                assert!(toast_during_exit > 0.0 && toast_during_exit < 1.5);
                 view.cloud_update = None;
                 view.sync_update_banner_motion(window, cx);
                 let banner_during_exit = motion::MotionSystem::value(cx, banner_spatial);
                 assert!(banner_during_exit > 0.0 && banner_during_exit < 1.5);
-                assert!(view.home_toast_visual.is_some());
                 assert!(view.update_banner_visual.is_some());
-                (toast_before_exit, banner_before_exit)
+                banner_before_exit
             })
         });
-        assert!(toast_before_exit > 0.0 && toast_before_exit < 1.0);
         assert!(banner_before_exit > 0.0 && banner_before_exit < 1.5);
 
         vc.update(|window, app| {
             advance_motion(app, window_id, 600);
             view.update(app, |view, cx| {
-                view.sync_home_toast_motion(window, cx);
                 view.sync_update_banner_motion(window, cx);
-                assert_eq!(view.home_toast_visual, None);
                 assert_eq!(view.update_banner_visual, None);
-                assert!(!motion::MotionSystem::has(cx, toast_spatial));
-                assert!(!motion::MotionSystem::has(cx, toast_opacity));
                 assert!(!motion::MotionSystem::has(cx, banner_spatial));
                 assert!(!motion::MotionSystem::has(cx, banner_opacity));
             });
@@ -7816,51 +7502,38 @@ mod tests {
     fn reduced_shell_motion_snaps_space_and_fades_opacity(cx: &mut TestAppContext) {
         let (view, vc) = modal_test_view(cx, true);
         let window_id = vc.update(|window, _| window.window_handle().window_id());
-        let (
-            sidebar_width,
-            sidebar_opacity,
-            toast_spatial,
-            toast_opacity,
-            banner_spatial,
-            banner_opacity,
-        ) = vc.update(|window, app| {
-            view.update(app, |view, cx| {
-                view.sync_sidebar_motion(window, cx);
-                let (sidebar_width, sidebar_opacity) = view.sidebar_motion_keys(cx);
-                view.shell.toggle_sidebar();
-                view.sync_sidebar_motion(window, cx);
-                assert_eq!(motion::MotionSystem::value(cx, sidebar_width), 0.0);
-                assert!(motion::MotionSystem::value(cx, sidebar_opacity) > 0.0);
+        let (sidebar_width, sidebar_opacity, banner_spatial, banner_opacity) =
+            vc.update(|window, app| {
+                view.update(app, |view, cx| {
+                    view.sync_sidebar_motion(window, cx);
+                    let (sidebar_width, sidebar_opacity) = view.sidebar_motion_keys(cx);
+                    view.shell.toggle_sidebar();
+                    view.sync_sidebar_motion(window, cx);
+                    assert_eq!(motion::MotionSystem::value(cx, sidebar_width), 0.0);
+                    assert!(motion::MotionSystem::value(cx, sidebar_opacity) > 0.0);
 
-                view.home_coming_soon = Some("Design");
-                view.sync_home_toast_motion(window, cx);
-                let (toast_spatial, toast_opacity) = view.home_toast_keys(cx);
-                assert_eq!(motion::MotionSystem::value(cx, toast_spatial), 1.0);
-                assert_eq!(motion::MotionSystem::value(cx, toast_opacity), 0.0);
-
-                view.cloud_update = Some(update_plan());
-                view.sync_update_banner_motion(window, cx);
-                let (banner_spatial, banner_opacity) = view.update_banner_keys(cx);
-                assert_eq!(motion::MotionSystem::value(cx, banner_spatial), 1.0);
-                assert_eq!(motion::MotionSystem::value(cx, banner_opacity), 0.0);
-                (
-                    sidebar_width,
-                    sidebar_opacity,
-                    toast_spatial,
-                    toast_opacity,
-                    banner_spatial,
-                    banner_opacity,
-                )
-            })
-        });
+                    view.cloud_update = Some(update_plan());
+                    view.sync_update_banner_motion(window, cx);
+                    let (banner_spatial, banner_opacity) = view.update_banner_keys(cx);
+                    assert_eq!(motion::MotionSystem::value(cx, banner_spatial), 1.0);
+                    assert_eq!(motion::MotionSystem::value(cx, banner_opacity), 0.0);
+                    (
+                        sidebar_width,
+                        sidebar_opacity,
+                        banner_spatial,
+                        banner_opacity,
+                    )
+                })
+            });
         assert!(vc.read(|app| app
             .global::<motion::MotionSystem>()
             .driver_active(window_id)));
 
         vc.update(|_, app| advance_motion(app, window_id, 600));
-        for key in [toast_opacity, banner_opacity] {
-            assert_eq!(vc.read(|app| motion::MotionSystem::value(app, key)), 1.0);
-        }
+        assert_eq!(
+            vc.read(|app| motion::MotionSystem::value(app, banner_opacity)),
+            1.0
+        );
         assert_eq!(
             vc.read(|app| motion::MotionSystem::value(app, sidebar_opacity)),
             0.0
@@ -7868,10 +7541,6 @@ mod tests {
         assert_eq!(
             vc.read(|app| motion::MotionSystem::value(app, sidebar_width)),
             0.0
-        );
-        assert_eq!(
-            vc.read(|app| motion::MotionSystem::value(app, toast_spatial)),
-            1.0
         );
         assert_eq!(
             vc.read(|app| motion::MotionSystem::value(app, banner_spatial)),

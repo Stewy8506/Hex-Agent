@@ -1,7 +1,7 @@
 //! Application-shell state container for HEX Desktop.
 //!
-//! Owns the sidebar view, message feed, composer, active pane, and the modal
-//! stack. Layout and rendering live in `ChatView` (`src/chat.rs`); this type
+//! Owns the sidebar view, message feed, composer, and the modal stack.
+//! Layout and rendering live in `ChatView` (`src/chat.rs`); this type
 //! only carries state shared across sessions.
 
 use crate::acp_bridge::{AcpBridge, AcpEvent};
@@ -10,35 +10,6 @@ use crate::ui::modals::{
 };
 use crate::ui::sidebar::{ProviderState, SidebarView};
 use crate::ui::tool_card::ToolCallCard;
-
-/// Active view within the main pane of the application shell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ShellView {
-    /// Conversation message feed and prompt composer.
-    #[default]
-    Chat,
-    /// Coming soon: file browser pane.
-    Files,
-    /// Coming soon: embedded browser pane.
-    Browser,
-    /// Coming soon: embedded terminal pane.
-    Terminal,
-    /// Settings and configuration editor.
-    Settings,
-}
-
-impl ShellView {
-    /// Human label for the view (header segment or empty-state title).
-    pub fn pane_title(self) -> &'static str {
-        match self {
-            Self::Chat => "Chat",
-            Self::Files => "Files",
-            Self::Browser => "Browser",
-            Self::Terminal => "Terminal",
-            Self::Settings => "Settings",
-        }
-    }
-}
 
 // --- Mockup session-header metrics (docs/design mockups-desktop) ---
 
@@ -58,6 +29,11 @@ pub const SEGMENTED_GAP: f32 = 2.0;
 pub const SEGMENT_BUTTON: f32 = 32.0;
 pub const SEGMENT_BUTTON_RADIUS: f32 = 8.0;
 pub const SEGMENT_ICON: f32 = 16.0;
+/// Header view slot: one active segmented button, container padding, and gutter.
+pub const HEADER_VIEW_WIDTH: f32 = SEGMENT_BUTTON + 2.0 * SEGMENTED_PADDING + HEADER_PADDING_X;
+/// Header actions: notifications, local device, and settings.
+pub const HEADER_ACTION_COUNT: f32 = 3.0;
+pub const HEADER_ACTIONS_WIDTH: f32 = HEADER_ACTION_COUNT * SEGMENT_BUTTON + HEADER_PADDING_X;
 
 /// Top-level application shell GPUI component.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,8 +48,6 @@ pub struct AppShell {
     pub sidebar_collapsed: bool,
     /// Currently selected session ID, if any.
     pub active_session_id: Option<String>,
-    /// Currently active main pane view.
-    pub active_view: ShellView,
     /// Currently displayed modal overlay (Command Palette, Tool Approval, Model Picker).
     pub active_modal: ActiveModal,
     /// Modals waiting behind the active one; unresolved approvals are never dropped.
@@ -97,7 +71,6 @@ impl AppShell {
             composer: crate::ui::composer::PromptComposer::new(),
             sidebar_collapsed: false,
             active_session_id: None,
-            active_view: ShellView::Chat,
             active_modal: ActiveModal::None,
             modal_queue: std::collections::VecDeque::new(),
             acp_bridge: None,
@@ -115,7 +88,6 @@ impl AppShell {
             composer: crate::ui::composer::PromptComposer::new(),
             sidebar_collapsed: false,
             active_session_id: None,
-            active_view: ShellView::Chat,
             active_modal: ActiveModal::None,
             modal_queue: std::collections::VecDeque::new(),
             acp_bridge: None,
@@ -297,6 +269,9 @@ mod tests {
         assert_eq!(SEGMENT_BUTTON, 32.0);
         assert_eq!(SEGMENT_BUTTON_RADIUS, 8.0);
         assert_eq!(SEGMENT_ICON, 16.0);
+        assert_eq!(HEADER_VIEW_WIDTH, 58.0);
+        assert_eq!(HEADER_ACTION_COUNT, 3.0);
+        assert_eq!(HEADER_ACTIONS_WIDTH, 116.0);
         // Segmented container #191919 / border #232323; active button #262626.
         assert_eq!(theme.mockup_dock, rgb(0x191919));
         assert_eq!(theme.mockup_dock_border, rgb(0x232323));
@@ -307,7 +282,6 @@ mod tests {
     fn test_app_shell_defaults_and_toggles() {
         let mut shell = AppShell::new();
         assert!(!shell.sidebar_collapsed);
-        assert_eq!(shell.active_view, ShellView::Chat);
         assert!(shell.active_session_id.is_none());
 
         // Toggle sidebar (Cmd+B)

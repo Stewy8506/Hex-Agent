@@ -1,5 +1,4 @@
 pub mod home;
-pub use home::home_tooltip;
 pub mod composer;
 pub mod diff_view;
 pub mod feed;
@@ -34,7 +33,7 @@ pub use session_list::{
     classify_session_date, format_relative_time, SessionGroupCategory, SessionItem,
     SessionListView,
 };
-pub use shell::{AppShell, ShellView};
+pub use shell::AppShell;
 pub use sidebar::{ProviderState, ProviderStatus, SidebarView};
 pub use token_gauge::{
     format_token_number, render_ascii_progress_bar, GaugeThreshold, TokenGaugeWidget,

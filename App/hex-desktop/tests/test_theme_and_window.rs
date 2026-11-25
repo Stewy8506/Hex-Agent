@@ -1,7 +1,7 @@
 use core::prelude::v1::test;
 use gpui::*;
 use hex_desktop::theme::*;
-use hex_desktop::ui::shell::{AppShell, ShellView};
+use hex_desktop::ui::shell::AppShell;
 use hex_desktop::window::*;
 
 #[test]
@@ -295,7 +295,6 @@ async fn test_app_shell_state_in_test_context(cx: &mut TestAppContext) {
     let shell_entity = cx.new(|_cx| AppShell::new());
     cx.update(|cx| {
         let shell = shell_entity.read(cx);
-        assert_eq!(shell.active_view, ShellView::Chat);
         assert!(shell.active_session_id.is_none());
     });
 
@@ -306,6 +305,5 @@ async fn test_app_shell_state_in_test_context(cx: &mut TestAppContext) {
         let shell = workspace_shell.read(cx);
         assert_eq!(shell.sidebar.workspace_name, "test-hex-workspace");
         assert_eq!(shell.sidebar.git_branch, "main");
-        assert_eq!(shell.active_view, ShellView::Chat);
     });
 }

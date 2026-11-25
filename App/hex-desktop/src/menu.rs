@@ -4,13 +4,13 @@
 //! - App Menu: About, Preferences (⌘,), Hide (⌘H), Quit (⌘Q)
 //! - File Menu: New Chat (⌘N), Close Window (⌘W)
 //! - Edit Menu: Undo (⌘Z), Redo (⇧⌘Z), Cut (⌘X), Copy (⌘C), Paste (⌘V), Select All (⌘A)
-//! - View Menu: Toggle Sidebar (⌘B), Command Palette (⌘K), Actual Size (⌘0), Zoom In (⌘+), Zoom Out (⌘-)
+//! - View Menu: Toggle Sidebar (⌘B), Command Palette (⌘K)
 
 use gpui::*;
 
 use crate::shortcuts::{
-    About, ActualSize, CloseWindow, Copy, Cut, Hide, NewChat, OpenSettings, Paste, Quit, Redo,
-    SelectAll, ToggleCommandPalette, ToggleSidebar, Undo, ZoomIn, ZoomOut,
+    About, CloseWindow, Copy, Cut, Hide, NewChat, OpenSettings, Paste, Quit, Redo, SelectAll,
+    ToggleCommandPalette, ToggleSidebar, Undo,
 };
 
 /// Constructs the full macOS application menu hierarchy.
@@ -52,10 +52,6 @@ pub fn application_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Toggle Sidebar", ToggleSidebar),
                 MenuItem::action("Command Palette...", ToggleCommandPalette),
-                MenuItem::separator(),
-                MenuItem::action("Actual Size", ActualSize),
-                MenuItem::action("Zoom In", ZoomIn),
-                MenuItem::action("Zoom Out", ZoomOut),
             ],
         },
     ]
@@ -81,8 +77,9 @@ mod tests {
         assert_eq!(menus[2].name.as_ref(), "Edit");
         assert_eq!(menus[3].name.as_ref(), "View");
 
-        // View menu contains Toggle Sidebar and Command Palette
+        // View menu contains only working navigation actions.
         let view_items = &menus[3].items;
-        assert!(view_items.len() >= 6);
+        assert_eq!(view_items.len(), 2);
+        assert!(view_items.iter().all(|item| !matches!(item, MenuItem::Separator)));
     }
 }
