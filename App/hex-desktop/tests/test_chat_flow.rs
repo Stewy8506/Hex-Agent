@@ -457,8 +457,9 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
         assert_eq!(v.shell.active_session_id, None);
         assert!(v.shell.feed.is_empty());
         assert_eq!(v.shell.sidebar.provider_status.state, ProviderState::Connected);
-        assert_eq!(v.shell.composer.model_pill.provider_name, "HEX");
-        assert_eq!(v.shell.composer.model_pill.model_name, "ready");
+        assert_eq!(v.shell.composer.model_pill.provider_name, "");
+        assert_eq!(v.shell.composer.model_pill.model_name, "");
+        assert_ne!(v.shell.composer.model_pill.display_label(), "ready");
         assert!(v.shell.sidebar.session_list.sessions.is_empty());
     });
 
@@ -884,6 +885,7 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
         view.update(app, |view, cx| {
             view.shell.active_modal = ActiveModal::ModelPicker(ModelPickerModal::new(
                 "gpt-4o",
+                "OpenAI",
                 vec![
                     ModelEntry::new("gpt-4o", "GPT-4o", "OpenAI", false),
                     ModelEntry::new("o3-mini", "o3-mini", "OpenAI", false),
@@ -896,7 +898,9 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
     click_debug_element(vc, "model_1");
     snap(vc, &view, |view| {
         assert_eq!(view.shell.active_modal, ActiveModal::None);
-        assert!(last_notice(view).unwrap().contains("cannot switch model"));
+        assert_eq!(view.shell.composer.model_pill.model_name, "o3-mini");
+        assert_eq!(view.shell.composer.model_pill.provider_name, "OpenAI");
+        assert!(!last_notice(view).is_some_and(|notice| notice.contains("cannot switch model")));
     });
 
     vc.update(|_, app| {
@@ -993,8 +997,11 @@ async fn test_model_picker_virtualizes_catalog_and_scrolls_keyboard_selection(
         .collect();
     vc.update(|_window, app| {
         view.update(app, |view, cx| {
-            view.shell.active_modal =
-                ActiveModal::ModelPicker(ModelPickerModal::new("model-0", models));
+            view.shell.active_modal = ActiveModal::ModelPicker(ModelPickerModal::new(
+                "model-0",
+                "OpenAI",
+                models,
+            ));
             cx.notify();
         });
     });

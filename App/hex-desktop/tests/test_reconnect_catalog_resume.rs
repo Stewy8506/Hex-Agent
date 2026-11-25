@@ -41,10 +41,22 @@ struct MockState {
     catalog_started: AtomicUsize,
     catalog_finished: AtomicUsize,
     catalog_gates: StdMutex<std::collections::HashMap<usize, Arc<Notify>>>,
+    identity_started: AtomicUsize,
+    identity_finished: AtomicUsize,
+    identity_gates: StdMutex<std::collections::HashMap<usize, Arc<Notify>>>,
+    identity_requests: StdMutex<Vec<Value>>,
+    active_model: StdMutex<String>,
+    active_provider: StdMutex<String>,
+    active_by_session: StdMutex<std::collections::HashMap<String, (String, String)>>,
+    new_session_requests: StdMutex<Vec<Value>>,
     switch_model: StdMutex<Option<String>>,
     switch_provider: StdMutex<Option<String>>,
+    switch_requests: StdMutex<Vec<Value>>,
     switch_error: AtomicBool,
     switch_unconfirmed: AtomicBool,
+    switch_started: AtomicUsize,
+    switch_finished: AtomicUsize,
+    switch_gates: StdMutex<std::collections::HashMap<usize, Arc<Notify>>>,
     list_sessions: StdMutex<Vec<Value>>,
     load_history: StdMutex<Vec<(String, String)>>,
     load_histories: StdMutex<std::collections::HashMap<String, Vec<(String, String)>>>,
@@ -58,6 +70,8 @@ impl MockState {
     fn new() -> Arc<Self> {
         let state = Self {
             load_model: StdMutex::new("claude-3-7-sonnet".to_string()),
+            active_model: StdMutex::new("claude-3-7-sonnet".to_string()),
+            active_provider: StdMutex::new("Anthropic".to_string()),
             ..Default::default()
         };
         Arc::new(state)
@@ -74,6 +88,25 @@ async fn send_line(writer: &Arc<AsyncMutex<DuplexStream>>, value: Value) {
 
 fn catalog_model(id: &str, display: &str, provider: &str, is_local: bool) -> Value {
     json!({"id": id, "displayName": display, "provider": provider, "isLocal": is_local})
+}
+
+fn provider_for_model(state: &MockState, model_id: &str) -> String {
+    state
+        .catalog_models
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"].as_str() == Some(model_id))
+        .and_then(|model| model["provider"].as_str())
+        .map(str::to_string)
+        .filter(|provider| !provider.is_empty())
+        .unwrap_or_else(|| {
+            if state.active_model.lock().unwrap().as_str() == model_id {
+                state.active_provider.lock().unwrap().clone()
+            } else {
+                "Unknown".to_string()
+            }
+        })
 }
 
 fn session_item(id: &str, model: &str) -> Value {
@@ -108,10 +141,22 @@ async fn handle_request(
         "session/new" => {
             let n = state.session_counter.fetch_add(1, Ordering::SeqCst) + 1;
             let session_id = format!("ses_test_{n}");
+            state.new_session_requests.lock().unwrap().push(params.clone());
+            let requested_model = params
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| state.active_model.lock().unwrap().clone());
+            let provider = provider_for_model(&state, &requested_model);
+            state
+                .active_by_session
+                .lock()
+                .unwrap()
+                .insert(session_id.clone(), (requested_model.clone(), provider.clone()));
             state.list_sessions.lock().unwrap().push(json!({
                 "sessionId": session_id,
                 "cwd": "/workspace",
-                "model": "claude-3-7-sonnet",
+                "model": requested_model,
                 "createdAt": 1_700_000_000.0 + n as f64,
                 "turns": 0
             }));
@@ -122,8 +167,8 @@ async fn handle_request(
                     "result": {
                         "sessionId": session_id,
                         "cwd": params.get("cwd").and_then(|v| v.as_str()).unwrap_or("/workspace"),
-                        "model": "claude-3-7-sonnet",
-                        "provider": "Anthropic"
+                        "model": requested_model,
+                        "provider": provider
                     }
                 }),
             )
@@ -234,11 +279,42 @@ async fn handle_request(
                 .as_str()
                 .unwrap_or("ses_unknown")
                 .to_string();
-            let request = state.catalog_started.fetch_add(1, Ordering::SeqCst) + 1;
-            let gate = state.catalog_gates.lock().unwrap().get(&request).cloned();
+            let is_default = sid == "default";
+            if is_default {
+                state.identity_requests.lock().unwrap().push(params.clone());
+            }
+            let request = if is_default {
+                state.identity_started.fetch_add(1, Ordering::SeqCst) + 1
+            } else {
+                state.catalog_started.fetch_add(1, Ordering::SeqCst) + 1
+            };
+            let gate = if is_default {
+                state.identity_gates.lock().unwrap().get(&request).cloned()
+            } else {
+                state.catalog_gates.lock().unwrap().get(&request).cloned()
+            };
             let failed = state.catalog_fail.load(Ordering::SeqCst);
             let models = state.catalog_models.lock().unwrap().clone();
             let error = state.catalog_error.lock().unwrap().clone();
+            let (active_model, provider) = if is_default {
+                (
+                    state.active_model.lock().unwrap().clone(),
+                    state.active_provider.lock().unwrap().clone(),
+                )
+            } else {
+                state
+                    .active_by_session
+                    .lock()
+                    .unwrap()
+                    .get(&sid)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        (
+                            state.active_model.lock().unwrap().clone(),
+                            state.active_provider.lock().unwrap().clone(),
+                        )
+                    })
+            };
             if let Some(gate) = gate {
                 gate.notified().await;
             }
@@ -251,13 +327,17 @@ async fn handle_request(
                     }),
                 )
                 .await;
-                state.catalog_finished.fetch_add(1, Ordering::SeqCst);
+                if is_default {
+                    state.identity_finished.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    state.catalog_finished.fetch_add(1, Ordering::SeqCst);
+                }
                 return;
             }
             let mut result = json!({
                 "sessionId": sid,
-                "activeModel": "claude-3-7-sonnet",
-                "provider": "Anthropic",
+                "activeModel": active_model,
+                "provider": provider,
                 "models": models,
             });
             if let Some(err) = error {
@@ -268,14 +348,24 @@ async fn handle_request(
                 json!({"jsonrpc": "2.0", "id": id, "result": result}),
             )
             .await;
-            state.catalog_finished.fetch_add(1, Ordering::SeqCst);
+            if is_default {
+                state.identity_finished.fetch_add(1, Ordering::SeqCst);
+            } else {
+                state.catalog_finished.fetch_add(1, Ordering::SeqCst);
+            }
         }
         "session/command" => {
             let sid = params["sessionId"].as_str().unwrap_or("ses_unknown").to_string();
+            let request = state.switch_started.fetch_add(1, Ordering::SeqCst) + 1;
+            state.switch_requests.lock().unwrap().push(params.clone());
+            let gate = state.switch_gates.lock().unwrap().get(&request).cloned();
             let failed = state.switch_error.load(Ordering::SeqCst);
             let unconfirmed = state.switch_unconfirmed.load(Ordering::SeqCst);
             let model = state.switch_model.lock().unwrap().clone();
             let provider = state.switch_provider.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
             let output = if failed {
                 "backend refused the switch".to_string()
             } else {
@@ -288,14 +378,25 @@ async fn handle_request(
                 result["isError"] = json!(true);
             }
             if !unconfirmed {
-                if let Some(m) = model {
+                if let Some(m) = model.clone() {
                     result["model"] = json!(m);
                 }
-                if let Some(p) = provider {
+                if let Some(p) = provider.clone() {
                     result["provider"] = json!(p);
+                }
+                if let Some(model) = model {
+                    let provider = provider.unwrap_or_else(|| provider_for_model(&state, &model));
+                    *state.active_model.lock().unwrap() = model.clone();
+                    *state.active_provider.lock().unwrap() = provider.clone();
+                    state
+                        .active_by_session
+                        .lock()
+                        .unwrap()
+                        .insert(sid, (model, provider));
                 }
             }
             send_line(writer, json!({"jsonrpc": "2.0", "id": id, "result": result})).await;
+            state.switch_finished.fetch_add(1, Ordering::SeqCst);
         }
         "session/historyContent" => {
             state.history_requests.lock().unwrap().push(params.clone());
@@ -446,6 +547,127 @@ fn submit_initial_prompt(vc: &mut VisualTestContext, view: &Entity<ChatView>, te
     });
 }
 
+#[gpui::test]
+async fn test_startup_uses_backend_model_identity_without_creating_session(
+    cx: &mut TestAppContext,
+) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    let identity_gate = Arc::new(Notify::new());
+    state
+        .identity_gates
+        .lock()
+        .unwrap()
+        .insert(1, identity_gate.clone());
+    *state.catalog_models.lock().unwrap() = vec![catalog_model(
+        "claude-3-7-sonnet",
+        "Claude 3.7 Sonnet",
+        "Anthropic",
+        false,
+    )];
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(
+        server_read,
+        server_write,
+        state.clone(),
+        shutdown_rx,
+    ));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    pump_until(&mut vc, &view, "startup identity request", |_| {
+        state.identity_started.load(Ordering::SeqCst) == 1
+    });
+    snap(&vc, &view, |v| {
+        assert!(v.shell.composer.model_pill.is_loading);
+        assert!(v.shell.composer.model_pill.model_name.is_empty());
+        assert_eq!(v.shell.composer.model_pill.display_label(), "…");
+        assert!(v.shell.active_session_id.is_none());
+    });
+
+    identity_gate.notify_one();
+    pump_until(&mut vc, &view, "backend model identity", |v| {
+        v.shell.composer.model_pill.model_name == "Claude 3.7 Sonnet"
+    });
+    snap(&vc, &view, |v| {
+        assert_eq!(v.shell.composer.model_pill.provider_name, "Anthropic");
+        assert_eq!(
+            v.shell.sidebar.provider_status.model_name,
+            "Claude 3.7 Sonnet"
+        );
+        assert!(!v.shell.composer.model_pill.is_loading);
+        assert_eq!(state.session_counter.load(Ordering::SeqCst), 0);
+        assert_eq!(state.load_started.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            state.identity_requests.lock().unwrap()[0]["sessionId"],
+            "default"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_stale_startup_identity_cannot_overwrite_new_session(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    let identity_gate = Arc::new(Notify::new());
+    state
+        .identity_gates
+        .lock()
+        .unwrap()
+        .insert(1, identity_gate.clone());
+    *state.catalog_models.lock().unwrap() = vec![
+        catalog_model("claude-3-7-sonnet", "Claude 3.7 Sonnet", "Anthropic", false),
+        catalog_model("gpt-4o", "GPT-4o", "OpenAI", false),
+    ];
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(
+        server_read,
+        server_write,
+        state.clone(),
+        shutdown_rx,
+    ));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    pump_until(&mut vc, &view, "gated startup identity", |_| {
+        state.identity_started.load(Ordering::SeqCst) == 1
+    });
+
+    *state.active_model.lock().unwrap() = "gpt-4o".to_string();
+    *state.active_provider.lock().unwrap() = "OpenAI".to_string();
+    submit_initial_prompt(&mut vc, &view, "create before startup identity returns");
+    identity_gate.notify_one();
+    pump_until(&mut vc, &view, "stale startup identity delivered", |_| {
+        state.identity_finished.load(Ordering::SeqCst) == 1
+    });
+    vc.run_until_parked();
+    snap(&vc, &view, |v| {
+        assert_eq!(v.shell.active_session_id.as_deref(), Some("ses_test_1"));
+        assert_eq!(v.shell.composer.model_pill.model_name, "gpt-4o");
+        assert_eq!(v.shell.composer.model_pill.provider_name, "OpenAI");
+    });
+}
+
 /// B28: a transport loss arms one supervised reconnect loop (Reconnecting);
 /// once the transport is back the previous session is restored from durable
 /// history rather than silently dropped or duplicated.
@@ -478,6 +700,10 @@ async fn test_supervised_reconnect_restores_session(cx: &mut TestAppContext) {
     let state_b = MockState::new();
     *state_b.load_history.lock().unwrap() =
         vec![("Recovered prompt".to_string(), "Recovered answer".to_string())];
+    *state_b.active_model.lock().unwrap() = "gpt-4o".to_string();
+    *state_b.active_provider.lock().unwrap() = "OpenAI".to_string();
+    *state_b.catalog_models.lock().unwrap() =
+        vec![catalog_model("gpt-4o", "GPT-4o", "OpenAI", false)];
     let (client_read_b, server_write_b) = tokio::io::duplex(64 * 1024);
     let (server_read_b, client_write_b) = tokio::io::duplex(64 * 1024);
     let (_shutdown_tx_b, shutdown_rx_b) = watch::channel(false);
@@ -500,6 +726,10 @@ async fn test_supervised_reconnect_restores_session(cx: &mut TestAppContext) {
             && v.shell.active_session_id.as_deref() == Some("ses_test_1")
             && last_assistant(v).map(|a| a.content.as_str()) == Some("Recovered answer")
     });
+    pump_until(&mut vc, &view, "reconnected model identity", |v| {
+        v.shell.composer.model_pill.model_name == "GPT-4o"
+            && v.shell.composer.model_pill.provider_name == "OpenAI"
+    });
     snap(&vc, &view, |v| {
         assert_eq!(last_user(v).as_deref(), Some("Recovered prompt"));
         // Exactly one supervised loop ran; the session was not duplicated.
@@ -507,6 +737,87 @@ async fn test_supervised_reconnect_restores_session(cx: &mut TestAppContext) {
             v.shell.sidebar.session_list.sessions.iter().filter(|s| s.id == "ses_test_1").count(),
             1
         );
+    });
+}
+
+#[gpui::test]
+async fn test_home_model_pick_is_forwarded_to_session_new(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    *state.catalog_models.lock().unwrap() = vec![
+        catalog_model("gpt-4o", "GPT-4o", "OpenAI", false),
+        catalog_model("o3-mini", "o3-mini", "OpenAI", false),
+    ];
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(
+        server_read,
+        server_write,
+        state.clone(),
+        shutdown_rx,
+    ));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    pump_until(&mut vc, &view, "startup identity", |_| {
+        state.identity_finished.load(Ordering::SeqCst) >= 1
+    });
+
+    vc.simulate_keystrokes("cmd-k");
+    vc.simulate_input("switch model");
+    vc.simulate_keystrokes("enter");
+    pump_until(&mut vc, &view, "Home model catalog", |v| {
+        matches!(
+            &v.shell.active_modal,
+            ActiveModal::ModelPicker(picker) if picker.is_ready()
+        )
+    });
+    vc.simulate_keystrokes("enter");
+    snap(&vc, &view, |v| {
+        assert!(v.shell.active_session_id.is_none());
+        assert_eq!(v.shell.composer.model_pill.model_name, "GPT-4o");
+        assert_eq!(v.shell.composer.model_pill.provider_name, "OpenAI");
+        assert_eq!(state.switch_started.load(Ordering::SeqCst), 0);
+        assert_eq!(state.session_counter.load(Ordering::SeqCst), 0);
+    });
+
+    vc.simulate_keystrokes("cmd-k");
+    vc.simulate_input("switch model");
+    vc.simulate_keystrokes("enter");
+    pump_until(&mut vc, &view, "Home draft picker reopen", |v| {
+        matches!(
+            &v.shell.active_modal,
+            ActiveModal::ModelPicker(picker) if picker.is_ready()
+        )
+    });
+    snap(&vc, &view, |v| {
+        let ActiveModal::ModelPicker(picker) = &v.shell.active_modal else {
+            panic!("Home picker should remain open");
+        };
+        assert_eq!(picker.selected_model_id, "gpt-4o");
+        assert_eq!(picker.selected_provider, "OpenAI");
+        assert_eq!(picker.highlighted_model().unwrap().id, "gpt-4o");
+    });
+    vc.simulate_keystrokes("escape");
+
+    submit_initial_prompt(&mut vc, &view, "create with the draft model");
+    snap(&vc, &view, |v| {
+        assert_eq!(v.shell.active_session_id.as_deref(), Some("ses_test_1"));
+        assert_eq!(v.shell.composer.model_pill.model_name, "GPT-4o");
+        assert_eq!(v.shell.composer.model_pill.provider_name, "OpenAI");
+        assert_eq!(state.switch_started.load(Ordering::SeqCst), 0);
+        let requests = state.new_session_requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["model"], "gpt-4o");
     });
 }
 
@@ -614,12 +925,12 @@ async fn test_model_catalog_fetch_and_confirmed_switch(cx: &mut TestAppContext) 
     // is highlighted; Enter selects it and dispatches the backend switch.
     vc.simulate_keystrokes("enter");
     pump_until(&mut vc, &view, "backend-confirmed model switch", |v| {
-        v.shell.composer.model_pill.model_name == "gpt-4o"
+        v.shell.composer.model_pill.model_name == "GPT-4o"
     });
     snap(&vc, &view, |v| {
         assert_eq!(v.shell.active_modal, ActiveModal::None);
         assert_eq!(v.shell.composer.model_pill.provider_name, "OpenAI");
-        assert_eq!(v.shell.sidebar.provider_status.model_name, "gpt-4o");
+        assert_eq!(v.shell.sidebar.provider_status.model_name, "GPT-4o");
         let item = v
             .shell
             .sidebar
@@ -648,8 +959,8 @@ async fn test_model_catalog_fetch_and_confirmed_switch(cx: &mut TestAppContext) 
         has_notice(v, "Model switch failed")
     });
     snap(&vc, &view, |v| {
-        assert_eq!(v.shell.composer.model_pill.model_name, "gpt-4o");
-        assert_eq!(v.shell.sidebar.provider_status.model_name, "gpt-4o");
+        assert_eq!(v.shell.composer.model_pill.model_name, "GPT-4o");
+        assert_eq!(v.shell.sidebar.provider_status.model_name, "GPT-4o");
     });
 }
 
@@ -863,6 +1174,73 @@ async fn test_model_catalog_stale_responses_and_navigation_are_rejected(cx: &mut
     vc.run_until_parked();
     snap(&vc, &view, |v| {
         assert_eq!(v.shell.active_modal, ActiveModal::None);
+    });
+}
+
+#[gpui::test]
+async fn test_stale_model_switch_cannot_overwrite_home_identity(cx: &mut TestAppContext) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let state = MockState::new();
+    let switch_gate = Arc::new(Notify::new());
+    state
+        .switch_gates
+        .lock()
+        .unwrap()
+        .insert(1, switch_gate.clone());
+    *state.catalog_models.lock().unwrap() =
+        vec![catalog_model("gpt-4o", "GPT-4o", "OpenAI", false)];
+    *state.switch_model.lock().unwrap() = Some("gpt-4o".to_string());
+    *state.switch_provider.lock().unwrap() = Some("OpenAI".to_string());
+
+    let (client_read, server_write) = tokio::io::duplex(64 * 1024);
+    let (server_read, client_write) = tokio::io::duplex(64 * 1024);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    rt.spawn(run_mock_server(
+        server_read,
+        server_write,
+        state.clone(),
+        shutdown_rx,
+    ));
+
+    let bridge = AcpBridge::new();
+    rt.block_on(bridge.connect_streams(client_read, client_write))
+        .expect("ACP handshake");
+    let (view, mut vc) = build_view(cx, &rt, &bridge);
+    submit_initial_prompt(&mut vc, &view, "start a conversation");
+
+    vc.simulate_keystrokes("cmd-k");
+    vc.simulate_input("switch model");
+    vc.simulate_keystrokes("enter");
+    pump_until(&mut vc, &view, "model picker", |v| {
+        matches!(
+            &v.shell.active_modal,
+            ActiveModal::ModelPicker(picker) if picker.is_ready()
+        )
+    });
+    vc.simulate_keystrokes("enter");
+    pump_until(&mut vc, &view, "gated model switch", |_| {
+        state.switch_started.load(Ordering::SeqCst) == 1
+    });
+    snap(&vc, &view, |v| {
+        assert_eq!(v.shell.composer.model_pill.model_name, "claude-3-7-sonnet");
+    });
+
+    vc.simulate_keystrokes("cmd-n");
+    switch_gate.notify_one();
+    pump_until(&mut vc, &view, "stale switch response", |_| {
+        state.switch_finished.load(Ordering::SeqCst) == 1
+    });
+    vc.run_until_parked();
+    snap(&vc, &view, |v| {
+        assert!(v.shell.active_session_id.is_none());
+        assert_eq!(v.shell.composer.model_pill.model_name, "claude-3-7-sonnet");
+        assert_eq!(v.shell.composer.model_pill.provider_name, "Anthropic");
+        assert!(!has_notice(v, "Model switch"));
     });
 }
 

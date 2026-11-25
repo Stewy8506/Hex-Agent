@@ -138,7 +138,12 @@ impl AppShell {
     /// Open Model Picker over the live backend catalog (B32).
     pub fn open_model_picker(&mut self, models: Vec<crate::ui::modals::ModelEntry>) {
         let current_model = self.composer.model_pill.model_name.clone();
-        self.show_model_picker(ModelPickerModal::new(current_model, models));
+        let current_provider = self.composer.model_pill.provider_name.clone();
+        self.show_model_picker(ModelPickerModal::new(
+            current_model,
+            current_provider,
+            models,
+        ));
     }
 
     pub fn show_model_picker(&mut self, picker: ModelPickerModal) {

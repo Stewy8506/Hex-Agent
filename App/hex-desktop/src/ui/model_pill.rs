@@ -28,13 +28,19 @@ pub struct ModelSelectorPill {
     pub provider_name: String,
     pub model_name: String,
     pub is_picker_open: bool,
+    pub is_loading: bool,
 }
 
 impl Default for ModelSelectorPill {
     fn default() -> Self {
         // Neutral until the runtime reports the real model; never fabricate
         // a model identity before session adoption.
-        Self::new("HEX", "Select model")
+        Self {
+            provider_name: String::new(),
+            model_name: String::new(),
+            is_picker_open: false,
+            is_loading: true,
+        }
     }
 }
 
@@ -44,12 +50,20 @@ impl ModelSelectorPill {
             provider_name: provider_name.into(),
             model_name: model_name.into(),
             is_picker_open: false,
+            is_loading: false,
         }
     }
 
     pub fn set_model(&mut self, provider_name: impl Into<String>, model_name: impl Into<String>) {
         self.provider_name = provider_name.into();
         self.model_name = model_name.into();
+        self.is_loading = false;
+    }
+
+    pub fn set_loading(&mut self) {
+        self.provider_name.clear();
+        self.model_name.clear();
+        self.is_loading = true;
     }
 
     pub fn toggle_picker(&mut self) {
@@ -61,7 +75,11 @@ impl ModelSelectorPill {
     }
 
     pub fn display_label(&self) -> &str {
-        &self.model_name
+        if self.model_name.is_empty() {
+            "…"
+        } else {
+            &self.model_name
+        }
     }
 
     /// Renders the compact model pill button (mockup `.pill`: bg `#1f1f1f`,
@@ -69,7 +87,7 @@ impl ModelSelectorPill {
     /// hover `#272727`).
     pub fn render(&self, theme: &HermesTheme) -> Div {
         crate::ui::pill::mockup_pill(theme)
-            .child(self.model_name.clone())
+            .child(self.display_label().to_string())
             .child(crate::ui::pill::mockup_pill_chevron())
     }
 }

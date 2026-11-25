@@ -52,6 +52,10 @@ impl ModelEntry {
         )
     }
 
+    pub fn display_label(&self) -> String {
+        model_display_name(&self.id, &self.provider, std::slice::from_ref(self))
+    }
+
     /// Check if model matches a search query.
     pub fn matches(&self, query: &str) -> bool {
         let q = query.trim().to_lowercase();
@@ -63,6 +67,29 @@ impl ModelEntry {
             || self.display_name.to_lowercase().contains(&q)
             || self.provider.to_lowercase().contains(&q)
     }
+}
+
+pub fn model_display_name(model_id: &str, provider: &str, models: &[ModelEntry]) -> String {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return String::new();
+    }
+
+    models
+        .iter()
+        .find(|model| {
+            model.id == model_id
+                && (provider.trim().is_empty() || model.provider.trim() == provider.trim())
+        })
+        .map(|model| {
+            let label = model.display_name.trim();
+            if label.is_empty() {
+                model.id.clone()
+            } else {
+                label.to_string()
+            }
+        })
+        .unwrap_or_else(|| model_id.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +105,8 @@ enum ModelPickerRow {
     Model(usize),
 }
 
-pub type ModelSelectHandler = Rc<dyn Fn(String, &ClickEvent, &mut Window, &mut App)>;
+pub type ModelSelectHandler =
+    Rc<dyn Fn(String, String, &ClickEvent, &mut Window, &mut App)>;
 pub type ModelRetryHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 /// Model Picker modal state and rendering.
@@ -86,6 +114,7 @@ pub type ModelRetryHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 pub struct ModelPickerModal {
     pub models: Vec<ModelEntry>,
     pub selected_model_id: String,
+    pub selected_provider: String,
     pub highlighted_index: usize,
     pub search_query: String,
     pub status: ModelPickerStatus,
@@ -99,6 +128,7 @@ impl PartialEq for ModelPickerModal {
     fn eq(&self, other: &Self) -> bool {
         self.models == other.models
             && self.selected_model_id == other.selected_model_id
+            && self.selected_provider == other.selected_provider
             && self.highlighted_index == other.highlighted_index
             && self.search_query == other.search_query
             && self.status == other.status
@@ -110,15 +140,25 @@ impl PartialEq for ModelPickerModal {
 
 impl ModelPickerModal {
     /// Create a picker over the live backend catalog, highlighting the active model.
-    pub fn new(current_model: impl Into<String>, models: Vec<ModelEntry>) -> Self {
+    pub fn new(
+        current_model: impl Into<String>,
+        current_provider: impl Into<String>,
+        models: Vec<ModelEntry>,
+    ) -> Self {
         let selected_model_id = current_model.into();
+        let selected_provider = current_provider.into();
         let highlighted_index = models
             .iter()
-            .position(|m| m.id == selected_model_id)
+            .position(|m| {
+                m.id == selected_model_id
+                    && (selected_provider.trim().is_empty()
+                        || m.provider.trim() == selected_provider.trim())
+            })
             .unwrap_or(0);
         let picker = Self {
             models,
             selected_model_id,
+            selected_provider,
             highlighted_index,
             search_query: String::new(),
             status: ModelPickerStatus::Ready,
@@ -133,12 +173,14 @@ impl ModelPickerModal {
 
     pub fn loading(
         current_model: impl Into<String>,
+        current_provider: impl Into<String>,
         request_id: u64,
         session_id: Option<String>,
     ) -> Self {
         Self {
             models: Vec::new(),
             selected_model_id: current_model.into(),
+            selected_provider: current_provider.into(),
             highlighted_index: 0,
             search_query: String::new(),
             status: ModelPickerStatus::Loading,
@@ -164,14 +206,30 @@ impl ModelPickerModal {
         }
     }
 
-    pub fn set_catalog(&mut self, models: Vec<ModelEntry>, warning: Option<String>) {
+    pub fn set_catalog(
+        &mut self,
+        models: Vec<ModelEntry>,
+        active_model: impl Into<String>,
+        active_provider: impl Into<String>,
+        warning: Option<String>,
+    ) {
         self.models = models;
+        let active_model = active_model.into();
+        let active_provider = active_provider.into();
+        if !active_model.trim().is_empty() {
+            self.selected_model_id = active_model;
+            self.selected_provider = active_provider;
+        }
         self.warning = warning;
         self.status = ModelPickerStatus::Ready;
         self.highlighted_index = self
             .filtered_models()
             .iter()
-            .position(|model| model.id == self.selected_model_id)
+            .position(|model| {
+                model.id == self.selected_model_id
+                    && (self.selected_provider.trim().is_empty()
+                        || model.provider.trim() == self.selected_provider.trim())
+            })
             .unwrap_or(0);
         self.scroll_highlighted_into_view();
     }
@@ -281,9 +339,12 @@ impl ModelPickerModal {
         if !self.is_ready() {
             return None;
         }
-        if let Some(m) = self.highlighted_model() {
-            let id = m.id.clone();
+        if let Some((id, provider)) = self
+            .highlighted_model()
+            .map(|model| (model.id.clone(), model.provider.clone()))
+        {
             self.selected_model_id = id.clone();
+            self.selected_provider = provider;
             Some(id)
         } else {
             None
@@ -447,6 +508,7 @@ impl ModelPickerModal {
         let rows = Self::rows_for(&models);
         let highlighted_index = self.highlighted_index;
         let selected_model_id = self.selected_model_id.clone();
+        let selected_provider = self.selected_provider.clone();
         let scroll_handle = self.scroll_handle.clone();
         let motion_owner = motion.owner;
         let list = uniform_list(
@@ -466,6 +528,7 @@ impl ModelPickerModal {
                             &models[*index],
                             *index,
                             &selected_model_id,
+                            &selected_provider,
                             *index == highlighted_index,
                             &theme,
                             motion,
@@ -491,7 +554,7 @@ impl ModelPickerModal {
 }
 
 fn model_row_id(model: &ModelEntry) -> SharedString {
-    SharedString::from(format!("model_row_{}", model.id))
+    SharedString::from(format!("model_row_{}_{}", model.id, model.provider))
 }
 
 fn render_provider_row(provider: &str, theme: HermesTheme) -> Div {
@@ -511,14 +574,18 @@ fn render_model_row(
     model: &ModelEntry,
     index: usize,
     selected_model_id: &str,
+    selected_provider: &str,
     is_highlighted: bool,
     theme: &HermesTheme,
     motion: ModalMotion<'_>,
     on_select: ModelSelectHandler,
 ) -> Stateful<Div> {
-    let is_selected = model.id == selected_model_id;
+    let is_selected = model.id == selected_model_id
+        && (selected_provider.trim().is_empty()
+            || model.provider.trim() == selected_provider.trim());
     let dot_color = provider_dot_color(&model.provider, theme);
     let model_id = model.id.clone();
+    let model_provider = model.provider.clone();
     let mut row = div()
         .h_full()
         .w_full()
@@ -565,7 +632,7 @@ fn render_model_row(
                         } else {
                             theme.mockup_text_muted
                         })
-                        .child(model.display_name.clone()),
+                        .child(model.display_label()),
                 ),
         )
         .child(
@@ -614,7 +681,9 @@ fn render_model_row(
         .h(px(MODEL_PICKER_ROW_HEIGHT))
         .w_full()
         .cursor_pointer()
-        .on_click(move |event, window, cx| on_select(model_id.clone(), event, window, cx))
+        .on_click(move |event, window, cx| {
+            on_select(model_id.clone(), model_provider.clone(), event, window, cx)
+        })
         .child(row)
 }
 
@@ -670,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_model_picker_uses_backend_catalog_and_filtering() {
-        let mut picker = ModelPickerModal::new("gpt-4o", catalog());
+        let mut picker = ModelPickerModal::new("gpt-4o", "OpenAI", catalog());
         assert_eq!(picker.selected_model_id, "gpt-4o");
         assert_eq!(picker.highlighted_index, 0);
         assert_eq!(picker.models.len(), 3);
@@ -690,7 +759,7 @@ mod tests {
 
     #[test]
     fn test_model_picker_selection_and_shortcuts() {
-        let mut picker = ModelPickerModal::new("gpt-4o", catalog());
+        let mut picker = ModelPickerModal::new("gpt-4o", "OpenAI", catalog());
         picker.set_search("");
 
         // Move down
@@ -705,26 +774,53 @@ mod tests {
 
     #[test]
     fn test_model_picker_highlights_active_model_wherever_it_sits() {
-        let picker = ModelPickerModal::new("qwen2.5-coder-32b", catalog());
+        let picker = ModelPickerModal::new("qwen2.5-coder-32b", "Local", catalog());
         assert_eq!(picker.highlighted_index, 2);
         assert_eq!(picker.highlighted_model().unwrap().id, "qwen2.5-coder-32b");
     }
 
     #[test]
+    fn test_model_picker_authoritative_catalog_updates_selection() {
+        let mut picker = ModelPickerModal::loading("stale-model", "Old provider", 1, None);
+        picker.set_catalog(catalog(), "qwen2.5-coder-32b", "Local", None);
+        assert_eq!(picker.selected_model_id, "qwen2.5-coder-32b");
+        assert_eq!(picker.selected_provider, "Local");
+        assert_eq!(picker.highlighted_index, 2);
+        assert_eq!(picker.highlighted_model().unwrap().display_label(), "Qwen (Ollama)");
+    }
+
+    #[test]
+    fn test_model_picker_keeps_provider_pair_for_duplicate_ids() {
+        let models = vec![
+            ModelEntry::new("shared-id", "Cloud Shared", "OpenAI", false),
+            ModelEntry::new("shared-id", "Local Shared", "Local", true),
+        ];
+        let picker = ModelPickerModal::new("shared-id", "Local", models.clone());
+        assert_eq!(picker.highlighted_index, 1);
+        assert_eq!(picker.highlighted_model().unwrap().display_label(), "Local Shared");
+        assert_ne!(model_row_id(&models[0]), model_row_id(&models[1]));
+    }
+
+    #[test]
     fn test_model_picker_empty_catalog_selects_nothing() {
-        let mut picker = ModelPickerModal::new("gpt-4o", Vec::new());
+        let mut picker = ModelPickerModal::new("gpt-4o", "OpenAI", Vec::new());
         assert_eq!(picker.handle_key("enter"), None);
         assert_eq!(picker.selected_model_id, "gpt-4o");
     }
 
     #[test]
     fn loading_and_error_states_cannot_select_stale_models() {
-        let mut picker = ModelPickerModal::loading("gpt-4o", 7, Some("ses_1".into()));
+        let mut picker = ModelPickerModal::loading("gpt-4o", "OpenAI", 7, Some("ses_1".into()));
         assert!(picker.is_loading());
         assert_eq!(picker.handle_key("enter"), None);
 
         picker.set_search("o3");
-        picker.set_catalog(catalog(), Some("Local probe timed out".into()));
+        picker.set_catalog(
+            catalog(),
+            "o3-mini",
+            "OpenAI",
+            Some("Local probe timed out".into()),
+        );
         assert!(picker.is_ready());
         assert_eq!(picker.highlighted_model().unwrap().id, "o3-mini");
         assert_eq!(picker.warning.as_deref(), Some("Local probe timed out"));
@@ -737,7 +833,7 @@ mod tests {
 
     #[test]
     fn keyboard_navigation_targets_virtual_rows_and_stable_ids() {
-        let mut picker = ModelPickerModal::new("gpt-4o", catalog());
+        let mut picker = ModelPickerModal::new("gpt-4o", "OpenAI", catalog());
         assert_eq!(
             picker.rows(),
             vec![

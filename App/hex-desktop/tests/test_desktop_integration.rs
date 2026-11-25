@@ -322,7 +322,7 @@ fn test_model_picker_workflow() {
         ModelEntry::new("o3-mini", "o3-mini", "OpenAI", false),
         ModelEntry::new("qwen2.5-coder-32b", "Qwen (Ollama)", "Local", true),
     ];
-    let mut picker = ModelPickerModal::new("claude-3-7-sonnet", catalog);
+    let mut picker = ModelPickerModal::new("claude-3-7-sonnet", "Anthropic", catalog);
     assert_eq!(picker.selected_model_id, "claude-3-7-sonnet");
 
     // Filter by provider ("openai")

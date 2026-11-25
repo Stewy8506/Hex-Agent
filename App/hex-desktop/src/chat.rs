@@ -29,7 +29,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use hex_protocol::error::AcpError;
 use hex_protocol::models::{
-    ApprovalDecisionResponse, CloudAuthStatus, CloudUpdatePlan, PagedSessionLoad,
+    ApprovalDecisionResponse, CloudAuthStatus, CloudUpdatePlan, ModelCatalog, PagedSessionLoad,
     SessionNewResponse, SessionPromptResponse,
 };
 
@@ -47,7 +47,9 @@ use crate::ui::modals::account::{AccountAction, AccountMode};
 use crate::ui::modals::approval::{
     ApprovalHandler, ApprovalInteraction, ToolApprovalChoice, ToolApprovalResult,
 };
-use crate::ui::modals::model_picker::{ModelPickerModal, ModelRetryHandler, ModelSelectHandler};
+use crate::ui::modals::model_picker::{
+    model_display_name, ModelPickerModal, ModelRetryHandler, ModelSelectHandler,
+};
 use crate::ui::modals::palette::PaletteActionHandler;
 use crate::ui::modals::session_actions::{
     SessionActionHandler, SessionActionModal, SessionActionMode, SessionActionOutcome,
@@ -176,6 +178,9 @@ struct SessionState {
     feed: MessageFeed,
     draft: String,
     attachments: Vec<String>,
+    model_id: Option<String>,
+    current_model: String,
+    current_provider: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -393,6 +398,7 @@ pub struct ChatView {
     session_load_generation: u64,
     session_list_generation: u64,
     model_picker_generation: u64,
+    model_identity_generation: u64,
     session_title_revisions: HashMap<String, u64>,
     title_hydration_in_flight: HashSet<String>,
     title_hydration_attempted: HashSet<String>,
@@ -406,6 +412,8 @@ pub struct ChatView {
     current_model: String,
     current_provider: String,
     model_id: Option<String>,
+    model_catalog: Vec<ModelEntry>,
+    draft_model_manual: bool,
     /// B28: one supervised reconnect loop at a time; re-armed on every loss.
     supervisor_active: bool,
     /// Phase 2 routing: the app opens on the Home start screen.
@@ -474,10 +482,10 @@ impl ChatView {
         } else {
             ProviderState::Offline
         };
-        // Honest identity until session/new reports the real provider/model.
-        shell.sidebar.provider_status.provider_name = "HEX".to_string();
+        // Honest identity until the runtime reports the real provider/model.
+        shell.sidebar.provider_status.provider_name = String::new();
         shell.sidebar.provider_status.model_name = String::new();
-        shell.composer.model_pill.set_model("HEX", "connecting…");
+        shell.composer.model_pill.set_loading();
 
         let mut view = Self {
             shell,
@@ -510,6 +518,7 @@ impl ChatView {
             session_load_generation: 0,
             session_list_generation: 0,
             model_picker_generation: 0,
+            model_identity_generation: 0,
             session_title_revisions: HashMap::new(),
             title_hydration_in_flight: HashSet::new(),
             title_hydration_attempted: HashSet::new(),
@@ -518,8 +527,10 @@ impl ChatView {
             running_turns: HashSet::new(),
             turn_assistants: HashMap::new(),
             current_model: String::new(),
-            current_provider: "HEX".to_string(),
+            current_provider: String::new(),
             model_id: None,
+            model_catalog: Vec::new(),
+            draft_model_manual: false,
             supervisor_active: false,
             show_home: true,
             pending_home_prompt: None,
@@ -684,6 +695,129 @@ impl ChatView {
     // Backend lifecycle
     // ------------------------------------------------------------------
 
+    fn provider_for_model(&self, model_id: &str, reported_provider: String) -> String {
+        let reported_provider = reported_provider.trim().to_string();
+        if !reported_provider.is_empty() {
+            return reported_provider;
+        }
+
+        self.model_catalog
+            .iter()
+            .find(|model| model.id == model_id)
+            .map(|model| model.provider.trim().to_string())
+            .filter(|provider| !provider.is_empty())
+            .unwrap_or_else(|| {
+                if self.current_model == model_id {
+                    self.current_provider.clone()
+                } else {
+                    String::new()
+                }
+            })
+    }
+
+    fn update_model_identity(&mut self, model_id: String, provider: String) {
+        let model_id = model_id.trim().to_string();
+        let provider = provider.trim().to_string();
+        let label = model_display_name(&model_id, &provider, &self.model_catalog);
+        self.current_model = model_id.clone();
+        self.model_id = (!model_id.is_empty()).then(|| model_id.clone());
+        self.current_provider = provider;
+        self.shell
+            .composer
+            .model_pill
+            .set_model(self.current_provider.clone(), label.clone());
+        self.shell.sidebar.provider_status.provider_name = self.current_provider.clone();
+        self.shell.sidebar.provider_status.model_name = label;
+        if let Some(active_id) = &self.shell.active_session_id {
+            if let Some(item) = self
+                .shell
+                .sidebar
+                .session_list
+                .sessions
+                .iter_mut()
+                .find(|session| &session.id == active_id)
+            {
+                item.model_name = Some(model_id);
+            }
+        }
+    }
+
+    fn apply_model_catalog(&mut self, catalog: ModelCatalog, preserve_home_draft: bool) {
+        let entries = catalog
+            .models
+            .iter()
+            .map(ModelEntry::from_catalog)
+            .collect::<Vec<_>>();
+        let active_model = catalog.active_model.trim().to_string();
+        let reported_provider = catalog.provider.trim().to_string();
+        let matched_provider = entries
+            .iter()
+            .find(|model| {
+                model.id == active_model
+                    && (reported_provider.is_empty()
+                        || model.provider.trim() == reported_provider)
+            })
+            .map(|model| model.provider.clone())
+            .unwrap_or_default();
+        self.model_catalog = entries;
+
+        if active_model.is_empty()
+            || (preserve_home_draft && self.draft_model_manual && self.model_id.is_some())
+        {
+            return;
+        }
+
+        let provider = self.provider_for_model(
+            &active_model,
+            if !reported_provider.is_empty() {
+                reported_provider
+            } else {
+                matched_provider
+            },
+        );
+        self.update_model_identity(active_model, provider);
+    }
+
+    fn request_model_identity(&mut self, cx: &mut Context<Self>) {
+        if !self.bridge.is_connected() {
+            if self.current_model.is_empty() {
+                self.shell.composer.model_pill.set_loading();
+            }
+            return;
+        }
+
+        self.model_identity_generation = self.model_identity_generation.wrapping_add(1);
+        let generation = self.model_identity_generation;
+        let session_id = self.shell.active_session_id.clone();
+        let sid = session_id.clone().unwrap_or_else(|| "default".to_string());
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt.spawn(async move { bridge.list_models(&sid).await }).await;
+            this.update(cx, |view, cx| {
+                if view.model_identity_generation != generation
+                    || view.shell.active_session_id != session_id
+                {
+                    return;
+                }
+
+                match res {
+                    Ok(Ok(catalog)) => {
+                        view.apply_model_catalog(catalog, session_id.is_none());
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        let model = view.current_model.clone();
+                        let provider = view.current_provider.clone();
+                        view.update_model_identity(model, provider);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn start_backend(&mut self, cx: &mut Context<Self>) {
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
@@ -707,10 +841,11 @@ impl ChatView {
                 }
             }
             this.update(cx, |view, cx| {
-                view.shell.composer.model_pill.set_model("HEX", "ready");
-                view.shell.sidebar.provider_status.model_name = "Ready".to_string();
+                view.shell.composer.model_pill.set_loading();
+                view.shell.sidebar.provider_status.model_name.clear();
                 view.sync_transport_state();
                 view.refresh_session_list(cx);
+                view.request_model_identity(cx);
                 cx.notify();
             })
             .ok();
@@ -725,6 +860,7 @@ impl ChatView {
             return;
         }
         self.supervisor_active = true;
+        self.model_identity_generation = self.model_identity_generation.wrapping_add(1);
         self.shell.sidebar.provider_status.state = ProviderState::Reconnecting;
         cx.notify();
 
@@ -760,6 +896,9 @@ impl ChatView {
         let Some(previous) = self.shell.active_session_id.clone() else {
             self.shell.sidebar.provider_status.state = ProviderState::Connected;
             self.refresh_session_list(cx);
+            if self.model_id.is_none() {
+                self.request_model_identity(cx);
+            }
             cx.notify();
             return;
         };
@@ -1459,6 +1598,7 @@ impl ChatView {
     fn begin_session_navigation(&mut self) -> u64 {
         self.session_load_generation = self.session_load_generation.wrapping_add(1);
         self.model_picker_generation = self.model_picker_generation.wrapping_add(1);
+        self.model_identity_generation = self.model_identity_generation.wrapping_add(1);
         self.shell
             .modal_queue
             .retain(|modal| !matches!(modal, ActiveModal::ModelPicker(_)));
@@ -1584,6 +1724,9 @@ impl ChatView {
                     feed,
                     draft,
                     attachments,
+                    model_id: self.model_id.clone(),
+                    current_model: self.current_model.clone(),
+                    current_provider: self.current_provider.clone(),
                 },
             );
         }
@@ -1607,15 +1750,9 @@ impl ChatView {
             .sidebar
             .add_session(SessionItem::new(id.clone(), "New Chat").with_model(resp.model.clone()));
         self.shell.select_session(id);
-        self.current_model = resp.model.clone();
-        self.model_id = Some(resp.model.clone());
-        self.current_provider = resp.provider.clone().unwrap_or_else(|| "HEX".to_string());
-        self.shell
-            .composer
-            .model_pill
-            .set_model(self.current_provider.clone(), resp.model.clone());
-        self.shell.sidebar.provider_status.provider_name = self.current_provider.clone();
-        self.shell.sidebar.provider_status.model_name = resp.model.clone();
+        let provider =
+            self.provider_for_model(&resp.model, resp.provider.clone().unwrap_or_default());
+        self.update_model_identity(resp.model.clone(), provider);
         self.home_connection_error = None;
         let home_prompt = self.pending_home_prompt.take();
         if let Some(text) = home_prompt {
@@ -1701,13 +1838,8 @@ impl ChatView {
                 }
             }
         }
-        self.current_model = load.model.clone();
-        self.model_id = Some(load.model.clone());
-        self.shell
-            .composer
-            .model_pill
-            .set_model(self.current_provider.clone(), load.model.clone());
-        self.shell.sidebar.provider_status.model_name = load.model;
+        self.update_model_identity(load.model.clone(), String::new());
+        self.request_model_identity(cx);
         self.sync_transport_state();
         cx.notify();
     }
@@ -1730,16 +1862,32 @@ impl ChatView {
         let transition = self.capture_session_transition(!was_home);
         self.show_home = false;
         let generation = self.begin_session_navigation();
-        if let Some(state) = self.sessions.remove(&id) {
+        if let Some(SessionState {
+            feed,
+            draft,
+            attachments,
+            model_id,
+            current_model,
+            current_provider,
+        }) = self.sessions.remove(&id)
+        {
             self.pending_session_transition = Some(transition);
             self.save_active_session();
             self.clear_attachment_motion(cx);
-            self.shell.feed = state.feed;
+            self.shell.feed = feed;
             self.force_feed_resync();
-            self.set_editor_content(state.draft, cx);
-            self.attachments = state.attachments;
+            self.set_editor_content(draft, cx);
+            self.attachments = attachments;
+            self.current_model = current_model;
+            self.model_id = model_id;
+            self.current_provider = current_provider;
+            self.update_model_identity(
+                self.current_model.clone(),
+                self.current_provider.clone(),
+            );
             self.shell.select_session(id);
             self.sync_transport_state();
+            self.request_model_identity(cx);
             cx.notify();
             return;
         }
@@ -2211,6 +2359,15 @@ impl ChatView {
         self.pending_home_prompt = None;
         self.show_home = true;
         self.home_connection_error = None;
+        if !self.draft_model_manual {
+            self.current_model.clear();
+            self.current_provider.clear();
+            self.model_id = None;
+            self.shell.composer.model_pill.set_loading();
+            self.shell.sidebar.provider_status.provider_name.clear();
+            self.shell.sidebar.provider_status.model_name.clear();
+            self.request_model_identity(cx);
+        }
         self.sync_transport_state();
         cx.notify();
     }
@@ -2782,10 +2939,11 @@ impl ChatView {
         self.model_picker_generation = self.model_picker_generation.wrapping_add(1);
         let request_id = self.model_picker_generation;
         let mut picker = ModelPickerModal::loading(
-            self.shell.composer.model_pill.model_name.clone(),
+            self.model_id.clone().unwrap_or_default(),
+            self.current_provider.clone(),
             request_id,
-            session_id,
-            );
+            session_id.clone(),
+        );
         if !search_query.is_empty() {
             picker.set_search(search_query);
         }
@@ -2807,25 +2965,64 @@ impl ChatView {
                 .spawn(async move { bridge.list_models(&sid).await })
                 .await;
             this.update(cx, |view, cx| {
-                if view.model_picker_generation != request_id {
+                if view.model_picker_generation != request_id
+                    || view.shell.active_session_id != session_id
+                {
                     return;
                 }
-                let Some(picker) = view.model_picker_mut(request_id) else {
-                    return;
-                };
                 match res {
                     Ok(Ok(catalog)) => {
-                            let entries = catalog
-                                .models
-                                .iter()
-                                .map(ModelEntry::from_catalog)
-                                .collect();
-                        picker.set_catalog(entries, catalog.error.clone());
+                        let entries: Vec<ModelEntry> = catalog
+                            .models
+                            .iter()
+                            .map(ModelEntry::from_catalog)
+                            .collect();
+                        let active_model = catalog.active_model.clone();
+                        let active_provider = catalog.provider.clone();
+                        let warning = catalog.error.clone();
+                        let preserve_home_draft = session_id.is_none() && view.draft_model_manual;
+                        if preserve_home_draft {
+                            view.model_catalog = entries.clone();
+                        } else {
+                            view.apply_model_catalog(catalog, session_id.is_none());
                         }
-                    Ok(Err(err)) => {
-                        picker.set_error(format!("Could not load the model catalog: {err}"))
+                        let (selected_model, selected_provider) = if preserve_home_draft {
+                            (
+                                view.model_id.clone().unwrap_or_default(),
+                                view.current_provider.clone(),
+                            )
+                        } else {
+                            let selected_model = view
+                                .model_id
+                                .clone()
+                                .filter(|model| !model.is_empty())
+                                .unwrap_or(active_model);
+                            let selected_provider = if view.current_provider.trim().is_empty() {
+                                active_provider
+                            } else {
+                                view.current_provider.clone()
+                            };
+                            (selected_model, selected_provider)
+                        };
+                        if let Some(picker) = view.model_picker_mut(request_id) {
+                            picker.set_catalog(
+                                entries,
+                                selected_model,
+                                selected_provider,
+                                warning,
+                            );
+                        }
                     }
-                    Err(err) => picker.set_error(format!("Model catalog task aborted: {err}")),
+                    Ok(Err(err)) => {
+                        if let Some(picker) = view.model_picker_mut(request_id) {
+                            picker.set_error(format!("Could not load the model catalog: {err}"));
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(picker) = view.model_picker_mut(request_id) {
+                            picker.set_error(format!("Model catalog task aborted: {err}"));
+                        }
+                    }
                 }
                 cx.notify();
             })
@@ -3076,12 +3273,19 @@ impl ChatView {
         }
     }
 
-    /// B32: apply a model choice only once the backend confirms the switch.
-    fn apply_model_choice(&mut self, model_id: String, cx: &mut Context<Self>) {
+    /// Session switches apply only after backend confirmation; Home picks are draft state.
+    fn apply_model_choice(
+        &mut self,
+        model_id: String,
+        selected_provider: String,
+        cx: &mut Context<Self>,
+    ) {
         let Some(sid) = self.shell.active_session_id.clone() else {
-            self.shell
-                .feed
-                .add_system_notice("No active session — cannot switch model.");
+            self.model_identity_generation = self.model_identity_generation.wrapping_add(1);
+            self.draft_model_manual = true;
+            let provider = self.provider_for_model(&model_id, selected_provider);
+            self.update_model_identity(model_id, provider);
+            self.home_connection_error = None;
             cx.notify();
             return;
         };
@@ -3092,6 +3296,8 @@ impl ChatView {
             cx.notify();
             return;
         }
+        let generation = self.model_picker_generation;
+        self.model_identity_generation = self.model_identity_generation.wrapping_add(1);
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         let spawn_sid = sid.clone();
@@ -3100,31 +3306,19 @@ impl ChatView {
                 .spawn(async move { bridge.set_session_model(&spawn_sid, &model_id).await })
                 .await;
             this.update(cx, |view, cx| {
+                if view.model_picker_generation != generation
+                    || view.shell.active_session_id.as_deref() != Some(sid.as_str())
+                {
+                    return;
+                }
                 match res {
                     Ok(Ok(resp)) if resp.is_error != Some(true) => {
                         if let Some(confirmed) = resp.model {
-                            view.model_id = Some(confirmed.clone());
-                            view.current_model = confirmed.clone();
-                            if let Some(prov) = resp.provider {
-                                view.current_provider = prov;
-                            }
-                            view.shell
-                                .composer
-                                .model_pill
-                                .set_model(view.current_provider.clone(), confirmed.clone());
-                            view.shell.sidebar.provider_status.provider_name =
-                                view.current_provider.clone();
-                            view.shell.sidebar.provider_status.model_name = confirmed.clone();
-                            if let Some(item) = view
-                                .shell
-                                .sidebar
-                                .session_list
-                                .sessions
-                                .iter_mut()
-                                .find(|s| s.id == sid)
-                            {
-                                item.model_name = Some(confirmed);
-                            }
+                            let provider = view.provider_for_model(
+                                &confirmed,
+                                resp.provider.clone().unwrap_or(selected_provider),
+                            );
+                            view.update_model_identity(confirmed, provider);
                         } else {
                             view.shell.feed.add_system_notice(format!(
                                 "Model switch was not confirmed: {}",
@@ -3279,8 +3473,9 @@ impl ChatView {
                     return true;
                 }
                 if let Some(model_id) = picker.handle_key(key) {
+                    let provider = picker.selected_provider.clone();
                     self.shell.dismiss_modal();
-                    self.apply_model_choice(model_id, cx);
+                    self.apply_model_choice(model_id, provider, cx);
                     return true;
                 }
                 if matches!(
@@ -4706,7 +4901,7 @@ impl ChatView {
                                 .min_w_0()
                                 .flex_1()
                                 .truncate()
-                                .child(self.shell.composer.model_pill.model_name.clone()),
+                                .child(self.shell.composer.model_pill.display_label().to_string()),
                         )
                         .child(mockup_pill_chevron()),
                 ),
@@ -6023,7 +6218,7 @@ impl ChatView {
                 let retry_view = view.clone();
                 let retry_session_id = session_id.clone();
                 let on_select: ModelSelectHandler =
-                    std::rc::Rc::new(move |model_id, _event, _window, cx| {
+                    std::rc::Rc::new(move |model_id, provider, _event, _window, cx| {
                         view.update(cx, |this, cx| {
                             let current = match &this.shell.active_modal {
                                 ActiveModal::ModelPicker(picker) => picker,
@@ -6036,7 +6231,7 @@ impl ChatView {
                                 return;
                             }
                             this.shell.dismiss_modal();
-                            this.apply_model_choice(model_id, cx);
+                            this.apply_model_choice(model_id, provider, cx);
                         })
                         .ok();
                     });
@@ -7077,6 +7272,9 @@ mod tests {
                         feed: feed_b,
                         draft: String::new(),
                         attachments: Vec::new(),
+                        model_id: None,
+                        current_model: String::new(),
+                        current_provider: String::new(),
                     },
                 );
                 view.sessions.insert(
@@ -7085,6 +7283,9 @@ mod tests {
                         feed: feed_c,
                         draft: String::new(),
                         attachments: Vec::new(),
+                        model_id: None,
+                        current_model: String::new(),
+                        current_provider: String::new(),
                     },
                 );
                 view.sync_session_transition(window, cx);
@@ -7370,7 +7571,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn cached_session_switch_preserves_attachments(cx: &mut TestAppContext) {
+    fn cached_session_switch_preserves_draft_attachments_and_model(cx: &mut TestAppContext) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -7395,22 +7596,32 @@ mod tests {
                 view.shell.select_session("a".to_string());
                 view.content = "Draft A".to_string();
                 view.attachments = vec!["a.txt".to_string()];
+                view.model_id = Some("model-a".to_string());
+                view.current_model = "model-a".to_string();
+                view.current_provider = "Provider A".to_string();
                 view.sessions.insert(
                     "b".to_string(),
                     SessionState {
                         feed: MessageFeed::new(),
                         draft: "Draft B".to_string(),
                         attachments: vec!["b.txt".to_string()],
+                        model_id: Some("model-b".to_string()),
+                        current_model: "model-b".to_string(),
+                        current_provider: "Provider B".to_string(),
                     },
                 );
 
                 view.switch_session("b".to_string(), cx);
                 assert_eq!(view.content, "Draft B");
                 assert_eq!(view.attachments, vec!["b.txt".to_string()]);
+                assert_eq!(view.shell.composer.model_pill.model_name, "model-b");
+                assert_eq!(view.shell.composer.model_pill.provider_name, "Provider B");
 
                 view.switch_session("a".to_string(), cx);
                 assert_eq!(view.content, "Draft A");
                 assert_eq!(view.attachments, vec!["a.txt".to_string()]);
+                assert_eq!(view.shell.composer.model_pill.model_name, "model-a");
+                assert_eq!(view.shell.composer.model_pill.provider_name, "Provider A");
             });
         });
     }
