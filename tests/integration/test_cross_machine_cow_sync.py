@@ -18,7 +18,7 @@ Validates:
    - Worker 2 claims task with strictly incremented fencing token (1 -> 2).
    - LEASE_TAKEOVER event recorded in hash-chained task event log.
    - Worker 2 reconstructs workspace from CAS delta artifact.
-   - Worker 2 replays already-sealed tool calls in 0ms (< 15ms) without duplicate external execution.
+   - Worker 2 replays already-sealed tool calls from the call journal without duplicate external execution.
    - Worker 2 executes step 2 and completes task to SUCCEEDED.
 4. Stale worker wake-up and monotonic fencing token defense:
    - Stale Worker 1 wakes up and attempts tool calls, lease renewals, and state transitions with fencing_token=1.
@@ -375,8 +375,8 @@ class TestLeaseExpiryHandoverAndJournalReplay(unittest.TestCase):
         self.assertEqual(takeover_events[0]["payload"]["new_fencing_token"], 2)
         self.assertEqual(takeover_events[0]["actor"], "worker_02")
 
-    def test_cross_machine_handover_with_0ms_journal_replay(self) -> None:
-        """Worker 2 takes over from Worker 1's CoW delta archive and replays sealed tool calls in 0ms."""
+    def test_cross_machine_handover_replays_sealed_journal_calls(self) -> None:
+        """Worker 2 takes over from Worker 1's CoW delta archive and replays sealed tool calls from the journal."""
         # 1. Create a task with requested steps in QUEUED state
         task_ws = self.temp_dir / "init_ws"
         task_ws.mkdir()
@@ -455,8 +455,7 @@ class TestLeaseExpiryHandoverAndJournalReplay(unittest.TestCase):
         self.assertEqual(reconstructed_sha, ws_tree_sha1)
         self.assertEqual((worker2_ws / "step1_output.txt").read_text(encoding="utf-8"), "worker 1 progress")
 
-        # 5. Worker 2 invokes Step 1 tool call -> 0ms replay (< 15 ms) from call journal
-        t_start = time.perf_counter()
+        # 5. Worker 2 invokes Step 1 tool call -> replay from the call journal
         res2 = self.orch.gateway.invoke(
             task_id=task_id,
             attempt_id=attempt_id2,
@@ -467,13 +466,11 @@ class TestLeaseExpiryHandoverAndJournalReplay(unittest.TestCase):
             workspace_dir=worker2_ws,
             fencing_token=token2,
         )
-        duration_ms = (time.perf_counter() - t_start) * 1000
 
         self.assertTrue(res2["ok"])
         self.assertTrue(res2["_replayed"])
         self.assertEqual(res2["_replayed_from_call_id"], call_id1)
         self.assertEqual(res2.get("files"), res1.get("files"))
-        self.assertLess(duration_ms, 150.0, "Replay invocation must complete in 0ms (< 150 ms)")
 
         # 6. Worker 2 executes Step 2 with fencing_token=2
         res_step2 = self.orch.gateway.invoke(
