@@ -169,7 +169,9 @@ pub fn open_chat_window(
         .map(|display| config.centered_on_display(display.bounds()));
     let options = config.window_options(bounds);
     cx.open_window(options, move |_window, cx| {
-        cx.new(|cx| ChatView::new(bridge.clone(), rt.clone(), workspace.clone(), cx))
+        let view = cx.new(|cx| ChatView::new(bridge.clone(), rt.clone(), workspace.clone(), cx));
+        view.update(cx, |view, cx| view.start_backend(cx));
+        view
     })
 }
 
@@ -554,7 +556,6 @@ impl ChatView {
             thought_starts: HashMap::new(),
         };
         view.start_event_pump(cx);
-        view.start_backend(cx);
         view.start_git_branch_lookup(cx);
         view.refresh_cloud_status(cx);
         view
@@ -817,7 +818,7 @@ impl ChatView {
         .detach();
     }
 
-    fn start_backend(&mut self, cx: &mut Context<Self>) {
+    pub fn start_backend(&mut self, cx: &mut Context<Self>) {
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {

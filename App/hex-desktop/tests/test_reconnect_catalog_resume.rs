@@ -534,6 +534,9 @@ fn build_view(
     let (view, vc) = cx.add_window_view(|_window, cx| {
         ChatView::new(bridge.clone(), rt.handle().clone(), workspace.clone(), cx)
     });
+    vc.update(|_window, cx| {
+        view.update(cx, |view, cx| view.start_backend(cx));
+    });
     (view, vc.clone())
 }
 

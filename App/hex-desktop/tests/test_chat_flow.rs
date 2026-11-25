@@ -453,6 +453,9 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     let (view, vc) = cx.add_window_view(|_window, cx| {
         ChatView::new(bridge.clone(), rt.handle().clone(), workspace.clone(), cx)
     });
+    vc.update(|_window, cx| {
+        view.update(cx, |view, cx| view.start_backend(cx));
+    });
 
     // 1. Startup connects and lists durable sessions without creating a chat.
     pump_until(vc, &view, "session list refresh", |v| {
