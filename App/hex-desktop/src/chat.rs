@@ -4459,15 +4459,28 @@ impl ChatView {
     /// Opens the native file picker and stages the picked files as prompt
     /// attachments (deduped; the runtime enforces its own count/size budget).
     fn open_file_picker(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = rfd::FileDialog::new()
+        // A synchronous modal nests the macOS run loop while GPUI holds AppCell.
+        let dialog = rfd::AsyncFileDialog::new()
             .set_title("Attach files")
+            .set_parent(window)
             .pick_files();
-        if let Some(paths) = picked {
-            for path in paths {
-                self.stage_attachment(path.to_string_lossy().to_string(), window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if let Some(paths) = dialog.await {
+                let _ = cx.update(|window, cx| {
+                    let _ = this.update(cx, |view, cx| {
+                        for path in paths {
+                            view.stage_attachment(
+                                path.path().to_string_lossy().to_string(),
+                                window,
+                                cx,
+                            );
+                        }
+                        cx.notify();
+                    });
+                });
             }
-            cx.notify();
-        }
+        })
+        .detach();
     }
 
     fn stage_attachment(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
