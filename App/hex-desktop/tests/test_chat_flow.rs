@@ -57,6 +57,8 @@ struct MockState {
     tool_responses: AtomicUsize,
     tools_delay_ms: AtomicU64,
     config_error: StdMutex<Option<String>>,
+    config_revision: StdMutex<String>,
+    config_sets: StdMutex<Vec<Value>>,
     tools_error: StdMutex<Option<String>>,
     skills_output: StdMutex<String>,
     skills_error: StdMutex<Option<String>>,
@@ -70,6 +72,38 @@ async fn send_line(writer: &Arc<AsyncMutex<DuplexStream>>, value: Value) {
     let mut w = writer.lock().await;
     w.write_all(line.as_bytes()).await.unwrap();
     w.flush().await.unwrap();
+}
+
+fn mock_config_result(revision: &str) -> Value {
+    json!({
+        "path": "~/.hex/config.yaml",
+        "workspace": "/workspace",
+        "dataDir": "/workspace/.hex/data",
+        "config": {
+            "model": {
+                "cloudProvider": "anthropic",
+                "cloudModelId": "claude-3-7-sonnet",
+                "reasoningEffort": "medium",
+                "profile": "cloud"
+            },
+            "runtime": { "maxTurns": 24 },
+            "webSearch": { "provider": "brave" },
+            "cloud": { "baseUrl": "" },
+            "learning": { "autoReflect": "off" }
+        },
+        "options": {
+            "model.reasoningEffort": ["none", "low", "medium", "high"],
+            "model.profile": ["cloud", "local", "hybrid"]
+        },
+        "schema": {
+            "version": 1,
+            "fields": {
+                "model.reasoningEffort": {"kind": "choice", "options": ["none", "low", "medium", "high"]},
+                "runtime.maxTurns": {"kind": "int", "min": 1, "max": 1000}
+            }
+        },
+        "revision": revision
+    })
 }
 
 async fn send_update(writer: &Arc<AsyncMutex<DuplexStream>>, params: Value) {
@@ -149,32 +183,67 @@ async fn handle_request(
                 .await;
                 return;
             }
+            let revision = {
+                let stored = state.config_revision.lock().unwrap();
+                if stored.is_empty() {
+                    "sha256:mock-v1".to_string()
+                } else {
+                    stored.clone()
+                }
+            };
             send_line(
                 &writer,
                 json!({
                     "jsonrpc": "2.0", "id": id,
-                    "result": {
-                        "path": "~/.hex/config.yaml",
-                        "workspace": "/workspace",
-                        "dataDir": "/workspace/.hex/data",
-                        "config": {
-                            "model": {
-                                "cloudProvider": "anthropic",
-                                "cloudModelId": "claude-3-7-sonnet",
-                                "reasoningEffort": "medium",
-                                "profile": "cloud"
-                            },
-                            "runtime": { "maxTurns": 24 },
-                            "webSearch": { "provider": "brave" },
-                            "cloud": { "baseUrl": "" },
-                            "learning": { "autoReflect": "off" }
-                        },
-                        "options": {
-                            "model.reasoningEffort": ["none", "low", "medium", "high"],
-                            "model.profile": ["cloud", "local", "hybrid"]
-                        }
-                    }
+                    "result": mock_config_result(&revision)
                 }),
+            )
+            .await;
+        }
+        "config/set" => {
+            state.config_sets.lock().unwrap().push(params.clone());
+            let current = {
+                let mut stored = state.config_revision.lock().unwrap();
+                if stored.is_empty() {
+                    *stored = "sha256:mock-v1".to_string();
+                }
+                stored.clone()
+            };
+            if params.get("expectedRevision").and_then(Value::as_str)
+                != Some(current.as_str())
+            {
+                send_line(
+                    &writer,
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": {
+                            "code": -32001,
+                            "message": "Config changed since it was loaded; reload settings and try again.",
+                            "data": {"reason": "config_revision_conflict", "actualRevision": current}
+                        }
+                    }),
+                )
+                .await;
+                return;
+            }
+            *state.config_revision.lock().unwrap() = "sha256:mock-v2".to_string();
+            let changed = params["updates"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .flat_map(|(section, values)| {
+                    values
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(move |key| format!("{section}.{key}"))
+                })
+                .collect::<Vec<_>>();
+            let mut result = mock_config_result("sha256:mock-v2");
+            result["changed"] = json!(changed);
+            send_line(
+                &writer,
+                json!({"jsonrpc": "2.0", "id": id, "result": result}),
             )
             .await;
         }
@@ -1545,6 +1614,91 @@ fn test_connected_settings_load_runtime_config_and_tool_inventory(cx: &mut TestA
         assert_eq!(modal.dirty_count(), 0);
         assert_eq!(modal.selected_action(), None);
     });
+}
+
+#[gpui::test]
+fn test_connected_settings_save_sends_loaded_revision(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "revision-aware settings load", |view| {
+        matches!(&view.shell.active_modal, ActiveModal::Settings(modal)
+            if !modal.load_failed && modal.revision.as_deref() == Some("sha256:mock-v1"))
+    });
+
+    click_debug_element(vc, "settings_section_models");
+    click_debug_element(vc, "settings_row_2");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(modal.dirty_updates(), json!({"model": {"reasoningEffort": "high"}}));
+    });
+    click_debug_element(vc, "settings_save_row");
+    pump_until(vc, &view, "revision-aware settings save", |view| {
+        matches!(&view.shell.active_modal, ActiveModal::Settings(modal)
+            if modal.revision.as_deref() == Some("sha256:mock-v2") && !modal.busy)
+    });
+
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(modal.dirty_count(), 0);
+        assert!(modal.error.is_none());
+        assert!(modal.status.as_deref().unwrap().starts_with("Saved 1 key"));
+    });
+    let requests = state.config_sets.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["expectedRevision"], "sha256:mock-v1");
+    assert_eq!(requests[0]["updates"], json!({"model": {"reasoningEffort": "high"}}));
+}
+
+#[gpui::test]
+fn test_settings_revision_conflict_preserves_local_and_runtime_edits(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "settings before external edit", |view| {
+        matches!(&view.shell.active_modal, ActiveModal::Settings(modal)
+            if !modal.load_failed && modal.revision.is_some())
+    });
+
+    click_debug_element(vc, "settings_section_appearance");
+    click_debug_element(vc, "settings_row_0");
+    click_debug_element(vc, "settings_section_models");
+    click_debug_element(vc, "settings_row_2");
+    *state.config_revision.lock().unwrap() = "sha256:external".to_string();
+    click_debug_element(vc, "settings_save_row");
+    pump_until(vc, &view, "settings revision conflict", |view| {
+        matches!(&view.shell.active_modal, ActiveModal::Settings(modal)
+            if modal.error.as_deref().is_some_and(|error| error.contains("changed elsewhere")))
+    });
+
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(modal.revision.as_deref(), Some("sha256:external"));
+        assert_eq!(modal.desktop_dirty_count(), 0);
+        assert_eq!(modal.desktop_preferences.theme, ThemePreset::Midnight);
+        assert_eq!(modal.dirty_updates(), json!({"model": {"reasoningEffort": "high"}}));
+        assert!(modal.error.as_deref().unwrap().starts_with("Desktop preferences saved."));
+    });
+    let requests = state.config_sets.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["expectedRevision"], "sha256:mock-v1");
+    drop(requests);
+
+    click_debug_element(vc, "settings_save_row");
+    pump_until(vc, &view, "settings save after conflict", |view| {
+        matches!(&view.shell.active_modal, ActiveModal::Settings(modal)
+            if modal.revision.as_deref() == Some("sha256:mock-v2") && !modal.busy)
+    });
+    let requests = state.config_sets.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["expectedRevision"], "sha256:external");
+    assert_eq!(requests[1]["updates"], json!({"model": {"reasoningEffort": "high"}}));
 }
 
 #[gpui::test]

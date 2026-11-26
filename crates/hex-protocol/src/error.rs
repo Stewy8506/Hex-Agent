@@ -1,7 +1,7 @@
 //! Error types for ACP client and protocol communication.
 
 use thiserror::Error;
-use crate::models::JsonRpcError;
+use crate::models::{JsonRpcError, JSONRPC_CONFIG_REVISION_CONFLICT};
 
 #[derive(Debug, Error)]
 pub enum AcpError {
@@ -28,4 +28,24 @@ pub enum AcpError {
 
     #[error("Process exited with status code: {0:?}")]
     ProcessExited(Option<i32>),
+}
+
+impl AcpError {
+    pub fn is_config_revision_conflict(&self) -> bool {
+        matches!(
+            self,
+            Self::Rpc(error) if error.code == JSONRPC_CONFIG_REVISION_CONFLICT
+        )
+    }
+
+    pub fn config_revision_conflict_revision(&self) -> Option<&str> {
+        match self {
+            Self::Rpc(error) if error.code == JSONRPC_CONFIG_REVISION_CONFLICT => error
+                .data
+                .as_ref()?
+                .get("actualRevision")?
+                .as_str(),
+            _ => None,
+        }
+    }
 }

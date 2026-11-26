@@ -753,6 +753,7 @@ pub struct SettingsModal {
     pub data_dir: String,
     pub fields: Vec<SettingField>,
     pub options: serde_json::Value,
+    pub revision: Option<String>,
     pub originals: HashMap<String, String>,
     pub desktop_preferences: DesktopPreferences,
     desktop_originals: DesktopPreferences,
@@ -784,6 +785,7 @@ impl PartialEq for SettingsModal {
             && self.data_dir == other.data_dir
             && self.fields == other.fields
             && self.options == other.options
+            && self.revision == other.revision
             && self.originals == other.originals
             && self.desktop_preferences == other.desktop_preferences
             && self.desktop_originals == other.desktop_originals
@@ -827,6 +829,7 @@ impl Default for SettingsModal {
             data_dir: String::new(),
             fields,
             options: serde_json::Value::Null,
+            revision: None,
             originals,
             desktop_preferences: desktop_preferences.clone(),
             desktop_originals: desktop_preferences,
@@ -985,6 +988,7 @@ impl SettingsModal {
         self.workspace = view.workspace.clone();
         self.data_dir = view.data_dir.clone();
         self.options = view.options.clone();
+        self.revision = view.revision.clone();
         self.fields = fields;
         self.originals = originals;
         self.selected = self
@@ -1009,6 +1013,7 @@ impl SettingsModal {
 
     pub fn mark_load_failed(&mut self, message: impl Into<String>) {
         self.load_failed = true;
+        self.revision = None;
         self.error = Some(message.into());
     }
 
@@ -1905,6 +1910,8 @@ impl SettingsModal {
             data_dir: view.data_dir.clone(),
             config: view.config.clone(),
             options: view.options.clone(),
+            schema: view.schema.clone(),
+            revision: view.revision.clone(),
         };
         self.apply_view(&getter);
         self.busy = false;
@@ -2602,7 +2609,8 @@ mod tests {
             "options": {
                 "model.reasoningEffort": ["none", "low", "medium", "high"],
                 "model.profile": ["cloud", "local", "hybrid", "antigravity_hybrid"]
-            }
+            },
+            "revision": "sha256:sample"
         }))
         .expect("valid view")
     }
@@ -2613,6 +2621,30 @@ mod tests {
         modal.mark_load_failed("config/get failed: permission denied");
         assert!(modal.load_failed);
         assert_eq!(modal.error.as_deref(), Some("config/get failed: permission denied"));
+    }
+
+    #[test]
+    fn test_apply_view_tracks_revision_and_save_rebases_it() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        assert_eq!(modal.revision.as_deref(), Some("sha256:sample"));
+
+        let saved = hex_protocol::models::ConfigSetResponse {
+            path: "~/.hex/config.yaml".to_string(),
+            workspace: "/ws".to_string(),
+            data_dir: "/ws/.hex/data".to_string(),
+            config: sample_view().config,
+            options: sample_view().options,
+            schema: None,
+            revision: Some("sha256:saved".to_string()),
+            changed: vec!["model.reasoningEffort".to_string()],
+        };
+        modal.apply_saved(&saved);
+        assert_eq!(modal.revision.as_deref(), Some("sha256:saved"));
+        assert!(!modal.busy);
+
+        modal.mark_load_failed("reload failed");
+        assert_eq!(modal.revision, None);
     }
 
     #[test]

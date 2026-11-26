@@ -301,6 +301,7 @@ impl fmt::Display for SessionStatus {
 // ---------------------------------------------------------------------------
 
 pub const HEX_CONTRACT_VERSION: u32 = 1;
+pub const JSONRPC_CONFIG_REVISION_CONFLICT: i64 = -32001;
 pub const HEX_FEATURE_SETTINGS_READ: &str = "settings.read";
 pub const HEX_FEATURE_SETTINGS_WRITE: &str = "settings.write";
 pub const HEX_FEATURE_TOOLS_LIST: &str = "tools.list";
@@ -683,6 +684,37 @@ pub struct SettingsConfig {
     pub learning: Option<LearningSettings>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigSettingKind {
+    Text,
+    Choice,
+    Int,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigSettingSpec {
+    pub kind: ConfigSettingKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigSettingsSchema {
+    pub version: u32,
+    pub fields: std::collections::BTreeMap<String, ConfigSettingSpec>,
+}
+
 /// Result of `config/get` / `config/set`. `options` maps dotted keys to the
 /// backend's allowed choice vocabularies (single source of truth for pickers).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -693,6 +725,10 @@ pub struct ConfigGetResponse {
     pub data_dir: String,
     pub config: SettingsConfig,
     pub options: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<ConfigSettingsSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 /// Result of `config/set`; `changed` lists the dotted keys written.
@@ -704,6 +740,10 @@ pub struct ConfigSetResponse {
     pub data_dir: String,
     pub config: SettingsConfig,
     pub options: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<ConfigSettingsSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
     pub changed: Vec<String>,
 }
 
@@ -1206,6 +1246,68 @@ mod tests {
         assert_eq!(init_resp.server_info.name, "HEX");
         assert!(init_resp.capabilities.session.streaming);
         assert!(!init_resp.capabilities.tools.list_changed);
+    }
+
+    #[test]
+    fn test_config_settings_schema_and_revision_deserialize() {
+        let response: ConfigGetResponse = serde_json::from_value(serde_json::json!({
+            "path": "/ws/config.yaml",
+            "workspace": "/ws",
+            "dataDir": "/ws/.hex/data",
+            "config": {"runtime": {"maxTurns": 90}},
+            "options": {},
+            "schema": {
+                "version": 1,
+                "fields": {
+                    "model.cloudProvider": {
+                        "kind": "text",
+                        "required": true,
+                        "maxLength": 500
+                    },
+                    "model.reasoningEffort": {
+                        "kind": "choice",
+                        "options": ["low", "high"]
+                    },
+                    "runtime.maxTurns": {"kind": "int", "min": 1, "max": 1000}
+                }
+            },
+            "revision": "sha256:abc"
+        }))
+        .unwrap();
+
+        let schema = response.schema.unwrap();
+        assert_eq!(schema.version, 1);
+        let provider = &schema.fields["model.cloudProvider"];
+        assert_eq!(provider.kind, ConfigSettingKind::Text);
+        assert_eq!(provider.required, Some(true));
+        assert_eq!(provider.max_length, Some(500));
+        let turns = &schema.fields["runtime.maxTurns"];
+        assert_eq!(turns.kind, ConfigSettingKind::Int);
+        assert_eq!(turns.min, Some(1));
+        assert_eq!(turns.max, Some(1000));
+        assert_eq!(response.revision.as_deref(), Some("sha256:abc"));
+    }
+
+    #[test]
+    fn test_legacy_config_response_has_no_schema_or_revision() {
+        let response: ConfigGetResponse = serde_json::from_value(serde_json::json!({
+            "path": "/ws/config.yaml",
+            "workspace": "/ws",
+            "dataDir": "/ws/.hex/data",
+            "config": {},
+            "options": {}
+        }))
+        .unwrap();
+        assert!(response.schema.is_none());
+        assert!(response.revision.is_none());
+    }
+
+    #[test]
+    fn test_config_schema_rejects_unknown_setting_kind() {
+        let result = serde_json::from_value::<ConfigSettingSpec>(serde_json::json!({
+            "kind": "secret"
+        }));
+        assert!(result.is_err());
     }
 
     #[test]

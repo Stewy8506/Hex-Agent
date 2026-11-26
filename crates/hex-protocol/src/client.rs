@@ -757,9 +757,13 @@ impl AcpClient {
     pub async fn config_set(
         &self,
         updates: serde_json::Value,
+        expected_revision: Option<&str>,
     ) -> Result<ConfigSetResponse, AcpError> {
-        self.send_request("config/set", serde_json::json!({ "updates": updates }))
-            .await
+        let mut params = serde_json::json!({ "updates": updates });
+        if let Some(revision) = expected_revision {
+            params["expectedRevision"] = serde_json::json!(revision);
+        }
+        self.send_request("config/set", params).await
     }
 
     /// Query available tools from the ACP server.

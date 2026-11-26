@@ -7,8 +7,8 @@ use tokio::sync::Mutex;
 
 use hex_protocol::{
     AcpClient, ClientInfo, DiffLineType, HEX_CONTRACT_VERSION, HEX_FEATURE_SETTINGS_READ,
-    HEX_FEATURE_SETTINGS_WRITE, InitializeResponse, JsonRpcRequest, SessionNewResponse,
-    SessionPromptResponse, UnifiedDiff,
+    HEX_FEATURE_SETTINGS_WRITE, InitializeResponse, JSONRPC_CONFIG_REVISION_CONFLICT, JsonRpcRequest,
+    SessionNewResponse, SessionPromptResponse, UnifiedDiff,
 };
 
 #[tokio::test]
@@ -217,6 +217,107 @@ async fn test_legacy_initialize_response_remains_supported() {
     assert_eq!(response.hex_contract_version, None);
     assert!(!response.supports_settings_read());
     assert!(!client.supports_feature(HEX_FEATURE_SETTINGS_WRITE).await);
+}
+
+#[tokio::test]
+async fn test_config_revision_roundtrip_conflict_and_legacy_write() {
+    let (client_read, mut server_write) = tokio::io::duplex(16384);
+    let (server_read, client_write) = tokio::io::duplex(16384);
+    let client = AcpClient::from_streams(client_read, client_write);
+
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let mut revision = "sha256:loaded";
+        for _ in 0..4 {
+            let line = lines.next_line().await.unwrap().unwrap();
+            let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+            let response = match req.method.as_str() {
+                "config/get" => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "result": {
+                        "path": "/ws/config.yaml",
+                        "workspace": "/ws",
+                        "dataDir": "/ws/.hex/data",
+                        "config": {"runtime": {"maxTurns": 24}},
+                        "options": {},
+                        "schema": {
+                            "version": 1,
+                            "fields": {
+                                "runtime.maxTurns": {"kind": "int", "min": 1, "max": 1000}
+                            }
+                        },
+                        "revision": "sha256:loaded"
+                    }
+                }),
+                "config/set" => {
+                    let expected = req.params.as_ref().unwrap()["expectedRevision"].as_str();
+                    if expected == Some(revision) || expected.is_none() {
+                        revision = "sha256:saved";
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": req.id,
+                            "result": {
+                                "path": "/ws/config.yaml",
+                                "workspace": "/ws",
+                                "dataDir": "/ws/.hex/data",
+                                "config": {"runtime": {"maxTurns": 48}},
+                                "options": {},
+                                "revision": "sha256:saved",
+                                "changed": ["runtime.maxTurns"]
+                            }
+                        })
+                    } else {
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": req.id,
+                            "error": {
+                                "code": JSONRPC_CONFIG_REVISION_CONFLICT,
+                                "message": "Config changed since it was loaded",
+                                "data": {"actualRevision": "sha256:external"}
+                            }
+                        })
+                    }
+                }
+                other => panic!("unexpected method {other}"),
+            };
+            server_write
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+
+    let loaded = client.config_get().await.unwrap();
+    assert_eq!(loaded.revision.as_deref(), Some("sha256:loaded"));
+    assert_eq!(loaded.schema.unwrap().version, 1);
+    let saved = client
+        .config_set(
+            serde_json::json!({"runtime": {"maxTurns": 48}}),
+            Some("sha256:loaded"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.revision.as_deref(), Some("sha256:saved"));
+    assert_eq!(saved.changed, ["runtime.maxTurns"]);
+
+    let conflict = client
+        .config_set(
+            serde_json::json!({"runtime": {"maxTurns": 72}}),
+            Some("sha256:loaded"),
+        )
+        .await
+        .unwrap_err();
+    assert!(conflict.is_config_revision_conflict());
+    assert_eq!(
+        conflict.config_revision_conflict_revision(),
+        Some("sha256:external")
+    );
+
+    client
+        .config_set(serde_json::json!({"runtime": {"maxTurns": 72}}), None)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

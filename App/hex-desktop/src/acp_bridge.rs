@@ -546,10 +546,13 @@ impl AcpBridge {
     pub async fn set_config(
         &self,
         updates: serde_json::Value,
+        expected_revision: Option<String>,
     ) -> Result<hex_protocol::models::ConfigSetResponse, AcpError> {
         let client_opt = self.client.lock().await.clone();
         if let Some(client) = client_opt {
-            client.config_set(updates).await
+            client
+                .config_set(updates, expected_revision.as_deref())
+                .await
         } else {
             Err(AcpError::ConnectionClosed)
         }

@@ -6034,6 +6034,11 @@ impl ChatView {
             return;
         }
         let bridge = self.bridge.clone();
+        let expected_revision = if let ActiveModal::Settings(modal) = &self.shell.active_modal {
+            modal.revision.clone()
+        } else {
+            None
+        };
         if !bridge.is_connected() {
             if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
                 modal.busy = false;
@@ -6056,7 +6061,7 @@ impl ChatView {
         let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
             let res = rt
-                .spawn(async move { bridge.set_config(updates).await })
+                .spawn(async move { bridge.set_config(updates, expected_revision).await })
                 .await;
             this.update(cx, |view, cx| {
                 if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
@@ -6074,8 +6079,28 @@ impl ChatView {
                         }
                         Ok(Err(err)) => {
                             modal.busy = false;
+                            let message = if err.is_config_revision_conflict() {
+                                if let Some(revision) = err.config_revision_conflict_revision() {
+                                    modal.revision = Some(revision.to_string());
+                                    concat!(
+                                        "Runtime settings changed elsewhere. Your edits were kept; ",
+                                        "save again to apply them to the latest config."
+                                    )
+                                    .to_string()
+                                } else {
+                                    concat!(
+                                        "Runtime settings changed elsewhere. Close and reopen Settings ",
+                                        "to load the latest values before saving again."
+                                    )
+                                    .to_string()
+                                }
+                            } else {
+                                format!("Runtime save failed: {err}")
+                            };
                             modal.error = Some(if desktop_saved {
-                                format!("Desktop preferences saved. Runtime save failed: {err}")
+                                format!("Desktop preferences saved. {message}")
+                            } else if err.is_config_revision_conflict() {
+                                message
                             } else {
                                 format!("Save failed: {err}")
                             });

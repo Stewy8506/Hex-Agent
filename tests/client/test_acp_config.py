@@ -7,12 +7,14 @@ credentials.env and must never be writable through this surface.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from hex_cli.acp import CONFIG_SCHEMA, ACPServer
+from hex_cli.acp import CONFIG_REVISION_CONFLICT, CONFIG_SCHEMA, ACPServer
 
 SAMPLE_CONFIG = """\
 model:
@@ -71,6 +73,33 @@ class TestConfigSurface(unittest.TestCase):
         # Unrelated config sections are never echoed.
         self.assertNotIn("totally_unrelated", json.dumps(view))
 
+        expected_revision = "sha256:" + hashlib.sha256(
+            SAMPLE_CONFIG.encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(view["revision"], expected_revision)
+        self.assertEqual(view["schema"]["version"], 1)
+        fields = view["schema"]["fields"]
+        self.assertEqual(
+            fields["model.cloudProvider"],
+            {"kind": "text", "required": True, "maxLength": 500},
+        )
+        self.assertEqual(
+            fields["runtime.maxTurns"],
+            {"kind": "int", "min": 1, "max": 1000},
+        )
+        self.assertEqual(
+            fields["model.reasoningEffort"]["options"],
+            list(CONFIG_SCHEMA["model"]["reasoning_effort"]["options"]),
+        )
+        self.assertEqual(
+            set(fields),
+            {
+                f"{ACPServer._camel(section)}.{ACPServer._camel(key)}"
+                for section, keys in CONFIG_SCHEMA.items()
+                for key in keys
+            },
+        )
+
     def test_config_get_hides_absent_keys(self) -> None:
         self.cfg.write_text("model:\n  cloud_provider: openai\n", encoding="utf-8")
         view = self._get()
@@ -79,11 +108,13 @@ class TestConfigSurface(unittest.TestCase):
         self.assertNotIn("learning", view["config"])
 
     def test_config_set_round_trip_and_preserves_unrelated_sections(self) -> None:
+        loaded_revision = self._get()["revision"]
         resp = self.server.handle_request(
             _req(
                 2,
                 "config/set",
                 {
+                    "expectedRevision": loaded_revision,
                     "updates": {
                         "model": {"reasoningEffort": "high"},
                         "cloud": {"baseUrl": "http://127.0.0.1:8787"},
@@ -100,6 +131,9 @@ class TestConfigSurface(unittest.TestCase):
         self.assertEqual(result["config"]["model"]["reasoningEffort"], "high")
         self.assertEqual(result["config"]["cloud"]["baseUrl"], "http://127.0.0.1:8787")
         self.assertEqual(result["config"]["learning"]["autoReflect"], "idle")
+        self.assertNotEqual(result["revision"], loaded_revision)
+        self.assertEqual(result["revision"], self._get()["revision"])
+        self.assertEqual(result["schema"], self._get()["schema"])
 
         raw = self.cfg.read_text(encoding="utf-8")
         self.assertIn("reasoning_effort: high", raw)
@@ -136,6 +170,78 @@ class TestConfigSurface(unittest.TestCase):
                 self.assertIn("error", resp, label)
         # None of the rejected writes touched the file.
         self.assertIn("reasoning_effort: low", self.cfg.read_text(encoding="utf-8"))
+
+    def test_config_set_rejects_stale_revision_without_writing(self) -> None:
+        loaded_revision = self._get()["revision"]
+        changed_config = SAMPLE_CONFIG.replace("reasoning_effort: low", "reasoning_effort: high")
+        changed_config = changed_config.replace("keep_me: true", "keep_me: false")
+        self.cfg.write_text(changed_config, encoding="utf-8")
+        actual_revision = self._get()["revision"]
+
+        resp = self.server.handle_request(
+            _req(
+                2,
+                "config/set",
+                {
+                    "expectedRevision": loaded_revision,
+                    "updates": {"runtime": {"maxTurns": 120}},
+                },
+            )
+        )
+        self.assertEqual(resp["error"]["code"], CONFIG_REVISION_CONFLICT)
+        self.assertEqual(
+            resp["error"]["data"],
+            {
+                "reason": "config_revision_conflict",
+                "expectedRevision": loaded_revision,
+                "actualRevision": actual_revision,
+            },
+        )
+        self.assertEqual(self.cfg.read_text(encoding="utf-8"), changed_config)
+
+    def test_concurrent_writes_with_same_revision_allow_only_one(self) -> None:
+        loaded_revision = self._get()["revision"]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    self.server.handle_request,
+                    _req(
+                        request_id,
+                        "config/set",
+                        {
+                            "expectedRevision": loaded_revision,
+                            "updates": {"runtime": {"maxTurns": max_turns}},
+                        },
+                    ),
+                )
+                for request_id, max_turns in [(2, 111), (3, 222)]
+            ]
+            responses = [future.result() for future in futures]
+
+        self.assertEqual(sum("result" in response for response in responses), 1)
+        conflict = next(response for response in responses if "error" in response)
+        self.assertEqual(conflict["error"]["code"], CONFIG_REVISION_CONFLICT)
+        raw = self.cfg.read_text(encoding="utf-8")
+        self.assertNotEqual("max_turns: 111" in raw, "max_turns: 222" in raw)
+        self.assertEqual(self._get()["revision"], conflict["error"]["data"]["actualRevision"])
+
+    def test_config_set_rejects_invalid_expected_revision(self) -> None:
+        original = self.cfg.read_text(encoding="utf-8")
+        for revision in [1, True, "", "   ", [], {}]:
+            with self.subTest(revision=revision):
+                resp = self.server.handle_request(
+                    _req(
+                        2,
+                        "config/set",
+                        {
+                            "expectedRevision": revision,
+                            "updates": {"runtime": {"maxTurns": 120}},
+                        },
+                    )
+                )
+                self.assertEqual(resp["error"]["code"], -32602)
+                self.assertIn("expectedRevision", resp["error"]["message"])
+                self.assertEqual(self.cfg.read_text(encoding="utf-8"), original)
 
     def test_config_set_accepts_snake_case_wire_keys(self) -> None:
         resp = self.server.handle_request(

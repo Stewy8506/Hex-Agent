@@ -20,6 +20,7 @@ Dispatched methods:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -38,7 +39,7 @@ from typing import Any
 from harness_core import __version__
 from harness_core.config_loader import (
     ConfigParseError,
-    parse_config_yaml,
+    parse_config_yaml_text,
     write_config_yaml_atomic,
 )
 from harness_core.core.reasoning_effort import EFFORT_LADDER
@@ -615,6 +616,18 @@ HEX_CONTRACT_FEATURES = (
     "skills.list",
 )
 
+CONFIG_SCHEMA_VERSION = 1
+CONFIG_TEXT_MAX_LENGTH = 500
+CONFIG_REVISION_CONFLICT = -32001
+
+
+class ConfigRevisionConflict(Exception):
+    def __init__(self, expected_revision: str, actual_revision: str) -> None:
+        super().__init__("Config changed since it was loaded; reload settings and try again.")
+        self.expected_revision = expected_revision
+        self.actual_revision = actual_revision
+
+
 # DX3 settings surface: the only config.yaml sections/keys a client may read
 # through config/get or write through config/set. Values always live in the
 # config file; secrets (API keys, tokens) stay in credentials.env and are
@@ -670,6 +683,7 @@ class ACPServer:
         self.pending_approvals: dict[str, Any] = {}
         self.approval_bridge: Any | None = None
         self._lock = threading.Lock()
+        self._config_lock = threading.RLock()
         self._write_lock = threading.Lock()
         self._persist_lock = threading.RLock()
         self._tools_call_task_id: str | None = None
@@ -1011,6 +1025,20 @@ class ACPServer:
                 "id": req_id,
                 "result": res,
             }
+        except ConfigRevisionConflict as exc:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": CONFIG_REVISION_CONFLICT,
+                    "message": str(exc),
+                    "data": {
+                        "reason": "config_revision_conflict",
+                        "expectedRevision": exc.expected_revision,
+                        "actualRevision": exc.actual_revision,
+                    },
+                },
+            }
         except Exception as exc:
             logger.exception("Error handling ACP method %s: %s", method, exc)
             return {
@@ -1018,7 +1046,7 @@ class ACPServer:
                 "id": req_id,
                 "error": {
                     "code": -32602 if method in {
-                        "initialize", "session/toolResult", "session/load", "session/history",
+                        "initialize", "config/set", "session/toolResult", "session/load", "session/history",
                         "session/historyContent", "session/approvalDecision"
                     } and isinstance(exc, (ValueError, TypeError)) else -32000,
                     "message": str(exc),
@@ -1726,7 +1754,37 @@ class ACPServer:
             f"_{ch.lower()}" if ch.isupper() else ch for ch in key
         )
 
-    def _settings_view(self) -> dict[str, Any]:
+    @staticmethod
+    def _read_config_snapshot(cfg_file: Path) -> tuple[dict[str, Any], str]:
+        try:
+            text = cfg_file.read_text(encoding="utf-8") if cfg_file.is_file() else ""
+            data = parse_config_yaml_text(text, cfg_file)
+        except ConfigParseError as exc:
+            raise OSError(f"Config file unreadable; settings unavailable: {exc}") from exc
+        revision = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return data, revision
+
+    @staticmethod
+    def _settings_schema() -> dict[str, Any]:
+        fields: dict[str, dict[str, Any]] = {}
+        for section, keys in CONFIG_SCHEMA.items():
+            for key, spec in keys.items():
+                kind = spec["kind"]
+                field: dict[str, Any] = {"kind": kind}
+                if kind == "choice":
+                    field["options"] = list(spec["options"])
+                elif kind == "int":
+                    field["min"] = spec["min"]
+                    field["max"] = spec["max"]
+                else:
+                    field["required"] = bool(spec.get("required"))
+                    field["maxLength"] = CONFIG_TEXT_MAX_LENGTH
+                fields[f"{ACPServer._camel(section)}.{ACPServer._camel(key)}"] = field
+        return {"version": CONFIG_SCHEMA_VERSION, "fields": fields}
+
+    def _settings_view_from_snapshot(
+        self, data: dict[str, Any], revision: str
+    ) -> dict[str, Any]:
         """Sanitized settings view: whitelisted keys only, never secrets.
 
         Wire keys are camelCase (config.yaml stores snake_case; converted at
@@ -1735,10 +1793,6 @@ class ACPServer:
         as "not set" rather than guessing defaults.
         """
         cfg_file = self.config_dir / "config.yaml"
-        try:
-            data = parse_config_yaml(cfg_file)
-        except ConfigParseError as exc:
-            raise OSError(f"Config file unreadable; settings unavailable: {exc}") from exc
 
         def jsonable(value: Any) -> Any:
             if isinstance(value, (str, int, float, bool)) or value is None:
@@ -1768,7 +1822,14 @@ class ACPServer:
             "dataDir": str(self.workspace_root / ".hex" / "data"),
             "config": view,
             "options": options,
+            "schema": self._settings_schema(),
+            "revision": revision,
         }
+
+    def _settings_view(self) -> dict[str, Any]:
+        with self._config_lock:
+            data, revision = self._read_config_snapshot(self.config_dir / "config.yaml")
+            return self._settings_view_from_snapshot(data, revision)
 
     def _handle_config_get(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._settings_view()
@@ -1804,14 +1865,23 @@ class ACPServer:
             raise ValueError(f"{section}.{key} must be a non-empty string")
         if not spec.get("required") and not text:
             return None  # optional text cleared: remove the key from the file
-        if len(text) > 500:
-            raise ValueError(f"{section}.{key} must be at most 500 characters")
+        if len(text) > CONFIG_TEXT_MAX_LENGTH:
+            raise ValueError(
+                f"{section}.{key} must be at most {CONFIG_TEXT_MAX_LENGTH} characters"
+            )
         return text
 
     def _handle_config_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            raise ValueError("config/set params must be an object")
         updates = params.get("updates")
         if not isinstance(updates, dict) or not updates:
             raise ValueError("updates must be a non-empty mapping of section -> {key: value}")
+        expected_revision = params.get("expectedRevision")
+        if expected_revision is not None and (
+            not isinstance(expected_revision, str) or not expected_revision.strip()
+        ):
+            raise ValueError("expectedRevision must be a non-empty string")
 
         normalized: dict[str, dict[str, Any]] = {}
         changed: list[str] = []
@@ -1844,22 +1914,30 @@ class ACPServer:
                 changed.append(f"{self._camel(canonical)}.{self._camel(file_key)}")
 
         cfg_file = self.config_dir / "config.yaml"
-        try:
-            merged = parse_config_yaml(cfg_file)
-        except ConfigParseError as exc:
-            raise OSError(f"Refusing to overwrite unreadable config file: {exc}") from exc
 
-        for section, sec_updates in normalized.items():
-            for key, value in sec_updates.items():
-                if value is None:
-                    sec = merged.get(section)
-                    if isinstance(sec, dict):
-                        sec.pop(key, None)
-                else:
-                    merged.setdefault(section, {})[key] = value
+        def merge(base: dict[str, Any]) -> dict[str, Any]:
+            for section, sec_updates in normalized.items():
+                for key, value in sec_updates.items():
+                    if value is None:
+                        sec = base.get(section)
+                        if isinstance(sec, dict):
+                            sec.pop(key, None)
+                    else:
+                        base.setdefault(section, {})[key] = value
+            return base
 
-        write_config_yaml_atomic(cfg_file, merged)
-        return {**self._settings_view(), "changed": sorted(changed)}
+        with self._config_lock:
+            merged, revision = self._read_config_snapshot(cfg_file)
+            if expected_revision is not None and expected_revision != revision:
+                raise ConfigRevisionConflict(expected_revision, revision)
+            merge(merged)
+            latest, latest_revision = self._read_config_snapshot(cfg_file)
+            if latest_revision != revision:
+                if expected_revision is not None:
+                    raise ConfigRevisionConflict(expected_revision, latest_revision)
+                merged = merge(latest)
+            write_config_yaml_atomic(cfg_file, merged)
+            return {**self._settings_view(), "changed": sorted(changed)}
 
     def _handle_session_models(self, params: dict[str, Any]) -> dict[str, Any]:
         """B32: live model catalog from the configured providers, never a hardcoded list."""

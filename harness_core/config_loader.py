@@ -77,24 +77,16 @@ def parse_env_file(file_path: Path) -> dict[str, str]:
     return env_vars
 
 
-def parse_config_yaml(file_path: Path) -> dict[str, Any]:
-    """Parse a config.yaml into typed values using PyYAML (a declared dependency).
-
-    Returns {} only when the file does not exist. Malformed YAML or a
-    non-mapping document raises ConfigParseError with an actionable message;
-    configuration failures are never silently reduced to an empty config.
-    """
-    if not file_path.is_file():
-        return {}
+def parse_config_yaml_text(text: str, file_path: Path | str) -> dict[str, Any]:
+    """Parse one config snapshot so validation and revision hashing stay aligned."""
     if yaml is None:
         raise ConfigParseError(
             file_path,
             "PyYAML is required to parse configuration but is not installed. "
             "Reinstall HEX (pip install -e .) or run: pip install 'pyyaml>=6.0'",
         )
-    content = file_path.read_text(encoding="utf-8")
     try:
-        data = yaml.safe_load(content)
+        data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         location = ""
         mark = getattr(exc, "problem_mark", None)
@@ -110,6 +102,18 @@ def parse_config_yaml(file_path: Path) -> dict[str, Any]:
             f"configuration must be a YAML mapping, got {type(data).__name__}",
         )
     return data
+
+
+def parse_config_yaml(file_path: Path) -> dict[str, Any]:
+    """Parse a config.yaml into typed values using PyYAML (a declared dependency).
+
+    Returns {} only when the file does not exist. Malformed YAML or a
+    non-mapping document raises ConfigParseError with an actionable message;
+    configuration failures are never silently reduced to an empty config.
+    """
+    if not file_path.is_file():
+        return {}
+    return parse_config_yaml_text(file_path.read_text(encoding="utf-8"), file_path)
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
