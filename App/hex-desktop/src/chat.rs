@@ -2854,6 +2854,7 @@ impl ChatView {
                 cx.notify();
             }
             PaletteAction::OpenSettings => self.open_settings_modal(cx),
+            PaletteAction::OpenSetting(key) => self.open_setting(key, cx),
             PaletteAction::ExportTranscript => self.export_transcript(cx),
             PaletteAction::Custom(label) => {
                 self.shell
@@ -3739,7 +3740,9 @@ impl ChatView {
                     return true;
                 }
                 if key == "escape" {
-                    if modal.editing {
+                    if modal.searching {
+                        modal.cancel_search();
+                    } else if modal.editing {
                         modal.cancel_edit();
                     } else {
                         self.shell.dismiss_modal();
@@ -3770,6 +3773,7 @@ impl ChatView {
                         | "home"
                         | "end"
                         | "delete"
+                        | "/"
                 ) {
                     cx.notify();
                     true
@@ -4352,7 +4356,7 @@ impl ChatView {
             | ActiveModal::SessionSearch(_) => true,
             ActiveModal::Account(modal) => modal.accepts_text_edit(),
             ActiveModal::SessionAction(modal) => modal.accepts_text_edit(),
-            ActiveModal::Settings(modal) => !modal.busy && modal.editing,
+            ActiveModal::Settings(modal) => modal.accepts_text_edit(),
             _ => false,
         }
     }
@@ -5655,6 +5659,19 @@ impl ChatView {
         cx.notify();
     }
 
+    fn open_setting(&mut self, key: String, cx: &mut Context<Self>) {
+        if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+            modal.request_setting(&key);
+            cx.notify();
+            return;
+        }
+        self.open_settings_modal(cx);
+        if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+            modal.request_setting(&key);
+        }
+        cx.notify();
+    }
+
     /// DX3: opens the editable settings modal and hydrates it from the
     /// runtime via `config/get`. Offline: the modal states that honestly
     /// instead of inventing values.
@@ -6545,6 +6562,12 @@ impl ChatView {
                                     }
                                     SettingsInteraction::SelectSection(section) => {
                                         current.select_section(section);
+                                    }
+                                    SettingsInteraction::FocusSearch => {
+                                        current.focus_search();
+                                    }
+                                    SettingsInteraction::RevealSetting(key) => {
+                                        current.reveal_setting(&key);
                                     }
                                     SettingsInteraction::Save => {
                                         current.selected = current.fields.len();

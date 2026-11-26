@@ -80,15 +80,15 @@ enum SettingKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SettingDescriptor {
+pub(crate) struct SettingDescriptor {
     section: SettingsSection,
-    key: &'static str,
-    label: &'static str,
+    pub(crate) key: &'static str,
+    pub(crate) label: &'static str,
     description: &'static str,
     kind: SettingKind,
 }
 
-const SETTING_DESCRIPTORS: [SettingDescriptor; 10] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 10] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -170,6 +170,16 @@ const SETTING_DESCRIPTORS: [SettingDescriptor; 10] = [
         },
     },
 ];
+
+impl SettingDescriptor {
+    pub(crate) fn palette_subtitle(self) -> String {
+        format!(
+            "Open {} setting · {}",
+            self.section.title(),
+            self.description
+        )
+    }
+}
 
 fn setting_descriptor(key: &str) -> &'static SettingDescriptor {
     SETTING_DESCRIPTORS
@@ -274,6 +284,8 @@ pub enum SettingsAction {
 pub enum SettingsInteraction {
     SelectRow(usize),
     SelectSection(SettingsSection),
+    FocusSearch,
+    RevealSetting(&'static str),
     Save,
 }
 
@@ -292,6 +304,12 @@ pub struct SettingsModal {
     pub options: serde_json::Value,
     pub originals: HashMap<String, String>,
     pub active_section: SettingsSection,
+    pub search_query: String,
+    search_cursor: usize,
+    search_anchor: usize,
+    pub searching: bool,
+    search_snapshot: Option<(String, usize, usize)>,
+    pending_setting: Option<String>,
     pub selected: usize, // index into fields; fields.len() == Save row
     pub editing: bool,
     selection_anchor: usize,
@@ -312,6 +330,12 @@ impl PartialEq for SettingsModal {
             && self.options == other.options
             && self.originals == other.originals
             && self.active_section == other.active_section
+            && self.search_query == other.search_query
+            && self.search_cursor == other.search_cursor
+            && self.search_anchor == other.search_anchor
+            && self.searching == other.searching
+            && self.search_snapshot == other.search_snapshot
+            && self.pending_setting == other.pending_setting
             && self.selected == other.selected
             && self.editing == other.editing
             && self.selection_anchor == other.selection_anchor
@@ -333,6 +357,12 @@ impl Default for SettingsModal {
             options: serde_json::Value::Null,
             originals: HashMap::new(),
             active_section: SettingsSection::Model,
+            search_query: String::new(),
+            search_cursor: 0,
+            search_anchor: 0,
+            searching: false,
+            search_snapshot: None,
+            pending_setting: None,
             selected: 0,
             editing: false,
             selection_anchor: 0,
@@ -444,11 +474,160 @@ impl SettingsModal {
         self.error = None;
         self.scroll_handle
             .scroll_to_item_strict(0, ScrollStrategy::Top);
+        if let Some(key) = self.pending_setting.take() {
+            self.reveal_setting(&key);
+        } else if self.searching {
+            self.sync_search_selection();
+        }
     }
 
     pub fn mark_load_failed(&mut self, message: impl Into<String>) {
         self.load_failed = true;
         self.error = Some(message.into());
+    }
+
+    pub fn accepts_text_edit(&self) -> bool {
+        !self.busy && (self.searching || self.editing)
+    }
+
+    fn search_results(&self) -> Vec<usize> {
+        let query = self.search_query.trim().to_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let mut scored = self
+            .fields
+            .iter()
+            .enumerate()
+            .filter_map(|(index, field)| {
+                let descriptor = setting_descriptor(field.key());
+                let key = descriptor.key.to_lowercase();
+                let label = descriptor.label.to_lowercase();
+                let score = if key == query || label == query {
+                    Some(0)
+                } else if key.starts_with(&query) || label.starts_with(&query) {
+                    Some(1)
+                } else if key.contains(&query)
+                    || label.contains(&query)
+                    || descriptor.description.to_lowercase().contains(&query)
+                    || descriptor.section.title().to_lowercase().contains(&query)
+                {
+                    Some(2)
+                } else {
+                    None
+                };
+                score.map(|score| (score, index))
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by_key(|(score, index)| (*score, *index));
+        scored.into_iter().map(|(_, index)| index).collect()
+    }
+
+    fn visible_indices(&self) -> Vec<usize> {
+        if self.search_query.trim().is_empty() {
+            self.section_indices()
+        } else {
+            self.search_results()
+        }
+    }
+
+    fn sync_search_selection(&mut self) {
+        if self.search_query.trim().is_empty() {
+            return;
+        }
+        let visible = self.search_results();
+        if !visible.contains(&self.selected) {
+            self.selected = visible.first().copied().unwrap_or(self.fields.len());
+        }
+        self.scroll_selected_into_view();
+    }
+
+    pub fn focus_search(&mut self) {
+        if self.busy {
+            return;
+        }
+        self.commit_edit();
+        if !self.searching {
+            self.search_snapshot = Some((
+                self.search_query.clone(),
+                self.search_cursor,
+                self.search_anchor,
+            ));
+        }
+        self.searching = true;
+        self.search_cursor = self.search_query.len();
+        self.search_anchor = self.search_cursor;
+    }
+
+    pub fn cancel_search(&mut self) {
+        if let Some((query, cursor, anchor)) = self.search_snapshot.take() {
+            self.search_query = query;
+            self.search_cursor = cursor;
+            self.search_anchor = anchor;
+        }
+        self.searching = false;
+        self.sync_search_selection();
+    }
+
+    fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.search_cursor = 0;
+        self.search_anchor = 0;
+        self.searching = false;
+        self.search_snapshot = None;
+    }
+
+    pub fn request_setting(&mut self, key: &str) -> bool {
+        if !SETTING_DESCRIPTORS
+            .iter()
+            .any(|descriptor| descriptor.key == key)
+        {
+            return false;
+        }
+        self.pending_setting = Some(key.to_string());
+        if self.fields.is_empty() {
+            true
+        } else {
+            self.reveal_setting(key)
+        }
+    }
+
+    pub fn reveal_setting(&mut self, key: &str) -> bool {
+        let Some(index) = self.fields.iter().position(|field| field.key() == key) else {
+            return false;
+        };
+        self.commit_edit();
+        self.clear_search();
+        self.pending_setting = None;
+        self.active_section = setting_descriptor(key).section;
+        self.selected = index;
+        self.selection_anchor = 0;
+        let Some(field) = self.fields.get_mut(index) else {
+            return false;
+        };
+        if let Some((value, cursor)) = field.text_state_mut() {
+            self.editing = true;
+            *cursor = value.len();
+            self.selection_anchor = *cursor;
+            self.edit_snapshot = Some((value.clone(), *cursor, *cursor));
+        }
+        self.scroll_selected_into_view();
+        true
+    }
+
+    fn active_text_state_mut(&mut self) -> Option<(&mut String, &mut usize, &mut usize)> {
+        if self.searching {
+            Some((
+                &mut self.search_query,
+                &mut self.search_cursor,
+                &mut self.search_anchor,
+            ))
+        } else {
+            let field = self.fields.get_mut(self.selected)?;
+            field
+                .text_state_mut()
+                .map(|(value, cursor)| (value, cursor, &mut self.selection_anchor))
+        }
     }
 
     fn section_indices(&self) -> Vec<usize> {
@@ -463,7 +642,7 @@ impl SettingsModal {
 
     fn move_selection(&mut self, delta: isize) {
         self.commit_edit();
-        let mut rows = self.section_indices();
+        let mut rows = self.visible_indices();
         rows.push(self.fields.len());
         let current = rows
             .iter()
@@ -477,6 +656,7 @@ impl SettingsModal {
 
     fn move_section(&mut self, delta: isize) {
         self.commit_edit();
+        self.clear_search();
         self.active_section = self.active_section.adjacent(delta);
         self.selected = self
             .fields
@@ -488,11 +668,11 @@ impl SettingsModal {
     }
 
     fn scroll_selected_into_view(&self) {
-        let index = self
-            .section_indices()
+        let visible = self.visible_indices();
+        let index = visible
             .iter()
             .position(|field_index| *field_index == self.selected)
-            .unwrap_or_else(|| self.section_indices().len().saturating_sub(1));
+            .unwrap_or_else(|| visible.len().saturating_sub(1));
         self.scroll_handle
             .scroll_to_item(index, ScrollStrategy::Center);
     }
@@ -502,6 +682,7 @@ impl SettingsModal {
             return;
         }
         self.commit_edit();
+        self.clear_search();
         self.active_section = section;
         self.selected = self
             .fields
@@ -517,6 +698,7 @@ impl SettingsModal {
             return;
         }
         self.commit_edit();
+        self.clear_search();
         self.selected = index.min(self.fields.len());
         if let Some(field) = self.fields.get(self.selected) {
             self.active_section = setting_descriptor(field.key()).section;
@@ -565,13 +747,10 @@ impl SettingsModal {
     }
 
     fn move_text_cursor(&mut self, delta: isize, selecting: bool) -> bool {
-        let Some(field) = self.fields.get_mut(self.selected) else {
+        let Some((value, cursor, anchor)) = self.active_text_state_mut() else {
             return false;
         };
-        let Some((value, cursor)) = field.text_state_mut() else {
-            return false;
-        };
-        move_horizontal(value, cursor, &mut self.selection_anchor, delta, selecting);
+        move_horizontal(value, cursor, anchor, delta, selecting);
         true
     }
 
@@ -581,6 +760,10 @@ impl SettingsModal {
             return None;
         }
         match key {
+            "/" if !self.searching && !self.editing => {
+                self.focus_search();
+                None
+            }
             "pageup" => {
                 self.move_section(-1);
                 None
@@ -604,13 +787,17 @@ impl SettingsModal {
                 None
             }
             "left" | "arrowleft" => {
-                if !(self.editing && self.move_text_cursor(-1, false)) && self.cycle_choice(-1) {
+                if !((self.searching || self.editing) && self.move_text_cursor(-1, false))
+                    && self.cycle_choice(-1)
+                {
                     self.commit_edit();
                 }
                 None
             }
             "right" | "arrowright" => {
-                if !(self.editing && self.move_text_cursor(1, false)) && self.cycle_choice(1) {
+                if !((self.searching || self.editing) && self.move_text_cursor(1, false))
+                    && self.cycle_choice(1)
+                {
                     self.commit_edit();
                 }
                 None
@@ -624,38 +811,32 @@ impl SettingsModal {
                 None
             }
             "home" | "end" => {
-                if self.editing {
-                    if let Some(field) = self.fields.get_mut(self.selected) {
-                        if let Some((value, cursor)) = field.text_state_mut() {
-                            move_to_edge(
-                                value,
-                                cursor,
-                                &mut self.selection_anchor,
-                                key == "end",
-                                false,
-                            );
-                        }
+                if self.searching || self.editing {
+                    if let Some((value, cursor, anchor)) = self.active_text_state_mut() {
+                        move_to_edge(value, cursor, anchor, key == "end", false);
                     }
                 }
                 None
             }
             "shift-home" | "shift-end" => {
-                if self.editing {
-                    if let Some(field) = self.fields.get_mut(self.selected) {
-                        if let Some((value, cursor)) = field.text_state_mut() {
-                            move_to_edge(
-                                value,
-                                cursor,
-                                &mut self.selection_anchor,
-                                key == "shift-end",
-                                true,
-                            );
-                        }
+                if self.searching || self.editing {
+                    if let Some((value, cursor, anchor)) = self.active_text_state_mut() {
+                        move_to_edge(value, cursor, anchor, key == "shift-end", true);
                     }
                 }
                 None
             }
             "enter" => {
+                if self.searching {
+                    if !self.search_query.trim().is_empty() {
+                        if let Some(field) = self.fields.get(self.selected) {
+                            let key = field.key();
+                            self.reveal_setting(key);
+                        }
+                        return None;
+                    }
+                    self.cancel_search();
+                }
                 if self.selected == self.fields.len() {
                     if self.dirty_count() == 0 {
                         return None;
@@ -710,6 +891,16 @@ impl SettingsModal {
     }
 
     pub fn text_selection(&self) -> Option<(String, usize, usize)> {
+        if self.searching {
+            return Some((
+                self.search_query.clone(),
+                self.search_cursor,
+                self.search_anchor,
+            ));
+        }
+        if !self.editing {
+            return None;
+        }
         let field = self.fields.get(self.selected)?;
         let (value, cursor) = match field {
             SettingField::Text { value, cursor, .. }
@@ -720,7 +911,7 @@ impl SettingsModal {
     }
 
     pub fn replace_text_range(&mut self, range: std::ops::Range<usize>, text: &str) -> bool {
-        if self.busy || !self.editing {
+        if !self.accepts_text_edit() {
             return false;
         }
         self.move_cursor_to(range.start, false);
@@ -730,75 +921,64 @@ impl SettingsModal {
     }
 
     pub fn select_text_range(&mut self, range: std::ops::Range<usize>) {
+        if !self.accepts_text_edit() {
+            return;
+        }
         self.move_cursor_to(range.start, false);
         self.move_cursor_to(range.end, true);
     }
 
     pub fn push_char(&mut self, text: &str) {
-        if self.busy || !self.editing {
+        if !self.accepts_text_edit() {
             return;
         }
-        if let Some(field) = self.fields.get_mut(self.selected) {
-            if let Some((value, cursor)) = field.text_state_mut() {
-                insert_text(value, cursor, &mut self.selection_anchor, text);
-            }
+        if let Some((value, cursor, anchor)) = self.active_text_state_mut() {
+            insert_text(value, cursor, anchor, text);
         }
+        self.sync_search_selection();
     }
 
     pub fn backspace(&mut self) {
-        if self.busy || !self.editing {
+        if !self.accepts_text_edit() {
             return;
         }
-        if let Some(field) = self.fields.get_mut(self.selected) {
-            if let Some((value, cursor)) = field.text_state_mut() {
-                text_backspace(value, cursor, &mut self.selection_anchor);
-            }
+        if let Some((value, cursor, anchor)) = self.active_text_state_mut() {
+            text_backspace(value, cursor, anchor);
         }
+        self.sync_search_selection();
     }
 
     pub fn delete(&mut self) {
-        if self.busy || !self.editing {
+        if !self.accepts_text_edit() {
             return;
         }
-        if let Some(field) = self.fields.get_mut(self.selected) {
-            if let Some((value, cursor)) = field.text_state_mut() {
-                text_delete(value, cursor, &mut self.selection_anchor);
-            }
+        if let Some((value, cursor, anchor)) = self.active_text_state_mut() {
+            text_delete(value, cursor, anchor);
         }
+        self.sync_search_selection();
     }
 
     pub fn move_cursor_to(&mut self, offset: usize, selecting: bool) {
-        if !self.editing {
+        if !self.accepts_text_edit() {
             return;
         }
-        if let Some(field) = self.fields.get_mut(self.selected) {
-            if let Some((value, cursor)) = field.text_state_mut() {
-                text_move_to(value, cursor, &mut self.selection_anchor, offset, selecting);
-            }
+        if let Some((value, cursor, anchor)) = self.active_text_state_mut() {
+            text_move_to(value, cursor, anchor, offset, selecting);
         }
     }
 
     pub fn select_all_text(&mut self) {
-        if !self.editing {
+        if !self.accepts_text_edit() {
             return;
         }
-        if let Some(field) = self.fields.get_mut(self.selected) {
-            if let Some((value, cursor)) = field.text_state_mut() {
-                select_all(value, cursor, &mut self.selection_anchor);
-            }
+        if let Some((value, cursor, anchor)) = self.active_text_state_mut() {
+            select_all(value, cursor, anchor);
         }
     }
 
     pub fn selected_text(&self) -> Option<String> {
-        self.editing.then(|| {
-            let field = &self.fields[self.selected];
-            let (value, cursor) = match field {
-                SettingField::Text { value, cursor, .. }
-                | SettingField::Number { value, cursor, .. } => (value, cursor),
-                SettingField::Choice { .. } => return String::new(),
-            };
-            selected_text(value, *cursor, self.selection_anchor)
-        })
+        let (value, cursor, anchor) = self.text_selection()?;
+        Some(selected_text(&value, cursor, anchor))
     }
 
     fn is_dirty(&self, field: &SettingField) -> bool {
@@ -1051,6 +1231,56 @@ impl SettingsModal {
                 ),
         );
 
+        let search_handler = settings_click_handler(&on_action, SettingsInteraction::FocusSearch);
+        let search = div()
+            .id("settings_search")
+            .debug_selector(|| "settings_search".to_string())
+            .w_full()
+            .min_h(px(38.0))
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(11.0))
+            .rounded(px(8.0))
+            .bg(theme.mockup_sidebar)
+            .border_1()
+            .border_color(if self.searching {
+                theme.accent_blue
+            } else {
+                theme.mockup_border
+            })
+            .when(!self.busy, |this| {
+                this.cursor_pointer()
+                    .on_click(move |event, window, cx| search_handler(event, window, cx))
+            })
+            .child(
+                crate::ui::modals::text_input::input_content(
+                    &self.search_query,
+                    self.search_cursor,
+                    self.search_anchor,
+                    "Search settings…",
+                    false,
+                    self.searching && !self.busy,
+                    theme,
+                )
+                .flex_1()
+                .min_w_0()
+                .font_family(theme.font_mono()[0].clone())
+                .text_size(px(MockupTypeScale::BASE_SIZE)),
+            )
+            .child(
+                div()
+                    .px(px(5.0))
+                    .py(px(1.0))
+                    .rounded(px(3.0))
+                    .bg(theme.mockup_hover)
+                    .font_family(theme.font_mono()[0].clone())
+                    .text_size(px(MockupTypeScale::HINT_SIZE))
+                    .text_color(theme.mockup_text_dim)
+                    .child("/"),
+            );
+        content = content.child(search);
+
         if self.load_failed {
             content = content.child(
                 div()
@@ -1084,56 +1314,72 @@ impl SettingsModal {
 
         if !self.fields.is_empty() {
             let fields = self.fields.clone();
-            let section_indices = self.section_indices();
+            let visible_indices = self.visible_indices();
+            let filtering = !self.search_query.trim().is_empty();
             let originals = self.originals.clone();
             let selected = self.selected;
-            let editing = self.editing;
+            let editing = self.editing && !self.searching;
             let selection_anchor = self.selection_anchor;
             let busy = self.busy;
             let scroll_handle = self.scroll_handle.clone();
             let theme = theme.clone();
             let on_action = on_action.clone();
             let list_id = format!("settings_rows_{}", self.active_section.id());
-            let list = uniform_list(
-                SharedString::from(list_id),
-                section_indices.len(),
-                move |range, _window, cx| {
-                    let motion = ModalMotion {
-                        owner: motion.owner,
-                        cx,
-                    };
-                    range
-                        .map(|row_index| {
-                            let index = section_indices[row_index];
-                            render_setting_row(
-                                &fields[index],
-                                index,
-                                index == selected,
-                                editing,
-                                selection_anchor,
-                                busy,
-                                &originals,
-                                &theme,
-                                motion,
-                                on_action.clone(),
-                            )
-                            .into_any_element()
-                        })
-                        .collect::<Vec<_>>()
-                },
-            )
-            .track_scroll(scroll_handle)
-            .w_full()
-            .h_full();
-            content = content.child(
-                div()
-                    .debug_selector(|| "settings_list".to_string())
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .overflow_hidden()
-                    .child(list),
-            );
+            if visible_indices.is_empty() {
+                content = content.child(
+                    div()
+                        .debug_selector(|| "settings_no_results".to_string())
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(MockupTypeScale::BASE_SIZE))
+                        .text_color(theme.mockup_text_dim)
+                        .child(format!("No settings match “{}”", self.search_query.trim())),
+                );
+            } else {
+                let list = uniform_list(
+                    SharedString::from(list_id),
+                    visible_indices.len(),
+                    move |range, _window, cx| {
+                        let motion = ModalMotion {
+                            owner: motion.owner,
+                            cx,
+                        };
+                        range
+                            .map(|row_index| {
+                                let index = visible_indices[row_index];
+                                render_setting_row(
+                                    &fields[index],
+                                    index,
+                                    index == selected,
+                                    editing,
+                                    selection_anchor,
+                                    busy,
+                                    filtering,
+                                    &originals,
+                                    &theme,
+                                    motion,
+                                    on_action.clone(),
+                                )
+                                .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                )
+                .track_scroll(scroll_handle)
+                .w_full()
+                .h_full();
+                content = content.child(
+                    div()
+                        .debug_selector(|| "settings_list".to_string())
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .overflow_hidden()
+                        .child(list),
+                );
+            }
         }
 
         let dirty = self.dirty_count();
@@ -1215,7 +1461,9 @@ impl SettingsModal {
                 .font_family(theme.font_mono()[0].clone())
                 .text_size(px(MockupTypeScale::HINT_SIZE))
                 .text_color(theme.mockup_text_dim)
-                .child("↑↓ rows · PgUp/PgDn sections · Enter edit · ←→ adjust · Esc cancel")
+                .child(
+                    "↑↓ rows · PgUp/PgDn sections · / search · Enter edit · ←→ adjust · Esc cancel",
+                )
                 .child(format!("Workspace · {}", self.workspace))
                 .child(format!("Data · {}", self.data_dir)),
         );
@@ -1239,6 +1487,7 @@ fn render_setting_row(
     editing: bool,
     selection_anchor: usize,
     busy: bool,
+    filtering: bool,
     originals: &HashMap<String, String>,
     theme: &HermesTheme,
     motion: ModalMotion<'_>,
@@ -1329,10 +1578,12 @@ fn render_setting_row(
         .overflow_hidden()
         .whitespace_nowrap();
 
-    let handler = settings_click_handler(
-        &on_action,
-        SettingsInteraction::SelectRow(index),
-    );
+    let interaction = if filtering {
+        SettingsInteraction::RevealSetting(field.key())
+    } else {
+        SettingsInteraction::SelectRow(index)
+    };
+    let handler = settings_click_handler(&on_action, interaction);
     let mut row = div()
         .id(SharedString::from(format!("settings_row_{index}")))
         .debug_selector(move || format!("settings_row_{index}"))
@@ -1377,12 +1628,21 @@ fn render_setting_row(
                 )
                 .child(value),
         );
+    let descriptor = setting_descriptor(field.key());
     row = row.child(
         div()
             .w_full()
             .text_size(px(MockupTypeScale::HINT_SIZE))
             .text_color(theme.mockup_text_dim)
-            .child(setting_descriptor(field.key()).description),
+            .child(if filtering {
+                format!(
+                    "{} · {}",
+                    descriptor.section.title(),
+                    descriptor.description
+                )
+            } else {
+                descriptor.description.to_string()
+            }),
     );
     if selected {
         row = modal_press(row, "settings_selected_press", motion);
@@ -1408,7 +1668,9 @@ mod tests {
                     "profile": "cloud"
                 },
                 "runtime": { "maxTurns": 90 },
-                "webSearch": { "provider": "brave" }
+                "webSearch": { "provider": "brave" },
+                "cloud": { "baseUrl": "" },
+                "learning": { "autoReflect": "off" }
             },
             "options": {
                 "model.reasoningEffort": ["none", "low", "medium", "high"],
@@ -1636,6 +1898,80 @@ mod tests {
         assert_eq!(modal.fields[effort_idx].display(), "none");
         modal.handle_key("right");
         assert_eq!(modal.fields[effort_idx].display(), "low");
+    }
+
+    #[test]
+    fn test_search_ranks_matches_and_reveals_across_sections() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+
+        modal.focus_search();
+        modal.push_char("model.cloud");
+        assert_eq!(modal.search_results(), vec![0, 1, 5]);
+        assert_eq!(modal.selected, 0);
+
+        modal.select_all_text();
+        modal.push_char("Model ID");
+        assert_eq!(modal.search_results(), vec![1]);
+        modal.handle_key("enter");
+        assert!(!modal.searching);
+        assert!(modal.search_query.is_empty());
+        assert_eq!(modal.active_section, SettingsSection::Model);
+        assert_eq!(modal.selected, 1);
+        assert!(modal.editing);
+
+        modal.focus_search();
+        modal.push_char("learn");
+        assert_eq!(modal.search_results(), vec![9]);
+        assert_eq!(modal.selected, 9);
+        modal.handle_key("enter");
+        assert_eq!(modal.active_section, SettingsSection::Learning);
+        assert_eq!(modal.selected, 9);
+        assert!(!modal.editing);
+        assert_eq!(modal.fields[9].display(), "off");
+    }
+
+    #[test]
+    fn test_search_editing_and_empty_results_do_not_change_settings() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+
+        modal.handle_key("/");
+        assert!(modal.searching);
+        modal.push_char("maxx");
+        assert_eq!(modal.search_results(), Vec::<usize>::new());
+        assert_eq!(modal.selected, modal.fields.len());
+        modal.backspace();
+        assert_eq!(modal.search_query, "max");
+        assert_eq!(modal.search_results(), vec![6]);
+        modal.handle_key("home");
+        modal.handle_key("shift-right");
+        assert_eq!(modal.selected_text().as_deref(), Some("m"));
+        modal.push_char("M");
+        assert_eq!(modal.search_query, "Max");
+        assert_eq!(modal.search_results(), vec![6]);
+        assert_eq!(modal.fields[6].display(), "90");
+
+        modal.cancel_search();
+        assert!(!modal.searching);
+        assert!(modal.search_query.is_empty());
+        assert_eq!(modal.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_pending_setting_deep_link_is_applied_after_load() {
+        let mut modal = SettingsModal::loading();
+        assert!(modal.request_setting("runtime.maxTurns"));
+        assert_eq!(modal.pending_setting.as_deref(), Some("runtime.maxTurns"));
+        assert!(!modal.request_setting("runtime.unknown"));
+
+        modal.apply_view(&sample_view());
+        assert!(modal.pending_setting.is_none());
+        assert_eq!(modal.active_section, SettingsSection::Runtime);
+        assert_eq!(modal.selected, 6);
+        assert!(modal.editing);
+        assert_eq!(modal.fields[6].display(), "90");
+        assert_eq!(modal.dirty_count(), 0);
     }
 
     #[test]

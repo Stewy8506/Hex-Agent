@@ -896,6 +896,29 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
 
     vc.update(|_, app| {
         view.update(app, |view, cx| {
+            view.shell.open_command_palette();
+            cx.notify();
+        });
+    });
+    finish_motion(vc, &view);
+    vc.simulate_input("max turns");
+    finish_motion(vc, &view);
+    click_debug_element(vc, "palette_setting_runtime.maxTurns");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("setting deep link should open settings");
+        };
+        assert!(modal.load_failed);
+    });
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
+            view.shell.dismiss_modal();
+            cx.notify();
+        });
+    });
+
+    vc.update(|_, app| {
+        view.update(app, |view, cx| {
             view.shell.active_modal = ActiveModal::ModelPicker(ModelPickerModal::new(
                 "gpt-4o",
                 "OpenAI",
@@ -1043,10 +1066,46 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
         );
         assert!(!modal.editing);
     });
-    click_debug_element(vc, "settings_save_row");
-    pump_until(vc, &view, "pointer settings save", |view| {
-        matches!(&view.shell.active_modal, ActiveModal::Settings(modal) if modal.error.as_deref().is_some_and(|error| error.starts_with("Save failed")))
+    click_debug_element(vc, "settings_search");
+    vc.simulate_input("provider");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert!(modal.searching);
+        assert_eq!(modal.search_query, "provider");
+        assert_eq!(modal.selected, 0);
     });
+    vc.simulate_keystrokes("escape");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert!(!modal.searching);
+        assert!(modal.search_query.is_empty());
+    });
+    vc.simulate_keystrokes("/");
+    vc.simulate_input("provider");
+    click_debug_element(vc, "settings_row_0");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(
+            modal.active_section,
+            hex_desktop::ui::modals::SettingsSection::Model
+        );
+        assert!(!modal.searching);
+        assert!(modal.editing);
+        assert_eq!(modal.selected, 0);
+    });
+    click_debug_element(vc, "settings_save_row");
+    pump_until(
+        vc,
+        &view,
+        "pointer settings save",
+        |view| matches!(&view.shell.active_modal, ActiveModal::Settings(modal) if modal.error.as_deref().is_some_and(|error| error.starts_with("Save failed"))),
+    );
 }
 
 #[gpui::test]

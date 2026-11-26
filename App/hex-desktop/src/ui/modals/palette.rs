@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::HermesTheme;
 use crate::ui::icon_svg;
+use crate::ui::modals::settings::SETTING_DESCRIPTORS;
 use crate::ui::modals::text_input::{
     backspace as text_backspace, delete as text_delete, input_content, insert_text, move_horizontal,
     move_to as text_move_to, move_to_edge, select_all, selected_text,
@@ -45,6 +46,7 @@ pub enum PaletteAction {
     ExportTranscript,
     SwitchModel,
     OpenSettings,
+    OpenSetting(String),
     ToggleSidebar,
     SelectSession(String),
     Custom(String),
@@ -105,6 +107,12 @@ impl PaletteItem {
         let title_lower = self.title.to_lowercase();
         if title_lower.contains(&q) {
             return true;
+        }
+
+        if let PaletteAction::OpenSetting(key) = &self.action {
+            if key.to_lowercase().contains(&q) {
+                return true;
+            }
         }
 
         if let Some(ref sub) = self.subtitle {
@@ -198,6 +206,18 @@ impl CommandPaletteModal {
                 .with_subtitle("Show or hide the navigation sidebar")
                 .with_shortcut("\u{2318}B"),
         );
+        for descriptor in SETTING_DESCRIPTORS {
+            items.push(
+                PaletteItem::new(
+                    format!("setting_{}", descriptor.key),
+                    descriptor.label,
+                    PaletteCategory::Navigation,
+                    "settings",
+                    PaletteAction::OpenSetting(descriptor.key.to_string()),
+                )
+                .with_subtitle(descriptor.palette_subtitle()),
+            );
+        }
 
         Self {
             query: String::new(),
@@ -633,6 +653,26 @@ mod tests {
         // CompactContext was removed — no honest backend mapping exists.
         palette.set_query("compact");
         assert!(palette.filtered_items().is_empty());
+    }
+
+    #[test]
+    fn test_command_palette_setting_deep_links() {
+        let mut palette = CommandPaletteModal::new();
+        palette.set_query("max turns");
+        let filtered = palette.filtered_items();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].action,
+            PaletteAction::OpenSetting("runtime.maxTurns".to_string())
+        );
+
+        palette.set_query("runtime.maxTurns");
+        let filtered = palette.filtered_items();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].action,
+            PaletteAction::OpenSetting("runtime.maxTurns".to_string())
+        );
     }
 
     #[test]
