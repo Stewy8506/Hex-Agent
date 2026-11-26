@@ -536,6 +536,8 @@ pub struct InventoryItem {
     pub description: String,
     pub detail: String,
     pub policy: Option<ToolPolicySelection>,
+    /// Lifecycle status for skills ("active"/"disabled"/...); tools carry None.
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -715,35 +717,49 @@ fn tool_info_fields(state: &InventoryState) -> Vec<SettingField> {
 pub const SKILLS_SESSION_REQUIRED: &str = "Open or select a session to load the skill registry.";
 
 fn skill_info_fields(state: &InventoryState) -> Vec<SettingField> {
-    let rows: Vec<(&str, String, String)> = match state {
-        InventoryState::Loading => vec![(
+    let info = |label: &str, value: &str, description: &str| SettingField::Info {
+        key: "desktop.info.skills",
+        label: label.to_string(),
+        value: value.to_string(),
+        description: description.to_string(),
+    };
+    match state {
+        InventoryState::Loading => vec![info(
             "Loading skills…",
-            "Loading".to_string(),
-            "Requesting the registered skills with /skills.".to_string(),
+            "Loading",
+            "Requesting the registered skills with /skills.",
         )],
         InventoryState::Ready(items) => items
             .iter()
-            .map(|item| (item.name.as_str(), item.detail.clone(), item.description.clone()))
+            .map(|item| match &item.status {
+                // The status drives SkillSpector's execution gate, so a parsed
+                // status upgrades the row from read-only info to a toggle.
+                Some(status) if status == "active" || status == "pinned" => SettingField::Skill {
+                    name: item.name.clone(),
+                    enabled: true,
+                    gate: item.detail.clone(),
+                    description: item.description.clone(),
+                },
+                Some(status) if status == "disabled" => SettingField::Skill {
+                    name: item.name.clone(),
+                    enabled: false,
+                    gate: item.detail.clone(),
+                    description: item.description.clone(),
+                },
+                _ => info(&item.name, &item.detail, &item.description),
+            })
             .collect(),
-        InventoryState::Empty => vec![(
+        InventoryState::Empty => vec![info(
             "No skills registered",
-            "0 skills".to_string(),
-            "The runtime skill ledger is empty.".to_string(),
+            "0 skills",
+            "The runtime skill ledger is empty.",
         )],
-        InventoryState::Unavailable(message) => vec![(
+        InventoryState::Unavailable(message) => vec![info(
             "Skills unavailable",
-            "Unavailable".to_string(),
-            message.clone(),
+            "Unavailable",
+            message.as_str(),
         )],
-    };
-    rows.into_iter()
-        .map(|(label, value, description)| SettingField::Info {
-            key: "desktop.info.skills",
-            label: label.to_string(),
-            value,
-            description,
-        })
-        .collect()
+    }
 }
 
 fn parse_skills_output(output: &str) -> Result<Vec<InventoryItem>, String> {
@@ -774,9 +790,15 @@ fn parse_skills_output(output: &str) -> Result<Vec<InventoryItem>, String> {
             .strip_prefix('•')
             .ok_or_else(|| "The runtime returned an unrecognized /skills entry.".to_string())?
             .trim();
-        let (name, gate) = match entry.rsplit_once(" (gate: ") {
-            Some((name, gate)) => (name.trim(), gate.strip_suffix(')').unwrap_or(gate).trim()),
-            None => (entry, "unknown"),
+        let (name, gate, status) = match entry.rsplit_once(" (gate: ") {
+            Some((name, tail)) => {
+                let tail = tail.strip_suffix(')').unwrap_or(tail).trim();
+                match tail.split_once(", status: ") {
+                    Some((gate, status)) => (name.trim(), gate.trim(), Some(status.trim().to_string())),
+                    None => (name.trim(), tail, None),
+                }
+            }
+            None => (entry, "unknown", None),
         };
         if name.is_empty() {
             return Err("The runtime returned a skill without a name.".to_string());
@@ -786,6 +808,7 @@ fn parse_skills_output(output: &str) -> Result<Vec<InventoryItem>, String> {
             description: "Registered in the runtime skill ledger.".to_string(),
             detail: format!("gate: {gate}"),
             policy: None,
+            status,
         });
     }
     if items.is_empty() {
@@ -803,6 +826,7 @@ fn parse_skills_output(output: &str) -> Result<Vec<InventoryItem>, String> {
                 .to_string(),
             detail: format!("{total} registered"),
             policy: None,
+            status: None,
         });
     }
     Ok(items)
@@ -870,6 +894,14 @@ pub enum SettingField {
         description: String,
         policy: ToolPolicySelection,
     },
+    /// One registered skill; toggling sends a runtime `/skill` command, not a
+    /// config write. Fields without a parsed status stay read-only Info rows.
+    Skill {
+        name: String,
+        enabled: bool,
+        gate: String,
+        description: String,
+    },
 }
 
 impl SettingField {
@@ -884,6 +916,7 @@ impl SettingField {
             | Self::Info { key, .. }
             | Self::Provider { key, .. } => key,
             Self::ToolPolicy { .. } => "desktop.info.tools",
+            Self::Skill { .. } => "desktop.info.skills",
         }
     }
 
@@ -898,6 +931,7 @@ impl SettingField {
             Self::Info { label, .. } => label,
             Self::Provider { provider, .. } => provider.name.as_str(),
             Self::ToolPolicy { name, .. } => name,
+            Self::Skill { name, .. } => name,
         }
     }
 
@@ -924,6 +958,13 @@ impl SettingField {
             Self::Info { value, .. } => value.clone(),
             Self::Provider { provider, .. } => provider_status(provider),
             Self::ToolPolicy { policy, .. } => tool_policy_display(*policy, None),
+            Self::Skill { enabled, .. } => {
+                if *enabled {
+                    "enabled".to_string()
+                } else {
+                    "disabled".to_string()
+                }
+            }
         }
     }
 
@@ -938,7 +979,8 @@ impl SettingField {
             | Self::Action { .. }
             | Self::Info { .. }
             | Self::Provider { .. }
-            | Self::ToolPolicy { .. } => None,
+            | Self::ToolPolicy { .. }
+            | Self::Skill { .. } => None,
         }
     }
 
@@ -969,6 +1011,7 @@ impl SettingField {
             Self::Info { .. } => Err("read-only rows cannot be saved as settings".to_string()),
             Self::Provider { .. } => Err("provider credentials use the provider API".to_string()),
             Self::ToolPolicy { .. } => Err("tool policy uses the tool policy API".to_string()),
+            Self::Skill { .. } => Err("skills toggle through the /skill runtime command".to_string()),
         }
     }
 }
@@ -982,6 +1025,7 @@ pub enum SettingsAction {
     SaveProviderEndpoint(String, String),
     DeleteProviderCredential(String),
     SaveToolPolicy(String, ToolPolicyMode),
+    ToggleSkill(String, bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1019,6 +1063,7 @@ pub struct SettingsModal {
     provider_drafts: HashMap<String, ProviderDraft>,
     tool_policy_drafts: HashMap<String, ToolPolicyMode>,
     tool_policy_active: bool,
+    skill_drafts: HashMap<String, bool>,
     provider_delete_confirmation: Option<String>,
     pub active_section: SettingsSection,
     pub search_query: String,
@@ -1056,6 +1101,7 @@ impl PartialEq for SettingsModal {
             && self.provider_drafts == other.provider_drafts
             && self.tool_policy_drafts == other.tool_policy_drafts
             && self.tool_policy_active == other.tool_policy_active
+            && self.skill_drafts == other.skill_drafts
             && self.provider_delete_confirmation == other.provider_delete_confirmation
             && self.active_section == other.active_section
             && self.search_query == other.search_query
@@ -1107,6 +1153,7 @@ impl Default for SettingsModal {
             provider_drafts: HashMap::new(),
             tool_policy_drafts: HashMap::new(),
             tool_policy_active: false,
+            skill_drafts: HashMap::new(),
             provider_delete_confirmation: None,
             active_section: SettingsSection::Model,
             search_query: String::new(),
@@ -1381,6 +1428,7 @@ impl SettingsModal {
                             },
                             detail,
                             policy: None,
+                            status: None,
                         }
                     })
                     .collect(),
@@ -1434,6 +1482,7 @@ impl SettingsModal {
                 is_default: tool.policy_default,
                 writable: tool.policy_writable,
             }),
+            status: None,
         }
     }
 
@@ -1454,6 +1503,26 @@ impl SettingsModal {
     }
 
     pub fn fail_tool_policy(&mut self, message: impl Into<String>) {
+        self.busy = false;
+        self.error = Some(message.into());
+    }
+
+    /// Skill toggle accepted by the runtime; the inventory refresh that
+    /// follows rebuilds the row from the ledger and clears the draft.
+    pub fn apply_skill_toggle(&mut self, name: &str, output: &str) {
+        self.skill_drafts.remove(name);
+        self.busy = true;
+        self.error = None;
+        let summary: String = output.lines().next().unwrap_or("").chars().take(120).collect();
+        self.status = Some(if summary.is_empty() {
+            format!("Skill {} updated.", name)
+        } else {
+            summary
+        });
+        self.scroll_selected_into_view();
+    }
+
+    pub fn fail_skill_toggle(&mut self, message: impl Into<String>) {
         self.busy = false;
         self.error = Some(message.into());
     }
@@ -1637,12 +1706,20 @@ impl SettingsModal {
                 SettingField::ToolPolicy { name, .. } => Some(name.clone()),
                 _ => None,
             });
+        let selected_skill_name = self
+            .fields
+            .get(self.selected)
+            .and_then(|field| match field {
+                SettingField::Skill { name, .. } => Some(name.clone()),
+                _ => None,
+            });
         self.fields.retain(|field| {
             !matches!(
                 field,
                 SettingField::Info { .. }
                     | SettingField::Provider { .. }
                     | SettingField::ToolPolicy { .. }
+                    | SettingField::Skill { .. }
             )
         });
         self.fields.extend(tool_info_fields(&self.tools));
@@ -1668,6 +1745,14 @@ impl SettingsModal {
                 .iter()
                 .position(|field| {
                     matches!(field, SettingField::ToolPolicy { name, .. } if name == &tool_name)
+                })
+                .unwrap_or(self.selected.min(self.fields.len()));
+        } else if let Some(skill_name) = selected_skill_name {
+            self.selected = self
+                .fields
+                .iter()
+                .position(|field| {
+                    matches!(field, SettingField::Skill { name, .. } if name == &skill_name)
                 })
                 .unwrap_or(self.selected.min(self.fields.len()));
         } else if save_selected {
@@ -1964,6 +2049,7 @@ impl SettingsModal {
                     SettingField::Info { description, .. } => description.as_str(),
                     SettingField::Provider { provider, .. } => provider.description.as_str(),
                     SettingField::ToolPolicy { description, .. } => description.as_str(),
+                    SettingField::Skill { description, .. } => description.as_str(),
                     _ => descriptor.description,
                 }
                 .to_lowercase();
@@ -2307,6 +2393,18 @@ impl SettingsModal {
         true
     }
 
+    /// Peek-flip a skill toggle draft; committed only on Enter.
+    fn toggle_skill_draft(&mut self) -> bool {
+        let Some(SettingField::Skill { name, enabled, .. }) =
+            self.fields.get(self.selected).cloned()
+        else {
+            return false;
+        };
+        let current = self.skill_drafts.get(&name).copied().unwrap_or(enabled);
+        self.skill_drafts.insert(name, !current);
+        true
+    }
+
     fn commit_edit(&mut self) {
         self.editing = false;
         self.capturing_keybind = None;
@@ -2362,7 +2460,10 @@ impl SettingsModal {
             }
             "left" | "arrowleft" => {
                 if !((self.searching || self.editing) && self.move_text_cursor(-1, false))
-                    && (self.cycle_choice(-1) || self.toggle_selected() || self.cycle_tool_policy(-1))
+                    && (self.cycle_choice(-1)
+                        || self.toggle_selected()
+                        || self.cycle_tool_policy(-1)
+                        || self.toggle_skill_draft())
                 {
                     self.commit_edit();
                 }
@@ -2370,7 +2471,10 @@ impl SettingsModal {
             }
             "right" | "arrowright" => {
                 if !((self.searching || self.editing) && self.move_text_cursor(1, false))
-                    && (self.cycle_choice(1) || self.toggle_selected() || self.cycle_tool_policy(1))
+                    && (self.cycle_choice(1)
+                        || self.toggle_selected()
+                        || self.cycle_tool_policy(1)
+                        || self.toggle_skill_draft())
                 {
                     self.commit_edit();
                 }
@@ -2468,6 +2572,16 @@ impl SettingsModal {
                 if let Some(SettingField::Toggle { .. }) = self.fields.get(self.selected) {
                     self.toggle_selected();
                     return None;
+                }
+                if let Some(SettingField::Skill { name, enabled, .. }) =
+                    self.fields.get(self.selected).cloned()
+                {
+                    let desired = self.skill_drafts.get(&name).copied().unwrap_or(enabled);
+                    if desired == enabled {
+                        return None;
+                    }
+                    self.busy = true;
+                    return Some(SettingsAction::ToggleSkill(name, desired));
                 }
                 let keybind_key = self
                     .fields
@@ -2584,7 +2698,8 @@ impl SettingsModal {
             | SettingField::Action { .. }
             | SettingField::Info { .. }
             | SettingField::Provider { .. }
-            | SettingField::ToolPolicy { .. } => {
+            | SettingField::ToolPolicy { .. }
+            | SettingField::Skill { .. } => {
                 return None;
             }
         };
@@ -2668,6 +2783,7 @@ impl SettingsModal {
             SettingField::Info { .. }
                 | SettingField::Provider { .. }
                 | SettingField::ToolPolicy { .. }
+                | SettingField::Skill { .. }
         ) && field.display() != self.originals.get(field.key()).cloned().unwrap_or_default()
     }
 
@@ -2751,6 +2867,7 @@ impl SettingsModal {
                         SettingField::Info { .. }
                             | SettingField::Provider { .. }
                             | SettingField::ToolPolicy { .. }
+                            | SettingField::Skill { .. }
                     )
                     && self.is_dirty(field)
             })
@@ -3156,6 +3273,7 @@ impl SettingsModal {
             let provider_drafts = self.provider_drafts.clone();
             let provider_delete_confirmation = self.provider_delete_confirmation.clone();
             let tool_policy_drafts = self.tool_policy_drafts.clone();
+            let skill_drafts = self.skill_drafts.clone();
             let selected = self.selected;
             let editing = self.editing && !self.searching;
             let capturing_keybind = self.capturing_keybind;
@@ -3206,6 +3324,7 @@ impl SettingsModal {
                                     &originals,
                                     &provider_drafts,
                                     &tool_policy_drafts,
+                                    &skill_drafts,
                                     provider_delete_confirmation.as_deref(),
                                     &theme,
                                     motion,
@@ -3343,6 +3462,7 @@ fn render_setting_row(
     originals: &HashMap<String, String>,
     provider_drafts: &HashMap<String, ProviderDraft>,
     tool_policy_drafts: &HashMap<String, ToolPolicyMode>,
+    skill_drafts: &HashMap<String, bool>,
     provider_delete_confirmation: Option<&str>,
     theme: &HermesTheme,
     motion: ModalMotion<'_>,
@@ -3353,6 +3473,7 @@ fn render_setting_row(
         SettingField::Info { .. }
             | SettingField::Provider { .. }
             | SettingField::ToolPolicy { .. }
+            | SettingField::Skill { .. }
     ) && field.display() != originals.get(field.key()).cloned().unwrap_or_default();
     let mut value = match field {
         SettingField::Text {
@@ -3606,6 +3727,35 @@ fn render_setting_row(
                     label
                 })
         }
+        SettingField::Skill { name, enabled, gate, .. } => {
+            let draft = skill_drafts.get(name).copied();
+            let state = draft.unwrap_or(*enabled);
+            let label = if state { "enabled" } else { "disabled" };
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .text_size(px(MockupTypeScale::HINT_SIZE))
+                        .text_color(theme.mockup_text_dim)
+                        .child(gate.clone()),
+                )
+                .child(
+                    div()
+                        .text_color(if selected || draft.is_some() {
+                            theme.accent_blue
+                        } else {
+                            theme.mockup_text_dim
+                        })
+                        .child(if selected {
+                            format!("‹ {label} ›")
+                        } else {
+                            label.to_string()
+                        }),
+                )
+        }
     };
     value = value
         .font_family(theme.font_mono()[0].clone())
@@ -3635,6 +3785,7 @@ fn render_setting_row(
         ),
         SettingField::Provider { provider, .. } => format!("settings_provider_{}", provider.id),
         SettingField::ToolPolicy { name, .. } => format!("settings_tool_policy_{}", name),
+        SettingField::Skill { name, .. } => format!("settings_skill_{}", name),
         SettingField::Toggle { key, .. } => format!(
             "settings_toggle_{}",
             key.strip_prefix("retention.").unwrap_or(key)
@@ -3692,6 +3843,7 @@ fn render_setting_row(
         SettingField::ToolPolicy { risk_class, description, .. } => {
             format!("{risk_class} · {description}")
         }
+        SettingField::Skill { description, .. } => description.clone(),
         _ => descriptor.description.to_string(),
     };
     row = row.child(
@@ -4579,6 +4731,91 @@ mod tests {
             InventoryState::Unavailable("/skills failed: permission denied".to_string())
         );
         assert_eq!(modal.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_skill_status_rows_toggle_and_dispatch_runtime_command() {
+        let output = "Registered Skills (3):\n  • audit_code (gate: ALLOW, status: active)\n  • offline_pack (gate: ALLOW, status: disabled)\n  • quarantine_me (gate: QUARANTINE, status: quarantined)";
+        let skills = parse_skills_output(output).unwrap();
+        assert_eq!(skills[0].name, "audit_code");
+        assert_eq!(skills[0].status.as_deref(), Some("active"));
+        assert_eq!(skills[1].name, "offline_pack");
+        assert_eq!(skills[1].status.as_deref(), Some("disabled"));
+
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        modal.set_skills_output(output);
+        modal.select_section(SettingsSection::Skills);
+
+        // Active skills render as enabled Skill rows; quarantined stays Info.
+        let enabled_index = modal
+            .fields
+            .iter()
+            .position(|field| matches!(field, SettingField::Skill { enabled: true, .. }))
+            .unwrap();
+        let disabled_index = modal
+            .fields
+            .iter()
+            .position(|field| matches!(field, SettingField::Skill { enabled: false, .. }))
+            .unwrap();
+        assert!(matches!(
+            modal.fields.get(disabled_index),
+            Some(SettingField::Skill { name, .. }) if name == "offline_pack"
+        ));
+        let quarantined_index = modal
+            .fields
+            .iter()
+            .position(|field| {
+                matches!(field, SettingField::Info { label, .. } if label == "quarantine_me")
+            })
+            .unwrap();
+        assert!(quarantined_index > disabled_index);
+
+        // Enter without a draft is a no-op; a peek flip commits on Enter.
+        modal.select_row(enabled_index);
+        assert_eq!(modal.handle_key("enter"), None);
+        assert!(modal.skill_drafts.is_empty());
+        modal.handle_key("right");
+        assert_eq!(modal.skill_drafts.get("audit_code"), Some(&false));
+        assert_eq!(
+            modal.handle_key("enter"),
+            Some(SettingsAction::ToggleSkill("audit_code".to_string(), false))
+        );
+        assert!(modal.busy);
+        // The draft survives dispatch so a failed toggle keeps the intent…
+        assert_eq!(modal.skill_drafts.get("audit_code"), Some(&false));
+        modal.fail_skill_toggle("/skill failed: ledger unavailable");
+        assert!(!modal.busy);
+        assert_eq!(modal.skill_drafts.get("audit_code"), Some(&false));
+        // …and a successful apply clears it while the refresh runs.
+        modal.apply_skill_toggle("audit_code", "Skill audit_code disabled.");
+        assert!(modal.skill_drafts.is_empty());
+        assert!(modal.busy);
+        // The inventory refresh that chat.rs issues next clears the busy gate.
+        modal.busy = false;
+
+        // Disabled skills toggle the other way.
+        modal.select_row(disabled_index);
+        modal.handle_key("left");
+        assert_eq!(modal.skill_drafts.get("offline_pack"), Some(&true));
+        assert_eq!(
+            modal.handle_key("enter"),
+            Some(SettingsAction::ToggleSkill(
+                "offline_pack".to_string(),
+                true
+            ))
+        );
+
+        // Skill toggles never leak into the config dirty diff.
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+
+        // Refreshing the inventory rebuilds rows and preserves the selection.
+        modal.set_skills_output(output);
+        assert!(matches!(
+            modal.fields.get(modal.selected),
+            Some(SettingField::Skill { name, .. }) if name == "offline_pack"
+        ));
     }
 
     #[test]

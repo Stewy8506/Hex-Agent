@@ -2734,6 +2734,7 @@ class ACPServer:
             "/status": self._cmd_status,
             "/doctor": self._cmd_doctor,
             "/skills": self._cmd_skills,
+            "/skill": self._cmd_skill,
             "/blast": self._cmd_blast,
             "/graph": self._cmd_blast,
             "/proof": self._cmd_proof,
@@ -2807,9 +2808,70 @@ class ACPServer:
         lines = [f"Registered Skills ({len(skills)}):"]
         for s in skills[:20]:
             name = s.get("name") or s.get("skill_id")
-            gate = s.get("gate_decision") or s.get("risk_gate") or "unknown"
-            lines.append(f"  • {name} (gate: {gate})")
+            scan = s.get("scan") or {}
+            gate = (
+                s.get("gate_decision")
+                or scan.get("gate_decision")
+                or s.get("risk_gate")
+                or "unknown"
+            )
+            status = s.get("status") or "unknown"
+            lines.append(f"  • {name} (gate: {gate}, status: {status})")
         return "\n".join(lines)
+
+    def _cmd_skill(self, sess: ACPSession, args: str) -> str:
+        """/skill enable|disable <name>: flips the ledger lifecycle status that
+        SkillSpector enforces at execution time (non-active skills are rejected
+        with SKILLSPECTOR_BLOCK)."""
+        ledger = getattr(self.orchestrator, "ledger", None)
+        if ledger is None or not hasattr(ledger, "list_skills"):
+            raise ValueError("Skill registry unavailable: orchestrator has no ledger.")
+        parts = args.strip().split(maxsplit=1)
+        if len(parts) != 2 or parts[0] not in ("enable", "disable"):
+            raise ValueError("Usage: /skill enable <name>  |  /skill disable <name>")
+        action, name = parts[0], parts[1].strip()
+        skills = ledger.list_skills()
+        match = next(
+            (
+                s
+                for s in skills
+                if (s.get("name") or s.get("skill_id") or "").lower() == name.lower()
+                or s.get("skill_id") == name
+            ),
+            None,
+        )
+        if match is None:
+            raise ValueError(f"Unknown skill: {name}")
+        skill_id = match.get("skill_id") or match.get("name")
+        status = (match.get("status") or "unknown").lower()
+        skill_name = match.get("name") or skill_id
+
+        if action == "disable":
+            if status in ("disabled",):
+                return f"Skill {skill_name} is already disabled."
+            if status not in ("active", "pinned"):
+                raise ValueError(
+                    f"Skill {skill_name} cannot be disabled from status '{status}'."
+                )
+            ledger.set_skill_status(skill_id, "disabled")
+            return f"Skill {skill_name} disabled. Running tasks with it will be rejected (SKILLSPECTOR_BLOCK)."
+
+        # enable
+        if status in ("active", "pinned"):
+            return f"Skill {skill_name} is already enabled."
+        if status == "quarantined":
+            raise ValueError(
+                f"Skill {skill_name} is quarantined by SkillSpector and cannot be "
+                "enabled until a passing re-scan."
+            )
+        if status == "candidate":
+            raise ValueError(
+                f"Skill {skill_name} is a candidate and has not been approved yet."
+            )
+        if status != "disabled":
+            raise ValueError(f"Skill {skill_name} has unknown status '{status}'.")
+        ledger.set_skill_status(skill_id, "active")
+        return f"Skill {skill_name} enabled."
 
     def _cmd_blast(self, sess: ACPSession, args: str) -> str:
         graphify = getattr(self.orchestrator, "graphify", None)

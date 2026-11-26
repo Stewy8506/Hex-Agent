@@ -3930,6 +3930,10 @@ impl ChatView {
                         self.execute_tool_policy_save(tool, mode, cx);
                         return true;
                     }
+                    Some(SettingsAction::ToggleSkill(skill, enable)) => {
+                        self.execute_skill_toggle(skill, enable, cx);
+                        return true;
+                    }
                     Some(SettingsAction::DeleteProviderCredential(provider)) => {
                         self.execute_provider_credential_delete(provider, cx);
                         return true;
@@ -5880,20 +5884,7 @@ impl ChatView {
             cx.notify();
             return;
         }
-        let skill_session_id = self
-            .shell
-            .active_session_id
-            .clone()
-            .filter(|session_id| !session_id.trim().is_empty())
-            .or_else(|| {
-                self.shell
-                    .sidebar
-                    .session_list
-                    .sessions
-                    .iter()
-                    .find(|session| !session.is_archived && !session.id.trim().is_empty())
-                    .map(|session| session.id.clone())
-            });
+        let skill_session_id = self.resolve_skill_session_id();
         if skill_session_id.is_some() {
             modal.set_skills_loading();
         } else {
@@ -5930,36 +5921,7 @@ impl ChatView {
         .detach();
 
         if let Some(session_id) = skill_session_id {
-            let bridge = self.bridge.clone();
-            let rt = self.rt.clone();
-            cx.spawn(async move |this, cx| {
-                let request_session = session_id.clone();
-                let res = rt
-                    .spawn(async move { bridge.list_skills(&request_session).await })
-                    .await;
-                this.update(cx, |view, cx| {
-                    if view.settings_generation != generation {
-                        return;
-                    }
-                    if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
-                        match res {
-                            Ok(Ok(response)) if response.is_error.unwrap_or(false) => {
-                                modal.set_skills_error(format!("/skills failed: {}", response.output))
-                            }
-                            Ok(Ok(response)) => modal.set_skills_output(&response.output),
-                            Ok(Err(err)) => {
-                                modal.set_skills_error(format!("/skills failed: {err}"))
-                            }
-                            Err(err) => modal.set_skills_error(format!(
-                                "Skill inventory task aborted: {err}"
-                            )),
-                        }
-                    }
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
+            self.request_skills_inventory(session_id, generation, false, cx);
         }
 
         let bridge = self.bridge.clone();
@@ -6264,6 +6226,125 @@ impl ChatView {
                             "Tool policy task aborted: {error}"
                         )),
                     }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The ACP session used for skill-registry reads and toggles: the active
+    /// session, or the first live sidebar session when none is focused.
+    fn resolve_skill_session_id(&self) -> Option<String> {
+        self.shell
+            .active_session_id
+            .clone()
+            .filter(|session_id| !session_id.trim().is_empty())
+            .or_else(|| {
+                self.shell
+                    .sidebar
+                    .session_list
+                    .sessions
+                    .iter()
+                    .find(|session| !session.is_archived && !session.id.trim().is_empty())
+                    .map(|session| session.id.clone())
+            })
+    }
+
+    fn request_skills_inventory(
+        &mut self,
+        session_id: String,
+        generation: u64,
+        clear_busy: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let request_session = session_id.clone();
+            let res = rt
+                .spawn(async move { bridge.list_skills(&request_session).await })
+                .await;
+            this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(response)) if response.is_error.unwrap_or(false) => {
+                            modal.set_skills_error(format!("/skills failed: {}", response.output))
+                        }
+                        Ok(Ok(response)) => modal.set_skills_output(&response.output),
+                        Ok(Err(err)) => {
+                            modal.set_skills_error(format!("/skills failed: {err}"))
+                        }
+                        Err(err) => modal.set_skills_error(format!(
+                            "Skill inventory task aborted: {err}"
+                        )),
+                    }
+                    if clear_busy {
+                        modal.busy = false;
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// DX6: applies a skill enable/disable through the runtime `/skill`
+    /// command, then re-reads the inventory so the row reflects the ledger.
+    fn execute_skill_toggle(&mut self, name: String, enable: bool, cx: &mut Context<Self>) {
+        let session_id = self.resolve_skill_session_id();
+        let ActiveModal::Settings(modal) = &mut self.shell.active_modal else {
+            return;
+        };
+        let Some(session_id) = session_id else {
+            modal.fail_skill_toggle(SKILLS_SESSION_REQUIRED);
+            cx.notify();
+            return;
+        };
+        let generation = self.settings_generation;
+        modal.busy = true;
+        modal.error = None;
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let request_session = session_id.clone();
+            let toggle_name = name.clone();
+            let res = rt
+                .spawn(async move {
+                    bridge
+                        .toggle_skill(&request_session, &toggle_name, enable)
+                        .await
+                })
+                .await;
+            let accepted = matches!(
+                &res,
+                Ok(Ok(response)) if !response.is_error.unwrap_or(false)
+            );
+            let apply_name = name.clone();
+            this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(response)) if response.is_error.unwrap_or(false) => {
+                            modal.fail_skill_toggle(format!("/skill failed: {}", response.output))
+                        }
+                        Ok(Ok(response)) => modal.apply_skill_toggle(&apply_name, &response.output),
+                        Ok(Err(err)) => modal.fail_skill_toggle(format!("/skill failed: {err}")),
+                        Err(err) => {
+                            modal.fail_skill_toggle(format!("Skill toggle task aborted: {err}"))
+                        }
+                    }
+                }
+                if accepted {
+                    view.request_skills_inventory(session_id, generation, true, cx);
                 }
                 cx.notify();
             })

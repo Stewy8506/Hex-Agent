@@ -72,6 +72,8 @@ struct MockState {
     skills_error: StdMutex<Option<String>>,
     skill_requests: AtomicUsize,
     skill_session_ids: StdMutex<Vec<String>>,
+    skill_toggles: StdMutex<Vec<(String, String)>>,
+    skill_toggle_error: StdMutex<Option<String>>,
     providers: StdMutex<Vec<Value>>,
     provider_requests: AtomicUsize,
     provider_responses: AtomicUsize,
@@ -802,6 +804,51 @@ async fn handle_request(
                     "result": {
                         "sessionId": session_id,
                         "command": "/skills",
+                        "output": output,
+                        "isError": is_error
+                    }
+                }),
+            )
+            .await;
+        }
+        "session/command" if params["command"].as_str() == Some("/skill") => {
+            let session_id = params["sessionId"].as_str().unwrap().to_string();
+            let args = params["args"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            state
+                .skill_toggles
+                .lock()
+                .unwrap()
+                .push((session_id.clone(), args.clone()));
+            let error = state.skill_toggle_error.lock().unwrap().clone();
+            let (output, is_error) = if let Some(message) = error {
+                (message, true)
+            } else {
+                // The toggle lands, so the mocked inventory flips its status.
+                let mut next = state.skills_output.lock().unwrap().clone();
+                if let Some(name) = args.strip_prefix("disable ") {
+                    next = next.replace(
+                        &format!("• {name} (gate: ALLOW, status: active)"),
+                        &format!("• {name} (gate: ALLOW, status: disabled)"),
+                    );
+                } else if let Some(name) = args.strip_prefix("enable ") {
+                    next = next.replace(
+                        &format!("• {name} (gate: ALLOW, status: disabled)"),
+                        &format!("• {name} (gate: ALLOW, status: active)"),
+                    );
+                }
+                *state.skills_output.lock().unwrap() = next;
+                (format!("Skill {} updated.", args), false)
+            };
+            send_line(
+                &writer,
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {
+                        "sessionId": session_id,
+                        "command": "/skill",
                         "output": output,
                         "isError": is_error
                     }
@@ -3011,6 +3058,139 @@ fn test_skills_settings_use_active_or_known_sessions_and_parse_output(
             }
         );
         assert_eq!(modal.dirty_count(), 0);
+    });
+}
+
+#[gpui::test]
+fn test_skill_toggle_dispatches_runtime_command_and_refreshes(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.sessions.lock().unwrap() = vec![json!({
+        "sessionId": "ses_active",
+        "cwd": "/workspace",
+        "model": "claude-3-7-sonnet",
+        "createdAt": 1_700_000_002.0,
+        "turns": 1,
+        "title": "Active session",
+        "archived": false,
+        "pinned": false
+    })];
+    *state.skills_output.lock().unwrap() = concat!(
+        "Registered Skills (2):\n",
+        "  • audit_code (gate: ALLOW, status: active)\n",
+        "  • offline_pack (gate: ALLOW, status: disabled)"
+    )
+    .to_string();
+    vc.update(|_, app| {
+        view.update(app, |view, _| {
+            view.shell.sidebar.session_list.sessions =
+                vec![SessionItem::new("ses_active", "Active session")];
+            view.shell.active_session_id = Some("ses_active".to_string());
+        });
+    });
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "skills with statuses load", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(modal.skills, InventoryState::Ready(_))
+        )
+    });
+    click_debug_element(vc, "settings_section_skills");
+    vc.update(|_, app| {
+        view.update(app, |view, _| {
+            let ActiveModal::Settings(modal) = &mut view.shell.active_modal else {
+                panic!("settings should remain open");
+            };
+            let skill_row = modal
+                .fields
+                .iter()
+                .position(|field| {
+                    matches!(field, SettingField::Skill { name, enabled: true, .. } if name == "audit_code")
+                })
+                .expect("active skill renders as a toggleable row");
+            modal.selected = skill_row;
+        });
+    });
+
+    vc.simulate_keystrokes("right");
+    finish_motion(vc, &view);
+    vc.simulate_keystrokes("enter");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "toggle accepted and inventory refreshed", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy && matches!(modal.skills, InventoryState::Ready(_))
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(
+            *state.skill_toggles.lock().unwrap(),
+            vec![(
+                "ses_active".to_string(),
+                "disable audit_code".to_string()
+            )]
+        );
+        // The inventory re-read appended a second /skills request.
+        assert_eq!(state.skill_requests.load(Ordering::SeqCst), 2);
+        assert!(modal.error.is_none());
+        let toggled = modal
+            .fields
+            .iter()
+            .find(|field| {
+                matches!(field, SettingField::Skill { name, .. } if name == "audit_code")
+            })
+            .expect("toggled skill stays listed after the refresh");
+        assert!(matches!(toggled, SettingField::Skill { enabled: false, .. }));
+        assert_eq!(modal.dirty_count(), 0);
+    });
+
+    vc.simulate_keystrokes("escape");
+    finish_motion(vc, &view);
+    *state.skill_toggle_error.lock().unwrap() = Some("Command failed: ledger unavailable".to_string());
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "skills load before failing toggle", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy && matches!(modal.skills, InventoryState::Ready(_))
+        )
+    });
+    vc.update(|_, app| {
+        view.update(app, |view, _| {
+            let ActiveModal::Settings(modal) = &mut view.shell.active_modal else {
+                panic!("settings should remain open");
+            };
+            let skill_row = modal
+                .fields
+                .iter()
+                .position(|field| {
+                    matches!(field, SettingField::Skill { name, .. } if name == "audit_code")
+                })
+                .expect("skill row present");
+            modal.selected = skill_row;
+        });
+    });
+    vc.simulate_keystrokes("right");
+    finish_motion(vc, &view);
+    vc.simulate_keystrokes("enter");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "toggle failure surfaces", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("ledger unavailable"))
+        )
     });
 }
 

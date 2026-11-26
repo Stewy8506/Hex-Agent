@@ -133,6 +133,13 @@
       "surfaces": {"console": "supported", "tui": "supported", "acp": "supported"}
     },
     {
+      "name": "/skill",
+      "aliases": [],
+      "usage": "/skill enable|disable <name>",
+      "description": "Enable or disable a registered skill (SkillSpector-gated lifecycle)",
+      "surfaces": {"console": "unavailable", "tui": "unavailable", "acp": "supported"}
+    },
+    {
       "name": "/tools",
       "aliases": [],
       "usage": "/tools",

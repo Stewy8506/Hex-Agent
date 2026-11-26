@@ -672,6 +672,24 @@ impl AcpBridge {
         }
     }
 
+    /// Enable or disable a registered skill through the runtime `/skill` command.
+    pub async fn toggle_skill(
+        &self,
+        session_id: &str,
+        name: &str,
+        enable: bool,
+    ) -> Result<hex_protocol::models::SessionCommandResponse, AcpError> {
+        let args = format!("{} {}", if enable { "enable" } else { "disable" }, name);
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client
+                .session_command(session_id, "/skill", Some(args.as_str()))
+                .await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Apply a model selection to the session via the backend `/model` command.
     /// Success carries the confirmed canonical model/provider identity.
     pub async fn set_session_model(

@@ -1573,6 +1573,34 @@ class LedgerStore:
                 results.append(d)
             return results
 
+    def set_skill_status(self, skill_id: str, status: str) -> int:
+        """Set the lifecycle status of every revision of a skill; returns rows updated."""
+        if self.backend_type == "postgres":
+            return self._run_sync(self.set_skill_status_async, skill_id, status)
+        with self._lock:
+            cursor = self.conn.execute(
+                "UPDATE skills SET status = ? WHERE skill_id = ?",
+                (status, skill_id),
+            )
+            self.conn.commit()
+            return cursor.rowcount
+
+    async def set_skill_status_async(self, skill_id: str, status: str) -> int:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.set_skill_status, skill_id, status)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE skills SET status = $1 WHERE skill_id = $2",
+                status,
+                skill_id,
+            )
+            # asyncpg returns an "UPDATE <n>" status tag.
+            try:
+                return int(result.split()[-1])
+            except (ValueError, IndexError):
+                return 0
+
     def acquire_lease_and_attempt(
         self,
         task_id: str,

@@ -33,9 +33,23 @@ class FakeMemory:
 class FakeLedger:
     def __init__(self) -> None:
         self.searched: list[str] = []
+        self.status_updates: list[tuple[str, str]] = []
+        self._skills = [
+            {"skill_id": "skl_1", "name": "demo-skill", "gate_decision": "ALLOW", "status": "active"},
+            {"skill_id": "skl_2", "name": "candidate-skill", "gate_decision": "REQUIRE_APPROVAL", "status": "candidate"},
+            {"skill_id": "skl_3", "name": "quarantine-skill", "gate_decision": "QUARANTINE", "status": "quarantined"},
+            {"skill_id": "skl_4", "name": "disabled-skill", "status": "disabled"},
+        ]
 
     def list_skills(self):
-        return [{"name": "demo-skill", "gate_decision": "ALLOW"}]
+        return [dict(skill) for skill in self._skills]
+
+    def set_skill_status(self, skill_id, status):
+        self.status_updates.append((skill_id, status))
+        for skill in self._skills:
+            if skill["skill_id"] == skill_id:
+                skill["status"] = status
+        return 1
 
     def search_tasks(self, query, project_id=None, limit=20):
         self.searched.append(query)
@@ -215,6 +229,48 @@ def test_scan_registers_real_bundle(server, tmp_path):
     assert server.orchestrator.scanner.scanned == [bundle.resolve()]
     assert "ALLOW" in res["output"]
     assert "skl_1" in res["output"]
+
+
+def test_skills_listing_reports_status(server):
+    res = run_cmd(server, "/skills")
+    assert res["isError"] is False
+    assert "demo-skill (gate: ALLOW, status: active)" in res["output"]
+    assert "quarantine-skill (gate: QUARANTINE, status: quarantined)" in res["output"]
+
+
+def test_skill_disable_then_enable_roundtrip(server):
+    res = run_cmd(server, "/skill", "disable demo-skill")
+    assert res["isError"] is False
+    assert server.orchestrator.ledger.status_updates == [("skl_1", "disabled")]
+    assert "disabled" in res["output"]
+
+    assert run_cmd(server, "/skill", "disable demo-skill")["isError"] is False
+
+    res = run_cmd(server, "/skill", "enable demo-skill")
+    assert res["isError"] is False
+    assert server.orchestrator.ledger.status_updates == [
+        ("skl_1", "disabled"),
+        ("skl_1", "active"),
+    ]
+
+
+def test_skill_toggle_refuses_unknown_and_ungated_transitions(server):
+    assert run_cmd(server, "/skill", "enable nope")["isError"] is True
+    assert run_cmd(server, "/skill", "frobnicate demo-skill")["isError"] is True
+    assert run_cmd(server, "/skill", "enable")["isError"] is True
+
+    res = run_cmd(server, "/skill", "enable candidate-skill")
+    assert res["isError"] is True
+    assert "candidate" in res["output"]
+
+    res = run_cmd(server, "/skill", "enable quarantine-skill")
+    assert res["isError"] is True
+    assert "quarantined" in res["output"]
+
+    res = run_cmd(server, "/skill", "disable disabled-skill")
+    assert res["isError"] is False
+    assert "already disabled" in res["output"]
+    assert server.orchestrator.ledger.status_updates == []
 
 
 def test_rollback_without_task_errors(server):
