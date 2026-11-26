@@ -6,6 +6,7 @@ pub mod chat;
 pub mod fonts;
 pub mod menu;
 pub mod platform;
+pub mod preferences;
 pub mod shortcuts;
 pub mod theme;
 pub mod ui;

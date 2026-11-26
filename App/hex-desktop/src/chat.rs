@@ -37,6 +37,7 @@ use crate::acp_bridge::{AcpBridge, AcpEvent};
 use crate::fonts;
 use crate::menu::init_menus;
 use crate::platform;
+use crate::preferences::DesktopPreferences;
 use crate::shortcuts::{self, init_shortcuts, About, CloseWindow, Hide, Quit, Redo, Undo};
 use crate::theme::{HermesTheme, MockupTypeScale};
 use crate::ui::composer::{context_bar, glow_card, COMPOSER_COLUMN_GAP, SESSION_PLACEHOLDER};
@@ -220,13 +221,32 @@ pub fn open_chat_window(
     rt: Handle,
     workspace: PathBuf,
 ) -> anyhow::Result<WindowHandle<ChatView>> {
+    let preferences = DesktopPreferences::load().unwrap_or_else(|error| {
+        log::warn!("{error}; using default desktop preferences");
+        DesktopPreferences::default()
+    });
+    cx.set_global(motion::MotionSystem::with_policy(
+        motion::MotionPolicy::new(
+            preferences
+                .reduce_motion
+                .unwrap_or_else(motion::reduced_motion),
+        ),
+    ));
     let config = WindowConfig::default();
     let bounds = cx
         .primary_display()
         .map(|display| config.centered_on_display(display.bounds()));
     let options = config.window_options(bounds);
     cx.open_window(options, move |_window, cx| {
-        let view = cx.new(|cx| ChatView::new(bridge.clone(), rt.clone(), workspace.clone(), cx));
+        let view = cx.new(|cx| {
+            ChatView::with_preferences(
+                bridge.clone(),
+                rt.clone(),
+                workspace.clone(),
+                preferences.clone(),
+                cx,
+            )
+        });
         view.update(cx, |view, cx| view.start_backend(cx));
         view
     })
@@ -455,6 +475,8 @@ pub struct ChatView {
     bridge: AcpBridge,
     rt: Handle,
     workspace: PathBuf,
+    preferences: DesktopPreferences,
+    persist_preferences: bool,
 
     sessions: HashMap<String, SessionState>,
     session_load_generation: u64,
@@ -526,12 +548,41 @@ impl Focusable for ChatView {
 
 impl ChatView {
     pub fn new(bridge: AcpBridge, rt: Handle, workspace: PathBuf, cx: &mut Context<Self>) -> Self {
+        Self::build(
+            bridge,
+            rt,
+            workspace,
+            DesktopPreferences::default(),
+            false,
+            cx,
+        )
+    }
+
+    fn with_preferences(
+        bridge: AcpBridge,
+        rt: Handle,
+        workspace: PathBuf,
+        preferences: DesktopPreferences,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::build(bridge, rt, workspace, preferences, true, cx)
+    }
+
+    fn build(
+        bridge: AcpBridge,
+        rt: Handle,
+        workspace: PathBuf,
+        preferences: DesktopPreferences,
+        persist_preferences: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let workspace_name = workspace
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Workspace".to_string());
 
         let mut shell = AppShell::new().with_acp_bridge(bridge.clone());
+        shell.set_sidebar_collapsed(preferences.sidebar_collapsed);
         // B35: the git branch is resolved off the UI thread; show a placeholder
         // until the background lookup completes instead of blocking startup.
         shell.sidebar.set_workspace(workspace_name, "…");
@@ -574,6 +625,8 @@ impl ChatView {
             bridge,
             rt,
             workspace,
+            preferences,
+            persist_preferences,
             sessions: HashMap::new(),
             session_load_generation: 0,
             session_list_generation: 0,
@@ -616,6 +669,17 @@ impl ChatView {
         view.start_git_branch_lookup(cx);
         view.refresh_cloud_status(cx);
         view
+    }
+
+    fn toggle_sidebar_and_save(&mut self, cx: &mut Context<Self>) {
+        self.shell.toggle_sidebar();
+        self.preferences.sidebar_collapsed = self.shell.sidebar_collapsed;
+        if self.persist_preferences {
+            if let Err(error) = self.preferences.save() {
+                log::warn!("failed to save desktop preferences: {error}");
+            }
+        }
+        cx.notify();
     }
 
     /// Fetch the local cloud account/device status for the footer + device chip.
@@ -2049,8 +2113,7 @@ impl ChatView {
             .id("home_sidebar_toggle")
             .debug_selector(|| "home_sidebar_toggle".to_string())
             .on_click(cx.listener(|this, _, _, cx| {
-                this.shell.toggle_sidebar();
-                cx.notify();
+                this.toggle_sidebar_and_save(cx);
             }))
             .child(mockup_icon_button(
                 theme,
@@ -2845,10 +2908,7 @@ impl ChatView {
             PaletteAction::NewChat => self.request_new_chat(cx),
             PaletteAction::SelectSession(id) => self.switch_session(id, cx),
             PaletteAction::SwitchModel => self.request_model_picker(cx),
-            PaletteAction::ToggleSidebar => {
-                self.shell.toggle_sidebar();
-                cx.notify();
-            }
+            PaletteAction::ToggleSidebar => self.toggle_sidebar_and_save(cx),
             PaletteAction::ClearHistory => {
                 self.shell.feed.clear();
                 cx.notify();
@@ -3829,8 +3889,7 @@ impl ChatView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.shell.toggle_sidebar();
-        cx.notify();
+        self.toggle_sidebar_and_save(cx);
     }
 
     fn on_open_settings(
@@ -5477,8 +5536,7 @@ impl ChatView {
                             .debug_selector(|| "header_toggle".to_string())
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.shell.toggle_sidebar();
-                                cx.notify();
+                                this.toggle_sidebar_and_save(cx);
                             }))
                             .child(mockup_icon_button(
                                 theme,
@@ -7174,6 +7232,32 @@ mod tests {
                 cx,
             )
         })
+    }
+
+    #[gpui::test]
+    fn stored_preferences_apply_to_the_production_view(cx: &mut TestAppContext) {
+        cx.update(init_app);
+        let preferences = DesktopPreferences {
+            sidebar_collapsed: true,
+            reduce_motion: Some(true),
+        };
+        let (view, vc) = cx.add_window_view(|_, cx| {
+            ChatView::with_preferences(
+                AcpBridge::new(),
+                app_runtime().handle().clone(),
+                std::env::temp_dir(),
+                preferences,
+                cx,
+            )
+        });
+        vc.update(|_, app| {
+            view.update(app, |view, _| {
+                assert!(view.shell.sidebar_collapsed);
+                assert!(view.preferences.sidebar_collapsed);
+                assert_eq!(view.preferences.reduce_motion, Some(true));
+                assert!(view.persist_preferences);
+            })
+        });
     }
 
     fn advance_motion(app: &mut App, window_id: WindowId, frames: usize) {
