@@ -677,6 +677,14 @@ mod tests {
             filtered[0].action,
             PaletteAction::OpenSetting("runtime.maxTurns".to_string())
         );
+
+        palette.set_query("Manage sessions");
+        let filtered = palette.filtered_items();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].action,
+            PaletteAction::OpenSetting("desktop.action.sessions".to_string())
+        );
     }
 
     #[test]

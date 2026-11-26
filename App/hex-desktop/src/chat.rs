@@ -3901,9 +3901,16 @@ impl ChatView {
                     cx.notify();
                     return true;
                 }
-                if let Some(SettingsAction::Save) = modal.handle_key(key) {
-                    self.execute_settings_save(cx);
-                    return true;
+                match modal.handle_key(key) {
+                    Some(SettingsAction::Save) => {
+                        self.execute_settings_save(cx);
+                        return true;
+                    }
+                    Some(SettingsAction::Activate(key)) => {
+                        self.activate_settings_action(key, cx);
+                        return true;
+                    }
+                    None => {}
                 }
                 // Consume navigation keys so they never reach the composer.
                 if matches!(
@@ -5867,6 +5874,32 @@ impl ChatView {
         cx.notify();
     }
 
+    fn activate_settings_action(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        if !matches!(
+            key,
+            "desktop.action.models" | "desktop.action.sessions" | "desktop.action.cloud"
+        ) {
+            return;
+        }
+        if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+            if modal.dirty_count() > 0 {
+                modal.error = Some(
+                    "Save your changes before opening another settings view.".to_string(),
+                );
+                cx.notify();
+                return;
+            }
+        }
+        self.shell.dismiss_modal();
+        self.clear_modal_history();
+        match key {
+            "desktop.action.models" => self.request_model_picker(cx),
+            "desktop.action.sessions" => self.open_session_search(cx),
+            "desktop.action.cloud" => self.open_account_modal(cx),
+            _ => unreachable!("validated settings action"),
+        }
+    }
+
     /// DX3: writes the modal's dirty diff via `config/set`; the fresh view in
     /// the response re-bases the modal, failures keep the operator's edits.
     fn execute_settings_save(&mut self, cx: &mut Context<Self>) {
@@ -6769,6 +6802,9 @@ impl ChatView {
                                 match interaction {
                                     SettingsInteraction::SelectRow(index) => {
                                         current.select_row(index);
+                                        if let Some(key) = current.selected_action() {
+                                            this.activate_settings_action(key, cx);
+                                        }
                                     }
                                     SettingsInteraction::SelectSection(section) => {
                                         current.select_section(section);
@@ -6782,6 +6818,9 @@ impl ChatView {
                                     SettingsInteraction::Save => {
                                         current.selected = current.fields.len();
                                         this.execute_settings_save(cx);
+                                    }
+                                    SettingsInteraction::Activate(key) => {
+                                        this.activate_settings_action(key, cx);
                                     }
                                 }
                             }

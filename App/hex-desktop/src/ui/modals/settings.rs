@@ -21,9 +21,12 @@ use hex_protocol::models::ConfigGetResponse;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     Model,
+    Sessions,
+    Cloud,
+    Tools,
+    Skills,
     Runtime,
     WebSearch,
-    Cloud,
     Learning,
     Appearance,
     MotionDisplay,
@@ -32,11 +35,14 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
         Self::Model,
+        Self::Sessions,
+        Self::Cloud,
+        Self::Tools,
+        Self::Skills,
         Self::Runtime,
         Self::WebSearch,
-        Self::Cloud,
         Self::Learning,
         Self::Appearance,
         Self::MotionDisplay,
@@ -46,10 +52,13 @@ impl SettingsSection {
 
     pub fn title(self) -> &'static str {
         match self {
-            Self::Model => "Model",
+            Self::Model => "Models",
+            Self::Sessions => "Sessions",
+            Self::Cloud => "Cloud",
+            Self::Tools => "Tools",
+            Self::Skills => "Skills",
             Self::Runtime => "Runtime",
             Self::WebSearch => "Web search",
-            Self::Cloud => "Cloud",
             Self::Learning => "Learning",
             Self::Appearance => "Appearance",
             Self::MotionDisplay => "Motion & display",
@@ -61,9 +70,12 @@ impl SettingsSection {
     pub fn description(self) -> &'static str {
         match self {
             Self::Model => "Choose the provider, model, and execution behavior.",
+            Self::Sessions => "Find, resume, rename, pin, archive, or delete sessions.",
+            Self::Cloud => "Manage the HEX cloud account and enrolled devices.",
+            Self::Tools => "Inspect the live tool registry exposed by the runtime.",
+            Self::Skills => "Inspect skills registered with the active runtime session.",
             Self::Runtime => "Control how long an agent turn may run.",
             Self::WebSearch => "Configure the provider used for web lookups.",
-            Self::Cloud => "Set the HEX cloud service endpoint.",
             Self::Learning => "Choose when HEX reflects on completed work.",
             Self::Appearance => "Personalize the desktop theme and interface density.",
             Self::MotionDisplay => "Control animation policy and sidebar visibility.",
@@ -76,10 +88,13 @@ impl SettingsSection {
 
     pub fn id(self) -> &'static str {
         match self {
-            Self::Model => "model",
+            Self::Model => "models",
+            Self::Sessions => "sessions",
+            Self::Cloud => "cloud",
+            Self::Tools => "tools",
+            Self::Skills => "skills",
             Self::Runtime => "runtime",
             Self::WebSearch => "web_search",
-            Self::Cloud => "cloud",
             Self::Learning => "learning",
             Self::Appearance => "appearance",
             Self::MotionDisplay => "motion_display",
@@ -109,6 +124,7 @@ enum SettingKind {
     Text { required: bool },
     Number { min: u64, max: u64 },
     Choice { fallback: &'static [&'static str] },
+    Action,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -146,7 +162,7 @@ const fn notification_setting(
     }
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 25] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 28] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -286,6 +302,27 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 25] = [
         "Update banners",
         "Show optional update banners above the conversation. Required updates stay visible.",
     ),
+    SettingDescriptor {
+        section: SettingsSection::Model,
+        key: "desktop.action.models",
+        label: "Choose a model",
+        description: "Open the live model catalog for the current session.",
+        kind: SettingKind::Action,
+    },
+    SettingDescriptor {
+        section: SettingsSection::Sessions,
+        key: "desktop.action.sessions",
+        label: "Manage sessions",
+        description: "Search, resume, rename, pin, archive, or delete existing sessions.",
+        kind: SettingKind::Action,
+    },
+    SettingDescriptor {
+        section: SettingsSection::Cloud,
+        key: "desktop.action.cloud",
+        label: "Account & devices",
+        description: "Open HEX cloud sign-in, account status, and enrolled devices.",
+        kind: SettingKind::Action,
+    },
 ];
 
 impl SettingDescriptor {
@@ -329,6 +366,14 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
         .iter()
         .filter(|descriptor| is_desktop_setting(descriptor.key))
     {
+        if matches!(descriptor.kind, SettingKind::Action) {
+            fields.push(SettingField::Action {
+                key: descriptor.key,
+                label: descriptor.label,
+                value: "Open".to_string(),
+            });
+            continue;
+        }
         if let Some(id) = ShortcutId::from_setting_key(descriptor.key) {
             if id.available() {
                 let value = shortcuts::effective_keystroke(preferences, id);
@@ -425,6 +470,12 @@ pub enum SettingField {
         label: &'static str,
         value: Option<String>,
     },
+    /// Opens an existing desktop workflow without changing a setting.
+    Action {
+        key: &'static str,
+        label: &'static str,
+        value: String,
+    },
 }
 
 impl SettingField {
@@ -433,7 +484,8 @@ impl SettingField {
             Self::Text { key, .. }
             | Self::Number { key, .. }
             | Self::Choice { key, .. }
-            | Self::Keybind { key, .. } => key,
+            | Self::Keybind { key, .. }
+            | Self::Action { key, .. } => key,
         }
     }
 
@@ -442,8 +494,13 @@ impl SettingField {
             Self::Text { label, .. }
             | Self::Number { label, .. }
             | Self::Choice { label, .. }
-            | Self::Keybind { label, .. } => label,
+            | Self::Keybind { label, .. }
+            | Self::Action { label, .. } => label,
         }
+    }
+
+    fn is_action(&self) -> bool {
+        matches!(self, Self::Action { .. })
     }
 
     fn display(&self) -> String {
@@ -454,6 +511,7 @@ impl SettingField {
                 .as_deref()
                 .map(shortcuts::display_keystroke)
                 .unwrap_or_else(|| "Unbound".to_string()),
+            Self::Action { value, .. } => value.clone(),
         }
     }
 
@@ -462,7 +520,7 @@ impl SettingField {
             Self::Text { value, cursor, .. } | Self::Number { value, cursor, .. } => {
                 Some((value, cursor))
             }
-            Self::Choice { .. } | Self::Keybind { .. } => None,
+            Self::Choice { .. } | Self::Keybind { .. } | Self::Action { .. } => None,
         }
     }
 
@@ -488,6 +546,7 @@ impl SettingField {
                         Ok(serde_json::Value::from(parsed))
                     }
                 }),
+            Self::Action { .. } => Err("actions cannot be saved as settings".to_string()),
         }
     }
 }
@@ -496,6 +555,7 @@ impl SettingField {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsAction {
     Save,
+    Activate(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -505,6 +565,7 @@ pub enum SettingsInteraction {
     FocusSearch,
     RevealSetting(&'static str),
     Save,
+    Activate(&'static str),
 }
 
 pub type SettingsHandler =
@@ -681,6 +742,11 @@ impl SettingsModal {
                 label: descriptor.label,
                 options: Self::option_list(options, descriptor.key, fallback),
                 value: raw.and_then(serde_json::Value::as_str).map(str::to_string),
+            },
+            SettingKind::Action => SettingField::Action {
+                key: descriptor.key,
+                label: descriptor.label,
+                value: "Open".to_string(),
             },
         }
     }
@@ -1070,6 +1136,13 @@ impl SettingsModal {
         self.scroll_selected_into_view();
     }
 
+    pub fn selected_action(&self) -> Option<&'static str> {
+        match self.fields.get(self.selected) {
+            Some(SettingField::Action { key, .. }) => Some(*key),
+            _ => None,
+        }
+    }
+
     fn cycle_choice(&mut self, delta: isize) -> bool {
         let Some(SettingField::Choice { options, value, .. }) =
             self.fields.get_mut(self.selected)
@@ -1184,6 +1257,9 @@ impl SettingsModal {
                     if !self.search_query.trim().is_empty() {
                         if let Some(field) = self.fields.get(self.selected) {
                             let key = field.key();
+                            if matches!(field, SettingField::Action { .. }) {
+                                return Some(SettingsAction::Activate(key));
+                            }
                             self.reveal_setting(key);
                         }
                         return None;
@@ -1200,6 +1276,9 @@ impl SettingsModal {
                     }
                     self.busy = true;
                     return Some(SettingsAction::Save);
+                }
+                if let Some(SettingField::Action { key, .. }) = self.fields.get(self.selected) {
+                    return Some(SettingsAction::Activate(*key));
                 }
                 let keybind_key = self
                     .fields
@@ -1269,7 +1348,9 @@ impl SettingsModal {
         let (value, cursor) = match field {
             SettingField::Text { value, cursor, .. }
             | SettingField::Number { value, cursor, .. } => (value, cursor),
-            SettingField::Choice { .. } | SettingField::Keybind { .. } => return None,
+            SettingField::Choice { .. } | SettingField::Keybind { .. } | SettingField::Action { .. } => {
+                return None;
+            }
         };
         Some((value.clone(), *cursor, self.selection_anchor))
     }
@@ -1547,11 +1628,14 @@ impl SettingsModal {
         theme: &HermesTheme,
         motion: ModalMotion<'_>,
         on_action: SettingsHandler,
-    ) -> Div {
+    ) -> Stateful<Div> {
         let mut nav = div()
+            .id("settings_navigation")
             .debug_selector(|| "settings_navigation".to_string())
             .w(px(180.0))
             .min_w(px(150.0))
+            .min_h_0()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(px(4.0))
@@ -1798,10 +1882,15 @@ impl SettingsModal {
             );
         }
 
+        let has_visible_action = self
+            .visible_indices()
+            .iter()
+            .any(|index| self.fields[*index].is_action());
         if !self.fields.is_empty()
             && (!self.load_failed
                 || self.active_section.is_local()
-                || !self.search_query.trim().is_empty())
+                || !self.search_query.trim().is_empty()
+                || has_visible_action)
         {
             let fields = self.fields.clone();
             let visible_indices = self.visible_indices();
@@ -1817,6 +1906,11 @@ impl SettingsModal {
             let on_action = on_action.clone();
             let list_id = format!("settings_rows_{}", self.active_section.id());
             if visible_indices.is_empty() {
+                let message = if filtering {
+                    format!("No settings match “{}”", self.search_query.trim())
+                } else {
+                    "No items are available in this section.".to_string()
+                };
                 content = content.child(
                     div()
                         .debug_selector(|| "settings_no_results".to_string())
@@ -1826,7 +1920,7 @@ impl SettingsModal {
                         .justify_center()
                         .text_size(px(MockupTypeScale::BASE_SIZE))
                         .text_color(theme.mockup_text_dim)
-                        .child(format!("No settings match “{}”", self.search_query.trim())),
+                        .child(message),
                 );
             } else {
                 let list = uniform_list(
@@ -1954,7 +2048,7 @@ impl SettingsModal {
                 .text_size(px(MockupTypeScale::HINT_SIZE))
                 .text_color(theme.mockup_text_dim)
                 .child(
-                    "↑↓ rows · PgUp/PgDn sections · / search · Enter edit · ←→ adjust · Esc cancel",
+                    "↑↓ rows · PgUp/PgDn sections · / search · Enter open/edit · ←→ adjust · Esc cancel",
                 )
                 .child("Appearance, motion, display, keyboard & notifications · saved locally on this device")
                 .child(format!("Workspace · {}", self.workspace))
@@ -2081,6 +2175,9 @@ fn render_setting_row(
                     current
                 })
         }
+        SettingField::Action { value, .. } => div()
+            .text_color(theme.accent_blue)
+            .child(format!("{value} →")),
     };
     value = value
         .font_family(theme.font_mono()[0].clone())
@@ -2092,15 +2189,22 @@ fn render_setting_row(
         .overflow_hidden()
         .whitespace_nowrap();
 
-    let interaction = if filtering {
-        SettingsInteraction::RevealSetting(field.key())
-    } else {
-        SettingsInteraction::SelectRow(index)
+    let interaction = match field {
+        SettingField::Action { key, .. } => SettingsInteraction::Activate(key),
+        _ if filtering => SettingsInteraction::RevealSetting(field.key()),
+        _ => SettingsInteraction::SelectRow(index),
     };
     let handler = settings_click_handler(&on_action, interaction);
+    let row_selector = match field {
+        SettingField::Action { key, .. } => format!(
+            "settings_action_{}",
+            key.strip_prefix("desktop.action.").unwrap_or(key)
+        ),
+        _ => format!("settings_row_{index}"),
+    };
     let mut row = div()
         .id(SharedString::from(format!("settings_row_{index}")))
-        .debug_selector(move || format!("settings_row_{index}"))
+        .debug_selector(move || row_selector.clone())
         .h(theme.space(76.0))
         .w_full()
         .flex()
@@ -2210,8 +2314,8 @@ mod tests {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 17 + keyboard_count);
-        assert_eq!(SettingsSection::ALL.len(), 9);
+        assert_eq!(modal.fields.len(), 20 + keyboard_count);
+        assert_eq!(SettingsSection::ALL.len(), 12);
         assert_eq!(modal.fields[12].key(), "desktop.motion");
         assert_eq!(modal.fields[13].key(), "desktop.sidebar");
         assert_eq!(modal.fields[14].key(), "desktop.keybind.command_palette");
@@ -2239,6 +2343,59 @@ mod tests {
         };
         assert_eq!(options.join(","), "none,low,medium,high");
         assert_eq!(value.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn test_settings_actions_activate_without_dirtying_settings() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+
+        for (section, key) in [
+            (SettingsSection::Model, "desktop.action.models"),
+            (SettingsSection::Sessions, "desktop.action.sessions"),
+            (SettingsSection::Cloud, "desktop.action.cloud"),
+        ] {
+            let index = modal
+                .fields
+                .iter()
+                .position(|field| field.key() == key)
+                .unwrap();
+            modal.select_row(index);
+            assert_eq!(modal.active_section, section);
+            assert_eq!(modal.selected_action(), Some(key));
+            assert_eq!(
+                modal.handle_key("enter"),
+                Some(SettingsAction::Activate(key))
+            );
+            assert_eq!(modal.dirty_count(), 0);
+            assert_eq!(modal.desktop_dirty_count(), 0);
+            assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+            assert!(modal.changed_desktop_preferences().is_none());
+        }
+    }
+
+    #[test]
+    fn test_settings_actions_are_searchable_and_deep_linkable() {
+        let mut modal = SettingsModal::loading();
+        assert!(modal.request_setting("desktop.action.sessions"));
+        assert_eq!(modal.active_section, SettingsSection::Sessions);
+        assert_eq!(modal.selected_action(), Some("desktop.action.sessions"));
+        assert_eq!(modal.dirty_count(), 0);
+
+        modal.focus_search();
+        modal.select_all_text();
+        modal.push_char("Manage sessions");
+        let index = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == "desktop.action.sessions")
+            .unwrap();
+        assert_eq!(modal.search_results(), vec![index]);
+        assert_eq!(
+            modal.handle_key("enter"),
+            Some(SettingsAction::Activate("desktop.action.sessions"))
+        );
+        assert_eq!(modal.dirty_count(), 0);
     }
 
     #[test]
@@ -2381,7 +2538,7 @@ mod tests {
         modal.apply_view(&sample_view());
 
         assert_eq!(modal.active_section, SettingsSection::Model);
-        assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5, 25]);
         modal.handle_key("down");
         assert_eq!(modal.selected, 1);
 
@@ -2389,20 +2546,20 @@ mod tests {
         assert_eq!(modal.active_section, SettingsSection::Notifications);
         assert_eq!(
             modal.section_indices().first(),
-            Some(&(modal.fields.len() - 3))
+            Some(&(modal.fields.len() - 6))
         );
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 1))
+            Some(&(modal.fields.len() - 4))
         );
-        assert_eq!(modal.selected, modal.fields.len() - 3);
+        assert_eq!(modal.selected, modal.fields.len() - 6);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Keyboard);
         assert_eq!(modal.section_indices().first(), Some(&14));
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 4))
+            Some(&(modal.fields.len() - 7))
         );
         assert_eq!(modal.selected, 14);
 

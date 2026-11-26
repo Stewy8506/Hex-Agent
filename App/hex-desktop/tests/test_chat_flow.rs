@@ -1138,7 +1138,7 @@ fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 7 + keyboard_count);
+        assert_eq!(modal.fields.len(), 10 + keyboard_count);
         assert!(modal
             .fields
             .iter()
@@ -1252,6 +1252,69 @@ fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
     vc.simulate_keystrokes("cmd-k");
     snap(vc, &view, |view| {
         assert!(!view.shell.active_modal.is_open());
+    });
+}
+
+#[gpui::test]
+fn test_settings_actions_open_existing_flows_and_preserve_dirty_edits(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        init_app(cx);
+        cx.set_global(MotionSystem::with_policy(MotionPolicy::new(true)));
+    });
+    let (view, vc) = cx.add_window_view(|_, cx| {
+        ChatView::new(
+            AcpBridge::new(),
+            app_runtime().handle().clone(),
+            std::env::temp_dir(),
+            cx,
+        )
+    });
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    click_debug_element(vc, "settings_section_appearance");
+    click_debug_element(vc, "settings_row_0");
+    click_debug_element(vc, "settings_section_models");
+    click_debug_element(vc, "settings_action_models");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("dirty settings must not be discarded by an action");
+        };
+        assert_eq!(modal.dirty_count(), 1);
+        assert_eq!(
+            modal.error.as_deref(),
+            Some("Save your changes before opening another settings view.")
+        );
+    });
+
+    vc.simulate_keystrokes("escape");
+    finish_motion(vc, &view);
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    click_debug_element(vc, "settings_section_models");
+    click_debug_element(vc, "settings_action_models");
+    snap(vc, &view, |view| {
+        assert!(matches!(view.shell.active_modal, ActiveModal::ModelPicker(_)));
+    });
+
+    vc.simulate_keystrokes("escape");
+    finish_motion(vc, &view);
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    click_debug_element(vc, "settings_section_sessions");
+    click_debug_element(vc, "settings_action_sessions");
+    snap(vc, &view, |view| {
+        assert!(matches!(view.shell.active_modal, ActiveModal::SessionSearch(_)));
+    });
+
+    vc.simulate_keystrokes("escape");
+    finish_motion(vc, &view);
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    click_debug_element(vc, "settings_section_cloud");
+    click_debug_element(vc, "settings_action_cloud");
+    snap(vc, &view, |view| {
+        assert!(matches!(view.shell.active_modal, ActiveModal::Account(_)));
     });
 }
 
