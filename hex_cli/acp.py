@@ -1864,6 +1864,8 @@ class ACPServer:
         file_value = file_credentials.get(env_var, "").strip() if env_var else ""
         if not env_var:
             source = "not_supported"
+        elif file_value and (not process_value or process_value == file_value):
+            source = "credentials_file"
         elif process_value:
             source = "environment"
         elif file_value:

@@ -27,7 +27,8 @@ use hex_desktop::ui::modals::approval::{ToolApprovalChoice, ToolApprovalModal};
 use hex_desktop::ui::modals::model_picker::ModelPickerModal;
 use hex_desktop::ui::modals::session_actions::{SessionActionMode, SessionActionModal};
 use hex_desktop::ui::modals::settings::{
-    InventoryState, SettingField, SettingsModal, SettingsSection, SKILLS_SESSION_REQUIRED,
+    InventoryState, ProvidersState, SettingField, SettingsModal, SettingsSection,
+    SKILLS_SESSION_REQUIRED,
 };
 use hex_desktop::ui::modals::{ActiveModal, ModelEntry};
 use hex_desktop::ui::motion::{MotionPolicy, MotionPreference, MotionSystem};
@@ -58,12 +59,21 @@ struct MockState {
     tools_delay_ms: AtomicU64,
     config_error: StdMutex<Option<String>>,
     config_revision: StdMutex<String>,
+    config_delay_ms: AtomicU64,
     config_sets: StdMutex<Vec<Value>>,
     tools_error: StdMutex<Option<String>>,
     skills_output: StdMutex<String>,
     skills_error: StdMutex<Option<String>>,
     skill_requests: AtomicUsize,
     skill_session_ids: StdMutex<Vec<String>>,
+    providers: StdMutex<Vec<Value>>,
+    provider_requests: AtomicUsize,
+    provider_responses: AtomicUsize,
+    provider_delay_ms: AtomicU64,
+    provider_error: StdMutex<Option<String>>,
+    provider_mutation_error: StdMutex<Option<String>>,
+    provider_sets: StdMutex<Vec<Value>>,
+    provider_deletes: StdMutex<Vec<Value>>,
 }
 
 async fn send_line(writer: &Arc<AsyncMutex<DuplexStream>>, value: Value) {
@@ -103,6 +113,60 @@ fn mock_config_result(revision: &str) -> Value {
             }
         },
         "revision": revision
+    })
+}
+
+fn mock_providers() -> Vec<Value> {
+    vec![
+        json!({
+            "id": "anthropic",
+            "name": "Anthropic",
+            "category": "featured",
+            "requiresApiKey": true,
+            "credentialEnvVar": "ANTHROPIC_API_KEY",
+            "credentialConfigured": false,
+            "credentialSource": "none",
+            "credentialWritable": true,
+            "baseUrlEnvVar": "ANTHROPIC_BASE_URL",
+            "defaultBaseUrl": "https://api.anthropic.com",
+            "signupUrl": "https://console.anthropic.com/settings/keys",
+            "description": "Anthropic Claude models"
+        }),
+        json!({
+            "id": "openai",
+            "name": "OpenAI",
+            "category": "featured",
+            "requiresApiKey": true,
+            "credentialEnvVar": "OPENAI_API_KEY",
+            "credentialConfigured": true,
+            "credentialSource": "credentials_file",
+            "credentialWritable": true,
+            "baseUrlEnvVar": "OPENAI_BASE_URL",
+            "defaultBaseUrl": "https://api.openai.com/v1",
+            "signupUrl": "https://platform.openai.com/api-keys",
+            "description": "OpenAI models"
+        }),
+        json!({
+            "id": "bedrock",
+            "name": "Amazon Bedrock",
+            "category": "cloud",
+            "requiresApiKey": false,
+            "credentialEnvVar": null,
+            "credentialConfigured": false,
+            "credentialSource": "not_supported",
+            "credentialWritable": false,
+            "baseUrlEnvVar": null,
+            "defaultBaseUrl": "",
+            "signupUrl": null,
+            "description": "AWS-managed Bedrock credentials"
+        }),
+    ]
+}
+
+fn mock_providers_result(providers: Vec<Value>) -> Value {
+    json!({
+        "storage": {"path": "/tmp/hex-test/credentials.env", "scope": "config_dir"},
+        "providers": providers
     })
 }
 
@@ -191,6 +255,10 @@ async fn handle_request(
                     stored.clone()
                 }
             };
+            let delay = state.config_delay_ms.load(Ordering::SeqCst);
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
             send_line(
                 &writer,
                 json!({
@@ -265,6 +333,96 @@ async fn handle_request(
             };
             send_line(&writer, response).await;
             state.tool_responses.fetch_add(1, Ordering::SeqCst);
+        }
+        "providers/list" => {
+            state.provider_requests.fetch_add(1, Ordering::SeqCst);
+            let providers = state.providers.lock().unwrap().clone();
+            let error = state.provider_error.lock().unwrap().clone();
+            let delay = state.provider_delay_ms.load(Ordering::SeqCst);
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            let response = if let Some(message) = error {
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": {"code": -32000, "message": message}
+                })
+            } else {
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": mock_providers_result(providers)
+                })
+            };
+            send_line(&writer, response).await;
+            state.provider_responses.fetch_add(1, Ordering::SeqCst);
+        }
+        "providers/credentials/set" => {
+            state.provider_sets.lock().unwrap().push(params.clone());
+            let error = state.provider_mutation_error.lock().unwrap().clone();
+            if let Some(message) = error {
+                send_line(
+                    &writer,
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32000, "message": message}
+                    }),
+                )
+                .await;
+                return;
+            }
+            let provider = {
+                let mut providers = state.providers.lock().unwrap();
+                let provider_id = params["provider"].as_str().unwrap();
+                let provider = providers
+                    .iter_mut()
+                    .find(|provider| provider["id"].as_str() == Some(provider_id))
+                    .expect("registered mock provider");
+                provider["credentialConfigured"] = json!(true);
+                provider["credentialSource"] = json!("credentials_file");
+                provider.clone()
+            };
+            send_line(
+                &writer,
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {"provider": provider, "changed": true}
+                }),
+            )
+            .await;
+        }
+        "providers/credentials/delete" => {
+            state.provider_deletes.lock().unwrap().push(params.clone());
+            let error = state.provider_mutation_error.lock().unwrap().clone();
+            if let Some(message) = error {
+                send_line(
+                    &writer,
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32000, "message": message}
+                    }),
+                )
+                .await;
+                return;
+            }
+            let provider = {
+                let mut providers = state.providers.lock().unwrap();
+                let provider_id = params["provider"].as_str().unwrap();
+                let provider = providers
+                    .iter_mut()
+                    .find(|provider| provider["id"].as_str() == Some(provider_id))
+                    .expect("registered mock provider");
+                provider["credentialConfigured"] = json!(false);
+                provider["credentialSource"] = json!("none");
+                provider.clone()
+            };
+            send_line(
+                &writer,
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {"provider": provider, "changed": true}
+                }),
+            )
+            .await;
         }
         "session/list" => {
             state.list_requests.fetch_add(1, Ordering::SeqCst);
@@ -1337,11 +1495,17 @@ fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
                 "Runtime offline — connect HEX to load the skill registry.".to_string()
             )
         );
+        assert_eq!(
+            modal.providers,
+            ProvidersState::Unavailable(
+                "Runtime offline — connect HEX to load provider connections.".to_string()
+            )
+        );
         let keyboard_count = ShortcutId::ALL
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 12 + keyboard_count);
+        assert_eq!(modal.fields.len(), 13 + keyboard_count);
         assert!(modal
             .fields
             .iter()
@@ -1617,6 +1781,275 @@ fn test_connected_settings_load_runtime_config_and_tool_inventory(cx: &mut TestA
 }
 
 #[gpui::test]
+fn test_connected_provider_credentials_save_and_confirm_removal(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.providers.lock().unwrap() = mock_providers();
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "provider inventory", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(&modal.providers, ProvidersState::Ready(_, providers) if providers.len() == 3)
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(state.provider_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(modal.dirty_count(), 0);
+    });
+
+    click_debug_element(vc, "settings_section_providers");
+    click_debug_element(vc, "settings_provider_anthropic");
+    assert_eq!(focus_state(vc, &view), (false, true));
+    vc.simulate_input("sk-test-only");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("provider editing should keep settings open");
+        };
+        assert!(modal.editing);
+        assert_eq!(
+            modal.text_selection().map(|(value, _, _)| value).as_deref(),
+            Some("sk-test-only")
+        );
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "provider credential save", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal.status.as_deref().is_some_and(|status| {
+                        status == "Anthropic credential saved in /tmp/hex-test/credentials.env."
+                    })
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after saving a credential");
+        };
+        assert!(!modal.editing);
+        assert_eq!(modal.text_selection(), None);
+        assert_eq!(modal.dirty_count(), 0);
+        let ProvidersState::Ready(_, providers) = &modal.providers else {
+            panic!("provider inventory should remain ready");
+        };
+        let anthropic = providers
+            .iter()
+            .find(|provider| provider.id == "anthropic")
+            .unwrap();
+        assert!(anthropic.credential_configured);
+        assert_eq!(
+            anthropic.credential_source,
+            hex_protocol::models::ProviderCredentialSource::CredentialsFile
+        );
+    });
+    vc.simulate_keystrokes("cmd-z");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("credential drafts must not enter modal undo history");
+        };
+        assert!(!modal.editing);
+        assert_eq!(modal.text_selection(), None);
+    });
+    let requests = state.provider_sets.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["provider"], "anthropic");
+    assert_eq!(requests[0]["credential"], "sk-test-only");
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
+
+    click_debug_element(vc, "settings_provider_remove_anthropic");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open while confirming removal");
+        };
+        assert!(modal.status.as_deref().unwrap().contains("again to confirm"));
+        assert!(!modal.editing);
+    });
+    assert_eq!(state.provider_deletes.lock().unwrap().len(), 0);
+
+    click_debug_element(vc, "settings_provider_remove_anthropic");
+    pump_until(vc, &view, "provider credential removal", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal.status.as_deref().is_some_and(|status| {
+                        status == "Anthropic credential removed from /tmp/hex-test/credentials.env."
+                    })
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after removing a credential");
+        };
+        let ProvidersState::Ready(_, providers) = &modal.providers else {
+            panic!("provider inventory should remain ready");
+        };
+        let anthropic = providers
+            .iter()
+            .find(|provider| provider.id == "anthropic")
+            .unwrap();
+        assert!(!anthropic.credential_configured);
+        assert_eq!(
+            anthropic.credential_source,
+            hex_protocol::models::ProviderCredentialSource::None
+        );
+        assert_eq!(modal.dirty_count(), 0);
+    });
+
+    vc.simulate_keystrokes("down delete");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open while confirming keyboard removal");
+        };
+        assert!(modal.status.as_deref().unwrap().contains("OpenAI"));
+        assert!(modal.status.as_deref().unwrap().contains("again to confirm"));
+    });
+    assert_eq!(state.provider_deletes.lock().unwrap().len(), 1);
+    vc.simulate_keystrokes("delete");
+    pump_until(vc, &view, "keyboard provider credential removal", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal.status.as_deref().is_some_and(|status| {
+                        status == "OpenAI credential removed from /tmp/hex-test/credentials.env."
+                    })
+        )
+    });
+    let requests = state.provider_deletes.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], json!({"provider": "anthropic"}));
+    assert_eq!(requests[1], json!({"provider": "openai"}));
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
+}
+
+#[gpui::test]
+fn test_provider_credential_failure_preserves_the_masked_draft_for_retry(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.providers.lock().unwrap() = mock_providers();
+    *state.provider_mutation_error.lock().unwrap() = Some("write denied".to_string());
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "providers before failed save", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(&modal.providers, ProvidersState::Ready(_, providers) if providers.len() == 3)
+        )
+    });
+    click_debug_element(vc, "settings_section_providers");
+    click_debug_element(vc, "settings_provider_anthropic");
+    vc.simulate_input("sk-retry-only");
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "provider credential failure", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal) if !modal.busy
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after a failed credential save");
+        };
+        assert!(modal.error.as_deref().is_some_and(|error| error
+            .starts_with("Provider credential save failed:")
+            && error.contains("write denied")));
+        assert!(modal.editing);
+        assert_eq!(
+            modal.text_selection().map(|(value, _, _)| value).as_deref(),
+            Some("sk-retry-only")
+        );
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+    assert_eq!(state.provider_sets.lock().unwrap().len(), 1);
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
+
+    state.provider_mutation_error.lock().unwrap().take();
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "provider credential retry", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal.error.is_none()
+                    && modal.status.as_deref().is_some_and(|status| status.contains("credential saved"))
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after retrying a credential save");
+        };
+        assert!(!modal.editing);
+        assert_eq!(modal.text_selection(), None);
+        assert_eq!(modal.dirty_count(), 0);
+    });
+    assert_eq!(state.provider_sets.lock().unwrap().len(), 2);
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
+}
+
+#[gpui::test]
+fn test_late_config_load_preserves_provider_credential_draft(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.providers.lock().unwrap() = mock_providers();
+    state.config_delay_ms.store(500, Ordering::SeqCst);
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "providers before config", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(&modal.providers, ProvidersState::Ready(_, providers) if providers.len() == 3)
+                    && modal.revision.is_none()
+        )
+    });
+    click_debug_element(vc, "settings_section_providers");
+    click_debug_element(vc, "settings_provider_anthropic");
+    vc.simulate_input("sk-late-config");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("provider editing should keep settings open");
+        };
+        assert_eq!(
+            modal.text_selection().map(|(value, _, _)| value).as_deref(),
+            Some("sk-late-config")
+        );
+    });
+
+    pump_until(vc, &view, "late config response", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal) if modal.revision.is_some()
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after config loads");
+        };
+        assert!(modal.editing);
+        assert_eq!(modal.active_section, SettingsSection::Providers);
+        assert!(matches!(
+            modal.fields.get(modal.selected),
+            Some(SettingField::Provider { provider, .. }) if provider.id == "anthropic"
+        ));
+        assert_eq!(
+            modal.text_selection().map(|(value, _, _)| value).as_deref(),
+            Some("sk-late-config")
+        );
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+}
+
+#[gpui::test]
 fn test_connected_settings_save_sends_loaded_revision(cx: &mut TestAppContext) {
     let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
     click_debug_element(vc, "home_settings_button");
@@ -1705,6 +2138,7 @@ fn test_settings_revision_conflict_preserves_local_and_runtime_edits(cx: &mut Te
 fn test_tool_inventory_failures_and_empty_results_are_independent(cx: &mut TestAppContext) {
     let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
     *state.config_error.lock().unwrap() = Some("permission denied".to_string());
+    *state.provider_error.lock().unwrap() = Some("provider registry denied".to_string());
     *state.tools.lock().unwrap() = vec![json!({
         "name": "list_files",
         "description": "List workspace files",
@@ -1718,7 +2152,14 @@ fn test_tool_inventory_failures_and_empty_results_are_independent(cx: &mut TestA
         let ActiveModal::Settings(modal) = &view.shell.active_modal else {
             return false;
         };
-        modal.load_failed && matches!(modal.tools, InventoryState::Ready(_))
+        modal.load_failed
+            && matches!(modal.tools, InventoryState::Ready(_))
+            && matches!(
+                &modal.providers,
+                ProvidersState::Unavailable(message)
+                    if message.starts_with("providers/list failed:")
+                        && message.contains("provider registry denied")
+            )
     });
     click_debug_element(vc, "settings_section_tools");
     click_debug_element(vc, "settings_info_tools");
@@ -1733,6 +2174,21 @@ fn test_tool_inventory_failures_and_empty_results_are_independent(cx: &mut TestA
             .find(|field| matches!(field, SettingField::Info { .. }))
             .expect("tool inventory row");
         assert_eq!(tool.label(), "list_files");
+        assert_eq!(modal.dirty_count(), 0);
+    });
+
+    click_debug_element(vc, "settings_section_providers");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("provider error should render independently of config and tools");
+        };
+        let provider = modal
+            .fields
+            .iter()
+            .find(|field| field.key() == "desktop.info.providers")
+            .expect("provider unavailable row");
+        assert_eq!(provider.label(), "Providers unavailable");
+        assert!(modal.error.as_deref().unwrap().contains("permission denied"));
         assert_eq!(modal.dirty_count(), 0);
     });
 
@@ -2017,12 +2473,28 @@ fn test_stale_settings_requests_cannot_overwrite_a_newer_opening(cx: &mut TestAp
         "description": "Previous registry",
         "parameters": {}
     })];
+    *state.providers.lock().unwrap() = vec![json!({
+        "id": "stale_provider",
+        "name": "Stale Provider",
+        "category": "featured",
+        "requiresApiKey": true,
+        "credentialEnvVar": "STALE_API_KEY",
+        "credentialConfigured": false,
+        "credentialSource": "none",
+        "credentialWritable": true,
+        "baseUrlEnvVar": null,
+        "defaultBaseUrl": "",
+        "signupUrl": null,
+        "description": "Previous provider registry"
+    })];
     state.tools_delay_ms.store(400, Ordering::SeqCst);
+    state.provider_delay_ms.store(400, Ordering::SeqCst);
 
     click_debug_element(vc, "home_settings_button");
     finish_motion(vc, &view);
-    pump_until(vc, &view, "first tool request", |_| {
+    pump_until(vc, &view, "first settings inventory requests", |_| {
         state.tool_requests.load(Ordering::SeqCst) == 1
+            && state.provider_requests.load(Ordering::SeqCst) == 1
     });
     vc.simulate_keystrokes("escape");
     finish_motion(vc, &view);
@@ -2032,10 +2504,12 @@ fn test_stale_settings_requests_cannot_overwrite_a_newer_opening(cx: &mut TestAp
         "description": "Current registry",
         "parameters": {}
     })];
+    *state.providers.lock().unwrap() = mock_providers();
     state.tools_delay_ms.store(0, Ordering::SeqCst);
+    state.provider_delay_ms.store(0, Ordering::SeqCst);
     click_debug_element(vc, "home_settings_button");
     finish_motion(vc, &view);
-    pump_until(vc, &view, "fresh tool inventory", |view| {
+    pump_until(vc, &view, "fresh settings inventories", |view| {
         matches!(
             &view.shell.active_modal,
             ActiveModal::Settings(modal)
@@ -2043,11 +2517,16 @@ fn test_stale_settings_requests_cannot_overwrite_a_newer_opening(cx: &mut TestAp
                     &modal.tools,
                     InventoryState::Ready(items)
                         if items.iter().any(|item| item.name == "fresh_tool")
+                ) && matches!(
+                    &modal.providers,
+                    ProvidersState::Ready(_, providers)
+                        if providers.iter().any(|provider| provider.id == "anthropic")
                 )
         )
     });
-    pump_until(vc, &view, "stale tool response", |_| {
+    pump_until(vc, &view, "stale settings responses", |_| {
         state.tool_responses.load(Ordering::SeqCst) == 2
+            && state.provider_responses.load(Ordering::SeqCst) == 2
     });
     vc.run_until_parked();
     vc.update(|_, app| {
@@ -2064,6 +2543,14 @@ fn test_stale_settings_requests_cannot_overwrite_a_newer_opening(cx: &mut TestAp
         };
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "fresh_tool");
+        let ProvidersState::Ready(_, providers) = &modal.providers else {
+            panic!("fresh provider inventory should remain ready");
+        };
+        assert_eq!(providers.len(), 3);
+        assert!(providers.iter().any(|provider| provider.id == "anthropic"));
+        assert!(!providers
+            .iter()
+            .any(|provider| provider.id == "stale_provider"));
     });
 }
 

@@ -3912,6 +3912,14 @@ impl ChatView {
                         self.activate_settings_action(key, cx);
                         return true;
                     }
+                    Some(SettingsAction::SaveProviderCredential(provider, credential)) => {
+                        self.execute_provider_credential_save(provider, credential, cx);
+                        return true;
+                    }
+                    Some(SettingsAction::DeleteProviderCredential(provider)) => {
+                        self.execute_provider_credential_delete(provider, cx);
+                        return true;
+                    }
                     None => {}
                 }
                 // Consume navigation keys so they never reach the composer.
@@ -4777,6 +4785,12 @@ impl ChatView {
     }
 
     fn record_modal_edit(&mut self, kind: TextEditKind) {
+        if matches!(
+            &self.shell.active_modal,
+            ActiveModal::Settings(modal) if modal.is_editing_provider()
+        ) {
+            return;
+        }
         if self.modal_undo.last().is_some_and(|previous| {
             std::mem::discriminant(previous) != std::mem::discriminant(&self.shell.active_modal)
         }) {
@@ -5846,6 +5860,8 @@ impl ChatView {
             modal.mark_load_failed("Runtime offline — settings unavailable until HEX connects.");
             modal.set_tools_error("Runtime offline — connect HEX to load the tool registry.");
             modal.set_skills_error("Runtime offline — connect HEX to load the skill registry.");
+            modal
+                .set_providers_error("Runtime offline — connect HEX to load provider connections.");
             self.shell.active_modal = ActiveModal::Settings(modal);
             cx.notify();
             return;
@@ -5954,6 +5970,30 @@ impl ChatView {
             .ok();
         })
         .detach();
+
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt.spawn(async move { bridge.providers_list().await }).await;
+            this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(providers)) => modal.set_providers(providers),
+                        Ok(Err(err)) => {
+                            modal.set_providers_error(format!("providers/list failed: {err}"))
+                        }
+                        Err(err) => modal
+                            .set_providers_error(format!("Provider inventory task aborted: {err}")),
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
         self.shell.active_modal = ActiveModal::Settings(modal);
         cx.notify();
     }
@@ -5982,6 +6022,104 @@ impl ChatView {
             "desktop.action.cloud" => self.open_account_modal(cx),
             _ => unreachable!("validated settings action"),
         }
+    }
+
+    fn execute_provider_credential_save(
+        &mut self,
+        provider: String,
+        credential: String,
+        cx: &mut Context<Self>,
+    ) {
+        let ActiveModal::Settings(modal) = &mut self.shell.active_modal else {
+            return;
+        };
+        modal.busy = true;
+        modal.error = None;
+        modal.status = None;
+        let generation = self.settings_generation;
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move { bridge.set_provider_credential(&provider, &credential).await })
+                .await;
+            this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(response)) => {
+                            if !modal.apply_provider_credential(
+                                response.provider,
+                                response.changed,
+                                false,
+                            ) {
+                                modal.fail_provider_credential(
+                                    "The provider catalog changed before the credential could be applied."
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        Ok(Err(err)) => modal
+                            .fail_provider_credential(format!("Provider credential save failed: {err}")),
+                        Err(err) => modal.fail_provider_credential(format!(
+                            "Provider credential task aborted: {err}"
+                        )),
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn execute_provider_credential_delete(&mut self, provider: String, cx: &mut Context<Self>) {
+        let ActiveModal::Settings(modal) = &mut self.shell.active_modal else {
+            return;
+        };
+        modal.busy = true;
+        modal.error = None;
+        modal.status = None;
+        let generation = self.settings_generation;
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move { bridge.delete_provider_credential(&provider).await })
+                .await;
+            this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(response)) => {
+                            if !modal.apply_provider_credential(
+                                response.provider,
+                                response.changed,
+                                true,
+                            ) {
+                                modal.fail_provider_credential(
+                                    "The provider catalog changed before the credential could be applied."
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        Ok(Err(err)) => modal.fail_provider_credential(format!(
+                            "Provider credential removal failed: {err}"
+                        )),
+                        Err(err) => modal.fail_provider_credential(format!(
+                            "Provider credential task aborted: {err}"
+                        )),
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// DX3: writes the modal's dirty diff via `config/set`; the fresh view in
@@ -6930,6 +7068,22 @@ impl ChatView {
                                     }
                                     SettingsInteraction::Activate(key) => {
                                         this.activate_settings_action(key, cx);
+                                    }
+                                    SettingsInteraction::RequestProviderDelete(provider) => {
+                                        if let Some(action) =
+                                            current.request_provider_delete(&provider)
+                                        {
+                                            match action {
+                                                SettingsAction::DeleteProviderCredential(
+                                                    provider,
+                                                ) => {
+                                                    this.execute_provider_credential_delete(
+                                                        provider, cx,
+                                                    );
+                                                }
+                                                _ => unreachable!("provider delete action"),
+                                            }
+                                        }
                                     }
                                 }
                             }

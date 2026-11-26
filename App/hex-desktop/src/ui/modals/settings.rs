@@ -16,7 +16,10 @@ use crate::ui::modals::text_input::{
 };
 use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::motion::MotionPreference;
-use hex_protocol::models::{ConfigGetResponse, ToolDefinition};
+use hex_protocol::models::{
+    ConfigGetResponse, ProviderCredentialSource, ProviderCredentialStorage, ProviderDescriptor,
+    ProvidersListResponse, ToolDefinition,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -25,6 +28,7 @@ pub enum SettingsSection {
     Cloud,
     Tools,
     Skills,
+    Providers,
     Runtime,
     WebSearch,
     Learning,
@@ -35,12 +39,13 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Model,
         Self::Sessions,
         Self::Cloud,
         Self::Tools,
         Self::Skills,
+        Self::Providers,
         Self::Runtime,
         Self::WebSearch,
         Self::Learning,
@@ -57,6 +62,7 @@ impl SettingsSection {
             Self::Cloud => "Cloud",
             Self::Tools => "Tools",
             Self::Skills => "Skills",
+            Self::Providers => "Providers",
             Self::Runtime => "Runtime",
             Self::WebSearch => "Web search",
             Self::Learning => "Learning",
@@ -74,6 +80,7 @@ impl SettingsSection {
             Self::Cloud => "Manage the HEX cloud account and enrolled devices.",
             Self::Tools => "Inspect the live tool registry exposed by the runtime.",
             Self::Skills => "Inspect skills registered with the active runtime session.",
+            Self::Providers => "Manage provider credentials and inspect connection metadata.",
             Self::Runtime => "Control how long an agent turn may run.",
             Self::WebSearch => "Configure the provider used for web lookups.",
             Self::Learning => "Choose when HEX reflects on completed work.",
@@ -93,6 +100,7 @@ impl SettingsSection {
             Self::Cloud => "cloud",
             Self::Tools => "tools",
             Self::Skills => "skills",
+            Self::Providers => "providers",
             Self::Runtime => "runtime",
             Self::WebSearch => "web_search",
             Self::Learning => "learning",
@@ -163,7 +171,7 @@ const fn notification_setting(
     }
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 30] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 31] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -338,6 +346,13 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 30] = [
         description: "Registered skill names and gate decisions from /skills.",
         kind: SettingKind::Info,
     },
+    SettingDescriptor {
+        section: SettingsSection::Providers,
+        key: "desktop.info.providers",
+        label: "Provider connections",
+        description: "Write-only API credentials from the registered provider catalog.",
+        kind: SettingKind::Info,
+    },
 ];
 
 impl SettingDescriptor {
@@ -468,6 +483,79 @@ pub enum InventoryState {
     Ready(Vec<InventoryItem>),
     Empty,
     Unavailable(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProvidersState {
+    Loading,
+    Ready(ProviderCredentialStorage, Vec<ProviderDescriptor>),
+    Empty,
+    Unavailable(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderDraft {
+    value: String,
+    cursor: usize,
+}
+
+fn provider_status(provider: &ProviderDescriptor) -> String {
+    match provider.credential_source {
+        ProviderCredentialSource::CredentialsFile => "Configured · credentials file".to_string(),
+        ProviderCredentialSource::Environment => "Configured · environment".to_string(),
+        ProviderCredentialSource::None => "Not configured".to_string(),
+        ProviderCredentialSource::NotSupported => "Credential not required".to_string(),
+    }
+}
+
+fn provider_description(provider: &ProviderDescriptor) -> String {
+    let credential = provider
+        .credential_env_var
+        .as_deref()
+        .map(|env_var| format!(" · {env_var}"))
+        .unwrap_or_default();
+    let description = if provider.description.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", provider.description.trim())
+    };
+    format!("{}{credential}{description}", provider.category)
+}
+
+fn provider_fields(state: &ProvidersState) -> Vec<SettingField> {
+    match state {
+        ProvidersState::Loading => vec![SettingField::Info {
+            key: "desktop.info.providers",
+            label: "Loading providers…".to_string(),
+            value: "Loading".to_string(),
+            description: "Requesting registered providers with providers/list.".to_string(),
+        }],
+        ProvidersState::Ready(_, providers) if providers.is_empty() => vec![SettingField::Info {
+            key: "desktop.info.providers",
+            label: "No providers registered".to_string(),
+            value: "0 providers".to_string(),
+            description: "The connected runtime returned an empty provider catalog.".to_string(),
+        }],
+        ProvidersState::Empty => vec![SettingField::Info {
+            key: "desktop.info.providers",
+            label: "No providers registered".to_string(),
+            value: "0 providers".to_string(),
+            description: "The connected runtime returned an empty provider catalog.".to_string(),
+        }],
+        ProvidersState::Ready(_, providers) => providers
+            .iter()
+            .map(|provider| SettingField::Provider {
+                key: "desktop.info.providers",
+                provider: provider.clone(),
+            })
+            .collect(),
+        ProvidersState::Unavailable(message) => vec![SettingField::Info {
+            key: "desktop.info.providers",
+            label: "Providers unavailable".to_string(),
+            value: "Unavailable".to_string(),
+            description: message.clone(),
+        }],
+    }
 }
 
 fn tool_info_fields(state: &InventoryState) -> Vec<SettingField> {
@@ -641,6 +729,10 @@ pub enum SettingField {
         value: String,
         description: String,
     },
+    Provider {
+        key: &'static str,
+        provider: ProviderDescriptor,
+    },
 }
 
 impl SettingField {
@@ -651,7 +743,8 @@ impl SettingField {
             | Self::Choice { key, .. }
             | Self::Keybind { key, .. }
             | Self::Action { key, .. }
-            | Self::Info { key, .. } => key,
+            | Self::Info { key, .. }
+            | Self::Provider { key, .. } => key,
         }
     }
 
@@ -663,6 +756,7 @@ impl SettingField {
             | Self::Keybind { label, .. }
             | Self::Action { label, .. } => label,
             Self::Info { label, .. } => label,
+            Self::Provider { provider, .. } => provider.name.as_str(),
         }
     }
 
@@ -680,6 +774,7 @@ impl SettingField {
                 .unwrap_or_else(|| "Unbound".to_string()),
             Self::Action { value, .. } => value.clone(),
             Self::Info { value, .. } => value.clone(),
+            Self::Provider { provider, .. } => provider_status(provider),
         }
     }
 
@@ -691,7 +786,8 @@ impl SettingField {
             Self::Choice { .. }
             | Self::Keybind { .. }
             | Self::Action { .. }
-            | Self::Info { .. } => None,
+            | Self::Info { .. }
+            | Self::Provider { .. } => None,
         }
     }
 
@@ -719,6 +815,7 @@ impl SettingField {
                 }),
             Self::Action { .. } => Err("actions cannot be saved as settings".to_string()),
             Self::Info { .. } => Err("read-only rows cannot be saved as settings".to_string()),
+            Self::Provider { .. } => Err("provider credentials use the provider API".to_string()),
         }
     }
 }
@@ -728,9 +825,11 @@ impl SettingField {
 pub enum SettingsAction {
     Save,
     Activate(&'static str),
+    SaveProviderCredential(String, String),
+    DeleteProviderCredential(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsInteraction {
     SelectRow(usize),
     SelectSection(SettingsSection),
@@ -738,6 +837,7 @@ pub enum SettingsInteraction {
     RevealSetting(&'static str),
     Save,
     Activate(&'static str),
+    RequestProviderDelete(String),
 }
 
 pub type SettingsHandler =
@@ -759,6 +859,9 @@ pub struct SettingsModal {
     desktop_originals: DesktopPreferences,
     pub tools: InventoryState,
     pub skills: InventoryState,
+    pub providers: ProvidersState,
+    provider_drafts: HashMap<String, ProviderDraft>,
+    provider_delete_confirmation: Option<String>,
     pub active_section: SettingsSection,
     pub search_query: String,
     search_cursor: usize,
@@ -791,6 +894,9 @@ impl PartialEq for SettingsModal {
             && self.desktop_originals == other.desktop_originals
             && self.tools == other.tools
             && self.skills == other.skills
+            && self.providers == other.providers
+            && self.provider_drafts == other.provider_drafts
+            && self.provider_delete_confirmation == other.provider_delete_confirmation
             && self.active_section == other.active_section
             && self.search_query == other.search_query
             && self.search_cursor == other.search_cursor
@@ -815,9 +921,11 @@ impl Default for SettingsModal {
         let desktop_preferences = DesktopPreferences::default();
         let tools = InventoryState::Loading;
         let skills = InventoryState::Unavailable(SKILLS_SESSION_REQUIRED.to_string());
+        let providers = ProvidersState::Loading;
         let mut fields = local_setting_fields(&desktop_preferences);
         fields.extend(tool_info_fields(&tools));
         fields.extend(skill_info_fields(&skills));
+        fields.extend(provider_fields(&providers));
         let selected = fields.len();
         let originals = fields
             .iter()
@@ -835,6 +943,9 @@ impl Default for SettingsModal {
             desktop_originals: desktop_preferences,
             tools,
             skills,
+            providers,
+            provider_drafts: HashMap::new(),
+            provider_delete_confirmation: None,
             active_section: SettingsSection::Model,
             search_query: String::new(),
             search_cursor: 0,
@@ -869,6 +980,7 @@ impl SettingsModal {
             .fields
             .extend(tool_info_fields(&modal.tools));
         modal.fields.extend(skill_info_fields(&modal.skills));
+        modal.fields.extend(provider_fields(&modal.providers));
         modal.originals = modal
             .fields
             .iter()
@@ -948,6 +1060,10 @@ impl SettingsModal {
 
     /// Rebuild the field list from a backend view; keeps `selected` in range.
     pub fn apply_view(&mut self, view: &ConfigGetResponse) {
+        let provider_edit = (self.editing && !self.searching && self.pending_setting.is_none())
+            .then(|| self.selected_provider().map(|provider| provider.id.clone()))
+            .flatten()
+            .map(|id| (id, self.selection_anchor));
         let config = serde_json::to_value(&view.config).expect("settings config is serializable");
         let mut fields = SETTING_DESCRIPTORS
             .iter()
@@ -964,12 +1080,17 @@ impl SettingsModal {
             self.fields
                 .iter()
                 .filter(|field| {
-                    is_desktop_setting(field.key()) && !matches!(field, SettingField::Info { .. })
+                    is_desktop_setting(field.key())
+                        && !matches!(
+                            field,
+                            SettingField::Info { .. } | SettingField::Provider { .. }
+                        )
                 })
                 .cloned(),
         );
         fields.extend(tool_info_fields(&self.tools));
         fields.extend(skill_info_fields(&self.skills));
+        fields.extend(provider_fields(&self.providers));
 
         let mut originals = HashMap::new();
         for field in &fields {
@@ -996,14 +1117,36 @@ impl SettingsModal {
             .iter()
             .position(|field| setting_descriptor(field.key()).section == self.active_section)
             .unwrap_or(0);
-        self.editing = false;
+        let preserved_provider_edit = if let Some((provider_id, anchor)) = provider_edit {
+            self.fields
+                .iter()
+                .position(|field| {
+                    matches!(field, SettingField::Provider { provider, .. } if provider.id == provider_id)
+                })
+                .map(|index| {
+                    self.selected = index;
+                    self.selection_anchor = anchor;
+                })
+                .is_some()
+        } else {
+            false
+        };
+        self.editing = preserved_provider_edit;
         self.capturing_keybind = None;
-        self.selection_anchor = 0;
+        if !preserved_provider_edit {
+            self.provider_drafts.clear();
+            self.provider_delete_confirmation = None;
+            self.selection_anchor = 0;
+        }
         self.edit_snapshot = None;
         self.load_failed = false;
         self.error = None;
-        self.scroll_handle
-            .scroll_to_item_strict(0, ScrollStrategy::Top);
+        if preserved_provider_edit {
+            self.scroll_selected_into_view();
+        } else {
+            self.scroll_handle
+                .scroll_to_item_strict(0, ScrollStrategy::Top);
+        }
         if let Some(key) = self.pending_setting.take() {
             self.reveal_setting(&key);
         } else if self.searching {
@@ -1058,6 +1201,72 @@ impl SettingsModal {
         self.refresh_inventory_fields();
     }
 
+    pub fn set_providers(&mut self, mut response: ProvidersListResponse) {
+        response
+            .providers
+            .sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+        self.providers = if response.providers.is_empty() {
+            ProvidersState::Empty
+        } else {
+            ProvidersState::Ready(response.storage, response.providers)
+        };
+        self.provider_drafts.clear();
+        self.provider_delete_confirmation = None;
+        self.refresh_inventory_fields();
+    }
+
+    pub fn set_providers_error(&mut self, message: impl Into<String>) {
+        self.providers = ProvidersState::Unavailable(message.into());
+        self.provider_drafts.clear();
+        self.provider_delete_confirmation = None;
+        self.refresh_inventory_fields();
+    }
+
+    pub fn apply_provider_credential(
+        &mut self,
+        provider: ProviderDescriptor,
+        changed: bool,
+        removed: bool,
+    ) -> bool {
+        let ProvidersState::Ready(storage, providers) = &mut self.providers else {
+            return false;
+        };
+        let Some(index) = providers
+            .iter()
+            .position(|current| current.id == provider.id)
+        else {
+            return false;
+        };
+        providers[index] = provider.clone();
+        self.provider_drafts.remove(&provider.id);
+        self.provider_delete_confirmation = None;
+        self.editing = false;
+        self.edit_snapshot = None;
+        self.busy = false;
+        self.error = None;
+        self.status = Some(if removed {
+            if changed {
+                format!(
+                    "{} credential removed from {}.",
+                    provider.name, storage.path
+                )
+            } else {
+                format!("{} has no managed credential to remove.", provider.name)
+            }
+        } else if changed {
+            format!("{} credential saved in {}.", provider.name, storage.path)
+        } else {
+            format!("{} credential is unchanged.", provider.name)
+        });
+        self.refresh_inventory_fields();
+        true
+    }
+
+    pub fn fail_provider_credential(&mut self, message: impl Into<String>) {
+        self.busy = false;
+        self.error = Some(message.into());
+    }
+
     pub fn set_skills_loading(&mut self) {
         self.skills = InventoryState::Loading;
         self.refresh_inventory_fields();
@@ -1085,19 +1294,42 @@ impl SettingsModal {
     fn refresh_inventory_fields(&mut self) {
         let old_len = self.fields.len();
         let save_selected = self.selected == old_len;
-        let selected_info_key = self.fields.get(self.selected).and_then(|field| match field {
-            SettingField::Info { key, .. } => Some(*key),
-            _ => None,
+        let selected_info_key = self
+            .fields
+            .get(self.selected)
+            .and_then(|field| match field {
+                SettingField::Info { key, .. } => Some(*key),
+                _ => None,
+            });
+        let selected_provider_id = self
+            .fields
+            .get(self.selected)
+            .and_then(|field| match field {
+                SettingField::Provider { provider, .. } => Some(provider.id.clone()),
+                _ => None,
+            });
+        self.fields.retain(|field| {
+            !matches!(
+                field,
+                SettingField::Info { .. } | SettingField::Provider { .. }
+            )
         });
-        self.fields
-            .retain(|field| !matches!(field, SettingField::Info { .. }));
         self.fields.extend(tool_info_fields(&self.tools));
         self.fields.extend(skill_info_fields(&self.skills));
+        self.fields.extend(provider_fields(&self.providers));
         if let Some(key) = selected_info_key {
             self.selected = self
                 .fields
                 .iter()
                 .position(|field| field.key() == key)
+                .unwrap_or(self.selected.min(self.fields.len()));
+        } else if let Some(provider_id) = selected_provider_id {
+            self.selected = self
+                .fields
+                .iter()
+                .position(|field| {
+                    matches!(field, SettingField::Provider { provider, .. } if provider.id == provider_id)
+                })
                 .unwrap_or(self.selected.min(self.fields.len()));
         } else if save_selected {
             self.selected = self.fields.len();
@@ -1108,8 +1340,112 @@ impl SettingsModal {
         self.scroll_selected_into_view();
     }
 
+    fn selected_provider(&self) -> Option<&ProviderDescriptor> {
+        match self.fields.get(self.selected) {
+            Some(SettingField::Provider { provider, .. }) => Some(provider),
+            _ => None,
+        }
+    }
+
+    fn begin_provider_edit(&mut self) {
+        let Some(provider) = self.selected_provider().cloned() else {
+            return;
+        };
+        if !provider.credential_writable {
+            return;
+        }
+        self.provider_delete_confirmation = None;
+        self.provider_drafts.insert(
+            provider.id.clone(),
+            ProviderDraft {
+                value: String::new(),
+                cursor: 0,
+            },
+        );
+        self.editing = true;
+        self.selection_anchor = 0;
+        self.edit_snapshot = None;
+        self.error = None;
+    }
+
+    fn validate_provider_credential(
+        provider: &ProviderDescriptor,
+        value: &str,
+    ) -> Result<(), String> {
+        if !provider.credential_writable {
+            return Err(format!(
+                "{} does not support credential editing.",
+                provider.name
+            ));
+        }
+        if value.is_empty() {
+            return Err(format!("Enter an API key or token for {}.", provider.name));
+        }
+        if value.chars().count() > 8192 {
+            return Err("Provider credentials must be at most 8192 characters.".to_string());
+        }
+        if value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(
+                "Provider credentials cannot contain whitespace or control characters.".to_string(),
+            );
+        }
+        if (value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\''))
+        {
+            return Err("Remove the wrapping quotes from the provider credential.".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn request_provider_delete(&mut self, provider_id: &str) -> Option<SettingsAction> {
+        let Some(provider) = self
+            .fields
+            .iter()
+            .find_map(|field| match field {
+                SettingField::Provider { provider, .. } if provider.id == provider_id => {
+                    Some(provider)
+                }
+                _ => None,
+            })
+            .cloned()
+        else {
+            return None;
+        };
+        if !provider.credential_writable
+            || provider.credential_source != ProviderCredentialSource::CredentialsFile
+        {
+            self.error = Some(format!(
+                "{} has no credential stored in the managed credentials file.",
+                provider.name
+            ));
+            return None;
+        }
+        if self.provider_delete_confirmation.as_deref() != Some(provider_id) {
+            self.provider_delete_confirmation = Some(provider_id.to_string());
+            self.status = Some(format!(
+                "Press Remove or Delete again to confirm removing the {} credential.",
+                provider.name
+            ));
+            return None;
+        }
+        self.provider_delete_confirmation = None;
+        self.busy = true;
+        Some(SettingsAction::DeleteProviderCredential(provider.id))
+    }
+
     pub fn accepts_text_edit(&self) -> bool {
         !self.busy && (self.searching || self.editing)
+    }
+
+    pub fn is_editing_provider(&self) -> bool {
+        self.editing
+            && matches!(
+                self.fields.get(self.selected),
+                Some(SettingField::Provider { .. })
+            )
     }
 
     pub fn capturing_keybind(&self) -> Option<&'static str> {
@@ -1194,9 +1530,20 @@ impl SettingsModal {
                 let label = field.label().to_lowercase();
                 let description = match field {
                     SettingField::Info { description, .. } => description.as_str(),
+                    SettingField::Provider { provider, .. } => provider.description.as_str(),
                     _ => descriptor.description,
                 }
                 .to_lowercase();
+                let provider_metadata = match field {
+                    SettingField::Provider { provider, .. } => format!(
+                        "{} {} {}",
+                        provider.category,
+                        provider.credential_env_var.as_deref().unwrap_or_default(),
+                        provider.default_base_url
+                    )
+                    .to_lowercase(),
+                    _ => String::new(),
+                };
                 let score = if key == query || label == query {
                     Some(0)
                 } else if key.starts_with(&query) || label.starts_with(&query) {
@@ -1205,6 +1552,7 @@ impl SettingsModal {
                     || label.contains(&query)
                     || field.display().to_lowercase().contains(&query)
                     || description.contains(&query)
+                    || provider_metadata.contains(&query)
                     || descriptor.section.title().to_lowercase().contains(&query)
                 {
                     Some(2)
@@ -1302,6 +1650,11 @@ impl SettingsModal {
             self.begin_keybind_capture(field_key);
             return true;
         }
+        if matches!(self.fields.get(index), Some(SettingField::Provider { .. })) {
+            self.begin_provider_edit();
+            self.scroll_selected_into_view();
+            return true;
+        }
         let Some(field) = self.fields.get_mut(index) else {
             return false;
         };
@@ -1323,6 +1676,18 @@ impl SettingsModal {
                 &mut self.search_anchor,
             ))
         } else {
+            let provider_id = match self.fields.get(self.selected) {
+                Some(SettingField::Provider { provider, .. }) => Some(provider.id.clone()),
+                _ => None,
+            };
+            if let Some(provider_id) = provider_id {
+                let draft = self.provider_drafts.get_mut(&provider_id)?;
+                return Some((
+                    &mut draft.value,
+                    &mut draft.cursor,
+                    &mut self.selection_anchor,
+                ));
+            }
             let field = self.fields.get_mut(self.selected)?;
             field
                 .text_state_mut()
@@ -1400,6 +1765,7 @@ impl SettingsModal {
         self.commit_edit();
         self.clear_search();
         self.selected = index.min(self.fields.len());
+        self.provider_delete_confirmation = None;
         if let Some(field) = self.fields.get(self.selected) {
             self.active_section = setting_descriptor(field.key()).section;
         }
@@ -1417,6 +1783,14 @@ impl SettingsModal {
             });
         if let Some(key) = keybind_key {
             self.begin_keybind_capture(key);
+            return;
+        }
+        if matches!(
+            self.fields.get(self.selected),
+            Some(SettingField::Provider { .. })
+        ) {
+            self.begin_provider_edit();
+            self.scroll_selected_into_view();
             return;
         }
         let Some(field) = self.fields.get_mut(self.selected) else {
@@ -1463,6 +1837,9 @@ impl SettingsModal {
         self.editing = false;
         self.capturing_keybind = None;
         self.edit_snapshot = None;
+        if let Some(provider_id) = self.selected_provider().map(|provider| provider.id.clone()) {
+            self.provider_drafts.remove(&provider_id);
+        }
     }
 
     fn move_text_cursor(&mut self, delta: isize, selecting: bool) -> bool {
@@ -1549,6 +1926,14 @@ impl SettingsModal {
                 }
                 None
             }
+            "delete" if !self.searching && !self.editing => {
+                if let Some(provider_id) =
+                    self.selected_provider().map(|provider| provider.id.clone())
+                {
+                    return self.request_provider_delete(&provider_id);
+                }
+                None
+            }
             "enter" => {
                 if self.searching {
                     if !self.search_query.trim().is_empty() {
@@ -1556,6 +1941,11 @@ impl SettingsModal {
                             let key = field.key();
                             if matches!(field, SettingField::Action { .. }) {
                                 return Some(SettingsAction::Activate(key));
+                            }
+                            if matches!(field, SettingField::Provider { .. }) {
+                                let index = self.selected;
+                                self.select_row(index);
+                                return None;
                             }
                             self.reveal_setting(key);
                         }
@@ -1588,6 +1978,25 @@ impl SettingsModal {
                     self.begin_keybind_capture(key);
                     return None;
                 }
+                if let Some(provider) = self.selected_provider().cloned() {
+                    if !self.editing {
+                        self.begin_provider_edit();
+                        return None;
+                    }
+                    let Some(draft) = self.provider_drafts.get(&provider.id) else {
+                        return None;
+                    };
+                    if let Err(error) = Self::validate_provider_credential(&provider, &draft.value)
+                    {
+                        self.error = Some(error);
+                        return None;
+                    }
+                    self.busy = true;
+                    return Some(SettingsAction::SaveProviderCredential(
+                        provider.id,
+                        draft.value.clone(),
+                    ));
+                }
                 let Some(field) = self.fields.get_mut(self.selected) else {
                     return None;
                 };
@@ -1619,6 +2028,11 @@ impl SettingsModal {
             return;
         }
         self.editing = false;
+        if let Some(provider_id) = self.selected_provider().map(|provider| provider.id.clone()) {
+            self.provider_drafts.remove(&provider_id);
+            self.provider_delete_confirmation = None;
+            return;
+        }
         if let Some((snapshot, cursor, anchor)) = self.edit_snapshot.take() {
             if let Some(field) = self.fields.get_mut(self.selected) {
                 if let Some((value, current)) = field.text_state_mut() {
@@ -1641,6 +2055,10 @@ impl SettingsModal {
         if !self.editing {
             return None;
         }
+        if let Some(SettingField::Provider { provider, .. }) = self.fields.get(self.selected) {
+            let draft = self.provider_drafts.get(&provider.id)?;
+            return Some((draft.value.clone(), draft.cursor, self.selection_anchor));
+        }
         let field = self.fields.get(self.selected)?;
         let (value, cursor) = match field {
             SettingField::Text { value, cursor, .. }
@@ -1648,7 +2066,8 @@ impl SettingsModal {
             SettingField::Choice { .. }
             | SettingField::Keybind { .. }
             | SettingField::Action { .. }
-            | SettingField::Info { .. } => {
+            | SettingField::Info { .. }
+            | SettingField::Provider { .. } => {
                 return None;
             }
         };
@@ -1727,8 +2146,10 @@ impl SettingsModal {
     }
 
     fn is_dirty(&self, field: &SettingField) -> bool {
-        !matches!(field, SettingField::Info { .. })
-            && field.display() != self.originals.get(field.key()).cloned().unwrap_or_default()
+        !matches!(
+            field,
+            SettingField::Info { .. } | SettingField::Provider { .. }
+        ) && field.display() != self.originals.get(field.key()).cloned().unwrap_or_default()
     }
 
     pub fn validation_error(&self) -> Option<String> {
@@ -1804,7 +2225,14 @@ impl SettingsModal {
     pub fn desktop_dirty_count(&self) -> usize {
         self.fields
             .iter()
-            .filter(|field| is_desktop_setting(field.key()) && self.is_dirty(field))
+            .filter(|field| {
+                is_desktop_setting(field.key())
+                    && !matches!(
+                        field,
+                        SettingField::Info { .. } | SettingField::Provider { .. }
+                    )
+                    && self.is_dirty(field)
+            })
             .count()
     }
 
@@ -1891,11 +2319,13 @@ impl SettingsModal {
     pub fn apply_desktop_saved(&mut self) {
         self.desktop_originals = self.desktop_preferences.clone();
         self.capturing_keybind = None;
-        for field in self
-            .fields
-            .iter()
-            .filter(|field| is_desktop_setting(field.key()))
-        {
+        for field in self.fields.iter().filter(|field| {
+            is_desktop_setting(field.key())
+                && !matches!(
+                    field,
+                    SettingField::Info { .. } | SettingField::Provider { .. }
+                )
+        }) {
             self.originals
                 .insert(field.key().to_string(), field.display());
         }
@@ -2199,6 +2629,8 @@ impl SettingsModal {
             let fields = self.fields.clone();
             let filtering = !self.search_query.trim().is_empty();
             let originals = self.originals.clone();
+            let provider_drafts = self.provider_drafts.clone();
+            let provider_delete_confirmation = self.provider_delete_confirmation.clone();
             let selected = self.selected;
             let editing = self.editing && !self.searching;
             let capturing_keybind = self.capturing_keybind;
@@ -2247,6 +2679,8 @@ impl SettingsModal {
                                     busy,
                                     filtering,
                                     &originals,
+                                    &provider_drafts,
+                                    provider_delete_confirmation.as_deref(),
                                     &theme,
                                     motion,
                                     on_action.clone(),
@@ -2367,7 +2801,8 @@ fn settings_click_handler(
     interaction: SettingsInteraction,
 ) -> crate::ui::modals::text_input::ModalClickHandler {
     let on_action = on_action.clone();
-    std::rc::Rc::new(move |event, window, cx| on_action(interaction, event, window, cx))
+    let interaction = interaction.clone();
+    std::rc::Rc::new(move |event, window, cx| on_action(interaction.clone(), event, window, cx))
 }
 
 fn render_setting_row(
@@ -2380,11 +2815,16 @@ fn render_setting_row(
     busy: bool,
     filtering: bool,
     originals: &HashMap<String, String>,
+    provider_drafts: &HashMap<String, ProviderDraft>,
+    provider_delete_confirmation: Option<&str>,
     theme: &HermesTheme,
     motion: ModalMotion<'_>,
     on_action: SettingsHandler,
 ) -> Stateful<Div> {
-    let dirty = field.display() != originals.get(field.key()).cloned().unwrap_or_default();
+    let dirty = !matches!(
+        field,
+        SettingField::Info { .. } | SettingField::Provider { .. }
+    ) && field.display() != originals.get(field.key()).cloned().unwrap_or_default();
     let mut value = match field {
         SettingField::Text {
             value,
@@ -2490,6 +2930,75 @@ fn render_setting_row(
         } else {
             value.clone()
         }),
+        SettingField::Provider { provider, .. } => {
+            let mut row = div().flex().flex_row().items_center().gap(px(8.0));
+            if selected && editing && provider.credential_writable {
+                let draft = provider_drafts.get(&provider.id);
+                row = row.child(
+                    crate::ui::modals::text_input::input_content(
+                        draft.map(|draft| draft.value.as_str()).unwrap_or_default(),
+                        draft.map(|draft| draft.cursor).unwrap_or_default(),
+                        selection_anchor,
+                        "Paste API key or token",
+                        true,
+                        !busy,
+                        theme,
+                    )
+                    .flex_1()
+                    .min_w_0(),
+                );
+            } else {
+                row = row.child(
+                    div()
+                        .text_color(if provider.credential_configured {
+                            theme.mockup_text_bright
+                        } else {
+                            theme.mockup_text_dim
+                        })
+                        .child(provider_status(provider)),
+                );
+            }
+            if provider.credential_source == ProviderCredentialSource::CredentialsFile {
+                let confirming = provider_delete_confirmation == Some(provider.id.as_str());
+                let provider_id = provider.id.clone();
+                let handler = settings_click_handler(
+                    &on_action,
+                    SettingsInteraction::RequestProviderDelete(provider_id.clone()),
+                );
+                let selector = format!("settings_provider_remove_{provider_id}");
+                let debug_selector = selector.clone();
+                let mut remove = div()
+                    .id(SharedString::from(selector))
+                    .debug_selector(move || debug_selector.clone())
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(if confirming {
+                        theme.rose_fg()
+                    } else {
+                        theme.mockup_border
+                    })
+                    .text_size(px(MockupTypeScale::HINT_SIZE))
+                    .text_color(if confirming {
+                        theme.rose_fg()
+                    } else {
+                        theme.mockup_text_dim
+                    })
+                    .cursor_pointer()
+                    .child(if confirming { "Confirm" } else { "Remove" })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    });
+                if busy {
+                    remove = remove.opacity(0.5);
+                }
+                row = row.child(remove);
+            }
+            row
+        }
     };
     value = value
         .font_family(theme.font_mono()[0].clone())
@@ -2503,6 +3012,7 @@ fn render_setting_row(
 
     let interaction = match field {
         SettingField::Action { key, .. } => SettingsInteraction::Activate(key),
+        SettingField::Provider { .. } => SettingsInteraction::SelectRow(index),
         _ if filtering => SettingsInteraction::RevealSetting(field.key()),
         _ => SettingsInteraction::SelectRow(index),
     };
@@ -2516,6 +3026,7 @@ fn render_setting_row(
             "settings_info_{}",
             key.strip_prefix("desktop.info.").unwrap_or(key)
         ),
+        SettingField::Provider { provider, .. } => format!("settings_provider_{}", provider.id),
         _ => format!("settings_row_{index}"),
     };
     let mut row = div()
@@ -2564,8 +3075,9 @@ fn render_setting_row(
         );
     let descriptor = setting_descriptor(field.key());
     let description = match field {
-        SettingField::Info { description, .. } => description.as_str(),
-        _ => descriptor.description,
+        SettingField::Info { description, .. } => description.clone(),
+        SettingField::Provider { provider, .. } => provider_description(provider),
+        _ => descriptor.description.to_string(),
     };
     row = row.child(
         div()
@@ -2655,8 +3167,8 @@ mod tests {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 22 + keyboard_count);
-        assert_eq!(SettingsSection::ALL.len(), 12);
+        assert_eq!(modal.fields.len(), 23 + keyboard_count);
+        assert_eq!(SettingsSection::ALL.len(), 13);
         assert_eq!(modal.fields[12].key(), "desktop.motion");
         assert_eq!(modal.fields[13].key(), "desktop.sidebar");
         assert_eq!(modal.fields[14].key(), "desktop.keybind.command_palette");
@@ -2811,6 +3323,190 @@ mod tests {
             modal.tools,
             InventoryState::Unavailable("tools/list failed: permission denied".to_string())
         );
+        assert_eq!(modal.dirty_count(), 0);
+    }
+
+    fn sample_provider(
+        id: &str,
+        name: &str,
+        source: ProviderCredentialSource,
+        writable: bool,
+    ) -> ProviderDescriptor {
+        ProviderDescriptor {
+            id: id.to_string(),
+            name: name.to_string(),
+            category: "featured".to_string(),
+            requires_api_key: writable,
+            credential_env_var: writable.then(|| format!("{}_API_KEY", id.to_uppercase())),
+            credential_configured: !matches!(source, ProviderCredentialSource::None),
+            credential_source: source,
+            credential_writable: writable,
+            base_url_env_var: writable.then(|| format!("{}_BASE_URL", id.to_uppercase())),
+            default_base_url: format!("https://{id}.invalid/v1"),
+            signup_url: Some(format!("https://{id}.invalid/keys")),
+            description: format!("{name} test provider"),
+        }
+    }
+
+    #[test]
+    fn test_provider_credentials_are_masked_searchable_and_outside_config_saves() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        modal.set_providers(ProvidersListResponse {
+            storage: ProviderCredentialStorage {
+                path: "/tmp/credentials.env".to_string(),
+                scope: "config_dir".to_string(),
+            },
+            providers: vec![
+                sample_provider(
+                    "anthropic",
+                    "Anthropic",
+                    ProviderCredentialSource::None,
+                    true,
+                ),
+                sample_provider(
+                    "openai",
+                    "OpenAI",
+                    ProviderCredentialSource::CredentialsFile,
+                    true,
+                ),
+                sample_provider(
+                    "bedrock",
+                    "Bedrock",
+                    ProviderCredentialSource::NotSupported,
+                    false,
+                ),
+            ],
+        });
+        modal.select_section(SettingsSection::Providers);
+        assert_eq!(modal.section_indices().len(), 3);
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+        assert!(modal.changed_desktop_preferences().is_none());
+
+        modal.focus_search();
+        modal.select_all_text();
+        modal.push_char("ANTHROPIC_API_KEY");
+        let anthropic_index = modal
+            .fields
+            .iter()
+            .position(|field| field.label() == "Anthropic")
+            .unwrap();
+        assert_eq!(modal.search_results(), vec![anthropic_index]);
+        modal.handle_key("enter");
+        assert!(!modal.searching);
+        assert!(modal.editing);
+        assert_eq!(modal.active_section, SettingsSection::Providers);
+        assert_eq!(modal.selected, anthropic_index);
+
+        modal.push_char("sk-test-only");
+        modal.select_all_text();
+        assert_eq!(modal.selected_text().as_deref(), Some("sk-test-only"));
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(
+            modal.handle_key("enter"),
+            Some(SettingsAction::SaveProviderCredential(
+                "anthropic".to_string(),
+                "sk-test-only".to_string(),
+            ))
+        );
+        assert!(modal.busy);
+
+        modal.fail_provider_credential("save failed");
+        assert!(modal.editing);
+        modal.cancel_edit();
+        modal.select_row(anthropic_index);
+        modal.push_char("sk-cancelled");
+        modal.cancel_edit();
+        assert!(!modal.editing);
+        assert_eq!(modal.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_provider_credential_validation_and_confirmed_removal() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        modal.set_providers(ProvidersListResponse {
+            storage: ProviderCredentialStorage {
+                path: "/tmp/credentials.env".to_string(),
+                scope: "config_dir".to_string(),
+            },
+            providers: vec![sample_provider(
+                "openai",
+                "OpenAI",
+                ProviderCredentialSource::CredentialsFile,
+                true,
+            )],
+        });
+        let index = modal
+            .fields
+            .iter()
+            .position(|field| field.label() == "OpenAI")
+            .unwrap();
+        modal.select_row(index);
+        modal.push_char("has space");
+        assert_eq!(modal.handle_key("enter"), None);
+        assert!(modal.error.as_deref().unwrap().contains("whitespace"));
+        assert!(!modal.busy);
+        modal.cancel_edit();
+
+        assert_eq!(modal.request_provider_delete("openai"), None);
+        assert_eq!(
+            modal.provider_delete_confirmation.as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            modal.request_provider_delete("openai"),
+            Some(SettingsAction::DeleteProviderCredential(
+                "openai".to_string()
+            ))
+        );
+        assert!(modal.busy);
+    }
+
+    #[test]
+    fn test_provider_mutation_updates_status_and_clears_the_secret_draft() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        modal.set_providers(ProvidersListResponse {
+            storage: ProviderCredentialStorage {
+                path: "/tmp/credentials.env".to_string(),
+                scope: "config_dir".to_string(),
+            },
+            providers: vec![sample_provider(
+                "anthropic",
+                "Anthropic",
+                ProviderCredentialSource::None,
+                true,
+            )],
+        });
+        let index = modal
+            .fields
+            .iter()
+            .position(|field| field.label() == "Anthropic")
+            .unwrap();
+        modal.select_row(index);
+        modal.push_char("sk-test-only");
+        let mut provider = sample_provider(
+            "anthropic",
+            "Anthropic",
+            ProviderCredentialSource::CredentialsFile,
+            true,
+        );
+        provider.credential_configured = true;
+        assert!(modal.apply_provider_credential(provider, true, false));
+        assert!(!modal.editing);
+        assert!(!modal.busy);
+        assert!(modal.provider_drafts.is_empty());
+        assert_eq!(
+            modal.fields[index].display(),
+            "Configured · credentials file"
+        );
+        assert!(modal
+            .status
+            .as_deref()
+            .unwrap()
+            .contains("credential saved"));
         assert_eq!(modal.dirty_count(), 0);
     }
 
@@ -3032,20 +3728,20 @@ mod tests {
         assert_eq!(modal.active_section, SettingsSection::Notifications);
         assert_eq!(
             modal.section_indices().first(),
-            Some(&(modal.fields.len() - 8))
+            Some(&(modal.fields.len() - 9))
         );
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 6))
+            Some(&(modal.fields.len() - 7))
         );
-        assert_eq!(modal.selected, modal.fields.len() - 8);
+        assert_eq!(modal.selected, modal.fields.len() - 9);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Keyboard);
         assert_eq!(modal.section_indices().first(), Some(&14));
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 9))
+            Some(&(modal.fields.len() - 10))
         );
         assert_eq!(modal.selected, 14);
 

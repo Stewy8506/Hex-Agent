@@ -87,7 +87,7 @@ class TestProviderCredentials(unittest.TestCase):
         result = response["result"]
         self.assertTrue(result["changed"])
         self.assertTrue(result["provider"]["credentialConfigured"])
-        self.assertEqual(result["provider"]["credentialSource"], "environment")
+        self.assertEqual(result["provider"]["credentialSource"], "credentials_file")
         self.assertNotIn(secret, json.dumps(result))
         self.assertEqual(os.environ["ANTHROPIC_API_KEY"], secret)
 
