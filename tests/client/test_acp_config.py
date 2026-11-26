@@ -256,6 +256,53 @@ class TestConfigSurface(unittest.TestCase):
         self.assertEqual(resp["result"]["changed"], ["webSearch.provider"])
         self.assertEqual(resp["result"]["config"]["webSearch"]["provider"], "tavily")
 
+    def test_config_set_profile_vocabulary_and_local_model_id(self) -> None:
+        loaded_revision = self._get()["revision"]
+        resp = self.server.handle_request(
+            _req(
+                2,
+                "config/set",
+                {
+                    "expectedRevision": loaded_revision,
+                    "updates": {
+                        "model": {"profile": "offline", "localModelId": "llama3.2"}
+                    },
+                },
+            )
+        )
+        result = resp["result"]
+        self.assertEqual(result["changed"], ["model.localModelId", "model.profile"])
+        self.assertEqual(result["config"]["model"]["profile"], "offline")
+        self.assertEqual(result["config"]["model"]["localModelId"], "llama3.2")
+
+        view = self._get()
+        self.assertEqual(view["config"]["model"]["profile"], "offline")
+        self.assertEqual(view["config"]["model"]["localModelId"], "llama3.2")
+        self.assertEqual(
+            view["options"]["model.profile"],
+            list(CONFIG_SCHEMA["model"]["profile"]["options"]),
+        )
+
+        raw = self.cfg.read_text(encoding="utf-8")
+        self.assertIn("profile: offline", raw)
+        self.assertIn("local_model_id: llama3.2", raw)
+
+        # The empty optional value clears local_model_id from the file.
+        resp = self.server.handle_request(
+            _req(3, "config/set", {"updates": {"model": {"localModelId": ""}}})
+        )
+        self.assertEqual(resp["result"]["changed"], ["model.localModelId"])
+        self.assertNotIn("localModelId", resp["result"]["config"]["model"])
+        self.assertNotIn("local_model_id", self.cfg.read_text(encoding="utf-8"))
+
+        for profile in ("ultra", "", 1):
+            with self.subTest(profile=profile):
+                resp = self.server.handle_request(
+                    _req(4, "config/set", {"updates": {"model": {"profile": profile}}})
+                )
+                self.assertIn("error", resp)
+        self.assertIn("profile: offline", self.cfg.read_text(encoding="utf-8"))
+
     def test_model_endpoint_save_updates_environment_and_active_provider(self) -> None:
         runtime_provider = SimpleNamespace(provider_id="gemini", base_url="https://old.invalid")
         self.server._orchestrator = SimpleNamespace(

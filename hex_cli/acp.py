@@ -690,7 +690,9 @@ class ConfigRevisionConflict(Exception):
 # config file; secrets (API keys, tokens) stay in credentials.env and are
 # rejected here by name. Vocabulary notes:
 #   - reasoning_effort: canonical ladder from harness_core.core.reasoning_effort
-#   - profile: router.py execution profiles (local / hybrid / antigravity_hybrid)
+#   - profile: router.py execution profiles (local / offline / hybrid /
+#     antigravity_hybrid; "cloud" = never pinned local)
+#   - local_model_id: router.py local tier model, exported as HEX_LOCAL_MODEL_ID
 #   - compressor_mode: router.py FR-045a modes
 #   - web_search.provider: capabilities/web_search.py supported providers
 #   - learning.auto_reflect: get_auto_reflect_policy() vocabulary
@@ -702,8 +704,12 @@ CONFIG_SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
     "model": {
         "cloud_provider": {"kind": "text", "required": True},
         "cloud_model_id": {"kind": "text", "required": True},
+        "local_model_id": {"kind": "text", "required": False},
         "reasoning_effort": {"kind": "choice", "options": list(EFFORT_LADDER)},
-        "profile": {"kind": "choice", "options": ["cloud", "local", "hybrid", "antigravity_hybrid"]},
+        "profile": {
+            "kind": "choice",
+            "options": ["cloud", "local", "offline", "hybrid", "antigravity_hybrid"],
+        },
         "compressor_mode": {"kind": "choice", "options": ["deterministic", "cloud", "local", "off"]},
         "cloud_base_url": {"kind": "text", "required": False},
     },

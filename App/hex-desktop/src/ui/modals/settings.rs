@@ -178,7 +178,7 @@ const fn notification_setting(
     }
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 36] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 37] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -195,6 +195,13 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 36] = [
     },
     SettingDescriptor {
         section: SettingsSection::Model,
+        key: "model.localModelId",
+        label: "Local model ID",
+        description: "Model used on this machine when the execution profile pins work locally.",
+        kind: SettingKind::Text { required: false },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Model,
         key: "model.reasoningEffort",
         label: "Reasoning effort",
         description: "How much reasoning the model should use.",
@@ -208,7 +215,7 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 36] = [
         label: "Execution profile",
         description: "Where HEX runs tools and model requests.",
         kind: SettingKind::Choice {
-            fallback: &["cloud", "local", "hybrid", "antigravity_hybrid"],
+            fallback: &["cloud", "local", "offline", "hybrid", "antigravity_hybrid"],
         },
     },
     SettingDescriptor {
@@ -3718,6 +3725,7 @@ mod tests {
                 "model": {
                     "cloudProvider": "gemini",
                     "cloudModelId": "gemini-2.5-pro",
+                    "localModelId": "llama3.2",
                     "reasoningEffort": "low",
                     "profile": "cloud"
                 },
@@ -3786,16 +3794,17 @@ mod tests {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 28 + keyboard_count);
+        assert_eq!(modal.fields.len(), 29 + keyboard_count);
         assert_eq!(SettingsSection::ALL.len(), 14);
-        assert_eq!(modal.fields[10].key(), "retention.workspaceTtl");
-        assert_eq!(modal.fields[11].key(), "retention.casTtl");
-        assert_eq!(modal.fields[12].key(), "retention.autoVacuum");
-        assert_eq!(modal.fields[13].key(), "notifications.approvals");
-        assert_eq!(modal.fields[14].key(), "notifications.alerts");
-        assert_eq!(modal.fields[17].key(), "desktop.motion");
-        assert_eq!(modal.fields[18].key(), "desktop.sidebar");
-        assert_eq!(modal.fields[19].key(), "desktop.keybind.command_palette");
+        assert_eq!(modal.fields[2].key(), "model.localModelId");
+        assert_eq!(modal.fields[11].key(), "retention.workspaceTtl");
+        assert_eq!(modal.fields[12].key(), "retention.casTtl");
+        assert_eq!(modal.fields[13].key(), "retention.autoVacuum");
+        assert_eq!(modal.fields[14].key(), "notifications.approvals");
+        assert_eq!(modal.fields[15].key(), "notifications.alerts");
+        assert_eq!(modal.fields[18].key(), "desktop.motion");
+        assert_eq!(modal.fields[19].key(), "desktop.sidebar");
+        assert_eq!(modal.fields[20].key(), "desktop.keybind.command_palette");
         assert_eq!(modal.dirty_count(), 0);
 
         // Choice cycling from the set value; dirty count follows.
@@ -4712,7 +4721,7 @@ mod tests {
         modal.apply_view(&sample_view());
 
         assert_eq!(modal.active_section, SettingsSection::Model);
-        assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5, 30]);
+        assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5, 6, 31]);
         modal.handle_key("down");
         assert_eq!(modal.selected, 1);
 
@@ -4720,43 +4729,43 @@ mod tests {
         assert_eq!(modal.active_section, SettingsSection::Notifications);
         assert_eq!(
             modal.section_indices().first(),
-            Some(&13)
+            Some(&14)
         );
         assert_eq!(
             modal.section_indices().last(),
             Some(&(modal.fields.len() - 7))
         );
-        assert_eq!(modal.selected, 13);
+        assert_eq!(modal.selected, 14);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Keyboard);
-        assert_eq!(modal.section_indices().first(), Some(&19));
+        assert_eq!(modal.section_indices().first(), Some(&20));
         assert_eq!(
             modal.section_indices().last(),
             Some(&(modal.fields.len() - 10))
         );
-        assert_eq!(modal.selected, 19);
+        assert_eq!(modal.selected, 20);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::MotionDisplay);
-        assert_eq!(modal.section_indices(), vec![17, 18]);
-        assert_eq!(modal.selected, 17);
-        modal.handle_key("down");
+        assert_eq!(modal.section_indices(), vec![18, 19]);
         assert_eq!(modal.selected, 18);
+        modal.handle_key("down");
+        assert_eq!(modal.selected, 19);
         modal.handle_key("down");
         assert_eq!(modal.selected, modal.fields.len());
         modal.handle_key("down");
-        assert_eq!(modal.selected, 17);
+        assert_eq!(modal.selected, 18);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Appearance);
-        assert_eq!(modal.section_indices(), vec![15, 16]);
-        assert_eq!(modal.selected, 15);
+        assert_eq!(modal.section_indices(), vec![16, 17]);
+        assert_eq!(modal.selected, 16);
 
         modal.select_section(SettingsSection::Runtime);
         assert_eq!(modal.active_section, SettingsSection::Runtime);
-        assert_eq!(modal.section_indices(), vec![6]);
-        assert_eq!(modal.selected, 6);
+        assert_eq!(modal.section_indices(), vec![7]);
+        assert_eq!(modal.selected, 7);
 
         modal.select_row(0);
         assert_eq!(modal.active_section, SettingsSection::Model);
@@ -4923,12 +4932,12 @@ mod tests {
 
         modal.focus_search();
         modal.push_char("model.cloud");
-        assert_eq!(modal.search_results(), vec![0, 1, 5]);
+        assert_eq!(modal.search_results(), vec![0, 1, 6]);
         assert_eq!(modal.selected, 0);
 
         modal.select_all_text();
         modal.push_char("Model ID");
-        assert_eq!(modal.search_results(), vec![1]);
+        assert_eq!(modal.search_results(), vec![1, 2]);
         modal.handle_key("enter");
         assert!(!modal.searching);
         assert!(modal.search_query.is_empty());
@@ -4938,13 +4947,13 @@ mod tests {
 
         modal.focus_search();
         modal.push_char("learn");
-        assert_eq!(modal.search_results(), vec![9]);
-        assert_eq!(modal.selected, 9);
+        assert_eq!(modal.search_results(), vec![10]);
+        assert_eq!(modal.selected, 10);
         modal.handle_key("enter");
         assert_eq!(modal.active_section, SettingsSection::Learning);
-        assert_eq!(modal.selected, 9);
+        assert_eq!(modal.selected, 10);
         assert!(!modal.editing);
-        assert_eq!(modal.fields[9].display(), "off");
+        assert_eq!(modal.fields[10].display(), "off");
     }
 
     #[test]
@@ -4959,14 +4968,14 @@ mod tests {
         assert_eq!(modal.selected, modal.fields.len());
         modal.backspace();
         assert_eq!(modal.search_query, "max");
-        assert_eq!(modal.search_results(), vec![6]);
+        assert_eq!(modal.search_results(), vec![7]);
         modal.handle_key("home");
         modal.handle_key("shift-right");
         assert_eq!(modal.selected_text().as_deref(), Some("m"));
         modal.push_char("M");
         assert_eq!(modal.search_query, "Max");
-        assert_eq!(modal.search_results(), vec![6]);
-        assert_eq!(modal.fields[6].display(), "90");
+        assert_eq!(modal.search_results(), vec![7]);
+        assert_eq!(modal.fields[7].display(), "90");
 
         modal.cancel_search();
         assert!(!modal.searching);
@@ -4984,9 +4993,9 @@ mod tests {
         modal.apply_view(&sample_view());
         assert!(modal.pending_setting.is_none());
         assert_eq!(modal.active_section, SettingsSection::Runtime);
-        assert_eq!(modal.selected, 6);
+        assert_eq!(modal.selected, 7);
         assert!(modal.editing);
-        assert_eq!(modal.fields[6].display(), "90");
+        assert_eq!(modal.fields[7].display(), "90");
         assert_eq!(modal.dirty_count(), 0);
     }
 
@@ -5027,10 +5036,10 @@ mod tests {
         assert_eq!(modal.desktop_dirty_count(), 4);
 
         modal.apply_view(&sample_view());
-        assert_eq!(modal.fields[15].display(), "mono");
-        assert_eq!(modal.fields[16].display(), "comfortable");
-        assert_eq!(modal.fields[17].display(), "full");
-        assert_eq!(modal.fields[18].display(), "expanded");
+        assert_eq!(modal.fields[16].display(), "mono");
+        assert_eq!(modal.fields[17].display(), "comfortable");
+        assert_eq!(modal.fields[18].display(), "full");
+        assert_eq!(modal.fields[19].display(), "expanded");
         assert_eq!(modal.desktop_dirty_count(), 4);
 
         modal.desktop_preferences = changed;

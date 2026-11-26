@@ -2609,7 +2609,7 @@ fn test_connected_settings_save_sends_loaded_revision(cx: &mut TestAppContext) {
     });
 
     click_debug_element(vc, "settings_section_models");
-    click_debug_element(vc, "settings_row_2");
+    click_debug_element(vc, "settings_row_3");
     snap(vc, &view, |view| {
         let ActiveModal::Settings(modal) = &view.shell.active_modal else {
             panic!("settings should remain open");
@@ -2649,7 +2649,7 @@ fn test_settings_revision_conflict_preserves_local_and_runtime_edits(cx: &mut Te
     click_debug_element(vc, "settings_section_appearance");
     click_debug_element(vc, "settings_row_0");
     click_debug_element(vc, "settings_section_models");
-    click_debug_element(vc, "settings_row_2");
+    click_debug_element(vc, "settings_row_3");
     *state.config_revision.lock().unwrap() = "sha256:external".to_string();
     click_debug_element(vc, "settings_save_row");
     pump_until(vc, &view, "settings revision conflict", |view| {
