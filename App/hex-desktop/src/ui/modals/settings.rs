@@ -94,7 +94,7 @@ impl SettingsSection {
             Self::Keyboard => {
                 "Rebind global shortcuts; native text editing stays protected. Esc cancels, Delete clears, and Cmd/Ctrl+R resets."
             }
-            Self::Notifications => "Control in-app badges and update notices. No sound is played.",
+            Self::Notifications => "Control in-app badges and update notices, and webhook delivery of approvals and alerts. No sound is played.",
         }
     }
 
@@ -178,7 +178,7 @@ const fn notification_setting(
     }
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 34] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 36] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -343,6 +343,20 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 34] = [
         "Update banners",
         "Show optional update banners above the conversation. Required updates stay visible.",
     ),
+    SettingDescriptor {
+        section: SettingsSection::Notifications,
+        key: "notifications.approvals",
+        label: "Approval webhooks",
+        description: "Send approval requests and decisions to configured Telegram or Discord channels.",
+        kind: SettingKind::Toggle,
+    },
+    SettingDescriptor {
+        section: SettingsSection::Notifications,
+        key: "notifications.alerts",
+        label: "Alert webhooks",
+        description: "Send scheduler and failure alerts to configured Telegram or Discord channels.",
+        kind: SettingKind::Toggle,
+    },
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "desktop.action.models",
@@ -3715,6 +3729,10 @@ mod tests {
                     "workspaceTtl": "7d",
                     "casTtl": "30d",
                     "autoVacuum": false
+                },
+                "notifications": {
+                    "approvals": true,
+                    "alerts": false
                 }
             },
             "options": {
@@ -3768,14 +3786,16 @@ mod tests {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 26 + keyboard_count);
+        assert_eq!(modal.fields.len(), 28 + keyboard_count);
         assert_eq!(SettingsSection::ALL.len(), 14);
         assert_eq!(modal.fields[10].key(), "retention.workspaceTtl");
         assert_eq!(modal.fields[11].key(), "retention.casTtl");
         assert_eq!(modal.fields[12].key(), "retention.autoVacuum");
-        assert_eq!(modal.fields[15].key(), "desktop.motion");
-        assert_eq!(modal.fields[16].key(), "desktop.sidebar");
-        assert_eq!(modal.fields[17].key(), "desktop.keybind.command_palette");
+        assert_eq!(modal.fields[13].key(), "notifications.approvals");
+        assert_eq!(modal.fields[14].key(), "notifications.alerts");
+        assert_eq!(modal.fields[17].key(), "desktop.motion");
+        assert_eq!(modal.fields[18].key(), "desktop.sidebar");
+        assert_eq!(modal.fields[19].key(), "desktop.keybind.command_palette");
         assert_eq!(modal.dirty_count(), 0);
 
         // Choice cycling from the set value; dirty count follows.
@@ -3854,6 +3874,35 @@ mod tests {
         modal.handle_key("right");
         assert_eq!(modal.fields[ws_idx].display(), "7d");
         assert_eq!(modal.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_notification_delivery_toggles_send_bool_updates() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+
+        let approvals_idx = modal
+            .fields
+            .iter()
+            .position(|f| f.key() == "notifications.approvals")
+            .unwrap();
+        assert_eq!(modal.fields[approvals_idx].display(), "enabled");
+        let alerts_idx = modal
+            .fields
+            .iter()
+            .position(|f| f.key() == "notifications.alerts")
+            .unwrap();
+        assert_eq!(modal.fields[alerts_idx].display(), "disabled");
+        assert_eq!(modal.dirty_count(), 0);
+
+        modal.selected = alerts_idx;
+        modal.handle_key("enter");
+        assert_eq!(modal.dirty_updates(), serde_json::json!({
+            "notifications": { "alerts": true }
+        }));
+        assert_eq!(modal.dirty_count(), 1);
+        // Backend rows never leak into desktop preference changes.
+        assert!(modal.changed_desktop_preferences().is_none());
     }
 
     #[test]
@@ -4663,7 +4712,7 @@ mod tests {
         modal.apply_view(&sample_view());
 
         assert_eq!(modal.active_section, SettingsSection::Model);
-        assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5, 28]);
+        assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5, 30]);
         modal.handle_key("down");
         assert_eq!(modal.selected, 1);
 
@@ -4671,38 +4720,38 @@ mod tests {
         assert_eq!(modal.active_section, SettingsSection::Notifications);
         assert_eq!(
             modal.section_indices().first(),
-            Some(&(modal.fields.len() - 9))
+            Some(&13)
         );
         assert_eq!(
             modal.section_indices().last(),
             Some(&(modal.fields.len() - 7))
         );
-        assert_eq!(modal.selected, modal.fields.len() - 9);
+        assert_eq!(modal.selected, 13);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Keyboard);
-        assert_eq!(modal.section_indices().first(), Some(&17));
+        assert_eq!(modal.section_indices().first(), Some(&19));
         assert_eq!(
             modal.section_indices().last(),
             Some(&(modal.fields.len() - 10))
         );
-        assert_eq!(modal.selected, 17);
+        assert_eq!(modal.selected, 19);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::MotionDisplay);
-        assert_eq!(modal.section_indices(), vec![15, 16]);
-        assert_eq!(modal.selected, 15);
+        assert_eq!(modal.section_indices(), vec![17, 18]);
+        assert_eq!(modal.selected, 17);
         modal.handle_key("down");
-        assert_eq!(modal.selected, 16);
+        assert_eq!(modal.selected, 18);
         modal.handle_key("down");
         assert_eq!(modal.selected, modal.fields.len());
         modal.handle_key("down");
-        assert_eq!(modal.selected, 15);
+        assert_eq!(modal.selected, 17);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Appearance);
-        assert_eq!(modal.section_indices(), vec![13, 14]);
-        assert_eq!(modal.selected, 13);
+        assert_eq!(modal.section_indices(), vec![15, 16]);
+        assert_eq!(modal.selected, 15);
 
         modal.select_section(SettingsSection::Runtime);
         assert_eq!(modal.active_section, SettingsSection::Runtime);
@@ -4978,10 +5027,10 @@ mod tests {
         assert_eq!(modal.desktop_dirty_count(), 4);
 
         modal.apply_view(&sample_view());
-        assert_eq!(modal.fields[13].display(), "mono");
-        assert_eq!(modal.fields[14].display(), "comfortable");
-        assert_eq!(modal.fields[15].display(), "full");
-        assert_eq!(modal.fields[16].display(), "expanded");
+        assert_eq!(modal.fields[15].display(), "mono");
+        assert_eq!(modal.fields[16].display(), "comfortable");
+        assert_eq!(modal.fields[17].display(), "full");
+        assert_eq!(modal.fields[18].display(), "expanded");
         assert_eq!(modal.desktop_dirty_count(), 4);
 
         modal.desktop_preferences = changed;

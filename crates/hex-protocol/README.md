@@ -71,7 +71,7 @@ crates/hex-protocol/
   - `SessionUpdateNotification`: models `agent_response`, `agent_thought`, `tool`, `stream_end`, and terminal `status` (`is_turn_terminal()` checks `stream_end` or `status` in `ready | completed | cancelled | failed`) plus optional `SessionUsage` (`inputTokens`, `outputTokens`, `modelId`, `contextLimit`).
   - `ToolUpdate`: nested `{ eventType: start|complete|error, toolId, callId, durationMs, payload, diff }`.
   - `ApprovalRequestNotification` & `ApprovalDecisionResponse` (including `applied`, `outcome`, `leaseId`, `leaseTtlSeconds`).
-- **Configuration & Cloud Events**: `SettingsConfig` (`ModelSettings`, `RuntimeSettings`, `WebSearchSettings`, `CloudSettings`, `LearningSettings`), `ConfigGetResponse`, `ConfigSetResponse`, `CloudAuthStatus`, `CloudDevice`, `CloudEvent`, `CloudUpdatePlan`, `CloudFlags`.
+- **Configuration & Cloud Events**: `SettingsConfig` (`ModelSettings`, `RuntimeSettings`, `WebSearchSettings`, `CloudSettings`, `LearningSettings`, `RetentionSettings`, `NotificationSettings`), `ConfigGetResponse`, `ConfigSetResponse`, `CloudAuthStatus`, `CloudDevice`, `CloudEvent`, `CloudUpdatePlan`, `CloudFlags`.
 
 ### 3. Unified Diff Parser (`src/diff.rs`)
 

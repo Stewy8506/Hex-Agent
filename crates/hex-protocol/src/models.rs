@@ -692,6 +692,15 @@ pub struct RetentionSettings {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
+pub struct NotificationSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct SettingsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelSettings>,
@@ -705,6 +714,8 @@ pub struct SettingsConfig {
     pub learning: Option<LearningSettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention: Option<RetentionSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<NotificationSettings>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

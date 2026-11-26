@@ -278,9 +278,17 @@ class HarnessOrchestrator:
         except Exception:
             pass
         self.repair_patch_generator = repair_patch_generator
-        self.webhook_notifier = (
-            webhook_notifier if webhook_notifier is not None else WebhookNotifier(WebhookConfig.from_env())
-        )
+        self.webhook_notifier = webhook_notifier
+        if self.webhook_notifier is None:
+            from harness_core.capabilities.webhooks import notification_categories
+            from harness_core.config_loader import parse_config_yaml
+
+            webhook_config = WebhookConfig.from_env()
+            if config_dir is not None:
+                webhook_config = webhook_config.with_categories(
+                    notification_categories(parse_config_yaml(Path(config_dir) / "config.yaml"))
+                )
+            self.webhook_notifier = WebhookNotifier(webhook_config)
 
         self.ledger = LedgerStore(self.data_dir / "ledger.db")
         self.cow = cow or get_default_snapshot_provider(self.data_dir / "cow_snapshots")

@@ -696,6 +696,8 @@ class ConfigRevisionConflict(Exception):
 #   - learning.auto_reflect: get_auto_reflect_policy() vocabulary
 #   - retention.*: load_retention_config()/GarbageCollector vocabulary; TTL
 #     values must parse via storage.gc.parse_ttl_seconds
+#   - notifications.*: capabilities/webhooks.py delivery categories consumed
+#     by notification_categories()/WebhookNotifier
 CONFIG_SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
     "model": {
         "cloud_provider": {"kind": "text", "required": True},
@@ -727,6 +729,10 @@ CONFIG_SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "options": ["24h", "7d", "14d", "30d", "90d"],
         },
         "auto_vacuum": {"kind": "bool"},
+    },
+    "notifications": {
+        "approvals": {"kind": "bool"},
+        "alerts": {"kind": "bool"},
     },
 }
 

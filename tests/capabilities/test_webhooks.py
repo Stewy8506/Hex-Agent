@@ -429,5 +429,47 @@ class TestEndToEndApprovalWorkflow(unittest.TestCase):
         self.assertIn("Approved by oncall", tg_bcasts[0]["payload"]["text"])
 
 
+class TestNotificationCategoryGating(unittest.TestCase):
+    """The notifications section of config.yaml gates delivery per category."""
+
+    def setUp(self) -> None:
+        self.config = WebhookConfig(dry_run=True)
+        self.record = {
+            "approval_id": "apr_1",
+            "task_id": "t1",
+            "step_id": "s1",
+            "action_type": "git_push",
+            "action_params": {"ref": "main"},
+            "blast_radius_summary": "Pushing code",
+            "risk_class": "R3",
+        }
+
+    def test_default_categories_keep_all_delivery(self) -> None:
+        notifier = WebhookNotifier(self.config)
+        self.assertEqual(notifier.send_approval_request(self.record)["status"], "dry_run")
+        self.assertEqual(
+            notifier.send_decision_broadcast(self.record, "APPROVED")["status"], "dry_run"
+        )
+        self.assertEqual(notifier.send_alert("Title", "Body")["status"], "dry_run")
+
+    def test_disabled_approvals_skip_request_and_broadcast(self) -> None:
+        notifier = WebhookNotifier(self.config.with_categories(frozenset({"alerts"})))
+        result = notifier.send_approval_request(self.record)
+        self.assertEqual(result, {"status": "disabled", "category": "approvals"})
+        broadcast = notifier.send_decision_broadcast(self.record, "APPROVED")
+        self.assertEqual(broadcast, {"status": "disabled", "category": "approvals"})
+        self.assertEqual(notifier.sent_payloads, [])
+        # Alerts still deliver.
+        self.assertEqual(notifier.send_alert("Title", "Body")["status"], "dry_run")
+
+    def test_disabled_alerts_skip_alerts_only(self) -> None:
+        notifier = WebhookNotifier(self.config.with_categories(frozenset({"approvals"})))
+        self.assertEqual(
+            notifier.send_alert("Title", "Body"), {"status": "disabled", "category": "alerts"}
+        )
+        self.assertEqual(notifier.sent_payloads, [])
+        self.assertEqual(notifier.send_approval_request(self.record)["status"], "dry_run")
+
+
 if __name__ == "__main__":
     unittest.main()

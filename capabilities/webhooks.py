@@ -11,12 +11,16 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, replace
+from typing import Any, Mapping
 
 from harness_core.gateway import redact_secrets
 
 logger = logging.getLogger(__name__)
+
+# Delivery categories gated by the notifications section of config.yaml;
+# every category ships enabled until the operator disables it.
+DEFAULT_NOTIFICATION_CATEGORIES = frozenset({"approvals", "alerts"})
 
 
 @dataclass
@@ -27,6 +31,13 @@ class WebhookConfig:
     public_base_url: str = "http://127.0.0.1:8420"
     dry_run: bool = False
     timeout: float = 5.0
+    categories: frozenset[str] = DEFAULT_NOTIFICATION_CATEGORIES
+
+    def category_enabled(self, category: str) -> bool:
+        return category in self.categories
+
+    def with_categories(self, categories: frozenset[str]) -> WebhookConfig:
+        return replace(self, categories=frozenset(categories))
 
     @classmethod
     def from_env(cls) -> WebhookConfig:
@@ -47,6 +58,29 @@ class WebhookConfig:
             ),
             timeout=float(os.getenv("HEX_WEBHOOK_TIMEOUT") or os.getenv("HARNESS_WEBHOOK_TIMEOUT", "5.0")),
         )
+
+
+def notification_categories(config: Mapping[str, Any]) -> frozenset[str]:
+    """Delivery category gate parsed from a config.yaml mapping.
+
+    Each category (approvals, alerts) defaults to enabled; a false value
+    (or a hand-edited "false"/"no"/"off"/"0" string) disables delivery.
+    """
+    section = config.get("notifications")
+    if section is None:
+        return DEFAULT_NOTIFICATION_CATEGORIES
+    if not isinstance(section, dict):
+        raise ValueError("notifications config must be a mapping")
+    enabled: set[str] = set()
+    for category in DEFAULT_NOTIFICATION_CATEGORIES:
+        value = section.get(category, True)
+        if isinstance(value, str):
+            value = value.strip().lower() not in ("false", "no", "off", "0")
+        if not isinstance(value, bool):
+            raise ValueError(f"notifications.{category} must be true or false")
+        if value:
+            enabled.add(category)
+    return frozenset(enabled)
 
 
 def _extract_approval_fields(approval_record: dict[str, Any]) -> dict[str, Any]:
@@ -241,6 +275,8 @@ class WebhookNotifier:
 
     def send_approval_request(self, approval_record: dict[str, Any]) -> dict[str, Any]:
         """Dispatches rich approval notifications to Telegram and/or Discord."""
+        if not self.config.category_enabled("approvals"):
+            return {"status": "disabled", "category": "approvals"}
         base_url = self.config.public_base_url
         tg_payload = format_telegram_approval(approval_record, base_url)
         dc_payload = format_discord_approval(approval_record, base_url)
@@ -271,6 +307,8 @@ class WebhookNotifier:
 
     def send_decision_broadcast(self, approval_record: dict[str, Any], decision: str, comment: str = "") -> dict[str, Any]:
         """Dispatches decision broadcast notifications to Telegram and/or Discord."""
+        if not self.config.category_enabled("approvals"):
+            return {"status": "disabled", "category": "approvals"}
         broadcast_data = format_decision_broadcast(approval_record, decision, comment)
         tg_payload = broadcast_data["telegram"]
         dc_payload = broadcast_data["discord"]
@@ -301,6 +339,8 @@ class WebhookNotifier:
 
     def send_alert(self, title: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
         """Dispatches an alert notification to Telegram and/or Discord."""
+        if not self.config.category_enabled("alerts"):
+            return {"status": "disabled", "category": "alerts"}
         clean_title = redact_secrets(title)
         clean_message = redact_secrets(message)
 
