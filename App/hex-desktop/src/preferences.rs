@@ -4,11 +4,15 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::theme::{InterfaceDensity, ThemePreset};
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DesktopPreferences {
     pub sidebar_collapsed: bool,
     pub reduce_motion: Option<bool>,
+    pub theme: ThemePreset,
+    pub density: InterfaceDensity,
 }
 
 impl DesktopPreferences {
@@ -99,6 +103,8 @@ mod tests {
         let preferences = DesktopPreferences {
             sidebar_collapsed: true,
             reduce_motion: Some(true),
+            theme: ThemePreset::Midnight,
+            density: InterfaceDensity::Compact,
         };
 
         preferences.write_to(&path).expect("write preferences");
@@ -121,5 +127,18 @@ mod tests {
         fs::write(&path, b"not json").expect("write invalid preferences");
         let error = DesktopPreferences::read_from(&path).expect_err("invalid json");
         assert!(error.contains("could not parse"));
+    }
+
+    #[test]
+    fn older_preferences_keep_new_fields_at_their_defaults() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("preferences.json");
+        fs::write(&path, br#"{"sidebar_collapsed":true}"#).expect("write older preferences");
+
+        let preferences = DesktopPreferences::read_from(&path).expect("read preferences");
+        assert!(preferences.sidebar_collapsed);
+        assert_eq!(preferences.reduce_motion, None);
+        assert_eq!(preferences.theme, ThemePreset::Hermes);
+        assert_eq!(preferences.density, InterfaceDensity::Comfortable);
     }
 }

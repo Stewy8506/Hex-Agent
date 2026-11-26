@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::theme::{HermesTheme, MockupTypeScale};
+use crate::preferences::DesktopPreferences;
+use crate::theme::{HermesTheme, InterfaceDensity, MockupTypeScale, ThemePreset};
 use crate::ui::modals::text_input::{
     backspace as text_backspace, delete as text_delete, insert_text, move_horizontal,
     move_to as text_move_to, move_to_edge, select_all, selected_text,
@@ -22,15 +23,17 @@ pub enum SettingsSection {
     WebSearch,
     Cloud,
     Learning,
+    Appearance,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Model,
         Self::Runtime,
         Self::WebSearch,
         Self::Cloud,
         Self::Learning,
+        Self::Appearance,
     ];
 
     pub fn title(self) -> &'static str {
@@ -40,6 +43,7 @@ impl SettingsSection {
             Self::WebSearch => "Web search",
             Self::Cloud => "Cloud",
             Self::Learning => "Learning",
+            Self::Appearance => "Appearance",
         }
     }
 
@@ -50,6 +54,7 @@ impl SettingsSection {
             Self::WebSearch => "Configure the provider used for web lookups.",
             Self::Cloud => "Set the HEX cloud service endpoint.",
             Self::Learning => "Choose when HEX reflects on completed work.",
+            Self::Appearance => "Personalize the desktop theme and interface density.",
         }
     }
 
@@ -60,6 +65,7 @@ impl SettingsSection {
             Self::WebSearch => "web_search",
             Self::Cloud => "cloud",
             Self::Learning => "learning",
+            Self::Appearance => "appearance",
         }
     }
 
@@ -88,7 +94,7 @@ pub(crate) struct SettingDescriptor {
     kind: SettingKind,
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 10] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 12] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -169,6 +175,24 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 10] = [
             fallback: &["cloud_only", "idle", "off"],
         },
     },
+    SettingDescriptor {
+        section: SettingsSection::Appearance,
+        key: "desktop.theme",
+        label: "Theme",
+        description: "Color palette applied to this desktop app.",
+        kind: SettingKind::Choice {
+            fallback: &["hermes", "midnight", "mono"],
+        },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Appearance,
+        key: "desktop.density",
+        label: "Interface density",
+        description: "Spacing used by navigation, messages, and controls.",
+        kind: SettingKind::Choice {
+            fallback: &["comfortable", "compact"],
+        },
+    },
 ];
 
 impl SettingDescriptor {
@@ -186,6 +210,39 @@ fn setting_descriptor(key: &str) -> &'static SettingDescriptor {
         .iter()
         .find(|descriptor| descriptor.key == key)
         .expect("every setting field has a descriptor")
+}
+
+fn is_desktop_setting(key: &str) -> bool {
+    key.starts_with("desktop.")
+}
+
+fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
+    let theme_options: Vec<String> = ThemePreset::ALL
+        .iter()
+        .map(|preset| preset.id().to_string())
+        .collect();
+    let density_options: Vec<String> = InterfaceDensity::ALL
+        .iter()
+        .map(|density| density.id().to_string())
+        .collect();
+    SETTING_DESCRIPTORS
+        .iter()
+        .filter(|descriptor| is_desktop_setting(descriptor.key))
+        .map(|descriptor| SettingField::Choice {
+            key: descriptor.key,
+            label: descriptor.label,
+            options: match descriptor.key {
+                "desktop.theme" => theme_options.clone(),
+                "desktop.density" => density_options.clone(),
+                _ => unreachable!("unknown desktop setting"),
+            },
+            value: Some(match descriptor.key {
+                "desktop.theme" => preferences.theme.id().to_string(),
+                "desktop.density" => preferences.density.id().to_string(),
+                _ => unreachable!("unknown desktop setting"),
+            }),
+        })
+        .collect()
 }
 
 /// One editable row in the settings modal.
@@ -303,6 +360,8 @@ pub struct SettingsModal {
     pub fields: Vec<SettingField>,
     pub options: serde_json::Value,
     pub originals: HashMap<String, String>,
+    pub desktop_preferences: DesktopPreferences,
+    desktop_originals: DesktopPreferences,
     pub active_section: SettingsSection,
     pub search_query: String,
     search_cursor: usize,
@@ -329,6 +388,8 @@ impl PartialEq for SettingsModal {
             && self.fields == other.fields
             && self.options == other.options
             && self.originals == other.originals
+            && self.desktop_preferences == other.desktop_preferences
+            && self.desktop_originals == other.desktop_originals
             && self.active_section == other.active_section
             && self.search_query == other.search_query
             && self.search_cursor == other.search_cursor
@@ -349,13 +410,22 @@ impl PartialEq for SettingsModal {
 
 impl Default for SettingsModal {
     fn default() -> Self {
+        let desktop_preferences = DesktopPreferences::default();
+        let fields = local_setting_fields(&desktop_preferences);
+        let selected = fields.len();
+        let originals = fields
+            .iter()
+            .map(|field| (field.key().to_string(), field.display()))
+            .collect();
         Self {
             path: String::new(),
             workspace: String::new(),
             data_dir: String::new(),
-            fields: Vec::new(),
+            fields,
             options: serde_json::Value::Null,
-            originals: HashMap::new(),
+            originals,
+            desktop_preferences: desktop_preferences.clone(),
+            desktop_originals: desktop_preferences,
             active_section: SettingsSection::Model,
             search_query: String::new(),
             search_cursor: 0,
@@ -363,7 +433,7 @@ impl Default for SettingsModal {
             searching: false,
             search_snapshot: None,
             pending_setting: None,
-            selected: 0,
+            selected,
             editing: false,
             selection_anchor: 0,
             edit_snapshot: None,
@@ -380,6 +450,20 @@ impl SettingsModal {
     /// Empty shell shown while `config/get` is in flight (or after a failure).
     pub fn loading() -> Self {
         Self::default()
+    }
+
+    pub fn loading_with_preferences(preferences: DesktopPreferences) -> Self {
+        let mut modal = Self::default();
+        modal.fields = local_setting_fields(&preferences);
+        modal.originals = modal
+            .fields
+            .iter()
+            .map(|field| (field.key().to_string(), field.display()))
+            .collect();
+        modal.desktop_preferences = preferences.clone();
+        modal.desktop_originals = preferences;
+        modal.selected = modal.fields.len();
+        modal
     }
 
     fn option_list(options: &serde_json::Value, key: &str, fallback: &[&str]) -> Vec<String> {
@@ -440,8 +524,9 @@ impl SettingsModal {
     /// Rebuild the field list from a backend view; keeps `selected` in range.
     pub fn apply_view(&mut self, view: &ConfigGetResponse) {
         let config = serde_json::to_value(&view.config).expect("settings config is serializable");
-        let fields = SETTING_DESCRIPTORS
+        let mut fields = SETTING_DESCRIPTORS
             .iter()
+            .filter(|descriptor| !is_desktop_setting(descriptor.key))
             .map(|descriptor| {
                 let mut raw = Some(&config);
                 for segment in descriptor.key.split('.') {
@@ -450,10 +535,24 @@ impl SettingsModal {
                 Self::field_from_descriptor(descriptor, raw, &view.options)
             })
             .collect::<Vec<_>>();
+        fields.extend(
+            self.fields
+                .iter()
+                .filter(|field| is_desktop_setting(field.key()))
+                .cloned(),
+        );
 
         let mut originals = HashMap::new();
         for field in &fields {
-            originals.insert(field.key().to_string(), field.display());
+            let original = if is_desktop_setting(field.key()) {
+                self.originals
+                    .get(field.key())
+                    .cloned()
+                    .unwrap_or_else(|| field.display())
+            } else {
+                field.display()
+            };
+            originals.insert(field.key().to_string(), original);
         }
 
         self.path = view.path.clone();
@@ -585,10 +684,10 @@ impl SettingsModal {
             return false;
         }
         self.pending_setting = Some(key.to_string());
-        if self.fields.is_empty() {
-            true
-        } else {
+        if self.fields.iter().any(|field| field.key() == key) {
             self.reveal_setting(key)
+        } else {
+            true
         }
     }
 
@@ -1015,7 +1114,7 @@ impl SettingsModal {
         let mut groups: HashMap<String, serde_json::Map<String, serde_json::Value>> =
             HashMap::new();
         for field in &self.fields {
-            if !self.is_dirty(field) {
+            if is_desktop_setting(field.key()) || !self.is_dirty(field) {
                 continue;
             }
             let Ok(value) = field.wire_value() else {
@@ -1040,6 +1139,50 @@ impl SettingsModal {
             .iter()
             .filter(|field| self.is_dirty(field))
             .count()
+    }
+
+    pub fn desktop_dirty_count(&self) -> usize {
+        self.fields
+            .iter()
+            .filter(|field| is_desktop_setting(field.key()) && self.is_dirty(field))
+            .count()
+    }
+
+    pub fn changed_desktop_preferences(&self) -> Option<DesktopPreferences> {
+        if self.desktop_dirty_count() == 0 {
+            return None;
+        }
+        let mut preferences = self.desktop_preferences.clone();
+        for field in &self.fields {
+            let SettingField::Choice { key, value, .. } = field else {
+                continue;
+            };
+            match (*key, value.as_deref()) {
+                ("desktop.theme", Some("hermes")) => preferences.theme = ThemePreset::Hermes,
+                ("desktop.theme", Some("midnight")) => preferences.theme = ThemePreset::Midnight,
+                ("desktop.theme", Some("mono")) => preferences.theme = ThemePreset::Mono,
+                ("desktop.density", Some("comfortable")) => {
+                    preferences.density = InterfaceDensity::Comfortable
+                }
+                ("desktop.density", Some("compact")) => {
+                    preferences.density = InterfaceDensity::Compact
+                }
+                _ => {}
+            }
+        }
+        Some(preferences)
+    }
+
+    pub fn apply_desktop_saved(&mut self) {
+        self.desktop_originals = self.desktop_preferences.clone();
+        for field in self
+            .fields
+            .iter()
+            .filter(|field| is_desktop_setting(field.key()))
+        {
+            self.originals
+                .insert(field.key().to_string(), field.display());
+        }
     }
 
     /// Adopt a successful save response; returns the changed-key summary.
@@ -1104,7 +1247,7 @@ impl SettingsModal {
                     section.id()
                 )))
                 .debug_selector(move || format!("settings_section_{}", section.id()))
-                .h(px(40.0))
+                .h(theme.space(40.0))
                 .w_full()
                 .flex()
                 .items_center()
@@ -1284,22 +1427,30 @@ impl SettingsModal {
         if self.load_failed {
             content = content.child(
                 div()
-                    .text_size(px(MockupTypeScale::BASE_SIZE))
-                    .text_color(theme.mockup_text)
-                    .child("Settings could not be loaded."),
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .text_size(px(MockupTypeScale::BASE_SIZE))
+                            .text_color(theme.mockup_text)
+                            .child("Runtime settings are unavailable."),
+                    )
+                    .when(self.error.is_some(), |this| {
+                        this.child(
+                            div()
+                                .text_size(px(MockupTypeScale::HINT_SIZE))
+                                .text_color(theme.rose_fg())
+                                .child(self.error.clone().unwrap_or_default()),
+                        )
+                    }),
             );
-            if let Some(error) = &self.error {
-                content = content.child(
-                    div()
-                        .text_size(px(MockupTypeScale::HINT_SIZE))
-                        .text_color(theme.rose_fg())
-                        .child(error.clone()),
-                );
-            }
-            return card.child(content);
         }
 
-        if self.fields.is_empty() {
+        if self.active_section != SettingsSection::Appearance
+            && self.fields.iter().all(|field| is_desktop_setting(field.key()))
+            && !self.load_failed
+        {
             content = content.child(
                 div()
                     .flex_1()
@@ -1312,7 +1463,11 @@ impl SettingsModal {
             );
         }
 
-        if !self.fields.is_empty() {
+        if !self.fields.is_empty()
+            && (!self.load_failed
+                || self.active_section == SettingsSection::Appearance
+                || !self.search_query.trim().is_empty())
+        {
             let fields = self.fields.clone();
             let visible_indices = self.visible_indices();
             let filtering = !self.search_query.trim().is_empty();
@@ -1464,6 +1619,7 @@ impl SettingsModal {
                 .child(
                     "↑↓ rows · PgUp/PgDn sections · / search · Enter edit · ←→ adjust · Esc cancel",
                 )
+                .child("Appearance · saved locally on this device")
                 .child(format!("Workspace · {}", self.workspace))
                 .child(format!("Data · {}", self.data_dir)),
         );
@@ -1587,13 +1743,13 @@ fn render_setting_row(
     let mut row = div()
         .id(SharedString::from(format!("settings_row_{index}")))
         .debug_selector(move || format!("settings_row_{index}"))
-        .h(px(76.0))
+        .h(theme.space(76.0))
         .w_full()
         .flex()
         .flex_col()
         .justify_center()
-        .gap(px(3.0))
-        .px(px(12.0))
+        .gap(theme.space(3.0))
+        .px(theme.space(12.0))
         .rounded(px(8.0))
         .border_1()
         .border_color(if selected {
@@ -1692,7 +1848,7 @@ mod tests {
     fn test_apply_view_builds_fields_and_dirty_tracking() {
         let mut modal = SettingsModal::loading();
         modal.apply_view(&sample_view());
-        assert_eq!(modal.fields.len(), 10);
+        assert_eq!(modal.fields.len(), 12);
         assert_eq!(modal.dirty_count(), 0);
 
         // Choice cycling from the set value; dirty count follows.
@@ -1730,12 +1886,14 @@ mod tests {
         assert_eq!(modal.selected, 1);
 
         modal.handle_key("pageup");
-        assert_eq!(modal.active_section, SettingsSection::Learning);
-        assert_eq!(modal.selected, 9);
+        assert_eq!(modal.active_section, SettingsSection::Appearance);
+        assert_eq!(modal.selected, 10);
+        modal.handle_key("down");
+        assert_eq!(modal.selected, 11);
         modal.handle_key("down");
         assert_eq!(modal.selected, modal.fields.len());
         modal.handle_key("down");
-        assert_eq!(modal.selected, 9);
+        assert_eq!(modal.selected, 10);
 
         modal.select_section(SettingsSection::Runtime);
         assert_eq!(modal.active_section, SettingsSection::Runtime);
@@ -1971,6 +2129,60 @@ mod tests {
         assert_eq!(modal.selected, 6);
         assert!(modal.editing);
         assert_eq!(modal.fields[6].display(), "90");
+        assert_eq!(modal.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_desktop_appearance_changes_stay_out_of_acp_updates() {
+        let preferences = DesktopPreferences {
+            theme: ThemePreset::Midnight,
+            density: InterfaceDensity::Compact,
+            ..DesktopPreferences::default()
+        };
+        let mut modal = SettingsModal::loading_with_preferences(preferences);
+        assert_eq!(modal.selected, modal.fields.len());
+        assert_eq!(modal.handle_key("enter"), None);
+        assert_eq!(modal.dirty_count(), 0);
+        modal.select_section(SettingsSection::Appearance);
+        let theme_index = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == "desktop.theme")
+            .unwrap();
+        let density_index = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == "desktop.density")
+            .unwrap();
+
+        modal.select_row(theme_index);
+        modal.select_row(density_index);
+        let changed = modal
+            .changed_desktop_preferences()
+            .expect("desktop changes");
+        assert_eq!(changed.theme, ThemePreset::Mono);
+        assert_eq!(changed.density, InterfaceDensity::Comfortable);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+        assert_eq!(modal.desktop_dirty_count(), 2);
+
+        modal.apply_view(&sample_view());
+        let theme_index = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == "desktop.theme")
+            .unwrap();
+        let density_index = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == "desktop.density")
+            .unwrap();
+        assert_eq!(modal.fields[theme_index].display(), "mono");
+        assert_eq!(modal.fields[density_index].display(), "comfortable");
+        assert_eq!(modal.desktop_dirty_count(), 2);
+
+        modal.desktop_preferences = changed;
+        modal.apply_desktop_saved();
+        assert_eq!(modal.desktop_dirty_count(), 0);
         assert_eq!(modal.dirty_count(), 0);
     }
 

@@ -18,7 +18,8 @@ pub use menu::{application_menus, init_menus};
 pub use shortcuts::{desktop_keybindings, init_shortcuts};
 
 pub use theme::{
-    contrast_ratio, relative_luminance, HermesTheme, MockupTypeScale, TypographyTokens,
+    contrast_ratio, relative_luminance, HermesTheme, InterfaceDensity, MockupTypeScale,
+    ThemePreset, TypographyTokens,
 };
 pub use ui::{
     classify_session_date, format_reasoning_elapsed, format_relative_time, format_token_number,

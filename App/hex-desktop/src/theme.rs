@@ -13,6 +13,144 @@
 //! - Warning Amber: `#f59e0b`
 
 use gpui::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreset {
+    #[default]
+    Hermes,
+    Midnight,
+    Mono,
+}
+
+impl ThemePreset {
+    pub const ALL: [Self; 3] = [Self::Hermes, Self::Midnight, Self::Mono];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Hermes => "hermes",
+            Self::Midnight => "midnight",
+            Self::Mono => "mono",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hermes => "Hermes",
+            Self::Midnight => "Midnight",
+            Self::Mono => "Mono",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Hermes => "The canonical graphite palette with electric-blue accents.",
+            Self::Midnight => "Cool blue-violet surfaces for low-light work.",
+            Self::Mono => "A restrained grayscale palette with stronger contrast.",
+        }
+    }
+
+    pub fn apply(self, theme: &mut HermesTheme) {
+        match self {
+            Self::Hermes => {}
+            Self::Midnight => {
+                theme.accent_blue = rgb(0x8ab4ff);
+                theme.mockup_canvas = rgb(0x10141c);
+                theme.mockup_body = rgb(0x080b12);
+                theme.mockup_sidebar = rgb(0x0d121b);
+                theme.mockup_surface = rgb(0x151c28);
+                theme.mockup_hover = rgb(0x1d2735);
+                theme.mockup_chip = rgb(0x1a2330);
+                theme.mockup_border = rgb(0x273346);
+                theme.mockup_border_strong = rgb(0x33445c);
+                theme.mockup_text = rgb(0xe7edf7);
+                theme.mockup_text_bright = rgb(0xf7f9fc);
+                theme.mockup_text_muted = rgb(0xa3b1c5);
+                theme.mockup_text_dim = rgb(0x7f8da3);
+                theme.mockup_row_hover = rgb(0x182130);
+                theme.mockup_pill = rgb(0x1c2635);
+                theme.mockup_pill_hover = rgb(0x29374a);
+                theme.mockup_dock = rgb(0x121925);
+                theme.mockup_dock_border = rgb(0x263349);
+                theme.mockup_seg_active = rgb(0x223047);
+                theme.mockup_track = rgb(0x2b3a50);
+                theme.mockup_session_inactive = rgb(0xc3cede);
+                theme.mockup_text_base = rgb(0xdbe4f1);
+                theme.mockup_inline_code_bg = rgb(0x202b3b);
+                theme.mockup_accent_border = rgba(0x8ab4ff4d);
+                theme.mockup_accent_chip_bg = rgba(0x8ab4ff24);
+            }
+            Self::Mono => {
+                theme.accent_blue = rgb(0xd4d4d4);
+                theme.mockup_canvas = rgb(0x111111);
+                theme.mockup_body = rgb(0x080808);
+                theme.mockup_sidebar = rgb(0x0d0d0d);
+                theme.mockup_surface = rgb(0x171717);
+                theme.mockup_hover = rgb(0x222222);
+                theme.mockup_chip = rgb(0x202020);
+                theme.mockup_border = rgb(0x343434);
+                theme.mockup_border_strong = rgb(0x484848);
+                theme.mockup_text = rgb(0xf0f0f0);
+                theme.mockup_text_bright = rgb(0xffffff);
+                theme.mockup_text_muted = rgb(0xc4c4c4);
+                theme.mockup_text_dim = rgb(0xa8a8a8);
+                theme.mockup_row_hover = rgb(0x1c1c1c);
+                theme.mockup_pill = rgb(0x242424);
+                theme.mockup_pill_hover = rgb(0x303030);
+                theme.mockup_dock = rgb(0x161616);
+                theme.mockup_dock_border = rgb(0x383838);
+                theme.mockup_seg_active = rgb(0x2c2c2c);
+                theme.mockup_track = rgb(0x343434);
+                theme.mockup_session_inactive = rgb(0xd8d8d8);
+                theme.mockup_text_base = rgb(0xe4e4e4);
+                theme.mockup_inline_code_bg = rgb(0x242424);
+                theme.mockup_accent_border = rgba(0xd4d4d44d);
+                theme.mockup_accent_chip_bg = rgba(0xd4d4d424);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterfaceDensity {
+    #[default]
+    Comfortable,
+    Compact,
+}
+
+impl InterfaceDensity {
+    pub const ALL: [Self; 2] = [Self::Comfortable, Self::Compact];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Comfortable => "comfortable",
+            Self::Compact => "compact",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Comfortable => "Comfortable",
+            Self::Compact => "Compact",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Comfortable => "Balanced spacing for navigation, messages, and controls.",
+            Self::Compact => "Tighter spacing to fit more content without shrinking text.",
+        }
+    }
+
+    pub fn scale(self) -> f32 {
+        match self {
+            Self::Comfortable => 1.0,
+            Self::Compact => 0.82,
+        }
+    }
+}
 
 /// Typography scale and font family hierarchy for the Hermes Design System.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +215,8 @@ impl Default for TypographyTokens {
 /// HEX Desktop theme: mockup palette tokens, diff tints, and typography.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HermesTheme {
+    pub preset: ThemePreset,
+    pub density: InterfaceDensity,
     /// Electric Blue accent for focus and active indicators (#7aa7ff).
     pub accent_blue: Rgba,
     /// Sage green for diff additions and test passes (#8fbf93).
@@ -153,6 +293,8 @@ pub struct HermesTheme {
 impl Default for HermesTheme {
     fn default() -> Self {
         Self {
+            preset: ThemePreset::Hermes,
+            density: InterfaceDensity::Comfortable,
             accent_blue: rgb(0x7aa7ff),
             sage_fg: rgb(0x8fbf93),
             sage_bg: rgba(0x8fbf931f),
@@ -203,6 +345,18 @@ impl HermesTheme {
     /// Initialize the global theme on the GPUI application context.
     pub fn init(cx: &mut App) {
         cx.set_global(Self::default());
+    }
+
+    pub fn configured(preset: ThemePreset, density: InterfaceDensity) -> Self {
+        let mut theme = Self::default();
+        theme.preset = preset;
+        theme.density = density;
+        preset.apply(&mut theme);
+        theme
+    }
+
+    pub fn space(&self, base: f32) -> Pixels {
+        px(base * self.density.scale())
     }
 
     // --- Color Getters ---
@@ -437,6 +591,33 @@ mod tests {
     }
 
     #[test]
+    fn test_theme_presets_change_palette_without_losing_contrast() {
+        let hermes = HermesTheme::configured(ThemePreset::Hermes, InterfaceDensity::Comfortable);
+        let midnight =
+            HermesTheme::configured(ThemePreset::Midnight, InterfaceDensity::Comfortable);
+        let mono = HermesTheme::configured(ThemePreset::Mono, InterfaceDensity::Comfortable);
+
+        assert_eq!(hermes, HermesTheme::default());
+        assert_ne!(hermes.mockup_canvas, midnight.mockup_canvas);
+        assert_ne!(midnight.accent_blue, mono.accent_blue);
+        for theme in [hermes, midnight, mono] {
+            assert!(contrast_ratio(theme.mockup_text_bright, theme.mockup_canvas) > 9.0);
+            assert!(contrast_ratio(theme.mockup_text_bright, theme.mockup_surface) > 9.0);
+        }
+    }
+
+    #[test]
+    fn test_compact_density_scales_spacing_only() {
+        let comfortable =
+            HermesTheme::configured(ThemePreset::Hermes, InterfaceDensity::Comfortable);
+        let compact = HermesTheme::configured(ThemePreset::Hermes, InterfaceDensity::Compact);
+
+        assert_eq!(comfortable.space(10.0), px(10.0));
+        assert_eq!(compact.space(10.0), px(8.2));
+        assert_eq!(comfortable.body_size(), compact.body_size());
+    }
+
+    #[test]
     fn test_typography_hierarchy() {
         let theme = HermesTheme::default();
         assert_eq!(theme.title_size(), px(15.0));
@@ -446,7 +627,13 @@ mod tests {
         assert_eq!(theme.code_size(), px(12.0));
         assert_eq!(theme.caption_size(), px(11.0));
 
-        assert!(theme.font_mono().iter().any(|f| f.as_ref() == "JetBrains Mono"));
-        assert!(theme.font_sans().iter().any(|f| f.as_ref() == "-apple-system"));
+        assert!(theme
+            .font_mono()
+            .iter()
+            .any(|f| f.as_ref() == "JetBrains Mono"));
+        assert!(theme
+            .font_sans()
+            .iter()
+            .any(|f| f.as_ref() == "-apple-system"));
     }
 }

@@ -163,9 +163,9 @@ pub fn glow_card(inner: Div, theme: &HermesTheme) -> Div {
         .bg(theme.mockup_surface)
         .border_1()
         .border_color(theme.mockup_accent_border)
-        .pt(px(CARD_PADDING_TOP))
-        .px(px(CARD_PADDING_X))
-        .pb(px(CARD_PADDING_BOTTOM))
+        .pt(theme.space(CARD_PADDING_TOP))
+        .px(theme.space(CARD_PADDING_X))
+        .pb(theme.space(CARD_PADDING_BOTTOM))
         .child(inner);
 
     let halo = div()

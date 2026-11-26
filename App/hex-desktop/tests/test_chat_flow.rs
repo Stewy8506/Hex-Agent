@@ -18,6 +18,7 @@ use gpui::{EntityInputHandler, *};
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{app_runtime, init_app, ChatView};
 use hex_desktop::shortcuts::{About, Redo, Undo};
+use hex_desktop::theme::{HermesTheme, InterfaceDensity, ThemePreset};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::{ApprovalCard, FeedPaintProbe, MessageItem};
 use hex_desktop::ui::message::AssistantMessageView;
@@ -1030,13 +1031,16 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
     });
 
     let mut settings = SettingsModal::default();
-    settings.fields.push(SettingField::Text {
-        key: "model.cloudProvider",
-        label: "Provider",
-        value: "new-model".into(),
-        cursor: 0,
-        required: false,
-    });
+    settings.fields.insert(
+        0,
+        SettingField::Text {
+            key: "model.cloudProvider",
+            label: "Provider",
+            value: "new-model".into(),
+            cursor: 0,
+            required: false,
+        },
+    );
     settings
         .originals
         .insert("model.cloudProvider".into(), "old-model".into());
@@ -1106,6 +1110,76 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
         "pointer settings save",
         |view| matches!(&view.shell.active_modal, ActiveModal::Settings(modal) if modal.error.as_deref().is_some_and(|error| error.starts_with("Save failed"))),
     );
+}
+
+#[gpui::test]
+fn test_offline_appearance_settings_save_locally(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        init_app(cx);
+        cx.set_global(MotionSystem::with_policy(MotionPolicy::new(true)));
+    });
+    let (view, vc) = cx.add_window_view(|_, cx| {
+        ChatView::new(
+            AcpBridge::new(),
+            app_runtime().handle().clone(),
+            std::env::temp_dir(),
+            cx,
+        )
+    });
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should open offline");
+        };
+        assert!(modal.load_failed);
+        assert_eq!(modal.fields.len(), 2);
+        assert!(modal.fields.iter().all(|field| field.key().starts_with("desktop.")));
+    });
+
+    click_debug_element(vc, "settings_section_appearance");
+    click_debug_element(vc, "settings_search");
+    vc.simulate_input("theme");
+    click_debug_element(vc, "settings_row_0");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert!(!modal.searching);
+        assert!(modal.search_query.is_empty());
+        assert_eq!(
+            modal.active_section,
+            hex_desktop::ui::modals::SettingsSection::Appearance
+        );
+    });
+    click_debug_element(vc, "settings_row_0");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(modal.desktop_dirty_count(), 1);
+    });
+
+    click_debug_element(vc, "settings_row_1");
+    click_debug_element(vc, "settings_save_row");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after a local save");
+        };
+        assert_eq!(modal.desktop_preferences.theme, ThemePreset::Midnight);
+        assert_eq!(modal.desktop_preferences.density, InterfaceDensity::Compact);
+        assert_eq!(modal.dirty_updates(), json!({}));
+        assert_eq!(modal.desktop_dirty_count(), 0);
+        assert!(modal.error.is_none());
+        assert_eq!(
+            modal.status.as_deref(),
+            Some("Desktop preferences saved on this device.")
+        );
+    });
+    let theme = vc.read(|app| app.global::<HermesTheme>().clone());
+    assert_eq!(theme.preset, ThemePreset::Midnight);
+    assert_eq!(theme.density, InterfaceDensity::Compact);
 }
 
 #[gpui::test]
@@ -1491,13 +1565,16 @@ async fn test_undo_redo_actions_restore_composer_and_modal_text(cx: &mut TestApp
     assert_eq!(snap(vc, &view, |view| view.composer_text().to_string()), "draft");
 
     let mut settings = SettingsModal::default();
-    settings.fields.push(SettingField::Text {
-        key: "model.cloudProvider",
-        label: "Provider",
-        value: "gemini".to_string(),
-        cursor: "gemini".len(),
-        required: true,
-    });
+    settings.fields.insert(
+        0,
+        SettingField::Text {
+            key: "model.cloudProvider",
+            label: "Provider",
+            value: "gemini".to_string(),
+            cursor: "gemini".len(),
+            required: true,
+        },
+    );
     settings.selected = 0;
     settings.select_row(0);
     vc.update(|_window, app| {
@@ -1822,13 +1899,17 @@ async fn test_modal_enter_is_single_step_and_isolated(cx: &mut TestAppContext) {
     vc.update(|_window, app| {
         view.update(app, |view, cx| {
             let mut settings = SettingsModal::default();
-            settings.fields.push(SettingField::Text {
-                key: "model.cloudModelId",
-                label: "Model ID",
-                value: "gpt-4o".to_string(),
-                cursor: "gpt-4o".len(),
-                required: true,
-            });
+            settings.fields.insert(
+                0,
+                SettingField::Text {
+                    key: "model.cloudModelId",
+                    label: "Model ID",
+                    value: "gpt-4o".to_string(),
+                    cursor: "gpt-4o".len(),
+                    required: true,
+                },
+            );
+            settings.selected = 0;
             view.shell.active_modal = ActiveModal::Settings(settings);
             cx.notify();
         });

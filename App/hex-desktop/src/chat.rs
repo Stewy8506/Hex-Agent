@@ -225,6 +225,10 @@ pub fn open_chat_window(
         log::warn!("{error}; using default desktop preferences");
         DesktopPreferences::default()
     });
+    cx.set_global(HermesTheme::configured(
+        preferences.theme,
+        preferences.density,
+    ));
     cx.set_global(motion::MotionSystem::with_policy(
         motion::MotionPolicy::new(
             preferences
@@ -671,13 +675,29 @@ impl ChatView {
         view
     }
 
+    fn save_desktop_preferences(&mut self) -> Result<(), String> {
+        if self.persist_preferences {
+            self.preferences.save()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn apply_desktop_preferences(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        cx.set_global(HermesTheme::configured(
+            self.preferences.theme,
+            self.preferences.density,
+        ));
+        let result = self.save_desktop_preferences();
+        cx.notify();
+        result
+    }
+
     fn toggle_sidebar_and_save(&mut self, cx: &mut Context<Self>) {
         self.shell.toggle_sidebar();
         self.preferences.sidebar_collapsed = self.shell.sidebar_collapsed;
-        if self.persist_preferences {
-            if let Err(error) = self.preferences.save() {
-                log::warn!("failed to save desktop preferences: {error}");
-            }
+        if let Err(error) = self.save_desktop_preferences() {
+            log::warn!("failed to save desktop preferences: {error}");
         }
         cx.notify();
     }
@@ -5345,7 +5365,7 @@ impl ChatView {
             .w_full()
             .flex()
             .flex_col()
-            .gap(px(COMPOSER_COLUMN_GAP))
+            .gap(theme.space(COMPOSER_COLUMN_GAP))
             .child(input_area)
             .child(toolbar);
 
@@ -5739,7 +5759,7 @@ impl ChatView {
             cx.notify();
             return;
         }
-        let mut modal = SettingsModal::loading();
+        let mut modal = SettingsModal::loading_with_preferences(self.preferences.clone());
         if !self.bridge.is_connected() {
             modal.mark_load_failed("Runtime offline — settings unavailable until HEX connects.");
             self.shell.active_modal = ActiveModal::Settings(modal);
@@ -5789,18 +5809,61 @@ impl ChatView {
             cx.notify();
             return;
         }
-        let updates = modal.dirty_updates();
+        let (updates, changed_desktop) = {
+            let ActiveModal::Settings(modal) = &self.shell.active_modal else {
+                return;
+            };
+            if modal.dirty_count() == 0 {
+                return;
+            }
+            (modal.dirty_updates(), modal.changed_desktop_preferences())
+        };
+        let mut desktop_saved = false;
+        if let Some(preferences) = changed_desktop {
+            self.preferences = preferences.clone();
+            if let Err(error) = self.apply_desktop_preferences(cx) {
+                if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+                    modal.busy = false;
+                    modal.error = Some(format!("Desktop save failed: {error}"));
+                }
+                cx.notify();
+                return;
+            }
+            desktop_saved = true;
+            if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+                modal.desktop_preferences = preferences;
+                modal.apply_desktop_saved();
+                modal.error = None;
+                modal.status = Some("Desktop preferences saved on this device.".to_string());
+            }
+        }
         if !updates.as_object().is_some_and(|m| !m.is_empty()) {
+            if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+                modal.busy = false;
+            }
+            self.clear_modal_history();
+            cx.notify();
             return;
         }
         let bridge = self.bridge.clone();
         if !bridge.is_connected() {
             if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
                 modal.busy = false;
-                modal.error = Some(format!("Save failed: {}", AcpError::ConnectionClosed));
+                modal.error = Some(if desktop_saved {
+                    format!(
+                        "Desktop preferences saved. Runtime settings were not saved: {}",
+                        AcpError::ConnectionClosed
+                    )
+                } else {
+                    format!("Save failed: {}", AcpError::ConnectionClosed)
+                });
             }
             cx.notify();
             return;
+        }
+        if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+            modal.busy = true;
+            modal.error = None;
         }
         let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
@@ -5812,15 +5875,30 @@ impl ChatView {
                     match res {
                         Ok(Ok(saved)) => {
                             modal.apply_saved(&saved);
+                            if desktop_saved {
+                                modal.status = Some(format!(
+                                    "Saved {} runtime key{} and desktop preferences.",
+                                    saved.changed.len(),
+                                    if saved.changed.len() == 1 { "" } else { "s" }
+                                ));
+                            }
                             view.clear_modal_history();
                         }
                         Ok(Err(err)) => {
                             modal.busy = false;
-                            modal.error = Some(format!("Save failed: {err}"));
+                            modal.error = Some(if desktop_saved {
+                                format!("Desktop preferences saved. Runtime save failed: {err}")
+                            } else {
+                                format!("Save failed: {err}")
+                            });
                         }
                         Err(err) => {
                             modal.busy = false;
-                            modal.error = Some(format!("Save task aborted: {err}"));
+                            modal.error = Some(if desktop_saved {
+                                format!("Desktop preferences saved. Runtime save task aborted: {err}")
+                            } else {
+                                format!("Save task aborted: {err}")
+                            });
                         }
                     }
                 }
@@ -7240,6 +7318,8 @@ mod tests {
         let preferences = DesktopPreferences {
             sidebar_collapsed: true,
             reduce_motion: Some(true),
+            theme: crate::theme::ThemePreset::Midnight,
+            density: crate::theme::InterfaceDensity::Compact,
         };
         let (view, vc) = cx.add_window_view(|_, cx| {
             ChatView::with_preferences(
