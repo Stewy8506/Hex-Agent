@@ -804,17 +804,22 @@ impl ChatView {
 
     /// Aggregate notification count driving the header bell badge.
     fn notification_count(&self) -> usize {
-        self.pending_approval_count()
-            + if self.update_banner_line().is_some() {
-                1
-            } else {
-                0
-            }
+        let approvals = if self.preferences.approval_badges {
+            self.pending_approval_count()
+        } else {
+            0
+        };
+        let updates = if self.preferences.update_badges
+            && self.update_notification_line().is_some()
+        {
+            1
+        } else {
+            0
+        };
+        approvals + updates
     }
 
-    /// One-line banner summary for the verified update plan, if any:
-    /// `(text, mandatory)`.
-    fn update_banner_line(&self) -> Option<(String, bool)> {
+    fn update_notification_line(&self) -> Option<(String, bool)> {
         let plan = self.cloud_update.as_ref()?;
         if plan.apply_allowed == Some(false) {
             return Some((
@@ -840,6 +845,13 @@ impl ChatView {
             })
             .collect();
         Some((names.join(", "), mandatory))
+    }
+
+    /// One-line banner summary for the verified update plan, if any:
+    /// `(text, mandatory)`.
+    fn update_banner_line(&self) -> Option<(String, bool)> {
+        let (line, mandatory) = self.update_notification_line()?;
+        (mandatory || self.preferences.update_banners).then_some((line, mandatory))
     }
 
     /// Resolve the git branch on a blocking pool instead of the UI thread (B35).
@@ -6369,7 +6381,9 @@ impl Render for ChatView {
         // (active modal + queued approval modals).
         {
             let pending = self.pending_approval_count();
-            self.shell.sidebar.set_pending_approvals(pending);
+            self.shell
+                .sidebar
+                .set_pending_approvals(pending, self.preferences.approval_badges);
         }
         self.sync_sidebar_live_state();
         self.sync_sidebar_motion(window, cx);
@@ -8132,6 +8146,43 @@ mod tests {
             rollbacks: None,
             compatibility_issues: None,
         }
+    }
+
+    #[gpui::test]
+    fn visual_notification_preferences_gate_badges_and_optional_banners(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, vc) = modal_test_view(cx, false);
+        vc.update(|_, app| {
+            view.update(app, |view, _| {
+                view.cloud_update = Some(update_plan());
+                view.shell.modal_queue.push_back(ActiveModal::Approval(
+                    ToolApprovalModal::new("req_1", "bash", "cargo test", "R3"),
+                ));
+                assert_eq!(view.pending_approval_count(), 1);
+                assert_eq!(view.notification_count(), 2);
+                assert_eq!(view.update_banner_line().unwrap().1, false);
+
+                view.preferences.approval_badges = false;
+                assert_eq!(view.pending_approval_count(), 1);
+                assert_eq!(view.notification_count(), 1);
+
+                view.preferences.update_badges = true;
+                view.preferences.update_banners = false;
+                assert_eq!(view.notification_count(), 1);
+                assert!(view.update_banner_line().is_none());
+
+                view.preferences.update_badges = false;
+                assert_eq!(view.notification_count(), 0);
+                assert!(view.update_banner_line().is_none());
+
+                view.cloud_update.as_mut().unwrap().mandatory_upgrade_required = Some(true);
+                assert_eq!(view.update_banner_line().unwrap().1, true);
+
+                view.cloud_update.as_mut().unwrap().apply_allowed = Some(false);
+                assert_eq!(view.update_banner_line().unwrap().1, true);
+            });
+        });
     }
 
     #[gpui::test]

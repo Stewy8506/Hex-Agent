@@ -1138,7 +1138,7 @@ fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 4 + keyboard_count);
+        assert_eq!(modal.fields.len(), 7 + keyboard_count);
         assert!(modal
             .fields
             .iter()

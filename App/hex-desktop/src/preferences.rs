@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::theme::{InterfaceDensity, ThemePreset};
 use crate::ui::motion::MotionPreference;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DesktopPreferences {
     pub sidebar_collapsed: bool,
@@ -21,6 +21,24 @@ pub struct DesktopPreferences {
     pub theme: ThemePreset,
     pub density: InterfaceDensity,
     pub keybindings: BTreeMap<String, String>,
+    pub approval_badges: bool,
+    pub update_badges: bool,
+    pub update_banners: bool,
+}
+
+impl Default for DesktopPreferences {
+    fn default() -> Self {
+        Self {
+            sidebar_collapsed: false,
+            motion: MotionPreference::default(),
+            theme: ThemePreset::default(),
+            density: InterfaceDensity::default(),
+            keybindings: BTreeMap::new(),
+            approval_badges: true,
+            update_badges: true,
+            update_banners: true,
+        }
+    }
 }
 
 fn deserialize_motion_preference<'de, D>(deserializer: D) -> Result<MotionPreference, D::Error>
@@ -131,6 +149,9 @@ mod tests {
             motion: MotionPreference::Reduced,
             theme: ThemePreset::Midnight,
             density: InterfaceDensity::Compact,
+            approval_badges: false,
+            update_badges: false,
+            update_banners: false,
             ..DesktopPreferences::default()
         };
 
@@ -184,6 +205,9 @@ mod tests {
         assert_eq!(preferences.theme, ThemePreset::Hermes);
         assert_eq!(preferences.density, InterfaceDensity::Comfortable);
         assert!(preferences.keybindings.is_empty());
+        assert!(preferences.approval_badges);
+        assert!(preferences.update_badges);
+        assert!(preferences.update_banners);
     }
 
     #[test]

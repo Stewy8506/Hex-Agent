@@ -208,6 +208,8 @@ pub struct SidebarView {
     pub provider_status: ProviderStatus,
     /// Number of unresolved approvals waiting for the user.
     pub pending_approvals: usize,
+    /// Whether the pending approval count is shown.
+    pub pending_approvals_visible: bool,
     /// Session ids with a live turn (drives slot spinners and the running dot).
     pub running_sessions: HashSet<String>,
     /// Session ids with a pending approval (drives "Review" chips).
@@ -234,6 +236,7 @@ impl SidebarView {
             session_list: SessionListView::new(),
             provider_status: ProviderStatus::default(),
             pending_approvals: 0,
+            pending_approvals_visible: true,
             running_sessions: HashSet::new(),
             review_sessions: HashSet::new(),
             projects_collapsed: false,
@@ -252,6 +255,7 @@ impl SidebarView {
             session_list: SessionListView::new(),
             provider_status: ProviderStatus::default(),
             pending_approvals: 0,
+            pending_approvals_visible: true,
             running_sessions: HashSet::new(),
             review_sessions: HashSet::new(),
             projects_collapsed: false,
@@ -267,8 +271,9 @@ impl SidebarView {
     }
 
     /// Update the "Needs you" badge from the live approval queue.
-    pub fn set_pending_approvals(&mut self, count: usize) {
+    pub fn set_pending_approvals(&mut self, count: usize, visible: bool) {
         self.pending_approvals = count;
+        self.pending_approvals_visible = visible;
     }
 
     /// Sync live-turn session ids (drives spinners and the running dot).
@@ -657,22 +662,24 @@ impl SidebarView {
                 "bell",
                 handlers.on_needs_you.clone(),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(MockupTypeScale::CHIP_SIZE))
-                    .line_height(px(MockupTypeScale::CHIP_LINE_HEIGHT))
-                    .rounded(px(6.0))
-                    .px_2()
-                    .when(self.pending_approvals > 0, |c| {
-                        c.text_color(theme.accent_blue)
-                            .bg(theme.mockup_accent_chip_bg)
-                    })
-                    .when(self.pending_approvals == 0, |c| {
-                        c.text_color(theme.mockup_text_muted).bg(theme.mockup_chip)
-                    })
-                    .child(self.pending_approvals.to_string()),
-            );
+            .when(self.pending_approvals_visible, |c| {
+                c.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(MockupTypeScale::CHIP_SIZE))
+                        .line_height(px(MockupTypeScale::CHIP_LINE_HEIGHT))
+                        .rounded(px(6.0))
+                        .px_2()
+                        .when(self.pending_approvals > 0, |c| {
+                            c.text_color(theme.accent_blue)
+                                .bg(theme.mockup_accent_chip_bg)
+                        })
+                        .when(self.pending_approvals == 0, |c| {
+                            c.text_color(theme.mockup_text_muted).bg(theme.mockup_chip)
+                        })
+                        .child(self.pending_approvals.to_string()),
+                )
+            });
 
         div()
             .w_full()
@@ -918,6 +925,21 @@ mod tests {
         assert_eq!(status.display_label(), "OpenAI o3-mini");
         sidebar.set_provider_status(status);
         assert_eq!(sidebar.provider_status.state, ProviderState::Generating);
+    }
+
+    #[test]
+    fn test_pending_approval_badge_visibility() {
+        let mut sidebar = SidebarView::with_workspace("Harness", "main");
+        assert_eq!(sidebar.pending_approvals, 0);
+        assert!(sidebar.pending_approvals_visible);
+
+        sidebar.set_pending_approvals(3, true);
+        assert_eq!(sidebar.pending_approvals, 3);
+        assert!(sidebar.pending_approvals_visible);
+
+        sidebar.set_pending_approvals(3, false);
+        assert_eq!(sidebar.pending_approvals, 3);
+        assert!(!sidebar.pending_approvals_visible);
     }
 
     #[test]

@@ -28,10 +28,11 @@ pub enum SettingsSection {
     Appearance,
     MotionDisplay,
     Keyboard,
+    Notifications,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Model,
         Self::Runtime,
         Self::WebSearch,
@@ -40,6 +41,7 @@ impl SettingsSection {
         Self::Appearance,
         Self::MotionDisplay,
         Self::Keyboard,
+        Self::Notifications,
     ];
 
     pub fn title(self) -> &'static str {
@@ -52,6 +54,7 @@ impl SettingsSection {
             Self::Appearance => "Appearance",
             Self::MotionDisplay => "Motion & display",
             Self::Keyboard => "Keyboard",
+            Self::Notifications => "Notifications",
         }
     }
 
@@ -67,6 +70,7 @@ impl SettingsSection {
             Self::Keyboard => {
                 "Rebind global shortcuts; native text editing stays protected. Esc cancels, Delete clears, and Cmd/Ctrl+R resets."
             }
+            Self::Notifications => "Control in-app badges and update notices. No sound is played.",
         }
     }
 
@@ -80,13 +84,14 @@ impl SettingsSection {
             Self::Appearance => "appearance",
             Self::MotionDisplay => "motion_display",
             Self::Keyboard => "keyboard",
+            Self::Notifications => "notifications",
         }
     }
 
     pub fn is_local(self) -> bool {
         matches!(
             self,
-            Self::Appearance | Self::MotionDisplay | Self::Keyboard
+            Self::Appearance | Self::MotionDisplay | Self::Keyboard | Self::Notifications
         )
     }
 
@@ -125,7 +130,23 @@ const fn keybind_setting(id: ShortcutId) -> SettingDescriptor {
     }
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 22] = [
+const fn notification_setting(
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+) -> SettingDescriptor {
+    SettingDescriptor {
+        section: SettingsSection::Notifications,
+        key,
+        label,
+        description,
+        kind: SettingKind::Choice {
+            fallback: &["enabled", "disabled"],
+        },
+    }
+}
+
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 25] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -250,6 +271,21 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 22] = [
     keybind_setting(ShortcutId::CloseWindow),
     keybind_setting(ShortcutId::Quit),
     keybind_setting(ShortcutId::Hide),
+    notification_setting(
+        "desktop.notifications.approval_badges",
+        "Approval badges",
+        "Show pending approval counts on the header bell and in the sidebar.",
+    ),
+    notification_setting(
+        "desktop.notifications.update_badges",
+        "Update badges",
+        "Include available updates in the header notification badge.",
+    ),
+    notification_setting(
+        "desktop.notifications.update_banners",
+        "Update banners",
+        "Show optional update banners above the conversation. Required updates stay visible.",
+    ),
 ];
 
 impl SettingDescriptor {
@@ -287,6 +323,7 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
         .map(|motion| motion.id().to_string())
         .collect();
     let sidebar_options = vec!["expanded".to_string(), "collapsed".to_string()];
+    let notification_options = vec!["enabled".to_string(), "disabled".to_string()];
     let mut fields = Vec::new();
     for descriptor in SETTING_DESCRIPTORS
         .iter()
@@ -311,6 +348,9 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
                 "desktop.density" => density_options.clone(),
                 "desktop.motion" => motion_options.clone(),
                 "desktop.sidebar" => sidebar_options.clone(),
+                "desktop.notifications.approval_badges"
+                | "desktop.notifications.update_badges"
+                | "desktop.notifications.update_banners" => notification_options.clone(),
                 _ => unreachable!("unknown desktop setting"),
             },
             value: Some(match descriptor.key {
@@ -322,6 +362,27 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
                         "collapsed".to_string()
                     } else {
                         "expanded".to_string()
+                    }
+                }
+                "desktop.notifications.approval_badges" => {
+                    if preferences.approval_badges {
+                        "enabled".to_string()
+                    } else {
+                        "disabled".to_string()
+                    }
+                }
+                "desktop.notifications.update_badges" => {
+                    if preferences.update_badges {
+                        "enabled".to_string()
+                    } else {
+                        "disabled".to_string()
+                    }
+                }
+                "desktop.notifications.update_banners" => {
+                    if preferences.update_banners {
+                        "enabled".to_string()
+                    } else {
+                        "disabled".to_string()
                     }
                 }
                 _ => unreachable!("unknown desktop setting"),
@@ -1393,6 +1454,24 @@ impl SettingsModal {
                     ("desktop.motion", Some("full")) => preferences.motion = MotionPreference::Full,
                     ("desktop.sidebar", Some("expanded")) => preferences.sidebar_collapsed = false,
                     ("desktop.sidebar", Some("collapsed")) => preferences.sidebar_collapsed = true,
+                    ("desktop.notifications.approval_badges", Some("enabled")) => {
+                        preferences.approval_badges = true
+                    }
+                    ("desktop.notifications.approval_badges", Some("disabled")) => {
+                        preferences.approval_badges = false
+                    }
+                    ("desktop.notifications.update_badges", Some("enabled")) => {
+                        preferences.update_badges = true
+                    }
+                    ("desktop.notifications.update_badges", Some("disabled")) => {
+                        preferences.update_badges = false
+                    }
+                    ("desktop.notifications.update_banners", Some("enabled")) => {
+                        preferences.update_banners = true
+                    }
+                    ("desktop.notifications.update_banners", Some("disabled")) => {
+                        preferences.update_banners = false
+                    }
                     _ => {}
                 },
                 SettingField::Keybind {
@@ -1877,7 +1956,7 @@ impl SettingsModal {
                 .child(
                     "↑↓ rows · PgUp/PgDn sections · / search · Enter edit · ←→ adjust · Esc cancel",
                 )
-                .child("Appearance, motion, display & keyboard · saved locally on this device")
+                .child("Appearance, motion, display, keyboard & notifications · saved locally on this device")
                 .child(format!("Workspace · {}", self.workspace))
                 .child(format!("Data · {}", self.data_dir)),
         );
@@ -2131,8 +2210,8 @@ mod tests {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 14 + keyboard_count);
-        assert_eq!(SettingsSection::ALL.len(), 8);
+        assert_eq!(modal.fields.len(), 17 + keyboard_count);
+        assert_eq!(SettingsSection::ALL.len(), 9);
         assert_eq!(modal.fields[12].key(), "desktop.motion");
         assert_eq!(modal.fields[13].key(), "desktop.sidebar");
         assert_eq!(modal.fields[14].key(), "desktop.keybind.command_palette");
@@ -2160,6 +2239,34 @@ mod tests {
         };
         assert_eq!(options.join(","), "none,low,medium,high");
         assert_eq!(value.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn test_visual_notification_preferences_save_locally() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        for key in [
+            "desktop.notifications.approval_badges",
+            "desktop.notifications.update_badges",
+            "desktop.notifications.update_banners",
+        ] {
+            let index = modal
+                .fields
+                .iter()
+                .position(|field| field.key() == key)
+                .unwrap();
+            assert_eq!(modal.fields[index].display(), "enabled");
+            modal.select_row(index);
+            assert_eq!(modal.fields[index].display(), "disabled");
+        }
+
+        assert_eq!(modal.desktop_dirty_count(), 3);
+        assert_eq!(modal.dirty_count(), 3);
+        assert!(modal.dirty_updates().as_object().unwrap().is_empty());
+        let preferences = modal.changed_desktop_preferences().unwrap();
+        assert!(!preferences.approval_badges);
+        assert!(!preferences.update_badges);
+        assert!(!preferences.update_banners);
     }
 
     #[test]
@@ -2279,11 +2386,23 @@ mod tests {
         assert_eq!(modal.selected, 1);
 
         modal.handle_key("pageup");
+        assert_eq!(modal.active_section, SettingsSection::Notifications);
+        assert_eq!(
+            modal.section_indices().first(),
+            Some(&(modal.fields.len() - 3))
+        );
+        assert_eq!(
+            modal.section_indices().last(),
+            Some(&(modal.fields.len() - 1))
+        );
+        assert_eq!(modal.selected, modal.fields.len() - 3);
+
+        modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Keyboard);
         assert_eq!(modal.section_indices().first(), Some(&14));
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 1))
+            Some(&(modal.fields.len() - 4))
         );
         assert_eq!(modal.selected, 14);
 
