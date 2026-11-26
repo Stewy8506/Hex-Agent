@@ -5703,6 +5703,13 @@ impl ChatView {
         let ActiveModal::Settings(modal) = &self.shell.active_modal else {
             return;
         };
+        if let Some(error) = modal.validation_error() {
+            if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+                modal.error = Some(error);
+            }
+            cx.notify();
+            return;
+        }
         let updates = modal.dirty_updates();
         if !updates.as_object().is_some_and(|m| !m.is_empty()) {
             return;

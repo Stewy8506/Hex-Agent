@@ -27,6 +27,15 @@ pub enum SettingField {
         cursor: usize,
         required: bool,
     },
+    /// Integer value with backend-aligned range validation.
+    Number {
+        key: &'static str,
+        label: &'static str,
+        value: String,
+        cursor: usize,
+        min: u64,
+        max: u64,
+    },
     /// Single-choice value cycled with Enter / ← / →; None = not set.
     Choice {
         key: &'static str,
@@ -39,20 +48,56 @@ pub enum SettingField {
 impl SettingField {
     pub fn key(&self) -> &'static str {
         match self {
-            Self::Text { key, .. } | Self::Choice { key, .. } => key,
+            Self::Text { key, .. } | Self::Number { key, .. } | Self::Choice { key, .. } => key,
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Text { label, .. } | Self::Choice { label, .. } => label,
+            Self::Text { label, .. } | Self::Number { label, .. } | Self::Choice { label, .. } => {
+                label
+            }
         }
     }
 
     fn display(&self) -> String {
         match self {
-            Self::Text { value, .. } => value.clone(),
+            Self::Text { value, .. } | Self::Number { value, .. } => value.clone(),
             Self::Choice { value, .. } => value.clone().unwrap_or_default(),
+        }
+    }
+
+    fn text_state_mut(&mut self) -> Option<(&mut String, &mut usize)> {
+        match self {
+            Self::Text { value, cursor, .. } | Self::Number { value, cursor, .. } => {
+                Some((value, cursor))
+            }
+            Self::Choice { .. } => None,
+        }
+    }
+
+    fn wire_value(&self) -> Result<serde_json::Value, String> {
+        match self {
+            Self::Text { value, .. } => Ok(serde_json::Value::String(value.clone())),
+            Self::Choice { value, .. } => Ok(serde_json::Value::String(
+                value.as_deref().unwrap_or_default().to_string(),
+            )),
+            Self::Number {
+                value,
+                min,
+                max,
+                key,
+                ..
+            } => value
+                .parse::<u64>()
+                .map_err(|_| format!("{key} must be an integer between {min} and {max}"))
+                .and_then(|parsed| {
+                    if parsed < *min || parsed > *max {
+                        Err(format!("{key} must be an integer between {min} and {max}"))
+                    } else {
+                        Ok(serde_json::Value::from(parsed))
+                    }
+                }),
         }
     }
 }
@@ -170,6 +215,24 @@ impl SettingsModal {
         }
     }
 
+    fn number_field(
+        key: &'static str,
+        label: &'static str,
+        min: u64,
+        max: u64,
+        config: Option<u64>,
+    ) -> SettingField {
+        let value = config.map(|value| value.to_string()).unwrap_or_default();
+        SettingField::Number {
+            key,
+            label,
+            cursor: value.len(),
+            value,
+            min,
+            max,
+        }
+    }
+
     fn choice_field(
         key: &'static str,
         label: &'static str,
@@ -218,7 +281,7 @@ impl SettingsModal {
                 model.compressor_mode.as_deref(),
             ),
             Self::text_field("model.cloudBaseUrl", "Model endpoint", false, model.cloud_base_url.as_deref()),
-            Self::text_field("runtime.maxTurns", "Max turns", true, runtime.max_turns.map(|v| v.to_string()).as_deref()),
+            Self::number_field("runtime.maxTurns", "Max turns", 1, 1000, runtime.max_turns),
             Self::choice_field(
                 "webSearch.provider",
                 "Web search",
@@ -288,16 +351,16 @@ impl SettingsModal {
             self.scroll_selected_into_view();
             return;
         }
-        match &mut self.fields[self.selected] {
-            SettingField::Text { value, cursor, .. } => {
-                self.editing = true;
-                *cursor = value.len();
-                self.selection_anchor = *cursor;
-                self.edit_snapshot = Some((value.clone(), *cursor, *cursor));
-            }
-            SettingField::Choice { .. } => {
-                self.cycle_choice(1);
-            }
+        let Some(field) = self.fields.get_mut(self.selected) else {
+            return;
+        };
+        if let Some((value, cursor)) = field.text_state_mut() {
+            self.editing = true;
+            *cursor = value.len();
+            self.selection_anchor = *cursor;
+            self.edit_snapshot = Some((value.clone(), *cursor, *cursor));
+        } else if matches!(field, SettingField::Choice { .. }) {
+            self.cycle_choice(1);
         }
         self.scroll_selected_into_view();
     }
@@ -327,17 +390,13 @@ impl SettingsModal {
     }
 
     fn move_text_cursor(&mut self, delta: isize, selecting: bool) -> bool {
-        let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected)
-        else {
+        let Some(field) = self.fields.get_mut(self.selected) else {
             return false;
         };
-        move_horizontal(
-            value,
-            cursor,
-            &mut self.selection_anchor,
-            delta,
-            selecting,
-        );
+        let Some((value, cursor)) = field.text_state_mut() else {
+            return false;
+        };
+        move_horizontal(value, cursor, &mut self.selection_anchor, delta, selecting);
         true
     }
 
@@ -383,32 +442,32 @@ impl SettingsModal {
             }
             "home" | "end" => {
                 if self.editing {
-                    if let Some(SettingField::Text { value, cursor, .. }) =
-                        self.fields.get_mut(self.selected)
-                    {
-                        move_to_edge(
-                            value,
-                            cursor,
-                            &mut self.selection_anchor,
-                            key == "end",
-                            false,
-                        );
+                    if let Some(field) = self.fields.get_mut(self.selected) {
+                        if let Some((value, cursor)) = field.text_state_mut() {
+                            move_to_edge(
+                                value,
+                                cursor,
+                                &mut self.selection_anchor,
+                                key == "end",
+                                false,
+                            );
+                        }
                     }
                 }
                 None
             }
             "shift-home" | "shift-end" => {
                 if self.editing {
-                    if let Some(SettingField::Text { value, cursor, .. }) =
-                        self.fields.get_mut(self.selected)
-                    {
-                        move_to_edge(
-                            value,
-                            cursor,
-                            &mut self.selection_anchor,
-                            key == "shift-end",
-                            true,
-                        );
+                    if let Some(field) = self.fields.get_mut(self.selected) {
+                        if let Some((value, cursor)) = field.text_state_mut() {
+                            move_to_edge(
+                                value,
+                                cursor,
+                                &mut self.selection_anchor,
+                                key == "shift-end",
+                                true,
+                            );
+                        }
                     }
                 }
                 None
@@ -418,27 +477,32 @@ impl SettingsModal {
                     if self.dirty_count() == 0 {
                         return None;
                     }
+                    if let Some(error) = self.validation_error() {
+                        self.error = Some(error);
+                        return None;
+                    }
                     self.busy = true;
                     return Some(SettingsAction::Save);
                 }
-                match self.fields.get_mut(self.selected) {
-                    Some(SettingField::Text { value, cursor, .. }) => {
-                        if self.editing {
-                            self.commit_edit();
-                        } else {
-                            self.editing = true;
-                            *cursor = value.len();
-                            self.selection_anchor = *cursor;
-                            self.edit_snapshot = Some((value.clone(), *cursor, *cursor));
-                        }
-                        None
-                    }
-                    Some(SettingField::Choice { .. }) => {
+                let Some(field) = self.fields.get_mut(self.selected) else {
+                    return None;
+                };
+                if let Some((value, cursor)) = field.text_state_mut() {
+                    if self.editing {
                         self.commit_edit();
-                        self.cycle_choice(1);
-                        None
+                    } else {
+                        self.editing = true;
+                        *cursor = value.len();
+                        self.selection_anchor = *cursor;
+                        self.edit_snapshot = Some((value.clone(), *cursor, *cursor));
                     }
-                    None => None,
+                    None
+                } else if matches!(field, SettingField::Choice { .. }) {
+                    self.commit_edit();
+                    self.cycle_choice(1);
+                    None
+                } else {
+                    None
                 }
             }
             _ => None,
@@ -452,19 +516,22 @@ impl SettingsModal {
         }
         self.editing = false;
         if let Some((snapshot, cursor, anchor)) = self.edit_snapshot.take() {
-            if let Some(SettingField::Text { value, cursor: current, .. }) =
-                self.fields.get_mut(self.selected)
-            {
-                *value = snapshot;
-                *current = cursor;
-                self.selection_anchor = anchor;
+            if let Some(field) = self.fields.get_mut(self.selected) {
+                if let Some((value, current)) = field.text_state_mut() {
+                    *value = snapshot;
+                    *current = cursor;
+                    self.selection_anchor = anchor;
+                }
             }
         }
     }
 
     pub fn text_selection(&self) -> Option<(String, usize, usize)> {
-        let SettingField::Text { value, cursor, .. } = self.fields.get(self.selected)? else {
-            return None;
+        let field = self.fields.get(self.selected)?;
+        let (value, cursor) = match field {
+            SettingField::Text { value, cursor, .. }
+            | SettingField::Number { value, cursor, .. } => (value, cursor),
+            SettingField::Choice { .. } => return None,
         };
         Some((value.clone(), *cursor, self.selection_anchor))
     }
@@ -488,8 +555,10 @@ impl SettingsModal {
         if self.busy || !self.editing {
             return;
         }
-        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
-            insert_text(value, cursor, &mut self.selection_anchor, text);
+        if let Some(field) = self.fields.get_mut(self.selected) {
+            if let Some((value, cursor)) = field.text_state_mut() {
+                insert_text(value, cursor, &mut self.selection_anchor, text);
+            }
         }
     }
 
@@ -497,8 +566,10 @@ impl SettingsModal {
         if self.busy || !self.editing {
             return;
         }
-        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
-            text_backspace(value, cursor, &mut self.selection_anchor);
+        if let Some(field) = self.fields.get_mut(self.selected) {
+            if let Some((value, cursor)) = field.text_state_mut() {
+                text_backspace(value, cursor, &mut self.selection_anchor);
+            }
         }
     }
 
@@ -506,8 +577,10 @@ impl SettingsModal {
         if self.busy || !self.editing {
             return;
         }
-        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
-            text_delete(value, cursor, &mut self.selection_anchor);
+        if let Some(field) = self.fields.get_mut(self.selected) {
+            if let Some((value, cursor)) = field.text_state_mut() {
+                text_delete(value, cursor, &mut self.selection_anchor);
+            }
         }
     }
 
@@ -515,14 +588,10 @@ impl SettingsModal {
         if !self.editing {
             return;
         }
-        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
-            text_move_to(
-                value,
-                cursor,
-                &mut self.selection_anchor,
-                offset,
-                selecting,
-            );
+        if let Some(field) = self.fields.get_mut(self.selected) {
+            if let Some((value, cursor)) = field.text_state_mut() {
+                text_move_to(value, cursor, &mut self.selection_anchor, offset, selecting);
+            }
         }
     }
 
@@ -530,18 +599,52 @@ impl SettingsModal {
         if !self.editing {
             return;
         }
-        if let Some(SettingField::Text { value, cursor, .. }) = self.fields.get_mut(self.selected) {
-            select_all(value, cursor, &mut self.selection_anchor);
+        if let Some(field) = self.fields.get_mut(self.selected) {
+            if let Some((value, cursor)) = field.text_state_mut() {
+                select_all(value, cursor, &mut self.selection_anchor);
+            }
         }
     }
 
     pub fn selected_text(&self) -> Option<String> {
         self.editing.then(|| {
-            let SettingField::Text { value, cursor, .. } = &self.fields[self.selected] else {
-                return String::new();
+            let field = &self.fields[self.selected];
+            let (value, cursor) = match field {
+                SettingField::Text { value, cursor, .. }
+                | SettingField::Number { value, cursor, .. } => (value, cursor),
+                SettingField::Choice { .. } => return String::new(),
             };
             selected_text(value, *cursor, self.selection_anchor)
         })
+    }
+
+    fn is_dirty(&self, field: &SettingField) -> bool {
+        field.display() != self.originals.get(field.key()).cloned().unwrap_or_default()
+    }
+
+    pub fn validation_error(&self) -> Option<String> {
+        for field in &self.fields {
+            if !self.is_dirty(field) {
+                continue;
+            }
+            match field {
+                SettingField::Text {
+                    key,
+                    value,
+                    required,
+                    ..
+                } if *required && value.trim().is_empty() => {
+                    return Some(format!("{key} must be a non-empty string"));
+                }
+                SettingField::Number { .. } => {
+                    if let Err(error) = field.wire_value() {
+                        return Some(error);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Dotted keys whose committed value differs from the loaded snapshot.
@@ -549,15 +652,17 @@ impl SettingsModal {
         let mut groups: HashMap<String, serde_json::Map<String, serde_json::Value>> =
             HashMap::new();
         for field in &self.fields {
-            if field.display() == self.originals.get(field.key()).cloned().unwrap_or_default()
-            {
+            if !self.is_dirty(field) {
                 continue;
             }
+            let Ok(value) = field.wire_value() else {
+                continue;
+            };
             let (section, key) = field.key().split_once('.').unwrap_or((field.key(), ""));
             groups
                 .entry(section.to_string())
                 .or_default()
-                .insert(key.to_string(), serde_json::Value::String(field.display()));
+                .insert(key.to_string(), value);
         }
         serde_json::Value::Object(
             groups
@@ -570,7 +675,7 @@ impl SettingsModal {
     pub fn dirty_count(&self) -> usize {
         self.fields
             .iter()
-            .filter(|f| f.display() != self.originals.get(f.key()).cloned().unwrap_or_default())
+            .filter(|field| self.is_dirty(field))
             .count()
     }
 
@@ -751,6 +856,7 @@ impl SettingsModal {
         }
 
         let dirty = self.dirty_count();
+        let validation_error = self.validation_error();
         let save_selected = self.selected == self.fields.len();
         card = card.child(modal_press(
             div()
@@ -785,7 +891,9 @@ impl SettingsModal {
                         } else {
                             theme.mockup_text_dim
                         })
-                        .child(if dirty > 0 {
+                        .child(if validation_error.is_some() {
+                            "Fix invalid values".to_string()
+                        } else if dirty > 0 {
                             format!("Save changes ({dirty})")
                         } else {
                             "No changes".to_string()
@@ -869,9 +977,38 @@ fn render_setting_row(
                     theme,
                 )
             } else if value.is_empty() {
+                div().text_color(theme.mockup_text_dim).child(if *required {
+                    "required"
+                } else {
+                    "not set"
+                })
+            } else {
+                div()
+                    .text_color(theme.mockup_text_bright)
+                    .child(value.clone())
+            }
+        }
+        SettingField::Number {
+            value,
+            cursor,
+            min,
+            max,
+            ..
+        } => {
+            if selected && editing {
+                crate::ui::modals::text_input::input_content(
+                    value,
+                    *cursor,
+                    selection_anchor,
+                    &format!("{min}–{max}"),
+                    false,
+                    !busy,
+                    theme,
+                )
+            } else if value.is_empty() {
                 div()
                     .text_color(theme.mockup_text_dim)
-                    .child(if *required { "required" } else { "not set" })
+                    .child(format!("{min}–{max}"))
             } else {
                 div()
                     .text_color(theme.mockup_text_bright)
@@ -1034,6 +1171,50 @@ mod tests {
         };
         assert_eq!(options.join(","), "none,low,medium,high");
         assert_eq!(value.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn test_max_turns_serializes_as_an_integer() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        let max_turns_idx = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == "runtime.maxTurns")
+            .unwrap();
+
+        modal.select_row(max_turns_idx);
+        modal.select_all_text();
+        modal.push_char("120");
+        modal.handle_key("enter");
+
+        assert_eq!(modal.validation_error(), None);
+        assert_eq!(
+            modal.dirty_updates(),
+            serde_json::json!({ "runtime": { "maxTurns": 120 } })
+        );
+        assert!(modal.dirty_updates()["runtime"]["maxTurns"].is_number());
+    }
+
+    #[test]
+    fn test_invalid_max_turns_blocks_save() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        let max_turns_idx = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == "runtime.maxTurns")
+            .unwrap();
+
+        modal.select_row(max_turns_idx);
+        modal.select_all_text();
+        modal.push_char("0");
+        modal.handle_key("enter");
+        modal.selected = modal.fields.len();
+
+        assert!(modal.validation_error().unwrap().contains("1 and 1000"));
+        assert_eq!(modal.handle_key("enter"), None);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
     }
 
     #[test]
