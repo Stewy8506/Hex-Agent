@@ -303,8 +303,12 @@ fn test_command_palette_fuzzy_search_and_actions() {
     // 3. Search for navigation ("settings")
     palette.set_query("settings");
     let nav_results = palette.filtered_items();
-    assert_eq!(nav_results.len(), 1);
+    assert_eq!(nav_results.len(), 2);
     assert_eq!(nav_results[0].action, PaletteAction::OpenSettings);
+    assert_eq!(
+        nav_results[1].action,
+        PaletteAction::OpenSetting("desktop.keybind.open_settings".to_string())
+    );
 
     // 4. Keyboard selection and execution
     palette.set_query("");
@@ -359,7 +363,9 @@ async fn test_desktop_cockpit_shortcuts_and_menus(cx: &mut TestAppContext) {
     });
 
     // 2. Test keybindings structure
-    let bindings = desktop_keybindings();
+    let bindings = desktop_keybindings(
+        &hex_desktop::preferences::DesktopPreferences::default(),
+    );
     assert!(bindings.len() >= 10);
 
     // 3. Test application menus

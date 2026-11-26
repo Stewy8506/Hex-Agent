@@ -647,8 +647,12 @@ mod tests {
         // Filter for "settings"
         palette.set_query("settings");
         let filtered = palette.filtered_items();
-        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].title, "Open Settings");
+        assert_eq!(
+            filtered[1].action,
+            PaletteAction::OpenSetting("desktop.keybind.open_settings".to_string())
+        );
 
         // CompactContext was removed — no honest backend mapping exists.
         palette.set_query("compact");

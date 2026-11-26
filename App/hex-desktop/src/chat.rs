@@ -180,6 +180,17 @@ pub fn composer_keybindings() -> Vec<KeyBinding> {
 const MAX_UNDO_HISTORY: usize = 100;
 const SESSION_TITLE_HYDRATION_CONCURRENCY: usize = 4;
 
+#[derive(Default)]
+struct KeybindCaptureTarget(Option<WeakEntity<ChatView>>);
+
+impl Global for KeybindCaptureTarget {}
+
+fn configure_keybindings(cx: &mut App, preferences: &DesktopPreferences) {
+    cx.clear_key_bindings();
+    cx.bind_keys(shortcuts::desktop_keybindings(preferences));
+    cx.bind_keys(composer_keybindings());
+}
+
 /// Register embedded brand fonts, theme, menus, global shortcuts, and
 /// composer bindings. Shared by the real `main` entry point and the
 /// acceptance tests.
@@ -192,6 +203,24 @@ pub fn init_app(cx: &mut App) {
     init_shortcuts(cx);
     init_menus(cx);
     cx.bind_keys(composer_keybindings());
+    cx.set_global(KeybindCaptureTarget::default());
+    cx.intercept_keystrokes(|event, _, cx| {
+        let target = cx
+            .try_global::<KeybindCaptureTarget>()
+            .and_then(|target| target.0.clone());
+        let Some(target) = target else {
+            return;
+        };
+        let consumed = target
+            .update(cx, |view, cx| {
+                view.capture_keybind_keystroke(&event.keystroke, cx)
+            })
+            .unwrap_or(false);
+        if consumed {
+            cx.stop_propagation();
+        }
+    })
+    .detach();
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_window_closed(|cx| {
@@ -232,6 +261,7 @@ pub fn open_chat_window(
     cx.set_global(motion::MotionSystem::with_policy(
         motion::MotionPolicy::new(preferences.motion.is_reduced(motion::reduced_motion())),
     ));
+    configure_keybindings(cx, &preferences);
     let config = WindowConfig::default();
     let bounds = cx
         .primary_display()
@@ -668,6 +698,7 @@ impl ChatView {
         view.start_event_pump(cx);
         view.start_git_branch_lookup(cx);
         view.refresh_cloud_status(cx);
+        cx.set_global(KeybindCaptureTarget(Some(cx.entity().downgrade())));
         view
     }
 
@@ -682,6 +713,7 @@ impl ChatView {
     fn apply_desktop_preferences(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         let result = self.save_desktop_preferences();
         if result.is_ok() {
+            configure_keybindings(cx, &self.preferences);
             cx.set_global(HermesTheme::configured(
                 self.preferences.theme,
                 self.preferences.density,
@@ -3550,6 +3582,21 @@ impl ChatView {
         true
     }
 
+    fn capture_keybind_keystroke(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let capturing = matches!(
+            &self.shell.active_modal,
+            ActiveModal::Settings(modal) if modal.capturing_keybind().is_some()
+        );
+        if !capturing {
+            return false;
+        }
+        if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+            modal.capture_keystroke(&keystroke.unparse());
+        }
+        cx.notify();
+        true
+    }
+
     /// Route a key to the open modal. Returns true when the modal consumed it.
     fn handle_modal_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
         if !self.shell.active_modal.is_open() {
@@ -3824,6 +3871,11 @@ impl ChatView {
             }
             ActiveModal::Settings(modal) => {
                 if modal.busy {
+                    return true;
+                }
+                if modal.capturing_keybind().is_some() {
+                    modal.capture_keystroke(key);
+                    cx.notify();
                     return true;
                 }
                 if key == "escape" {
@@ -7328,6 +7380,7 @@ mod tests {
             motion: motion::MotionPreference::Reduced,
             theme: crate::theme::ThemePreset::Midnight,
             density: crate::theme::InterfaceDensity::Compact,
+            ..DesktopPreferences::default()
         };
         let (view, vc) = cx.add_window_view(|_, cx| {
             ChatView::with_preferences(

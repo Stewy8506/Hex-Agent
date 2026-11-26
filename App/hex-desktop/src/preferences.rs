@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ pub struct DesktopPreferences {
     pub motion: MotionPreference,
     pub theme: ThemePreset,
     pub density: InterfaceDensity,
+    pub keybindings: BTreeMap<String, String>,
 }
 
 fn deserialize_motion_preference<'de, D>(deserializer: D) -> Result<MotionPreference, D::Error>
@@ -129,6 +131,7 @@ mod tests {
             motion: MotionPreference::Reduced,
             theme: ThemePreset::Midnight,
             density: InterfaceDensity::Compact,
+            ..DesktopPreferences::default()
         };
 
         preferences.write_to(&path).expect("write preferences");
@@ -180,5 +183,25 @@ mod tests {
         assert_eq!(preferences.motion, MotionPreference::System);
         assert_eq!(preferences.theme, ThemePreset::Hermes);
         assert_eq!(preferences.density, InterfaceDensity::Comfortable);
+        assert!(preferences.keybindings.is_empty());
+    }
+
+    #[test]
+    fn keybinding_overrides_round_trip_including_explicitly_unbound_actions() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("preferences.json");
+        let preferences = DesktopPreferences {
+            keybindings: BTreeMap::from([
+                ("command_palette".to_string(), "cmd-alt-p".to_string()),
+                ("toggle_sidebar".to_string(), String::new()),
+            ]),
+            ..DesktopPreferences::default()
+        };
+
+        preferences.write_to(&path).expect("write preferences");
+        assert_eq!(
+            DesktopPreferences::read_from(&path).expect("read preferences"),
+            preferences
+        );
     }
 }

@@ -17,7 +17,7 @@ use core::prelude::v1::test;
 use gpui::{EntityInputHandler, *};
 use hex_desktop::acp_bridge::AcpBridge;
 use hex_desktop::chat::{app_runtime, init_app, ChatView};
-use hex_desktop::shortcuts::{About, Redo, Undo};
+use hex_desktop::shortcuts::{About, Redo, ShortcutId, Undo};
 use hex_desktop::theme::{HermesTheme, InterfaceDensity, ThemePreset};
 use hex_desktop::ui::composer::{GlowCardPaint, GlowCardProbe};
 use hex_desktop::ui::feed::{ApprovalCard, FeedPaintProbe, MessageItem};
@@ -1134,8 +1134,15 @@ fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
             panic!("settings should open offline");
         };
         assert!(modal.load_failed);
-        assert_eq!(modal.fields.len(), 4);
-        assert!(modal.fields.iter().all(|field| field.key().starts_with("desktop.")));
+        let keyboard_count = ShortcutId::ALL
+            .into_iter()
+            .filter(|id| id.available())
+            .count();
+        assert_eq!(modal.fields.len(), 4 + keyboard_count);
+        assert!(modal
+            .fields
+            .iter()
+            .all(|field| field.key().starts_with("desktop.")));
     });
 
     click_debug_element(vc, "settings_section_appearance");
@@ -1197,6 +1204,55 @@ fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
         assert!(modal.error.is_none());
     });
     assert!(vc.read(MotionSystem::is_reduced));
+
+    click_debug_element(vc, "settings_section_keyboard");
+    click_debug_element(vc, "settings_row_0");
+    vc.simulate_keystrokes("cmd-k");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("capturing an existing shortcut must not run its action");
+        };
+        assert!(modal.capturing_keybind().is_none());
+        assert_eq!(modal.desktop_dirty_count(), 0);
+    });
+    click_debug_element(vc, "settings_row_0");
+    vc.simulate_keystrokes("cmd-alt-p");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("capturing a shortcut must not open the command palette");
+        };
+        assert!(modal.capturing_keybind().is_none());
+        assert_eq!(modal.desktop_dirty_count(), 1);
+        assert!(modal.validation_error().is_none());
+        assert!(matches!(
+            &modal.fields[4],
+            SettingField::Keybind { value: Some(value), .. }
+                if value == &hex_desktop::shortcuts::canonical_keystroke("cmd-alt-p").unwrap()
+        ));
+    });
+    click_debug_element(vc, "settings_save_row");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after saving a shortcut");
+        };
+        assert_eq!(modal.desktop_dirty_count(), 0);
+        assert!(modal.error.is_none());
+        assert_eq!(
+            modal.desktop_preferences.keybindings[ShortcutId::CommandPalette.id()],
+            hex_desktop::shortcuts::canonical_keystroke("cmd-alt-p").unwrap()
+        );
+    });
+
+    vc.simulate_keystrokes("escape");
+    vc.simulate_keystrokes("cmd-alt-p");
+    snap(vc, &view, |view| {
+        assert!(matches!(view.shell.active_modal, ActiveModal::Palette(_)));
+    });
+    vc.simulate_keystrokes("escape");
+    vc.simulate_keystrokes("cmd-k");
+    snap(vc, &view, |view| {
+        assert!(!view.shell.active_modal.is_open());
+    });
 }
 
 #[gpui::test]

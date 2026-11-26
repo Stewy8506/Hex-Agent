@@ -2,12 +2,13 @@
 //! methods. The backend owns the whitelist and validation; desktop descriptors
 //! organize those values into sections and send only changed keys.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::preferences::DesktopPreferences;
+use crate::shortcuts::{self, ShortcutId};
 use crate::theme::{HermesTheme, InterfaceDensity, MockupTypeScale, ThemePreset};
 use crate::ui::modals::text_input::{
     backspace as text_backspace, delete as text_delete, insert_text, move_horizontal,
@@ -26,10 +27,11 @@ pub enum SettingsSection {
     Learning,
     Appearance,
     MotionDisplay,
+    Keyboard,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Model,
         Self::Runtime,
         Self::WebSearch,
@@ -37,6 +39,7 @@ impl SettingsSection {
         Self::Learning,
         Self::Appearance,
         Self::MotionDisplay,
+        Self::Keyboard,
     ];
 
     pub fn title(self) -> &'static str {
@@ -48,6 +51,7 @@ impl SettingsSection {
             Self::Learning => "Learning",
             Self::Appearance => "Appearance",
             Self::MotionDisplay => "Motion & display",
+            Self::Keyboard => "Keyboard",
         }
     }
 
@@ -60,6 +64,9 @@ impl SettingsSection {
             Self::Learning => "Choose when HEX reflects on completed work.",
             Self::Appearance => "Personalize the desktop theme and interface density.",
             Self::MotionDisplay => "Control animation policy and sidebar visibility.",
+            Self::Keyboard => {
+                "Rebind global shortcuts; native text editing stays protected. Esc cancels, Delete clears, and Cmd/Ctrl+R resets."
+            }
         }
     }
 
@@ -72,11 +79,15 @@ impl SettingsSection {
             Self::Learning => "learning",
             Self::Appearance => "appearance",
             Self::MotionDisplay => "motion_display",
+            Self::Keyboard => "keyboard",
         }
     }
 
     pub fn is_local(self) -> bool {
-        matches!(self, Self::Appearance | Self::MotionDisplay)
+        matches!(
+            self,
+            Self::Appearance | Self::MotionDisplay | Self::Keyboard
+        )
     }
 
     fn adjacent(self, delta: isize) -> Self {
@@ -104,7 +115,17 @@ pub(crate) struct SettingDescriptor {
     kind: SettingKind,
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 14] = [
+const fn keybind_setting(id: ShortcutId) -> SettingDescriptor {
+    SettingDescriptor {
+        section: SettingsSection::Keyboard,
+        key: id.setting_key(),
+        label: id.label(),
+        description: id.description(),
+        kind: SettingKind::Choice { fallback: &[] },
+    }
+}
+
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 22] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -221,6 +242,14 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 14] = [
             fallback: &["expanded", "collapsed"],
         },
     },
+    keybind_setting(ShortcutId::CommandPalette),
+    keybind_setting(ShortcutId::NewChat),
+    keybind_setting(ShortcutId::SubmitPrompt),
+    keybind_setting(ShortcutId::ToggleSidebar),
+    keybind_setting(ShortcutId::OpenSettings),
+    keybind_setting(ShortcutId::CloseWindow),
+    keybind_setting(ShortcutId::Quit),
+    keybind_setting(ShortcutId::Hide),
 ];
 
 impl SettingDescriptor {
@@ -258,10 +287,23 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
         .map(|motion| motion.id().to_string())
         .collect();
     let sidebar_options = vec!["expanded".to_string(), "collapsed".to_string()];
-    SETTING_DESCRIPTORS
+    let mut fields = Vec::new();
+    for descriptor in SETTING_DESCRIPTORS
         .iter()
         .filter(|descriptor| is_desktop_setting(descriptor.key))
-        .map(|descriptor| SettingField::Choice {
+    {
+        if let Some(id) = ShortcutId::from_setting_key(descriptor.key) {
+            if id.available() {
+                let value = shortcuts::effective_keystroke(preferences, id);
+                fields.push(SettingField::Keybind {
+                    key: descriptor.key,
+                    label: descriptor.label,
+                    value,
+                });
+            }
+            continue;
+        }
+        fields.push(SettingField::Choice {
             key: descriptor.key,
             label: descriptor.label,
             options: match descriptor.key {
@@ -284,8 +326,9 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
                 }
                 _ => unreachable!("unknown desktop setting"),
             }),
-        })
-        .collect()
+        });
+    }
+    fields
 }
 
 /// One editable row in the settings modal.
@@ -315,20 +358,30 @@ pub enum SettingField {
         options: Vec<String>,
         value: Option<String>,
     },
+    /// Global shortcut; None means explicitly unbound.
+    Keybind {
+        key: &'static str,
+        label: &'static str,
+        value: Option<String>,
+    },
 }
 
 impl SettingField {
     pub fn key(&self) -> &'static str {
         match self {
-            Self::Text { key, .. } | Self::Number { key, .. } | Self::Choice { key, .. } => key,
+            Self::Text { key, .. }
+            | Self::Number { key, .. }
+            | Self::Choice { key, .. }
+            | Self::Keybind { key, .. } => key,
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Text { label, .. } | Self::Number { label, .. } | Self::Choice { label, .. } => {
-                label
-            }
+            Self::Text { label, .. }
+            | Self::Number { label, .. }
+            | Self::Choice { label, .. }
+            | Self::Keybind { label, .. } => label,
         }
     }
 
@@ -336,6 +389,10 @@ impl SettingField {
         match self {
             Self::Text { value, .. } | Self::Number { value, .. } => value.clone(),
             Self::Choice { value, .. } => value.clone().unwrap_or_default(),
+            Self::Keybind { value, .. } => value
+                .as_deref()
+                .map(shortcuts::display_keystroke)
+                .unwrap_or_else(|| "Unbound".to_string()),
         }
     }
 
@@ -344,16 +401,16 @@ impl SettingField {
             Self::Text { value, cursor, .. } | Self::Number { value, cursor, .. } => {
                 Some((value, cursor))
             }
-            Self::Choice { .. } => None,
+            Self::Choice { .. } | Self::Keybind { .. } => None,
         }
     }
 
     fn wire_value(&self) -> Result<serde_json::Value, String> {
         match self {
             Self::Text { value, .. } => Ok(serde_json::Value::String(value.clone())),
-            Self::Choice { value, .. } => Ok(serde_json::Value::String(
-                value.as_deref().unwrap_or_default().to_string(),
-            )),
+            Self::Choice { value, .. } | Self::Keybind { value, .. } => Ok(
+                serde_json::Value::String(value.as_deref().unwrap_or_default().to_string()),
+            ),
             Self::Number {
                 value,
                 min,
@@ -414,6 +471,7 @@ pub struct SettingsModal {
     pending_setting: Option<String>,
     pub selected: usize, // index into fields; fields.len() == Save row
     pub editing: bool,
+    capturing_keybind: Option<&'static str>,
     selection_anchor: usize,
     edit_snapshot: Option<(String, usize, usize)>,
     pub busy: bool,
@@ -442,6 +500,7 @@ impl PartialEq for SettingsModal {
             && self.pending_setting == other.pending_setting
             && self.selected == other.selected
             && self.editing == other.editing
+            && self.capturing_keybind == other.capturing_keybind
             && self.selection_anchor == other.selection_anchor
             && self.edit_snapshot == other.edit_snapshot
             && self.busy == other.busy
@@ -478,6 +537,7 @@ impl Default for SettingsModal {
             pending_setting: None,
             selected,
             editing: false,
+            capturing_keybind: None,
             selection_anchor: 0,
             edit_snapshot: None,
             busy: false,
@@ -610,6 +670,7 @@ impl SettingsModal {
             .position(|field| setting_descriptor(field.key()).section == self.active_section)
             .unwrap_or(0);
         self.editing = false;
+        self.capturing_keybind = None;
         self.selection_anchor = 0;
         self.edit_snapshot = None;
         self.load_failed = false;
@@ -632,6 +693,73 @@ impl SettingsModal {
         !self.busy && (self.searching || self.editing)
     }
 
+    pub fn capturing_keybind(&self) -> Option<&'static str> {
+        self.capturing_keybind
+    }
+
+    pub fn begin_keybind_capture(&mut self, key: &'static str) {
+        if self.busy
+            || !self
+                .fields
+                .iter()
+                .any(|field| field.key() == key && matches!(field, SettingField::Keybind { .. }))
+        {
+            return;
+        }
+        self.commit_edit();
+        self.clear_search();
+        self.active_section = SettingsSection::Keyboard;
+        self.selected = self
+            .fields
+            .iter()
+            .position(|field| field.key() == key)
+            .unwrap_or(self.fields.len());
+        self.selection_anchor = 0;
+        self.capturing_keybind = Some(key);
+        self.error = None;
+        self.scroll_selected_into_view();
+    }
+
+    pub fn capture_keystroke(&mut self, source: &str) {
+        if self.busy || shortcuts::is_modifier_only(source) {
+            return;
+        }
+        let Some(key) = self.capturing_keybind.take() else {
+            return;
+        };
+        if source == "escape" {
+            return;
+        }
+        let value = if matches!(source, "backspace" | "delete") {
+            None
+        } else if shortcuts::canonical_keystroke(source).as_deref()
+            == shortcuts::canonical_keystroke("secondary-r").as_deref()
+        {
+            ShortcutId::from_setting_key(key).map(|id| id.default_keystroke().to_string())
+        } else {
+            Some(shortcuts::canonical_keystroke(source).unwrap_or_else(|| source.to_string()))
+        };
+        if let Some(SettingField::Keybind { value: current, .. }) =
+            self.fields.iter_mut().find(|field| field.key() == key)
+        {
+            *current = value;
+        }
+        self.error = None;
+    }
+
+    fn keybinding_values(&self) -> BTreeMap<String, String> {
+        self.fields
+            .iter()
+            .filter_map(|field| {
+                let SettingField::Keybind { key, value, .. } = field else {
+                    return None;
+                };
+                ShortcutId::from_setting_key(key)
+                    .map(|id| (id.id().to_string(), value.clone().unwrap_or_default()))
+            })
+            .collect()
+    }
+
     fn search_results(&self) -> Vec<usize> {
         let query = self.search_query.trim().to_lowercase();
         if query.is_empty() {
@@ -651,6 +779,7 @@ impl SettingsModal {
                     Some(1)
                 } else if key.contains(&query)
                     || label.contains(&query)
+                    || field.display().to_lowercase().contains(&query)
                     || descriptor.description.to_lowercase().contains(&query)
                     || descriptor.section.title().to_lowercase().contains(&query)
                 {
@@ -744,6 +873,11 @@ impl SettingsModal {
         self.active_section = setting_descriptor(key).section;
         self.selected = index;
         self.selection_anchor = 0;
+        let field_key = self.fields[index].key();
+        if matches!(self.fields.get(index), Some(SettingField::Keybind { .. })) {
+            self.begin_keybind_capture(field_key);
+            return true;
+        }
         let Some(field) = self.fields.get_mut(index) else {
             return false;
         };
@@ -850,6 +984,17 @@ impl SettingsModal {
             self.scroll_selected_into_view();
             return;
         }
+        let keybind_key = self
+            .fields
+            .get(self.selected)
+            .and_then(|field| match field {
+                SettingField::Keybind { key, .. } => Some(*key),
+                _ => None,
+            });
+        if let Some(key) = keybind_key {
+            self.begin_keybind_capture(key);
+            return;
+        }
         let Some(field) = self.fields.get_mut(self.selected) else {
             return;
         };
@@ -885,6 +1030,7 @@ impl SettingsModal {
 
     fn commit_edit(&mut self) {
         self.editing = false;
+        self.capturing_keybind = None;
         self.edit_snapshot = None;
     }
 
@@ -899,6 +1045,10 @@ impl SettingsModal {
     /// Non-printable keys; printable characters route through `push_char`.
     pub fn handle_key(&mut self, key: &str) -> Option<SettingsAction> {
         if self.busy {
+            return None;
+        }
+        if self.capturing_keybind.is_some() {
+            self.capture_keystroke(key);
             return None;
         }
         match key {
@@ -990,6 +1140,17 @@ impl SettingsModal {
                     self.busy = true;
                     return Some(SettingsAction::Save);
                 }
+                let keybind_key = self
+                    .fields
+                    .get(self.selected)
+                    .and_then(|field| match field {
+                        SettingField::Keybind { key, .. } => Some(*key),
+                        _ => None,
+                    });
+                if let Some(key) = keybind_key {
+                    self.begin_keybind_capture(key);
+                    return None;
+                }
                 let Some(field) = self.fields.get_mut(self.selected) else {
                     return None;
                 };
@@ -1047,7 +1208,7 @@ impl SettingsModal {
         let (value, cursor) = match field {
             SettingField::Text { value, cursor, .. }
             | SettingField::Number { value, cursor, .. } => (value, cursor),
-            SettingField::Choice { .. } => return None,
+            SettingField::Choice { .. } | SettingField::Keybind { .. } => return None,
         };
         Some((value.clone(), *cursor, self.selection_anchor))
     }
@@ -1146,6 +1307,19 @@ impl SettingsModal {
                         return Some(error);
                     }
                 }
+                SettingField::Keybind {
+                    key,
+                    value: Some(source),
+                    ..
+                } => {
+                    if let Some(id) = ShortcutId::from_setting_key(key) {
+                        if let Err(error) =
+                            shortcuts::validate_keybinding(id, source, &self.keybinding_values())
+                        {
+                            return Some(error);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1197,26 +1371,56 @@ impl SettingsModal {
         }
         let mut preferences = self.desktop_preferences.clone();
         for field in &self.fields {
-            let SettingField::Choice { key, value, .. } = field else {
-                continue;
-            };
-            match (*key, value.as_deref()) {
-                ("desktop.theme", Some("hermes")) => preferences.theme = ThemePreset::Hermes,
-                ("desktop.theme", Some("midnight")) => preferences.theme = ThemePreset::Midnight,
-                ("desktop.theme", Some("mono")) => preferences.theme = ThemePreset::Mono,
-                ("desktop.density", Some("comfortable")) => {
-                    preferences.density = InterfaceDensity::Comfortable
+            match field {
+                SettingField::Choice { key, value, .. } => match (*key, value.as_deref()) {
+                    ("desktop.theme", Some("hermes")) => preferences.theme = ThemePreset::Hermes,
+                    ("desktop.theme", Some("midnight")) => {
+                        preferences.theme = ThemePreset::Midnight
+                    }
+                    ("desktop.theme", Some("mono")) => preferences.theme = ThemePreset::Mono,
+                    ("desktop.density", Some("comfortable")) => {
+                        preferences.density = InterfaceDensity::Comfortable
+                    }
+                    ("desktop.density", Some("compact")) => {
+                        preferences.density = InterfaceDensity::Compact
+                    }
+                    ("desktop.motion", Some("system")) => {
+                        preferences.motion = MotionPreference::System
+                    }
+                    ("desktop.motion", Some("reduced")) => {
+                        preferences.motion = MotionPreference::Reduced
+                    }
+                    ("desktop.motion", Some("full")) => preferences.motion = MotionPreference::Full,
+                    ("desktop.sidebar", Some("expanded")) => preferences.sidebar_collapsed = false,
+                    ("desktop.sidebar", Some("collapsed")) => preferences.sidebar_collapsed = true,
+                    _ => {}
+                },
+                SettingField::Keybind {
+                    key,
+                    value: Some(value),
+                    ..
+                } => {
+                    if let Some(id) = ShortcutId::from_setting_key(key) {
+                        if shortcuts::canonical_keystroke(value).as_deref()
+                            == shortcuts::canonical_keystroke(id.default_keystroke()).as_deref()
+                        {
+                            preferences.keybindings.remove(id.id());
+                        } else {
+                            preferences
+                                .keybindings
+                                .insert(id.id().to_string(), value.clone());
+                        }
+                    }
                 }
-                ("desktop.density", Some("compact")) => {
-                    preferences.density = InterfaceDensity::Compact
+                SettingField::Keybind {
+                    key, value: None, ..
+                } => {
+                    if let Some(id) = ShortcutId::from_setting_key(key) {
+                        preferences
+                            .keybindings
+                            .insert(id.id().to_string(), String::new());
+                    }
                 }
-                ("desktop.motion", Some("system")) => preferences.motion = MotionPreference::System,
-                ("desktop.motion", Some("reduced")) => {
-                    preferences.motion = MotionPreference::Reduced
-                }
-                ("desktop.motion", Some("full")) => preferences.motion = MotionPreference::Full,
-                ("desktop.sidebar", Some("expanded")) => preferences.sidebar_collapsed = false,
-                ("desktop.sidebar", Some("collapsed")) => preferences.sidebar_collapsed = true,
                 _ => {}
             }
         }
@@ -1225,6 +1429,7 @@ impl SettingsModal {
 
     pub fn apply_desktop_saved(&mut self) {
         self.desktop_originals = self.desktop_preferences.clone();
+        self.capturing_keybind = None;
         for field in self
             .fields
             .iter()
@@ -1248,6 +1453,7 @@ impl SettingsModal {
         self.apply_view(&getter);
         self.busy = false;
         self.editing = false;
+        self.capturing_keybind = None;
         self.status = Some(format!(
             "Saved {} key{} to {}",
             changed,
@@ -1524,6 +1730,7 @@ impl SettingsModal {
             let originals = self.originals.clone();
             let selected = self.selected;
             let editing = self.editing && !self.searching;
+            let capturing_keybind = self.capturing_keybind;
             let selection_anchor = self.selection_anchor;
             let busy = self.busy;
             let scroll_handle = self.scroll_handle.clone();
@@ -1559,6 +1766,7 @@ impl SettingsModal {
                                     index,
                                     index == selected,
                                     editing,
+                                    capturing_keybind,
                                     selection_anchor,
                                     busy,
                                     filtering,
@@ -1669,7 +1877,7 @@ impl SettingsModal {
                 .child(
                     "↑↓ rows · PgUp/PgDn sections · / search · Enter edit · ←→ adjust · Esc cancel",
                 )
-                .child("Appearance, motion & display · saved locally on this device")
+                .child("Appearance, motion, display & keyboard · saved locally on this device")
                 .child(format!("Workspace · {}", self.workspace))
                 .child(format!("Data · {}", self.data_dir)),
         );
@@ -1691,6 +1899,7 @@ fn render_setting_row(
     index: usize,
     selected: bool,
     editing: bool,
+    capturing_keybind: Option<&'static str>,
     selection_anchor: usize,
     busy: bool,
     filtering: bool,
@@ -1768,6 +1977,26 @@ fn render_setting_row(
                     theme.mockup_text_bright
                 })
                 .child(if selected {
+                    format!("‹ {current} ›")
+                } else {
+                    current
+                })
+        }
+        SettingField::Keybind { value, .. } => {
+            let capturing = capturing_keybind == Some(field.key());
+            let current = value
+                .as_deref()
+                .map(shortcuts::display_keystroke)
+                .unwrap_or_else(|| "Unbound".to_string());
+            div()
+                .text_color(if capturing || value.is_none() {
+                    theme.accent_blue
+                } else {
+                    theme.mockup_text_bright
+                })
+                .child(if capturing {
+                    "Press a shortcut…".to_string()
+                } else if selected {
                     format!("‹ {current} ›")
                 } else {
                     current
@@ -1898,10 +2127,15 @@ mod tests {
     fn test_apply_view_builds_fields_and_dirty_tracking() {
         let mut modal = SettingsModal::loading();
         modal.apply_view(&sample_view());
-        assert_eq!(modal.fields.len(), 14);
-        assert_eq!(SettingsSection::ALL.len(), 7);
+        let keyboard_count = ShortcutId::ALL
+            .into_iter()
+            .filter(|id| id.available())
+            .count();
+        assert_eq!(modal.fields.len(), 14 + keyboard_count);
+        assert_eq!(SettingsSection::ALL.len(), 8);
         assert_eq!(modal.fields[12].key(), "desktop.motion");
         assert_eq!(modal.fields[13].key(), "desktop.sidebar");
+        assert_eq!(modal.fields[14].key(), "desktop.keybind.command_palette");
         assert_eq!(modal.dirty_count(), 0);
 
         // Choice cycling from the set value; dirty count follows.
@@ -1929,6 +2163,112 @@ mod tests {
     }
 
     #[test]
+    fn test_keybind_capture_clear_reset_and_conflict_validation() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        let index = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == ShortcutId::CommandPalette.setting_key())
+            .unwrap();
+        let original = modal.fields[index].display();
+
+        modal.select_row(index);
+        assert_eq!(
+            modal.capturing_keybind(),
+            Some(ShortcutId::CommandPalette.setting_key())
+        );
+        modal.capture_keystroke("cmd");
+        assert!(modal.capturing_keybind().is_some());
+        modal.capture_keystroke("escape");
+        assert!(modal.capturing_keybind().is_none());
+        assert_eq!(modal.fields[index].display(), original);
+
+        modal.begin_keybind_capture(ShortcutId::CommandPalette.setting_key());
+        modal.capture_keystroke("cmd-alt-p");
+        assert!(modal.capturing_keybind().is_none());
+        assert_eq!(modal.dirty_count(), 1);
+        assert_eq!(modal.validation_error(), None);
+        let preferences = modal.changed_desktop_preferences().unwrap();
+        assert_eq!(
+            preferences.keybindings[ShortcutId::CommandPalette.id()],
+            shortcuts::canonical_keystroke("cmd-alt-p").unwrap()
+        );
+        assert!(modal.dirty_updates().as_object().unwrap().is_empty());
+
+        modal.begin_keybind_capture(ShortcutId::CommandPalette.setting_key());
+        modal.capture_keystroke("secondary-c");
+        assert!(modal.validation_error().unwrap().contains("Copy"));
+
+        modal.begin_keybind_capture(ShortcutId::CommandPalette.setting_key());
+        modal.capture_keystroke("backspace");
+        let preferences = modal.changed_desktop_preferences().unwrap();
+        assert_eq!(preferences.keybindings[ShortcutId::CommandPalette.id()], "");
+        assert_eq!(modal.validation_error(), None);
+
+        modal.begin_keybind_capture(ShortcutId::CommandPalette.setting_key());
+        modal.capture_keystroke("secondary-r");
+        assert!(modal.changed_desktop_preferences().is_none());
+        assert_eq!(modal.fields[index].display(), original);
+        assert_eq!(modal.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_keybind_reset_removes_a_persisted_override() {
+        let preferences = DesktopPreferences {
+            keybindings: BTreeMap::from([(
+                ShortcutId::CommandPalette.id().to_string(),
+                "cmd-alt-p".to_string(),
+            )]),
+            ..DesktopPreferences::default()
+        };
+        let mut modal = SettingsModal::loading_with_preferences(preferences);
+        modal.begin_keybind_capture(ShortcutId::CommandPalette.setting_key());
+        modal.capture_keystroke("secondary-r");
+
+        let preferences = modal.changed_desktop_preferences().unwrap();
+        assert!(!preferences
+            .keybindings
+            .contains_key(ShortcutId::CommandPalette.id()));
+        assert_eq!(modal.dirty_count(), 1);
+    }
+
+    #[test]
+    fn test_explicitly_unbound_shortcut_stays_unbound_when_reloaded() {
+        let preferences = DesktopPreferences {
+            keybindings: BTreeMap::from([(
+                ShortcutId::CommandPalette.id().to_string(),
+                String::new(),
+            )]),
+            ..DesktopPreferences::default()
+        };
+        let mut modal = SettingsModal::loading_with_preferences(preferences);
+        let palette_index = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == ShortcutId::CommandPalette.setting_key())
+            .unwrap();
+        assert!(matches!(
+            &modal.fields[palette_index],
+            SettingField::Keybind { value: None, .. }
+        ));
+        assert_eq!(modal.fields[palette_index].display(), "Unbound");
+        assert_eq!(modal.desktop_dirty_count(), 0);
+
+        modal.begin_keybind_capture(ShortcutId::NewChat.setting_key());
+        modal.capture_keystroke("cmd-alt-p");
+        let preferences = modal.changed_desktop_preferences().unwrap();
+        assert_eq!(preferences.keybindings[ShortcutId::CommandPalette.id()], "");
+
+        let modal = SettingsModal::loading_with_preferences(preferences);
+        assert!(matches!(
+            &modal.fields[palette_index],
+            SettingField::Keybind { value: None, .. }
+        ));
+        assert_eq!(modal.desktop_dirty_count(), 0);
+    }
+
+    #[test]
     fn test_split_navigation_scopes_rows_to_the_active_section() {
         let mut modal = SettingsModal::loading();
         modal.apply_view(&sample_view());
@@ -1937,6 +2277,15 @@ mod tests {
         assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5]);
         modal.handle_key("down");
         assert_eq!(modal.selected, 1);
+
+        modal.handle_key("pageup");
+        assert_eq!(modal.active_section, SettingsSection::Keyboard);
+        assert_eq!(modal.section_indices().first(), Some(&14));
+        assert_eq!(
+            modal.section_indices().last(),
+            Some(&(modal.fields.len() - 1))
+        );
+        assert_eq!(modal.selected, 14);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::MotionDisplay);
@@ -2198,6 +2547,7 @@ mod tests {
             motion: MotionPreference::Reduced,
             theme: ThemePreset::Midnight,
             density: InterfaceDensity::Compact,
+            ..DesktopPreferences::default()
         };
         let mut modal = SettingsModal::loading_with_preferences(preferences);
         assert_eq!(modal.selected, modal.fields.len());
