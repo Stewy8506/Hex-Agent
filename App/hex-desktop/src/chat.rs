@@ -230,11 +230,7 @@ pub fn open_chat_window(
         preferences.density,
     ));
     cx.set_global(motion::MotionSystem::with_policy(
-        motion::MotionPolicy::new(
-            preferences
-                .reduce_motion
-                .unwrap_or_else(motion::reduced_motion),
-        ),
+        motion::MotionPolicy::new(preferences.motion.is_reduced(motion::reduced_motion())),
     ));
     let config = WindowConfig::default();
     let bounds = cx
@@ -684,11 +680,21 @@ impl ChatView {
     }
 
     fn apply_desktop_preferences(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        cx.set_global(HermesTheme::configured(
-            self.preferences.theme,
-            self.preferences.density,
-        ));
         let result = self.save_desktop_preferences();
+        if result.is_ok() {
+            cx.set_global(HermesTheme::configured(
+                self.preferences.theme,
+                self.preferences.density,
+            ));
+            motion::MotionSystem::set_policy(
+                cx,
+                motion::MotionPolicy::new(
+                    self.preferences.motion.is_reduced(motion::reduced_motion()),
+                ),
+            );
+            self.shell
+                .set_sidebar_collapsed(self.preferences.sidebar_collapsed);
+        }
         cx.notify();
         result
     }
@@ -2091,6 +2097,7 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        let reduced = motion::MotionSystem::is_reduced(cx);
         // Continue list: the five most recent real sessions, with honest
         // running (live turn) and Review (pending approval) state, synced
         // by sync_sidebar_live_state each frame.
@@ -2189,7 +2196,7 @@ impl ChatView {
                 .size(px(home::CONTINUE_DOT_SIZE))
                 .rounded_full()
                 .bg(theme.accent_blue);
-            if motion::reduced_motion() {
+            if motion::MotionSystem::is_reduced(cx) {
                 dot.into_any_element()
             } else {
                 dot.with_animation(
@@ -2337,7 +2344,7 @@ impl ChatView {
                                     .items_center()
                                     .child(
                                         // ASCII logo with rise entrance
-                                        crate::ui::home::render_logo(theme),
+                                        crate::ui::home::render_logo(theme, reduced),
                                     )
                                     .child(
                                         // Pulsating glowing prompt card wrapping the composer
@@ -2387,7 +2394,7 @@ impl ChatView {
                             })
                             .children(rows.iter().map(|row| {
                                 let id = row.id.clone();
-                                crate::ui::home::render_continue_row(theme, row, {
+                                crate::ui::home::render_continue_row(theme, row, reduced, {
                                     let this = cx.entity().downgrade();
                                     move |_, _, cx| {
                                         let _ = this.update(cx, |view, cx| {
@@ -5369,7 +5376,7 @@ impl ChatView {
             .child(input_area)
             .child(toolbar);
 
-        let glow = glow_card(column, theme);
+        let glow = glow_card(column, theme, motion::MotionSystem::is_reduced(cx));
 
         // The context bar only appears once the runtime has reported real
         // usage for this session; before the first turn it would show a
@@ -6408,11 +6415,12 @@ impl Render for ChatView {
                     .flex_none()
                     .overflow_hidden()
                     .opacity(sidebar_alpha)
-                    .child(
-                        self.shell
-                            .sidebar
-                            .render_with_width(&theme, &sidebar_handlers, sidebar_width),
-                    ),
+                    .child(self.shell.sidebar.render_with_width(
+                        &theme,
+                        &sidebar_handlers,
+                        sidebar_width,
+                        motion::MotionSystem::is_reduced(cx),
+                    )),
             );
         }
 
@@ -7317,7 +7325,7 @@ mod tests {
         cx.update(init_app);
         let preferences = DesktopPreferences {
             sidebar_collapsed: true,
-            reduce_motion: Some(true),
+            motion: motion::MotionPreference::Reduced,
             theme: crate::theme::ThemePreset::Midnight,
             density: crate::theme::InterfaceDensity::Compact,
         };
@@ -7334,7 +7342,7 @@ mod tests {
             view.update(app, |view, _| {
                 assert!(view.shell.sidebar_collapsed);
                 assert!(view.preferences.sidebar_collapsed);
-                assert_eq!(view.preferences.reduce_motion, Some(true));
+                assert_eq!(view.preferences.motion, motion::MotionPreference::Reduced);
                 assert!(view.persist_preferences);
             })
         });

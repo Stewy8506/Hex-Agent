@@ -416,13 +416,14 @@ impl SidebarView {
         handlers: &SidebarHandlers,
         session_count: usize,
         any_running: bool,
+        reduced: bool,
     ) -> Stateful<Div> {
         let running_dot = if any_running {
             let dot = div()
                 .size(px(RUNNING_DOT))
                 .rounded_full()
                 .bg(theme.accent_blue);
-            if motion::reduced_motion() {
+            if reduced {
                 dot.into_any_element()
             } else {
                 dot.with_animation(
@@ -491,6 +492,7 @@ impl SidebarView {
         theme: &HermesTheme,
         session: &SessionItem,
         handlers: &SidebarHandlers,
+        reduced: bool,
     ) -> Stateful<Div> {
         let is_active = self.session_list.selected_session_id.as_deref() == Some(&session.id);
         let running = self.running_sessions.contains(&session.id);
@@ -504,7 +506,7 @@ impl SidebarView {
                 .font_family(theme.font_mono()[0].clone())
                 .text_size(px(MockupTypeScale::SPINNER_SIZE))
                 .text_color(theme.accent_blue);
-            if motion::reduced_motion() {
+            if reduced {
                 glyph.child(motion::spinner_frame(Duration::ZERO).to_string()).into_any_element()
             } else {
                 glyph
@@ -775,13 +777,13 @@ impl SidebarView {
 
     /// Renders the mockup 296px sidebar.
     pub fn render(&self, theme: &HermesTheme) -> Div {
-        self.render_with_width(theme, &SidebarHandlers::default(), SIDEBAR_WIDTH)
+        self.render_with_width(theme, &SidebarHandlers::default(), SIDEBAR_WIDTH, true)
     }
 
     /// Renders the sidebar with the interactive handlers `ChatView` wires to
     /// real backend operations.
     pub fn render_with_actions(&self, theme: &HermesTheme, handlers: &SidebarHandlers) -> Div {
-        self.render_with_width(theme, handlers, SIDEBAR_WIDTH)
+        self.render_with_width(theme, handlers, SIDEBAR_WIDTH, true)
     }
 
     pub fn render_with_width(
@@ -789,6 +791,7 @@ impl SidebarView {
         theme: &HermesTheme,
         handlers: &SidebarHandlers,
         width: f32,
+        reduced: bool,
     ) -> Div {
         // Active rows honor the live search query and exclude archived
         // sessions (both driven by SessionListView::filter_sessions).
@@ -817,11 +820,11 @@ impl SidebarView {
             .flex_col()
             .gap(theme.space(2.0))
             .overflow_y_scroll()
-            .child(self.render_project_row(theme, handlers, ordered.len(), any_running));
+            .child(self.render_project_row(theme, handlers, ordered.len(), any_running, reduced));
         if !self.projects_collapsed {
             for session in &ordered {
                 project_list =
-                    project_list.child(self.render_session_row(theme, session, handlers));
+                    project_list.child(self.render_session_row(theme, session, handlers, reduced));
             }
         }
         if !archived.is_empty() {

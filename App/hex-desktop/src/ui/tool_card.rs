@@ -143,14 +143,14 @@ impl ToolCallCard {
 
     /// The status indicator element: braille spinner for running turns, or
     /// the tinted status SVG.
-    fn render_status(&self, theme: &HermesTheme) -> AnyElement {
+    fn render_status(&self, theme: &HermesTheme, reduced: bool) -> AnyElement {
         match self.status {
             ToolStatus::Running => {
                 let spinner = div()
                     .font_family(theme.font_mono()[0].clone())
                     .text_size(px(MockupTypeScale::SPINNER_SIZE))
                     .text_color(theme.accent_blue());
-                if motion::reduced_motion() {
+                if reduced {
                     spinner
                         .child(motion::spinner_frame(motion::SPIN_PERIOD).to_string())
                         .into_any_element()
@@ -178,7 +178,7 @@ impl ToolCallCard {
     }
 
     /// Renders the tool header row.
-    fn render_header(&self, theme: &HermesTheme) -> Div {
+    fn render_header(&self, theme: &HermesTheme, reduced: bool) -> Div {
         let icon = tool_icon(&self.tool_name);
         let duration_str = self
             .duration_ms
@@ -221,7 +221,7 @@ impl ToolCallCard {
                             .text_color(theme.mockup_text_dim)
                             .child(duration_str),
                     )
-                    .child(self.render_status(theme)),
+                    .child(self.render_status(theme, reduced)),
             )
     }
 
@@ -441,6 +441,10 @@ impl ToolCallCard {
         input_reveal: Option<(RevealMotion, &App)>,
         output_reveal: Option<(RevealMotion, &App)>,
     ) -> Div {
+        let reduced = input_reveal
+            .as_ref()
+            .map(|(_, cx)| motion::MotionSystem::is_reduced(cx))
+            .unwrap_or(true);
         let mut card = div()
             .w_full()
             .min_w_0()
@@ -451,7 +455,7 @@ impl ToolCallCard {
             .border_color(theme.mockup_border)
             .bg(theme.mockup_surface)
             .overflow_hidden()
-            .child(self.render_header(theme))
+            .child(self.render_header(theme, reduced))
             .child(self.render_input_fold(
                 theme,
                 on_input.as_ref(),

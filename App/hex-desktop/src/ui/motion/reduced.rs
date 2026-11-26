@@ -1,8 +1,55 @@
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use super::presets::SpringPreset;
 
 pub const REDUCED_OPACITY_FADE: Duration = Duration::from_millis(180);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionPreference {
+    #[default]
+    System,
+    Reduced,
+    Full,
+}
+
+impl MotionPreference {
+    pub const ALL: [Self; 3] = [Self::System, Self::Reduced, Self::Full];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Reduced => "reduced",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Reduced => "Reduced",
+            Self::Full => "Full",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::System => "Follow the operating system's reduced-motion setting.",
+            Self::Reduced => "Use static spatial transitions and short opacity fades.",
+            Self::Full => "Use the complete spring and ambient animation set.",
+        }
+    }
+
+    pub fn is_reduced(self, system_reduced: bool) -> bool {
+        match self {
+            Self::System => system_reduced,
+            Self::Reduced => true,
+            Self::Full => false,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MotionKind {
@@ -10,7 +57,7 @@ pub enum MotionKind {
     Opacity,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MotionPolicy {
     reduced: bool,
 }
@@ -121,6 +168,14 @@ mod tests {
         let policy = MotionPolicy::new(false);
         assert!(!policy.snaps(MotionKind::Spatial));
         assert_eq!(policy.preset(MotionKind::Opacity, BOUNCY), BOUNCY);
+    }
+
+    #[test]
+    fn motion_preference_resolves_system_and_overrides() {
+        assert!(MotionPreference::System.is_reduced(true));
+        assert!(!MotionPreference::System.is_reduced(false));
+        assert!(MotionPreference::Reduced.is_reduced(false));
+        assert!(!MotionPreference::Full.is_reduced(true));
     }
 
     #[test]

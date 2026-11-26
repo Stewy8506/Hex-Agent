@@ -694,6 +694,10 @@ impl AssistantMessageView {
         token_count: Option<String>,
         mut motion: Option<(&mut Window, &mut App, EntityId)>,
     ) -> Div {
+        let reduced = match motion.as_ref() {
+            Some((_, cx, _)) => motion::MotionSystem::is_reduced(cx),
+            None => true,
+        };
         let mut card = div().w_full().flex().flex_col().gap(px(FEED_GAP));
 
         if let Some(reasoning) = &self.reasoning {
@@ -755,7 +759,7 @@ impl AssistantMessageView {
 
         // 4. Streaming braille spinner at the tail (mockup `.sp`).
         if self.is_streaming {
-            card = card.child(self.render_streaming_spinner(theme));
+            card = card.child(self.render_streaming_spinner(theme, reduced));
         }
 
         // 5. Action bar + Changes button (only when not streaming).
@@ -790,12 +794,12 @@ impl AssistantMessageView {
 
     /// The mockup `.sp` braille spinner (900ms steps(1)); reduced motion keeps
     /// the first frame static.
-    fn render_streaming_spinner(&self, theme: &HermesTheme) -> AnyElement {
+    fn render_streaming_spinner(&self, theme: &HermesTheme, reduced: bool) -> AnyElement {
         let spinner = div()
             .font_family(theme.font_mono()[0].clone())
             .text_size(px(MockupTypeScale::SPINNER_SIZE))
             .text_color(theme.accent_blue());
-        if motion::reduced_motion() {
+        if reduced {
             spinner
                 .child(motion::spinner_frame(std::time::Duration::ZERO).to_string())
                 .into_any_element()

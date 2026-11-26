@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use gpui::*;
 
 use crate::theme::HermesTheme;
-use crate::ui::motion;
 use crate::ui::token_gauge::TokenGaugeWidget;
 
 /// One-shot glow entrance duration in milliseconds.
@@ -153,7 +152,7 @@ impl Global for GlowCardProbe {}
 /// `#171717` card with the accent border, halo behind it, and the mockup's
 /// card padding (20px 22px 14px 22px). `inner` is the composer column
 /// (input row + toolbar); the column supplies its own 30px gap.
-pub fn glow_card(inner: Div, theme: &HermesTheme) -> Div {
+pub fn glow_card(inner: Div, theme: &HermesTheme, reduced: bool) -> Div {
     let accent = theme.accent_blue();
 
     let card = div()
@@ -178,7 +177,7 @@ pub fn glow_card(inner: Div, theme: &HermesTheme) -> Div {
         .bg(glow_halo_gradient(accent))
         .shadow(glow_shadow_stack(accent));
 
-    let halo = if motion::reduced_motion() {
+    let halo = if reduced {
         halo.opacity(HALO_STATIC_OPACITY).into_any_element()
     } else {
         halo.with_animation(

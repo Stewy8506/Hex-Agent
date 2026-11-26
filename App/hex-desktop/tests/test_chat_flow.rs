@@ -28,7 +28,7 @@ use hex_desktop::ui::modals::model_picker::ModelPickerModal;
 use hex_desktop::ui::modals::session_actions::{SessionActionMode, SessionActionModal};
 use hex_desktop::ui::modals::settings::{SettingField, SettingsModal};
 use hex_desktop::ui::modals::{ActiveModal, ModelEntry};
-use hex_desktop::ui::motion::{MotionPolicy, MotionSystem};
+use hex_desktop::ui::motion::{MotionPolicy, MotionPreference, MotionSystem};
 use hex_desktop::ui::reasoning::ThinkingDisclosure;
 use hex_desktop::ui::sidebar::ProviderState;
 use hex_desktop::ui::tool_card::{ToolCallCard, ToolStatus};
@@ -1113,7 +1113,7 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn test_offline_appearance_settings_save_locally(cx: &mut TestAppContext) {
+fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
     cx.update(|cx| {
         init_app(cx);
         cx.set_global(MotionSystem::with_policy(MotionPolicy::new(true)));
@@ -1134,7 +1134,7 @@ fn test_offline_appearance_settings_save_locally(cx: &mut TestAppContext) {
             panic!("settings should open offline");
         };
         assert!(modal.load_failed);
-        assert_eq!(modal.fields.len(), 2);
+        assert_eq!(modal.fields.len(), 4);
         assert!(modal.fields.iter().all(|field| field.key().starts_with("desktop.")));
     });
 
@@ -1180,6 +1180,23 @@ fn test_offline_appearance_settings_save_locally(cx: &mut TestAppContext) {
     let theme = vc.read(|app| app.global::<HermesTheme>().clone());
     assert_eq!(theme.preset, ThemePreset::Midnight);
     assert_eq!(theme.density, InterfaceDensity::Compact);
+
+    click_debug_element(vc, "settings_section_motion_display");
+    click_debug_element(vc, "settings_row_0");
+    click_debug_element(vc, "settings_row_1");
+    click_debug_element(vc, "settings_save_row");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after a local save");
+        };
+        assert_eq!(modal.desktop_preferences.motion, MotionPreference::Reduced);
+        assert!(modal.desktop_preferences.sidebar_collapsed);
+        assert!(view.shell.sidebar_collapsed);
+        assert_eq!(modal.dirty_updates(), json!({}));
+        assert_eq!(modal.desktop_dirty_count(), 0);
+        assert!(modal.error.is_none());
+    });
+    assert!(vc.read(MotionSystem::is_reduced));
 }
 
 #[gpui::test]

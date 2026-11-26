@@ -14,6 +14,7 @@ use crate::ui::modals::text_input::{
     move_to as text_move_to, move_to_edge, select_all, selected_text,
 };
 use crate::ui::modals::{modal_press, ModalMotion};
+use crate::ui::motion::MotionPreference;
 use hex_protocol::models::ConfigGetResponse;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,16 +25,18 @@ pub enum SettingsSection {
     Cloud,
     Learning,
     Appearance,
+    MotionDisplay,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Model,
         Self::Runtime,
         Self::WebSearch,
         Self::Cloud,
         Self::Learning,
         Self::Appearance,
+        Self::MotionDisplay,
     ];
 
     pub fn title(self) -> &'static str {
@@ -44,6 +47,7 @@ impl SettingsSection {
             Self::Cloud => "Cloud",
             Self::Learning => "Learning",
             Self::Appearance => "Appearance",
+            Self::MotionDisplay => "Motion & display",
         }
     }
 
@@ -55,6 +59,7 @@ impl SettingsSection {
             Self::Cloud => "Set the HEX cloud service endpoint.",
             Self::Learning => "Choose when HEX reflects on completed work.",
             Self::Appearance => "Personalize the desktop theme and interface density.",
+            Self::MotionDisplay => "Control animation policy and sidebar visibility.",
         }
     }
 
@@ -66,7 +71,12 @@ impl SettingsSection {
             Self::Cloud => "cloud",
             Self::Learning => "learning",
             Self::Appearance => "appearance",
+            Self::MotionDisplay => "motion_display",
         }
+    }
+
+    pub fn is_local(self) -> bool {
+        matches!(self, Self::Appearance | Self::MotionDisplay)
     }
 
     fn adjacent(self, delta: isize) -> Self {
@@ -94,7 +104,7 @@ pub(crate) struct SettingDescriptor {
     kind: SettingKind,
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 12] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 14] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -193,6 +203,24 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 12] = [
             fallback: &["comfortable", "compact"],
         },
     },
+    SettingDescriptor {
+        section: SettingsSection::MotionDisplay,
+        key: "desktop.motion",
+        label: "Motion",
+        description: "Animation policy for spatial transitions and ambient effects.",
+        kind: SettingKind::Choice {
+            fallback: &["system", "reduced", "full"],
+        },
+    },
+    SettingDescriptor {
+        section: SettingsSection::MotionDisplay,
+        key: "desktop.sidebar",
+        label: "Sidebar",
+        description: "Whether the navigation sidebar is expanded.",
+        kind: SettingKind::Choice {
+            fallback: &["expanded", "collapsed"],
+        },
+    },
 ];
 
 impl SettingDescriptor {
@@ -225,6 +253,11 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
         .iter()
         .map(|density| density.id().to_string())
         .collect();
+    let motion_options: Vec<String> = MotionPreference::ALL
+        .iter()
+        .map(|motion| motion.id().to_string())
+        .collect();
+    let sidebar_options = vec!["expanded".to_string(), "collapsed".to_string()];
     SETTING_DESCRIPTORS
         .iter()
         .filter(|descriptor| is_desktop_setting(descriptor.key))
@@ -234,11 +267,21 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
             options: match descriptor.key {
                 "desktop.theme" => theme_options.clone(),
                 "desktop.density" => density_options.clone(),
+                "desktop.motion" => motion_options.clone(),
+                "desktop.sidebar" => sidebar_options.clone(),
                 _ => unreachable!("unknown desktop setting"),
             },
             value: Some(match descriptor.key {
                 "desktop.theme" => preferences.theme.id().to_string(),
                 "desktop.density" => preferences.density.id().to_string(),
+                "desktop.motion" => preferences.motion.id().to_string(),
+                "desktop.sidebar" => {
+                    if preferences.sidebar_collapsed {
+                        "collapsed".to_string()
+                    } else {
+                        "expanded".to_string()
+                    }
+                }
                 _ => unreachable!("unknown desktop setting"),
             }),
         })
@@ -1167,6 +1210,13 @@ impl SettingsModal {
                 ("desktop.density", Some("compact")) => {
                     preferences.density = InterfaceDensity::Compact
                 }
+                ("desktop.motion", Some("system")) => preferences.motion = MotionPreference::System,
+                ("desktop.motion", Some("reduced")) => {
+                    preferences.motion = MotionPreference::Reduced
+                }
+                ("desktop.motion", Some("full")) => preferences.motion = MotionPreference::Full,
+                ("desktop.sidebar", Some("expanded")) => preferences.sidebar_collapsed = false,
+                ("desktop.sidebar", Some("collapsed")) => preferences.sidebar_collapsed = true,
                 _ => {}
             }
         }
@@ -1447,7 +1497,7 @@ impl SettingsModal {
             );
         }
 
-        if self.active_section != SettingsSection::Appearance
+        if !self.active_section.is_local()
             && self.fields.iter().all(|field| is_desktop_setting(field.key()))
             && !self.load_failed
         {
@@ -1465,7 +1515,7 @@ impl SettingsModal {
 
         if !self.fields.is_empty()
             && (!self.load_failed
-                || self.active_section == SettingsSection::Appearance
+                || self.active_section.is_local()
                 || !self.search_query.trim().is_empty())
         {
             let fields = self.fields.clone();
@@ -1619,7 +1669,7 @@ impl SettingsModal {
                 .child(
                     "↑↓ rows · PgUp/PgDn sections · / search · Enter edit · ←→ adjust · Esc cancel",
                 )
-                .child("Appearance · saved locally on this device")
+                .child("Appearance, motion & display · saved locally on this device")
                 .child(format!("Workspace · {}", self.workspace))
                 .child(format!("Data · {}", self.data_dir)),
         );
@@ -1848,7 +1898,10 @@ mod tests {
     fn test_apply_view_builds_fields_and_dirty_tracking() {
         let mut modal = SettingsModal::loading();
         modal.apply_view(&sample_view());
-        assert_eq!(modal.fields.len(), 12);
+        assert_eq!(modal.fields.len(), 14);
+        assert_eq!(SettingsSection::ALL.len(), 7);
+        assert_eq!(modal.fields[12].key(), "desktop.motion");
+        assert_eq!(modal.fields[13].key(), "desktop.sidebar");
         assert_eq!(modal.dirty_count(), 0);
 
         // Choice cycling from the set value; dirty count follows.
@@ -1886,13 +1939,19 @@ mod tests {
         assert_eq!(modal.selected, 1);
 
         modal.handle_key("pageup");
-        assert_eq!(modal.active_section, SettingsSection::Appearance);
-        assert_eq!(modal.selected, 10);
+        assert_eq!(modal.active_section, SettingsSection::MotionDisplay);
+        assert_eq!(modal.section_indices(), vec![12, 13]);
+        assert_eq!(modal.selected, 12);
         modal.handle_key("down");
-        assert_eq!(modal.selected, 11);
+        assert_eq!(modal.selected, 13);
         modal.handle_key("down");
         assert_eq!(modal.selected, modal.fields.len());
         modal.handle_key("down");
+        assert_eq!(modal.selected, 12);
+
+        modal.handle_key("pageup");
+        assert_eq!(modal.active_section, SettingsSection::Appearance);
+        assert_eq!(modal.section_indices(), vec![10, 11]);
         assert_eq!(modal.selected, 10);
 
         modal.select_section(SettingsSection::Runtime);
@@ -2133,52 +2192,46 @@ mod tests {
     }
 
     #[test]
-    fn test_desktop_appearance_changes_stay_out_of_acp_updates() {
+    fn test_desktop_settings_stay_out_of_acp_updates() {
         let preferences = DesktopPreferences {
+            sidebar_collapsed: true,
+            motion: MotionPreference::Reduced,
             theme: ThemePreset::Midnight,
             density: InterfaceDensity::Compact,
-            ..DesktopPreferences::default()
         };
         let mut modal = SettingsModal::loading_with_preferences(preferences);
         assert_eq!(modal.selected, modal.fields.len());
         assert_eq!(modal.handle_key("enter"), None);
         assert_eq!(modal.dirty_count(), 0);
-        modal.select_section(SettingsSection::Appearance);
-        let theme_index = modal
-            .fields
-            .iter()
-            .position(|field| field.key() == "desktop.theme")
-            .unwrap();
-        let density_index = modal
-            .fields
-            .iter()
-            .position(|field| field.key() == "desktop.density")
-            .unwrap();
-
-        modal.select_row(theme_index);
-        modal.select_row(density_index);
+        for key in [
+            "desktop.theme",
+            "desktop.density",
+            "desktop.motion",
+            "desktop.sidebar",
+        ] {
+            let index = modal
+                .fields
+                .iter()
+                .position(|field| field.key() == key)
+                .unwrap();
+            modal.select_row(index);
+        }
         let changed = modal
             .changed_desktop_preferences()
             .expect("desktop changes");
         assert_eq!(changed.theme, ThemePreset::Mono);
         assert_eq!(changed.density, InterfaceDensity::Comfortable);
+        assert_eq!(changed.motion, MotionPreference::Full);
+        assert!(!changed.sidebar_collapsed);
         assert_eq!(modal.dirty_updates(), serde_json::json!({}));
-        assert_eq!(modal.desktop_dirty_count(), 2);
+        assert_eq!(modal.desktop_dirty_count(), 4);
 
         modal.apply_view(&sample_view());
-        let theme_index = modal
-            .fields
-            .iter()
-            .position(|field| field.key() == "desktop.theme")
-            .unwrap();
-        let density_index = modal
-            .fields
-            .iter()
-            .position(|field| field.key() == "desktop.density")
-            .unwrap();
-        assert_eq!(modal.fields[theme_index].display(), "mono");
-        assert_eq!(modal.fields[density_index].display(), "comfortable");
-        assert_eq!(modal.desktop_dirty_count(), 2);
+        assert_eq!(modal.fields[10].display(), "mono");
+        assert_eq!(modal.fields[11].display(), "comfortable");
+        assert_eq!(modal.fields[12].display(), "full");
+        assert_eq!(modal.fields[13].display(), "expanded");
+        assert_eq!(modal.desktop_dirty_count(), 4);
 
         modal.desktop_preferences = changed;
         modal.apply_desktop_saved();

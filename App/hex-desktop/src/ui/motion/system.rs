@@ -81,6 +81,36 @@ impl MotionSystem {
         )
     }
 
+    pub fn is_reduced(cx: &App) -> bool {
+        Self::policy(cx).is_reduced()
+    }
+
+    pub fn set_policy(cx: &mut App, policy: MotionPolicy) {
+        if !cx.has_global::<Self>() {
+            cx.set_global(Self::with_policy(policy));
+            return;
+        }
+        let owners = cx.global_mut::<Self>().apply_policy(policy);
+        for owner in owners {
+            cx.notify(owner);
+        }
+    }
+
+    fn apply_policy(&mut self, policy: MotionPolicy) -> Vec<EntityId> {
+        if self.policy == policy {
+            return Vec::new();
+        }
+        self.policy = policy;
+        self.springs
+            .iter_mut()
+            .map(|(key, entry)| {
+                let target = entry.spring.target();
+                entry.spring.snap(target);
+                key.owner
+            })
+            .collect()
+    }
+
     pub fn value(cx: &App, key: SpringKey) -> f32 {
         Self::value_or(cx, key, 1.0)
     }
@@ -304,6 +334,22 @@ mod tests {
         assert_eq!(system.springs[&card].spring.value(), value);
         assert_eq!(system.springs[&card].spring.velocity(), velocity);
         assert_eq!(system.springs[&card].spring.target(), 0.0);
+    }
+
+    #[test]
+    fn policy_changes_settle_active_springs_and_notify_owners() {
+        let mut system = MotionSystem::with_policy(MotionPolicy::new(false));
+        let window_id = WindowId::from(1);
+        let modal = key(10, "modal");
+        system.retarget_for_window(window_id, modal, 1.0, SMOOTH, MotionKind::Spatial);
+        system.tick(window_id, Duration::from_millis(16));
+        assert!(system.driver_active(window_id));
+
+        let owners = system.apply_policy(MotionPolicy::new(true));
+        assert_eq!(owners, vec![modal.owner]);
+        assert!(!system.driver_active(window_id));
+        assert_eq!(system.springs[&modal].spring.value(), 1.0);
+        assert!(system.apply_policy(MotionPolicy::new(true)).is_empty());
     }
 
     #[test]

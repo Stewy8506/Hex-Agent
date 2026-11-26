@@ -17,6 +17,8 @@ pub use interaction::{
 };
 pub use lerp::{lerp, lerp_hsla, lerp_px};
 pub use presets::{spring_easing, SpringPreset, BOUNCY, SMOOTH, SNAPPY};
-pub use reduced::{reduced_motion, MotionKind, MotionPolicy, REDUCED_OPACITY_FADE};
+pub use reduced::{
+    reduced_motion, MotionKind, MotionPolicy, MotionPreference, REDUCED_OPACITY_FADE,
+};
 pub use spring::{Spring, SETTLE_POSITION_EPSILON, SETTLE_VELOCITY_EPSILON};
 pub use system::{MotionSystem, SpringKey};

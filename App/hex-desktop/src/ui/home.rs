@@ -48,7 +48,7 @@ pub const CONTINUE_TIME_WIDTH: f32 = 34.0;
 /// Renders the ASCII logo block with the mockup's `rise` entrance (0.9s
 /// cubic-bezier(.2,.7,.2,1), opacity 0→1 and a 6px→0 upward settle simulated
 /// via margin-top), centered. Skipped entirely under reduced motion.
-pub fn render_logo(theme: &HermesTheme) -> AnyElement {
+pub fn render_logo(theme: &HermesTheme, reduced: bool) -> AnyElement {
     let logo = div().flex().flex_col().items_center().mb(px(46.0)).child(
         div()
             .font_family(theme.font_mono()[0].clone())
@@ -59,7 +59,7 @@ pub fn render_logo(theme: &HermesTheme) -> AnyElement {
             .whitespace_nowrap()
             .child(ASCII_LOGO),
     );
-    if motion::reduced_motion() {
+    if reduced {
         logo.into_any_element()
     } else {
         logo.with_animation(
@@ -101,12 +101,13 @@ pub fn continue_chip(row: &ContinueRow) -> (&'static str, bool) {
 pub fn render_continue_row(
     theme: &HermesTheme,
     row: &ContinueRow,
+    reduced: bool,
     on_open: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let (chip_label, chip_accent) = continue_chip(row);
     let dot_slot = if row.running {
         let dot = div().size_full().rounded_full().bg(theme.accent_blue);
-        let animated = if motion::reduced_motion() {
+        let animated = if reduced {
             dot.into_any_element()
         } else {
             dot.with_animation(

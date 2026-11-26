@@ -2,17 +2,41 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::theme::{InterfaceDensity, ThemePreset};
+use crate::ui::motion::MotionPreference;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DesktopPreferences {
     pub sidebar_collapsed: bool,
-    pub reduce_motion: Option<bool>,
+    #[serde(
+        default,
+        alias = "reduce_motion",
+        deserialize_with = "deserialize_motion_preference"
+    )]
+    pub motion: MotionPreference,
     pub theme: ThemePreset,
     pub density: InterfaceDensity,
+}
+
+fn deserialize_motion_preference<'de, D>(deserializer: D) -> Result<MotionPreference, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(MotionPreference::System),
+        serde_json::Value::Bool(true) => Ok(MotionPreference::Reduced),
+        serde_json::Value::Bool(false) => Ok(MotionPreference::Full),
+        value @ serde_json::Value::String(_) => {
+            serde_json::from_value(value).map_err(serde::de::Error::custom)
+        }
+        _ => Err(serde::de::Error::custom(
+            "motion must be system, reduced, full, or a legacy boolean",
+        )),
+    }
 }
 
 impl DesktopPreferences {
@@ -102,7 +126,7 @@ mod tests {
         let path = directory.path().join("nested/preferences.json");
         let preferences = DesktopPreferences {
             sidebar_collapsed: true,
-            reduce_motion: Some(true),
+            motion: MotionPreference::Reduced,
             theme: ThemePreset::Midnight,
             density: InterfaceDensity::Compact,
         };
@@ -130,6 +154,22 @@ mod tests {
     }
 
     #[test]
+    fn legacy_reduced_motion_values_migrate_to_motion_preferences() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("preferences.json");
+        for (legacy, expected) in [
+            ("true", MotionPreference::Reduced),
+            ("false", MotionPreference::Full),
+            ("null", MotionPreference::System),
+        ] {
+            fs::write(&path, format!(r#"{{"reduce_motion":{legacy}}}"#).as_bytes())
+                .expect("write legacy preferences");
+            let preferences = DesktopPreferences::read_from(&path).expect("read preferences");
+            assert_eq!(preferences.motion, expected);
+        }
+    }
+
+    #[test]
     fn older_preferences_keep_new_fields_at_their_defaults() {
         let directory = tempfile::tempdir().expect("temp directory");
         let path = directory.path().join("preferences.json");
@@ -137,7 +177,7 @@ mod tests {
 
         let preferences = DesktopPreferences::read_from(&path).expect("read preferences");
         assert!(preferences.sidebar_collapsed);
-        assert_eq!(preferences.reduce_motion, None);
+        assert_eq!(preferences.motion, MotionPreference::System);
         assert_eq!(preferences.theme, ThemePreset::Hermes);
         assert_eq!(preferences.density, InterfaceDensity::Comfortable);
     }

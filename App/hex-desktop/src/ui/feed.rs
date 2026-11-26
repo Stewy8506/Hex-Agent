@@ -604,7 +604,7 @@ impl MessageFeed {
                 );
             column = column.child(empty);
         } else if self.is_connecting {
-            let spinner_el: AnyElement = if motion::reduced_motion() {
+            let spinner_el: AnyElement = if motion::MotionSystem::is_reduced(cx) {
                 div()
                     .font_family(theme.font_mono()[0].clone())
                     .text_size(px(MockupTypeScale::SPINNER_SIZE))
