@@ -1,7 +1,6 @@
-//! DX3 settings modal: an editable settings surface driven by the ACP
-//! `config/get` / `config/set` methods. The backend owns the whitelist and
-//! validation; this modal mirrors the returned view, lets the operator edit
-//! text fields and cycle choice fields, and sends only changed keys.
+//! Editable settings surface driven by the ACP `config/get` / `config/set`
+//! methods. The backend owns the whitelist and validation; desktop descriptors
+//! organize those values into sections and send only changed keys.
 
 use std::collections::HashMap;
 
@@ -15,6 +14,169 @@ use crate::ui::modals::text_input::{
 };
 use crate::ui::modals::{modal_press, ModalMotion};
 use hex_protocol::models::ConfigGetResponse;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsSection {
+    Model,
+    Runtime,
+    WebSearch,
+    Cloud,
+    Learning,
+}
+
+impl SettingsSection {
+    pub const ALL: [Self; 5] = [
+        Self::Model,
+        Self::Runtime,
+        Self::WebSearch,
+        Self::Cloud,
+        Self::Learning,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Model => "Model",
+            Self::Runtime => "Runtime",
+            Self::WebSearch => "Web search",
+            Self::Cloud => "Cloud",
+            Self::Learning => "Learning",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Model => "Choose the provider, model, and execution behavior.",
+            Self::Runtime => "Control how long an agent turn may run.",
+            Self::WebSearch => "Configure the provider used for web lookups.",
+            Self::Cloud => "Set the HEX cloud service endpoint.",
+            Self::Learning => "Choose when HEX reflects on completed work.",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Runtime => "runtime",
+            Self::WebSearch => "web_search",
+            Self::Cloud => "cloud",
+            Self::Learning => "learning",
+        }
+    }
+
+    fn adjacent(self, delta: isize) -> Self {
+        let current = Self::ALL
+            .iter()
+            .position(|section| *section == self)
+            .unwrap_or(0) as isize;
+        Self::ALL[(current + delta).rem_euclid(Self::ALL.len() as isize) as usize]
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SettingKind {
+    Text { required: bool },
+    Number { min: u64, max: u64 },
+    Choice { fallback: &'static [&'static str] },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SettingDescriptor {
+    section: SettingsSection,
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    kind: SettingKind,
+}
+
+const SETTING_DESCRIPTORS: [SettingDescriptor; 10] = [
+    SettingDescriptor {
+        section: SettingsSection::Model,
+        key: "model.cloudProvider",
+        label: "Provider",
+        description: "Cloud provider used for new agent sessions.",
+        kind: SettingKind::Text { required: true },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Model,
+        key: "model.cloudModelId",
+        label: "Model ID",
+        description: "Default model identifier for cloud sessions.",
+        kind: SettingKind::Text { required: true },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Model,
+        key: "model.reasoningEffort",
+        label: "Reasoning effort",
+        description: "How much reasoning the model should use.",
+        kind: SettingKind::Choice {
+            fallback: &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Model,
+        key: "model.profile",
+        label: "Execution profile",
+        description: "Where HEX runs tools and model requests.",
+        kind: SettingKind::Choice {
+            fallback: &["cloud", "local", "hybrid", "antigravity_hybrid"],
+        },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Model,
+        key: "model.compressorMode",
+        label: "Log compression",
+        description: "How large tool output is compressed.",
+        kind: SettingKind::Choice {
+            fallback: &["deterministic", "cloud", "local", "off"],
+        },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Model,
+        key: "model.cloudBaseUrl",
+        label: "Model endpoint",
+        description: "Optional custom endpoint for the cloud provider.",
+        kind: SettingKind::Text { required: false },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Runtime,
+        key: "runtime.maxTurns",
+        label: "Max turns",
+        description: "Maximum model turns allowed in one run.",
+        kind: SettingKind::Number { min: 1, max: 1000 },
+    },
+    SettingDescriptor {
+        section: SettingsSection::WebSearch,
+        key: "webSearch.provider",
+        label: "Web search",
+        description: "Search backend used when a tool needs the web.",
+        kind: SettingKind::Choice {
+            fallback: &["auto", "duckduckgo", "tavily", "brave"],
+        },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Cloud,
+        key: "cloud.baseUrl",
+        label: "HEX cloud URL",
+        description: "Base URL for account and cloud services.",
+        kind: SettingKind::Text { required: false },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Learning,
+        key: "learning.autoReflect",
+        label: "Auto-reflect",
+        description: "When HEX should learn from completed sessions.",
+        kind: SettingKind::Choice {
+            fallback: &["cloud_only", "idle", "off"],
+        },
+    },
+];
+
+fn setting_descriptor(key: &str) -> &'static SettingDescriptor {
+    SETTING_DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.key == key)
+        .expect("every setting field has a descriptor")
+}
 
 /// One editable row in the settings modal.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +273,7 @@ pub enum SettingsAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsInteraction {
     SelectRow(usize),
+    SelectSection(SettingsSection),
     Save,
 }
 
@@ -128,6 +291,7 @@ pub struct SettingsModal {
     pub fields: Vec<SettingField>,
     pub options: serde_json::Value,
     pub originals: HashMap<String, String>,
+    pub active_section: SettingsSection,
     pub selected: usize, // index into fields; fields.len() == Save row
     pub editing: bool,
     selection_anchor: usize,
@@ -147,6 +311,7 @@ impl PartialEq for SettingsModal {
             && self.fields == other.fields
             && self.options == other.options
             && self.originals == other.originals
+            && self.active_section == other.active_section
             && self.selected == other.selected
             && self.editing == other.editing
             && self.selection_anchor == other.selection_anchor
@@ -167,6 +332,7 @@ impl Default for SettingsModal {
             fields: Vec::new(),
             options: serde_json::Value::Null,
             originals: HashMap::new(),
+            active_section: SettingsSection::Model,
             selected: 0,
             editing: false,
             selection_anchor: 0,
@@ -199,105 +365,61 @@ impl SettingsModal {
             .unwrap_or_else(|| fallback.iter().map(|s| s.to_string()).collect())
     }
 
-    fn text_field(
-        key: &'static str,
-        label: &'static str,
-        required: bool,
-        config: Option<&str>,
-    ) -> SettingField {
-        let value = config.unwrap_or_default().to_string();
-        SettingField::Text {
-            key,
-            label,
-            cursor: value.len(),
-            value,
-            required,
-        }
-    }
-
-    fn number_field(
-        key: &'static str,
-        label: &'static str,
-        min: u64,
-        max: u64,
-        config: Option<u64>,
-    ) -> SettingField {
-        let value = config.map(|value| value.to_string()).unwrap_or_default();
-        SettingField::Number {
-            key,
-            label,
-            cursor: value.len(),
-            value,
-            min,
-            max,
-        }
-    }
-
-    fn choice_field(
-        key: &'static str,
-        label: &'static str,
+    fn field_from_descriptor(
+        descriptor: &SettingDescriptor,
+        raw: Option<&serde_json::Value>,
         options: &serde_json::Value,
-        fallback: &[&str],
-        config: Option<&str>,
     ) -> SettingField {
-        SettingField::Choice {
-            key,
-            label,
-            options: Self::option_list(options, key, fallback),
-            value: config.map(str::to_string),
+        match descriptor.kind {
+            SettingKind::Text { required } => {
+                let value = raw
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                SettingField::Text {
+                    key: descriptor.key,
+                    label: descriptor.label,
+                    cursor: value.len(),
+                    value,
+                    required,
+                }
+            }
+            SettingKind::Number { min, max } => {
+                let value = raw
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default();
+                SettingField::Number {
+                    key: descriptor.key,
+                    label: descriptor.label,
+                    cursor: value.len(),
+                    value,
+                    min,
+                    max,
+                }
+            }
+            SettingKind::Choice { fallback } => SettingField::Choice {
+                key: descriptor.key,
+                label: descriptor.label,
+                options: Self::option_list(options, descriptor.key, fallback),
+                value: raw.and_then(serde_json::Value::as_str).map(str::to_string),
+            },
         }
     }
 
     /// Rebuild the field list from a backend view; keeps `selected` in range.
     pub fn apply_view(&mut self, view: &ConfigGetResponse) {
-        let model = view.config.model.clone().unwrap_or_default();
-        let runtime = view.config.runtime.clone().unwrap_or_default();
-        let web = view.config.web_search.clone().unwrap_or_default();
-        let cloud = view.config.cloud.clone().unwrap_or_default();
-        let learning = view.config.learning.clone().unwrap_or_default();
-
-        let fields = vec![
-            Self::text_field("model.cloudProvider", "Provider", true, model.cloud_provider.as_deref()),
-            Self::text_field("model.cloudModelId", "Model ID", true, model.cloud_model_id.as_deref()),
-            Self::choice_field(
-                "model.reasoningEffort",
-                "Reasoning effort",
-                &view.options,
-                &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-                model.reasoning_effort.as_deref(),
-            ),
-            Self::choice_field(
-                "model.profile",
-                "Execution profile",
-                &view.options,
-                &["cloud", "local", "hybrid", "antigravity_hybrid"],
-                model.profile.as_deref(),
-            ),
-            Self::choice_field(
-                "model.compressorMode",
-                "Log compression",
-                &view.options,
-                &["deterministic", "cloud", "local", "off"],
-                model.compressor_mode.as_deref(),
-            ),
-            Self::text_field("model.cloudBaseUrl", "Model endpoint", false, model.cloud_base_url.as_deref()),
-            Self::number_field("runtime.maxTurns", "Max turns", 1, 1000, runtime.max_turns),
-            Self::choice_field(
-                "webSearch.provider",
-                "Web search",
-                &view.options,
-                &["auto", "duckduckgo", "tavily", "brave"],
-                web.provider.as_deref(),
-            ),
-            Self::text_field("cloud.baseUrl", "HEX cloud URL", false, cloud.base_url.as_deref()),
-            Self::choice_field(
-                "learning.autoReflect",
-                "Auto-reflect",
-                &view.options,
-                &["cloud_only", "idle", "off"],
-                learning.auto_reflect.as_deref(),
-            ),
-        ];
+        let config = serde_json::to_value(&view.config).expect("settings config is serializable");
+        let fields = SETTING_DESCRIPTORS
+            .iter()
+            .map(|descriptor| {
+                let mut raw = Some(&config);
+                for segment in descriptor.key.split('.') {
+                    raw = raw.and_then(|value| value.get(segment));
+                }
+                Self::field_from_descriptor(descriptor, raw, &view.options)
+            })
+            .collect::<Vec<_>>();
 
         let mut originals = HashMap::new();
         for field in &fields {
@@ -310,7 +432,11 @@ impl SettingsModal {
         self.options = view.options.clone();
         self.fields = fields;
         self.originals = originals;
-        self.selected = self.selected.min(self.fields.len());
+        self.selected = self
+            .fields
+            .iter()
+            .position(|field| setting_descriptor(field.key()).section == self.active_section)
+            .unwrap_or(0);
         self.editing = false;
         self.selection_anchor = 0;
         self.edit_snapshot = None;
@@ -325,19 +451,65 @@ impl SettingsModal {
         self.error = Some(message.into());
     }
 
+    fn section_indices(&self) -> Vec<usize> {
+        self.fields
+            .iter()
+            .enumerate()
+            .filter_map(|(index, field)| {
+                (setting_descriptor(field.key()).section == self.active_section).then_some(index)
+            })
+            .collect()
+    }
+
     fn move_selection(&mut self, delta: isize) {
         self.commit_edit();
-        let count = self.fields.len() as isize + 1;
-        let next = (self.selected as isize + delta).rem_euclid(count);
-        self.selected = next as usize;
+        let mut rows = self.section_indices();
+        rows.push(self.fields.len());
+        let current = rows
+            .iter()
+            .position(|index| *index == self.selected)
+            .unwrap_or(0) as isize;
+        let next = (current + delta).rem_euclid(rows.len() as isize);
+        self.selected = rows[next as usize];
+        self.selection_anchor = 0;
+        self.scroll_selected_into_view();
+    }
+
+    fn move_section(&mut self, delta: isize) {
+        self.commit_edit();
+        self.active_section = self.active_section.adjacent(delta);
+        self.selected = self
+            .fields
+            .iter()
+            .position(|field| setting_descriptor(field.key()).section == self.active_section)
+            .unwrap_or(self.fields.len());
         self.selection_anchor = 0;
         self.scroll_selected_into_view();
     }
 
     fn scroll_selected_into_view(&self) {
-        let index = self.selected.min(self.fields.len().saturating_sub(1));
+        let index = self
+            .section_indices()
+            .iter()
+            .position(|field_index| *field_index == self.selected)
+            .unwrap_or_else(|| self.section_indices().len().saturating_sub(1));
         self.scroll_handle
             .scroll_to_item(index, ScrollStrategy::Center);
+    }
+
+    pub fn select_section(&mut self, section: SettingsSection) {
+        if self.busy {
+            return;
+        }
+        self.commit_edit();
+        self.active_section = section;
+        self.selected = self
+            .fields
+            .iter()
+            .position(|field| setting_descriptor(field.key()).section == section)
+            .unwrap_or(self.fields.len());
+        self.selection_anchor = 0;
+        self.scroll_selected_into_view();
     }
 
     pub fn select_row(&mut self, index: usize) {
@@ -346,6 +518,9 @@ impl SettingsModal {
         }
         self.commit_edit();
         self.selected = index.min(self.fields.len());
+        if let Some(field) = self.fields.get(self.selected) {
+            self.active_section = setting_descriptor(field.key()).section;
+        }
         self.selection_anchor = 0;
         if self.selected == self.fields.len() {
             self.scroll_selected_into_view();
@@ -406,6 +581,14 @@ impl SettingsModal {
             return None;
         }
         match key {
+            "pageup" => {
+                self.move_section(-1);
+                None
+            }
+            "pagedown" => {
+                self.move_section(1);
+                None
+            }
             "up" | "arrowup" => {
                 self.commit_edit();
                 self.move_selection(-1);
@@ -701,45 +884,157 @@ impl SettingsModal {
         changed
     }
 
-    fn section_label(key: &str) -> &'static str {
-        match key.split('.').next().unwrap_or(key) {
-            "model" => "Model",
-            "runtime" => "Runtime",
-            "webSearch" => "Web search",
-            "cloud" => "Cloud",
-            "learning" => "Learning",
-            _ => "Other",
+    fn render_navigation(
+        &self,
+        theme: &HermesTheme,
+        motion: ModalMotion<'_>,
+        on_action: SettingsHandler,
+    ) -> Div {
+        let mut nav = div()
+            .debug_selector(|| "settings_navigation".to_string())
+            .w(px(180.0))
+            .min_w(px(150.0))
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .p(px(12.0))
+            .bg(theme.mockup_sidebar)
+            .child(
+                div()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .text_size(px(MockupTypeScale::FEATURE_LABEL_SIZE))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.mockup_text)
+                    .child("Settings"),
+            );
+
+        for section in SettingsSection::ALL {
+            let selected = self.active_section == section;
+            let count = self
+                .fields
+                .iter()
+                .filter(|field| setting_descriptor(field.key()).section == section)
+                .count();
+            let handler =
+                settings_click_handler(&on_action, SettingsInteraction::SelectSection(section));
+            let mut row = div()
+                .id(SharedString::from(format!(
+                    "settings_section_{}",
+                    section.id()
+                )))
+                .debug_selector(move || format!("settings_section_{}", section.id()))
+                .h(px(40.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_between()
+                .px(px(10.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(if selected {
+                    theme.accent_blue
+                } else {
+                    gpui::rgba(0x00000000)
+                })
+                .when(selected, |this| this.bg(theme.mockup_hover))
+                .when(!selected && !self.busy, |this| {
+                    this.hover(|this| this.bg(theme.mockup_hover))
+                })
+                .when(!self.busy, |this| {
+                    this.cursor_pointer()
+                        .on_click(move |event, window, cx| handler(event, window, cx))
+                })
+                .child(
+                    div()
+                        .text_size(px(MockupTypeScale::BASE_SIZE))
+                        .text_color(if selected {
+                            theme.mockup_text
+                        } else {
+                            theme.mockup_session_inactive
+                        })
+                        .child(section.title()),
+                )
+                .child(
+                    div()
+                        .font_family(theme.font_mono()[0].clone())
+                        .text_size(px(MockupTypeScale::HINT_SIZE))
+                        .text_color(theme.mockup_text_dim)
+                        .child(count.to_string()),
+                );
+            if selected {
+                row = modal_press(row, section.id(), motion);
+            }
+            nav = nav.child(row);
         }
+
+        nav.child(
+            div()
+                .mt(px(12.0))
+                .px(px(8.0))
+                .flex()
+                .flex_col()
+                .gap(px(3.0))
+                .text_size(px(MockupTypeScale::HINT_SIZE))
+                .text_color(theme.mockup_text_dim)
+                .child("CONFIG FILE")
+                .child(
+                    div()
+                        .font_family(theme.font_mono()[0].clone())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(self.path.clone()),
+                ),
+        )
     }
 
-    /// Renders the modal card content.
+    /// Renders the split settings shell.
     pub fn render(
         &self,
         theme: &HermesTheme,
         motion: ModalMotion<'_>,
         on_action: SettingsHandler,
     ) -> Div {
-        let mut card = div()
+        let card = div()
             .debug_selector(|| "settings_content".to_string())
-            .w(px(560.0))
+            .w(px(880.0))
             .max_w_full()
+            .h(px(560.0))
+            .flex()
+            .flex_row()
+            .child(self.render_navigation(theme, motion, on_action.clone()));
+        let mut content = div()
+            .flex_1()
+            .min_w_0()
             .flex()
             .flex_col()
             .gap(px(10.0))
             .px(px(20.0))
             .py(px(18.0));
 
-        card = card.child(
+        content = content.child(
             div()
                 .flex()
                 .items_center()
                 .justify_between()
                 .child(
                     div()
-                        .text_size(px(MockupTypeScale::FEATURE_LABEL_SIZE))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.mockup_text)
-                        .child("Settings"),
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.0))
+                        .child(
+                            div()
+                                .text_size(px(18.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.mockup_text)
+                                .child(self.active_section.title()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(MockupTypeScale::HINT_SIZE))
+                                .text_color(theme.mockup_text_dim)
+                                .child(self.active_section.description()),
+                        ),
                 )
                 .child(
                     div()
@@ -757,44 +1052,30 @@ impl SettingsModal {
         );
 
         if self.load_failed {
-            card = card.child(
+            content = content.child(
                 div()
                     .text_size(px(MockupTypeScale::BASE_SIZE))
                     .text_color(theme.mockup_text)
                     .child("Settings could not be loaded."),
             );
             if let Some(error) = &self.error {
-                card = card.child(
+                content = content.child(
                     div()
                         .text_size(px(MockupTypeScale::HINT_SIZE))
                         .text_color(theme.rose_fg())
                         .child(error.clone()),
                 );
             }
-            return card.child(
-                div()
-                    .font_family(theme.font_mono()[0].clone())
-                    .text_size(px(MockupTypeScale::HINT_SIZE))
-                    .text_color(theme.mockup_text_dim)
-                    .child("Esc — close"),
-            );
+            return card.child(content);
         }
 
-        card = card.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .text_size(px(MockupTypeScale::HINT_SIZE))
-                .text_color(theme.mockup_text_dim)
-                .child(format!("File · {}", self.path))
-                .child(format!("Workspace · {}", self.workspace))
-                .child(format!("Data · {}", self.data_dir)),
-        );
-
         if self.fields.is_empty() {
-            card = card.child(
+            content = content.child(
                 div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .text_size(px(MockupTypeScale::BASE_SIZE))
                     .text_color(theme.mockup_text_dim)
                     .child("Loading settings…"),
@@ -803,6 +1084,7 @@ impl SettingsModal {
 
         if !self.fields.is_empty() {
             let fields = self.fields.clone();
+            let section_indices = self.section_indices();
             let originals = self.originals.clone();
             let selected = self.selected;
             let editing = self.editing;
@@ -811,23 +1093,21 @@ impl SettingsModal {
             let scroll_handle = self.scroll_handle.clone();
             let theme = theme.clone();
             let on_action = on_action.clone();
+            let list_id = format!("settings_rows_{}", self.active_section.id());
             let list = uniform_list(
-                "settings_rows",
-                fields.len(),
+                SharedString::from(list_id),
+                section_indices.len(),
                 move |range, _window, cx| {
                     let motion = ModalMotion {
                         owner: motion.owner,
                         cx,
                     };
                     range
-                        .map(|index| {
-                            let show_section = index == 0
-                                || fields[index].key().split('.').next()
-                                    != fields[index - 1].key().split('.').next();
+                        .map(|row_index| {
+                            let index = section_indices[row_index];
                             render_setting_row(
                                 &fields[index],
                                 index,
-                                show_section,
                                 index == selected,
                                 editing,
                                 selection_anchor,
@@ -845,10 +1125,11 @@ impl SettingsModal {
             .track_scroll(scroll_handle)
             .w_full()
             .h_full();
-            card = card.child(
+            content = content.child(
                 div()
                     .debug_selector(|| "settings_list".to_string())
-                    .h(px(320.0))
+                    .flex_1()
+                    .min_h_0()
                     .w_full()
                     .overflow_hidden()
                     .child(list),
@@ -858,11 +1139,10 @@ impl SettingsModal {
         let dirty = self.dirty_count();
         let validation_error = self.validation_error();
         let save_selected = self.selected == self.fields.len();
-        card = card.child(modal_press(
+        content = content.child(modal_press(
             div()
                 .id("settings_save_row")
                 .debug_selector(|| "settings_save_row".into())
-                .mt(px(12.0))
                 .w_full()
                 .flex()
                 .items_center()
@@ -911,7 +1191,7 @@ impl SettingsModal {
         ));
 
         if let Some(status) = &self.status {
-            card = card.child(
+            content = content.child(
                 div()
                     .text_size(px(MockupTypeScale::HINT_SIZE))
                     .text_color(theme.accent_blue)
@@ -919,7 +1199,7 @@ impl SettingsModal {
             );
         }
         if let Some(error) = &self.error {
-            card = card.child(
+            content = content.child(
                 div()
                     .text_size(px(MockupTypeScale::HINT_SIZE))
                     .text_color(theme.rose_fg())
@@ -927,13 +1207,20 @@ impl SettingsModal {
             );
         }
 
-        card.child(
+        content = content.child(
             div()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
                 .font_family(theme.font_mono()[0].clone())
                 .text_size(px(MockupTypeScale::HINT_SIZE))
                 .text_color(theme.mockup_text_dim)
-                .child("↑↓ — select · Enter — edit / cycle · ←→ — move / cycle · Home/End — jump · Del — forward · Esc — cancel / close"),
-        )
+                .child("↑↓ rows · PgUp/PgDn sections · Enter edit · ←→ adjust · Esc cancel")
+                .child(format!("Workspace · {}", self.workspace))
+                .child(format!("Data · {}", self.data_dir)),
+        );
+
+        card.child(content)
     }
 }
 
@@ -948,7 +1235,6 @@ fn settings_click_handler(
 fn render_setting_row(
     field: &SettingField,
     index: usize,
-    show_section: bool,
     selected: bool,
     editing: bool,
     selection_anchor: usize,
@@ -1050,7 +1336,7 @@ fn render_setting_row(
     let mut row = div()
         .id(SharedString::from(format!("settings_row_{index}")))
         .debug_selector(move || format!("settings_row_{index}"))
-        .h(px(64.0))
+        .h(px(76.0))
         .w_full()
         .flex()
         .flex_col()
@@ -1091,15 +1377,13 @@ fn render_setting_row(
                 )
                 .child(value),
         );
-    if show_section {
-        row = row.child(
-            div()
-                .text_size(px(9.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.mockup_text_muted)
-                .child(SettingsModal::section_label(field.key())),
-        );
-    }
+    row = row.child(
+        div()
+            .w_full()
+            .text_size(px(MockupTypeScale::HINT_SIZE))
+            .text_color(theme.mockup_text_dim)
+            .child(setting_descriptor(field.key()).description),
+    );
     if selected {
         row = modal_press(row, "settings_selected_press", motion);
     }
@@ -1171,6 +1455,34 @@ mod tests {
         };
         assert_eq!(options.join(","), "none,low,medium,high");
         assert_eq!(value.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn test_split_navigation_scopes_rows_to_the_active_section() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+
+        assert_eq!(modal.active_section, SettingsSection::Model);
+        assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5]);
+        modal.handle_key("down");
+        assert_eq!(modal.selected, 1);
+
+        modal.handle_key("pageup");
+        assert_eq!(modal.active_section, SettingsSection::Learning);
+        assert_eq!(modal.selected, 9);
+        modal.handle_key("down");
+        assert_eq!(modal.selected, modal.fields.len());
+        modal.handle_key("down");
+        assert_eq!(modal.selected, 9);
+
+        modal.select_section(SettingsSection::Runtime);
+        assert_eq!(modal.active_section, SettingsSection::Runtime);
+        assert_eq!(modal.section_indices(), vec![6]);
+        assert_eq!(modal.selected, 6);
+
+        modal.select_row(0);
+        assert_eq!(modal.active_section, SettingsSection::Model);
+        assert_eq!(modal.selected, 0);
     }
 
     #[test]

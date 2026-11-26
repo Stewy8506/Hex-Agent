@@ -54,7 +54,9 @@ use crate::ui::modals::session_actions::{
     SessionActionHandler, SessionActionModal, SessionActionMode,
     SessionActionOutcome, SessionSearchModal,
 };
-use crate::ui::modals::settings::{SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal};
+use crate::ui::modals::settings::{
+    SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal,
+};
 use crate::ui::modals::text_input::{delete_target, move_target, TextUnit};
 use crate::ui::modals::{
     render_about, render_modal_container, AccountModal, ActiveModal, ModalMotion, ModelEntry,
@@ -3759,6 +3761,8 @@ impl ChatView {
                         | "arrowleft"
                         | "right"
                         | "arrowright"
+                        | "pageup"
+                        | "pagedown"
                         | "enter"
                         | "tab"
                         | "shift-tab"
@@ -6538,6 +6542,9 @@ impl ChatView {
                                 match interaction {
                                     SettingsInteraction::SelectRow(index) => {
                                         current.select_row(index);
+                                    }
+                                    SettingsInteraction::SelectSection(section) => {
+                                        current.select_section(section);
                                     }
                                     SettingsInteraction::Save => {
                                         current.selected = current.fields.len();

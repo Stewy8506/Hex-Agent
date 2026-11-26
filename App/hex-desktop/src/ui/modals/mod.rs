@@ -22,7 +22,9 @@ pub use session_actions::{
     SessionActionHandler, SessionActionInteraction, SessionActionModal, SessionActionOutcome,
     SessionSearchModal,
 };
-pub use settings::{SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal};
+pub use settings::{
+    SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal, SettingsSection,
+};
 
 use gpui::*;
 use crate::theme::HermesTheme;

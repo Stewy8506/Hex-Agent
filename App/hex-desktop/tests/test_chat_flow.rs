@@ -1008,15 +1008,15 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
 
     let mut settings = SettingsModal::default();
     settings.fields.push(SettingField::Text {
-        key: "model.name",
-        label: "Model",
+        key: "model.cloudProvider",
+        label: "Provider",
         value: "new-model".into(),
         cursor: 0,
         required: false,
     });
     settings
         .originals
-        .insert("model.name".into(), "old-model".into());
+        .insert("model.cloudProvider".into(), "old-model".into());
     vc.update(|_, app| {
         view.update(app, |view, cx| {
             view.shell.active_modal = ActiveModal::Settings(settings);
@@ -1031,6 +1031,17 @@ fn test_modal_pointer_actions_activate_controls(cx: &mut TestAppContext) {
         };
         assert!(modal.editing);
         assert_eq!(modal.selected, 0);
+    });
+    click_debug_element(vc, "settings_section_runtime");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(
+            modal.active_section,
+            hex_desktop::ui::modals::SettingsSection::Runtime
+        );
+        assert!(!modal.editing);
     });
     click_debug_element(vc, "settings_save_row");
     pump_until(vc, &view, "pointer settings save", |view| {
