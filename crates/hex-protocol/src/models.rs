@@ -983,6 +983,40 @@ pub struct ToolsListResponse {
     pub tools: Vec<ToolDefinition>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolPolicyMode {
+    Default,
+    Allow,
+    Ask,
+    Deny,
+}
+
+/// Live tool definition with its effective approval policy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolPolicyEntry {
+    #[serde(flatten)]
+    pub definition: ToolDefinition,
+    pub policy_mode: ToolPolicyMode,
+    pub policy_default: bool,
+    pub policy_writable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsPolicyResponse {
+    pub tools: Vec<ToolPolicyEntry>,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPolicyMutationResponse {
+    pub tools: Vec<ToolPolicyEntry>,
+    pub revision: String,
+    pub changed: Vec<String>,
+}
+
 /// Parameters for `tools/call`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallParams {
@@ -1493,6 +1527,35 @@ mod tests {
         assert_eq!(tools.tools.len(), 1);
         assert_eq!(tools.tools[0].name, "read_file");
         assert_eq!(tools.tools[0].risk_class.as_deref(), Some("R0"));
+    }
+
+    #[test]
+    fn test_tool_policy_response_roundtrip() {
+        let raw = serde_json::json!({
+            "tools": [{
+                "name": "write_file",
+                "description": "Write a file",
+                "parameters": {"type": "object"},
+                "risk_class": "R2",
+                "policy_mode": "ask",
+                "policy_default": false,
+                "policy_writable": true
+            }],
+            "revision": "sha256:abc"
+        });
+        let response: ToolsPolicyResponse = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(response.tools[0].definition.name, "write_file");
+        assert_eq!(response.tools[0].policy_mode, ToolPolicyMode::Ask);
+        assert!(!response.tools[0].policy_default);
+        assert_eq!(serde_json::to_value(response).unwrap(), raw);
+
+        let mutation: ToolPolicyMutationResponse = serde_json::from_value(serde_json::json!({
+            "tools": [],
+            "revision": "sha256:def",
+            "changed": ["write_file"]
+        }))
+        .unwrap();
+        assert_eq!(mutation.changed, vec!["write_file"]);
     }
 
     #[test]

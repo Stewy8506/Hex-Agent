@@ -15,7 +15,7 @@ Dispatched methods:
 - session/prompt, session/cancel, session/command
 - session/history, session/historyContent, session/toolResult, session/subagents
 - session/approvalDecision
-- tools/list, tools/call
+- tools/list, tools/call, tools/policy/get, tools/policy/set
 """
 
 from __future__ import annotations
@@ -46,6 +46,12 @@ from harness_core.config_loader import (
     write_config_yaml_atomic,
 )
 from harness_core.core.reasoning_effort import EFFORT_LADDER
+from harness_core.tool_policy import (
+    ToolPolicy,
+    normalize_tool_policy_mode,
+    tool_policy_overrides,
+    validate_tool_policy_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -643,7 +649,7 @@ _SUPPORTED_METHODS = (
     "session/history", "session/historyContent", "session/toolResult",
     "session/subagents", "session/approvalDecision",
     "session/rename", "session/delete", "session/archive", "session/pin",
-    "tools/list", "tools/call",
+    "tools/list", "tools/call", "tools/policy/get", "tools/policy/set",
     "config/get", "config/set",
     "providers/list", "providers/credentials/set", "providers/credentials/delete",
     "providers/endpoint/set",
@@ -661,6 +667,8 @@ HEX_CONTRACT_FEATURES = (
     "providers.credentials.write",
     "providers.endpoint.write",
     "tools.list",
+    "tools.policy.read",
+    "tools.policy.write",
     "skills.list",
 )
 
@@ -902,6 +910,7 @@ class ACPServer:
             self._orchestrator = HarnessOrchestrator(
                 data_dir=data_dir,
                 default_workspace=self.workspace_root,
+                config_dir=self.config_dir,
             )
         self._wire_approval_bridge(self._orchestrator)
         return self._orchestrator
@@ -991,6 +1000,10 @@ class ACPServer:
                 res = self._handle_tools_list(params)
             elif method == "tools/call":
                 res = self._handle_tools_call(params)
+            elif method == "tools/policy/get":
+                res = self._handle_tools_policy_get(params)
+            elif method == "tools/policy/set":
+                res = self._handle_tools_policy_set(params)
             elif method == "session/approvalDecision":
                 res = self._handle_session_approval_decision(params)
             elif method == "session/command":
@@ -1105,7 +1118,7 @@ class ACPServer:
                     "code": -32602 if method in {
                         "initialize", "config/set", "providers/list",
                         "providers/credentials/set", "providers/credentials/delete",
-                        "providers/endpoint/set",
+                        "providers/endpoint/set", "tools/policy/set",
                         "session/toolResult", "session/load", "session/history",
                         "session/historyContent", "session/approvalDecision"
                     } and isinstance(exc, (ValueError, TypeError)) else -32000,
@@ -2304,6 +2317,103 @@ class ACPServer:
         # registered MCP tools), not the static built-in catalog (B57).
         defs = self.orchestrator.gateway.live_tool_definitions()
         return {"tools": defs}
+
+    @staticmethod
+    def _tool_policy_view(
+        definitions: list[dict[str, Any]], policy: ToolPolicy, revision: str
+    ) -> dict[str, Any]:
+        tools: list[dict[str, Any]] = []
+        for definition in definitions:
+            name = str(definition["name"])
+            risk = str(definition.get("risk_class") or "")
+            tools.append({
+                **definition,
+                "policy_mode": policy.mode_for(name, risk),
+                "policy_default": policy.is_default(name),
+                "policy_writable": risk != "R4",
+            })
+        return {"tools": tools, "revision": revision}
+
+    def _handle_tools_policy_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        gateway = self.orchestrator.gateway
+        with self._config_lock:
+            config, revision = self._read_config_snapshot(self.config_dir / "config.yaml")
+            policy = ToolPolicy(tool_policy_overrides(config))
+            gateway.tool_policy = policy
+        definitions = gateway.live_tool_definitions()
+        return self._tool_policy_view(definitions, policy, revision)
+
+    def _handle_tools_policy_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            raise ValueError("tools/policy/set params must be an object")
+        updates = params.get("updates")
+        if not isinstance(updates, dict) or not updates:
+            raise ValueError("updates must be a non-empty mapping of tool name to mode")
+        expected_revision = params.get("expectedRevision")
+        if not isinstance(expected_revision, str) or not expected_revision.strip():
+            raise ValueError("expectedRevision must be a non-empty string")
+
+        gateway = self.orchestrator.gateway
+        definitions = gateway.live_tool_definitions()
+        known = {str(definition["name"]): str(definition.get("risk_class") or "") for definition in definitions}
+        normalized: dict[str, str] = {}
+        for raw_name, raw_mode in updates.items():
+            name = validate_tool_policy_name(raw_name)
+            if name not in known:
+                raise ValueError(f"Unknown tool {name!r}")
+            if known[name] == "R4":
+                raise ValueError(f"Tool {name!r} is R4 and its deny policy cannot be changed")
+            normalized[name] = normalize_tool_policy_mode(raw_mode)
+
+        cfg_file = self.config_dir / "config.yaml"
+        with self._config_lock:
+            merged, revision = self._read_config_snapshot(cfg_file)
+            if expected_revision != revision:
+                raise ConfigRevisionConflict(expected_revision, revision)
+            tools = merged.get("tools")
+            if tools is None:
+                tools = {}
+            if not isinstance(tools, dict):
+                raise ValueError("tools config must be a mapping")
+            raw_policy = tools.get("policy")
+            if raw_policy is None:
+                raw_policy = {}
+            if not isinstance(raw_policy, dict):
+                raise ValueError("tools.policy must be a mapping of tool name to mode")
+            policy = dict(raw_policy)
+            changed: list[str] = []
+            for name, mode in normalized.items():
+                stored = None if mode == "default" else mode
+                if raw_policy.get(name) != stored:
+                    changed.append(name)
+                if stored is None:
+                    policy.pop(name, None)
+                else:
+                    policy[name] = stored
+            if policy:
+                tools["policy"] = policy
+            else:
+                tools.pop("policy", None)
+            if tools:
+                merged["tools"] = tools
+            else:
+                merged.pop("tools", None)
+
+            latest, latest_revision = self._read_config_snapshot(cfg_file)
+            if latest_revision != revision:
+                raise ConfigRevisionConflict(expected_revision, latest_revision)
+            if changed:
+                write_config_yaml_atomic(cfg_file, merged)
+                _, written_revision = self._read_config_snapshot(cfg_file)
+            else:
+                written_revision = revision
+            effective = ToolPolicy(tool_policy_overrides(merged))
+            gateway.tool_policy = effective
+
+        return {
+            **self._tool_policy_view(gateway.live_tool_definitions(), effective, written_revision),
+            "changed": sorted(changed),
+        }
 
     def _ensure_tools_call_task(self) -> str:
         """Ledger task backing direct tools/call so gateway policy always applies."""

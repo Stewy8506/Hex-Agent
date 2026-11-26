@@ -26,7 +26,8 @@ use crate::models::{
     SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
     SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionRenameResponse,
     SessionSubagentsParams, SessionSubagentsResponse, SubagentInfo, ToolCallParams,
-    ToolCallResponse, ToolDefinition, ToolsListResponse, HEX_CONTRACT_VERSION,
+    ToolCallResponse, ToolDefinition, ToolPolicyMutationResponse, ToolsListResponse,
+    ToolsPolicyResponse, HEX_CONTRACT_VERSION,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -820,6 +821,31 @@ impl AcpClient {
         Ok(resp.tools)
     }
 
+    /// Read the live tool registry with effective per-tool approval policy.
+    pub async fn tools_policy_get(&self) -> Result<ToolsPolicyResponse, AcpError> {
+        self.send_request("tools/policy/get", serde_json::json!({}))
+            .await
+    }
+
+    /// Update per-tool approval policy using the shared config revision.
+    pub async fn tools_policy_set(
+        &self,
+        tool: &str,
+        mode: &str,
+        expected_revision: &str,
+    ) -> Result<ToolPolicyMutationResponse, AcpError> {
+        let mut updates = serde_json::Map::new();
+        updates.insert(tool.to_string(), serde_json::Value::String(mode.to_string()));
+        self.send_request(
+            "tools/policy/set",
+            serde_json::json!({
+                "updates": updates,
+                "expectedRevision": expected_revision
+            }),
+        )
+        .await
+    }
+
     // -- Cloud account ------------------------------------------------------
 
     /// Local cloud account/device status (`cloud/auth/status`).
@@ -1299,6 +1325,70 @@ mod tests {
         assert_eq!(res.approval_id, "appr_1");
         assert_eq!(res.decision, "approve");
         assert_eq!(res.status, "acknowledged");
+    }
+
+    #[tokio::test]
+    async fn test_client_tool_policy_rpc() {
+        let (client_read, mut server_write) = tokio::io::duplex(4096);
+        let (server_read, client_write) = tokio::io::duplex(4096);
+        let client = AcpClient::from_streams(client_read, client_write);
+
+        let server = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            let requests = [
+                ("tools/policy/get", serde_json::json!({})),
+                (
+                    "tools/policy/set",
+                    serde_json::json!({
+                        "updates": {"write_file": "ask"},
+                        "expectedRevision": "sha256:policy-v1"
+                    }),
+                ),
+            ];
+            for (method, params) in requests {
+                let line = lines.next_line().await.unwrap().unwrap();
+                let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+                assert_eq!(req.method, method);
+                assert_eq!(req.params, Some(params));
+                let result = if method == "tools/policy/get" {
+                    serde_json::json!({
+                        "tools": [{
+                            "name": "write_file",
+                            "description": "Write a file",
+                            "parameters": {},
+                            "risk_class": "R2",
+                            "policy_mode": "allow",
+                            "policy_default": true,
+                            "policy_writable": true
+                        }],
+                        "revision": "sha256:policy-v1"
+                    })
+                } else {
+                    serde_json::json!({
+                        "tools": [],
+                        "revision": "sha256:policy-v2",
+                        "changed": ["write_file"]
+                    })
+                };
+                let response =
+                    serde_json::json!({"jsonrpc": "2.0", "id": req.id, "result": result});
+                server_write
+                    .write_all((response.to_string() + "\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let policy = client.tools_policy_get().await.unwrap();
+        assert_eq!(policy.revision, "sha256:policy-v1");
+        assert_eq!(policy.tools[0].definition.name, "write_file");
+        let mutation = client
+            .tools_policy_set("write_file", "ask", "sha256:policy-v1")
+            .await
+            .unwrap();
+        assert_eq!(mutation.revision, "sha256:policy-v2");
+        assert_eq!(mutation.changed, vec!["write_file"]);
+        server.await.unwrap();
     }
 
     #[tokio::test]

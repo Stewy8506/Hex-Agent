@@ -111,6 +111,7 @@ class TestAcpCliBoundaries(unittest.TestCase):
                     self.assertIn("result", response)
                 constructor.assert_called_once_with(
                     data_dir=workspace / ".hex" / "data", default_workspace=workspace,
+                    config_dir=Path.home() / ".hex",
                 )
 
             with patch.object(ACPServer, "run_stdio", autospec=True, side_effect=run_stdio) as run:

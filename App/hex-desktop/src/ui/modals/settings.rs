@@ -18,7 +18,8 @@ use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::motion::MotionPreference;
 use hex_protocol::models::{
     ConfigGetResponse, ProviderCredentialSource, ProviderCredentialStorage, ProviderDescriptor,
-    ProviderEndpointSource, ProvidersListResponse, ToolDefinition,
+    ProviderEndpointSource, ProvidersListResponse, ToolDefinition, ToolPolicyEntry,
+    ToolPolicyMode, ToolPolicyMutationResponse, ToolsPolicyResponse,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +79,7 @@ impl SettingsSection {
             Self::Model => "Choose the provider, model, and execution behavior.",
             Self::Sessions => "Find, resume, rename, pin, archive, or delete sessions.",
             Self::Cloud => "Manage the HEX cloud account and enrolled devices.",
-            Self::Tools => "Inspect the live tool registry exposed by the runtime.",
+            Self::Tools => "Inspect live tools and choose whether each may run, asks for approval, or is denied.",
             Self::Skills => "Inspect skills registered with the active runtime session.",
             Self::Providers => "Manage provider credentials and inspect connection metadata.",
             Self::Runtime => "Control how long an agent turn may run.",
@@ -336,7 +337,7 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 31] = [
         section: SettingsSection::Tools,
         key: "desktop.info.tools",
         label: "Tool inventory",
-        description: "Live tool names, descriptions, and risk classes from tools/list.",
+        description: "Live tool names, risk classes, and allow/ask/deny approval policy from tools/policy/get.",
         kind: SettingKind::Info,
     },
     SettingDescriptor {
@@ -470,11 +471,19 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
     fields
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolPolicySelection {
+    pub mode: ToolPolicyMode,
+    pub is_default: bool,
+    pub writable: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InventoryItem {
     pub name: String,
     pub description: String,
     pub detail: String,
+    pub policy: Option<ToolPolicySelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -504,6 +513,33 @@ struct ProviderDraft {
     kind: ProviderDraftKind,
     value: String,
     cursor: usize,
+}
+
+fn tool_policy_mode_label(mode: ToolPolicyMode) -> &'static str {
+    match mode {
+        ToolPolicyMode::Default => "default",
+        ToolPolicyMode::Allow => "allow",
+        ToolPolicyMode::Ask => "ask",
+        ToolPolicyMode::Deny => "deny",
+    }
+}
+
+pub fn tool_policy_wire_mode(mode: ToolPolicyMode) -> &'static str {
+    tool_policy_mode_label(mode)
+}
+
+fn tool_policy_display(selection: ToolPolicySelection, draft: Option<ToolPolicyMode>) -> String {
+    if !selection.writable {
+        return "deny · fixed".to_string();
+    }
+    match draft.unwrap_or(if selection.is_default {
+        ToolPolicyMode::Default
+    } else {
+        selection.mode
+    }) {
+        ToolPolicyMode::Default => format!("default ({})", tool_policy_mode_label(selection.mode)),
+        mode => tool_policy_mode_label(mode).to_string(),
+    }
 }
 
 fn provider_status(provider: &ProviderDescriptor) -> String {
@@ -586,35 +622,42 @@ fn provider_fields(state: &ProvidersState) -> Vec<SettingField> {
 }
 
 fn tool_info_fields(state: &InventoryState) -> Vec<SettingField> {
-    let rows: Vec<(&str, String, String)> = match state {
-        InventoryState::Loading => vec![(
+    let info = |label: &str, value: &str, description: &str| SettingField::Info {
+        key: "desktop.info.tools",
+        label: label.to_string(),
+        value: value.to_string(),
+        description: description.to_string(),
+    };
+    match state {
+        InventoryState::Loading => vec![info(
             "Loading tools…",
-            "Loading".to_string(),
-            "Requesting the live registry with tools/list.".to_string(),
+            "Loading",
+            "Requesting the live registry and approval policy.",
         )],
         InventoryState::Ready(items) => items
             .iter()
-            .map(|item| (item.name.as_str(), item.detail.clone(), item.description.clone()))
+            .map(|item| {
+                if let Some(policy) = item.policy {
+                    SettingField::ToolPolicy {
+                        name: item.name.clone(),
+                        risk_class: item.detail.trim_start_matches("risk: ").to_string(),
+                        description: item.description.clone(),
+                        policy,
+                    }
+                } else {
+                    info(&item.name, &item.detail, &item.description)
+                }
+            })
             .collect(),
-        InventoryState::Empty => vec![(
+        InventoryState::Empty => vec![info(
             "No tools registered",
-            "0 tools".to_string(),
-            "The connected runtime returned an empty tool registry.".to_string(),
+            "0 tools",
+            "The connected runtime returned an empty tool registry.",
         )],
-        InventoryState::Unavailable(message) => vec![(
-            "Tools unavailable",
-            "Unavailable".to_string(),
-            message.clone(),
-        )],
-    };
-    rows.into_iter()
-        .map(|(label, value, description)| SettingField::Info {
-            key: "desktop.info.tools",
-            label: label.to_string(),
-            value,
-            description,
-        })
-        .collect()
+        InventoryState::Unavailable(message) => {
+            vec![info("Tools unavailable", "Unavailable", message)]
+        }
+    }
 }
 
 pub const SKILLS_SESSION_REQUIRED: &str = "Open or select a session to load the skill registry.";
@@ -690,6 +733,7 @@ fn parse_skills_output(output: &str) -> Result<Vec<InventoryItem>, String> {
             name: name.to_string(),
             description: "Registered in the runtime skill ledger.".to_string(),
             detail: format!("gate: {gate}"),
+            policy: None,
         });
     }
     if items.is_empty() {
@@ -706,6 +750,7 @@ fn parse_skills_output(output: &str) -> Result<Vec<InventoryItem>, String> {
             description: "The current /skills response is limited to the first 20 skills."
                 .to_string(),
             detail: format!("{total} registered"),
+            policy: None,
         });
     }
     Ok(items)
@@ -760,6 +805,12 @@ pub enum SettingField {
         key: &'static str,
         provider: ProviderDescriptor,
     },
+    ToolPolicy {
+        name: String,
+        risk_class: String,
+        description: String,
+        policy: ToolPolicySelection,
+    },
 }
 
 impl SettingField {
@@ -772,6 +823,7 @@ impl SettingField {
             | Self::Action { key, .. }
             | Self::Info { key, .. }
             | Self::Provider { key, .. } => key,
+            Self::ToolPolicy { .. } => "desktop.info.tools",
         }
     }
 
@@ -784,6 +836,7 @@ impl SettingField {
             | Self::Action { label, .. } => label,
             Self::Info { label, .. } => label,
             Self::Provider { provider, .. } => provider.name.as_str(),
+            Self::ToolPolicy { name, .. } => name,
         }
     }
 
@@ -802,6 +855,7 @@ impl SettingField {
             Self::Action { value, .. } => value.clone(),
             Self::Info { value, .. } => value.clone(),
             Self::Provider { provider, .. } => provider_status(provider),
+            Self::ToolPolicy { policy, .. } => tool_policy_display(*policy, None),
         }
     }
 
@@ -814,7 +868,8 @@ impl SettingField {
             | Self::Keybind { .. }
             | Self::Action { .. }
             | Self::Info { .. }
-            | Self::Provider { .. } => None,
+            | Self::Provider { .. }
+            | Self::ToolPolicy { .. } => None,
         }
     }
 
@@ -843,6 +898,7 @@ impl SettingField {
             Self::Action { .. } => Err("actions cannot be saved as settings".to_string()),
             Self::Info { .. } => Err("read-only rows cannot be saved as settings".to_string()),
             Self::Provider { .. } => Err("provider credentials use the provider API".to_string()),
+            Self::ToolPolicy { .. } => Err("tool policy uses the tool policy API".to_string()),
         }
     }
 }
@@ -855,6 +911,7 @@ pub enum SettingsAction {
     SaveProviderCredential(String, String),
     SaveProviderEndpoint(String, String),
     DeleteProviderCredential(String),
+    SaveToolPolicy(String, ToolPolicyMode),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -890,6 +947,8 @@ pub struct SettingsModal {
     pub skills: InventoryState,
     pub providers: ProvidersState,
     provider_drafts: HashMap<String, ProviderDraft>,
+    tool_policy_drafts: HashMap<String, ToolPolicyMode>,
+    tool_policy_active: bool,
     provider_delete_confirmation: Option<String>,
     pub active_section: SettingsSection,
     pub search_query: String,
@@ -925,6 +984,8 @@ impl PartialEq for SettingsModal {
             && self.skills == other.skills
             && self.providers == other.providers
             && self.provider_drafts == other.provider_drafts
+            && self.tool_policy_drafts == other.tool_policy_drafts
+            && self.tool_policy_active == other.tool_policy_active
             && self.provider_delete_confirmation == other.provider_delete_confirmation
             && self.active_section == other.active_section
             && self.search_query == other.search_query
@@ -974,6 +1035,8 @@ impl Default for SettingsModal {
             skills,
             providers,
             provider_drafts: HashMap::new(),
+            tool_policy_drafts: HashMap::new(),
+            tool_policy_active: false,
             provider_delete_confirmation: None,
             active_section: SettingsSection::Model,
             search_query: String::new(),
@@ -1093,6 +1156,14 @@ impl SettingsModal {
             .then(|| self.selected_provider().map(|provider| provider.id.clone()))
             .flatten()
             .map(|id| (id, self.selection_anchor));
+        let selected_tool_name = (!self.searching && self.pending_setting.is_none())
+            .then(|| {
+                self.fields.get(self.selected).and_then(|field| match field {
+                    SettingField::ToolPolicy { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
+            })
+            .flatten();
         let config = serde_json::to_value(&view.config).expect("settings config is serializable");
         let mut fields = SETTING_DESCRIPTORS
             .iter()
@@ -1112,7 +1183,9 @@ impl SettingsModal {
                     is_desktop_setting(field.key())
                         && !matches!(
                             field,
-                            SettingField::Info { .. } | SettingField::Provider { .. }
+                            SettingField::Info { .. }
+                                | SettingField::Provider { .. }
+                                | SettingField::ToolPolicy { .. }
                         )
                 })
                 .cloned(),
@@ -1138,7 +1211,9 @@ impl SettingsModal {
         self.workspace = view.workspace.clone();
         self.data_dir = view.data_dir.clone();
         self.options = view.options.clone();
-        self.revision = view.revision.clone();
+        if !self.tool_policy_active {
+            self.revision = view.revision.clone();
+        }
         self.fields = fields;
         self.originals = originals;
         self.selected = self
@@ -1146,6 +1221,15 @@ impl SettingsModal {
             .iter()
             .position(|field| setting_descriptor(field.key()).section == self.active_section)
             .unwrap_or(0);
+        if let Some(tool_name) = selected_tool_name {
+            self.selected = self
+                .fields
+                .iter()
+                .position(|field| {
+                    matches!(field, SettingField::ToolPolicy { name, .. } if name == &tool_name)
+                })
+                .unwrap_or(self.selected);
+        }
         let preserved_provider_edit = if let Some((provider_id, anchor)) = provider_edit {
             self.fields
                 .iter()
@@ -1185,11 +1269,14 @@ impl SettingsModal {
 
     pub fn mark_load_failed(&mut self, message: impl Into<String>) {
         self.load_failed = true;
-        self.revision = None;
+        if !self.tool_policy_active {
+            self.revision = None;
+        }
         self.error = Some(message.into());
     }
 
     pub fn set_tools(&mut self, mut tools: Vec<ToolDefinition>) {
+        self.tool_policy_active = false;
         tools.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
         self.tools = if tools.is_empty() {
             InventoryState::Empty
@@ -1217,12 +1304,82 @@ impl SettingsModal {
                                 tool.description
                             },
                             detail,
+                            policy: None,
                         }
                     })
                     .collect(),
             )
         };
         self.refresh_inventory_fields();
+    }
+
+    pub fn set_tool_policy(&mut self, mut response: ToolsPolicyResponse) {
+        self.tool_policy_active = true;
+        response
+            .tools
+            .sort_by(|left, right| left.definition.name.to_lowercase().cmp(&right.definition.name.to_lowercase()));
+        self.tools = if response.tools.is_empty() {
+            InventoryState::Empty
+        } else {
+            InventoryState::Ready(
+                response
+                    .tools
+                    .into_iter()
+                    .map(Self::tool_policy_inventory_item)
+                    .collect(),
+            )
+        };
+        self.revision = Some(response.revision);
+        self.refresh_inventory_fields();
+    }
+
+    fn tool_policy_inventory_item(tool: ToolPolicyEntry) -> InventoryItem {
+        let risk = tool
+            .definition
+            .risk_class
+            .as_deref()
+            .map(str::trim)
+            .filter(|risk| !risk.is_empty())
+            .unwrap_or("unspecified");
+        InventoryItem {
+            name: if tool.definition.name.trim().is_empty() {
+                "(unnamed tool)".to_string()
+            } else {
+                tool.definition.name
+            },
+            description: if tool.definition.description.trim().is_empty() {
+                "No description provided.".to_string()
+            } else {
+                tool.definition.description
+            },
+            detail: format!("risk: {risk}"),
+            policy: Some(ToolPolicySelection {
+                mode: tool.policy_mode,
+                is_default: tool.policy_default,
+                writable: tool.policy_writable,
+            }),
+        }
+    }
+
+    pub fn apply_tool_policy(&mut self, response: ToolPolicyMutationResponse, tool: String) {
+        self.tool_policy_drafts.remove(&tool);
+        self.set_tool_policy(ToolsPolicyResponse {
+            tools: response.tools,
+            revision: response.revision,
+        });
+        self.busy = false;
+        self.error = None;
+        self.status = if response.changed.is_empty() {
+            Some("Tool policy unchanged.".to_string())
+        } else {
+            Some(format!("{} tool policy updated.", tool))
+        };
+        self.scroll_selected_into_view();
+    }
+
+    pub fn fail_tool_policy(&mut self, message: impl Into<String>) {
+        self.busy = false;
+        self.error = Some(message.into());
     }
 
     pub fn set_tools_error(&mut self, message: impl Into<String>) {
@@ -1397,10 +1554,19 @@ impl SettingsModal {
                 SettingField::Provider { provider, .. } => Some(provider.id.clone()),
                 _ => None,
             });
+        let selected_tool_name = self
+            .fields
+            .get(self.selected)
+            .and_then(|field| match field {
+                SettingField::ToolPolicy { name, .. } => Some(name.clone()),
+                _ => None,
+            });
         self.fields.retain(|field| {
             !matches!(
                 field,
-                SettingField::Info { .. } | SettingField::Provider { .. }
+                SettingField::Info { .. }
+                    | SettingField::Provider { .. }
+                    | SettingField::ToolPolicy { .. }
             )
         });
         self.fields.extend(tool_info_fields(&self.tools));
@@ -1418,6 +1584,14 @@ impl SettingsModal {
                 .iter()
                 .position(|field| {
                     matches!(field, SettingField::Provider { provider, .. } if provider.id == provider_id)
+                })
+                .unwrap_or(self.selected.min(self.fields.len()));
+        } else if let Some(tool_name) = selected_tool_name {
+            self.selected = self
+                .fields
+                .iter()
+                .position(|field| {
+                    matches!(field, SettingField::ToolPolicy { name, .. } if name == &tool_name)
                 })
                 .unwrap_or(self.selected.min(self.fields.len()));
         } else if save_selected {
@@ -1713,6 +1887,7 @@ impl SettingsModal {
                 let description = match field {
                     SettingField::Info { description, .. } => description.as_str(),
                     SettingField::Provider { provider, .. } => provider.description.as_str(),
+                    SettingField::ToolPolicy { description, .. } => description.as_str(),
                     _ => descriptor.description,
                 }
                 .to_lowercase();
@@ -1726,6 +1901,10 @@ impl SettingsModal {
                     .to_lowercase(),
                     _ => String::new(),
                 };
+                let tool_metadata = match field {
+                    SettingField::ToolPolicy { risk_class, .. } => risk_class.to_lowercase(),
+                    _ => String::new(),
+                };
                 let score = if key == query || label == query {
                     Some(0)
                 } else if key.starts_with(&query) || label.starts_with(&query) {
@@ -1734,6 +1913,7 @@ impl SettingsModal {
                     || label.contains(&query)
                     || field.display().to_lowercase().contains(&query)
                     || description.contains(&query)
+                    || tool_metadata.contains(&query)
                     || provider_metadata.contains(&query)
                     || descriptor.section.title().to_lowercase().contains(&query)
                 {
@@ -2015,6 +2195,34 @@ impl SettingsModal {
         true
     }
 
+    fn cycle_tool_policy(&mut self, delta: isize) -> bool {
+        let Some(SettingField::ToolPolicy { name, policy, .. }) =
+            self.fields.get(self.selected).cloned()
+        else {
+            return false;
+        };
+        if !policy.writable {
+            return false;
+        }
+        let options = [
+            ToolPolicyMode::Allow,
+            ToolPolicyMode::Ask,
+            ToolPolicyMode::Deny,
+            ToolPolicyMode::Default,
+        ];
+        let current = self.tool_policy_drafts.get(&name).copied().unwrap_or(
+            if policy.is_default {
+                ToolPolicyMode::Default
+            } else {
+                policy.mode
+            },
+        );
+        let index = options.iter().position(|mode| *mode == current).unwrap_or(0);
+        let next = (index as isize + delta).rem_euclid(options.len() as isize) as usize;
+        self.tool_policy_drafts.insert(name, options[next]);
+        true
+    }
+
     fn commit_edit(&mut self) {
         self.editing = false;
         self.capturing_keybind = None;
@@ -2070,7 +2278,7 @@ impl SettingsModal {
             }
             "left" | "arrowleft" => {
                 if !((self.searching || self.editing) && self.move_text_cursor(-1, false))
-                    && self.cycle_choice(-1)
+                    && (self.cycle_choice(-1) || self.cycle_tool_policy(-1))
                 {
                     self.commit_edit();
                 }
@@ -2078,7 +2286,7 @@ impl SettingsModal {
             }
             "right" | "arrowright" => {
                 if !((self.searching || self.editing) && self.move_text_cursor(1, false))
-                    && self.cycle_choice(1)
+                    && (self.cycle_choice(1) || self.cycle_tool_policy(1))
                 {
                     self.commit_edit();
                 }
@@ -2129,6 +2337,11 @@ impl SettingsModal {
                                 self.select_row(index);
                                 return None;
                             }
+                            if matches!(field, SettingField::ToolPolicy { .. }) {
+                                let index = self.selected;
+                                self.select_row(index);
+                                return None;
+                            }
                             self.reveal_setting(key);
                         }
                         return None;
@@ -2148,6 +2361,25 @@ impl SettingsModal {
                 }
                 if let Some(SettingField::Action { key, .. }) = self.fields.get(self.selected) {
                     return Some(SettingsAction::Activate(*key));
+                }
+                if let Some(SettingField::ToolPolicy { name, policy, .. }) =
+                    self.fields.get(self.selected).cloned()
+                {
+                    if !policy.writable {
+                        return None;
+                    }
+                    let mode = self.tool_policy_drafts.get(&name).copied().unwrap_or(
+                        if policy.is_default {
+                            ToolPolicyMode::Default
+                        } else {
+                            policy.mode
+                        },
+                    );
+                    self.busy = true;
+                    return Some(SettingsAction::SaveToolPolicy(
+                        name,
+                        mode,
+                    ));
                 }
                 let keybind_key = self
                     .fields
@@ -2262,7 +2494,8 @@ impl SettingsModal {
             | SettingField::Keybind { .. }
             | SettingField::Action { .. }
             | SettingField::Info { .. }
-            | SettingField::Provider { .. } => {
+            | SettingField::Provider { .. }
+            | SettingField::ToolPolicy { .. } => {
                 return None;
             }
         };
@@ -2343,7 +2576,9 @@ impl SettingsModal {
     fn is_dirty(&self, field: &SettingField) -> bool {
         !matches!(
             field,
-            SettingField::Info { .. } | SettingField::Provider { .. }
+            SettingField::Info { .. }
+                | SettingField::Provider { .. }
+                | SettingField::ToolPolicy { .. }
         ) && field.display() != self.originals.get(field.key()).cloned().unwrap_or_default()
     }
 
@@ -2424,7 +2659,9 @@ impl SettingsModal {
                 is_desktop_setting(field.key())
                     && !matches!(
                         field,
-                        SettingField::Info { .. } | SettingField::Provider { .. }
+                        SettingField::Info { .. }
+                            | SettingField::Provider { .. }
+                            | SettingField::ToolPolicy { .. }
                     )
                     && self.is_dirty(field)
             })
@@ -2518,7 +2755,9 @@ impl SettingsModal {
             is_desktop_setting(field.key())
                 && !matches!(
                     field,
-                    SettingField::Info { .. } | SettingField::Provider { .. }
+                    SettingField::Info { .. }
+                        | SettingField::Provider { .. }
+                        | SettingField::ToolPolicy { .. }
                 )
         }) {
             self.originals
@@ -2539,6 +2778,7 @@ impl SettingsModal {
             revision: view.revision.clone(),
         };
         self.apply_view(&getter);
+        self.revision = view.revision.clone();
         self.busy = false;
         self.editing = false;
         self.capturing_keybind = None;
@@ -2826,6 +3066,7 @@ impl SettingsModal {
             let originals = self.originals.clone();
             let provider_drafts = self.provider_drafts.clone();
             let provider_delete_confirmation = self.provider_delete_confirmation.clone();
+            let tool_policy_drafts = self.tool_policy_drafts.clone();
             let selected = self.selected;
             let editing = self.editing && !self.searching;
             let capturing_keybind = self.capturing_keybind;
@@ -2875,6 +3116,7 @@ impl SettingsModal {
                                     filtering,
                                     &originals,
                                     &provider_drafts,
+                                    &tool_policy_drafts,
                                     provider_delete_confirmation.as_deref(),
                                     &theme,
                                     motion,
@@ -3011,6 +3253,7 @@ fn render_setting_row(
     filtering: bool,
     originals: &HashMap<String, String>,
     provider_drafts: &HashMap<String, ProviderDraft>,
+    tool_policy_drafts: &HashMap<String, ToolPolicyMode>,
     provider_delete_confirmation: Option<&str>,
     theme: &HermesTheme,
     motion: ModalMotion<'_>,
@@ -3018,7 +3261,9 @@ fn render_setting_row(
 ) -> Stateful<Div> {
     let dirty = !matches!(
         field,
-        SettingField::Info { .. } | SettingField::Provider { .. }
+        SettingField::Info { .. }
+            | SettingField::Provider { .. }
+            | SettingField::ToolPolicy { .. }
     ) && field.display() != originals.get(field.key()).cloned().unwrap_or_default();
     let mut value = match field {
         SettingField::Text {
@@ -3242,6 +3487,22 @@ fn render_setting_row(
             }
             row
         }
+        SettingField::ToolPolicy { name, policy, .. } => {
+            let draft = tool_policy_drafts.get(name).copied();
+            let label = tool_policy_display(*policy, draft);
+            let value_color = if policy.writable && (selected || draft.is_some()) {
+                theme.accent_blue
+            } else {
+                theme.mockup_text_dim
+            };
+            div()
+                .text_color(value_color)
+                .child(if selected && policy.writable {
+                    format!("‹ {label} ›")
+                } else {
+                    label
+                })
+        }
     };
     value = value
         .font_family(theme.font_mono()[0].clone())
@@ -3270,6 +3531,7 @@ fn render_setting_row(
             key.strip_prefix("desktop.info.").unwrap_or(key)
         ),
         SettingField::Provider { provider, .. } => format!("settings_provider_{}", provider.id),
+        SettingField::ToolPolicy { name, .. } => format!("settings_tool_policy_{}", name),
         _ => format!("settings_row_{index}"),
     };
     let mut row = div()
@@ -3320,6 +3582,9 @@ fn render_setting_row(
     let description = match field {
         SettingField::Info { description, .. } => description.clone(),
         SettingField::Provider { provider, .. } => provider_description(provider),
+        SettingField::ToolPolicy { risk_class, description, .. } => {
+            format!("{risk_class} · {description}")
+        }
         _ => descriptor.description.to_string(),
     };
     row = row.child(
@@ -3567,6 +3832,187 @@ mod tests {
             InventoryState::Unavailable("tools/list failed: permission denied".to_string())
         );
         assert_eq!(modal.dirty_count(), 0);
+    }
+
+    fn sample_tool_policy() -> ToolsPolicyResponse {
+        ToolsPolicyResponse {
+            tools: vec![
+                ToolPolicyEntry {
+                    definition: ToolDefinition {
+                        name: "write_file".to_string(),
+                        description: "Write a workspace file".to_string(),
+                        parameters: serde_json::Value::Null,
+                        risk_class: Some("R3".to_string()),
+                    },
+                    policy_mode: ToolPolicyMode::Ask,
+                    policy_default: true,
+                    policy_writable: true,
+                },
+                ToolPolicyEntry {
+                    definition: ToolDefinition {
+                        name: "git_push_remote".to_string(),
+                        description: "Push commits to a remote".to_string(),
+                        parameters: serde_json::Value::Null,
+                        risk_class: Some("R3".to_string()),
+                    },
+                    policy_mode: ToolPolicyMode::Allow,
+                    policy_default: false,
+                    policy_writable: true,
+                },
+                ToolPolicyEntry {
+                    definition: ToolDefinition {
+                        name: "run_shell".to_string(),
+                        description: "Run an unrestricted shell command".to_string(),
+                        parameters: serde_json::Value::Null,
+                        risk_class: Some("R4".to_string()),
+                    },
+                    policy_mode: ToolPolicyMode::Deny,
+                    policy_default: false,
+                    policy_writable: false,
+                },
+            ],
+            revision: "sha256:policy-v1".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_tool_policy_cycles_applies_and_preserves_failed_drafts() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        modal.set_tool_policy(sample_tool_policy());
+        assert_eq!(modal.revision.as_deref(), Some("sha256:policy-v1"));
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+        assert!(modal.changed_desktop_preferences().is_none());
+
+        let write_index = modal
+            .fields
+            .iter()
+            .position(|field| field.label() == "write_file")
+            .unwrap();
+        assert_eq!(modal.fields[write_index].display(), "default (ask)");
+        let git_index = modal
+            .fields
+            .iter()
+            .position(|field| field.label() == "git_push_remote")
+            .unwrap();
+        assert_eq!(modal.fields[git_index].display(), "allow");
+        let fixed_index = modal
+            .fields
+            .iter()
+            .position(|field| field.label() == "run_shell")
+            .unwrap();
+        assert_eq!(modal.fields[fixed_index].display(), "deny · fixed");
+
+        modal.select_row(fixed_index);
+        assert!(!modal.cycle_tool_policy(1));
+        assert!(!modal.cycle_tool_policy(-1));
+        assert_eq!(modal.handle_key("enter"), None);
+        assert!(!modal.busy);
+        assert!(modal.tool_policy_drafts.is_empty());
+
+        modal.select_row(write_index);
+        assert!(modal.cycle_tool_policy(1));
+        assert_eq!(
+            modal.tool_policy_drafts.get("write_file"),
+            Some(&ToolPolicyMode::Allow)
+        );
+        assert!(modal.cycle_tool_policy(-1));
+        assert_eq!(
+            modal.handle_key("enter"),
+            Some(SettingsAction::SaveToolPolicy(
+                "write_file".to_string(),
+                ToolPolicyMode::Default,
+            ))
+        );
+        assert!(modal.busy);
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.desktop_dirty_count(), 0);
+
+        modal.fail_tool_policy("revision conflict");
+        assert!(!modal.busy);
+        assert!(modal.error.as_deref().unwrap().contains("revision conflict"));
+        assert_eq!(
+            modal.tool_policy_drafts.get("write_file"),
+            Some(&ToolPolicyMode::Default)
+        );
+
+        assert!(modal.cycle_tool_policy(-1));
+        assert_eq!(
+            modal.tool_policy_drafts.get("write_file"),
+            Some(&ToolPolicyMode::Deny)
+        );
+        let mut response = sample_tool_policy();
+        response.tools[0].policy_mode = ToolPolicyMode::Deny;
+        response.tools[0].policy_default = false;
+        response.revision = "sha256:policy-v2".to_string();
+        modal.apply_tool_policy(
+            ToolPolicyMutationResponse {
+                tools: response.tools,
+                revision: response.revision,
+                changed: vec!["write_file".to_string()],
+            },
+            "write_file".to_string(),
+        );
+        assert!(!modal.busy);
+        assert!(modal.tool_policy_drafts.is_empty());
+        assert_eq!(modal.revision.as_deref(), Some("sha256:policy-v2"));
+        assert_eq!(modal.fields[modal.selected].label(), "write_file");
+        assert_eq!(modal.fields[modal.selected].display(), "deny");
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_tool_policy_is_searchable_deep_linkable_and_survives_config_refresh() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        modal.set_tool_policy(sample_tool_policy());
+        assert!(modal.request_setting("desktop.info.tools"));
+        assert_eq!(modal.active_section, SettingsSection::Tools);
+        assert!(matches!(
+            modal.fields.get(modal.selected),
+            Some(SettingField::ToolPolicy { .. })
+        ));
+
+        modal.focus_search();
+        modal.select_all_text();
+        modal.push_char("R4");
+        let fixed_index = modal
+            .fields
+            .iter()
+            .position(|field| field.label() == "run_shell")
+            .unwrap();
+        assert_eq!(modal.search_results(), vec![fixed_index]);
+        assert_eq!(modal.handle_key("enter"), None);
+        assert!(!modal.searching);
+        assert_eq!(modal.selected, fixed_index);
+
+        let write_index = modal
+            .fields
+            .iter()
+            .position(|field| field.label() == "write_file")
+            .unwrap();
+        modal.select_row(write_index);
+        assert!(modal.cycle_tool_policy(1));
+        modal.apply_view(&sample_view());
+        assert_eq!(
+            modal
+                .fields
+                .iter()
+                .filter(|field| matches!(field, SettingField::ToolPolicy { .. }))
+                .count(),
+            3
+        );
+        assert_eq!(
+            modal.tool_policy_drafts.get("write_file"),
+            Some(&ToolPolicyMode::Allow)
+        );
+        assert_eq!(modal.revision.as_deref(), Some("sha256:policy-v1"));
+        modal.mark_load_failed("config reload failed");
+        assert_eq!(modal.revision.as_deref(), Some("sha256:policy-v1"));
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
     }
 
     fn sample_provider(

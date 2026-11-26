@@ -62,6 +62,12 @@ struct MockState {
     config_delay_ms: AtomicU64,
     config_sets: StdMutex<Vec<Value>>,
     tools_error: StdMutex<Option<String>>,
+    tool_policy_supported: AtomicBool,
+    tool_policy_requests: AtomicUsize,
+    tool_policy_sets: StdMutex<Vec<Value>>,
+    tool_policy_error: StdMutex<Option<String>>,
+    tool_policy: StdMutex<Vec<Value>>,
+    tool_policy_revision: StdMutex<String>,
     skills_output: StdMutex<String>,
     skills_error: StdMutex<Option<String>>,
     skill_requests: AtomicUsize,
@@ -115,6 +121,47 @@ fn mock_config_result(revision: &str) -> Value {
         },
         "revision": revision
     })
+}
+
+fn mock_tool_policy() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "write_file",
+            "description": "Write a file to the workspace",
+            "parameters": {"type": "object"},
+            "risk_class": "R3",
+            "policy_mode": "ask",
+            "policy_default": true,
+            "policy_writable": true
+        }),
+        json!({
+            "name": "read_file",
+            "description": "Read files from the workspace",
+            "parameters": {"type": "object"},
+            "risk_class": "R1",
+            "policy_mode": "allow",
+            "policy_default": true,
+            "policy_writable": true
+        }),
+        json!({
+            "name": "run_shell",
+            "description": "Run an unrestricted command",
+            "parameters": {"type": "object"},
+            "risk_class": "R4",
+            "policy_mode": "deny",
+            "policy_default": false,
+            "policy_writable": false
+        }),
+    ]
+}
+
+fn current_tool_policy_revision(state: &MockState) -> String {
+    let stored = state.tool_policy_revision.lock().unwrap();
+    if stored.is_empty() {
+        "sha256:policy-v1".to_string()
+    } else {
+        stored.clone()
+    }
 }
 
 fn mock_providers() -> Vec<Value> {
@@ -208,7 +255,12 @@ async fn handle_request(
                         "protocolVersion": "2024-11-05",
                         "capabilities": {
                             "session": {"streaming": true, "cancel": true, "history": true},
-                            "tools": {"listChanged": false}
+                            "tools": {"listChanged": false},
+                            "features": if state.tool_policy_supported.load(Ordering::SeqCst) {
+                                vec!["settings.read", "settings.write", "tools.policy.write"]
+                            } else {
+                                vec!["settings.read", "settings.write"]
+                            }
                         },
                         "serverInfo": {"name": "harness_core_mock", "version": "1.0.0"}
                     }
@@ -346,6 +398,97 @@ async fn handle_request(
             };
             send_line(&writer, response).await;
             state.tool_responses.fetch_add(1, Ordering::SeqCst);
+        }
+        "tools/policy/get" => {
+            state.tool_policy_requests.fetch_add(1, Ordering::SeqCst);
+            let mut tools = state.tool_policy.lock().unwrap().clone();
+            if tools.is_empty() {
+                tools = mock_tool_policy();
+                *state.tool_policy.lock().unwrap() = tools.clone();
+            }
+            let response = json!({
+                "jsonrpc": "2.0", "id": id,
+                "result": {
+                    "tools": tools,
+                    "revision": current_tool_policy_revision(&state)
+                }
+            });
+            send_line(&writer, response).await;
+        }
+        "tools/policy/set" => {
+            state.tool_policy_sets.lock().unwrap().push(params.clone());
+            let error = state.tool_policy_error.lock().unwrap().clone();
+            if let Some(message) = error {
+                send_line(
+                    &writer,
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32000, "message": message}
+                    }),
+                )
+                .await;
+                return;
+            }
+            let current_revision = current_tool_policy_revision(&state);
+            if params.get("expectedRevision").and_then(Value::as_str)
+                != Some(current_revision.as_str())
+            {
+                send_line(
+                    &writer,
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32001, "message": "config revision conflict"}
+                    }),
+                )
+                .await;
+                return;
+            }
+            let mut tools = state.tool_policy.lock().unwrap().clone();
+            if tools.is_empty() {
+                tools = mock_tool_policy();
+            }
+            let mut changed = Vec::new();
+            for (name, mode) in params["updates"].as_object().unwrap() {
+                let tool = tools
+                    .iter_mut()
+                    .find(|tool| tool["name"].as_str() == Some(name.as_str()))
+                    .expect("known mock tool");
+                let mode = mode.as_str().unwrap();
+                let effective = if mode == "default" {
+                    if tool["risk_class"].as_str() == Some("R3") {
+                        "ask"
+                    } else if tool["risk_class"].as_str() == Some("R4") {
+                        "deny"
+                    } else {
+                        "allow"
+                    }
+                } else {
+                    mode
+                };
+                tool["policy_mode"] = json!(effective);
+                tool["policy_default"] = json!(mode == "default");
+                changed.push(name.clone());
+            }
+            let revision = if changed.is_empty() {
+                current_revision
+            } else {
+                let current_version = current_revision
+                    .strip_prefix("sha256:policy-v")
+                    .and_then(|version| version.parse::<u32>().ok())
+                    .unwrap_or(1);
+                let next = format!("sha256:policy-v{}", current_version + 1);
+                *state.tool_policy_revision.lock().unwrap() = next.clone();
+                next
+            };
+            *state.tool_policy.lock().unwrap() = tools.clone();
+            send_line(
+                &writer,
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {"tools": tools, "revision": revision, "changed": changed}
+                }),
+            )
+            .await;
         }
         "providers/list" => {
             state.provider_requests.fetch_add(1, Ordering::SeqCst);
@@ -1206,6 +1349,18 @@ fn launch_connected_chat_with_state<'a>(
     &'a mut VisualTestContext,
     Arc<MockState>,
 ) {
+    launch_connected_chat_with_configured_state(cx, |_| {})
+}
+
+fn launch_connected_chat_with_configured_state<'a>(
+    cx: &'a mut TestAppContext,
+    configure: impl FnOnce(&MockState),
+) -> (
+    Runtime,
+    Entity<ChatView>,
+    &'a mut VisualTestContext,
+    Arc<MockState>,
+) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -1214,6 +1369,7 @@ fn launch_connected_chat_with_state<'a>(
     let (client_read, server_write) = tokio::io::duplex(64 * 1024);
     let (server_read, client_write) = tokio::io::duplex(64 * 1024);
     let state = Arc::new(MockState::default());
+    configure(&state);
     rt.spawn(run_mock_server(server_read, server_write, state.clone()));
     let bridge = AcpBridge::new();
     rt.block_on(bridge.connect_streams(client_read, client_write))
@@ -1798,6 +1954,7 @@ fn test_connected_settings_load_runtime_config_and_tool_inventory(cx: &mut TestA
             panic!("settings should remain open");
         };
         assert_eq!(state.tool_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(state.tool_policy_requests.load(Ordering::SeqCst), 0);
         assert_eq!(modal.dirty_count(), 0);
         assert_eq!(modal.dirty_updates(), json!({}));
         let info = modal
@@ -1843,6 +2000,159 @@ fn test_connected_settings_load_runtime_config_and_tool_inventory(cx: &mut TestA
         assert_eq!(modal.dirty_count(), 0);
         assert_eq!(modal.selected_action(), None);
     });
+}
+
+#[gpui::test]
+fn test_connected_tool_policy_loads_and_saves_with_the_shared_revision(
+    cx: &mut TestAppContext,
+) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_configured_state(cx, |state| {
+        state.tool_policy_supported.store(true, Ordering::SeqCst);
+    });
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "live tool policy", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(modal.tools, InventoryState::Ready(_))
+                    && modal.revision.as_deref() == Some("sha256:policy-v1")
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(state.tool_policy_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(state.tool_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+
+    click_debug_element(vc, "settings_section_tools");
+    assert!(
+        vc.debug_bounds("settings_tool_policy_write_file")
+            .is_some_and(|bounds| bounds.size.width > px(0.0)),
+        "writable policy row should render"
+    );
+    click_debug_element(vc, "settings_tool_policy_write_file");
+    vc.simulate_keystrokes("right enter");
+    pump_until(vc, &view, "tool policy save", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal.status.as_deref() == Some("write_file tool policy updated.")
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after saving tool policy");
+        };
+        assert_eq!(modal.revision.as_deref(), Some("sha256:policy-v2"));
+        assert_eq!(modal.fields[modal.selected].label(), "write_file");
+        assert!(matches!(
+            &modal.fields[modal.selected],
+            SettingField::ToolPolicy { policy, .. }
+                if policy.mode == hex_protocol::models::ToolPolicyMode::Allow
+                    && !policy.is_default
+        ));
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.desktop_dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), json!({}));
+        assert!(modal.changed_desktop_preferences().is_none());
+    });
+    let requests = state.tool_policy_sets.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0],
+        json!({
+            "updates": {"write_file": "allow"},
+            "expectedRevision": "sha256:policy-v1"
+        })
+    );
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
+    drop(requests);
+
+    vc.simulate_keystrokes("cmd-z");
+    assert_eq!(state.tool_policy_sets.lock().unwrap().len(), 1);
+}
+
+#[gpui::test]
+fn test_tool_policy_failure_preserves_the_draft_for_retry(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_configured_state(cx, |state| {
+        state.tool_policy_supported.store(true, Ordering::SeqCst);
+        *state.tool_policy_error.lock().unwrap() = Some("policy write denied".to_string());
+    });
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "tool policy before failed save", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(modal.tools, InventoryState::Ready(_))
+                    && modal.revision.as_deref() == Some("sha256:policy-v1")
+        )
+    });
+    click_debug_element(vc, "settings_section_tools");
+    click_debug_element(vc, "settings_tool_policy_write_file");
+    vc.simulate_keystrokes("right enter");
+    pump_until(vc, &view, "tool policy failure", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal.error.as_deref().is_some_and(|error| {
+                        error.starts_with("Tool policy save failed:")
+                            && error.contains("policy write denied")
+                    })
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after a failed policy save");
+        };
+        assert_eq!(modal.fields[modal.selected].label(), "write_file");
+        assert_eq!(modal.revision.as_deref(), Some("sha256:policy-v1"));
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+    assert_eq!(state.tool_policy_sets.lock().unwrap().len(), 1);
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
+
+    state.tool_policy_error.lock().unwrap().take();
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "tool policy retry", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal.error.is_none()
+                    && modal.status.as_deref() == Some("write_file tool policy updated.")
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after retrying tool policy");
+        };
+        assert_eq!(modal.fields[modal.selected].label(), "write_file");
+        assert!(matches!(
+            &modal.fields[modal.selected],
+            SettingField::ToolPolicy { policy, .. }
+                if policy.mode == hex_protocol::models::ToolPolicyMode::Allow
+                    && !policy.is_default
+        ));
+        assert_eq!(modal.revision.as_deref(), Some("sha256:policy-v2"));
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+    let requests = state.tool_policy_sets.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1]);
+    assert_eq!(requests[1]["updates"], json!({"write_file": "allow"}));
+    assert_eq!(requests[1]["expectedRevision"], "sha256:policy-v1");
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
 }
 
 #[gpui::test]

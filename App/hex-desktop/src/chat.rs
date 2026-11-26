@@ -30,7 +30,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use hex_protocol::error::AcpError;
 use hex_protocol::models::{
     ApprovalDecisionResponse, CloudAuthStatus, CloudUpdatePlan, ModelCatalog, PagedSessionLoad,
-    SessionNewResponse, SessionPromptResponse,
+    SessionNewResponse, SessionPromptResponse, ToolDefinition, ToolsPolicyResponse,
 };
 
 use crate::acp_bridge::{AcpBridge, AcpEvent};
@@ -56,7 +56,8 @@ use crate::ui::modals::session_actions::{
     SessionActionOutcome, SessionSearchModal,
 };
 use crate::ui::modals::settings::{
-    SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal, SKILLS_SESSION_REQUIRED,
+    tool_policy_wire_mode, SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal,
+    SKILLS_SESSION_REQUIRED,
 };
 use crate::ui::modals::text_input::{delete_target, move_target, TextUnit};
 use crate::ui::modals::{
@@ -470,6 +471,11 @@ async fn full_history_field(
         }
         offset = end;
     }
+}
+
+enum SettingsToolsResult {
+    List(Vec<ToolDefinition>),
+    Policy(ToolsPolicyResponse),
 }
 
 /// The interactive desktop root: sidebar + feed + composer wired to ACP.
@@ -3920,6 +3926,10 @@ impl ChatView {
                         self.execute_provider_endpoint_save(provider, base_url, cx);
                         return true;
                     }
+                    Some(SettingsAction::SaveToolPolicy(tool, mode)) => {
+                        self.execute_tool_policy_save(tool, mode, cx);
+                        return true;
+                    }
                     Some(SettingsAction::DeleteProviderCredential(provider)) => {
                         self.execute_provider_credential_delete(provider, cx);
                         return true;
@@ -5955,15 +5965,32 @@ impl ChatView {
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
-            let res = rt.spawn(async move { bridge.tools_list().await }).await;
+            let res = rt
+                .spawn(async move {
+                    if bridge.supports_feature("tools.policy.write").await {
+                        bridge
+                            .tools_policy_get()
+                            .await
+                            .map(SettingsToolsResult::Policy)
+                            .map_err(|error| format!("tools/policy/get failed: {error}"))
+                    } else {
+                        bridge
+                            .tools_list()
+                            .await
+                            .map(SettingsToolsResult::List)
+                            .map_err(|error| format!("tools/list failed: {error}"))
+                    }
+                })
+                .await;
             this.update(cx, |view, cx| {
                 if view.settings_generation != generation {
                     return;
                 }
                 if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
                     match res {
-                        Ok(Ok(tools)) => modal.set_tools(tools),
-                        Ok(Err(err)) => modal.set_tools_error(format!("tools/list failed: {err}")),
+                        Ok(Ok(SettingsToolsResult::Policy(policy))) => modal.set_tool_policy(policy),
+                        Ok(Ok(SettingsToolsResult::List(tools))) => modal.set_tools(tools),
+                        Ok(Err(error)) => modal.set_tools_error(error),
                         Err(err) => {
                             modal.set_tools_error(format!("Tool inventory task aborted: {err}"))
                         }
@@ -6191,6 +6218,59 @@ impl ChatView {
             .ok();
         })
         .detach();
+    }
+
+    fn execute_tool_policy_save(
+        &mut self,
+        tool: String,
+        mode: hex_protocol::models::ToolPolicyMode,
+        cx: &mut Context<Self>,
+    ) {
+        let ActiveModal::Settings(modal) = &mut self.shell.active_modal else {
+            return;
+        };
+        let Some(expected_revision) = modal.revision.clone() else {
+            modal.fail_tool_policy("Load the tool policy before changing it.");
+            cx.notify();
+            return;
+        };
+        let wire_mode = tool_policy_wire_mode(mode);
+        let request_tool = tool.clone();
+        let tool_for_request = request_tool.clone();
+        modal.busy = true;
+        modal.error = None;
+        modal.status = None;
+        let generation = self.settings_generation;
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move {
+                    bridge
+                        .tools_policy_set(&tool_for_request, wire_mode, &expected_revision)
+                        .await
+                })
+                .await;
+            this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(response)) => modal.apply_tool_policy(response, request_tool),
+                        Ok(Err(error)) => modal
+                            .fail_tool_policy(format!("Tool policy save failed: {error}")),
+                        Err(error) => modal.fail_tool_policy(format!(
+                            "Tool policy task aborted: {error}"
+                        )),
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     /// DX3: writes the modal's dirty diff via `config/set`; the fresh view in

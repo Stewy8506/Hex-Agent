@@ -632,6 +632,33 @@ impl AcpBridge {
         }
     }
 
+    /// Read the live tool registry and effective approval policy.
+    pub async fn tools_policy_get(
+        &self,
+    ) -> Result<hex_protocol::models::ToolsPolicyResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.tools_policy_get().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    /// Apply one tool policy update using the current settings revision.
+    pub async fn tools_policy_set(
+        &self,
+        tool: &str,
+        mode: &str,
+        expected_revision: &str,
+    ) -> Result<hex_protocol::models::ToolPolicyMutationResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.tools_policy_set(tool, mode, expected_revision).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// List registered skills through an existing ACP session.
     pub async fn list_skills(
         &self,

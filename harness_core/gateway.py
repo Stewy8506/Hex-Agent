@@ -47,6 +47,7 @@ from harness_core.runtime.process_registry import ProcessRegistry, get_process_r
 from harness_core.storage.sandbox import ExecutionSandbox, SandboxResult, get_default_sandbox
 from harness_core.cognition.skillspector import SkillSecurityScanner, compute_mcp_manifest_sha256
 from harness_core.platform.shell import build_command_argv
+from harness_core.tool_policy import ToolPolicy
 from harness_core.tools.filesystem import FileToolsMixin
 
 
@@ -757,8 +758,10 @@ class ToolGateway(FileToolsMixin):
         approval_lease_manager: Any | None = None,
         approval_bridge: Any | None = None,
         router: Any | None = None,
+        tool_policy: ToolPolicy | None = None,
     ):
         self.ledger = ledger
+        self.tool_policy = tool_policy or ToolPolicy({})
         self.graphify = graphify
         self.blast_interceptor = ActiveBlastRadiusInterceptor(graphify)
         self.sandbox = sandbox or get_default_sandbox()
@@ -1179,6 +1182,11 @@ class ToolGateway(FileToolsMixin):
                 f"Fast-Path tasks only permit R0/R1 tools; '{spec.tool_id}' is {spec.risk_class.value}",
             )
 
+        policy = getattr(self, "tool_policy", None) or ToolPolicy({})
+        policy_mode = policy.mode_for(spec.tool_id, spec.risk_class)
+        if policy_mode == "deny":
+            return (PolicyDecisionType.DENY, f"Tool '{spec.tool_id}' is denied by tool policy")
+
         if getattr(self, "approval_lease_manager", None) is not None:
             has_lease, lease_id = self.approval_lease_manager.check_lease(
                 spec.tool_id,
@@ -1215,13 +1223,16 @@ class ToolGateway(FileToolsMixin):
                     "Writing the global user profile (memory target='user') requires human approval",
                 )
 
-        if spec.risk_class == RiskClass.R3:
+        if policy_mode == "allow":
+            return (PolicyDecisionType.ALLOW, f"Tool '{spec.tool_id}' is allowed by tool policy")
+
+        if policy_mode == "ask" or spec.risk_class == RiskClass.R3:
             # Check if an approved approval record already exists for this exact action
             action_hash = sha256_hex(f"{task['task_id']}|{spec.tool_id}|{canonical_json(redact_secrets(args))}")
             approvals = self.ledger.list_approvals(task_id=task["task_id"], decision="APPROVED")
             if any(a["action_hash"] == action_hash for a in approvals):
-                return (PolicyDecisionType.ALLOW, "R3 action explicitly pre-approved by owner")
-            return (PolicyDecisionType.REQUIRE_APPROVAL, f"R3 tool '{spec.tool_id}' requires human approval")
+                return (PolicyDecisionType.ALLOW, "Action explicitly pre-approved by owner")
+            return (PolicyDecisionType.REQUIRE_APPROVAL, f"Tool '{spec.tool_id}' requires human approval")
 
         return (PolicyDecisionType.ALLOW, f"Permitted under risk class {spec.risk_class.value}")
 

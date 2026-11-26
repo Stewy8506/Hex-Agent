@@ -260,6 +260,7 @@ class HarnessOrchestrator:
         soul_manager: SoulManager | None = None,
         moa_config: Any | None = None,
         demo_mode: bool = False,
+        config_dir: Path | str | None = None,
     ):
         if str(data_dir) == ":memory:":
             self._temp_mem_dir = tempfile.TemporaryDirectory(prefix="harness_mem_")
@@ -289,12 +290,18 @@ class HarnessOrchestrator:
         self.sandbox = sandbox or get_default_sandbox(self.workspaces_root)
         self.graphify = ActiveGraphifyAdapter(self.default_workspace)
         self.lsp_manager = LSPManager(self.default_workspace)
+        from harness_core.tool_policy import ToolPolicy, load_tool_policy
+
+        tool_policy = ToolPolicy({})
+        if config_dir is not None:
+            tool_policy = ToolPolicy(load_tool_policy(Path(config_dir) / "config.yaml"))
         self.gateway = ToolGateway(
             self.ledger,
             self.graphify,
             sandbox=self.sandbox,
             notifier=self.webhook_notifier,
             lsp_manager=self.lsp_manager,
+            tool_policy=tool_policy,
         )
         self.scanner = SkillSpectorScanner(self.ledger)
         self.router = TwoTierModelRouter()
