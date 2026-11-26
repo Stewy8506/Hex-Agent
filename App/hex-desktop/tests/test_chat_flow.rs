@@ -73,6 +73,7 @@ struct MockState {
     provider_error: StdMutex<Option<String>>,
     provider_mutation_error: StdMutex<Option<String>>,
     provider_sets: StdMutex<Vec<Value>>,
+    provider_endpoint_sets: StdMutex<Vec<Value>>,
     provider_deletes: StdMutex<Vec<Value>>,
 }
 
@@ -129,6 +130,10 @@ fn mock_providers() -> Vec<Value> {
             "credentialWritable": true,
             "baseUrlEnvVar": "ANTHROPIC_BASE_URL",
             "defaultBaseUrl": "https://api.anthropic.com",
+            "effectiveBaseUrl": "https://api.anthropic.com",
+            "endpointSource": "default",
+            "endpointEnvVar": null,
+            "endpointWritable": true,
             "signupUrl": "https://console.anthropic.com/settings/keys",
             "description": "Anthropic Claude models"
         }),
@@ -143,6 +148,10 @@ fn mock_providers() -> Vec<Value> {
             "credentialWritable": true,
             "baseUrlEnvVar": "OPENAI_BASE_URL",
             "defaultBaseUrl": "https://api.openai.com/v1",
+            "effectiveBaseUrl": "https://openai-proxy.invalid/v1",
+            "endpointSource": "credentials_file",
+            "endpointEnvVar": "OPENAI_BASE_URL",
+            "endpointWritable": true,
             "signupUrl": "https://platform.openai.com/api-keys",
             "description": "OpenAI models"
         }),
@@ -157,6 +166,10 @@ fn mock_providers() -> Vec<Value> {
             "credentialWritable": false,
             "baseUrlEnvVar": null,
             "defaultBaseUrl": "",
+            "effectiveBaseUrl": "",
+            "endpointSource": "default",
+            "endpointEnvVar": null,
+            "endpointWritable": false,
             "signupUrl": null,
             "description": "AWS-managed Bedrock credentials"
         }),
@@ -355,6 +368,58 @@ async fn handle_request(
             };
             send_line(&writer, response).await;
             state.provider_responses.fetch_add(1, Ordering::SeqCst);
+        }
+        "providers/endpoint/set" => {
+            state
+                .provider_endpoint_sets
+                .lock()
+                .unwrap()
+                .push(params.clone());
+            let error = state.provider_mutation_error.lock().unwrap().clone();
+            if let Some(message) = error {
+                send_line(
+                    &writer,
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32000, "message": message}
+                    }),
+                )
+                .await;
+                return;
+            }
+            let provider = {
+                let mut providers = state.providers.lock().unwrap();
+                let provider_id = params["provider"].as_str().unwrap();
+                let provider = providers
+                    .iter_mut()
+                    .find(|provider| provider["id"].as_str() == Some(provider_id))
+                    .expect("registered mock provider");
+                let base_url = params["baseUrl"].as_str().unwrap();
+                provider["effectiveBaseUrl"] = json!(if base_url.is_empty() {
+                    provider["defaultBaseUrl"].clone()
+                } else {
+                    json!(base_url)
+                });
+                provider["endpointSource"] = json!(if base_url.is_empty() {
+                    "default"
+                } else {
+                    "credentials_file"
+                });
+                provider["endpointEnvVar"] = if base_url.is_empty() {
+                    Value::Null
+                } else {
+                    provider["baseUrlEnvVar"].clone()
+                };
+                provider.clone()
+            };
+            send_line(
+                &writer,
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {"provider": provider, "changed": true}
+                }),
+            )
+            .await;
         }
         "providers/credentials/set" => {
             state.provider_sets.lock().unwrap().push(params.clone());
@@ -1993,6 +2058,180 @@ fn test_provider_credential_failure_preserves_the_masked_draft_for_retry(cx: &mu
         assert_eq!(modal.dirty_count(), 0);
     });
     assert_eq!(state.provider_sets.lock().unwrap().len(), 2);
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
+}
+
+#[gpui::test]
+fn test_provider_endpoint_save_and_model_setting_link(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.providers.lock().unwrap() = mock_providers();
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "providers before endpoint edit", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(&modal.providers, ProvidersState::Ready(_, providers) if providers.len() == 3)
+        )
+    });
+    click_debug_element(vc, "settings_section_providers");
+    let endpoint_bounds = vc
+        .debug_bounds("settings_provider_endpoint_anthropic")
+        .expect("rendered provider endpoint control");
+    assert!(
+        endpoint_bounds.size.width > px(0.0),
+        "endpoint control has no width"
+    );
+    click_debug_element(vc, "settings_provider_endpoint_anthropic");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("endpoint editing should keep settings open");
+        };
+        assert!(
+            modal.editing,
+            "endpoint edit did not start: {:?}",
+            modal.error
+        );
+        assert_eq!(
+            modal.text_selection().map(|(value, _, _)| value).as_deref(),
+            Some("https://api.anthropic.com"),
+            "selected={:?}, error={:?}",
+            modal.fields.get(modal.selected).map(|field| field.label()),
+            modal.error
+        );
+        assert_eq!(modal.dirty_count(), 0);
+    });
+    vc.simulate_keystrokes("cmd-a");
+    vc.simulate_input("https://anthropic-proxy.invalid/v1");
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "provider endpoint save", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal.status.as_deref() == Some(
+                        "Anthropic endpoint saved in /tmp/hex-test/credentials.env."
+                    )
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after saving an endpoint");
+        };
+        assert!(!modal.editing);
+        let ProvidersState::Ready(_, providers) = &modal.providers else {
+            panic!("provider inventory should remain ready");
+        };
+        let anthropic = providers
+            .iter()
+            .find(|provider| provider.id == "anthropic")
+            .unwrap();
+        assert_eq!(
+            anthropic.effective_base_url.as_deref(),
+            Some("https://anthropic-proxy.invalid/v1")
+        );
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+    let requests = state.provider_endpoint_sets.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["provider"], "anthropic");
+    assert_eq!(requests[0]["baseUrl"], "https://anthropic-proxy.invalid/v1");
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
+    drop(requests);
+
+    vc.simulate_keystrokes("escape");
+    {
+        let mut providers = state.providers.lock().unwrap();
+        let anthropic = providers
+            .iter_mut()
+            .find(|provider| provider["id"] == "anthropic")
+            .unwrap();
+        anthropic["endpointSource"] = json!("model_config");
+        anthropic["endpointWritable"] = json!(false);
+        anthropic["effectiveBaseUrl"] = json!("https://model-config.invalid/v1");
+    }
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "providers with model endpoint", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(&modal.providers, ProvidersState::Ready(_, providers) if providers.len() == 3)
+        )
+    });
+    click_debug_element(vc, "settings_section_providers");
+    click_debug_element(vc, "settings_provider_endpoint_anthropic");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("model endpoint link should keep settings open");
+        };
+        assert_eq!(modal.active_section, SettingsSection::Model);
+        assert!(modal.editing);
+        assert!(matches!(
+            modal.fields.get(modal.selected),
+            Some(SettingField::Text { key, .. }) if *key == "model.cloudBaseUrl"
+        ));
+    });
+}
+
+#[gpui::test]
+fn test_provider_endpoint_failure_preserves_the_draft_for_retry(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.providers.lock().unwrap() = mock_providers();
+    *state.provider_mutation_error.lock().unwrap() = Some("endpoint write denied".to_string());
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "providers before endpoint failure", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(&modal.providers, ProvidersState::Ready(_, providers) if providers.len() == 3)
+        )
+    });
+    click_debug_element(vc, "settings_section_providers");
+    click_debug_element(vc, "settings_provider_endpoint_openai");
+    vc.simulate_keystrokes("cmd-a");
+    vc.simulate_input("https://retry-proxy.invalid/v1");
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "provider endpoint failure", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal) if !modal.busy
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open after a failed endpoint save");
+        };
+        assert!(modal
+            .error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("Provider endpoint save failed:")
+                && error.contains("endpoint write denied")));
+        assert!(modal.editing);
+        assert_eq!(
+            modal.text_selection().map(|(value, _, _)| value).as_deref(),
+            Some("https://retry-proxy.invalid/v1")
+        );
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+    assert_eq!(state.provider_endpoint_sets.lock().unwrap().len(), 1);
+    assert_eq!(state.config_sets.lock().unwrap().len(), 0);
+
+    state.provider_mutation_error.lock().unwrap().take();
+    vc.simulate_keystrokes("enter");
+    pump_until(vc, &view, "provider endpoint retry", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal.error.is_none()
+                    && modal.status.as_deref().is_some_and(|status| status.contains("endpoint saved"))
+        )
+    });
+    assert_eq!(state.provider_endpoint_sets.lock().unwrap().len(), 2);
     assert_eq!(state.config_sets.lock().unwrap().len(), 0);
 }
 

@@ -582,6 +582,19 @@ impl AcpBridge {
         }
     }
 
+    pub async fn set_provider_endpoint(
+        &self,
+        provider: &str,
+        base_url: &str,
+    ) -> Result<hex_protocol::models::ProviderEndpointMutationResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.set_provider_endpoint(provider, base_url).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     pub async fn delete_provider_credential(
         &self,
         provider: &str,

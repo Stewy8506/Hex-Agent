@@ -83,6 +83,7 @@ class TestACPServer(unittest.TestCase):
                 "settings.write",
                 "providers.list",
                 "providers.credentials.write",
+                "providers.endpoint.write",
                 "tools.list",
                 "skills.list",
             ],

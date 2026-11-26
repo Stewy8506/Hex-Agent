@@ -741,6 +741,15 @@ pub struct ProviderCredentialStorage {
     pub scope: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderEndpointSource {
+    ProviderEnvironment,
+    CredentialsFile,
+    ModelConfig,
+    Default,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderDescriptor {
@@ -754,6 +763,14 @@ pub struct ProviderDescriptor {
     pub credential_writable: bool,
     pub base_url_env_var: Option<String>,
     pub default_base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_source: Option<ProviderEndpointSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_env_var: Option<String>,
+    #[serde(default)]
+    pub endpoint_writable: bool,
     pub signup_url: Option<String>,
     pub description: String,
 }
@@ -763,6 +780,13 @@ pub struct ProviderDescriptor {
 pub struct ProvidersListResponse {
     pub storage: ProviderCredentialStorage,
     pub providers: Vec<ProviderDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderEndpointMutationResponse {
+    pub provider: ProviderDescriptor,
+    pub changed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

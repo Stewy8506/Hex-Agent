@@ -3916,6 +3916,10 @@ impl ChatView {
                         self.execute_provider_credential_save(provider, credential, cx);
                         return true;
                     }
+                    Some(SettingsAction::SaveProviderEndpoint(provider, base_url)) => {
+                        self.execute_provider_endpoint_save(provider, base_url, cx);
+                        return true;
+                    }
                     Some(SettingsAction::DeleteProviderCredential(provider)) => {
                         self.execute_provider_credential_delete(provider, cx);
                         return true;
@@ -5971,6 +5975,16 @@ impl ChatView {
         })
         .detach();
 
+        self.refresh_settings_providers(cx);
+        self.shell.active_modal = ActiveModal::Settings(modal);
+        cx.notify();
+    }
+
+    fn refresh_settings_providers(&mut self, cx: &mut Context<Self>) {
+        if !self.bridge.is_connected() {
+            return;
+        }
+        let generation = self.settings_generation;
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
         cx.spawn(async move |this, cx| {
@@ -5994,11 +6008,16 @@ impl ChatView {
             .ok();
         })
         .detach();
-        self.shell.active_modal = ActiveModal::Settings(modal);
-        cx.notify();
     }
 
     fn activate_settings_action(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        if key == "model.cloudBaseUrl" {
+            if let ActiveModal::Settings(modal) = &mut self.shell.active_modal {
+                modal.reveal_setting(key);
+            }
+            cx.notify();
+            return;
+        }
         if !matches!(
             key,
             "desktop.action.models" | "desktop.action.sessions" | "desktop.action.cloud"
@@ -6122,6 +6141,58 @@ impl ChatView {
         .detach();
     }
 
+    fn execute_provider_endpoint_save(
+        &mut self,
+        provider: String,
+        base_url: String,
+        cx: &mut Context<Self>,
+    ) {
+        let ActiveModal::Settings(modal) = &mut self.shell.active_modal else {
+            return;
+        };
+        modal.busy = true;
+        modal.error = None;
+        modal.status = None;
+        let generation = self.settings_generation;
+        let removed = base_url.is_empty();
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt
+                .spawn(async move { bridge.set_provider_endpoint(&provider, &base_url).await })
+                .await;
+            this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(response)) => {
+                            if !modal.apply_provider_endpoint(
+                                response.provider,
+                                response.changed,
+                                removed,
+                            ) {
+                                modal.fail_provider_endpoint(
+                                    "The provider catalog changed before the endpoint could be applied."
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        Ok(Err(err)) => modal
+                            .fail_provider_endpoint(format!("Provider endpoint save failed: {err}")),
+                        Err(err) => modal.fail_provider_endpoint(format!(
+                            "Provider endpoint task aborted: {err}"
+                        )),
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// DX3: writes the modal's dirty diff via `config/set`; the fresh view in
     /// the response re-bases the modal, failures keep the operator's edits.
     fn execute_settings_save(&mut self, cx: &mut Context<Self>) {
@@ -6214,6 +6285,11 @@ impl ChatView {
                                 ));
                             }
                             view.clear_modal_history();
+                            if saved.changed.iter().any(|key| {
+                                matches!(key.as_str(), "model.cloudBaseUrl" | "model.cloudProvider")
+                            }) {
+                                view.refresh_settings_providers(cx);
+                            }
                         }
                         Ok(Err(err)) => {
                             modal.busy = false;
@@ -7068,6 +7144,9 @@ impl ChatView {
                                     }
                                     SettingsInteraction::Activate(key) => {
                                         this.activate_settings_action(key, cx);
+                                    }
+                                    SettingsInteraction::EditProviderEndpoint(provider) => {
+                                        current.request_provider_endpoint_edit(&provider);
                                     }
                                     SettingsInteraction::RequestProviderDelete(provider) => {
                                         if let Some(action) =

@@ -19,7 +19,8 @@ use crate::models::{
     ApprovalDecisionParams, ApprovalDecisionResponse, ClientInfo, CloudAuthStatus, CloudDevice,
     CloudDevicesList, CloudFlags, CloudRevokeResult, CloudUpdatePlan, ConfigGetResponse,
     ConfigSetResponse, InitializeParams, InitializeResponse, JsonRpcNotification, JsonRpcRequest,
-    ModelCatalog, ProviderCredentialMutationResponse, ProvidersListResponse, RequestId,
+    ModelCatalog, ProviderCredentialMutationResponse,
+    ProviderEndpointMutationResponse, ProvidersListResponse, RequestId,
     SessionCancelParams, SessionCancelResponse, SessionCommandParams,
     SessionCommandResponse, SessionDeleteResponse, SessionFlagResponse, SessionListItem,
     SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
@@ -782,6 +783,19 @@ impl AcpClient {
         self.send_request(
             "providers/credentials/set",
             serde_json::json!({ "provider": provider, "credential": credential }),
+        )
+        .await
+    }
+
+    /// Set or reset a registered provider's endpoint override.
+    pub async fn set_provider_endpoint(
+        &self,
+        provider: &str,
+        base_url: &str,
+    ) -> Result<ProviderEndpointMutationResponse, AcpError> {
+        self.send_request(
+            "providers/endpoint/set",
+            serde_json::json!({ "provider": provider, "baseUrl": base_url }),
         )
         .await
     }

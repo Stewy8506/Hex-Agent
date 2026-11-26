@@ -18,7 +18,7 @@ use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::motion::MotionPreference;
 use hex_protocol::models::{
     ConfigGetResponse, ProviderCredentialSource, ProviderCredentialStorage, ProviderDescriptor,
-    ProvidersListResponse, ToolDefinition,
+    ProviderEndpointSource, ProvidersListResponse, ToolDefinition,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -493,8 +493,15 @@ pub enum ProvidersState {
     Unavailable(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderDraftKind {
+    Credential,
+    Endpoint,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderDraft {
+    kind: ProviderDraftKind,
     value: String,
     cursor: usize,
 }
@@ -508,18 +515,38 @@ fn provider_status(provider: &ProviderDescriptor) -> String {
     }
 }
 
+fn provider_endpoint_source(source: ProviderEndpointSource) -> &'static str {
+    match source {
+        ProviderEndpointSource::ProviderEnvironment => "environment",
+        ProviderEndpointSource::CredentialsFile => "credentials file",
+        ProviderEndpointSource::ModelConfig => "model setting",
+        ProviderEndpointSource::Default => "default",
+    }
+}
+
 fn provider_description(provider: &ProviderDescriptor) -> String {
     let credential = provider
         .credential_env_var
         .as_deref()
         .map(|env_var| format!(" · {env_var}"))
         .unwrap_or_default();
+    let endpoint = provider
+        .effective_base_url
+        .as_deref()
+        .map(|base_url| {
+            let source = provider
+                .endpoint_source
+                .map(provider_endpoint_source)
+                .unwrap_or("reported by runtime");
+            format!(" · Endpoint: {base_url} ({source})")
+        })
+        .unwrap_or_default();
     let description = if provider.description.trim().is_empty() {
         String::new()
     } else {
         format!(" · {}", provider.description.trim())
     };
-    format!("{}{credential}{description}", provider.category)
+    format!("{}{credential}{endpoint}{description}", provider.category)
 }
 
 fn provider_fields(state: &ProvidersState) -> Vec<SettingField> {
@@ -826,6 +853,7 @@ pub enum SettingsAction {
     Save,
     Activate(&'static str),
     SaveProviderCredential(String, String),
+    SaveProviderEndpoint(String, String),
     DeleteProviderCredential(String),
 }
 
@@ -838,6 +866,7 @@ pub enum SettingsInteraction {
     Save,
     Activate(&'static str),
     RequestProviderDelete(String),
+    EditProviderEndpoint(String),
 }
 
 pub type SettingsHandler =
@@ -1202,6 +1231,10 @@ impl SettingsModal {
     }
 
     pub fn set_providers(&mut self, mut response: ProvidersListResponse) {
+        let editing_provider = (self.editing && !self.searching && self.pending_setting.is_none())
+            .then(|| self.selected_provider().map(|provider| provider.id.clone()))
+            .flatten();
+        let selection_anchor = self.selection_anchor;
         response
             .providers
             .sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
@@ -1210,9 +1243,22 @@ impl SettingsModal {
         } else {
             ProvidersState::Ready(response.storage, response.providers)
         };
+        self.refresh_inventory_fields();
+        if let Some(provider_id) = editing_provider {
+            let preserved = self.fields.iter().position(|field| {
+                matches!(field, SettingField::Provider { provider, .. } if provider.id == provider_id)
+            });
+            if let Some(index) = preserved {
+                self.selected = index;
+                self.selection_anchor = selection_anchor;
+                self.editing = true;
+                self.capturing_keybind = None;
+                return;
+            }
+        }
         self.provider_drafts.clear();
         self.provider_delete_confirmation = None;
-        self.refresh_inventory_fields();
+        self.selection_anchor = 0;
     }
 
     pub fn set_providers_error(&mut self, message: impl Into<String>) {
@@ -1260,6 +1306,49 @@ impl SettingsModal {
         });
         self.refresh_inventory_fields();
         true
+    }
+
+    pub fn apply_provider_endpoint(
+        &mut self,
+        provider: ProviderDescriptor,
+        changed: bool,
+        removed: bool,
+    ) -> bool {
+        let ProvidersState::Ready(storage, providers) = &mut self.providers else {
+            return false;
+        };
+        let Some(index) = providers
+            .iter()
+            .position(|current| current.id == provider.id)
+        else {
+            return false;
+        };
+        providers[index] = provider.clone();
+        self.provider_drafts.remove(&provider.id);
+        self.provider_delete_confirmation = None;
+        self.editing = false;
+        self.edit_snapshot = None;
+        self.busy = false;
+        self.error = None;
+        self.status = Some(if changed {
+            if removed {
+                format!(
+                    "{} endpoint override removed from {}.",
+                    provider.name, storage.path
+                )
+            } else {
+                format!("{} endpoint saved in {}.", provider.name, storage.path)
+            }
+        } else {
+            format!("{} endpoint is unchanged.", provider.name)
+        });
+        self.refresh_inventory_fields();
+        true
+    }
+
+    pub fn fail_provider_endpoint(&mut self, message: impl Into<String>) {
+        self.busy = false;
+        self.error = Some(message.into());
     }
 
     pub fn fail_provider_credential(&mut self, message: impl Into<String>) {
@@ -1358,6 +1447,7 @@ impl SettingsModal {
         self.provider_drafts.insert(
             provider.id.clone(),
             ProviderDraft {
+                kind: ProviderDraftKind::Credential,
                 value: String::new(),
                 cursor: 0,
             },
@@ -1366,6 +1456,98 @@ impl SettingsModal {
         self.selection_anchor = 0;
         self.edit_snapshot = None;
         self.error = None;
+    }
+
+    pub fn request_provider_endpoint_edit(&mut self, provider_id: &str) -> bool {
+        let Some((index, provider)) =
+            self.fields
+                .iter()
+                .enumerate()
+                .find_map(|(index, field)| match field {
+                    SettingField::Provider { provider, .. } if provider.id == provider_id => {
+                        Some((index, provider.clone()))
+                    }
+                    _ => None,
+                })
+        else {
+            return false;
+        };
+        self.selected = index;
+        self.active_section = SettingsSection::Providers;
+        if provider.endpoint_source == Some(ProviderEndpointSource::ModelConfig) {
+            return self.reveal_setting("model.cloudBaseUrl");
+        }
+        if !provider.endpoint_writable {
+            self.error = Some(format!(
+                "{} does not support endpoint editing.",
+                provider.name
+            ));
+            return false;
+        }
+        self.provider_delete_confirmation = None;
+        let value = provider.effective_base_url.clone().unwrap_or_default();
+        let cursor = value.len();
+        self.provider_drafts.insert(
+            provider.id.clone(),
+            ProviderDraft {
+                kind: ProviderDraftKind::Endpoint,
+                value,
+                cursor,
+            },
+        );
+        self.editing = true;
+        self.selection_anchor = cursor;
+        self.edit_snapshot = None;
+        self.error = None;
+        true
+    }
+
+    fn validate_provider_endpoint(
+        provider: &ProviderDescriptor,
+        value: &str,
+    ) -> Result<(), String> {
+        if !provider.endpoint_writable {
+            return Err(format!(
+                "{} does not support endpoint editing.",
+                provider.name
+            ));
+        }
+        let value = value.trim();
+        if value.is_empty() {
+            return Ok(());
+        }
+        if value.chars().count() > 500 {
+            return Err("Provider endpoints must be at most 500 characters.".to_string());
+        }
+        if value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(
+                "Provider endpoints cannot contain whitespace or control characters.".to_string(),
+            );
+        }
+        let authority = value
+            .split_once("://")
+            .filter(|(scheme, _)| matches!(*scheme, "http" | "https"))
+            .map(|(_, authority)| authority)
+            .ok_or_else(|| "Provider endpoints must be absolute HTTP(S) URLs.".to_string())?;
+        let host = authority
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or_default()
+            .rsplit('@')
+            .next()
+            .unwrap_or_default();
+        if host.is_empty() || value.contains('@') {
+            return Err("Provider endpoints must have a host and no user information.".to_string());
+        }
+        if value.contains('?') || value.contains('#') {
+            return Err(
+                "Provider endpoints cannot include a query string or fragment.".to_string(),
+            );
+        }
+        Ok(())
     }
 
     fn validate_provider_credential(
@@ -1986,6 +2168,19 @@ impl SettingsModal {
                     let Some(draft) = self.provider_drafts.get(&provider.id) else {
                         return None;
                     };
+                    if draft.kind == ProviderDraftKind::Endpoint {
+                        if let Err(error) =
+                            Self::validate_provider_endpoint(&provider, &draft.value)
+                        {
+                            self.error = Some(error);
+                            return None;
+                        }
+                        self.busy = true;
+                        return Some(SettingsAction::SaveProviderEndpoint(
+                            provider.id,
+                            draft.value.trim().to_string(),
+                        ));
+                    }
                     if let Err(error) = Self::validate_provider_credential(&provider, &draft.value)
                     {
                         self.error = Some(error);
@@ -2932,15 +3127,25 @@ fn render_setting_row(
         }),
         SettingField::Provider { provider, .. } => {
             let mut row = div().flex().flex_row().items_center().gap(px(8.0));
-            if selected && editing && provider.credential_writable {
-                let draft = provider_drafts.get(&provider.id);
+            let draft = provider_drafts.get(&provider.id);
+            let editing_endpoint = draft
+                .map(|draft| draft.kind == ProviderDraftKind::Endpoint)
+                .unwrap_or(false);
+            if selected
+                && editing
+                && ((!editing_endpoint && provider.credential_writable) || editing_endpoint)
+            {
                 row = row.child(
                     crate::ui::modals::text_input::input_content(
                         draft.map(|draft| draft.value.as_str()).unwrap_or_default(),
                         draft.map(|draft| draft.cursor).unwrap_or_default(),
                         selection_anchor,
-                        "Paste API key or token",
-                        true,
+                        if editing_endpoint {
+                            "https://proxy.example/v1 · empty resets"
+                        } else {
+                            "Paste API key or token"
+                        },
+                        !editing_endpoint,
                         !busy,
                         theme,
                     )
@@ -2957,6 +3162,44 @@ fn render_setting_row(
                         })
                         .child(provider_status(provider)),
                 );
+            }
+            if provider.endpoint_writable
+                || provider.endpoint_source == Some(ProviderEndpointSource::ModelConfig)
+            {
+                let provider_id = provider.id.clone();
+                let handler = settings_click_handler(
+                    &on_action,
+                    SettingsInteraction::EditProviderEndpoint(provider_id.clone()),
+                );
+                let selector = format!("settings_provider_endpoint_{provider_id}");
+                let debug_selector = selector.clone();
+                let mut endpoint = div()
+                    .id(SharedString::from(selector))
+                    .debug_selector(move || debug_selector.clone())
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(theme.mockup_border)
+                    .text_size(px(MockupTypeScale::HINT_SIZE))
+                    .text_color(theme.accent_blue)
+                    .cursor_pointer()
+                    .child(
+                        if provider.endpoint_source == Some(ProviderEndpointSource::ModelConfig) {
+                            "Model setting"
+                        } else {
+                            "Endpoint"
+                        },
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    });
+                if busy {
+                    endpoint = endpoint.opacity(0.5);
+                }
+                row = row.child(endpoint);
             }
             if provider.credential_source == ProviderCredentialSource::CredentialsFile {
                 let confirming = provider_delete_confirmation == Some(provider.id.as_str());
@@ -3343,6 +3586,10 @@ mod tests {
             credential_writable: writable,
             base_url_env_var: writable.then(|| format!("{}_BASE_URL", id.to_uppercase())),
             default_base_url: format!("https://{id}.invalid/v1"),
+            effective_base_url: Some(format!("https://{id}.invalid/v1")),
+            endpoint_source: Some(ProviderEndpointSource::Default),
+            endpoint_env_var: None,
+            endpoint_writable: writable,
             signup_url: Some(format!("https://{id}.invalid/keys")),
             description: format!("{name} test provider"),
         }
@@ -3508,6 +3755,106 @@ mod tests {
             .unwrap()
             .contains("credential saved"));
         assert_eq!(modal.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_provider_endpoint_edit_validation_reset_and_refresh_preservation() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        let response = ProvidersListResponse {
+            storage: ProviderCredentialStorage {
+                path: "/tmp/credentials.env".to_string(),
+                scope: "config_dir".to_string(),
+            },
+            providers: vec![
+                sample_provider(
+                    "anthropic",
+                    "Anthropic",
+                    ProviderCredentialSource::None,
+                    true,
+                ),
+                sample_provider("openai", "OpenAI", ProviderCredentialSource::None, true),
+            ],
+        };
+        modal.set_providers(response.clone());
+        modal.select_section(SettingsSection::Providers);
+        assert!(modal.request_provider_endpoint_edit("anthropic"));
+        assert_eq!(modal.fields[modal.selected].label(), "Anthropic");
+        assert_eq!(
+            modal.text_selection().map(|(value, _, _)| value).as_deref(),
+            Some("https://anthropic.invalid/v1")
+        );
+
+        modal.select_all_text();
+        modal.push_char("https://user:pass@proxy.invalid/v1");
+        assert_eq!(modal.handle_key("enter"), None);
+        assert!(modal.error.as_deref().unwrap().contains("user information"));
+        assert!(!modal.busy);
+
+        modal.select_all_text();
+        modal.push_char("https://proxy.invalid/v1");
+        assert_eq!(
+            modal.handle_key("enter"),
+            Some(SettingsAction::SaveProviderEndpoint(
+                "anthropic".to_string(),
+                "https://proxy.invalid/v1".to_string(),
+            ))
+        );
+        assert!(modal.busy);
+        modal.fail_provider_endpoint("endpoint write denied");
+        assert!(modal.editing);
+        assert_eq!(
+            modal.text_selection().map(|(value, _, _)| value).as_deref(),
+            Some("https://proxy.invalid/v1")
+        );
+
+        modal.set_providers(response.clone());
+        assert!(modal.editing);
+        assert_eq!(
+            modal.text_selection().map(|(value, _, _)| value).as_deref(),
+            Some("https://proxy.invalid/v1")
+        );
+        modal.select_all_text();
+        modal.backspace();
+        assert_eq!(
+            modal.handle_key("enter"),
+            Some(SettingsAction::SaveProviderEndpoint(
+                "anthropic".to_string(),
+                String::new(),
+            ))
+        );
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_provider_model_endpoint_links_to_the_existing_config_field() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        let mut provider = sample_provider(
+            "anthropic",
+            "Anthropic",
+            ProviderCredentialSource::None,
+            true,
+        );
+        provider.endpoint_source = Some(ProviderEndpointSource::ModelConfig);
+        provider.endpoint_writable = false;
+        provider.effective_base_url = Some("https://model-config.invalid/v1".to_string());
+        modal.set_providers(ProvidersListResponse {
+            storage: ProviderCredentialStorage {
+                path: "/tmp/credentials.env".to_string(),
+                scope: "config_dir".to_string(),
+            },
+            providers: vec![provider],
+        });
+        assert!(modal.request_provider_endpoint_edit("anthropic"));
+        assert_eq!(modal.active_section, SettingsSection::Model);
+        assert!(modal.editing);
+        assert!(matches!(
+            modal.fields.get(modal.selected),
+            Some(SettingField::Text { key, .. }) if *key == "model.cloudBaseUrl"
+        ));
+        assert!(modal.provider_drafts.is_empty());
     }
 
     #[test]

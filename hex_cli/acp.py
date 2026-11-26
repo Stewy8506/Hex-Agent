@@ -35,6 +35,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from harness_core import __version__
 from harness_core.config_loader import (
@@ -84,6 +85,46 @@ def _redact_sensitive_text(text: object) -> str:
         flags=re.IGNORECASE,
     )
     return s
+
+
+def _sanitize_provider_endpoint(value: object) -> str:
+    text = str(value or "").strip().rstrip("/")
+    try:
+        parsed = urlsplit(text)
+        if parsed.username or parsed.password or "@" in parsed.netloc:
+            text = urlunsplit((parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], parsed.path, "", ""))
+        else:
+            text = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        parsed.port
+    except ValueError:
+        return "[invalid endpoint]"
+    return text or "[not set]"
+
+
+def _validate_provider_endpoint(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("baseUrl must be a string")
+    text = value.strip().rstrip("/")
+    if not text:
+        return ""
+    if len(text) > CONFIG_TEXT_MAX_LENGTH:
+        raise ValueError(f"baseUrl must be at most {CONFIG_TEXT_MAX_LENGTH} characters")
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in text):
+        raise ValueError("baseUrl must not contain whitespace or control characters")
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("baseUrl must be a valid HTTP(S) URL") from exc
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("baseUrl must be an absolute HTTP(S) URL")
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError("baseUrl port must be between 1 and 65535")
+    if parsed.username or parsed.password or "@" in parsed.netloc:
+        raise ValueError("baseUrl must not include user information")
+    if parsed.query or parsed.fragment:
+        raise ValueError("baseUrl must not include a query string or fragment")
+    return text
 
 
 def _bounded_tool_preview(payload: Any, *, error: bool = False) -> str:
@@ -605,6 +646,7 @@ _SUPPORTED_METHODS = (
     "tools/list", "tools/call",
     "config/get", "config/set",
     "providers/list", "providers/credentials/set", "providers/credentials/delete",
+    "providers/endpoint/set",
     "cloud/auth/status", "cloud/auth/register", "cloud/auth/login",
     "cloud/auth/logout", "cloud/devices/list", "cloud/devices/revoke",
     "cloud/update/check", "cloud/config/evaluate",
@@ -617,6 +659,7 @@ HEX_CONTRACT_FEATURES = (
     "settings.write",
     "providers.list",
     "providers.credentials.write",
+    "providers.endpoint.write",
     "tools.list",
     "skills.list",
 )
@@ -942,6 +985,8 @@ class ACPServer:
                 res = self._handle_provider_credential_set(params)
             elif method == "providers/credentials/delete":
                 res = self._handle_provider_credential_delete(params)
+            elif method == "providers/endpoint/set":
+                res = self._handle_provider_endpoint_set(params)
             elif method == "tools/list":
                 res = self._handle_tools_list(params)
             elif method == "tools/call":
@@ -1060,6 +1105,7 @@ class ACPServer:
                     "code": -32602 if method in {
                         "initialize", "config/set", "providers/list",
                         "providers/credentials/set", "providers/credentials/delete",
+                        "providers/endpoint/set",
                         "session/toolResult", "session/load", "session/history",
                         "session/historyContent", "session/approvalDecision"
                     } and isinstance(exc, (ValueError, TypeError)) else -32000,
@@ -1857,8 +1903,82 @@ class ACPServer:
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         return parse_env_file_text(text)
 
+    def _provider_config_snapshot(self) -> dict[str, Any]:
+        try:
+            data, _ = self._read_config_snapshot(self.config_dir / "config.yaml")
+            return data
+        except ConfigParseError:
+            return {}
+
     @staticmethod
-    def _provider_status(spec: Any, file_credentials: dict[str, str]) -> dict[str, Any]:
+    def _active_provider_id(config: dict[str, Any]) -> str:
+        from harness_core.providers.registry import get_provider_spec
+
+        model = config.get("model") if isinstance(config, dict) else None
+        configured = model.get("cloud_provider") if isinstance(model, dict) else None
+        provider_id = str(configured or os.getenv("HEX_CLOUD_PROVIDER") or "").strip()
+        spec = get_provider_spec(provider_id)
+        return spec.id if spec else provider_id.lower()
+
+    def _provider_endpoint_status(
+        self,
+        spec: Any,
+        file_credentials: dict[str, str],
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        active = self._active_provider_id(config) == spec.id
+        model = config.get("model") if isinstance(config, dict) else None
+        model_url = str(model.get("cloud_base_url") or "").strip() if isinstance(model, dict) else ""
+        global_url = os.environ.get("HEX_CLOUD_BASE_URL", "").strip()
+        if active and model_url:
+            return {
+                "effectiveBaseUrl": _sanitize_provider_endpoint(model_url),
+                "endpointSource": "model_config",
+                "endpointEnvVar": None,
+                "endpointWritable": False,
+            }
+        if active and global_url:
+            return {
+                "effectiveBaseUrl": _sanitize_provider_endpoint(global_url),
+                "endpointSource": "provider_environment",
+                "endpointEnvVar": "HEX_CLOUD_BASE_URL",
+                "endpointWritable": False,
+            }
+        for env_var in spec.base_url_env_vars:
+            file_value = file_credentials.get(env_var, "").strip()
+            process_value = os.environ.get(env_var, "").strip()
+            value = file_value or process_value
+            if value:
+                return {
+                    "effectiveBaseUrl": _sanitize_provider_endpoint(value),
+                    "endpointSource": "credentials_file" if file_value else "provider_environment",
+                    "endpointEnvVar": env_var,
+                    "endpointWritable": bool(spec.base_url_env_var),
+                }
+        return {
+            "effectiveBaseUrl": _sanitize_provider_endpoint(spec.default_base_url),
+            "endpointSource": "default",
+            "endpointEnvVar": None,
+            "endpointWritable": bool(spec.base_url_env_var),
+        }
+
+    def _apply_active_provider_endpoint(self, spec: Any, base_url: str | None = None) -> None:
+        router = getattr(self._orchestrator, "router", None)
+        provider = getattr(router, "cloud_provider", None)
+        provider_id = str(getattr(provider, "provider_id", "") or "")
+        if provider_id == "google_antigravity":
+            provider_id = "antigravity"
+        if provider_id != spec.id or not hasattr(provider, "base_url"):
+            return
+        resolved = base_url if base_url is not None else spec.resolve_base_url()
+        provider.base_url = resolved.rstrip("/")
+
+    def _provider_status(
+        self,
+        spec: Any,
+        file_credentials: dict[str, str],
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         env_var = ACPServer._provider_credential_env_var(spec)
         process_value = os.environ.get(env_var, "").strip() if env_var else ""
         file_value = file_credentials.get(env_var, "").strip() if env_var else ""
@@ -1883,6 +2003,9 @@ class ACPServer:
             "credentialWritable": env_var is not None,
             "baseUrlEnvVar": spec.base_url_env_var or None,
             "defaultBaseUrl": spec.default_base_url,
+            **self._provider_endpoint_status(
+                spec, file_credentials, config if config is not None else {}
+            ),
             "signupUrl": spec.signup_url or None,
             "description": spec.description,
         }
@@ -1908,7 +2031,8 @@ class ACPServer:
             raise ValueError("providers/list params must be an object")
         with self._config_lock:
             credentials = self._read_credentials_file()
-            providers = [self._provider_status(spec, credentials) for spec in list_providers()]
+            config = self._provider_config_snapshot()
+            providers = [self._provider_status(spec, credentials, config) for spec in list_providers()]
         return {
             "storage": {
                 "path": str(self.config_dir / "credentials.env"),
@@ -1940,7 +2064,7 @@ class ACPServer:
                 self.config_dir / "credentials.env", {env_var: credential}
             )
             os.environ[env_var] = credential
-            provider = self._provider_status(spec, updated)
+            provider = self._provider_status(spec, updated, self._provider_config_snapshot())
         return {"provider": provider, "changed": previous.get(env_var) != credential}
 
     def _handle_provider_credential_delete(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1956,8 +2080,40 @@ class ACPServer:
             )
             if env_var in previous and os.environ.get(env_var) == previous[env_var]:
                 os.environ.pop(env_var, None)
-            provider = self._provider_status(spec, updated)
+            provider = self._provider_status(spec, updated, self._provider_config_snapshot())
         return {"provider": provider, "changed": env_var in previous}
+
+    def _handle_provider_endpoint_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        spec = self._provider_from_params(params)
+        env_var = spec.base_url_env_var
+        if not env_var:
+            raise ValueError("this provider does not support endpoint overrides")
+        base_url = _validate_provider_endpoint(params.get("baseUrl"))
+
+        with self._config_lock:
+            config = self._provider_config_snapshot()
+            if self._active_provider_id(config) == spec.id:
+                model = config.get("model") if isinstance(config, dict) else None
+                model_url = str(model.get("cloud_base_url") or "").strip() if isinstance(model, dict) else ""
+                if model_url:
+                    raise ValueError("the active model endpoint is managed by model.cloudBaseUrl")
+                if os.environ.get("HEX_CLOUD_BASE_URL", "").strip():
+                    raise ValueError("the active model endpoint is managed by HEX_CLOUD_BASE_URL")
+            previous = self._read_credentials_file()
+            updated = update_env_file_atomic(
+                self.config_dir / "credentials.env",
+                {env_var: base_url or None},
+            )
+            if base_url:
+                os.environ[env_var] = base_url
+            elif env_var in previous and os.environ.get(env_var) == previous[env_var]:
+                os.environ.pop(env_var, None)
+            self._apply_active_provider_endpoint(spec)
+            provider = self._provider_status(spec, updated, config)
+        return {
+            "provider": provider,
+            "changed": previous.get(env_var) != base_url,
+        }
 
     def _handle_config_get(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._settings_view()
@@ -1997,6 +2153,8 @@ class ACPServer:
             raise ValueError(
                 f"{section}.{key} must be at most {CONFIG_TEXT_MAX_LENGTH} characters"
             )
+        if section == "model" and key in ("cloud_base_url", "cloudBaseUrl"):
+            return _validate_provider_endpoint(text)
         return text
 
     def _handle_config_set(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -2065,6 +2223,18 @@ class ACPServer:
                     raise ConfigRevisionConflict(expected_revision, latest_revision)
                 merged = merge(latest)
             write_config_yaml_atomic(cfg_file, merged)
+            model_updates = normalized.get("model", {})
+            if "cloud_base_url" in model_updates:
+                endpoint = model_updates["cloud_base_url"]
+                if endpoint:
+                    os.environ["HEX_CLOUD_BASE_URL"] = endpoint
+                else:
+                    os.environ.pop("HEX_CLOUD_BASE_URL", None)
+                from harness_core.providers.registry import get_provider_spec
+
+                spec = get_provider_spec(self._active_provider_id(merged))
+                if spec is not None:
+                    self._apply_active_provider_endpoint(spec, endpoint)
             return {**self._settings_view(), "changed": sorted(changed)}
 
     def _handle_session_models(self, params: dict[str, Any]) -> dict[str, Any]:

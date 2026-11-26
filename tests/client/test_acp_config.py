@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from hex_cli.acp import CONFIG_REVISION_CONFLICT, CONFIG_SCHEMA, ACPServer
 
@@ -163,6 +166,9 @@ class TestConfigSurface(unittest.TestCase):
             ({"runtime": {"maxTurns": "ninety"}}, "int wrong type"),
             ({"nope": {"x": 1}}, "unknown section"),
             ({"model": {"notAKey": 1}}, "unknown key"),
+            ({"model": {"cloudBaseUrl": "https://user:pass@example.test"}}, "url userinfo"),
+            ({"model": {"cloudBaseUrl": "https://example.test?token=secret"}}, "url query"),
+            ({"model": {"cloudBaseUrl": "ftp://example.test"}}, "url scheme"),
         ]
         for updates, label in cases:
             with self.subTest(label):
@@ -249,6 +255,26 @@ class TestConfigSurface(unittest.TestCase):
         )
         self.assertEqual(resp["result"]["changed"], ["webSearch.provider"])
         self.assertEqual(resp["result"]["config"]["webSearch"]["provider"], "tavily")
+
+    def test_model_endpoint_save_updates_environment_and_active_provider(self) -> None:
+        runtime_provider = SimpleNamespace(provider_id="gemini", base_url="https://old.invalid")
+        self.server._orchestrator = SimpleNamespace(
+            router=SimpleNamespace(cloud_provider=runtime_provider)
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            response = self.server.handle_request(
+                _req(2, "config/set", {"updates": {"model": {"cloudBaseUrl": "https://new.invalid/v1"}}})
+            )
+            self.assertIn("result", response)
+            self.assertEqual(os.environ["HEX_CLOUD_BASE_URL"], "https://new.invalid/v1")
+            self.assertEqual(runtime_provider.base_url, "https://new.invalid/v1")
+
+            cleared = self.server.handle_request(
+                _req(3, "config/set", {"updates": {"model": {"cloudBaseUrl": ""}}})
+            )
+            self.assertIn("result", cleared)
+            self.assertNotIn("HEX_CLOUD_BASE_URL", os.environ)
+            self.assertEqual(runtime_provider.base_url, "https://generativelanguage.googleapis.com/v1beta")
 
     def test_config_set_refuses_to_overwrite_unparseable_file(self) -> None:
         self.cfg.write_text("model: [broken\n  yaml: : :", encoding="utf-8")

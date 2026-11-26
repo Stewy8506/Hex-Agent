@@ -51,16 +51,20 @@ class ProviderSpec:
             return ""
         return None
 
+    @property
+    def base_url_env_vars(self) -> tuple[str, ...]:
+        if self.id == "custom":
+            return tuple(
+                dict.fromkeys(
+                    [self.base_url_env_var, "HEX_CUSTOM_BASE_URL", "CUSTOM_BASE_URL", "OPENAI_BASE_URL"]
+                )
+            )
+        return (self.base_url_env_var,) if self.base_url_env_var else ()
+
     def resolve_base_url(self, custom_creds: dict[str, str] | None = None) -> str:
         """Resolve API base URL honoring base_url_env_var overrides."""
         creds = custom_creds or {}
-        candidates: list[str] = []
-        if self.base_url_env_var:
-            candidates.append(self.base_url_env_var)
-        if self.id == "custom":
-            candidates.extend(["HEX_CUSTOM_BASE_URL", "CUSTOM_BASE_URL", "OPENAI_BASE_URL"])
-
-        for var in candidates:
+        for var in self.base_url_env_vars:
             val = creds.get(var) or os.getenv(var)
             if val and str(val).strip():
                 return str(val).strip().rstrip("/")
