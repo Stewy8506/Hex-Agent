@@ -40,6 +40,8 @@ from harness_core import __version__
 from harness_core.config_loader import (
     ConfigParseError,
     parse_config_yaml_text,
+    parse_env_file_text,
+    update_env_file_atomic,
     write_config_yaml_atomic,
 )
 from harness_core.core.reasoning_effort import EFFORT_LADDER
@@ -602,6 +604,7 @@ _SUPPORTED_METHODS = (
     "session/rename", "session/delete", "session/archive", "session/pin",
     "tools/list", "tools/call",
     "config/get", "config/set",
+    "providers/list", "providers/credentials/set", "providers/credentials/delete",
     "cloud/auth/status", "cloud/auth/register", "cloud/auth/login",
     "cloud/auth/logout", "cloud/devices/list", "cloud/devices/revoke",
     "cloud/update/check", "cloud/config/evaluate",
@@ -612,6 +615,8 @@ HEX_CONTRACT_VERSION = 1
 HEX_CONTRACT_FEATURES = (
     "settings.read",
     "settings.write",
+    "providers.list",
+    "providers.credentials.write",
     "tools.list",
     "skills.list",
 )
@@ -619,6 +624,7 @@ HEX_CONTRACT_FEATURES = (
 CONFIG_SCHEMA_VERSION = 1
 CONFIG_TEXT_MAX_LENGTH = 500
 CONFIG_REVISION_CONFLICT = -32001
+PROVIDER_CREDENTIAL_MAX_LENGTH = 8192
 
 
 class ConfigRevisionConflict(Exception):
@@ -930,6 +936,12 @@ class ACPServer:
                 res = self._handle_config_get(params)
             elif method == "config/set":
                 res = self._handle_config_set(params)
+            elif method == "providers/list":
+                res = self._handle_providers_list(params)
+            elif method == "providers/credentials/set":
+                res = self._handle_provider_credential_set(params)
+            elif method == "providers/credentials/delete":
+                res = self._handle_provider_credential_delete(params)
             elif method == "tools/list":
                 res = self._handle_tools_list(params)
             elif method == "tools/call":
@@ -1046,7 +1058,9 @@ class ACPServer:
                 "id": req_id,
                 "error": {
                     "code": -32602 if method in {
-                        "initialize", "config/set", "session/toolResult", "session/load", "session/history",
+                        "initialize", "config/set", "providers/list",
+                        "providers/credentials/set", "providers/credentials/delete",
+                        "session/toolResult", "session/load", "session/history",
                         "session/historyContent", "session/approvalDecision"
                     } and isinstance(exc, (ValueError, TypeError)) else -32000,
                     "message": str(exc),
@@ -1830,6 +1844,118 @@ class ACPServer:
         with self._config_lock:
             data, revision = self._read_config_snapshot(self.config_dir / "config.yaml")
             return self._settings_view_from_snapshot(data, revision)
+
+    @staticmethod
+    def _provider_credential_env_var(spec: Any) -> str | None:
+        for env_var in spec.env_vars:
+            if env_var.endswith("_API_KEY") or env_var.endswith("_TOKEN"):
+                return env_var
+        return None
+
+    def _read_credentials_file(self) -> dict[str, str]:
+        path = self.config_dir / "credentials.env"
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        return parse_env_file_text(text)
+
+    @staticmethod
+    def _provider_status(spec: Any, file_credentials: dict[str, str]) -> dict[str, Any]:
+        env_var = ACPServer._provider_credential_env_var(spec)
+        process_value = os.environ.get(env_var, "").strip() if env_var else ""
+        file_value = file_credentials.get(env_var, "").strip() if env_var else ""
+        if not env_var:
+            source = "not_supported"
+        elif process_value:
+            source = "environment"
+        elif file_value:
+            source = "credentials_file"
+        else:
+            source = "none"
+        return {
+            "id": spec.id,
+            "name": spec.name,
+            "category": spec.category,
+            "requiresApiKey": spec.requires_api_key,
+            "credentialEnvVar": env_var,
+            "credentialConfigured": bool(process_value or file_value),
+            "credentialSource": source,
+            "credentialWritable": env_var is not None,
+            "baseUrlEnvVar": spec.base_url_env_var or None,
+            "defaultBaseUrl": spec.default_base_url,
+            "signupUrl": spec.signup_url or None,
+            "description": spec.description,
+        }
+
+    @staticmethod
+    def _provider_from_params(params: Any) -> Any:
+        from harness_core.providers.registry import get_provider_spec
+
+        if not isinstance(params, dict):
+            raise ValueError("provider params must be an object")
+        provider_id = params.get("provider")
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            raise ValueError("provider must be a non-empty string")
+        spec = get_provider_spec(provider_id)
+        if spec is None:
+            raise ValueError("unknown provider")
+        return spec
+
+    def _handle_providers_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        from harness_core.providers.registry import list_providers
+
+        if not isinstance(params, dict):
+            raise ValueError("providers/list params must be an object")
+        with self._config_lock:
+            credentials = self._read_credentials_file()
+            providers = [self._provider_status(spec, credentials) for spec in list_providers()]
+        return {
+            "storage": {
+                "path": str(self.config_dir / "credentials.env"),
+                "scope": "config_dir",
+            },
+            "providers": providers,
+        }
+
+    def _handle_provider_credential_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        spec = self._provider_from_params(params)
+        credential = params.get("credential")
+        env_var = self._provider_credential_env_var(spec)
+        if env_var is None:
+            raise ValueError("this provider does not support API key or token credentials")
+        if not isinstance(credential, str) or not credential:
+            raise ValueError("credential must be a non-empty string")
+        if len(credential) > PROVIDER_CREDENTIAL_MAX_LENGTH:
+            raise ValueError(
+                f"credential must be at most {PROVIDER_CREDENTIAL_MAX_LENGTH} characters"
+            )
+        if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in credential):
+            raise ValueError("credential must not contain whitespace or control characters")
+        if credential[0] in ("'", '"') and credential[-1] == credential[0]:
+            raise ValueError("credential must not include wrapping quotes")
+
+        with self._config_lock:
+            previous = self._read_credentials_file()
+            updated = update_env_file_atomic(
+                self.config_dir / "credentials.env", {env_var: credential}
+            )
+            os.environ[env_var] = credential
+            provider = self._provider_status(spec, updated)
+        return {"provider": provider, "changed": previous.get(env_var) != credential}
+
+    def _handle_provider_credential_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        spec = self._provider_from_params(params)
+        env_var = self._provider_credential_env_var(spec)
+        if env_var is None:
+            raise ValueError("this provider does not support API key or token credentials")
+
+        with self._config_lock:
+            previous = self._read_credentials_file()
+            updated = update_env_file_atomic(
+                self.config_dir / "credentials.env", {env_var: None}
+            )
+            if env_var in previous and os.environ.get(env_var) == previous[env_var]:
+                os.environ.pop(env_var, None)
+            provider = self._provider_status(spec, updated)
+        return {"provider": provider, "changed": env_var in previous}
 
     def _handle_config_get(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._settings_view()

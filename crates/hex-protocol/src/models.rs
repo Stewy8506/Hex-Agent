@@ -304,6 +304,8 @@ pub const HEX_CONTRACT_VERSION: u32 = 1;
 pub const JSONRPC_CONFIG_REVISION_CONFLICT: i64 = -32001;
 pub const HEX_FEATURE_SETTINGS_READ: &str = "settings.read";
 pub const HEX_FEATURE_SETTINGS_WRITE: &str = "settings.write";
+pub const HEX_FEATURE_PROVIDERS_LIST: &str = "providers.list";
+pub const HEX_FEATURE_PROVIDER_CREDENTIALS_WRITE: &str = "providers.credentials.write";
 pub const HEX_FEATURE_TOOLS_LIST: &str = "tools.list";
 pub const HEX_FEATURE_SKILLS_LIST: &str = "skills.list";
 
@@ -390,6 +392,14 @@ impl InitializeResponse {
 
     pub fn supports_settings_write(&self) -> bool {
         self.supports_feature(HEX_FEATURE_SETTINGS_WRITE)
+    }
+
+    pub fn supports_providers_list(&self) -> bool {
+        self.supports_feature(HEX_FEATURE_PROVIDERS_LIST)
+    }
+
+    pub fn supports_provider_credentials_write(&self) -> bool {
+        self.supports_feature(HEX_FEATURE_PROVIDER_CREDENTIALS_WRITE)
     }
 
     pub fn supports_feature(&self, feature: &str) -> bool {
@@ -713,6 +723,53 @@ pub struct ConfigSettingSpec {
 pub struct ConfigSettingsSchema {
     pub version: u32,
     pub fields: std::collections::BTreeMap<String, ConfigSettingSpec>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCredentialSource {
+    CredentialsFile,
+    Environment,
+    None,
+    NotSupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCredentialStorage {
+    pub path: String,
+    pub scope: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDescriptor {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub requires_api_key: bool,
+    pub credential_env_var: Option<String>,
+    pub credential_configured: bool,
+    pub credential_source: ProviderCredentialSource,
+    pub credential_writable: bool,
+    pub base_url_env_var: Option<String>,
+    pub default_base_url: String,
+    pub signup_url: Option<String>,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvidersListResponse {
+    pub storage: ProviderCredentialStorage,
+    pub providers: Vec<ProviderDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCredentialMutationResponse {
+    pub provider: ProviderDescriptor,
+    pub changed: bool,
 }
 
 /// Result of `config/get` / `config/set`. `options` maps dotted keys to the
@@ -1308,6 +1365,38 @@ mod tests {
             "kind": "secret"
         }));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_provider_credential_contract_deserializes_without_values() {
+        let response: ProvidersListResponse = serde_json::from_value(serde_json::json!({
+            "storage": {"path": "/home/operator/.hex/credentials.env", "scope": "config_dir"},
+            "providers": [{
+                "id": "anthropic",
+                "name": "Anthropic",
+                "category": "featured",
+                "requiresApiKey": true,
+                "credentialEnvVar": "ANTHROPIC_API_KEY",
+                "credentialConfigured": true,
+                "credentialSource": "credentials_file",
+                "credentialWritable": true,
+                "baseUrlEnvVar": "ANTHROPIC_BASE_URL",
+                "defaultBaseUrl": "https://api.anthropic.com/v1",
+                "signupUrl": "https://console.anthropic.com/settings/keys",
+                "description": "Claude API"
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(response.providers.len(), 1);
+        let provider = &response.providers[0];
+        assert_eq!(provider.credential_env_var.as_deref(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(provider.credential_source, ProviderCredentialSource::CredentialsFile);
+        assert!(provider.credential_configured);
+        assert!(provider.credential_writable);
+        let serialized = serde_json::to_value(&response).unwrap();
+        assert!(serialized["providers"][0].get("credential").is_none());
+        assert!(serialized["providers"][0].get("credentialValue").is_none());
     }
 
     #[test]

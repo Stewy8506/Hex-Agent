@@ -78,7 +78,14 @@ class TestACPServer(unittest.TestCase):
         self.assertEqual(res["hexContractVersion"], 1)
         self.assertEqual(
             res["capabilities"]["features"],
-            ["settings.read", "settings.write", "tools.list", "skills.list"],
+            [
+                "settings.read",
+                "settings.write",
+                "providers.list",
+                "providers.credentials.write",
+                "tools.list",
+                "skills.list",
+            ],
         )
         self.assertEqual(res["serverInfo"]["name"], "HEX")
         desc = res["serverInfo"]["description"].lower()

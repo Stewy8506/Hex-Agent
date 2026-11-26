@@ -6,8 +6,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
 use hex_protocol::{
-    AcpClient, ClientInfo, DiffLineType, HEX_CONTRACT_VERSION, HEX_FEATURE_SETTINGS_READ,
-    HEX_FEATURE_SETTINGS_WRITE, InitializeResponse, JSONRPC_CONFIG_REVISION_CONFLICT, JsonRpcRequest,
+    AcpClient, ClientInfo, DiffLineType, HEX_CONTRACT_VERSION, HEX_FEATURE_PROVIDER_CREDENTIALS_WRITE,
+    HEX_FEATURE_PROVIDERS_LIST, HEX_FEATURE_SETTINGS_READ, HEX_FEATURE_SETTINGS_WRITE,
+    InitializeResponse, JSONRPC_CONFIG_REVISION_CONFLICT, JsonRpcRequest, ProviderCredentialSource,
     SessionNewResponse, SessionPromptResponse, UnifiedDiff,
 };
 
@@ -43,7 +44,12 @@ async fn test_full_session_lifecycle() {
                                 "session": {"streaming": true, "cancel": true, "history": true},
                                 "tools": {"listChanged": false},
                                 "prompts": {},
-                                "features": [HEX_FEATURE_SETTINGS_READ, HEX_FEATURE_SETTINGS_WRITE]
+                                "features": [
+                                    HEX_FEATURE_SETTINGS_READ,
+                                    HEX_FEATURE_SETTINGS_WRITE,
+                                    HEX_FEATURE_PROVIDERS_LIST,
+                                    HEX_FEATURE_PROVIDER_CREDENTIALS_WRITE
+                                ]
                             },
                             "serverInfo": {"name": "HEX", "version": "0.20.1"}
                         }
@@ -143,6 +149,8 @@ async fn test_full_session_lifecycle() {
     assert_eq!(init_res.hex_contract_version, Some(HEX_CONTRACT_VERSION));
     assert!(init_res.supports_settings_read());
     assert!(init_res.supports_settings_write());
+    assert!(init_res.supports_providers_list());
+    assert!(init_res.supports_provider_credentials_write());
     assert!(!init_res.supports_feature("settings.schema"));
     assert!(init_res.capabilities.session.streaming);
     assert!(client.supports_feature(HEX_FEATURE_SETTINGS_READ).await);
@@ -318,6 +326,111 @@ async fn test_config_revision_roundtrip_conflict_and_legacy_write() {
         .config_set(serde_json::json!({"runtime": {"maxTurns": 72}}), None)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn test_provider_credentials_roundtrip_never_returns_secret_values() {
+    let (client_read, mut server_write) = tokio::io::duplex(16384);
+    let (server_read, client_write) = tokio::io::duplex(16384);
+    let client = AcpClient::from_streams(client_read, client_write);
+
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let mut configured = false;
+        for _ in 0..3 {
+            let line = lines.next_line().await.unwrap().unwrap();
+            let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+            let result = match req.method.as_str() {
+                "providers/list" => {
+                    serde_json::json!({
+                        "storage": {"path": "/ws/credentials.env", "scope": "config_dir"},
+                        "providers": [{
+                            "id": "anthropic",
+                            "name": "Anthropic",
+                            "category": "featured",
+                            "requiresApiKey": true,
+                            "credentialEnvVar": "ANTHROPIC_API_KEY",
+                            "credentialConfigured": configured,
+                            "credentialSource": if configured { "environment" } else { "none" },
+                            "credentialWritable": true,
+                            "baseUrlEnvVar": "ANTHROPIC_BASE_URL",
+                            "defaultBaseUrl": "https://api.anthropic.com/v1",
+                            "signupUrl": "https://console.anthropic.com/settings/keys",
+                            "description": "Claude API"
+                        }]
+                    })
+                }
+                "providers/credentials/set" => {
+                    assert_eq!(req.params.as_ref().unwrap()["provider"], "anthropic");
+                    assert_eq!(req.params.as_ref().unwrap()["credential"], "sk-test-only");
+                    configured = true;
+                    serde_json::json!({
+                        "provider": {
+                            "id": "anthropic",
+                            "name": "Anthropic",
+                            "category": "featured",
+                            "requiresApiKey": true,
+                            "credentialEnvVar": "ANTHROPIC_API_KEY",
+                            "credentialConfigured": true,
+                            "credentialSource": "environment",
+                            "credentialWritable": true,
+                            "baseUrlEnvVar": "ANTHROPIC_BASE_URL",
+                            "defaultBaseUrl": "https://api.anthropic.com/v1",
+                            "signupUrl": null,
+                            "description": "Claude API"
+                        },
+                        "changed": true
+                    })
+                }
+                "providers/credentials/delete" => {
+                    assert_eq!(req.params.as_ref().unwrap()["provider"], "anthropic");
+                    assert!(req.params.as_ref().unwrap().get("credential").is_none());
+                    configured = false;
+                    serde_json::json!({
+                        "provider": {
+                            "id": "anthropic",
+                            "name": "Anthropic",
+                            "category": "featured",
+                            "requiresApiKey": true,
+                            "credentialEnvVar": "ANTHROPIC_API_KEY",
+                            "credentialConfigured": false,
+                            "credentialSource": "none",
+                            "credentialWritable": true,
+                            "baseUrlEnvVar": "ANTHROPIC_BASE_URL",
+                            "defaultBaseUrl": "https://api.anthropic.com/v1",
+                            "signupUrl": null,
+                            "description": "Claude API"
+                        },
+                        "changed": true
+                    })
+                }
+                other => panic!("unexpected method {other}"),
+            };
+            let response = serde_json::json!({"jsonrpc": "2.0", "id": req.id, "result": result});
+            assert!(!response.to_string().contains("sk-test-only"));
+            server_write
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+
+    let listed = client.providers_list().await.unwrap();
+    assert_eq!(listed.storage.scope, "config_dir");
+    assert_eq!(listed.providers[0].credential_source, ProviderCredentialSource::None);
+    assert!(!listed.providers[0].credential_configured);
+
+    let saved = client
+        .set_provider_credential("anthropic", "sk-test-only")
+        .await
+        .unwrap();
+    assert!(saved.changed);
+    assert!(saved.provider.credential_configured);
+    assert_eq!(saved.provider.credential_source, ProviderCredentialSource::Environment);
+
+    let deleted = client.delete_provider_credential("anthropic").await.unwrap();
+    assert!(deleted.changed);
+    assert!(!deleted.provider.credential_configured);
 }
 
 #[tokio::test]

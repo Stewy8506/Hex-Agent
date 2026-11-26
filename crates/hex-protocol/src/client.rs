@@ -19,7 +19,8 @@ use crate::models::{
     ApprovalDecisionParams, ApprovalDecisionResponse, ClientInfo, CloudAuthStatus, CloudDevice,
     CloudDevicesList, CloudFlags, CloudRevokeResult, CloudUpdatePlan, ConfigGetResponse,
     ConfigSetResponse, InitializeParams, InitializeResponse, JsonRpcNotification, JsonRpcRequest,
-    ModelCatalog, RequestId, SessionCancelParams, SessionCancelResponse, SessionCommandParams,
+    ModelCatalog, ProviderCredentialMutationResponse, ProvidersListResponse, RequestId,
+    SessionCancelParams, SessionCancelResponse, SessionCommandParams,
     SessionCommandResponse, SessionDeleteResponse, SessionFlagResponse, SessionListItem,
     SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
     SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionRenameResponse,
@@ -764,6 +765,37 @@ impl AcpClient {
             params["expectedRevision"] = serde_json::json!(revision);
         }
         self.send_request("config/set", params).await
+    }
+
+    /// List registered providers and credential status without secret values.
+    pub async fn providers_list(&self) -> Result<ProvidersListResponse, AcpError> {
+        self.send_request("providers/list", serde_json::json!({}))
+            .await
+    }
+
+    /// Write a provider API key or token to the backend credential store.
+    pub async fn set_provider_credential(
+        &self,
+        provider: &str,
+        credential: &str,
+    ) -> Result<ProviderCredentialMutationResponse, AcpError> {
+        self.send_request(
+            "providers/credentials/set",
+            serde_json::json!({ "provider": provider, "credential": credential }),
+        )
+        .await
+    }
+
+    /// Remove a provider API key or token from the backend credential store.
+    pub async fn delete_provider_credential(
+        &self,
+        provider: &str,
+    ) -> Result<ProviderCredentialMutationResponse, AcpError> {
+        self.send_request(
+            "providers/credentials/delete",
+            serde_json::json!({ "provider": provider }),
+        )
+        .await
     }
 
     /// Query available tools from the ACP server.

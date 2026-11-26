@@ -558,6 +558,42 @@ impl AcpBridge {
         }
     }
 
+    pub async fn providers_list(
+        &self,
+    ) -> Result<hex_protocol::models::ProvidersListResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.providers_list().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    pub async fn set_provider_credential(
+        &self,
+        provider: &str,
+        credential: &str,
+    ) -> Result<hex_protocol::models::ProviderCredentialMutationResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.set_provider_credential(provider, credential).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
+    pub async fn delete_provider_credential(
+        &self,
+        provider: &str,
+    ) -> Result<hex_protocol::models::ProviderCredentialMutationResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.delete_provider_credential(provider).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Fetch the live model catalog from the backend's configured providers (B32).
     pub async fn list_models(
         &self,

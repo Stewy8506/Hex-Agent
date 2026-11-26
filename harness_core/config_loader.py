@@ -49,32 +49,78 @@ class ConfigParseError(ValueError):
         super().__init__(f"{self.path}: {message}")
 
 
+def parse_env_file_text(content: str) -> dict[str, str]:
+    """Parse one .env snapshot into key-value pairs."""
+    env_vars: dict[str, str] = {}
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            # Strip wrapping quotes if present
+            if (val.startswith('"') and val.endswith('"')) or (
+                val.startswith("'") and val.endswith("'")
+            ):
+                val = val[1:-1]
+            if key:
+                env_vars[key] = val
+    return env_vars
+
+
 def parse_env_file(file_path: Path) -> dict[str, str]:
     """Parse a .env formatted file into key-value pairs."""
-    env_vars: dict[str, str] = {}
     if not file_path.is_file():
-        return env_vars
-
+        return {}
     try:
-        content = file_path.read_text(encoding="utf-8")
-        for line in content.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, val = line.split("=", 1)
-                key = key.strip()
-                val = val.strip()
-                # Strip wrapping quotes if present
-                if (val.startswith('"') and val.endswith('"')) or (
-                    val.startswith("'") and val.endswith("'")
-                ):
-                    val = val[1:-1]
-                if key:
-                    env_vars[key] = val
+        return parse_env_file_text(file_path.read_text(encoding="utf-8"))
     except Exception:
-        pass
-    return env_vars
+        return {}
+
+
+def update_env_file_atomic(
+    file_path: Path, updates: dict[str, str | None]
+) -> dict[str, str]:
+    """Atomically patch selected .env keys while preserving unrelated lines."""
+    if not updates:
+        return parse_env_file(file_path)
+
+    original = file_path.read_text(encoding="utf-8") if file_path.is_file() else ""
+    output: list[str] = []
+    pending = dict(updates)
+    written: set[str] = set()
+    assignment = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+    for line in original.splitlines(keepends=True):
+        match = assignment.match(line.strip())
+        key = match.group(1) if match else ""
+        if key not in updates:
+            output.append(line)
+            continue
+        if key in written:
+            continue
+        written.add(key)
+        value = updates[key]
+        if value is not None:
+            ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            output.append(f"{key}={value}{ending}")
+
+    remaining = {key: value for key, value in pending.items() if key not in written}
+    if any(value is not None for value in remaining.values()):
+        if output and not output[-1].endswith(("\n", "\r")):
+            output[-1] += "\n"
+        output.extend(
+            f"{key}={value}\n" for key, value in remaining.items() if value is not None
+        )
+
+    rendered = "".join(output)
+    if rendered != original:
+        write_config_text_atomic(file_path, rendered)
+    if file_path.is_file():
+        file_path.chmod(0o600)
+    return parse_env_file_text(rendered)
 
 
 def parse_config_yaml_text(text: str, file_path: Path | str) -> dict[str, Any]:
