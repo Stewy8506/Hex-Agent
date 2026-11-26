@@ -26,7 +26,8 @@ use crate::models::{
     SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
     SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionRenameResponse,
     SessionSubagentsParams, SessionSubagentsResponse, SubagentInfo, ToolCallParams,
-    ToolCallResponse, ToolDefinition, ToolPolicyMutationResponse, ToolsListResponse,
+    GcPreviewResponse, ToolCallResponse, ToolDefinition, ToolPolicyMutationResponse,
+    ToolsListResponse,
     ToolsPolicyResponse, HEX_CONTRACT_VERSION,
 };
 
@@ -844,6 +845,12 @@ impl AcpClient {
             }),
         )
         .await
+    }
+
+    /// Read-only dry-run retention sweep (`maintenance/gcPreview`).
+    pub async fn gc_preview(&self) -> Result<GcPreviewResponse, AcpError> {
+        self.send_request("maintenance/gcPreview", serde_json::json!({}))
+            .await
     }
 
     // -- Cloud account ------------------------------------------------------

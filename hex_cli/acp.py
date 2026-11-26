@@ -1029,6 +1029,8 @@ class ACPServer:
                 res = self._handle_tools_policy_get(params)
             elif method == "tools/policy/set":
                 res = self._handle_tools_policy_set(params)
+            elif method == "maintenance/gcPreview":
+                res = self._handle_gc_preview(params)
             elif method == "session/approvalDecision":
                 res = self._handle_session_approval_decision(params)
             elif method == "session/command":
@@ -1144,6 +1146,7 @@ class ACPServer:
                         "initialize", "config/set", "providers/list",
                         "providers/credentials/set", "providers/credentials/delete",
                         "providers/endpoint/set", "tools/policy/set",
+                        "maintenance/gcPreview",
                         "session/toolResult", "session/load", "session/history",
                         "session/historyContent", "session/approvalDecision"
                     } and isinstance(exc, (ValueError, TypeError)) else -32000,
@@ -2446,6 +2449,38 @@ class ACPServer:
         return {
             **self._tool_policy_view(gateway.live_tool_definitions(), effective, written_revision),
             "changed": sorted(changed),
+        }
+
+    def _handle_gc_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read-only dry-run retention sweep: reports what a cleanup would
+        reclaim. Never deletes, vacuums, or materializes a runtime."""
+        if not isinstance(params, dict):
+            raise ValueError("maintenance/gcPreview params must be an object")
+        live = self._orchestrator
+        gc = getattr(live, "gc", None) if live is not None else None
+        if gc is None:
+            from harness_core.storage.gc import GarbageCollector
+
+            gc = GarbageCollector(
+                self.workspace_root / ".hex" / "data",
+                ledger=getattr(live, "ledger", None),
+                workspace_root=self.workspace_root,
+            )
+        report = gc.run_sweep(dry_run=True)
+        data = report.to_dict()
+        return {
+            "dryRun": True,
+            "totalBytesReclaimed": int(data["total_bytes_reclaimed"]),
+            "totalReclaimedHuman": str(data["total_reclaimed_human"]),
+            "workspacesDeleted": int(data["workspaces_deleted"]),
+            "workspacesBytes": int(data["workspaces_bytes"]),
+            "snapshotsDeleted": int(data["snapshots_deleted"]),
+            "snapshotsBytes": int(data["snapshots_bytes"]),
+            "casBlobsDeleted": int(data["cas_blobs_deleted"]),
+            "casBytes": int(data["cas_bytes"]),
+            "vacuumMode": str(data["vacuum_mode"]),
+            "durationMs": int(data["duration_ms"]),
+            "errors": [str(error) for error in data["errors"]],
         }
 
     def _ensure_tools_call_task(self) -> str:

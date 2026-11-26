@@ -1,11 +1,14 @@
 """Retention settings ACP tests: the config/set surface writes real YAML
 types under the [retention] section that storage/gc.py consumes through
 load_retention_config, so the desktop retention pane drives the GC directly.
+Also covers the read-only `maintenance/gcPreview` dry-run surface.
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -13,7 +16,7 @@ import yaml
 
 from hex_cli.acp import CONFIG_SCHEMA, ACPServer
 from harness_core.config_loader import load_retention_config
-from storage.gc import GarbageCollector
+from storage.gc import GCReport, GarbageCollector
 
 
 def _req(id_, method, params=None):
@@ -121,6 +124,76 @@ class TestRetentionSurface(unittest.TestCase):
         loaded = load_retention_config(self.ws)
         self.assertIs(loaded["auto_vacuum"], False)
         self.assertEqual(loaded["workspace_ttl"], "72h")
+
+    def test_gc_preview_on_an_empty_data_dir_reports_zeros(self) -> None:
+        resp = self.server.handle_request(_req(1, "maintenance/gcPreview"))
+        self.assertNotIn("error", resp)
+        result = resp["result"]
+        self.assertTrue(result["dryRun"])
+        self.assertEqual(result["totalBytesReclaimed"], 0)
+        self.assertEqual(result["totalReclaimedHuman"], "0 B")
+        self.assertEqual(result["workspacesDeleted"], 0)
+        self.assertEqual(result["snapshotsDeleted"], 0)
+        self.assertEqual(result["casBlobsDeleted"], 0)
+        self.assertEqual(result["vacuumMode"], "none")
+        self.assertEqual(result["errors"], [])
+
+    def test_gc_preview_reports_reclaimables_without_deleting(self) -> None:
+        data_root = self.ws / ".hex" / "data"
+        workspaces = data_root / "active_workspaces" / "orphan_ws"
+        workspaces.mkdir(parents=True)
+        (workspaces / "scratch.txt").write_bytes(b"stale bytes")
+        snapshots = data_root / "cow_snapshots" / "snap_orphan"
+        snapshots.mkdir(parents=True)
+        (snapshots / "snapshot.bin").write_bytes(b"stale snapshot")
+
+        # Orphan-guard: pretend both directories are two hours old.
+        stale = time.time() - 7200
+        os.utime(workspaces, (stale, stale))
+        os.utime(snapshots, (stale, stale))
+
+        before = sorted(str(p.relative_to(self.ws)) for p in self.ws.rglob("*"))
+        resp = self.server.handle_request(_req(1, "maintenance/gcPreview"))
+        self.assertNotIn("error", resp)
+        result = resp["result"]
+        self.assertTrue(result["dryRun"])
+        self.assertEqual(result["workspacesDeleted"], 1)
+        self.assertEqual(result["snapshotsDeleted"], 1)
+        self.assertEqual(
+            result["totalBytesReclaimed"],
+            len(b"stale bytes") + len(b"stale snapshot"),
+        )
+        self.assertEqual(result["vacuumMode"], "none")
+        self.assertEqual(result["errors"], [])
+
+        # A preview never deletes, vacuums, or writes anything.
+        after = sorted(str(p.relative_to(self.ws)) for p in self.ws.rglob("*"))
+        self.assertEqual(after, before)
+        self.assertTrue(workspaces.exists())
+        self.assertTrue(snapshots.exists())
+
+    def test_gc_preview_rejects_non_object_params(self) -> None:
+        resp = self.server.handle_request(
+            _req(1, "maintenance/gcPreview", ["not", "an", "object"])
+        )
+        self.assertIn("error", resp)
+        self.assertEqual(resp["error"]["code"], -32602)
+
+    def test_gc_preview_reuses_a_live_orchestrator_collector(self) -> None:
+        from types import SimpleNamespace
+
+        calls: list[bool] = []
+
+        class FakeGC:
+            def run_sweep(self, *, dry_run: bool) -> GCReport:
+                calls.append(dry_run)
+                return GCReport(dry_run=dry_run)
+
+        fake = SimpleNamespace(gc=FakeGC(), ledger=None)
+        self.server._orchestrator = fake
+        resp = self.server.handle_request(_req(1, "maintenance/gcPreview"))
+        self.assertNotIn("error", resp)
+        self.assertEqual(calls, [True])
 
 
 if __name__ == "__main__":

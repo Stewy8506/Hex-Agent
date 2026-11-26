@@ -17,9 +17,9 @@ use crate::ui::modals::text_input::{
 use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::motion::MotionPreference;
 use hex_protocol::models::{
-    ConfigGetResponse, ProviderCredentialSource, ProviderCredentialStorage, ProviderDescriptor,
-    ProviderEndpointSource, ProvidersListResponse, ToolDefinition, ToolPolicyEntry,
-    ToolPolicyMode, ToolPolicyMutationResponse, ToolsPolicyResponse,
+    ConfigGetResponse, GcPreviewResponse, ProviderCredentialSource, ProviderCredentialStorage,
+    ProviderDescriptor, ProviderEndpointSource, ProvidersListResponse, ToolDefinition,
+    ToolPolicyEntry, ToolPolicyMode, ToolPolicyMutationResponse, ToolsPolicyResponse,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,7 +178,7 @@ const fn notification_setting(
     }
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 37] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 39] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -384,6 +384,20 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 37] = [
         label: "Account & devices",
         description: "Open HEX cloud sign-in, account status, and enrolled devices.",
         kind: SettingKind::Action,
+    },
+    SettingDescriptor {
+        section: SettingsSection::Retention,
+        key: "desktop.action.gcPreview",
+        label: "Preview cleanup sweep",
+        description: "Run a read-only dry-run sweep that reports what a retention cleanup would reclaim. Nothing is deleted.",
+        kind: SettingKind::Action,
+    },
+    SettingDescriptor {
+        section: SettingsSection::Retention,
+        key: "desktop.info.gcPreview",
+        label: "Cleanup preview",
+        description: "Last dry-run sweep result for this runtime's data directory.",
+        kind: SettingKind::Info,
     },
     SettingDescriptor {
         section: SettingsSection::Tools,
@@ -673,6 +687,31 @@ fn provider_fields(state: &ProvidersState) -> Vec<SettingField> {
             description: message.clone(),
         }],
     }
+}
+
+fn gc_preview_fields(preview: Option<&GcPreviewResponse>) -> Vec<SettingField> {
+    let Some(preview) = preview else {
+        return Vec::new();
+    };
+    let mut description = format!(
+        "Would prune {} workspaces, {} snapshots, and {} CAS blobs in {} ms. Nothing was deleted.",
+        preview.workspaces_deleted,
+        preview.snapshots_deleted,
+        preview.cas_blobs_deleted,
+        preview.duration_ms
+    );
+    if !preview.errors.is_empty() {
+        description.push_str(&format!(
+            " The sweep reported {} error(s).",
+            preview.errors.len()
+        ));
+    }
+    vec![SettingField::Info {
+        key: "desktop.info.gcPreview",
+        label: "Cleanup preview (dry-run)".to_string(),
+        value: preview.total_reclaimed_human.clone(),
+        description,
+    }]
 }
 
 fn tool_info_fields(state: &InventoryState) -> Vec<SettingField> {
@@ -1060,6 +1099,7 @@ pub struct SettingsModal {
     pub tools: InventoryState,
     pub skills: InventoryState,
     pub providers: ProvidersState,
+    pub gc_preview: Option<GcPreviewResponse>,
     provider_drafts: HashMap<String, ProviderDraft>,
     tool_policy_drafts: HashMap<String, ToolPolicyMode>,
     tool_policy_active: bool,
@@ -1098,6 +1138,7 @@ impl PartialEq for SettingsModal {
             && self.tools == other.tools
             && self.skills == other.skills
             && self.providers == other.providers
+            && self.gc_preview == other.gc_preview
             && self.provider_drafts == other.provider_drafts
             && self.tool_policy_drafts == other.tool_policy_drafts
             && self.tool_policy_active == other.tool_policy_active
@@ -1150,6 +1191,7 @@ impl Default for SettingsModal {
             tools,
             skills,
             providers,
+            gc_preview: None,
             provider_drafts: HashMap::new(),
             tool_policy_drafts: HashMap::new(),
             tool_policy_active: false,
@@ -1316,6 +1358,7 @@ impl SettingsModal {
         fields.extend(tool_info_fields(&self.tools));
         fields.extend(skill_info_fields(&self.skills));
         fields.extend(provider_fields(&self.providers));
+        fields.extend(gc_preview_fields(self.gc_preview.as_ref()));
 
         let mut originals = HashMap::new();
         for field in &fields {
@@ -1527,6 +1570,15 @@ impl SettingsModal {
         self.error = Some(message.into());
     }
 
+    pub fn set_gc_preview(&mut self, preview: GcPreviewResponse) {
+        self.gc_preview = Some(preview);
+        self.refresh_inventory_fields();
+        self.busy = false;
+        self.error = None;
+        self.status = Some("Preview complete — nothing was deleted.".to_string());
+        self.scroll_selected_into_view();
+    }
+
     pub fn set_tools_error(&mut self, message: impl Into<String>) {
         self.tools = InventoryState::Unavailable(message.into());
         self.refresh_inventory_fields();
@@ -1725,6 +1777,8 @@ impl SettingsModal {
         self.fields.extend(tool_info_fields(&self.tools));
         self.fields.extend(skill_info_fields(&self.skills));
         self.fields.extend(provider_fields(&self.providers));
+        self.fields
+            .extend(gc_preview_fields(self.gc_preview.as_ref()));
         if let Some(key) = selected_info_key {
             self.selected = self
                 .fields
@@ -3946,7 +4000,7 @@ mod tests {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 29 + keyboard_count);
+        assert_eq!(modal.fields.len(), 30 + keyboard_count);
         assert_eq!(SettingsSection::ALL.len(), 14);
         assert_eq!(modal.fields[2].key(), "model.localModelId");
         assert_eq!(modal.fields[11].key(), "retention.workspaceTtl");
@@ -4734,6 +4788,72 @@ mod tests {
     }
 
     #[test]
+    fn test_gc_preview_renders_read_only_info_row() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        let base_len = modal.fields.len();
+        assert!(modal
+            .fields
+            .iter()
+            .all(|field| field.key() != "desktop.info.gcPreview"));
+
+        modal.busy = true;
+        modal.set_gc_preview(GcPreviewResponse {
+            total_bytes_reclaimed: 4096,
+            total_reclaimed_human: "4.0 KB".to_string(),
+            workspaces_deleted: 1,
+            snapshots_deleted: 2,
+            cas_blobs_deleted: 3,
+            duration_ms: 12,
+            ..Default::default()
+        });
+        assert!(!modal.busy);
+        assert_eq!(modal.error, None);
+        assert_eq!(modal.fields.len(), base_len + 1);
+        assert!(matches!(
+            modal.fields.last(),
+            Some(SettingField::Info {
+                key: "desktop.info.gcPreview",
+                value,
+                description,
+                ..
+            }) if value == "4.0 KB"
+                && description
+                    .contains("Would prune 1 workspaces, 2 snapshots, and 3 CAS blobs in 12 ms.")
+                && description.contains("Nothing was deleted.")
+        ));
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+        assert!(modal.changed_desktop_preferences().is_none());
+
+        // The action row routes through Activate and never dirties the view.
+        let action_index = modal
+            .fields
+            .iter()
+            .position(|field| field.key() == "desktop.action.gcPreview")
+            .unwrap();
+        modal.selected = action_index;
+        assert_eq!(
+            modal.handle_key("enter"),
+            Some(SettingsAction::Activate("desktop.action.gcPreview"))
+        );
+        assert_eq!(modal.dirty_count(), 0);
+
+        // The preview row joins Retention section navigation.
+        modal.select_section(SettingsSection::Retention);
+        assert!(modal.section_indices().contains(&(modal.fields.len() - 1)));
+
+        modal.set_gc_preview(GcPreviewResponse {
+            errors: vec!["snapshot missing".to_string()],
+            ..Default::default()
+        });
+        assert!(matches!(
+            modal.fields.last(),
+            Some(SettingField::Info { description, .. }) if description.contains("1 error(s)")
+        ));
+    }
+
+    #[test]
     fn test_skill_status_rows_toggle_and_dispatch_runtime_command() {
         let output = "Registered Skills (3):\n  • audit_code (gate: ALLOW, status: active)\n  • offline_pack (gate: ALLOW, status: disabled)\n  • quarantine_me (gate: QUARANTINE, status: quarantined)";
         let skills = parse_skills_output(output).unwrap();
@@ -4970,7 +5090,7 @@ mod tests {
         );
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 7))
+            Some(&(modal.fields.len() - 8))
         );
         assert_eq!(modal.selected, 14);
 
@@ -4979,7 +5099,7 @@ mod tests {
         assert_eq!(modal.section_indices().first(), Some(&20));
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 10))
+            Some(&(modal.fields.len() - 11))
         );
         assert_eq!(modal.selected, 20);
 

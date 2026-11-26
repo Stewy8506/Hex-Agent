@@ -1042,6 +1042,27 @@ pub struct ToolPolicyMutationResponse {
     pub changed: Vec<String>,
 }
 
+/// Read-only retention preview returned by `maintenance/gcPreview`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GcPreviewResponse {
+    pub dry_run: bool,
+    pub total_bytes_reclaimed: u64,
+    #[serde(default)]
+    pub total_reclaimed_human: String,
+    pub workspaces_deleted: u64,
+    pub workspaces_bytes: u64,
+    pub snapshots_deleted: u64,
+    pub snapshots_bytes: u64,
+    pub cas_blobs_deleted: u64,
+    pub cas_bytes: u64,
+    #[serde(default)]
+    pub vacuum_mode: String,
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
 /// Parameters for `tools/call`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallParams {

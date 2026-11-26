@@ -6007,6 +6007,12 @@ impl ChatView {
             cx.notify();
             return;
         }
+        if key == "desktop.action.gcPreview" {
+            // Read-only preview: stays inside the settings modal and never
+            // mutates config, so the dirty guard below does not apply.
+            self.execute_gc_preview(cx);
+            return;
+        }
         if !matches!(
             key,
             "desktop.action.models" | "desktop.action.sessions" | "desktop.action.cloud"
@@ -6345,6 +6351,46 @@ impl ChatView {
                 }
                 if accepted {
                     view.request_skills_inventory(session_id, generation, true, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// DX7: runs a read-only retention preview via `maintenance/gcPreview`.
+    /// The sweep never deletes anything; the report renders as an info row
+    /// in the Retention section.
+    fn execute_gc_preview(&mut self, cx: &mut Context<Self>) {
+        let ActiveModal::Settings(modal) = &mut self.shell.active_modal else {
+            return;
+        };
+        let generation = self.settings_generation;
+        modal.busy = true;
+        modal.error = None;
+        modal.status = None;
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt.spawn(async move { bridge.gc_preview().await }).await;
+            this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(response)) => modal.set_gc_preview(response),
+                        Ok(Err(err)) => {
+                            modal.error = Some(format!("Retention preview failed: {err}"));
+                            modal.busy = false;
+                        }
+                        Err(err) => {
+                            modal.error = Some(format!("Retention preview task aborted: {err}"));
+                            modal.busy = false;
+                        }
+                    }
                 }
                 cx.notify();
             })

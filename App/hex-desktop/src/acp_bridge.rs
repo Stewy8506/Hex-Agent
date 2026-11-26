@@ -690,6 +690,16 @@ impl AcpBridge {
         }
     }
 
+    /// Read-only dry-run retention sweep (`maintenance/gcPreview`).
+    pub async fn gc_preview(&self) -> Result<hex_protocol::models::GcPreviewResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.gc_preview().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Apply a model selection to the session via the backend `/model` command.
     /// Success carries the confirmed canonical model/provider identity.
     pub async fn set_session_model(

@@ -75,6 +75,8 @@ struct MockState {
     skill_toggles: StdMutex<Vec<(String, String)>>,
     skill_toggle_error: StdMutex<Option<String>>,
     providers: StdMutex<Vec<Value>>,
+    gc_preview_requests: AtomicUsize,
+    gc_preview_error: StdMutex<Option<String>>,
     provider_requests: AtomicUsize,
     provider_responses: AtomicUsize,
     provider_delay_ms: AtomicU64,
@@ -630,6 +632,42 @@ async fn handle_request(
                 json!({
                     "jsonrpc": "2.0", "id": id,
                     "result": {"provider": provider, "changed": true}
+                }),
+            )
+            .await;
+        }
+        "maintenance/gcPreview" => {
+            state.gc_preview_requests.fetch_add(1, Ordering::SeqCst);
+            let error = state.gc_preview_error.lock().unwrap().clone();
+            if let Some(message) = error {
+                send_line(
+                    &writer,
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32000, "message": message}
+                    }),
+                )
+                .await;
+                return;
+            }
+            send_line(
+                &writer,
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {
+                        "dryRun": true,
+                        "totalBytesReclaimed": 4096,
+                        "totalReclaimedHuman": "4.0 KB",
+                        "workspacesDeleted": 1,
+                        "workspacesBytes": 2048,
+                        "snapshotsDeleted": 2,
+                        "snapshotsBytes": 1024,
+                        "casBlobsDeleted": 3,
+                        "casBytes": 1024,
+                        "vacuumMode": "none",
+                        "durationMs": 3,
+                        "errors": []
+                    }
                 }),
             )
             .await;
@@ -1773,7 +1811,7 @@ fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 13 + keyboard_count);
+        assert_eq!(modal.fields.len(), 14 + keyboard_count);
         assert!(modal
             .fields
             .iter()
@@ -3190,6 +3228,82 @@ fn test_skill_toggle_dispatches_runtime_command_and_refreshes(cx: &mut TestAppCo
                         .error
                         .as_deref()
                         .is_some_and(|error| error.contains("ledger unavailable"))
+        )
+    });
+}
+
+#[gpui::test]
+fn test_gc_preview_runs_dry_run_and_surfaces_failures(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "settings inventories load", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal) if !modal.busy
+        )
+    });
+    click_debug_element(vc, "settings_section_retention");
+    vc.update(|_, app| {
+        view.update(app, |view, _| {
+            let ActiveModal::Settings(modal) = &mut view.shell.active_modal else {
+                panic!("settings should remain open");
+            };
+            let action_row = modal
+                .fields
+                .iter()
+                .position(|field| field.key() == "desktop.action.gcPreview")
+                .expect("gc preview action row renders in Retention");
+            modal.selected = action_row;
+        });
+    });
+
+    vc.simulate_keystrokes("enter");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "gc preview lands", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal
+                        .fields
+                        .iter()
+                        .any(|field| field.key() == "desktop.info.gcPreview")
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(state.gc_preview_requests.load(Ordering::SeqCst), 1);
+        assert!(modal.error.is_none());
+        assert_eq!(
+            modal.status.as_deref(),
+            Some("Preview complete — nothing was deleted.")
+        );
+        assert!(matches!(
+            modal.fields.last(),
+            Some(SettingField::Info { value, description, .. })
+                if value == "4.0 KB" && description.contains("Nothing was deleted.")
+        ));
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+    });
+
+    *state.gc_preview_error.lock().unwrap() =
+        Some("Command failed: data directory unavailable".to_string());
+    vc.simulate_keystrokes("enter");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "gc preview failure surfaces", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.busy
+                    && modal
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("data directory unavailable"))
         )
     });
 }
