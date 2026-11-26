@@ -26,14 +26,16 @@ use hex_desktop::ui::DiffView;
 use hex_desktop::ui::modals::approval::{ToolApprovalChoice, ToolApprovalModal};
 use hex_desktop::ui::modals::model_picker::ModelPickerModal;
 use hex_desktop::ui::modals::session_actions::{SessionActionMode, SessionActionModal};
-use hex_desktop::ui::modals::settings::{SettingField, SettingsModal};
+use hex_desktop::ui::modals::settings::{
+    InventoryState, SettingField, SettingsModal, SettingsSection,
+};
 use hex_desktop::ui::modals::{ActiveModal, ModelEntry};
 use hex_desktop::ui::motion::{MotionPolicy, MotionPreference, MotionSystem};
 use hex_desktop::ui::reasoning::ThinkingDisclosure;
 use hex_desktop::ui::sidebar::ProviderState;
 use hex_desktop::ui::tool_card::{ToolCallCard, ToolStatus};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
@@ -49,6 +51,12 @@ struct MockState {
     prompts: StdMutex<Vec<(String, String)>>,
     sessions: StdMutex<Vec<Value>>,
     renames: StdMutex<Vec<(String, String)>>,
+    tools: StdMutex<Vec<Value>>,
+    tool_requests: AtomicUsize,
+    tool_responses: AtomicUsize,
+    tools_delay_ms: AtomicU64,
+    config_error: StdMutex<Option<String>>,
+    tools_error: StdMutex<Option<String>>,
 }
 
 async fn send_line(writer: &Arc<AsyncMutex<DuplexStream>>, value: Value) {
@@ -122,6 +130,67 @@ async fn handle_request(
                 }),
             )
             .await;
+        }
+        "config/get" => {
+            let error = state.config_error.lock().unwrap().clone();
+            if let Some(message) = error {
+                send_line(
+                    &writer,
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32000, "message": message}
+                    }),
+                )
+                .await;
+                return;
+            }
+            send_line(
+                &writer,
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {
+                        "path": "~/.hex/config.yaml",
+                        "workspace": "/workspace",
+                        "dataDir": "/workspace/.hex/data",
+                        "config": {
+                            "model": {
+                                "cloudProvider": "anthropic",
+                                "cloudModelId": "claude-3-7-sonnet",
+                                "reasoningEffort": "medium",
+                                "profile": "cloud"
+                            },
+                            "runtime": { "maxTurns": 24 },
+                            "webSearch": { "provider": "brave" },
+                            "cloud": { "baseUrl": "" },
+                            "learning": { "autoReflect": "off" }
+                        },
+                        "options": {
+                            "model.reasoningEffort": ["none", "low", "medium", "high"],
+                            "model.profile": ["cloud", "local", "hybrid"]
+                        }
+                    }
+                }),
+            )
+            .await;
+        }
+        "tools/list" => {
+            state.tool_requests.fetch_add(1, Ordering::SeqCst);
+            let tools = state.tools.lock().unwrap().clone();
+            let error = state.tools_error.lock().unwrap().clone();
+            let delay = state.tools_delay_ms.load(Ordering::SeqCst);
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            let response = if let Some(message) = error {
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": {"code": -32000, "message": message}
+                })
+            } else {
+                json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tools}})
+            };
+            send_line(&writer, response).await;
+            state.tool_responses.fetch_add(1, Ordering::SeqCst);
         }
         "session/list" => {
             state.list_requests.fetch_add(1, Ordering::SeqCst);
@@ -796,9 +865,14 @@ async fn test_chat_vertical_slice(cx: &mut TestAppContext) {
     );
 }
 
-fn launch_connected_chat<'a>(
+fn launch_connected_chat_with_state<'a>(
     cx: &'a mut TestAppContext,
-) -> (Runtime, Entity<ChatView>, &'a mut VisualTestContext) {
+) -> (
+    Runtime,
+    Entity<ChatView>,
+    &'a mut VisualTestContext,
+    Arc<MockState>,
+) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -807,7 +881,7 @@ fn launch_connected_chat<'a>(
     let (client_read, server_write) = tokio::io::duplex(64 * 1024);
     let (server_read, client_write) = tokio::io::duplex(64 * 1024);
     let state = Arc::new(MockState::default());
-    rt.spawn(run_mock_server(server_read, server_write, state));
+    rt.spawn(run_mock_server(server_read, server_write, state.clone()));
     let bridge = AcpBridge::new();
     rt.block_on(bridge.connect_streams(client_read, client_write))
         .expect("ACP handshake");
@@ -820,6 +894,13 @@ fn launch_connected_chat<'a>(
     let (view, vc) = cx.add_window_view(|_window, cx| {
         ChatView::new(bridge.clone(), rt.handle().clone(), std::env::temp_dir(), cx)
     });
+    (rt, view, vc, state)
+}
+
+fn launch_connected_chat<'a>(
+    cx: &'a mut TestAppContext,
+) -> (Runtime, Entity<ChatView>, &'a mut VisualTestContext) {
+    let (rt, view, vc, _state) = launch_connected_chat_with_state(cx);
     (rt, view, vc)
 }
 
@@ -1134,15 +1215,34 @@ fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
             panic!("settings should open offline");
         };
         assert!(modal.load_failed);
+        assert_eq!(
+            modal.tools,
+            InventoryState::Unavailable(
+                "Runtime offline — connect HEX to load the tool registry.".to_string()
+            )
+        );
         let keyboard_count = ShortcutId::ALL
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 10 + keyboard_count);
+        assert_eq!(modal.fields.len(), 11 + keyboard_count);
         assert!(modal
             .fields
             .iter()
             .all(|field| field.key().starts_with("desktop.")));
+    });
+
+    click_debug_element(vc, "settings_section_tools");
+    click_debug_element(vc, "settings_info_tools");
+    vc.simulate_keystrokes("enter");
+    finish_motion(vc, &view);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("offline tool inventory should remain visible");
+        };
+        assert_eq!(modal.active_section, SettingsSection::Tools);
+        assert!(!modal.editing);
+        assert_eq!(modal.dirty_count(), 0);
     });
 
     click_debug_element(vc, "settings_section_appearance");
@@ -1315,6 +1415,245 @@ fn test_settings_actions_open_existing_flows_and_preserve_dirty_edits(cx: &mut T
     click_debug_element(vc, "settings_action_cloud");
     snap(vc, &view, |view| {
         assert!(matches!(view.shell.active_modal, ActiveModal::Account(_)));
+    });
+}
+
+#[gpui::test]
+fn test_connected_settings_load_runtime_config_and_tool_inventory(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.tools.lock().unwrap() = vec![
+        json!({
+            "name": "write_file",
+            "description": "Write a file to the workspace",
+            "parameters": {"type": "object"},
+            "risk_class": "R3"
+        }),
+        json!({
+            "name": "read_file",
+            "description": "Read files from the workspace",
+            "parameters": {"type": "object"}
+        }),
+    ];
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "runtime settings and tool inventory", |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            return false;
+        };
+        !modal.load_failed
+            && matches!(modal.tools, InventoryState::Ready(_))
+            && modal.fields.iter().any(|field| {
+                matches!(field, SettingField::Number { value, .. } if value == "24")
+            })
+    });
+
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(state.tool_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), json!({}));
+        let info = modal
+            .fields
+            .iter()
+            .filter(|field| matches!(field, SettingField::Info { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(info.len(), 2);
+        assert_eq!(
+            info[0],
+            &SettingField::Info {
+                key: "desktop.info.tools",
+                label: "read_file".to_string(),
+                value: "risk: unspecified".to_string(),
+                description: "Read files from the workspace".to_string(),
+            }
+        );
+        assert_eq!(info[1].label(), "write_file");
+        assert_eq!(
+            info[1],
+            &SettingField::Info {
+                key: "desktop.info.tools",
+                label: "write_file".to_string(),
+                value: "risk: R3".to_string(),
+                description: "Write a file to the workspace".to_string(),
+            }
+        );
+    });
+
+    click_debug_element(vc, "settings_section_tools");
+    click_debug_element(vc, "settings_info_tools");
+    vc.simulate_keystrokes("enter");
+    finish_motion(vc, &view);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("read-only tool activation should keep settings open");
+        };
+        assert_eq!(modal.active_section, SettingsSection::Tools);
+        assert!(!modal.editing);
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.selected_action(), None);
+    });
+}
+
+#[gpui::test]
+fn test_tool_inventory_failures_and_empty_results_are_independent(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.config_error.lock().unwrap() = Some("permission denied".to_string());
+    *state.tools.lock().unwrap() = vec![json!({
+        "name": "list_files",
+        "description": "List workspace files",
+        "parameters": {},
+        "risk_class": "R1"
+    })];
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "tool inventory after config failure", |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            return false;
+        };
+        modal.load_failed && matches!(modal.tools, InventoryState::Ready(_))
+    });
+    click_debug_element(vc, "settings_section_tools");
+    click_debug_element(vc, "settings_info_tools");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("tool inventory should render even when config/get fails");
+        };
+        assert!(modal.error.as_deref().unwrap().contains("permission denied"));
+        let tool = modal
+            .fields
+            .iter()
+            .find(|field| matches!(field, SettingField::Info { .. }))
+            .expect("tool inventory row");
+        assert_eq!(tool.label(), "list_files");
+        assert_eq!(modal.dirty_count(), 0);
+    });
+
+    vc.simulate_keystrokes("escape");
+    finish_motion(vc, &view);
+    state.config_error.lock().unwrap().take();
+    *state.tools_error.lock().unwrap() = Some("permission denied".to_string());
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "config settings after tool failure", |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            return false;
+        };
+        !modal.load_failed
+            && matches!(
+                &modal.tools,
+                InventoryState::Unavailable(message)
+                    if message.starts_with("tools/list failed:")
+                        && message.contains("permission denied")
+            )
+            && modal.fields.iter().any(|field| {
+                matches!(field, SettingField::Number { value, .. } if value == "24")
+            })
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("runtime config should remain available");
+        };
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+
+    vc.simulate_keystrokes("escape");
+    finish_motion(vc, &view);
+    state.tools_error.lock().unwrap().take();
+    state.tools.lock().unwrap().clear();
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "empty tool inventory", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.load_failed && modal.tools == InventoryState::Empty
+        )
+    });
+    click_debug_element(vc, "settings_section_tools");
+    click_debug_element(vc, "settings_info_tools");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("empty tool state should render");
+        };
+        let empty = modal
+            .fields
+            .iter()
+            .find(|field| matches!(field, SettingField::Info { .. }))
+            .expect("empty tool state");
+        assert_eq!(
+            empty,
+            &SettingField::Info {
+                key: "desktop.info.tools",
+                label: "No tools registered".to_string(),
+                value: "0 tools".to_string(),
+                description: "The connected runtime returned an empty tool registry."
+                    .to_string(),
+            }
+        );
+        assert_eq!(modal.dirty_count(), 0);
+    });
+}
+
+#[gpui::test]
+fn test_stale_settings_requests_cannot_overwrite_a_newer_opening(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.tools.lock().unwrap() = vec![json!({
+        "name": "stale_tool",
+        "description": "Previous registry",
+        "parameters": {}
+    })];
+    state.tools_delay_ms.store(400, Ordering::SeqCst);
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "first tool request", |_| {
+        state.tool_requests.load(Ordering::SeqCst) == 1
+    });
+    vc.simulate_keystrokes("escape");
+    finish_motion(vc, &view);
+
+    *state.tools.lock().unwrap() = vec![json!({
+        "name": "fresh_tool",
+        "description": "Current registry",
+        "parameters": {}
+    })];
+    state.tools_delay_ms.store(0, Ordering::SeqCst);
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "fresh tool inventory", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(
+                    &modal.tools,
+                    InventoryState::Ready(items)
+                        if items.iter().any(|item| item.name == "fresh_tool")
+                )
+        )
+    });
+    pump_until(vc, &view, "stale tool response", |_| {
+        state.tool_responses.load(Ordering::SeqCst) == 2
+    });
+    vc.run_until_parked();
+    vc.update(|_, app| {
+        view.update(app, |_, cx| cx.notify());
+    });
+    vc.run_until_parked();
+
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("newer settings opening should remain active");
+        };
+        let InventoryState::Ready(items) = &modal.tools else {
+            panic!("fresh tool inventory should remain ready");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "fresh_tool");
     });
 }
 

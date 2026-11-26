@@ -559,6 +559,18 @@ impl AcpBridge {
         }
     }
 
+    /// Fetch the live tool registry exposed by the runtime.
+    pub async fn tools_list(
+        &self,
+    ) -> Result<Vec<hex_protocol::models::ToolDefinition>, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.tools_list().await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Apply a model selection to the session via the backend `/model` command.
     /// Success carries the confirmed canonical model/provider identity.
     pub async fn set_session_model(

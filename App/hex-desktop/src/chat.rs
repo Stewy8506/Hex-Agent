@@ -513,6 +513,7 @@ pub struct ChatView {
     session_list_generation: u64,
     model_picker_generation: u64,
     model_identity_generation: u64,
+    settings_generation: u64,
     session_title_revisions: HashMap<String, u64>,
     title_hydration_in_flight: HashSet<String>,
     title_hydration_attempted: HashSet<String>,
@@ -662,6 +663,7 @@ impl ChatView {
             session_list_generation: 0,
             model_picker_generation: 0,
             model_identity_generation: 0,
+            settings_generation: 0,
             session_title_revisions: HashMap::new(),
             title_hydration_in_flight: HashSet::new(),
             title_hydration_attempted: HashSet::new(),
@@ -5837,9 +5839,12 @@ impl ChatView {
             cx.notify();
             return;
         }
+        self.settings_generation = self.settings_generation.wrapping_add(1);
+        let generation = self.settings_generation;
         let mut modal = SettingsModal::loading_with_preferences(self.preferences.clone());
         if !self.bridge.is_connected() {
             modal.mark_load_failed("Runtime offline — settings unavailable until HEX connects.");
+            modal.set_tools_error("Runtime offline — connect HEX to load the tool registry.");
             self.shell.active_modal = ActiveModal::Settings(modal);
             cx.notify();
             return;
@@ -5849,6 +5854,9 @@ impl ChatView {
         cx.spawn(async move |this, cx| {
             let res = rt.spawn(async move { bridge.get_config().await }).await;
             this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
                 let load_error = match &res {
                     Ok(Err(err)) => Some(format!("config/get failed: {err}")),
                     Err(err) => Some(format!("config task aborted: {err}")),
@@ -5863,6 +5871,29 @@ impl ChatView {
                         _ => modal.mark_load_failed(load_error.unwrap_or_else(|| {
                             "Could not read settings from the runtime.".to_string()
                         })),
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+
+        let bridge = self.bridge.clone();
+        let rt = self.rt.clone();
+        cx.spawn(async move |this, cx| {
+            let res = rt.spawn(async move { bridge.tools_list().await }).await;
+            this.update(cx, |view, cx| {
+                if view.settings_generation != generation {
+                    return;
+                }
+                if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                    match res {
+                        Ok(Ok(tools)) => modal.set_tools(tools),
+                        Ok(Err(err)) => modal.set_tools_error(format!("tools/list failed: {err}")),
+                        Err(err) => {
+                            modal.set_tools_error(format!("Tool inventory task aborted: {err}"))
+                        }
                     }
                 }
                 cx.notify();

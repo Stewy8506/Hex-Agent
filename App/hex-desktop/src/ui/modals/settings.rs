@@ -16,7 +16,7 @@ use crate::ui::modals::text_input::{
 };
 use crate::ui::modals::{modal_press, ModalMotion};
 use crate::ui::motion::MotionPreference;
-use hex_protocol::models::ConfigGetResponse;
+use hex_protocol::models::{ConfigGetResponse, ToolDefinition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -125,6 +125,7 @@ enum SettingKind {
     Number { min: u64, max: u64 },
     Choice { fallback: &'static [&'static str] },
     Action,
+    Info,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -162,7 +163,7 @@ const fn notification_setting(
     }
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 28] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 29] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -323,6 +324,13 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 28] = [
         description: "Open HEX cloud sign-in, account status, and enrolled devices.",
         kind: SettingKind::Action,
     },
+    SettingDescriptor {
+        section: SettingsSection::Tools,
+        key: "desktop.info.tools",
+        label: "Tool inventory",
+        description: "Live tool names, descriptions, and risk classes from tools/list.",
+        kind: SettingKind::Info,
+    },
 ];
 
 impl SettingDescriptor {
@@ -372,6 +380,9 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
                 label: descriptor.label,
                 value: "Open".to_string(),
             });
+            continue;
+        }
+        if matches!(descriptor.kind, SettingKind::Info) {
             continue;
         }
         if let Some(id) = ShortcutId::from_setting_key(descriptor.key) {
@@ -437,7 +448,54 @@ fn local_setting_fields(preferences: &DesktopPreferences) -> Vec<SettingField> {
     fields
 }
 
-/// One editable row in the settings modal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryItem {
+    pub name: String,
+    pub description: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InventoryState {
+    Loading,
+    Ready(Vec<InventoryItem>),
+    Empty,
+    Unavailable(String),
+}
+
+fn tool_info_fields(state: &InventoryState) -> Vec<SettingField> {
+    let rows: Vec<(&str, String, String)> = match state {
+        InventoryState::Loading => vec![(
+            "Loading tools…",
+            "Loading".to_string(),
+            "Requesting the live registry with tools/list.".to_string(),
+        )],
+        InventoryState::Ready(items) => items
+            .iter()
+            .map(|item| (item.name.as_str(), item.detail.clone(), item.description.clone()))
+            .collect(),
+        InventoryState::Empty => vec![(
+            "No tools registered",
+            "0 tools".to_string(),
+            "The connected runtime returned an empty tool registry.".to_string(),
+        )],
+        InventoryState::Unavailable(message) => vec![(
+            "Tools unavailable",
+            "Unavailable".to_string(),
+            message.clone(),
+        )],
+    };
+    rows.into_iter()
+        .map(|(label, value, description)| SettingField::Info {
+            key: "desktop.info.tools",
+            label: label.to_string(),
+            value,
+            description,
+        })
+        .collect()
+}
+
+/// One editable or read-only row in the settings modal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingField {
     /// Free-text value; Enter starts/commits editing, Esc cancels.
@@ -476,6 +534,12 @@ pub enum SettingField {
         label: &'static str,
         value: String,
     },
+    Info {
+        key: &'static str,
+        label: String,
+        value: String,
+        description: String,
+    },
 }
 
 impl SettingField {
@@ -485,17 +549,19 @@ impl SettingField {
             | Self::Number { key, .. }
             | Self::Choice { key, .. }
             | Self::Keybind { key, .. }
-            | Self::Action { key, .. } => key,
+            | Self::Action { key, .. }
+            | Self::Info { key, .. } => key,
         }
     }
 
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> &str {
         match self {
             Self::Text { label, .. }
             | Self::Number { label, .. }
             | Self::Choice { label, .. }
             | Self::Keybind { label, .. }
             | Self::Action { label, .. } => label,
+            Self::Info { label, .. } => label,
         }
     }
 
@@ -512,6 +578,7 @@ impl SettingField {
                 .map(shortcuts::display_keystroke)
                 .unwrap_or_else(|| "Unbound".to_string()),
             Self::Action { value, .. } => value.clone(),
+            Self::Info { value, .. } => value.clone(),
         }
     }
 
@@ -520,7 +587,10 @@ impl SettingField {
             Self::Text { value, cursor, .. } | Self::Number { value, cursor, .. } => {
                 Some((value, cursor))
             }
-            Self::Choice { .. } | Self::Keybind { .. } | Self::Action { .. } => None,
+            Self::Choice { .. }
+            | Self::Keybind { .. }
+            | Self::Action { .. }
+            | Self::Info { .. } => None,
         }
     }
 
@@ -547,6 +617,7 @@ impl SettingField {
                     }
                 }),
             Self::Action { .. } => Err("actions cannot be saved as settings".to_string()),
+            Self::Info { .. } => Err("read-only rows cannot be saved as settings".to_string()),
         }
     }
 }
@@ -584,6 +655,7 @@ pub struct SettingsModal {
     pub originals: HashMap<String, String>,
     pub desktop_preferences: DesktopPreferences,
     desktop_originals: DesktopPreferences,
+    pub tools: InventoryState,
     pub active_section: SettingsSection,
     pub search_query: String,
     search_cursor: usize,
@@ -613,6 +685,7 @@ impl PartialEq for SettingsModal {
             && self.originals == other.originals
             && self.desktop_preferences == other.desktop_preferences
             && self.desktop_originals == other.desktop_originals
+            && self.tools == other.tools
             && self.active_section == other.active_section
             && self.search_query == other.search_query
             && self.search_cursor == other.search_cursor
@@ -635,7 +708,9 @@ impl PartialEq for SettingsModal {
 impl Default for SettingsModal {
     fn default() -> Self {
         let desktop_preferences = DesktopPreferences::default();
-        let fields = local_setting_fields(&desktop_preferences);
+        let tools = InventoryState::Loading;
+        let mut fields = local_setting_fields(&desktop_preferences);
+        fields.extend(tool_info_fields(&tools));
         let selected = fields.len();
         let originals = fields
             .iter()
@@ -650,6 +725,7 @@ impl Default for SettingsModal {
             originals,
             desktop_preferences: desktop_preferences.clone(),
             desktop_originals: desktop_preferences,
+            tools,
             active_section: SettingsSection::Model,
             search_query: String::new(),
             search_cursor: 0,
@@ -680,6 +756,9 @@ impl SettingsModal {
     pub fn loading_with_preferences(preferences: DesktopPreferences) -> Self {
         let mut modal = Self::default();
         modal.fields = local_setting_fields(&preferences);
+        modal
+            .fields
+            .extend(tool_info_fields(&modal.tools));
         modal.originals = modal
             .fields
             .iter()
@@ -748,6 +827,12 @@ impl SettingsModal {
                 label: descriptor.label,
                 value: "Open".to_string(),
             },
+            SettingKind::Info => SettingField::Info {
+                key: descriptor.key,
+                label: descriptor.label.to_string(),
+                value: String::new(),
+                description: descriptor.description.to_string(),
+            },
         }
     }
 
@@ -768,9 +853,12 @@ impl SettingsModal {
         fields.extend(
             self.fields
                 .iter()
-                .filter(|field| is_desktop_setting(field.key()))
+                .filter(|field| {
+                    is_desktop_setting(field.key()) && !matches!(field, SettingField::Info { .. })
+                })
                 .cloned(),
         );
+        fields.extend(tool_info_fields(&self.tools));
 
         let mut originals = HashMap::new();
         for field in &fields {
@@ -814,6 +902,69 @@ impl SettingsModal {
     pub fn mark_load_failed(&mut self, message: impl Into<String>) {
         self.load_failed = true;
         self.error = Some(message.into());
+    }
+
+    pub fn set_tools(&mut self, mut tools: Vec<ToolDefinition>) {
+        tools.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+        self.tools = if tools.is_empty() {
+            InventoryState::Empty
+        } else {
+            InventoryState::Ready(
+                tools
+                    .into_iter()
+                    .map(|tool| {
+                        let risk = tool
+                            .risk_class
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|risk| !risk.is_empty())
+                            .unwrap_or("unspecified");
+                        let detail = format!("risk: {risk}");
+                        InventoryItem {
+                            name: if tool.name.trim().is_empty() {
+                                "(unnamed tool)".to_string()
+                            } else {
+                                tool.name
+                            },
+                            description: if tool.description.trim().is_empty() {
+                                "No description provided.".to_string()
+                            } else {
+                                tool.description
+                            },
+                            detail,
+                        }
+                    })
+                    .collect(),
+            )
+        };
+        self.refresh_tool_fields();
+    }
+
+    pub fn set_tools_error(&mut self, message: impl Into<String>) {
+        self.tools = InventoryState::Unavailable(message.into());
+        self.refresh_tool_fields();
+    }
+
+    fn refresh_tool_fields(&mut self) {
+        let old_len = self.fields.len();
+        let save_selected = self.selected == old_len;
+        let tool_selected = self
+            .fields
+            .get(self.selected)
+            .is_some_and(|field| field.key() == "desktop.info.tools");
+        self.fields
+            .retain(|field| !matches!(field, SettingField::Info { .. }));
+        let first_tool = self.fields.len();
+        self.fields.extend(tool_info_fields(&self.tools));
+        if self.active_section == SettingsSection::Tools && tool_selected {
+            self.selected = first_tool;
+        } else if save_selected {
+            self.selected = self.fields.len();
+        }
+        if self.searching {
+            self.sync_search_selection();
+        }
+        self.scroll_selected_into_view();
     }
 
     pub fn accepts_text_edit(&self) -> bool {
@@ -899,7 +1050,12 @@ impl SettingsModal {
             .filter_map(|(index, field)| {
                 let descriptor = setting_descriptor(field.key());
                 let key = descriptor.key.to_lowercase();
-                let label = descriptor.label.to_lowercase();
+                let label = field.label().to_lowercase();
+                let description = match field {
+                    SettingField::Info { description, .. } => description.as_str(),
+                    _ => descriptor.description,
+                }
+                .to_lowercase();
                 let score = if key == query || label == query {
                     Some(0)
                 } else if key.starts_with(&query) || label.starts_with(&query) {
@@ -907,7 +1063,7 @@ impl SettingsModal {
                 } else if key.contains(&query)
                     || label.contains(&query)
                     || field.display().to_lowercase().contains(&query)
-                    || descriptor.description.to_lowercase().contains(&query)
+                    || description.contains(&query)
                     || descriptor.section.title().to_lowercase().contains(&query)
                 {
                     Some(2)
@@ -1348,7 +1504,10 @@ impl SettingsModal {
         let (value, cursor) = match field {
             SettingField::Text { value, cursor, .. }
             | SettingField::Number { value, cursor, .. } => (value, cursor),
-            SettingField::Choice { .. } | SettingField::Keybind { .. } | SettingField::Action { .. } => {
+            SettingField::Choice { .. }
+            | SettingField::Keybind { .. }
+            | SettingField::Action { .. }
+            | SettingField::Info { .. } => {
                 return None;
             }
         };
@@ -1427,7 +1586,8 @@ impl SettingsModal {
     }
 
     fn is_dirty(&self, field: &SettingField) -> bool {
-        field.display() != self.originals.get(field.key()).cloned().unwrap_or_default()
+        !matches!(field, SettingField::Info { .. })
+            && field.display() != self.originals.get(field.key()).cloned().unwrap_or_default()
     }
 
     pub fn validation_error(&self) -> Option<String> {
@@ -1882,18 +2042,18 @@ impl SettingsModal {
             );
         }
 
-        let has_visible_action = self
-            .visible_indices()
-            .iter()
-            .any(|index| self.fields[*index].is_action());
+        let visible_indices = self.visible_indices();
+        let has_visible_runtime_row = visible_indices.iter().any(|index| {
+            self.fields[*index].is_action()
+                || matches!(self.fields[*index], SettingField::Info { .. })
+        });
         if !self.fields.is_empty()
             && (!self.load_failed
                 || self.active_section.is_local()
                 || !self.search_query.trim().is_empty()
-                || has_visible_action)
+                || has_visible_runtime_row)
         {
             let fields = self.fields.clone();
-            let visible_indices = self.visible_indices();
             let filtering = !self.search_query.trim().is_empty();
             let originals = self.originals.clone();
             let selected = self.selected;
@@ -2178,6 +2338,15 @@ fn render_setting_row(
         SettingField::Action { value, .. } => div()
             .text_color(theme.accent_blue)
             .child(format!("{value} →")),
+        SettingField::Info { value, .. } => div().text_color(if value.is_empty() {
+            theme.mockup_text_dim
+        } else {
+            theme.mockup_text_bright
+        }).child(if value.is_empty() {
+            "Read-only".to_string()
+        } else {
+            value.clone()
+        }),
     };
     value = value
         .font_family(theme.font_mono()[0].clone())
@@ -2199,6 +2368,10 @@ fn render_setting_row(
         SettingField::Action { key, .. } => format!(
             "settings_action_{}",
             key.strip_prefix("desktop.action.").unwrap_or(key)
+        ),
+        SettingField::Info { key, .. } => format!(
+            "settings_info_{}",
+            key.strip_prefix("desktop.info.").unwrap_or(key)
         ),
         _ => format!("settings_row_{index}"),
     };
@@ -2242,24 +2415,24 @@ fn render_setting_row(
                         } else {
                             theme.mockup_session_inactive
                         })
-                        .child(field.label()),
+                        .child(field.label().to_string()),
                 )
                 .child(value),
         );
     let descriptor = setting_descriptor(field.key());
+    let description = match field {
+        SettingField::Info { description, .. } => description.as_str(),
+        _ => descriptor.description,
+    };
     row = row.child(
         div()
             .w_full()
             .text_size(px(MockupTypeScale::HINT_SIZE))
             .text_color(theme.mockup_text_dim)
             .child(if filtering {
-                format!(
-                    "{} · {}",
-                    descriptor.section.title(),
-                    descriptor.description
-                )
+                format!("{} · {}", descriptor.section.title(), description)
             } else {
-                descriptor.description.to_string()
+                description.to_string()
             }),
     );
     if selected {
@@ -2314,7 +2487,7 @@ mod tests {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 20 + keyboard_count);
+        assert_eq!(modal.fields.len(), 21 + keyboard_count);
         assert_eq!(SettingsSection::ALL.len(), 12);
         assert_eq!(modal.fields[12].key(), "desktop.motion");
         assert_eq!(modal.fields[13].key(), "desktop.sidebar");
@@ -2394,6 +2567,70 @@ mod tests {
         assert_eq!(
             modal.handle_key("enter"),
             Some(SettingsAction::Activate("desktop.action.sessions"))
+        );
+        assert_eq!(modal.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_tool_inventory_is_live_searchable_and_read_only() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        modal.select_section(SettingsSection::Tools);
+        assert_eq!(modal.tools, InventoryState::Loading);
+        assert_eq!(modal.selected_action(), None);
+
+        modal.set_tools(vec![
+            ToolDefinition {
+                name: "write_file".to_string(),
+                description: "Write a file".to_string(),
+                parameters: serde_json::Value::Null,
+                risk_class: Some("R3".to_string()),
+            },
+            ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read files from the workspace".to_string(),
+                parameters: serde_json::Value::Null,
+                risk_class: None,
+            },
+        ]);
+        let info = modal
+            .fields
+            .iter()
+            .filter(|field| matches!(field, SettingField::Info { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(info.len(), 2);
+        assert_eq!(info[0].label(), "read_file");
+        assert_eq!(info[0].display(), "risk: unspecified");
+        assert_eq!(info[1].label(), "write_file");
+        assert_eq!(info[1].display(), "risk: R3");
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+        assert!(modal.changed_desktop_preferences().is_none());
+
+        modal.focus_search();
+        modal.select_all_text();
+        modal.push_char("workspace");
+        assert_eq!(modal.search_results(), vec![modal.fields.len() - 2]);
+        assert_eq!(modal.handle_key("enter"), None);
+        assert!(!modal.searching);
+        assert!(!modal.editing);
+        assert_eq!(modal.active_section, SettingsSection::Tools);
+
+        modal.apply_view(&sample_view());
+        assert_eq!(
+            modal
+                .fields
+                .iter()
+                .filter(|field| matches!(field, SettingField::Info { .. }))
+                .count(),
+            2
+        );
+        modal.set_tools(Vec::new());
+        assert_eq!(modal.tools, InventoryState::Empty);
+        modal.set_tools_error("tools/list failed: permission denied");
+        assert_eq!(
+            modal.tools,
+            InventoryState::Unavailable("tools/list failed: permission denied".to_string())
         );
         assert_eq!(modal.dirty_count(), 0);
     }
@@ -2546,20 +2783,20 @@ mod tests {
         assert_eq!(modal.active_section, SettingsSection::Notifications);
         assert_eq!(
             modal.section_indices().first(),
-            Some(&(modal.fields.len() - 6))
+            Some(&(modal.fields.len() - 7))
         );
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 4))
+            Some(&(modal.fields.len() - 5))
         );
-        assert_eq!(modal.selected, modal.fields.len() - 6);
+        assert_eq!(modal.selected, modal.fields.len() - 7);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Keyboard);
         assert_eq!(modal.section_indices().first(), Some(&14));
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 7))
+            Some(&(modal.fields.len() - 8))
         );
         assert_eq!(modal.selected, 14);
 
