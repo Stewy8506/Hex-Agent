@@ -655,7 +655,7 @@ mod tests {
         );
 
         // CompactContext was removed — no honest backend mapping exists.
-        palette.set_query("compact");
+        palette.set_query("compactcontext");
         assert!(palette.filtered_items().is_empty());
     }
 

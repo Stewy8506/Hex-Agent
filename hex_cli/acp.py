@@ -694,6 +694,8 @@ class ConfigRevisionConflict(Exception):
 #   - compressor_mode: router.py FR-045a modes
 #   - web_search.provider: capabilities/web_search.py supported providers
 #   - learning.auto_reflect: get_auto_reflect_policy() vocabulary
+#   - retention.*: load_retention_config()/GarbageCollector vocabulary; TTL
+#     values must parse via storage.gc.parse_ttl_seconds
 CONFIG_SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
     "model": {
         "cloud_provider": {"kind": "text", "required": True},
@@ -714,6 +716,17 @@ CONFIG_SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
     },
     "learning": {
         "auto_reflect": {"kind": "choice", "options": ["cloud_only", "idle", "off"]},
+    },
+    "retention": {
+        "workspace_ttl": {
+            "kind": "choice",
+            "options": ["24h", "72h", "7d", "14d", "30d"],
+        },
+        "cas_ttl": {
+            "kind": "choice",
+            "options": ["24h", "7d", "14d", "30d", "90d"],
+        },
+        "auto_vacuum": {"kind": "bool"},
     },
 }
 
@@ -1849,6 +1862,8 @@ class ACPServer:
                 elif kind == "int":
                     field["min"] = spec["min"]
                     field["max"] = spec["max"]
+                elif kind == "bool":
+                    pass
                 else:
                     field["required"] = bool(spec.get("required"))
                     field["maxLength"] = CONFIG_TEXT_MAX_LENGTH
@@ -2154,6 +2169,12 @@ class ACPServer:
                     f"{section}.{key} must be an integer between {spec['min']} and {spec['max']}"
                 )
             return iv
+        if kind == "bool":
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+                return value.strip().lower() == "true"
+            raise ValueError(f"{section}.{key} must be true or false")
         # text
         if not isinstance(value, str):
             raise ValueError(f"{section}.{key} must be a string")

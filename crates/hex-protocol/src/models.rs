@@ -681,6 +681,17 @@ pub struct LearningSettings {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
+pub struct RetentionSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_ttl: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cas_ttl: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_vacuum: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct SettingsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelSettings>,
@@ -692,6 +703,8 @@ pub struct SettingsConfig {
     pub cloud: Option<CloudSettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub learning: Option<LearningSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retention: Option<RetentionSettings>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -700,6 +713,7 @@ pub enum ConfigSettingKind {
     Text,
     Choice,
     Int,
+    Bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

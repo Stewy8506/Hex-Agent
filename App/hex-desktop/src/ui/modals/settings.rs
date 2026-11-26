@@ -33,6 +33,7 @@ pub enum SettingsSection {
     Runtime,
     WebSearch,
     Learning,
+    Retention,
     Appearance,
     MotionDisplay,
     Keyboard,
@@ -40,7 +41,7 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Model,
         Self::Sessions,
         Self::Cloud,
@@ -50,6 +51,7 @@ impl SettingsSection {
         Self::Runtime,
         Self::WebSearch,
         Self::Learning,
+        Self::Retention,
         Self::Appearance,
         Self::MotionDisplay,
         Self::Keyboard,
@@ -67,6 +69,7 @@ impl SettingsSection {
             Self::Runtime => "Runtime",
             Self::WebSearch => "Web search",
             Self::Learning => "Learning",
+            Self::Retention => "Retention",
             Self::Appearance => "Appearance",
             Self::MotionDisplay => "Motion & display",
             Self::Keyboard => "Keyboard",
@@ -85,6 +88,7 @@ impl SettingsSection {
             Self::Runtime => "Control how long an agent turn may run.",
             Self::WebSearch => "Configure the provider used for web lookups.",
             Self::Learning => "Choose when HEX reflects on completed work.",
+            Self::Retention => "Control how long stored workspaces and content data are kept. A workspace config overrides these values.",
             Self::Appearance => "Personalize the desktop theme and interface density.",
             Self::MotionDisplay => "Control animation policy and sidebar visibility.",
             Self::Keyboard => {
@@ -105,6 +109,7 @@ impl SettingsSection {
             Self::Runtime => "runtime",
             Self::WebSearch => "web_search",
             Self::Learning => "learning",
+            Self::Retention => "retention",
             Self::Appearance => "appearance",
             Self::MotionDisplay => "motion_display",
             Self::Keyboard => "keyboard",
@@ -133,6 +138,7 @@ enum SettingKind {
     Text { required: bool },
     Number { min: u64, max: u64 },
     Choice { fallback: &'static [&'static str] },
+    Toggle,
     Action,
     Info,
 }
@@ -172,7 +178,7 @@ const fn notification_setting(
     }
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 31] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 34] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -252,6 +258,31 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 31] = [
         kind: SettingKind::Choice {
             fallback: &["cloud_only", "idle", "off"],
         },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Retention,
+        key: "retention.workspaceTtl",
+        label: "Workspace TTL",
+        description: "How long finished task workspaces are kept before cleanup.",
+        kind: SettingKind::Choice {
+            fallback: &["24h", "72h", "7d", "14d", "30d"],
+        },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Retention,
+        key: "retention.casTtl",
+        label: "Content TTL",
+        description: "How long unreferenced stored tool output is kept before cleanup.",
+        kind: SettingKind::Choice {
+            fallback: &["24h", "7d", "14d", "30d", "90d"],
+        },
+    },
+    SettingDescriptor {
+        section: SettingsSection::Retention,
+        key: "retention.autoVacuum",
+        label: "Auto vacuum",
+        description: "Compact the session ledger after each cleanup sweep.",
+        kind: SettingKind::Toggle,
     },
     SettingDescriptor {
         section: SettingsSection::Appearance,
@@ -783,6 +814,13 @@ pub enum SettingField {
         options: Vec<String>,
         value: Option<String>,
     },
+    /// Boolean value flipped with Enter / ← / →; unset keys fall back to the
+    /// backend default (enabled).
+    Toggle {
+        key: &'static str,
+        label: &'static str,
+        value: bool,
+    },
     /// Global shortcut; None means explicitly unbound.
     Keybind {
         key: &'static str,
@@ -819,6 +857,7 @@ impl SettingField {
             Self::Text { key, .. }
             | Self::Number { key, .. }
             | Self::Choice { key, .. }
+            | Self::Toggle { key, .. }
             | Self::Keybind { key, .. }
             | Self::Action { key, .. }
             | Self::Info { key, .. }
@@ -832,6 +871,7 @@ impl SettingField {
             Self::Text { label, .. }
             | Self::Number { label, .. }
             | Self::Choice { label, .. }
+            | Self::Toggle { label, .. }
             | Self::Keybind { label, .. }
             | Self::Action { label, .. } => label,
             Self::Info { label, .. } => label,
@@ -848,6 +888,13 @@ impl SettingField {
         match self {
             Self::Text { value, .. } | Self::Number { value, .. } => value.clone(),
             Self::Choice { value, .. } => value.clone().unwrap_or_default(),
+            Self::Toggle { value, .. } => {
+                if *value {
+                    "enabled".to_string()
+                } else {
+                    "disabled".to_string()
+                }
+            }
             Self::Keybind { value, .. } => value
                 .as_deref()
                 .map(shortcuts::display_keystroke)
@@ -865,6 +912,7 @@ impl SettingField {
                 Some((value, cursor))
             }
             Self::Choice { .. }
+            | Self::Toggle { .. }
             | Self::Keybind { .. }
             | Self::Action { .. }
             | Self::Info { .. }
@@ -879,6 +927,7 @@ impl SettingField {
             Self::Choice { value, .. } | Self::Keybind { value, .. } => Ok(
                 serde_json::Value::String(value.as_deref().unwrap_or_default().to_string()),
             ),
+            Self::Toggle { value, .. } => Ok(serde_json::Value::Bool(*value)),
             Self::Number {
                 value,
                 min,
@@ -1135,6 +1184,12 @@ impl SettingsModal {
                 label: descriptor.label,
                 options: Self::option_list(options, descriptor.key, fallback),
                 value: raw.and_then(serde_json::Value::as_str).map(str::to_string),
+            },
+            SettingKind::Toggle => SettingField::Toggle {
+                key: descriptor.key,
+                label: descriptor.label,
+                // Unset keys follow the backend default (auto vacuum on).
+                value: raw.and_then(serde_json::Value::as_bool).unwrap_or(true),
             },
             SettingKind::Action => SettingField::Action {
                 key: descriptor.key,
@@ -2195,6 +2250,14 @@ impl SettingsModal {
         true
     }
 
+    fn toggle_selected(&mut self) -> bool {
+        let Some(SettingField::Toggle { value, .. }) = self.fields.get_mut(self.selected) else {
+            return false;
+        };
+        *value = !*value;
+        true
+    }
+
     fn cycle_tool_policy(&mut self, delta: isize) -> bool {
         let Some(SettingField::ToolPolicy { name, policy, .. }) =
             self.fields.get(self.selected).cloned()
@@ -2278,7 +2341,7 @@ impl SettingsModal {
             }
             "left" | "arrowleft" => {
                 if !((self.searching || self.editing) && self.move_text_cursor(-1, false))
-                    && (self.cycle_choice(-1) || self.cycle_tool_policy(-1))
+                    && (self.cycle_choice(-1) || self.toggle_selected() || self.cycle_tool_policy(-1))
                 {
                     self.commit_edit();
                 }
@@ -2286,7 +2349,7 @@ impl SettingsModal {
             }
             "right" | "arrowright" => {
                 if !((self.searching || self.editing) && self.move_text_cursor(1, false))
-                    && (self.cycle_choice(1) || self.cycle_tool_policy(1))
+                    && (self.cycle_choice(1) || self.toggle_selected() || self.cycle_tool_policy(1))
                 {
                     self.commit_edit();
                 }
@@ -2380,6 +2443,10 @@ impl SettingsModal {
                         name,
                         mode,
                     ));
+                }
+                if let Some(SettingField::Toggle { .. }) = self.fields.get(self.selected) {
+                    self.toggle_selected();
+                    return None;
                 }
                 let keybind_key = self
                     .fields
@@ -2491,6 +2558,7 @@ impl SettingsModal {
             SettingField::Text { value, cursor, .. }
             | SettingField::Number { value, cursor, .. } => (value, cursor),
             SettingField::Choice { .. }
+            | SettingField::Toggle { .. }
             | SettingField::Keybind { .. }
             | SettingField::Action { .. }
             | SettingField::Info { .. }
@@ -3338,6 +3406,20 @@ fn render_setting_row(
                     current
                 })
         }
+        SettingField::Toggle { value, .. } => {
+            let label = if *value { "enabled" } else { "disabled" };
+            div()
+                .text_color(if selected {
+                    theme.accent_blue
+                } else {
+                    theme.mockup_text_bright
+                })
+                .child(if selected {
+                    format!("‹ {label} ›")
+                } else {
+                    label.to_string()
+                })
+        }
         SettingField::Keybind { value, .. } => {
             let capturing = capturing_keybind == Some(field.key());
             let current = value
@@ -3532,6 +3614,10 @@ fn render_setting_row(
         ),
         SettingField::Provider { provider, .. } => format!("settings_provider_{}", provider.id),
         SettingField::ToolPolicy { name, .. } => format!("settings_tool_policy_{}", name),
+        SettingField::Toggle { key, .. } => format!(
+            "settings_toggle_{}",
+            key.strip_prefix("retention.").unwrap_or(key)
+        ),
         _ => format!("settings_row_{index}"),
     };
     let mut row = div()
@@ -3624,11 +3710,18 @@ mod tests {
                 "runtime": { "maxTurns": 90 },
                 "webSearch": { "provider": "brave" },
                 "cloud": { "baseUrl": "" },
-                "learning": { "autoReflect": "off" }
+                "learning": { "autoReflect": "off" },
+                "retention": {
+                    "workspaceTtl": "7d",
+                    "casTtl": "30d",
+                    "autoVacuum": false
+                }
             },
             "options": {
                 "model.reasoningEffort": ["none", "low", "medium", "high"],
-                "model.profile": ["cloud", "local", "hybrid", "antigravity_hybrid"]
+                "model.profile": ["cloud", "local", "hybrid", "antigravity_hybrid"],
+                "retention.workspaceTtl": ["24h", "72h", "7d", "14d", "30d"],
+                "retention.casTtl": ["24h", "7d", "14d", "30d", "90d"]
             },
             "revision": "sha256:sample"
         }))
@@ -3675,11 +3768,14 @@ mod tests {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 23 + keyboard_count);
-        assert_eq!(SettingsSection::ALL.len(), 13);
-        assert_eq!(modal.fields[12].key(), "desktop.motion");
-        assert_eq!(modal.fields[13].key(), "desktop.sidebar");
-        assert_eq!(modal.fields[14].key(), "desktop.keybind.command_palette");
+        assert_eq!(modal.fields.len(), 26 + keyboard_count);
+        assert_eq!(SettingsSection::ALL.len(), 14);
+        assert_eq!(modal.fields[10].key(), "retention.workspaceTtl");
+        assert_eq!(modal.fields[11].key(), "retention.casTtl");
+        assert_eq!(modal.fields[12].key(), "retention.autoVacuum");
+        assert_eq!(modal.fields[15].key(), "desktop.motion");
+        assert_eq!(modal.fields[16].key(), "desktop.sidebar");
+        assert_eq!(modal.fields[17].key(), "desktop.keybind.command_palette");
         assert_eq!(modal.dirty_count(), 0);
 
         // Choice cycling from the set value; dirty count follows.
@@ -3704,6 +3800,60 @@ mod tests {
         };
         assert_eq!(options.join(","), "none,low,medium,high");
         assert_eq!(value.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn test_retention_fields_render_and_toggle_sends_bool() {
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+
+        let ws_idx = modal
+            .fields
+            .iter()
+            .position(|f| f.key() == "retention.workspaceTtl")
+            .unwrap();
+        assert_eq!(modal.fields[ws_idx].display(), "7d");
+        let cas_idx = modal
+            .fields
+            .iter()
+            .position(|f| f.key() == "retention.casTtl")
+            .unwrap();
+        assert_eq!(modal.fields[cas_idx].display(), "30d");
+        let vacuum_idx = modal
+            .fields
+            .iter()
+            .position(|f| f.key() == "retention.autoVacuum")
+            .unwrap();
+        assert_eq!(modal.fields[vacuum_idx].display(), "disabled");
+        assert_eq!(modal.fields[vacuum_idx].label(), "Auto vacuum");
+        assert_eq!(modal.dirty_count(), 0);
+
+        // Enter toggles the bool and dirty tracking exposes a JSON boolean.
+        modal.selected = vacuum_idx;
+        modal.handle_key("enter");
+        assert_eq!(modal.fields[vacuum_idx].display(), "enabled");
+        assert_eq!(modal.dirty_count(), 1);
+        assert_eq!(
+            modal.dirty_updates(),
+            serde_json::json!({ "retention": { "autoVacuum": true } })
+        );
+        modal.handle_key("enter");
+        assert_eq!(modal.fields[vacuum_idx].display(), "disabled");
+        assert_eq!(modal.dirty_count(), 0);
+
+        // Arrows also toggle; left/right behave identically.
+        modal.handle_key("right");
+        assert_eq!(modal.fields[vacuum_idx].display(), "enabled");
+        modal.handle_key("left");
+        assert_eq!(modal.fields[vacuum_idx].display(), "disabled");
+
+        // TTL choices cycle within the backend vocabulary.
+        modal.selected = ws_idx;
+        modal.handle_key("left");
+        assert_eq!(modal.fields[ws_idx].display(), "72h");
+        modal.handle_key("right");
+        assert_eq!(modal.fields[ws_idx].display(), "7d");
+        assert_eq!(modal.dirty_count(), 0);
     }
 
     #[test]
@@ -3800,7 +3950,7 @@ mod tests {
 
         modal.focus_search();
         modal.select_all_text();
-        modal.push_char("workspace");
+        modal.push_char("read files");
         let read_file_index = modal
             .fields
             .iter()
@@ -4513,7 +4663,7 @@ mod tests {
         modal.apply_view(&sample_view());
 
         assert_eq!(modal.active_section, SettingsSection::Model);
-        assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5, 25]);
+        assert_eq!(modal.section_indices(), vec![0, 1, 2, 3, 4, 5, 28]);
         modal.handle_key("down");
         assert_eq!(modal.selected, 1);
 
@@ -4531,28 +4681,28 @@ mod tests {
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Keyboard);
-        assert_eq!(modal.section_indices().first(), Some(&14));
+        assert_eq!(modal.section_indices().first(), Some(&17));
         assert_eq!(
             modal.section_indices().last(),
             Some(&(modal.fields.len() - 10))
         );
-        assert_eq!(modal.selected, 14);
+        assert_eq!(modal.selected, 17);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::MotionDisplay);
-        assert_eq!(modal.section_indices(), vec![12, 13]);
-        assert_eq!(modal.selected, 12);
+        assert_eq!(modal.section_indices(), vec![15, 16]);
+        assert_eq!(modal.selected, 15);
         modal.handle_key("down");
-        assert_eq!(modal.selected, 13);
+        assert_eq!(modal.selected, 16);
         modal.handle_key("down");
         assert_eq!(modal.selected, modal.fields.len());
         modal.handle_key("down");
-        assert_eq!(modal.selected, 12);
+        assert_eq!(modal.selected, 15);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Appearance);
-        assert_eq!(modal.section_indices(), vec![10, 11]);
-        assert_eq!(modal.selected, 10);
+        assert_eq!(modal.section_indices(), vec![13, 14]);
+        assert_eq!(modal.selected, 13);
 
         modal.select_section(SettingsSection::Runtime);
         assert_eq!(modal.active_section, SettingsSection::Runtime);
@@ -4828,10 +4978,10 @@ mod tests {
         assert_eq!(modal.desktop_dirty_count(), 4);
 
         modal.apply_view(&sample_view());
-        assert_eq!(modal.fields[10].display(), "mono");
-        assert_eq!(modal.fields[11].display(), "comfortable");
-        assert_eq!(modal.fields[12].display(), "full");
-        assert_eq!(modal.fields[13].display(), "expanded");
+        assert_eq!(modal.fields[13].display(), "mono");
+        assert_eq!(modal.fields[14].display(), "comfortable");
+        assert_eq!(modal.fields[15].display(), "full");
+        assert_eq!(modal.fields[16].display(), "expanded");
         assert_eq!(modal.desktop_dirty_count(), 4);
 
         modal.desktop_preferences = changed;

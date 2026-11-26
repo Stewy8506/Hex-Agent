@@ -652,6 +652,15 @@ def should_execute_background_reflection(
     return False, "Suppressed background reflection on local hardware to prevent memory starvation"
 
 
+def _normalize_retention(cfg: dict[str, Any]) -> dict[str, Any]:
+    # Hand-edited config files may quote booleans; a truthy string like
+    # "false" would silently re-enable auto vacuum downstream.
+    value = cfg.get("auto_vacuum", True)
+    if isinstance(value, str):
+        cfg["auto_vacuum"] = value.strip().lower() not in ("false", "no", "off", "0")
+    return cfg
+
+
 def load_retention_config(workspace_root: Path | str | None = None) -> dict[str, Any]:
     """Load storage retention and garbage collection settings.
 
@@ -688,14 +697,14 @@ def load_retention_config(workspace_root: Path | str | None = None) -> dict[str,
                     data = tomllib.loads(content.decode("utf-8"))
                     ret = data.get("retention")
                     if isinstance(ret, dict):
-                        return {**defaults, **ret}
+                        return _normalize_retention({**defaults, **ret})
                 except Exception:
                     pass
             elif p.suffix in (".yaml", ".yml"):
                 data = parse_config_yaml(p)
                 ret = data.get("retention")
                 if isinstance(ret, dict):
-                    return {**defaults, **ret}
+                    return _normalize_retention({**defaults, **ret})
         except Exception:
             continue
 
