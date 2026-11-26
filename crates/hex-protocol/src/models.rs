@@ -300,6 +300,12 @@ impl fmt::Display for SessionStatus {
 // ACP Protocol Requests and Responses
 // ---------------------------------------------------------------------------
 
+pub const HEX_CONTRACT_VERSION: u32 = 1;
+pub const HEX_FEATURE_SETTINGS_READ: &str = "settings.read";
+pub const HEX_FEATURE_SETTINGS_WRITE: &str = "settings.write";
+pub const HEX_FEATURE_TOOLS_LIST: &str = "tools.list";
+pub const HEX_FEATURE_SKILLS_LIST: &str = "skills.list";
+
 /// Client info sent in `initialize`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientInfo {
@@ -322,6 +328,8 @@ pub struct ClientCapabilities {
 pub struct InitializeParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hex_contract_version: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_info: Option<ClientInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -357,6 +365,8 @@ pub struct ServerCapabilities {
     pub tools: ToolsCapabilities,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompts: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 /// Result returned from `initialize` call.
@@ -364,8 +374,26 @@ pub struct ServerCapabilities {
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResponse {
     pub protocol_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_dialect: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hex_contract_version: Option<u32>,
     pub capabilities: ServerCapabilities,
     pub server_info: ServerInfo,
+}
+
+impl InitializeResponse {
+    pub fn supports_settings_read(&self) -> bool {
+        self.supports_feature(HEX_FEATURE_SETTINGS_READ)
+    }
+
+    pub fn supports_settings_write(&self) -> bool {
+        self.supports_feature(HEX_FEATURE_SETTINGS_WRITE)
+    }
+
+    pub fn supports_feature(&self, feature: &str) -> bool {
+        self.capabilities.features.iter().any(|item| item == feature)
+    }
 }
 
 /// Parameters for `session/new`.

@@ -607,6 +607,14 @@ _SUPPORTED_METHODS = (
     "cloud/signal/start", "cloud/signal/stop", "cloud/signal/status",
 )
 
+HEX_CONTRACT_VERSION = 1
+HEX_CONTRACT_FEATURES = (
+    "settings.read",
+    "settings.write",
+    "tools.list",
+    "skills.list",
+)
+
 # DX3 settings surface: the only config.yaml sections/keys a client may read
 # through config/get or write through config/set. Values always live in the
 # config file; secrets (API keys, tokens) stay in credentials.env and are
@@ -1010,17 +1018,30 @@ class ACPServer:
                 "id": req_id,
                 "error": {
                     "code": -32602 if method in {
-                        "session/toolResult", "session/load", "session/history", "session/historyContent",
-                        "session/approvalDecision"
+                        "initialize", "session/toolResult", "session/load", "session/history",
+                        "session/historyContent", "session/approvalDecision"
                     } and isinstance(exc, (ValueError, TypeError)) else -32000,
                     "message": str(exc),
                 },
             }
 
     def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            raise ValueError("initialize params must be an object")
+        requested_version = params.get("hexContractVersion")
+        if requested_version is not None and (
+            type(requested_version) is not int
+            or requested_version < 1
+            or requested_version > HEX_CONTRACT_VERSION
+        ):
+            raise ValueError(
+                "hexContractVersion must be an integer between 1 and "
+                f"{HEX_CONTRACT_VERSION}"
+            )
         return {
             "protocolVersion": "2024-11-05",
             "protocolDialect": "hex-private-acp/1",
+            "hexContractVersion": HEX_CONTRACT_VERSION,
             "capabilities": {
                 "session": {
                     "streaming": True,
@@ -1032,6 +1053,7 @@ class ACPServer:
                     "listChanged": False,
                 },
                 "prompts": {},
+                "features": list(HEX_CONTRACT_FEATURES),
             },
             "serverInfo": {
                 "name": "HEX",

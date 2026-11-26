@@ -24,7 +24,7 @@ use crate::models::{
     SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
     SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionRenameResponse,
     SessionSubagentsParams, SessionSubagentsResponse, SubagentInfo, ToolCallParams,
-    ToolCallResponse, ToolDefinition, ToolsListResponse,
+    ToolCallResponse, ToolDefinition, ToolsListResponse, HEX_CONTRACT_VERSION,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -88,6 +88,7 @@ pub struct AcpClient {
     lossless_tx: LosslessSender,
     child: Option<Arc<Mutex<tokio::process::Child>>>,
     default_timeout: Duration,
+    negotiated: Arc<Mutex<Option<InitializeResponse>>>,
 }
 
 impl AcpClient {
@@ -244,6 +245,7 @@ impl AcpClient {
             lossless_tx,
             child: None,
             default_timeout: Duration::from_secs(60),
+            negotiated: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -525,6 +527,7 @@ impl AcpClient {
     ) -> Result<InitializeResponse, AcpError> {
         let params = InitializeParams {
             protocol_version: Some("2024-11-05".to_string()),
+            hex_contract_version: Some(HEX_CONTRACT_VERSION),
             client_info: client_info.or_else(|| {
                 Some(ClientInfo {
                     name: "HEX-Rust-Cockpit".to_string(),
@@ -533,7 +536,30 @@ impl AcpClient {
             }),
             capabilities: None,
         };
-        self.send_request("initialize", params).await
+        let response: InitializeResponse = self.send_request("initialize", params).await?;
+        if let Some(version) = response.hex_contract_version {
+            if version == 0 || version > HEX_CONTRACT_VERSION {
+                return Err(AcpError::InvalidResponse(format!(
+                    "server advertised unsupported HEX contract version {version}"
+                )));
+            }
+        }
+        *self.negotiated.lock().await = Some(response.clone());
+        Ok(response)
+    }
+
+    /// Return the most recent successful initialize response.
+    pub async fn negotiated_contract(&self) -> Option<InitializeResponse> {
+        self.negotiated.lock().await.clone()
+    }
+
+    /// Check an optional feature advertised by the negotiated server contract.
+    pub async fn supports_feature(&self, feature: &str) -> bool {
+        self.negotiated
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|response| response.supports_feature(feature))
     }
 
     /// Create a new editor session.

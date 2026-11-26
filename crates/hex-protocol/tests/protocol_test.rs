@@ -6,8 +6,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
 use hex_protocol::{
-    AcpClient, ClientInfo, DiffLineType, InitializeResponse, JsonRpcRequest,
-    SessionNewResponse, SessionPromptResponse, UnifiedDiff,
+    AcpClient, ClientInfo, DiffLineType, HEX_CONTRACT_VERSION, HEX_FEATURE_SETTINGS_READ,
+    HEX_FEATURE_SETTINGS_WRITE, InitializeResponse, JsonRpcRequest, SessionNewResponse,
+    SessionPromptResponse, UnifiedDiff,
 };
 
 #[tokio::test]
@@ -27,15 +28,22 @@ async fn test_full_session_lifecycle() {
 
             match req.method.as_str() {
                 "initialize" => {
+                    assert_eq!(
+                        req.params.as_ref().unwrap()["hexContractVersion"],
+                        HEX_CONTRACT_VERSION
+                    );
                     let resp = serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": req.id,
                         "result": {
                             "protocolVersion": "2024-11-05",
+                            "protocolDialect": "hex-private-acp/1",
+                            "hexContractVersion": HEX_CONTRACT_VERSION,
                             "capabilities": {
                                 "session": {"streaming": true, "cancel": true, "history": true},
                                 "tools": {"listChanged": false},
-                                "prompts": {}
+                                "prompts": {},
+                                "features": [HEX_FEATURE_SETTINGS_READ, HEX_FEATURE_SETTINGS_WRITE]
                             },
                             "serverInfo": {"name": "HEX", "version": "0.20.1"}
                         }
@@ -131,7 +139,17 @@ async fn test_full_session_lifecycle() {
         .await
         .unwrap();
     assert_eq!(init_res.server_info.name, "HEX");
+    assert_eq!(init_res.protocol_dialect.as_deref(), Some("hex-private-acp/1"));
+    assert_eq!(init_res.hex_contract_version, Some(HEX_CONTRACT_VERSION));
+    assert!(init_res.supports_settings_read());
+    assert!(init_res.supports_settings_write());
+    assert!(!init_res.supports_feature("settings.schema"));
     assert!(init_res.capabilities.session.streaming);
+    assert!(client.supports_feature(HEX_FEATURE_SETTINGS_READ).await);
+    assert_eq!(
+        client.negotiated_contract().await.unwrap(),
+        init_res
+    );
 
     // 2. Session New
     let sess_res: SessionNewResponse = client
@@ -159,6 +177,81 @@ async fn test_full_session_lifecycle() {
     // 5. Session Cancel
     let cancel_res = client.session_cancel(&sess_res.session_id).await.unwrap();
     assert!(cancel_res.cancelled);
+}
+
+#[tokio::test]
+async fn test_legacy_initialize_response_remains_supported() {
+    let (client_read, mut server_write) = tokio::io::duplex(8192);
+    let (server_read, client_write) = tokio::io::duplex(8192);
+    let client = AcpClient::from_streams(client_read, client_write);
+
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let line = lines.next_line().await.unwrap().unwrap();
+        let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            req.params.as_ref().unwrap()["hexContractVersion"],
+            HEX_CONTRACT_VERSION
+        );
+        let resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "session": {"streaming": true, "cancel": true, "history": true},
+                    "tools": {"listChanged": false}
+                },
+                "serverInfo": {"name": "legacy-HEX", "version": "0.1.0"}
+            }
+        });
+        server_write
+            .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
+            .await
+            .unwrap();
+    });
+
+    let response = client.initialize(None).await.unwrap();
+    assert_eq!(response.server_info.name, "legacy-HEX");
+    assert_eq!(response.protocol_dialect, None);
+    assert_eq!(response.hex_contract_version, None);
+    assert!(!response.supports_settings_read());
+    assert!(!client.supports_feature(HEX_FEATURE_SETTINGS_WRITE).await);
+}
+
+#[tokio::test]
+async fn test_initialize_rejects_a_newer_server_contract() {
+    let (client_read, mut server_write) = tokio::io::duplex(8192);
+    let (server_read, client_write) = tokio::io::duplex(8192);
+    let client = AcpClient::from_streams(client_read, client_write);
+
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let line = lines.next_line().await.unwrap().unwrap();
+        let req: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+        let resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "hexContractVersion": HEX_CONTRACT_VERSION + 1,
+                "capabilities": {
+                    "session": {"streaming": true, "cancel": true, "history": true},
+                    "tools": {"listChanged": false},
+                    "features": []
+                },
+                "serverInfo": {"name": "future-HEX", "version": "99.0.0"}
+            }
+        });
+        server_write
+            .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
+            .await
+            .unwrap();
+    });
+
+    let error = client.initialize(None).await.unwrap_err();
+    assert!(matches!(error, hex_protocol::AcpError::InvalidResponse(_)));
+    assert!(client.negotiated_contract().await.is_none());
 }
 
 #[tokio::test]

@@ -75,10 +75,32 @@ class TestACPServer(unittest.TestCase):
         res = resp["result"]
         self.assertEqual(res["protocolDialect"], "hex-private-acp/1")
         self.assertEqual(res["protocolVersion"], "2024-11-05")
+        self.assertEqual(res["hexContractVersion"], 1)
+        self.assertEqual(
+            res["capabilities"]["features"],
+            ["settings.read", "settings.write", "tools.list", "skills.list"],
+        )
         self.assertEqual(res["serverInfo"]["name"], "HEX")
         desc = res["serverInfo"]["description"].lower()
         self.assertIn("private", desc)
         self.assertIn("not a certified", desc)
+
+    def test_acp_initialize_negotiates_supported_contract_version(self) -> None:
+        resp = self.server.handle_request({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "hexContractVersion": 1},
+        })
+        self.assertEqual(resp["result"]["hexContractVersion"], 1)
+
+    def test_acp_initialize_rejects_invalid_contract_versions(self) -> None:
+        for version in (0, -1, 2, "1", True):
+            with self.subTest(version=version):
+                resp = self.server.handle_request({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"hexContractVersion": version},
+                })
+                self.assertEqual(resp["error"]["code"], -32602)
+                self.assertIn("hexContractVersion", resp["error"]["message"])
 
     def test_acp_unknown_method_error_is_actionable(self) -> None:
         """3.7: an unknown method lists supported methods so a client can

@@ -200,6 +200,15 @@ impl AcpBridge {
         self.is_connected.load(Ordering::SeqCst)
     }
 
+    /// Check an optional feature advertised by the connected runtime.
+    pub async fn supports_feature(&self, feature: &str) -> bool {
+        let client = self.client.lock().await.clone();
+        match client {
+            Some(client) => client.supports_feature(feature).await,
+            None => false,
+        }
+    }
+
     /// Initialize bridge wrapping an existing initialized `AcpClient`.
     pub async fn from_client(client: AcpClient) -> Self {
         let bridge = Self::new();
@@ -883,11 +892,14 @@ mod tests {
 
                 match method {
                     "initialize" => {
+                        assert_eq!(req["params"]["hexContractVersion"], 1);
                         let resp = serde_json::json!({
                             "jsonrpc": "2.0",
                             "id": id,
                             "result": {
                                 "protocolVersion": "2024-11-05",
+                                "protocolDialect": "hex-private-acp/1",
+                                "hexContractVersion": 1,
                                 "capabilities": {
                                     "session": {
                                         "streaming": true,
@@ -896,7 +908,8 @@ mod tests {
                                     },
                                     "tools": {
                                         "listChanged": false
-                                    }
+                                    },
+                                    "features": ["settings.read", "settings.write"]
                                 },
                                 "serverInfo": {
                                     "name": "harness_core_mock",
@@ -938,6 +951,9 @@ mod tests {
         // Connect streams
         bridge.connect_streams(client_read, client_write).await.expect("connect failed");
         assert!(bridge.is_connected());
+        assert!(bridge.supports_feature("settings.read").await);
+        assert!(bridge.supports_feature("settings.write").await);
+        assert!(!bridge.supports_feature("settings.schema").await);
 
         // Verify connected event received
         let evt = events.recv().await.unwrap();
