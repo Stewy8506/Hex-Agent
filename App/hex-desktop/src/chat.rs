@@ -56,7 +56,7 @@ use crate::ui::modals::session_actions::{
     SessionActionOutcome, SessionSearchModal,
 };
 use crate::ui::modals::settings::{
-    SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal,
+    SettingsAction, SettingsHandler, SettingsInteraction, SettingsModal, SKILLS_SESSION_REQUIRED,
 };
 use crate::ui::modals::text_input::{delete_target, move_target, TextUnit};
 use crate::ui::modals::{
@@ -5845,9 +5845,29 @@ impl ChatView {
         if !self.bridge.is_connected() {
             modal.mark_load_failed("Runtime offline — settings unavailable until HEX connects.");
             modal.set_tools_error("Runtime offline — connect HEX to load the tool registry.");
+            modal.set_skills_error("Runtime offline — connect HEX to load the skill registry.");
             self.shell.active_modal = ActiveModal::Settings(modal);
             cx.notify();
             return;
+        }
+        let skill_session_id = self
+            .shell
+            .active_session_id
+            .clone()
+            .filter(|session_id| !session_id.trim().is_empty())
+            .or_else(|| {
+                self.shell
+                    .sidebar
+                    .session_list
+                    .sessions
+                    .iter()
+                    .find(|session| !session.is_archived && !session.id.trim().is_empty())
+                    .map(|session| session.id.clone())
+            });
+        if skill_session_id.is_some() {
+            modal.set_skills_loading();
+        } else {
+            modal.set_skills_error(SKILLS_SESSION_REQUIRED);
         }
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();
@@ -5878,6 +5898,39 @@ impl ChatView {
             .ok();
         })
         .detach();
+
+        if let Some(session_id) = skill_session_id {
+            let bridge = self.bridge.clone();
+            let rt = self.rt.clone();
+            cx.spawn(async move |this, cx| {
+                let request_session = session_id.clone();
+                let res = rt
+                    .spawn(async move { bridge.list_skills(&request_session).await })
+                    .await;
+                this.update(cx, |view, cx| {
+                    if view.settings_generation != generation {
+                        return;
+                    }
+                    if let ActiveModal::Settings(modal) = &mut view.shell.active_modal {
+                        match res {
+                            Ok(Ok(response)) if response.is_error.unwrap_or(false) => {
+                                modal.set_skills_error(format!("/skills failed: {}", response.output))
+                            }
+                            Ok(Ok(response)) => modal.set_skills_output(&response.output),
+                            Ok(Err(err)) => {
+                                modal.set_skills_error(format!("/skills failed: {err}"))
+                            }
+                            Err(err) => modal.set_skills_error(format!(
+                                "Skill inventory task aborted: {err}"
+                            )),
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
 
         let bridge = self.bridge.clone();
         let rt = self.rt.clone();

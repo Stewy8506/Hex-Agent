@@ -27,11 +27,12 @@ use hex_desktop::ui::modals::approval::{ToolApprovalChoice, ToolApprovalModal};
 use hex_desktop::ui::modals::model_picker::ModelPickerModal;
 use hex_desktop::ui::modals::session_actions::{SessionActionMode, SessionActionModal};
 use hex_desktop::ui::modals::settings::{
-    InventoryState, SettingField, SettingsModal, SettingsSection,
+    InventoryState, SettingField, SettingsModal, SettingsSection, SKILLS_SESSION_REQUIRED,
 };
 use hex_desktop::ui::modals::{ActiveModal, ModelEntry};
 use hex_desktop::ui::motion::{MotionPolicy, MotionPreference, MotionSystem};
 use hex_desktop::ui::reasoning::ThinkingDisclosure;
+use hex_desktop::ui::session_list::SessionItem;
 use hex_desktop::ui::sidebar::ProviderState;
 use hex_desktop::ui::tool_card::{ToolCallCard, ToolStatus};
 use serde_json::{json, Value};
@@ -57,6 +58,10 @@ struct MockState {
     tools_delay_ms: AtomicU64,
     config_error: StdMutex<Option<String>>,
     tools_error: StdMutex<Option<String>>,
+    skills_output: StdMutex<String>,
+    skills_error: StdMutex<Option<String>>,
+    skill_requests: AtomicUsize,
+    skill_session_ids: StdMutex<Vec<String>>,
 }
 
 async fn send_line(writer: &Arc<AsyncMutex<DuplexStream>>, value: Value) {
@@ -332,6 +337,42 @@ async fn handle_request(
                 )
                 .await;
             }
+        }
+        "session/command" if params["command"].as_str() == Some("/skills") => {
+            let session_id = params["sessionId"].as_str().unwrap().to_string();
+            state.skill_requests.fetch_add(1, Ordering::SeqCst);
+            state
+                .skill_session_ids
+                .lock()
+                .unwrap()
+                .push(session_id.clone());
+            let exists = state
+                .sessions
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|session| session["sessionId"].as_str() == Some(session_id.as_str()));
+            let error = state.skills_error.lock().unwrap().clone();
+            let (output, is_error) = if !exists {
+                ("Skill registry requires an existing session.".to_string(), true)
+            } else if let Some(message) = error {
+                (message, true)
+            } else {
+                (state.skills_output.lock().unwrap().clone(), false)
+            };
+            send_line(
+                &writer,
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {
+                        "sessionId": session_id,
+                        "command": "/skills",
+                        "output": output,
+                        "isError": is_error
+                    }
+                }),
+            )
+            .await;
         }
         "session/cancel" => {
             state.cancel_requests.fetch_add(1, Ordering::SeqCst);
@@ -1221,11 +1262,17 @@ fn test_offline_local_settings_save_locally(cx: &mut TestAppContext) {
                 "Runtime offline — connect HEX to load the tool registry.".to_string()
             )
         );
+        assert_eq!(
+            modal.skills,
+            InventoryState::Unavailable(
+                "Runtime offline — connect HEX to load the skill registry.".to_string()
+            )
+        );
         let keyboard_count = ShortcutId::ALL
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 11 + keyboard_count);
+        assert_eq!(modal.fields.len(), 12 + keyboard_count);
         assert!(modal
             .fields
             .iter()
@@ -1458,7 +1505,10 @@ fn test_connected_settings_load_runtime_config_and_tool_inventory(cx: &mut TestA
         let info = modal
             .fields
             .iter()
-            .filter(|field| matches!(field, SettingField::Info { .. }))
+            .filter(|field| {
+                field.key() == "desktop.info.tools"
+                    && matches!(field, SettingField::Info { .. })
+            })
             .collect::<Vec<_>>();
         assert_eq!(info.len(), 2);
         assert_eq!(
@@ -1593,6 +1643,212 @@ fn test_tool_inventory_failures_and_empty_results_are_independent(cx: &mut TestA
                 value: "0 tools".to_string(),
                 description: "The connected runtime returned an empty tool registry."
                     .to_string(),
+            }
+        );
+        assert_eq!(modal.dirty_count(), 0);
+    });
+}
+
+#[gpui::test]
+fn test_skills_settings_require_a_real_session(cx: &mut TestAppContext) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "settings without a session", |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            return false;
+        };
+        !modal.load_failed
+            && (matches!(modal.tools, InventoryState::Ready(_))
+                || modal.tools == InventoryState::Empty)
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(
+            modal.skills,
+            InventoryState::Unavailable(SKILLS_SESSION_REQUIRED.to_string())
+        );
+        assert_eq!(state.skill_requests.load(Ordering::SeqCst), 0);
+    });
+    click_debug_element(vc, "settings_section_skills");
+    click_debug_element(vc, "settings_info_skills");
+    vc.simulate_keystrokes("enter");
+    finish_motion(vc, &view);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("skill guidance should remain visible");
+        };
+        assert_eq!(modal.active_section, SettingsSection::Skills);
+        assert!(!modal.editing);
+        assert_eq!(modal.dirty_count(), 0);
+    });
+}
+
+#[gpui::test]
+fn test_skills_settings_use_active_or_known_sessions_and_parse_output(
+    cx: &mut TestAppContext,
+) {
+    let (_rt, view, vc, state) = launch_connected_chat_with_state(cx);
+    *state.sessions.lock().unwrap() = vec![
+        json!({
+            "sessionId": "ses_known",
+            "cwd": "/workspace",
+            "model": "claude-3-7-sonnet",
+            "createdAt": 1_700_000_001.0,
+            "turns": 1,
+            "title": "Known session",
+            "archived": false,
+            "pinned": false
+        }),
+        json!({
+            "sessionId": "ses_active",
+            "cwd": "/workspace",
+            "model": "claude-3-7-sonnet",
+            "createdAt": 1_700_000_002.0,
+            "turns": 1,
+            "title": "Active session",
+            "archived": false,
+            "pinned": false
+        }),
+    ];
+    *state.skills_output.lock().unwrap() = concat!(
+        "Registered Skills (2):\n",
+        "  • write_docs (gate: review)\n",
+        "  • audit_code (gate: allow)"
+    )
+    .to_string();
+    vc.update(|_, app| {
+        view.update(app, |view, _| {
+            view.shell.sidebar.session_list.sessions = vec![
+                SessionItem::new("ses_known", "Known session"),
+                SessionItem::new("ses_active", "Active session"),
+            ];
+            view.shell.active_session_id = Some("ses_active".to_string());
+        });
+    });
+
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "active session skills", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(modal.skills, InventoryState::Ready(_))
+        )
+    });
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("settings should remain open");
+        };
+        assert_eq!(
+            *state.skill_session_ids.lock().unwrap(),
+            vec!["ses_active".to_string()]
+        );
+        let skills = modal
+            .fields
+            .iter()
+            .filter(|field| {
+                field.key() == "desktop.info.skills"
+                    && matches!(field, SettingField::Info { .. })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].label(), "audit_code");
+        assert_eq!(
+            skills[0],
+            &SettingField::Info {
+                key: "desktop.info.skills",
+                label: "audit_code".to_string(),
+                value: "gate: allow".to_string(),
+                description: "Registered in the runtime skill ledger.".to_string(),
+            }
+        );
+        assert_eq!(skills[1].label(), "write_docs");
+        assert_eq!(
+            skills[1],
+            &SettingField::Info {
+                key: "desktop.info.skills",
+                label: "write_docs".to_string(),
+                value: "gate: review".to_string(),
+                description: "Registered in the runtime skill ledger.".to_string(),
+            }
+        );
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), json!({}));
+    });
+    click_debug_element(vc, "settings_section_skills");
+    click_debug_element(vc, "settings_info_skills");
+    vc.simulate_keystrokes("enter");
+    finish_motion(vc, &view);
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("read-only skills should keep settings open");
+        };
+        assert!(!modal.editing);
+        assert_eq!(modal.dirty_count(), 0);
+    });
+
+    vc.simulate_keystrokes("escape");
+    finish_motion(vc, &view);
+    *state.skills_error.lock().unwrap() = Some("permission denied".to_string());
+    vc.update(|_, app| {
+        view.update(app, |view, _| {
+            view.shell.active_session_id = None;
+        });
+    });
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "known session skill failure", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if matches!(
+                    &modal.skills,
+                    InventoryState::Unavailable(message)
+                        if message.starts_with("/skills failed:")
+                            && message.contains("permission denied")
+                )
+        )
+    });
+    assert_eq!(
+        *state.skill_session_ids.lock().unwrap(),
+        vec!["ses_active".to_string(), "ses_known".to_string()]
+    );
+
+    vc.simulate_keystrokes("escape");
+    finish_motion(vc, &view);
+    state.skills_error.lock().unwrap().take();
+    *state.skills_output.lock().unwrap() = "No skills registered in the ledger.".to_string();
+    click_debug_element(vc, "home_settings_button");
+    finish_motion(vc, &view);
+    pump_until(vc, &view, "empty skill registry", |view| {
+        matches!(
+            &view.shell.active_modal,
+            ActiveModal::Settings(modal)
+                if !modal.load_failed && modal.skills == InventoryState::Empty
+        )
+    });
+    click_debug_element(vc, "settings_section_skills");
+    click_debug_element(vc, "settings_info_skills");
+    snap(vc, &view, |view| {
+        let ActiveModal::Settings(modal) = &view.shell.active_modal else {
+            panic!("empty skill state should render");
+        };
+        let empty = modal
+            .fields
+            .iter()
+            .find(|field| field.key() == "desktop.info.skills")
+            .unwrap();
+        assert_eq!(empty.label(), "No skills registered");
+        assert_eq!(
+            empty,
+            &SettingField::Info {
+                key: "desktop.info.skills",
+                label: "No skills registered".to_string(),
+                value: "0 skills".to_string(),
+                description: "The runtime skill ledger is empty.".to_string(),
             }
         );
         assert_eq!(modal.dirty_count(), 0);

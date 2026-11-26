@@ -571,6 +571,19 @@ impl AcpBridge {
         }
     }
 
+    /// List registered skills through an existing ACP session.
+    pub async fn list_skills(
+        &self,
+        session_id: &str,
+    ) -> Result<hex_protocol::models::SessionCommandResponse, AcpError> {
+        let client_opt = self.client.lock().await.clone();
+        if let Some(client) = client_opt {
+            client.session_command(session_id, "/skills", None).await
+        } else {
+            Err(AcpError::ConnectionClosed)
+        }
+    }
+
     /// Apply a model selection to the session via the backend `/model` command.
     /// Success carries the confirmed canonical model/provider identity.
     pub async fn set_session_model(

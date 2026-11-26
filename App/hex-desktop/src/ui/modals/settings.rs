@@ -163,7 +163,7 @@ const fn notification_setting(
     }
 }
 
-pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 29] = [
+pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 30] = [
     SettingDescriptor {
         section: SettingsSection::Model,
         key: "model.cloudProvider",
@@ -331,6 +331,13 @@ pub(crate) const SETTING_DESCRIPTORS: [SettingDescriptor; 29] = [
         description: "Live tool names, descriptions, and risk classes from tools/list.",
         kind: SettingKind::Info,
     },
+    SettingDescriptor {
+        section: SettingsSection::Skills,
+        key: "desktop.info.skills",
+        label: "Skill inventory",
+        description: "Registered skill names and gate decisions from /skills.",
+        kind: SettingKind::Info,
+    },
 ];
 
 impl SettingDescriptor {
@@ -495,6 +502,100 @@ fn tool_info_fields(state: &InventoryState) -> Vec<SettingField> {
         .collect()
 }
 
+pub const SKILLS_SESSION_REQUIRED: &str = "Open or select a session to load the skill registry.";
+
+fn skill_info_fields(state: &InventoryState) -> Vec<SettingField> {
+    let rows: Vec<(&str, String, String)> = match state {
+        InventoryState::Loading => vec![(
+            "Loading skills…",
+            "Loading".to_string(),
+            "Requesting the registered skills with /skills.".to_string(),
+        )],
+        InventoryState::Ready(items) => items
+            .iter()
+            .map(|item| (item.name.as_str(), item.detail.clone(), item.description.clone()))
+            .collect(),
+        InventoryState::Empty => vec![(
+            "No skills registered",
+            "0 skills".to_string(),
+            "The runtime skill ledger is empty.".to_string(),
+        )],
+        InventoryState::Unavailable(message) => vec![(
+            "Skills unavailable",
+            "Unavailable".to_string(),
+            message.clone(),
+        )],
+    };
+    rows.into_iter()
+        .map(|(label, value, description)| SettingField::Info {
+            key: "desktop.info.skills",
+            label: label.to_string(),
+            value,
+            description,
+        })
+        .collect()
+}
+
+fn parse_skills_output(output: &str) -> Result<Vec<InventoryItem>, String> {
+    let output = output.trim();
+    if output.is_empty() {
+        return Err("The runtime returned an empty /skills response.".to_string());
+    }
+    if output.starts_with("No skills registered") {
+        return Ok(Vec::new());
+    }
+
+    let mut lines = output.lines().map(str::trim).filter(|line| !line.is_empty());
+    let header = lines
+        .next()
+        .ok_or_else(|| "The runtime returned an empty /skills response.".to_string())?;
+    let total = header
+        .strip_prefix("Registered Skills (")
+        .and_then(|header| header.strip_suffix("):"))
+        .and_then(|total| total.parse::<usize>().ok())
+        .ok_or_else(|| "The runtime returned an unrecognized /skills response.".to_string())?;
+    if total == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut items = Vec::new();
+    for line in lines {
+        let entry = line
+            .strip_prefix('•')
+            .ok_or_else(|| "The runtime returned an unrecognized /skills entry.".to_string())?
+            .trim();
+        let (name, gate) = match entry.rsplit_once(" (gate: ") {
+            Some((name, gate)) => (name.trim(), gate.strip_suffix(')').unwrap_or(gate).trim()),
+            None => (entry, "unknown"),
+        };
+        if name.is_empty() {
+            return Err("The runtime returned a skill without a name.".to_string());
+        }
+        items.push(InventoryItem {
+            name: name.to_string(),
+            description: "Registered in the runtime skill ledger.".to_string(),
+            detail: format!("gate: {gate}"),
+        });
+    }
+    if items.is_empty() {
+        return Err("The runtime reported skills but returned no entries.".to_string());
+    }
+    items.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+    });
+    if items.len() < total {
+        items.push(InventoryItem {
+            name: "Additional skills not shown".to_string(),
+            description: "The current /skills response is limited to the first 20 skills."
+                .to_string(),
+            detail: format!("{total} registered"),
+        });
+    }
+    Ok(items)
+}
+
 /// One editable or read-only row in the settings modal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingField {
@@ -656,6 +757,7 @@ pub struct SettingsModal {
     pub desktop_preferences: DesktopPreferences,
     desktop_originals: DesktopPreferences,
     pub tools: InventoryState,
+    pub skills: InventoryState,
     pub active_section: SettingsSection,
     pub search_query: String,
     search_cursor: usize,
@@ -686,6 +788,7 @@ impl PartialEq for SettingsModal {
             && self.desktop_preferences == other.desktop_preferences
             && self.desktop_originals == other.desktop_originals
             && self.tools == other.tools
+            && self.skills == other.skills
             && self.active_section == other.active_section
             && self.search_query == other.search_query
             && self.search_cursor == other.search_cursor
@@ -709,8 +812,10 @@ impl Default for SettingsModal {
     fn default() -> Self {
         let desktop_preferences = DesktopPreferences::default();
         let tools = InventoryState::Loading;
+        let skills = InventoryState::Unavailable(SKILLS_SESSION_REQUIRED.to_string());
         let mut fields = local_setting_fields(&desktop_preferences);
         fields.extend(tool_info_fields(&tools));
+        fields.extend(skill_info_fields(&skills));
         let selected = fields.len();
         let originals = fields
             .iter()
@@ -726,6 +831,7 @@ impl Default for SettingsModal {
             desktop_preferences: desktop_preferences.clone(),
             desktop_originals: desktop_preferences,
             tools,
+            skills,
             active_section: SettingsSection::Model,
             search_query: String::new(),
             search_cursor: 0,
@@ -759,6 +865,7 @@ impl SettingsModal {
         modal
             .fields
             .extend(tool_info_fields(&modal.tools));
+        modal.fields.extend(skill_info_fields(&modal.skills));
         modal.originals = modal
             .fields
             .iter()
@@ -859,6 +966,7 @@ impl SettingsModal {
                 .cloned(),
         );
         fields.extend(tool_info_fields(&self.tools));
+        fields.extend(skill_info_fields(&self.skills));
 
         let mut originals = HashMap::new();
         for field in &fields {
@@ -937,27 +1045,55 @@ impl SettingsModal {
                     .collect(),
             )
         };
-        self.refresh_tool_fields();
+        self.refresh_inventory_fields();
     }
 
     pub fn set_tools_error(&mut self, message: impl Into<String>) {
         self.tools = InventoryState::Unavailable(message.into());
-        self.refresh_tool_fields();
+        self.refresh_inventory_fields();
     }
 
-    fn refresh_tool_fields(&mut self) {
+    pub fn set_skills_loading(&mut self) {
+        self.skills = InventoryState::Loading;
+        self.refresh_inventory_fields();
+    }
+
+    pub fn set_skills_output(&mut self, output: &str) {
+        match parse_skills_output(output) {
+            Ok(skills) => {
+                self.skills = if skills.is_empty() {
+                    InventoryState::Empty
+                } else {
+                    InventoryState::Ready(skills)
+                };
+            }
+            Err(message) => self.skills = InventoryState::Unavailable(message),
+        }
+        self.refresh_inventory_fields();
+    }
+
+    pub fn set_skills_error(&mut self, message: impl Into<String>) {
+        self.skills = InventoryState::Unavailable(message.into());
+        self.refresh_inventory_fields();
+    }
+
+    fn refresh_inventory_fields(&mut self) {
         let old_len = self.fields.len();
         let save_selected = self.selected == old_len;
-        let tool_selected = self
-            .fields
-            .get(self.selected)
-            .is_some_and(|field| field.key() == "desktop.info.tools");
+        let selected_info_key = self.fields.get(self.selected).and_then(|field| match field {
+            SettingField::Info { key, .. } => Some(*key),
+            _ => None,
+        });
         self.fields
             .retain(|field| !matches!(field, SettingField::Info { .. }));
-        let first_tool = self.fields.len();
         self.fields.extend(tool_info_fields(&self.tools));
-        if self.active_section == SettingsSection::Tools && tool_selected {
-            self.selected = first_tool;
+        self.fields.extend(skill_info_fields(&self.skills));
+        if let Some(key) = selected_info_key {
+            self.selected = self
+                .fields
+                .iter()
+                .position(|field| field.key() == key)
+                .unwrap_or(self.selected.min(self.fields.len()));
         } else if save_selected {
             self.selected = self.fields.len();
         }
@@ -2487,7 +2623,7 @@ mod tests {
             .into_iter()
             .filter(|id| id.available())
             .count();
-        assert_eq!(modal.fields.len(), 21 + keyboard_count);
+        assert_eq!(modal.fields.len(), 22 + keyboard_count);
         assert_eq!(SettingsSection::ALL.len(), 12);
         assert_eq!(modal.fields[12].key(), "desktop.motion");
         assert_eq!(modal.fields[13].key(), "desktop.sidebar");
@@ -2596,7 +2732,10 @@ mod tests {
         let info = modal
             .fields
             .iter()
-            .filter(|field| matches!(field, SettingField::Info { .. }))
+            .filter(|field| {
+                field.key() == "desktop.info.tools"
+                    && matches!(field, SettingField::Info { .. })
+            })
             .collect::<Vec<_>>();
         assert_eq!(info.len(), 2);
         assert_eq!(info[0].label(), "read_file");
@@ -2610,7 +2749,12 @@ mod tests {
         modal.focus_search();
         modal.select_all_text();
         modal.push_char("workspace");
-        assert_eq!(modal.search_results(), vec![modal.fields.len() - 2]);
+        let read_file_index = modal
+            .fields
+            .iter()
+            .position(|field| field.label() == "read_file")
+            .unwrap();
+        assert_eq!(modal.search_results(), vec![read_file_index]);
         assert_eq!(modal.handle_key("enter"), None);
         assert!(!modal.searching);
         assert!(!modal.editing);
@@ -2621,7 +2765,10 @@ mod tests {
             modal
                 .fields
                 .iter()
-                .filter(|field| matches!(field, SettingField::Info { .. }))
+                .filter(|field| {
+                    field.key() == "desktop.info.tools"
+                        && matches!(field, SettingField::Info { .. })
+                })
                 .count(),
             2
         );
@@ -2631,6 +2778,76 @@ mod tests {
         assert_eq!(
             modal.tools,
             InventoryState::Unavailable("tools/list failed: permission denied".to_string())
+        );
+        assert_eq!(modal.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_skill_inventory_parses_gates_and_preserves_read_only_state() {
+        let output = "Registered Skills (2):\n  • write_docs (gate: review)\n  • audit_code (gate: allow)";
+        let skills = parse_skills_output(output).unwrap();
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].name, "audit_code");
+        assert_eq!(skills[0].detail, "gate: allow");
+        assert_eq!(skills[1].name, "write_docs");
+        assert_eq!(skills[1].detail, "gate: review");
+        assert!(parse_skills_output("No skills registered in the ledger.")
+            .unwrap()
+            .is_empty());
+        assert!(parse_skills_output("unexpected output").is_err());
+        assert!(parse_skills_output("Registered Skills (1):").is_err());
+
+        let mut truncated = String::from("Registered Skills (21):\n");
+        for index in 0..20 {
+            truncated.push_str(&format!("  • skill_{index:02} (gate: allow)\n"));
+        }
+        let skills = parse_skills_output(&truncated).unwrap();
+        assert_eq!(skills.len(), 21);
+        assert_eq!(skills.last().unwrap().name, "Additional skills not shown");
+        assert_eq!(skills.last().unwrap().detail, "21 registered");
+
+        let mut modal = SettingsModal::loading();
+        modal.apply_view(&sample_view());
+        modal.set_skills_output(output);
+        modal.select_section(SettingsSection::Skills);
+        let selected_label = modal.fields[modal.selected].label().to_string();
+        modal.set_tools(vec![ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read files".to_string(),
+            parameters: serde_json::Value::Null,
+            risk_class: Some("R1".to_string()),
+        }]);
+        assert_eq!(modal.fields[modal.selected].label(), selected_label);
+        assert_eq!(modal.active_section, SettingsSection::Skills);
+        assert_eq!(modal.dirty_count(), 0);
+        assert_eq!(modal.dirty_updates(), serde_json::json!({}));
+        assert!(modal.changed_desktop_preferences().is_none());
+
+        modal.focus_search();
+        modal.select_all_text();
+        modal.push_char("audit_code");
+        assert_eq!(
+            modal.search_results(),
+            vec![
+                modal
+                    .fields
+                    .iter()
+                    .position(|field| field.label() == "audit_code")
+                    .unwrap()
+            ]
+        );
+        assert_eq!(modal.handle_key("enter"), None);
+        assert!(!modal.editing);
+        assert_eq!(modal.active_section, SettingsSection::Skills);
+
+        modal.apply_view(&sample_view());
+        assert!(matches!(&modal.skills, InventoryState::Ready(_)));
+        modal.set_skills_output("No skills registered in the ledger.");
+        assert_eq!(modal.skills, InventoryState::Empty);
+        modal.set_skills_error("/skills failed: permission denied");
+        assert_eq!(
+            modal.skills,
+            InventoryState::Unavailable("/skills failed: permission denied".to_string())
         );
         assert_eq!(modal.dirty_count(), 0);
     }
@@ -2783,20 +3000,20 @@ mod tests {
         assert_eq!(modal.active_section, SettingsSection::Notifications);
         assert_eq!(
             modal.section_indices().first(),
-            Some(&(modal.fields.len() - 7))
+            Some(&(modal.fields.len() - 8))
         );
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 5))
+            Some(&(modal.fields.len() - 6))
         );
-        assert_eq!(modal.selected, modal.fields.len() - 7);
+        assert_eq!(modal.selected, modal.fields.len() - 8);
 
         modal.handle_key("pageup");
         assert_eq!(modal.active_section, SettingsSection::Keyboard);
         assert_eq!(modal.section_indices().first(), Some(&14));
         assert_eq!(
             modal.section_indices().last(),
-            Some(&(modal.fields.len() - 8))
+            Some(&(modal.fields.len() - 9))
         );
         assert_eq!(modal.selected, 14);
 
