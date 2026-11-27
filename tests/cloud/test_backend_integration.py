@@ -58,6 +58,7 @@ class LiveBackend:
             {
                 "HEX_BACKEND_DB": ":memory:",
                 "HEX_SIGNING_KEY_PATH": str(tmp / "import-app-signing.pem"),
+                "HEX_MASTER_KEY_PATH": str(tmp / "import-app-master-key.bin"),
             },
         ):
             from hex_backend.api.app import app as import_time_app
@@ -70,6 +71,7 @@ class LiveBackend:
             manifests_dir=_BACKEND_ROOT / "manifests",
             telemetry_dir=tmp / "telemetry",
             signing_key_path=tmp / "server-signing.pem",
+            master_key_path=tmp / "server-master-key.bin",
             inference_gateway_enabled=False,
         )
         self.app = create_app(settings)
