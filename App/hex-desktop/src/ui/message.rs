@@ -190,7 +190,7 @@ fn build_text_runs(
     (full_text, runs)
 }
 
-fn split_nowrap_segments(text: &str) -> Vec<&str> {
+fn split_inline_segments(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0usize;
     let mut saw_non_ws = false;
@@ -227,7 +227,11 @@ fn style_inline_node(
     default_color: Rgba,
 ) -> Div {
     let is_bold = default_bold || token.bold;
-    let mut view = div().flex_none().whitespace_nowrap().text_color(default_color);
+    let mut view = div()
+        .flex_none()
+        .max_w_full()
+        .whitespace_normal()
+        .text_color(default_color);
     if token.code {
         view = view
             .px(px(3.0))
@@ -268,9 +272,8 @@ fn render_inline_tokens_styled(
             .child(StyledText::new(full_text).with_runs(runs));
     }
 
-    // Link-bearing paragraphs render per-word/link chips with `.flex_none().whitespace_nowrap()`
-    // so Taffy never shrinks text boxes down to 1-character vertical stacks, while preserving
-    // clickable `markdown_link_{id_prefix}_{token_index}` debug selectors.
+    // Link-bearing paragraphs use wrapping, non-shrinking inline boxes so Taffy
+    // cannot collapse them while labels and long unbroken tokens still wrap.
     let lines = split_inline_token_lines(tokens);
     let mut container = div().w_full().min_w_0().flex().flex_col();
     let mut token_index = 0usize;
@@ -302,9 +305,14 @@ fn render_inline_tokens_styled(
                         .on_click(move |_, _, cx| cx.open_url(&url));
                     row = row.child(link);
                 } else {
-                    for seg in split_nowrap_segments(&token.text) {
+                    for (segment_index, seg) in
+                        split_inline_segments(&token.text).into_iter().enumerate()
+                    {
+                        let selector =
+                            format!("markdown_text_{id_prefix}_{token_index}_{segment_index}");
                         row = row.child(
                             style_inline_node(token, theme, default_bold, default_color)
+                                .debug_selector(move || selector)
                                 .child(seg.to_string()),
                         );
                     }
@@ -1271,7 +1279,7 @@ mod tests {
     }
 
     #[test]
-    fn test_styled_runs_match_byte_lengths_and_nowrap_segments() {
+    fn test_styled_runs_match_byte_lengths_and_inline_segments() {
         let theme = HermesTheme::default();
         let tokens = parse_inline("**Bold** `read_file` _em_ [docs](https://example.com)");
         let (text, runs) = build_text_runs(&tokens, &theme, false, theme.mockup_text_base);
@@ -1284,20 +1292,22 @@ mod tests {
         assert_eq!(runs[4].font.style, FontStyle::Italic);
         assert!(runs[6].underline.is_some());
 
-        let segs = split_nowrap_segments("See ARCHITECTURE.md for details");
+        let segs = split_inline_segments("See ARCHITECTURE.md for details");
         assert_eq!(segs.concat(), "See ARCHITECTURE.md for details");
         assert!(segs.len() >= 4);
     }
 
     struct MarkdownLayoutHarness {
         content: String,
+        width: f32,
     }
 
     impl Render for MarkdownLayoutHarness {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             let theme = HermesTheme::default();
             div()
-                .w(px(760.0))
+                .debug_selector(|| "markdown_layout_harness".to_string())
+                .w(px(self.width))
                 .p(px(24.0))
                 .bg(theme.mockup_body)
                 .child(AssistantMessageView::new("msg_layout", &self.content).render(&theme))
@@ -1326,6 +1336,7 @@ mod tests {
 
         let (_entity, vc) = cx.add_window_view(|_, _| MarkdownLayoutHarness {
             content: md.to_string(),
+            width: 760.0,
         });
         vc.simulate_resize(size(px(800.0), px(900.0)));
         vc.update(|window, _| window.refresh());
@@ -1391,6 +1402,65 @@ mod tests {
                 "list item {item_idx} overlapped previous item bottom {prev_item_bottom:?}: {row_bounds:?}"
             );
             prev_item_bottom = row_bounds.bottom();
+        }
+    }
+
+    #[gpui::test]
+    fn test_link_labels_and_unbroken_tokens_wrap_in_narrow_panes(cx: &mut gpui::TestAppContext) {
+        let long_label = "A deliberately long link label with enough words to wrap across several lines in a narrow pane";
+        let long_token = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(8);
+        let second_paragraph = format!("See [docs](https://example.com) and {long_token}");
+        let (long_token_index, long_segment_index) = parse_inline(&second_paragraph)
+            .iter()
+            .enumerate()
+            .find_map(|(token_index, token)| {
+                split_inline_segments(&token.text)
+                    .iter()
+                    .position(|segment| *segment == long_token)
+                    .map(|segment_index| (token_index, segment_index))
+            })
+            .expect("unbroken token parsed");
+        let content = format!("[{long_label}](https://example.com)\n\n{second_paragraph}");
+        let (_entity, vc) = cx.add_window_view(|_, _| MarkdownLayoutHarness {
+            content,
+            width: 260.0,
+        });
+        vc.simulate_resize(size(px(320.0), px(900.0)));
+        vc.update(|window, _| window.refresh());
+        vc.run_until_parked();
+
+        let root = vc
+            .debug_bounds(Box::leak(
+                "markdown_layout_harness".to_string().into_boxed_str(),
+            ))
+            .expect("layout harness bounds");
+        let pane_left = root.origin.x + px(24.0);
+        let pane_right = root.right() - px(24.0);
+        let pane_width = pane_right - pane_left;
+        let link = vc
+            .debug_bounds(Box::leak(
+                "markdown_link_msg_layout_0_0".to_string().into_boxed_str(),
+            ))
+            .expect("long link label bounds");
+        let unbroken_selector =
+            format!("markdown_text_msg_layout_1_{long_token_index}_{long_segment_index}");
+        let unbroken = vc
+            .debug_bounds(Box::leak(unbroken_selector.into_boxed_str()))
+            .expect("unbroken inline token bounds");
+
+        for (name, bounds) in [("link", link), ("unbroken token", unbroken)] {
+            assert!(
+                bounds.size.width <= pane_width + px(0.5),
+                "{name} overflowed narrow pane: {bounds:?} pane={pane_width:?}"
+            );
+            assert!(
+                bounds.origin.x >= pane_left - px(0.5) && bounds.right() <= pane_right + px(0.5),
+                "{name} escaped pane horizontally: {bounds:?} pane=({pane_left:?}, {pane_right:?})"
+            );
+            assert!(
+                bounds.size.height > px(30.0),
+                "{name} did not wrap: {bounds:?}"
+            );
         }
     }
 }
