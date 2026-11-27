@@ -1,6 +1,6 @@
 """Cross-repo e2e: cloud.session against a live in-process hex-backend.
 
-Skipped unless hex_backend (backend/hex-backend) and uvicorn are importable —
+Skipped unless the sibling hex-backend checkout and uvicorn are importable —
 run with the backend repo's dev environment installed to exercise the real
 HTTP wire path: register → login → challenge enrollment → device list →
 token rotation → revocation.
@@ -9,6 +9,7 @@ token rotation → revocation.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 import tempfile
@@ -19,6 +20,7 @@ import importlib.util
 import urllib.request
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
@@ -51,13 +53,23 @@ class LiveBackend:
     def __init__(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name)
-        from hex_backend.api.app import create_app
-        from hex_backend.config import Settings
+        with patch.dict(
+            os.environ,
+            {
+                "HEX_BACKEND_DB": ":memory:",
+                "HEX_SIGNING_KEY_PATH": str(tmp / "import-app-signing.pem"),
+            },
+        ):
+            from hex_backend.api.app import app as import_time_app
+            from hex_backend.api.app import create_app
+            from hex_backend.config import Settings
 
+        import_time_app.state.store.close()
         settings = Settings(
             db_path=tmp / "e2e.db",
             manifests_dir=_BACKEND_ROOT / "manifests",
             telemetry_dir=tmp / "telemetry",
+            signing_key_path=tmp / "server-signing.pem",
             inference_gateway_enabled=False,
         )
         self.app = create_app(settings)
