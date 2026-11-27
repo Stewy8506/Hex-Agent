@@ -294,10 +294,32 @@ class TestExtendedCloudProviders(unittest.TestCase):
         """Verify secrets in structured tool outputs, assistant calls, and user messages are redacted."""
         secret_tok = "sk-ant-api03-secretvalue1234567890"
         gh_tok = "ghp_1234567890abcdefghijklmnop"
+        gem_tok = "AIzaSyD-1234567890abcdefghijklmno"
         tool_spec = [{"name": "read_file", "description": "Read", "parameters": {"type": "object", "properties": {"max_tokens": {"type": "integer"}}}}]
         base_msgs = [
             {"role": "user", "content": f"Check token {secret_tok}"},
-            {"role": "assistant", "content": f"Reading {gh_tok}", "thinking": f"thought {secret_tok}", "signature": "sig_opaque_123", "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": ".env", "max_tokens": 50}}]},
+            {
+                "role": "assistant",
+                "content": f"Reading {gh_tok}",
+                "thinking": f"thought {secret_tok}",
+                "signature": "sk-sig-opaque-thinking-1234567890",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "name": "read_file",
+                        "arguments": {
+                            "path": ".env",
+                            "max_tokens": 50,
+                            "name": secret_tok,
+                            "id": gh_tok,
+                            "type": gem_tok,
+                            "role": secret_tok,
+                            "tool_name": gh_tok,
+                            "signature": secret_tok,
+                        },
+                    }
+                ],
+            },
             {"role": "tool", "tool_call_id": "c1", "name": "read_file", "content": f"API_KEY={secret_tok}"},
         ]
 
@@ -323,18 +345,58 @@ class TestExtendedCloudProviders(unittest.TestCase):
             raw_sent = captured[0].decode("utf-8")
             self.assertNotIn(secret_tok, raw_sent)
             self.assertNotIn(gh_tok, raw_sent)
+            self.assertNotIn(gem_tok, raw_sent)
             self.assertIn("[REDACTED_SECRET]", raw_sent)
             parsed_sent = json.loads(raw_sent)
             if ptype == "anthropic":
                 blocks = parsed_sent["messages"][1]["content"]
-                self.assertEqual(blocks[0]["signature"], "sig_opaque_123")
-                self.assertEqual(blocks[-1]["input"]["max_tokens"], 50)
+                self.assertEqual(blocks[0]["signature"], "sk-sig-opaque-thinking-1234567890")
+                tool_input = blocks[-1]["input"]
+                self.assertEqual(tool_input["max_tokens"], 50)
+                for k in ("name", "id", "type", "role", "tool_name", "signature"):
+                    self.assertEqual(tool_input[k], "[REDACTED_SECRET]")
             elif ptype == "gemini":
-                fn_call = parsed_sent["contents"][1]["parts"][-1]["functionCall"]
-                self.assertEqual(fn_call["args"]["max_tokens"], 50)
+                fn_args = parsed_sent["contents"][1]["parts"][-1]["functionCall"]["args"]
+                self.assertEqual(fn_args["max_tokens"], 50)
+                for k in ("name", "id", "type", "role", "tool_name", "signature"):
+                    self.assertEqual(fn_args[k], "[REDACTED_SECRET]")
             else:
                 tc_args = json.loads(parsed_sent["messages"][1]["tool_calls"][0]["function"]["arguments"])
                 self.assertEqual(tc_args["max_tokens"], 50)
+                for k in ("name", "id", "type", "role", "tool_name", "signature"):
+                    self.assertEqual(tc_args[k], "[REDACTED_SECRET]")
+
+        # Verify Anthropic content-list thinking block preserves its signature while redacting tool_use inputs
+        ant_block_captured: list[bytes] = []
+
+        def ant_block_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            ant_block_captured.append(body)
+            return 200, json.dumps({"content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 5, "output_tokens": 2}}).encode("utf-8")
+
+        ant_block_prov = CloudModelProvider(
+            provider_type="anthropic",
+            model_id="claude-3-5-sonnet-20241022",
+            api_key="sk-ant-test",
+            http_transport=ant_block_transport,
+        )
+        ant_block_prov.generate(
+            messages=[{
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": f"secret {secret_tok}", "signature": "sk-sig-block-99999999999"},
+                    {"type": "tool_use", "id": "tu_1", "name": "read_file", "input": {"name": secret_tok, "id": gh_tok, "type": gem_tok, "signature": secret_tok}},
+                ],
+            }],
+            tools=tool_spec,
+        )
+        ant_block_raw = ant_block_captured[0].decode("utf-8")
+        self.assertNotIn(secret_tok, ant_block_raw)
+        self.assertNotIn(gh_tok, ant_block_raw)
+        self.assertNotIn(gem_tok, ant_block_raw)
+        ant_blocks = json.loads(ant_block_raw)["messages"][0]["content"]
+        self.assertEqual(ant_blocks[0]["signature"], "sk-sig-block-99999999999")
+        self.assertEqual(ant_blocks[0]["thinking"], "secret [REDACTED_SECRET]")
+        self.assertEqual(ant_blocks[1]["input"]["signature"], "[REDACTED_SECRET]")
 
     def test_antigravity_and_local_providers_preserve_messages_tools_and_redact(self) -> None:
         """Verify Antigravity and LocalModelProvider (Ollama chat + MLX) preserve ReAct messages and tools."""
@@ -342,9 +404,10 @@ class TestExtendedCloudProviders(unittest.TestCase):
         from harness_core.providers.local_provider import LocalModelProvider
 
         secret_tok = "ghp_1234567890abcdefghijklmnop"
+        sk_tok = "sk-ant-api03-nestedarg1234567890"
         msgs = [
             {"role": "user", "content": "Inspect Cargo.toml"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "Cargo.toml"}}]},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "Cargo.toml", "name": sk_tok, "id": secret_tok, "type": sk_tok}}]},
             {"role": "tool", "tool_call_id": "c1", "name": "read_file", "content": f"token={secret_tok}; name='hex'"},
         ]
         tools = [{"name": "read_file", "description": "Read file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}]
@@ -367,6 +430,7 @@ class TestExtendedCloudProviders(unittest.TestCase):
         ag_cloud._antigravity_delegate = ag
         ag_resp = ag_cloud.generate(messages=msgs, tools=tools, tool_choice="required", system_prompt="System")
         self.assertNotIn(secret_tok, ag_captured["body"])
+        self.assertNotIn(sk_tok, ag_captured["body"])
         self.assertIn("[REDACTED_SECRET]", ag_captured["body"])
         inner_req = ag_captured["json"]["request"]
         self.assertEqual(len(inner_req["contents"]), 3)
@@ -413,6 +477,7 @@ class TestExtendedCloudProviders(unittest.TestCase):
         self.assertTrue(ollama_calls[0][0].endswith("/api/chat"))
         sent_ollama = json.dumps(ollama_calls[0][1])
         self.assertNotIn(secret_tok, sent_ollama)
+        self.assertNotIn(sk_tok, sent_ollama)
         self.assertIn("[REDACTED_SECRET]", sent_ollama)
         self.assertTrue(any(m.get("role") == "tool" for m in ollama_calls[0][1]["messages"]))
         self.assertEqual(ollama_calls[0][1]["tools"][0]["function"]["name"], "read_file")
@@ -434,6 +499,7 @@ class TestExtendedCloudProviders(unittest.TestCase):
         self.assertEqual(mlx_resp.text, "MLX reply")
         self.assertEqual(len(mlx_prompts), 1)
         self.assertNotIn(secret_tok, mlx_prompts[0])
+        self.assertNotIn(sk_tok, mlx_prompts[0])
         self.assertIn("[REDACTED_SECRET]", mlx_prompts[0])
         self.assertIn("name='hex'", mlx_prompts[0])
         self.assertIn("read_file", mlx_prompts[0])

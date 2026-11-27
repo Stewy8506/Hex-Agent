@@ -9,30 +9,35 @@ from typing import Any
 import uuid
 
 
-_PRESERVED_MESSAGE_KEYS = frozenset({
-    "signature",
-    "id",
-    "tool_call_id",
-    "tool_use_id",
-    "call_id",
-    "role",
-    "type",
-    "name",
-    "tool_name",
-})
-
-
-def _sanitize_value_strings(value: Any, *, redactor: Any) -> Any:
-    """Recursively redact secrets in string values without mutating key names or signatures."""
+def _sanitize_value_strings(
+    value: Any,
+    *,
+    redactor: Any,
+    preserve_signature: bool = False,
+) -> Any:
+    """Recursively redact secrets in string payloads while preserving thinking signatures."""
     if isinstance(value, str):
         return str(redactor(value))
     if isinstance(value, list):
-        return [_sanitize_value_strings(item, redactor=redactor) for item in value]
+        return [
+            _sanitize_value_strings(item, redactor=redactor, preserve_signature=False)
+            for item in value
+        ]
     if isinstance(value, dict):
-        return {
-            k: (v if k in _PRESERVED_MESSAGE_KEYS else _sanitize_value_strings(v, redactor=redactor))
-            for k, v in value.items()
-        }
+        allow_sig = preserve_signature or value.get("type") == "thinking"
+        sanitized: dict[Any, Any] = {}
+        for k, v in value.items():
+            if k == "signature" and allow_sig:
+                sanitized[k] = v
+            elif k == "thinking_block" and preserve_signature and isinstance(v, dict):
+                sanitized[k] = _sanitize_value_strings(
+                    v, redactor=redactor, preserve_signature=True
+                )
+            else:
+                sanitized[k] = _sanitize_value_strings(
+                    v, redactor=redactor, preserve_signature=False
+                )
+        return sanitized
     return value
 
 
@@ -43,7 +48,7 @@ def sanitize_messages_secrets(messages: list[dict[str, Any]] | None) -> list[dic
     from harness_core.gateway import redact_secrets
 
     return [
-        _sanitize_value_strings(dict(msg), redactor=redact_secrets)
+        _sanitize_value_strings(dict(msg), redactor=redact_secrets, preserve_signature=True)
         for msg in messages
         if isinstance(msg, dict)
     ]
