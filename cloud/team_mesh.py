@@ -202,6 +202,34 @@ def sign_turn_ack(
     }
 
 
+def verify_turn_ack(ack: Mapping[str, Any], device_public_key: str) -> dict[str, Any]:
+    fields = {"project_session_id", "host_epoch", "turn_seq", "bundle_digest", "signature"}
+    if not isinstance(ack, Mapping) or set(ack) != fields:
+        raise ValueError("Malformed turn acknowledgement.")
+    if not isinstance(ack["project_session_id"], str) or not DEVICE_ID_PATTERN.fullmatch(
+        ack["project_session_id"]
+    ):
+        raise ValueError("Invalid acknowledgement session.")
+    if type(ack["host_epoch"]) is not int or ack["host_epoch"] < 1:
+        raise ValueError("Invalid acknowledgement epoch.")
+    if type(ack["turn_seq"]) is not int or ack["turn_seq"] < 1:
+        raise ValueError("Invalid acknowledgement sequence.")
+    if not isinstance(ack["bundle_digest"], str) or not re.fullmatch(
+        r"[0-9a-f]{64}", ack["bundle_digest"]
+    ):
+        raise ValueError("Invalid acknowledgement bundle digest.")
+    try:
+        Ed25519PublicKey.from_public_bytes(_public_key_bytes(device_public_key)).verify(
+            _decode_signature(ack["signature"]),
+            TURN_ACK_DOMAIN + canonical_json_bytes(
+                {key: value for key, value in ack.items() if key != "signature"}
+            ),
+        )
+    except (InvalidSignature, ValueError) as exc:
+        raise ValueError("Turn acknowledgement signature verification failed.") from exc
+    return {key: value for key, value in ack.items() if key != "signature"}
+
+
 class TeamMeshCoordinator:
     """Enforces host_epoch fencing and validates incoming TurnCommitBundles on Replica Peers."""
 
@@ -267,6 +295,21 @@ class TeamMeshCoordinator:
         if self.committed_turn_seq <= self.last_applied_turn_seq:
             return None
         return self.last_applied_turn_seq + 1, self.committed_turn_seq
+
+    def note_committed_turn(
+        self, project_session_id: str, host_epoch: int, turn_seq: int
+    ) -> None:
+        if self.mode != "TEAM_PRIMARY_HOST":
+            raise ValueError("Only the active Coordinator can record a committed turn.")
+        if type(host_epoch) is not int or host_epoch < 1:
+            raise ValueError("Committed turn epoch must be positive.")
+        if self.project_session_id != project_session_id or host_epoch > self.current_epoch:
+            raise ValueError("Committed turn does not match the active Coordinator lease.")
+        if type(turn_seq) is not int or turn_seq < 1:
+            raise ValueError("Committed turn sequence must be positive.")
+        if host_epoch < self.current_epoch and turn_seq > self.committed_turn_seq:
+            raise ValueError("Historical committed turn exceeds the trusted lease sequence.")
+        self.committed_turn_seq = max(self.committed_turn_seq, turn_seq)
 
     def accept_turn_commit(
         self,

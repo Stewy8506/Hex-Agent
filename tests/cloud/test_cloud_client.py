@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -15,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 
 from cloud.auth_client import (
     DeviceIdentity,
+    HexAuthClient,
     encrypt_device_id,
     enrollment_signing_payload,
     generate_device_identity,
@@ -181,6 +183,29 @@ class HarnessCloudClientTests(unittest.TestCase):
             rc.apply_signed_config(signed_cfg, local_denied_features={"cloud_task_workers"})
             self.assertTrue(rc.is_enabled("p2p_cross_device_sync"))
             self.assertFalse(rc.is_enabled("cloud_task_workers"))
+
+    def test_session_turn_commit_sends_only_signed_control_metadata(self) -> None:
+        signed = {
+            "bundle": {"turn_seq": 3},
+            "author_device_record_id": "dev_author",
+            "protocol_version": 1,
+            "signature": "ed25519:signed",
+        }
+        response = {"payload": {"turn_seq": 3}, "signature": "ed25519:receipt"}
+        with patch("cloud.auth_client.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode()
+            result = HexAuthClient("https://backend.example").commit_session_turn(
+                "access-token", "proj_1", "dev_host_a", signed
+            )
+        self.assertEqual(result, response)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://backend.example/v1/sessions/proj_1/turn-commit")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Authorization"), "Bearer access-token")
+        self.assertEqual(json.loads(request.data), {
+            "coordinator_device_record_id": "dev_host_a",
+            "signed_bundle": signed,
+        })
 
     def test_signed_turn_ack_matches_backend_domain_and_rejects_tampering(self) -> None:
         signer = PeerIdentity.generate("dev_peer_a")

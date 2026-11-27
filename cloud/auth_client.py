@@ -18,7 +18,7 @@ import socket
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -205,6 +205,30 @@ class HexAuthClient:
                 "host_eligible": host_eligible,
                 "challenge": challenge,
                 "device_signature": device_signature,
+            },
+            access_token=access_token,
+        )
+
+    def commit_session_turn(
+        self,
+        access_token: str,
+        project_session_id: str,
+        coordinator_device_record_id: str,
+        signed_bundle: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Submit only signed turn metadata; workspace content never reaches the backend."""
+        if not isinstance(project_session_id, str) or not project_session_id:
+            raise ValueError("Project session id is required.")
+        if not isinstance(coordinator_device_record_id, str) or not coordinator_device_record_id:
+            raise ValueError("Coordinator device id is required.")
+        if not isinstance(signed_bundle, Mapping):
+            raise ValueError("Signed turn bundle must be an object.")
+        session_path = urllib.parse.quote(project_session_id, safe="")
+        return self._post_json(
+            f"/v1/sessions/{session_path}/turn-commit",
+            {
+                "coordinator_device_record_id": coordinator_device_record_id,
+                "signed_bundle": dict(signed_bundle),
             },
             access_token=access_token,
         )

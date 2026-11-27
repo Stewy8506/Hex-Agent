@@ -157,12 +157,13 @@ class SignalLinkTests(unittest.TestCase):
         self.assertTrue(_poll(lambda: link.status()["connected"]))
         self.assertTrue(link.send_turn_ack("proj_1", 1, 7, "a" * 64, signer))
         frame = json.loads(sock.sent[0])
+        self.assertEqual(set(frame), {"type", "ack"})
         self.assertEqual(frame["type"], "turn_ack")
-        self.assertEqual(frame["project_session_id"], "proj_1")
-        self.assertEqual(frame["host_epoch"], 1)
-        self.assertEqual(frame["turn_seq"], 7)
-        self.assertEqual(frame["bundle_digest"], "a" * 64)
-        self.assertTrue(frame["signature"].startswith("ed25519:"))
+        self.assertEqual(frame["ack"]["project_session_id"], "proj_1")
+        self.assertEqual(frame["ack"]["host_epoch"], 1)
+        self.assertEqual(frame["ack"]["turn_seq"], 7)
+        self.assertEqual(frame["ack"]["bundle_digest"], "a" * 64)
+        self.assertTrue(frame["ack"]["signature"].startswith("ed25519:"))
 
     def test_observer_does_not_request_failover(self) -> None:
         self.signaling.local_host_eligible = False

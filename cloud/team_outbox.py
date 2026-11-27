@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import json
 import os
 import tempfile
@@ -100,6 +101,7 @@ class TeamTurnOutbox:
         self.scope_provider = scope_provider
         self.publisher = publisher
         self._lock = threading.RLock()
+        self._inflight: set[str] = set()
 
     @property
     def pending_count(self) -> int:
@@ -163,6 +165,44 @@ class TeamTurnOutbox:
                 except Exception as exc:
                     queued += 1
                     self._record_failure(path, type(exc).__name__)
+        return {"delivered": delivered, "queued": queued}
+
+    async def publish_async(self, turn: VerifiedTeamTurn) -> dict[str, Any]:
+        with self._lock:
+            record = self._load_or_create(turn)
+            if record["status"] == "preparing":
+                record = self._prepare(record)
+            if record["status"] == "skipped":
+                return {"status": "skipped", "reason": "NO_WORKSPACE_CHANGES"}
+            if record["status"] in {"prepared", "signing"}:
+                record = self._sign(record)
+            if record["status"] != "ready":
+                raise ValueError("Team turn is not ready for delivery.")
+        return await self._deliver_async(record)
+
+    async def flush_async(self) -> dict[str, Any]:
+        delivered = 0
+        queued = 0
+        for path in sorted(self.pending_dir.glob("*.json")):
+            try:
+                with self._lock:
+                    record = self._load(path)
+                    if record["status"] == "preparing":
+                        record = self._prepare(record)
+                    if record["status"] == "skipped":
+                        continue
+                    if record["status"] in {"prepared", "signing"}:
+                        record = self._sign(record)
+                    if record["status"] != "ready":
+                        raise ValueError("Team turn is not ready for delivery.")
+                outcome = await self._deliver_async(record)
+                if outcome["status"] == "delivered":
+                    delivered += 1
+                else:
+                    queued += 1
+            except Exception as exc:
+                queued += 1
+                self._record_failure(path, type(exc).__name__)
         return {"delivered": delivered, "queued": queued}
 
     def _load_or_create(self, turn: VerifiedTeamTurn) -> dict[str, Any]:
@@ -309,7 +349,7 @@ class TeamTurnOutbox:
         self._write(self._path(turn.task_id, turn.attempt_id), record)
         return record
 
-    def _deliver(self, record: dict[str, Any]) -> dict[str, Any]:
+    def _ready_turn(self, record: dict[str, Any]) -> tuple[Path, SignedTurnCommitBundle, Mapping[str, Any]]:
         path = self.pending_dir / f"{record['turn_id']}.json"
         signed = SignedTurnCommitBundle.from_dict(record["signed"])
         payload = record["payload"]
@@ -317,26 +357,83 @@ class TeamTurnOutbox:
             raise ValueError("Pending signed team turn failed verification.")
         if team_payload_digest(payload) != record.get("payload_digest"):
             raise ValueError("Pending team payload changed.")
-        try:
-            result = self.publisher(signed, payload)
-            accepted = (
-                result.get("accepted") is True or result.get("ack") is True
-                if isinstance(result, Mapping)
-                else result is True
-            )
-            if not accepted:
-                raise RuntimeError("Team transport did not accept the turn.")
-        except Exception as exc:
-            record = {
-                **record,
-                "last_attempt_at": utcnow_iso(),
-                "last_error_type": type(exc).__name__,
-                "attempts": int(record.get("attempts", 0)) + 1,
-            }
-            self._write(path, record)
+        return path, signed, payload
+
+    def _claim_delivery(self, turn_id: str) -> bool:
+        with self._lock:
+            if turn_id in self._inflight:
+                return False
+            self._inflight.add(turn_id)
+            return True
+
+    def _release_delivery(self, turn_id: str) -> None:
+        with self._lock:
+            self._inflight.discard(turn_id)
+
+    def _deliver(self, record: dict[str, Any]) -> dict[str, Any]:
+        path, signed, payload = self._ready_turn(record)
+        if not self._claim_delivery(record["turn_id"]):
             return {"status": "queued", "turn_id": record["turn_id"]}
+        try:
+            if inspect.iscoroutinefunction(self.publisher):
+                self._write_failure(path, record, "ASYNC_PUBLISHER_REQUIRED")
+                return {"status": "queued", "turn_id": record["turn_id"]}
+            try:
+                result = self.publisher(signed, payload)
+                if inspect.isawaitable(result):
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    self._write_failure(path, record, "ASYNC_PUBLISHER_REQUIRED")
+                    return {"status": "queued", "turn_id": record["turn_id"]}
+            except Exception as exc:
+                self._write_failure(path, record, type(exc).__name__)
+                return {"status": "queued", "turn_id": record["turn_id"]}
+            if not self._complete_delivery(path, record, result):
+                return {"status": "queued", "turn_id": record["turn_id"]}
+            return {"status": "delivered", "turn_id": record["turn_id"]}
+        finally:
+            self._release_delivery(record["turn_id"])
+
+    async def _deliver_async(self, record: dict[str, Any]) -> dict[str, Any]:
+        path, signed, payload = self._ready_turn(record)
+        if not self._claim_delivery(record["turn_id"]):
+            return {"status": "queued", "turn_id": record["turn_id"]}
+        try:
+            try:
+                result = self.publisher(signed, payload)
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception as exc:
+                self._write_failure(path, record, type(exc).__name__)
+                return {"status": "queued", "turn_id": record["turn_id"]}
+            if not self._complete_delivery(path, record, result):
+                return {"status": "queued", "turn_id": record["turn_id"]}
+            return {"status": "delivered", "turn_id": record["turn_id"]}
+        finally:
+            self._release_delivery(record["turn_id"])
+
+    def _complete_delivery(
+        self, path: Path, record: dict[str, Any], result: Any
+    ) -> bool:
+        accepted = (
+            result.get("accepted") is True or result.get("ack") is True
+            if isinstance(result, Mapping)
+            else result is True
+        )
+        if not accepted:
+            self._write_failure(path, record, "RuntimeError")
+            return False
         self._archive_history(path, record)
-        return {"status": "delivered", "turn_id": record["turn_id"]}
+        return True
+
+    def _write_failure(self, path: Path, record: dict[str, Any], error_type: str) -> None:
+        failed = {
+            **record,
+            "last_attempt_at": utcnow_iso(),
+            "last_error_type": error_type,
+            "attempts": int(record.get("attempts", 0)) + 1,
+        }
+        self._write(path, failed)
 
     def _archive_history(self, pending_path: Path, record: Mapping[str, Any]) -> None:
         history_path = self.history_dir / pending_path.name

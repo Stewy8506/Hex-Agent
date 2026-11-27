@@ -13,7 +13,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from cloud.cognition_sync import CognitionSyncStore
 from cloud.p2p_transport import PeerIdentity
@@ -234,6 +234,17 @@ class TeamTurnOutboxTests(unittest.TestCase):
         self.assertEqual(restarted.flush(), {"delivered": 0, "queued": 1})
         publisher.assert_not_called()
         self.assertEqual(restarted.pending_count, 1)
+
+    def test_async_publisher_waits_for_explicit_async_flush(self) -> None:
+        import asyncio
+
+        publisher = AsyncMock(return_value={"accepted": True})
+        outbox = self._outbox(publisher)
+        self.assertEqual(outbox(self.turn)["status"], "queued")
+        publisher.assert_not_awaited()
+        self.assertEqual(asyncio.run(outbox.flush_async()), {"delivered": 1, "queued": 0})
+        publisher.assert_awaited_once()
+        self.assertEqual(outbox.pending_count, 0)
 
     def test_history_retention_keeps_the_newest_exact_turn(self) -> None:
         outbox = TeamTurnOutbox(

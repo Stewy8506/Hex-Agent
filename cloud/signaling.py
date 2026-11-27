@@ -188,9 +188,9 @@ class P2PSignalingClient:
         turn_seq: int,
         bundle_digest: str,
     ) -> dict[str, Any]:
-        return {"type": "turn_ack", **sign_turn_ack(
+        return sign_turn_ack(
             signer, project_session_id, host_epoch, turn_seq, bundle_digest
-        )}
+        )
 
     @staticmethod
     def build_failover_request(
@@ -325,9 +325,10 @@ class SignalLink:
         signer = signer or self._ack_signer
         if signer is None:
             return False
-        return self.send(P2PSignalingClient.build_turn_ack(
+        ack = P2PSignalingClient.build_turn_ack(
             signer, project_session_id, host_epoch, turn_seq, bundle_digest
-        ))
+        )
+        return self.send({"type": "turn_ack", "ack": ack})
 
     def send_p2p_signal(self, target_device_id: str, payload: dict[str, Any]) -> bool:
         return self.send(
