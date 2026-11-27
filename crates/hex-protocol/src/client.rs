@@ -299,6 +299,16 @@ impl AcpClient {
             .map(Path::to_path_buf)
     }
 
+    fn find_sibling_harness_root(app_path: &Path) -> Option<PathBuf> {
+        let app_root = app_path
+            .ancestors()
+            .find(|path| path.join("Cargo.toml").is_file() && path.join("src/main.rs").is_file())?;
+        let parent = app_root.parent()?;
+        ["Harness", "hex-agent"]
+            .into_iter()
+            .find_map(|name| Self::find_repo_root(&parent.join(name)))
+    }
+
     /// Helper to locate repository root containing the harness_core namespace or virtual environment.
     fn resolve_repo_root(workspace_root: Option<&Path>) -> PathBuf {
         if let Ok(env_root) = std::env::var("HEX_REPO_ROOT") {
@@ -320,6 +330,9 @@ impl AcpClient {
         // 2. Walk up from current_exe (e.g. repo/target/debug/hex-tui)
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(root) = exe_path.parent().and_then(Self::find_repo_root) {
+                return root;
+            }
+            if let Some(root) = Self::find_sibling_harness_root(&exe_path) {
                 return root;
             }
         }
@@ -1142,17 +1155,70 @@ mod tests {
     }
 
     #[test]
-    fn test_find_repo_root_from_relocated_desktop() {
+    fn test_find_repo_root_from_desktop_source() {
         let repo = tempfile::tempdir().unwrap();
         std::fs::create_dir(repo.path().join("harness_core")).unwrap();
         std::fs::write(repo.path().join("harness_core/__init__.py"), "").unwrap();
         std::fs::write(repo.path().join("pyproject.toml"), "").unwrap();
-        let desktop = repo.path().join("App/hex-desktop/src");
+        let desktop = repo.path().join("Hex-App/src");
         std::fs::create_dir_all(&desktop).unwrap();
 
         assert_eq!(
             AcpClient::find_repo_root(&desktop),
             Some(repo.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn test_find_sibling_harness_root_from_desktop_executable() {
+        let development = tempfile::tempdir().unwrap();
+        let harness = development.path().join("Harness");
+        std::fs::create_dir_all(harness.join("harness_core")).unwrap();
+        std::fs::write(harness.join("harness_core/__init__.py"), "").unwrap();
+        std::fs::write(harness.join("pyproject.toml"), "").unwrap();
+
+        let desktop = development.path().join("Hex-App");
+        std::fs::create_dir_all(desktop.join("src")).unwrap();
+        std::fs::write(desktop.join("Cargo.toml"), "").unwrap();
+        std::fs::write(desktop.join("src/main.rs"), "").unwrap();
+
+        assert_eq!(
+            AcpClient::find_sibling_harness_root(&desktop.join("target/debug/hex-desktop")),
+            Some(harness)
+        );
+    }
+
+    #[test]
+    fn test_find_sibling_harness_root_skips_incomplete_harness() {
+        let development = tempfile::tempdir().unwrap();
+        std::fs::create_dir(development.path().join("Harness")).unwrap();
+        let agent = development.path().join("hex-agent");
+        std::fs::create_dir_all(agent.join("harness_core")).unwrap();
+        std::fs::write(agent.join("harness_core/__init__.py"), "").unwrap();
+        std::fs::write(agent.join("pyproject.toml"), "").unwrap();
+
+        let desktop = development.path().join("Hex-App");
+        std::fs::create_dir_all(desktop.join("src")).unwrap();
+        std::fs::write(desktop.join("Cargo.toml"), "").unwrap();
+        std::fs::write(desktop.join("src/main.rs"), "").unwrap();
+
+        assert_eq!(
+            AcpClient::find_sibling_harness_root(&desktop.join("target/release/hex-desktop")),
+            Some(agent)
+        );
+    }
+
+    #[test]
+    fn test_find_sibling_harness_root_requires_engine_checkout() {
+        let development = tempfile::tempdir().unwrap();
+        let desktop = development.path().join("Hex-App");
+        std::fs::create_dir_all(desktop.join("src")).unwrap();
+        std::fs::write(desktop.join("Cargo.toml"), "").unwrap();
+        std::fs::write(desktop.join("src/main.rs"), "").unwrap();
+
+        assert_eq!(
+            AcpClient::find_sibling_harness_root(&desktop.join("target/debug/hex-desktop")),
+            None
         );
     }
 
