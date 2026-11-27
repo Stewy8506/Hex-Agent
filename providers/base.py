@@ -27,14 +27,15 @@ def _sanitize_value_strings(
         allow_sig = preserve_signature
         sanitized: dict[Any, Any] = {}
         for k, v in value.items():
+            sanitized_key = str(redactor(k)) if isinstance(k, str) else k
             if k == "signature" and allow_sig and isinstance(v, str):
-                sanitized[k] = v
+                sanitized[sanitized_key] = v
             elif k == "thinking_block" and preserve_signature and isinstance(v, dict):
-                sanitized[k] = _sanitize_value_strings(
+                sanitized[sanitized_key] = _sanitize_value_strings(
                     v, redactor=redactor, preserve_signature=True
                 )
             else:
-                sanitized[k] = _sanitize_value_strings(
+                sanitized[sanitized_key] = _sanitize_value_strings(
                     v, redactor=redactor, preserve_signature=False
                 )
         return sanitized

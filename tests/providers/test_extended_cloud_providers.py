@@ -339,6 +339,7 @@ class TestExtendedCloudProviders(unittest.TestCase):
                             "tool_name": gh_tok,
                             "signature": secret_tok,
                             "nested_thinking": {"type": "thinking", "signature": secret_tok},
+                            secret_tok: "secret-shaped key",
                         },
                     }
                 ],
@@ -379,18 +380,21 @@ class TestExtendedCloudProviders(unittest.TestCase):
                 for k in ("name", "id", "type", "role", "tool_name", "signature"):
                     self.assertEqual(tool_input[k], "[REDACTED_SECRET]")
                 self.assertEqual(tool_input["nested_thinking"]["signature"], "[REDACTED_SECRET]")
+                self.assertEqual(tool_input["[REDACTED_SECRET]"], "secret-shaped key")
             elif ptype == "gemini":
                 fn_args = parsed_sent["contents"][1]["parts"][-1]["functionCall"]["args"]
                 self.assertEqual(fn_args["max_tokens"], 50)
                 for k in ("name", "id", "type", "role", "tool_name", "signature"):
                     self.assertEqual(fn_args[k], "[REDACTED_SECRET]")
                 self.assertEqual(fn_args["nested_thinking"]["signature"], "[REDACTED_SECRET]")
+                self.assertEqual(fn_args["[REDACTED_SECRET]"], "secret-shaped key")
             else:
                 tc_args = json.loads(parsed_sent["messages"][1]["tool_calls"][0]["function"]["arguments"])
                 self.assertEqual(tc_args["max_tokens"], 50)
                 for k in ("name", "id", "type", "role", "tool_name", "signature"):
                     self.assertEqual(tc_args[k], "[REDACTED_SECRET]")
                 self.assertEqual(tc_args["nested_thinking"]["signature"], "[REDACTED_SECRET]")
+                self.assertEqual(tc_args["[REDACTED_SECRET]"], "secret-shaped key")
 
         # Verify Anthropic content-list thinking block preserves its signature while redacting tool_use inputs
         ant_block_captured: list[bytes] = []
@@ -433,7 +437,7 @@ class TestExtendedCloudProviders(unittest.TestCase):
         sk_tok = "sk-ant-api03-nestedarg1234567890"
         msgs = [
             {"role": "user", "content": "Inspect Cargo.toml"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "Cargo.toml", "name": sk_tok, "id": secret_tok, "type": sk_tok}}]},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "Cargo.toml", "name": sk_tok, "id": secret_tok, "type": sk_tok, secret_tok: "secret-shaped key"}}]},
             {"role": "tool", "tool_call_id": "c1", "name": "read_file", "content": f"token={secret_tok}; name='hex'"},
         ]
         tools = [{"name": "read_file", "description": "Read file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}]
