@@ -78,7 +78,13 @@ class LiveBackend:
         self.port = _free_port()
         import uvicorn
 
-        config = uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="warning")
+        config = uvicorn.Config(
+            self.app,
+            host="127.0.0.1",
+            port=self.port,
+            log_level="warning",
+            ws_max_size=64 * 1024 * 1024,
+        )
         self.server = uvicorn.Server(config)
         self.thread = threading.Thread(target=self.server.run, daemon=True)
         self.thread.start()
@@ -224,6 +230,56 @@ class BackendIntegrationTests(unittest.TestCase):
         self.assertIn("inference_gateway", flags)
         self.assertEqual(cloud_flags.active_kill_switches(), {})
         self.assertIsNotNone(cloud_flags.remote_config())
+
+    def test_backend_relay_authenticates_and_forwards_encrypted_frames(self) -> None:
+        import asyncio
+
+        from cloud.p2p_transport import PeerIdentity
+        from cloud.relay_transport import connect_relay_peer, generate_relay_ticket
+
+        async def scenario() -> None:
+            uri = f"ws://127.0.0.1:{self.backend.port}/hex/relay/v1"
+            alice = PeerIdentity.generate("relay_alice")
+            bob = PeerIdentity.generate("relay_bob")
+            ticket = generate_relay_ticket()
+            alice_session, bob_session = await asyncio.wait_for(
+                asyncio.gather(
+                    connect_relay_peer(
+                        uri,
+                        ticket,
+                        "initiator",
+                        alice,
+                        expected_peer=bob.address,
+                        timeout=5,
+                    ),
+                    connect_relay_peer(
+                        uri,
+                        ticket,
+                        "responder",
+                        bob,
+                        expected_peer=alice.address,
+                        timeout=5,
+                    ),
+                ),
+                timeout=10,
+            )
+            try:
+                await alice_session.send(b"backend-relay-ciphertext")
+                self.assertEqual(
+                    await bob_session.receive(), b"backend-relay-ciphertext"
+                )
+                await bob_session.send(b"backend-relay-response")
+                self.assertEqual(
+                    await alice_session.receive(), b"backend-relay-response"
+                )
+                self.assertEqual(
+                    self.backend.app.state.relay.status()["persisted_bytes"], 0
+                )
+            finally:
+                await alice_session.close()
+                await bob_session.close()
+
+        asyncio.run(scenario())
 
     def test_signal_link_connects_to_live_backend(self) -> None:
         from cloud.signaling import P2PSignalingClient, SignalLink
