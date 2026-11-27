@@ -10,7 +10,7 @@ HEX operates as a resilient, distributed autonomous execution engine consisting 
 
 ### 1.1 Control Plane & Cockpits
 - **CLI (`hex`)**: The primary command interface with specialized subcommands (`run`/`exec`, `submit`, `status`, `chat`, `tui`, `voice`, `acp`, `up`, `auth`, `quota`, `doctor`, `project`, `recipe`, `graphify`, `eval`, `harness2-eval`, `gateway`, `schedule`, `daemon`, `gc`, `uninstall`).
-- **Native macOS GPUI Desktop Cockpit (experimental)**: GPU-accelerated native macOS application built with Zed's GPUI crate (`App/hex-desktop`). The desktop runs a working ACP chat flow against the Python engine; it is distributed from source only. Launch with `cargo run -p hex-desktop` — there is no `hex desktop` subcommand yet.
+- **Native macOS GPUI Desktop Cockpit (experimental)**: GPU-accelerated native macOS application built with Zed's GPUI crate in the sibling `Hex-App` repository. The desktop runs a working ACP chat flow against the Python engine; it is distributed from source only. Launch with `cd ../Hex-App && cargo run -p hex-desktop` — there is no `hex desktop` subcommand yet.
 - **Native Rust Terminal Cockpit (`hex tui`)**: 60 FPS Ratatui terminal cockpit (`crates/hex-tui`, <20MB RAM) with side-by-side split diffs (`/sbs`), fuzzy slash autocomplete, and true-color themes.
 - **REST API (`/v1/*`)**: Handles task submission (`POST /v1/tasks`), status inspection (`GET /v1/tasks/{id}`), dynamic DAG replanning, worker registration, and remote approval decisions on default port `8420`.
 - **SSE Event Stream (`GET /v1/tasks/{id}/events?stream=true`)**: Real-time event streaming for UI control surfaces and external monitors.
@@ -54,14 +54,15 @@ HEX operates as a resilient, distributed autonomous execution engine consisting 
 HEX provides two high-performance native frontends:
 
 #### 1. Native macOS GPUI Desktop Cockpit (experimental)
-Built with Zed's GPU-accelerated GPUI framework (`App/hex-desktop`). It runs real chat sessions over ACP and is exercised end to end by `App/hex-desktop/tests/test_chat_flow.rs`. There is no `hex desktop` subcommand or packaged binary yet.
+Built with Zed's GPU-accelerated GPUI framework in the sibling `Hex-App` repository. It runs real chat sessions over ACP and is exercised end to end by `Hex-App/tests/test_chat_flow.rs`. There is no `hex desktop` subcommand or packaged binary yet.
 
 ```bash
 # Compile and launch with Cargo (requires Xcode Metal toolchain):
+cd ../Hex-App
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer cargo run -p hex-desktop
 ```
 
-- **Backend Bridge**: Attaches to `/tmp/hex-acp.sock` if present, otherwise spawns `python -m harness_core.client.cli acp` as a stdio JSON-RPC 2.0 subprocess. Python is resolved from `HEX_PYTHON_BIN`, `$VIRTUAL_ENV`, the repo's `.venv/bin/python`, then `python3`. Set `HEX_PYTHON_BIN` if the engine is installed elsewhere.
+- **Backend Bridge**: Spawns `python -m harness_core.client.cli acp` as a stdio JSON-RPC 2.0 subprocess. The engine root resolves from `HEX_REPO_ROOT`, workspace/executable ancestry, or the sibling `Harness` / `hex-agent` checkout. Python is resolved from `HEX_PYTHON_BIN`, `$VIRTUAL_ENV`, the engine repo's `.venv/bin/python`, then `python3`.
 - **Connection states**: The model pill shows `connecting…` at startup, `not connected` if the engine could not be started, and `no session` if `session/new` failed. A dropped connection adds a notice to the feed.
 - **Working today**: Streaming replies and tool cards, approvals (`y` once, `a` session, `n` deny), `Esc` to cancel a running turn, per-session drafts, auto-titled sessions, copy and regenerate.
 - **Shortcuts**: `Enter` (Send), `Shift+Enter` (Newline), `⌘Enter` (Send), `⌘K` (Command Palette), `⌘N` (New Session), `⌘B` (Toggle Sidebar), `Esc` (Cancel turn / Close modal).

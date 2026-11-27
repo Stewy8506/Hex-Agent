@@ -4,7 +4,7 @@
 **Date:** 2026-11-22  
 **Companion PRD:** `../hex-backend/PRD.md`  
 **Backend Repository:** `../hex-backend` (Phases 1–6 implemented & tested)  
-**Target Codebase:** `Harness` (`hex-ai` v0.22.0, `crates/hex-protocol`, `crates/hex-tui`, `App/hex-desktop`)
+**Target Codebase:** `Harness` (`hex-ai` v0.22.0, `crates/hex-protocol`, `crates/hex-tui`) and the sibling `Hex-App` desktop repository
 
 ---
 
@@ -63,7 +63,7 @@ Harness/
 | `agent/router.py` & `providers/` | Register dormant `HexGatewayProvider` (disabled when `inference_gateway.enabled = false`) for future rented GPU (`self_hosted_gpu`) or managed upstream (`upstream_proxy`) serving with KV-cache sticky routing (`prefix_cache_key`). | **#13 Model Serving Gateway** |
 | `hex_cli/acp.py` & `crates/hex-protocol/` | Abstract ACP JSON-RPC 2.0 transport across stdio/Unix socket (local), E2EE P2P tunnel (Team Primary Host), and HTTPS/WSS (Cloud Worker). | **Team Mesh**, **#4 Cloud Tasks** |
 | `hex_cli/cli.py` & `hex_cli/doctor.py` | Add CLI subcommands (`hex auth`, `hex devices`, `hex sync`, `hex team`, `hex update`, `hex registry`, `hex support`) and `hex doctor --bundle` redacted diagnostic archive. | **#1, #2, #5, #6, #9, #12** |
-| `App/hex-desktop` | Replace `PLAN.md` "Coming soon" placeholders: account footer, device/sync status, Team session panel + Primary Host badge, location chips (`This Mac` / `Peer Host` / `Cloud`), update banner, and notification bell. | **#1, #2, #4, #11, Team Mesh** |
+| `Hex-App` | Replace `PLAN.md` "Coming soon" placeholders: account footer, device/sync status, Team session panel + Primary Host badge, location chips (`This Mac` / `Peer Host` / `Cloud`), update banner, and notification bell. | **#1, #2, #4, #11, Team Mesh** |
 
 ---
 
@@ -143,7 +143,7 @@ After every completed work turn on the Primary Host:
 - [x] `cloud/auth_client.py`: `refresh()`, `list_devices()`, `revoke_device()`; `identity_material()`/`identity_from_material()` for keychain round-trip of the keypair.
 - [x] ACP (`hex_cli/acp.py`): `cloud/auth/{status,register,login,logout}` + `cloud/devices/{list,revoke}` methods and `cloud/event` push notifications (login/logout/revoke) for the desktop.
 - [x] CLI: `hex cloud {status,register,login,logout,devices,revoke}` (`hex_cli/commands/cloud_account.py`), human + `--json` output, getpass password prompt.
-- [x] Desktop (`App/hex-desktop`): typed `AcpClient`/`AcpBridge` cloud methods, `AcpEvent::CloudAccount` demux, Account modal (hand-rolled email/password entry, login/register, device roster + revoke + sign out), header device button and sidebar account footer wired (email + "Cloud connected"/"Local mode").
+- [x] Desktop (`Hex-App`): typed `AcpClient`/`AcpBridge` cloud methods, `AcpEvent::CloudAccount` demux, Account modal (hand-rolled email/password entry, login/register, device roster + revoke + sign out), header device button and sidebar account footer wired (email + "Cloud connected"/"Local mode").
 - [x] Tests: unit tests with memory keychain + cross-repo e2e (`tests/cloud/test_backend_integration.py`) booting real hex-backend under uvicorn: register -> login -> challenge enrollment -> device list -> re-login reuse -> self-revocation -> token rotation.
 
 ### Phase C: Updater, Remote Config & Signaling Live (harness core + desktop)
@@ -172,7 +172,7 @@ After every completed work turn on the Primary Host:
 - [x] Implement `cloud/team_mesh.py` (`TeamMeshCoordinator`, monotonic `host_epoch` fencing, `TurnCommitBundle` validation).
 - [ ] Add `TurnCommitHook` in `agent/orchestrator.py` and CoW/git delta packager in `storage/cow.py`.
 - [ ] Wire `agent/approval_lease.py` for RBAC-checked remote team approvals and add `hex team` CLI commands.
-- [ ] Add `crates/hex-protocol/src/{backend,p2p}.rs` and wire `App/hex-desktop` Team UI, Host badge, and location chips.
+- [ ] Add `crates/hex-protocol/src/{backend,p2p}.rs` and wire `Hex-App` Team UI, Host badge, and location chips.
 
 ### Phase 4: Skill/Plugin Registry & Integrations
 - [ ] Implement `cloud/registry_client.py` (sparse-index search, signed install manifests, local `SkillSpector` check).
@@ -180,7 +180,7 @@ After every completed work turn on the Primary Host:
 
 ### Phase 5: Cloud Workers, Telemetry, Notifications & Support
 - [ ] Implement `cloud/cloud_tasks.py`, `cloud/telemetry.py`, `cloud/support_client.py`, and `hex doctor --bundle`.
-- [ ] Wire live WebSocket notifications from `cloud/signaling.py` into `App/hex-desktop` & `hex-tui`.
+- [ ] Wire live WebSocket notifications from `cloud/signaling.py` into `Hex-App` & `hex-tui`.
 
 ### Phase 6: Optional Managed Model Serving & Inference Gateway (Dormant on Day 1)
 - [ ] Add dormant `providers/hex_gateway_provider.py` wired to `agent/router.py` (bypassed unless `inference_gateway.enabled = true`), forwarding `prefix_cache_key` for KV-cache sticky routing on rented GPUs.

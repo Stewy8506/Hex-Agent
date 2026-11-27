@@ -34,9 +34,9 @@ HEX is structured into five primary architectural planes:
 
 ---
 
-## 2. Native macOS GPUI Desktop Cockpit (`App/hex-desktop`) — Experimental
+## 2. Native macOS GPUI Desktop Cockpit (`Hex-App`) — Experimental
 
-HEX features a state-of-the-art native desktop application built using Zed's GPU-accelerated **GPUI** framework (`App/hex-desktop`):
+HEX features a state-of-the-art native desktop application built using Zed's GPU-accelerated **GPUI** framework (`Hex-App`):
 
 ```text
 ┌───────────────────────────┬────────────────────────────────────────────────────────┐
@@ -191,12 +191,10 @@ Harness/
 ├── providers/                # Provider integrations
 ├── lsp/                      # Language-server integration
 ├── gateways/                 # Gateway integration
-├── App/
-│   └── hex-desktop/          # Experimental macOS GPUI desktop crate
 ├── crates/
 │   ├── hex-protocol/         # Shared Rust wire contract
 │   └── hex-tui/              # Native terminal cockpit
-├── Cargo.toml                # Root Cargo workspace, including App/hex-desktop
+├── Cargo.toml                # Root Cargo workspace for hex-protocol and hex-tui
 ├── migrations/               # Alembic migrations
 └── tests/                    # Python subsystem tests
 ```
@@ -225,7 +223,7 @@ This is a physical relocation, not a new public API. The `harness_core/` anchor 
 - `hex_platform/hardware.py` and `hex_platform/diagnostics.py` contain host hardware profiling and diagnostic helpers. Configuration loading lives in `harness_core/config_loader.py`; its `update_config_yaml_model()` remains the shared model-selection writer used by onboarding and orchestration.
 - `storage/project_init.py` contains project stack detection and `.hex` initialization. `tools/filesystem.py` contains filesystem tool implementations behind the existing gateway. The relocation does not split the large orchestration or storage engines wholesale; domain responsibilities are unchanged.
 - Packaged skill data lives under `skills/builtin/` and `optional-skills/`, distinct from the Python engine in `skill_engine/`. Package mappings and package-data declarations preserve the canonical resource namespace.
-- The Cargo workspace remains at the repository root. Protocol and TUI crates remain in `crates/hex-protocol/` and `crates/hex-tui/`; the desktop crate lives in `App/hex-desktop/`. Run `cargo run -p hex-desktop` or `cargo test -p hex-desktop` from the root as before. `App/` currently contains only the desktop app; no mobile app or placeholder mobile directory is introduced.
+- The Cargo workspace remains at the `Harness` repository root for `crates/hex-protocol/` and `crates/hex-tui/`. The desktop crate lives in the sibling [`Hex-App`](../../../Hex-App/README.md) repository, path-depends on `../Harness/crates/hex-protocol`, and discovers the sibling engine at runtime. Run `cargo run -p hex-desktop` or `cargo test -p hex-desktop` from `Hex-App`; set `HEX_REPO_ROOT` for non-sibling layouts.
 - Python tests remain grouped by subsystem under `tests/<subsystem>/`; ACP/client coverage lives in `tests/client/`, and packaging/install coverage in `tests/packaging/`. Shared fixtures remain in `tests/fixtures/`; Rust tests stay with their crates.
 
 Development requires an editable install from the repository root: `python -m pip install -e ".[full]"`. Reinstall after the relocation to refresh setuptools' editable mappings; a raw repository-root or former source-directory `PYTHONPATH` cannot replace the package mapping. See [Contributing](../development/CONTRIBUTING.md) for setup.

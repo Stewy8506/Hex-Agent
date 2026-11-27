@@ -9,12 +9,13 @@ Thank you for your interest in contributing to **HEX**! Whether fixing a bug, ad
 ### Prerequisites:
 - **Python 3.10+** (Python 3.12 recommended)
 - **Rust / Cargo 1.80+** (for compiling `crates/hex-tui` and `crates/hex-protocol`)
-- **macOS and the Xcode/Metal toolchain** for the experimental desktop in `App/hex-desktop/`
+- **macOS and the Xcode/Metal toolchain** for the experimental desktop in the sibling `../Hex-App/` repository
 - **Git**
 
 ### Clone & Install:
 ```bash
-git clone https://github.com/Stewy8506/Harness.git
+git clone https://github.com/Stewy8506/Hex-Agent.git Harness
+git clone https://github.com/Stewy8506/Hex-App.git Hex-App
 cd Harness
 
 # Create and activate virtual environment
@@ -51,7 +52,7 @@ python -m harness_core.client.cli eval --suite all
 cargo test -p hex-protocol -p hex-tui
 
 # Desktop crate (macOS only; GPUI requires the Metal toolchain)
-cargo test -p hex-desktop
+(cd ../Hex-App && cargo test -p hex-desktop)
 ```
 
 ---
@@ -66,7 +67,7 @@ Use the open repository-root layout while keeping canonical `harness_core.*` imp
 - `hex_platform/hardware.py` and `hex_platform/diagnostics.py` own host hardware profiling and diagnostic helpers. Configuration stays in `harness_core/config_loader.py`; use its shared `update_config_yaml_model()` writer for model-selection updates from onboarding and orchestration.
 - `storage/project_init.py` owns project stack detection and `.hex` initialization. Filesystem tool implementations live in `tools/filesystem.py` behind the existing gateway.
 - `skills/builtin/` and `optional-skills/` contain packaged skill data, not the Python engine in `skill_engine/`. Their canonical resource package names are preserved by the package mappings.
-- The root `Cargo.toml` remains the workspace manifest. `crates/hex-protocol/` and `crates/hex-tui/` stay in place; the experimental macOS desktop lives in `App/hex-desktop/`. Run Cargo commands from the root using the unchanged package names. There is no new mobile app or placeholder mobile directory.
+- The root `Cargo.toml` is the workspace manifest for `crates/hex-protocol/` and `crates/hex-tui/`. The experimental macOS desktop lives in the sibling `../Hex-App/` repository and keeps the `hex-desktop` package name. Run protocol/TUI Cargo commands from `Harness` and desktop commands from `Hex-App`; set `HEX_REPO_ROOT` when the checkouts are not siblings. There is no new mobile app or placeholder mobile directory.
 
 Place tests under the matching `tests/<subsystem>/`; shared fixtures remain in `tests/fixtures/`, and Rust tests stay with their crates. Root manifests, installers, and `assets/` are not relocated. This layout does not imply a wholesale split of large orchestration or storage modules. Documentation lives under `docs/{architecture,guides,reference,development,research}/`, with design references and their assets together in `docs/design/mockups/`. See [Source Layout](../architecture/ARCHITECTURE.md#3-python-source-layout-srcharness_core) for the layout and compatibility boundaries.
 

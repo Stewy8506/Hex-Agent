@@ -1,6 +1,6 @@
 # `crates/` — Native Rust Workspace Crates
 
-The `crates/` directory contains the shared protocol and terminal cockpit Rust crates of the HEX Agent Cargo workspace (declared in the root [`Cargo.toml`](../Cargo.toml), alongside the desktop crate in [`App/hex-desktop`](../App/hex-desktop)).
+The `crates/` directory contains the shared protocol and terminal cockpit Rust crates of the HEX Agent Cargo workspace (declared in the root [`Cargo.toml`](../Cargo.toml)). The GPUI desktop lives in the sibling [`Hex-App`](../../Hex-App/README.md) repository and consumes `hex-protocol` through a path dependency.
 
 ## Crates
 

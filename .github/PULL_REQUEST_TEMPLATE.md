@@ -16,7 +16,7 @@ Fixes #(issue)
 
 - [ ] Python core (`harness_core`, `agent`, `storage`, `cognition`, `runtime`, `hex_cli`, `cloud`)
 - [ ] Rust protocol / TUI (`crates/hex-protocol`, `crates/hex-tui`)
-- [ ] macOS GPUI desktop (`App/hex-desktop`)
+- [ ] macOS GPUI desktop (`Hex-App` sibling repository)
 - [ ] Skills / SkillSpector (`skills`, `skill_engine`, `optional-skills`)
 
 ## Verification
@@ -26,7 +26,7 @@ Paste the commands you ran and their results:
 - [ ] `python -m pytest tests -v`
 - [ ] `python scripts/verify_event_chain.py` (when touching ledger/storage/migrations)
 - [ ] `cargo test -p hex-protocol -p hex-tui` (when touching Rust crates)
-- [ ] `cargo test -p hex-desktop` (macOS only, when touching desktop UI)
+- [ ] `(cd ../Hex-App && cargo test -p hex-desktop)` (macOS only, when touching desktop UI)
 
 ## Checklist
 

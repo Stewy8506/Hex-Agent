@@ -25,7 +25,7 @@ In [`pyproject.toml`](../pyproject.toml), `cloud/` is packaged as the top-level 
 ## Current Integrations vs Planned Modules
 
 - **Currently Wired**:
-  - [`hex_cli/acp.py`](../hex_cli/README.md): exposes `cloud/auth/{status,register,login,logout}`, `cloud/devices/{list,revoke}`, `cloud/update/check`, `cloud/config/evaluate`, `cloud/signal/{start,stop,status}` and streams `cloud/event` JSON-RPC notifications to [`App/hex-desktop`](../App/hex-desktop/README.md).
+  - [`hex_cli/acp.py`](../hex_cli/README.md): exposes `cloud/auth/{status,register,login,logout}`, `cloud/devices/{list,revoke}`, `cloud/update/check`, `cloud/config/evaluate`, `cloud/signal/{start,stop,status}` and streams `cloud/event` JSON-RPC notifications to [`Hex-App`](../../Hex-App/README.md).
   - [`hex_cli/commands/`](../hex_cli/README.md): `cloud_account.py` (`hex cloud`) and `update.py` (`hex update`).
   - `harness_core/config_loader.py` & `storage/vault_keychain.py`.
 - **Planned (per [`BACKEND_PLAN.md`](../BACKEND_PLAN.md) & [`ROADMAP.md`](../ROADMAP.md), not yet implemented)**:

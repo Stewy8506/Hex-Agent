@@ -1,8 +1,8 @@
 # Animations plan
 
 **Status:** PLANNED — not started. Standalone from `ROADMAP.md` (DX track) and `BACKEND_PLAN.md` (cloud phases).
-**Track:** AN1 → AN2 → AN3 → AN4. One commit per phase on the agent repo (`feat(hex-desktop): AN1 …`). Never push unless asked. `backend/` and runtime `data/` are never touched. AN-U (optional gpui upgrade spike) is deferred and gated — see §10; it is not on the critical path.
-**Subject:** the GPUI desktop app (`App/hex-desktop`, Rust). The TUI (`crates/hex-tui`) and the Python harness are out of scope — terminal cells and JSON-RPC have no spring surface. No audio: this is a productivity cockpit, sound does not belong to it.
+**Track:** AN1 → AN2 → AN3 → AN4. One commit per phase in the desktop repo (`feat(hex-desktop): AN1 …`); shared protocol changes land in `Harness`. Never push unless asked. `backend/` and runtime `data/` are never touched. AN-U (optional gpui upgrade spike) is deferred and gated — see §10; it is not on the critical path.
+**Subject:** the GPUI desktop app (`../Hex-App`, Rust). The TUI (`crates/hex-tui`) and the Python harness are out of scope — terminal cells and JSON-RPC have no spring surface. No audio: this is a productivity cockpit, sound does not belong to it.
 
 The goal is Apple-style physics-based motion: springs over curves, mandatory interruptibility, velocity handoff, subtle critically-damped defaults, transform+opacity choreography, and reduced-motion respect. This plan translates those principles into what **gpui 0.2.2 actually exposes** (verified against the vendored registry source), extends the existing `ui/motion.rs` foundation rather than replacing it, and assigns every animated surface a preset, a variant, and an interruption contract.
 
@@ -33,7 +33,7 @@ Source: `~/.cargo/registry/src/index.crates.io-*/gpui-0.2.2/src/`. These facts d
 
 ## 2. Existing foundation — keep and extend
 
-`App/hex-desktop/src/ui/motion.rs` already exists (mockup-parity §2.6) and is **not** greenfield:
+`../Hex-App/src/ui/motion.rs` already exists (mockup-parity §2.6) and is **not** greenfield:
 
 - Ambient periodic helpers, each gated on `reduced_motion()`: `breathe_opacity` (5s glow halo), `pulse_opacity` (2s accent dots), `blink_visible` (1.1s caret), `spinner_frame` (0.9s braille), `rise_progress` (0.9s entrance, `cubic_bezier(.2,.7,.2,1)`).
 - `cubic_bezier(x1,y1,x2,y2,x)` bisection evaluator — reusable.

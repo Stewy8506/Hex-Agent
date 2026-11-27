@@ -39,11 +39,11 @@ require('avante').setup({
 
 ## 3. Native macOS GPUI Desktop Cockpit (experimental)
 
-The **HEX Desktop Cockpit** (`App/hex-desktop`) embeds an ACP client (`AcpBridge`) that spawns the Python engine as a local stdio subprocess:
+The **HEX Desktop Cockpit** (`Hex-App`) embeds an ACP client (`AcpBridge`) that spawns the Python engine as a local stdio subprocess:
 - Streaming deltas, tool start/complete updates, and authoritative turn completion are consumed through the canonical wire contract below; replayed fixtures in `tests/fixtures/acp_wire` keep the Python server and Rust clients in lockstep.
 - Operator approvals round-trip through `session/approvalDecision` (a `lease_duration:<seconds>` reason is transmitted but not yet turned into a lease by the server); cancellation uses `session/cancel` and the turn ends in the server-reported `cancelled` state.
-- The end-to-end flow (connect, prompt, tool card, cancel, failure, session switching) is covered against a mock ACP server in `App/hex-desktop/tests/test_chat_flow.rs`; the approval round-trip, including the 15-minute lease payload, is covered in `App/hex-desktop/tests/test_desktop_integration.rs`.
-- Launch with `cargo run -p hex-desktop`; there is no `hex desktop` subcommand yet.
+- The end-to-end flow (connect, prompt, tool card, cancel, failure, session switching) is covered against a mock ACP server in `Hex-App/tests/test_chat_flow.rs`; the approval round-trip, including the 15-minute lease payload, is covered in `Hex-App/tests/test_desktop_integration.rs`.
+- Launch from the sibling desktop repository with `cd ../Hex-App && cargo run -p hex-desktop`; there is no `hex desktop` subcommand yet.
 
 ---
 

@@ -12,7 +12,7 @@
 | `guides/BROWSER_AND_VISION.md` | Browser accessibility snapshots (`@eN` semantic trees) and multimodal image inspection usage. |
 | `reference/ACP_INTEGRATION.md` | Agent Client Protocol (`hex acp`) configuration for Zed and Neovim (`avante.nvim`), plus canonical `session/update` wire contract notes. |
 | `reference/SUPPORTED_MODELS.md` | Catalog of 26 supported model providers, default/curated model IDs, env vars, and CredentialPool / Keychain notes. |
-| `development/desktop-design-parity-plan.md` | Exact color/typography token spec and DX1–DX7 workstream parity reference for `App/hex-desktop`. |
+| `development/desktop-design-parity-plan.md` | Exact color/typography token spec and DX1–DX7 workstream parity reference for `Hex-App`. |
 | `research/HERMES_LEARNING_AND_SOUL_ANALYSIS.md` | Comparative architecture analysis of Hermes Agent's `SOUL.md`, curated memory, and `/learn` mechanisms versus HEX's AST-governed cognition engine. |
-| `design/mockups-desktop/` | Standalone React/HTML design artboards (`DesktopStart.dc.html`, `DesktopSession.dc.html`) with bundled fonts (`Apfel Grotezk`, `Geist Mono`) used as pixel reference for `App/hex-desktop`. |
+| `design/mockups-desktop/` | Standalone React/HTML design artboards (`DesktopStart.dc.html`, `DesktopSession.dc.html`) with bundled fonts (`Apfel Grotezk`, `Geist Mono`) used as pixel reference for `Hex-App`. |
 | `design/mockups-tui/` | Standalone HTML design artboards (`Start.dc.html`, `Main.dc.html`, `Palette.dc.html`, `Permission.dc.html`, `Error.dc.html`, `SubAgent.dc.html`) used as cell-layout reference for `crates/hex-tui`. |

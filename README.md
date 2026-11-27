@@ -150,23 +150,25 @@ HEX will clone an isolated scratchpad, implement the code, run your test runner,
 ## 🖥️ Native macOS GPUI Desktop Cockpit (`hex-desktop`) — Experimental
 
 > **Status: experimental.** The desktop runs a working chat flow against the
-> Python engine over ACP, covered end to end by `App/hex-desktop/tests/test_chat_flow.rs`.
+> Python engine over ACP, covered end to end by `../Hex-App/tests/test_chat_flow.rs`.
 > It is distributed from source only, and some panels are not yet fed by live
 > data (see *Not yet live* below). Performance figures (FPS, RAM) have not been
 > benchmarked and are not claimed. The mockup below shows the target design.
 
 ```bash
+cd ../Hex-App
 cargo run -p hex-desktop
 # If Metal shader compilation fails, point at the full Xcode toolchain:
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer cargo run -p hex-desktop
 ```
 
-The app attaches to `/tmp/hex-acp.sock` if present, otherwise it spawns
-`python -m harness_core.client.cli acp`. The interpreter is chosen from
-`HEX_PYTHON_BIN`, then `$VIRTUAL_ENV`, then the repo's `.venv/bin/python`,
-then `python3`.
+The app spawns `python -m harness_core.client.cli acp` over stdio. The engine
+root resolves from `HEX_REPO_ROOT`, workspace/executable ancestry, or the sibling
+`Harness` / `hex-agent` checkout. The interpreter is chosen from `HEX_PYTHON_BIN`,
+then `$VIRTUAL_ENV`, then the engine repo's `.venv/bin/python`, then `python3`.
 
-The desktop is built with Zed's **GPUI** framework (`App/hex-desktop`):
+The desktop is built with Zed's **GPUI** framework in the sibling
+[`Hex-App`](../Hex-App/README.md) repository:
 
 ```text
 ┌───────────────────────────┬────────────────────────────────────────────────────────┐
@@ -309,19 +311,18 @@ Harness/
 ├── models/          # Model metadata, credential pool, provider routing
 ├── lsp/             # Language-server integration
 ├── gateways/        # Gateway integration
-├── App/hex-desktop/ # Experimental macOS GPUI desktop crate
 ├── crates/          # hex-protocol and hex-tui; root Cargo workspace remains
 └── tests/           # Python tests grouped by subsystem
 ```
 
-Supported setuptools `package_dir` mappings connect these physical directories to the unchanged `harness_core.*` imports and CLI entry points (for example, `harness_core.core` maps to `agent/` and `harness_core.client` to `hex_cli/`). The `harness_core/` anchor contains substantive shared modules, not forwarding wrappers. Root manifests, installers, assets, and shared test fixtures stay in place; this relocation does not imply a wholesale split of large core or storage modules.
+Supported setuptools `package_dir` mappings connect these physical directories to the unchanged `harness_core.*` imports and CLI entry points (for example, `harness_core.core` maps to `agent/` and `harness_core.client` to `hex_cli/`). The `harness_core/` anchor contains substantive shared modules, not forwarding wrappers. Root manifests, installers, assets, and shared test fixtures stay in place; this relocation does not imply a wholesale split of large core or storage modules. The GPUI desktop lives in the sibling [`Hex-App`](../Hex-App/README.md) repository.
 
 For development, install from the repository root into an activated virtual environment:
 
 ```bash
 python -m pip install -e ".[full]"
 # Desktop development (macOS; requires the Metal/Xcode toolchain):
-cargo run -p hex-desktop
+(cd ../Hex-App && cargo run -p hex-desktop)
 ```
 
 Re-run the editable install after the relocation, even in an existing environment, to refresh setuptools' editable package mappings. Adding the repository root to `PYTHONPATH` is not a substitute for this install. See [Contributing](docs/development/CONTRIBUTING.md) for setup and tests.

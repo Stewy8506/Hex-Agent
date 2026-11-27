@@ -280,7 +280,7 @@ What humans see in the UI is intentionally richer than what gets injected into L
 | `capabilities/proof.py` | Sign `TurnCommitBundle` payloads and `ProofArtifact` Merkle roots with the local Ed25519 device key. |
 | `agent/orchestrator.py` | Emit `INTENT_CLAIM` / `CONTRACT_CHANGE` events on state transitions; hook Graphify-filtered `<peer_activity>` JIT injection into tool observations; register bounded `ask_peer` tool. |
 | `crates/hex-protocol/` & `hex_cli/acp.py` | Add typed protocol frames for Presence, Delta Sync, Blackboard notes, and `ask_peer` RPCs. |
-| `App/hex-desktop` & TUI | Add Team Session Panel, Coordinator/Epoch badge, Live Multi-Agent Activity Rail, and Blackboard Drawer. |
+| `Hex-App` & TUI | Add Team Session Panel, Coordinator/Epoch badge, Live Multi-Agent Activity Rail, and Blackboard Drawer. |
 
 ### Recommended Implementation Phases
 

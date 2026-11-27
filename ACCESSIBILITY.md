@@ -6,7 +6,7 @@
 
 - **CLI (`hex` / `harness`):** Plain-text stdout/stderr output compatible with screen readers, braille displays, and terminal accessibility tools; supports `NO_COLOR=1` and non-interactive flags for automation.
 - **Native Terminal Cockpit (`hex-tui`):** Full keyboard-only navigation, command palette (`Ctrl+K` / `⌘K`), high-contrast Dark Zinc palette, and clear textual status badges (`[Completed]`, `[Failed]`, `[Pending]`) alongside color cues so status is never conveyed by color alone.
-- **macOS GPUI Desktop (`App/hex-desktop`, experimental):** Keyboard-first workflow (`Enter` to send, `Shift+Enter` for newline, `⌘N` new session, `⌘K` command palette, `[y]`/`[a]`/`[n]`/`[l]` tool approval shortcuts) and high-contrast typography.
+- **macOS GPUI Desktop (`Hex-App`, experimental):** Keyboard-first workflow (`Enter` to send, `Shift+Enter` for newline, `⌘N` new session, `⌘K` command palette, `[y]`/`[a]`/`[n]`/`[l]` tool approval shortcuts) and high-contrast typography.
 - **Voice Capability (`capabilities/voice.py`):** Optional hands-free spoken pair-programming mode.
 
 ## Known Limitations

@@ -2,7 +2,7 @@
 
 **Shared Agent Client Protocol (ACP) JSON-RPC 2.0 client, typed wire models, unified diff parser, and control-plane/P2P schemas for HEX Agent.**
 
-`hex-protocol` (`edition = "2021"`, `version = "0.1.0"`) is the Rust wire-contract crate shared by both native HEX frontends — the terminal cockpit ([`hex-tui`](../hex-tui/README.md)) and the GPUI desktop app ([`hex-desktop`](../../App/hex-desktop/README.md)). It connects Rust UIs to the Python runtime (`python -m harness_core.client.cli acp`) and defines the canonical schemas shared with `hex_cli/acp.py` and `cloud/`.
+`hex-protocol` (`edition = "2021"`, `version = "0.1.0"`) is the Rust wire-contract crate shared by both native HEX frontends — the terminal cockpit ([`hex-tui`](../hex-tui/README.md)) and the GPUI desktop app ([`hex-desktop`](../../../Hex-App/README.md)). It connects Rust UIs to the Python runtime (`python -m harness_core.client.cli acp`) and defines the canonical schemas shared with `hex_cli/acp.py` and `cloud/`.
 
 ---
 

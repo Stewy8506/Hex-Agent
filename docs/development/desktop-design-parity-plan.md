@@ -4,10 +4,11 @@
 tracked as DX1–DX7 in [`ROADMAP.md`](../../ROADMAP.md) (DX1–DX3 landed as of 2026-11-23).
 Supersedes the root `PLAN.md` (removed 2026-11-23; still in git history).
 
-**Goal:** make `App/hex-desktop` pixel-identical to the approved mockups in
+**Goal:** make `Hex-App` pixel-identical to the approved mockups in
 `docs/design/mockups-desktop/` — colours, sizing, spacing, typography, icons, layout,
 and every animation — while keeping all existing behaviour (ACP backend, sessions,
-approvals, model picker, palette) working and all tests green.
+approvals, model picker, palette) working and all tests green. Desktop sources now
+live in the sibling `../Hex-App` repository; paths below name that repository.
 
 **Driving convention (standing workflow):** one commit per sub-phase, each fix ships a
 red-proof regression test (write test → watch it fail on stashed source → restore → green),
@@ -23,7 +24,7 @@ Do not touch `crates/hex-tui/src/history.rs` (user's in-progress work).
 | Start screen | `docs/design/mockups-desktop/Hex agent · desktop start-html/DesktopStart.dc.html` |
 | Session screen | `docs/design/mockups-desktop/Hex agent · desktop session-html/DesktopSession.dc.html` |
 | Font assets (Apfel Grotezk 400/700 woff2) | `assets/` subfolder of each mockup directory |
-| Live app | `App/hex-desktop/src/` (GPUI 0.2.2, Windows Direct3D 11 renderer) |
+| Live app | `Hex-App/src/` (GPUI 0.2.2, Windows Direct3D 11 renderer) |
 
 The HTML/CSS is authoritative (extracted verbatim below). Artboard: **1440×900**,
 `$preview` props confirm both screens. Verification loop in §7.
@@ -163,7 +164,7 @@ context track 2 · avatar/send full circle.
 
 ### 2.5 Icon manifest
 
-Existing assets in `App/hex-desktop/assets/icons/` verified **verbatim-identical** to mockup
+Existing assets in `Hex-App/assets/icons/` verified **verbatim-identical** to mockup
 paths: arrow-up, attach, bell, bolt, chevron-down, design, extensions, mic, notebooks,
 pencil, plus, search, settings, sidebar, team. (bell/settings/search match both screens;
 the account gear reuses `settings.svg`.)

@@ -37,16 +37,6 @@ jobs:
       - name: Test Rust protocol and TUI crates
         run: cargo test -p hex-protocol -p hex-tui
 
-      # GPUI needs the macOS toolchain/Metal; the desktop lane is macOS-only
-      # until Linux system-dependency support is verified.
-      - name: Build native Rust desktop (macOS)
-        if: runner.os == 'macOS'
-        run: cargo build -p hex-desktop
-
-      - name: Test Rust desktop crate (macOS)
-        if: runner.os == 'macOS'
-        run: cargo test -p hex-desktop
-
       - name: Configure Git Committer
         run: |
           git config --global user.name "github-actions[bot]"

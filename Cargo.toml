@@ -3,5 +3,4 @@ resolver = "2"
 members = [
     "crates/hex-protocol",
     "crates/hex-tui",
-    "App/hex-desktop",
 ]
