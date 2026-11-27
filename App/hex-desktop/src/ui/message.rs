@@ -261,7 +261,8 @@ fn render_inline_tokens_styled(
     default_color: Rgba,
 ) -> Div {
     let has_links = tokens.iter().any(|t| t.link.is_some());
-    if !has_links {
+    let has_code = tokens.iter().any(|t| t.code);
+    if !has_links && !has_code {
         let (full_text, runs) = build_text_runs(tokens, theme, default_bold, default_color);
         if full_text.is_empty() {
             return div().w_full().min_w_0();
@@ -272,8 +273,8 @@ fn render_inline_tokens_styled(
             .child(StyledText::new(full_text).with_runs(runs));
     }
 
-    // Link-bearing paragraphs use wrapping, non-shrinking inline boxes so Taffy
-    // cannot collapse them while labels and long unbroken tokens still wrap.
+    // Interactive and code-bearing paragraphs use wrapping, non-shrinking inline
+    // boxes so Taffy cannot collapse them while links and long tokens still wrap.
     let lines = split_inline_token_lines(tokens);
     let mut container = div().w_full().min_w_0().flex().flex_col();
     let mut token_index = 0usize;
@@ -304,6 +305,13 @@ fn render_inline_tokens_styled(
                     link.interactivity()
                         .on_click(move |_, _, cx| cx.open_url(&url));
                     row = row.child(link);
+                } else if token.code {
+                    let selector = format!("markdown_code_{id_prefix}_{token_index}");
+                    row = row.child(
+                        style_inline_node(token, theme, default_bold, default_color)
+                            .debug_selector(move || selector)
+                            .child(token.text.clone()),
+                    );
                 } else {
                     for (segment_index, seg) in
                         split_inline_segments(&token.text).into_iter().enumerate()
@@ -1462,5 +1470,41 @@ mod tests {
                 "{name} did not wrap: {bounds:?}"
             );
         }
+    }
+
+    #[gpui::test]
+    fn test_inline_code_chips_match_with_and_without_links(cx: &mut gpui::TestAppContext) {
+        let second_paragraph = "See [docs](https://example.com) and `read_file`";
+        let code_index = parse_inline(second_paragraph)
+            .iter()
+            .position(|token| token.code)
+            .expect("inline code parsed");
+        let content = format!("`read_file`\n\n{second_paragraph}");
+        let (_entity, vc) = cx.add_window_view(|_, _| MarkdownLayoutHarness {
+            content,
+            width: 760.0,
+        });
+        vc.simulate_resize(size(px(800.0), px(900.0)));
+        vc.update(|window, _| window.refresh());
+        vc.run_until_parked();
+
+        let plain_code = vc
+            .debug_bounds(Box::leak(
+                "markdown_code_msg_layout_0_0".to_string().into_boxed_str(),
+            ))
+            .expect("inline code without link bounds");
+        let linked_code_selector = format!("markdown_code_msg_layout_1_{code_index}");
+        let linked_code = vc
+            .debug_bounds(Box::leak(linked_code_selector.into_boxed_str()))
+            .expect("inline code with link bounds");
+
+        assert!(
+            (plain_code.size.width - linked_code.size.width).abs() <= px(0.5),
+            "inline code width changed near a link: {plain_code:?} vs {linked_code:?}"
+        );
+        assert!(
+            (plain_code.size.height - linked_code.size.height).abs() <= px(0.5),
+            "inline code height changed near a link: {plain_code:?} vs {linked_code:?}"
+        );
     }
 }
