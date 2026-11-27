@@ -26,54 +26,107 @@ class P2PSignalingClient:
         self.revoked: bool = False
         self.active_kill_switches: dict[str, dict[str, Any]] = {}
         self.latest_host_leases: dict[str, dict[str, Any]] = {}
+        self._lock = threading.RLock()
         self._signal_handlers: list[Callable[[str, dict[str, Any]], None]] = []
+        self._security_handlers: list[Callable[[dict[str, Any]], None]] = []
 
     def on_p2p_signal(self, handler: Callable[[str, dict[str, Any]], None]) -> None:
-        self._signal_handlers.append(handler)
+        with self._lock:
+            self._signal_handlers.append(handler)
+
+    def remove_p2p_signal_handler(self, handler: Callable[[str, dict[str, Any]], None]) -> None:
+        with self._lock:
+            self._signal_handlers = [item for item in self._signal_handlers if item != handler]
+
+    def on_security_event(self, handler: Callable[[dict[str, Any]], None]) -> None:
+        with self._lock:
+            self._security_handlers.append(handler)
+
+    def remove_security_event_handler(self, handler: Callable[[dict[str, Any]], None]) -> None:
+        with self._lock:
+            self._security_handlers = [item for item in self._security_handlers if item != handler]
+
+    def peer_info(self, device_id: str) -> PeerInfo | None:
+        with self._lock:
+            peer = self.online_peers.get(device_id)
+            if peer is None:
+                return None
+            return PeerInfo(
+                device_record_id=peer.device_record_id,
+                user_id=peer.user_id,
+                device_pubkey=peer.device_pubkey,
+                host_eligible=peer.host_eligible,
+            )
+
+    def security_blocked(self, kill_switch_names: set[str]) -> bool:
+        with self._lock:
+            return self.revoked or any(name in self.active_kill_switches for name in kill_switch_names)
 
     def handle_server_event(self, event: dict[str, Any]) -> None:
         """Process a JSON event received from hex-backend /v1/signal."""
+        if not isinstance(event, dict):
+            return
         etype = event.get("type")
-        if etype == "welcome":
-            for p in event.get("online_peers", []):
+        security_event = etype in {"peer_offline", "peer_revoked", "device_revoked", "kill_switch_updated"}
+        with self._lock:
+            if etype == "welcome":
+                self.online_peers.clear()
+                for p in event.get("online_peers", []):
+                    info = PeerInfo(
+                        device_record_id=p["device_record_id"],
+                        user_id=p["user_id"],
+                        device_pubkey=p["device_pubkey"],
+                        host_eligible=bool(p.get("host_eligible", True)),
+                    )
+                    self.online_peers[info.device_record_id] = info
+            elif etype == "peer_online":
                 info = PeerInfo(
-                    device_record_id=p["device_record_id"],
-                    user_id=p["user_id"],
-                    device_pubkey=p["device_pubkey"],
-                    host_eligible=bool(p.get("host_eligible", True)),
+                    device_record_id=event["device_record_id"],
+                    user_id=event["user_id"],
+                    device_pubkey=event["device_pubkey"],
+                    host_eligible=bool(event.get("host_eligible", True)),
                 )
                 self.online_peers[info.device_record_id] = info
-        elif etype == "peer_online":
-            info = PeerInfo(
-                device_record_id=event["device_record_id"],
-                user_id=event["user_id"],
-                device_pubkey=event["device_pubkey"],
-            )
-            self.online_peers[info.device_record_id] = info
-        elif etype in {"peer_offline", "peer_revoked"}:
-            self.online_peers.pop(event.get("device_record_id", ""), None)
-        elif etype == "device_revoked":
-            if event.get("device_record_id") == self.local_device_id:
-                self.revoked = True
-                self.online_peers.clear()
-        elif etype == "p2p_signal":
+            elif etype in {"peer_offline", "peer_revoked"}:
+                self.online_peers.pop(event.get("device_record_id", ""), None)
+            elif etype == "device_revoked":
+                if event.get("device_record_id") == self.local_device_id:
+                    self.revoked = True
+                    self.online_peers.clear()
+            elif etype == "kill_switch_updated":
+                ks = event.get("event", {})
+                if not isinstance(ks, dict):
+                    return
+                name = ks.get("switch")
+                if isinstance(name, str) and name:
+                    if ks.get("active"):
+                        self.active_kill_switches[name] = ks
+                    else:
+                        self.active_kill_switches.pop(name, None)
+            elif etype == "host_lease_updated":
+                lease = event.get("lease", {})
+                pid = lease.get("project_session_id")
+                if pid:
+                    self.latest_host_leases[pid] = lease
+            signal_handlers = tuple(self._signal_handlers)
+            security_handlers = tuple(self._security_handlers)
+
+        if etype == "p2p_signal":
             sender = event.get("from_device_id", "")
             payload = event.get("payload", {})
-            for handler in self._signal_handlers:
-                handler(sender, payload)
-        elif etype == "kill_switch_updated":
-            ks = event.get("event", {})
-            name = ks.get("switch")
-            if name:
-                if ks.get("active"):
-                    self.active_kill_switches[name] = ks
-                else:
-                    self.active_kill_switches.pop(name, None)
-        elif etype == "host_lease_updated":
-            lease = event.get("lease", {})
-            pid = lease.get("project_session_id")
-            if pid:
-                self.latest_host_leases[pid] = lease
+            if not isinstance(sender, str) or not isinstance(payload, dict):
+                return
+            for handler in signal_handlers:
+                try:
+                    handler(sender, payload)
+                except Exception:
+                    continue
+        if security_event:
+            for handler in security_handlers:
+                try:
+                    handler(event)
+                except Exception:
+                    continue
 
     @staticmethod
     def build_turn_ack(project_session_id: str, turn_seq: int) -> dict[str, Any]:

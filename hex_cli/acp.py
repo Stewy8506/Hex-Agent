@@ -775,7 +775,8 @@ class ACPServer:
         self._shutting_down = False
         self._cloud_account: Any | None = None
         self._signal_link: Any | None = None
-        self._signal_lock = threading.Lock()
+        self._transport_broker: Any | None = None
+        self._signal_lock = threading.RLock()
 
     @property
     def cloud_account(self) -> Any:
@@ -792,6 +793,31 @@ class ACPServer:
             "params": {"kind": kind, **fields},
         })
 
+    def _default_relay_uri(self) -> str:
+        parsed = urlsplit(self.cloud_account.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("HEX cloud base URL must use HTTP or HTTPS.")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("HEX cloud base URL cannot contain credentials.")
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        return urlunsplit((scheme, parsed.netloc, "/hex/relay/v1", "", ""))
+
+    async def _serve_peer_sync(self, session: Any, _peer: Any) -> dict[str, Any]:
+        with self._sync_control({}) as control:
+            return await control.sync_with(session)
+
+    def _new_transport_broker(self, link: Any) -> Any:
+        from cloud.transport_broker import TransportBroker
+
+        return TransportBroker(
+            link.signaling,
+            link.send_p2p_signal,
+            self.cloud_account.peer_identity(),
+            relay_uri=self._default_relay_uri(),
+            session_handler=self._serve_peer_sync,
+            negotiation_timeout=30.0,
+        )
+
     def _signal_start(self) -> dict[str, Any]:
         from cloud.signaling import P2PSignalingClient, SignalLink
 
@@ -801,42 +827,66 @@ class ACPServer:
             if not device_id:
                 raise ValueError("Device not enrolled; sign in to HEX cloud first.")
             if self._signal_link is None:
-                link = SignalLink(
+                self._signal_link = SignalLink(
                     account.base_url,
                     P2PSignalingClient(device_id),
                     token_provider=account.access_token,
                     device_id_provider=account.device_record_id,
                 )
-                link.start()
-                self._signal_link = link
-            return self._signal_link.status()
+            if self._transport_broker is None:
+                self._transport_broker = self._new_transport_broker(self._signal_link)
+            self._signal_link.start()
+            self._transport_broker.start()
+            return self._signal_status()
 
     def _signal_stop(self) -> dict[str, Any]:
         with self._signal_lock:
             link = self._signal_link
-        if link is not None:
-            link.stop()
-            return link.status()
-        return {
+            broker = self._transport_broker
+            self._signal_link = None
+            self._transport_broker = None
+        status = link.status() if link is not None else {
             "running": False,
             "connected": False,
             "attempts": 0,
             "last_error": None,
             "base_url": self.cloud_account.base_url,
         }
+        if broker is not None:
+            broker.stop()
+        if link is not None:
+            link.stop()
+        status["running"] = False
+        status["connected"] = False
+        status["transport_broker"] = broker.status() if broker is not None else {
+            "running": False, "local_device_id": None, "active_tunnels": []
+        }
+        return status
 
     def _signal_status(self) -> dict[str, Any]:
         with self._signal_lock:
             link = self._signal_link
+            broker = self._transport_broker
         if link is not None:
-            return link.status()
-        return {
-            "running": False,
-            "connected": False,
-            "attempts": 0,
-            "last_error": None,
-            "base_url": self.cloud_account.base_url,
+            status = link.status()
+        else:
+            status = {
+                "running": False,
+                "connected": False,
+                "attempts": 0,
+                "last_error": None,
+                "base_url": self.cloud_account.base_url,
+            }
+        status["transport_broker"] = broker.status() if broker is not None else {
+            "running": False, "local_device_id": None, "active_tunnels": []
         }
+        return status
+
+    def _ensure_transport_broker(self) -> Any:
+        with self._signal_lock:
+            if self._signal_link is None or self._transport_broker is None:
+                raise ValueError("Authenticated signaling is not started.")
+            return self._transport_broker
 
     def _sync_control(self, params: dict[str, Any]) -> Any:
         from cloud.sync_control import SyncControl
@@ -870,10 +920,23 @@ class ACPServer:
         url = params.get("url")
         peer_id = params.get("peer_id")
         peer_key = params.get("peer_signing_public_key")
-        if not all(isinstance(value, str) and value for value in (url, peer_id, peer_key)):
-            raise ValueError("url, peer_id, and peer_signing_public_key are required.")
-        with self._sync_control(params) as control:
-            result = asyncio.run(control.run_websocket(url, peer_id, peer_key))
+        if not all(isinstance(value, str) and value for value in (peer_id, peer_key)):
+            raise ValueError("peer_id and peer_signing_public_key are required.")
+        requested_transport = params.get("transport")
+        signaled = requested_transport in ("auto", "webrtc", "relay", "signaled") or params.get("signaling") is True
+        if signaled:
+            if url:
+                raise ValueError("Signaled sync cannot also specify a direct WebSocket URL.")
+            self._signal_start()
+            broker = self._ensure_transport_broker()
+            transport = requested_transport if requested_transport in ("webrtc", "relay") else "auto"
+            with self._sync_control(params) as control:
+                result = control.run_signaled(broker, peer_id, peer_key, transport=transport)
+        else:
+            if not isinstance(url, str) or not url:
+                raise ValueError("url is required for direct WebSocket sync.")
+            with self._sync_control(params) as control:
+                result = asyncio.run(control.run_websocket(url, peer_id, peer_key))
         self._emit_cloud_event("sync_completed", **result)
         return result
 
@@ -1110,6 +1173,11 @@ class ACPServer:
                 if not device_record_id:
                     raise ValueError("device_record_id is required.")
                 res = self.cloud_account.revoke_device(device_record_id)
+                if device_record_id == self.cloud_account.device_record_id():
+                    try:
+                        self._signal_stop()
+                    except Exception as exc:
+                        logger.debug("Local revocation signal cleanup failed: %s", exc)
                 self._emit_cloud_event(
                     "device_revoked", device_record_id=device_record_id
                 )
@@ -3322,6 +3390,10 @@ class ACPServer:
         if self._shutting_down:
             return summary
         self._shutting_down = True
+        try:
+            self._signal_stop()
+        except Exception as exc:
+            logger.debug("ACP shutdown signal cleanup failed: %s", exc)
 
         with self._lock:
             sessions = list(self.sessions.values())

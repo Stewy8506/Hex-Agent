@@ -33,7 +33,8 @@ Harness/
 │   ├── p2p_transport.py              # [Implemented] Authenticated E2EE framing + loopback/WS/WSS/QUIC
 │   ├── webrtc_transport.py           # [Implemented] Device-pinned WebRTC DataChannels with bounded chunking
 │   ├── relay_transport.py            # [Implemented] Ticket-paired, zero-persistence ciphertext relay
-│   ├── sync_engine.py                # [Implemented] Bidirectional ledger/cognition sync over loopback, WebSocket, and QUIC
+│   ├── transport_broker.py           # [Implemented] Signal-driven WebRTC/relay negotiation + tunnel revocation
+│   ├── sync_engine.py                # [Implemented] Bidirectional ledger/cognition sync over all authenticated transports
 │   ├── registry_client.py            # [Planned] Sparse-index skill/plugin/tool installer + SkillSpector gate bridge
 │   ├── cloud_tasks.py                # [Planned] Ephemeral cloud worker dispatch & E2EE diff retrieval
 │   ├── telemetry.py                  # [Planned] Opt-in operational-only telemetry (strict prompt/code exclusion)
@@ -171,9 +172,9 @@ After every completed work turn on the Primary Host:
 - [x] Add a QUIC transport with mandatory certificate verification and device pinning, `hex-p2p-v1` ALPN, one length-delimited encrypted stream per connection, optional server allowlists, bounded lifecycle cleanup, and incremental `sync_engine.py` network tests (`cloud/p2p_transport.py`).
 - [x] Add WebRTC DataChannels with non-trickle SDP exchange, caller-supplied STUN/STUNS, device pinning, bounded frame chunking/backpressure, and encrypted `sync_engine.py` network tests (`cloud/webrtc_transport.py`).
 - [x] Add a stateless ticket-paired relay with 256-bit capabilities, loopback-only plaintext or verified WSS, opaque ciphertext forwarding, strict control-message validation, lifecycle limits, and encrypted `sync_engine.py` network tests (`cloud/relay_transport.py`).
-- [ ] Automate WebRTC SDP and relay-ticket negotiation through authenticated signaling, with direct-transport fallback.
-- [ ] Shut down long-lived peer tunnels immediately on device revocation or an active connectivity kill switch.
-- [x] Add `hex sync` CLI/ACP wiring and expose the shared sync engine through the control plane (`cloud/sync_control.py`, `hex_cli/commands/sync.py`).
+- [x] Automate WebRTC SDP and relay-ticket negotiation through authenticated signaling, with direct-transport fallback (`cloud/transport_broker.py`).
+- [x] Shut down long-lived peer tunnels immediately on device revocation or an active connectivity kill switch (`cloud/transport_broker.py`).
+- [x] Add `hex sync` CLI/ACP wiring and expose the shared sync engine through the control plane, including persistent signaled WebRTC/relay sessions (`cloud/sync_control.py`, `hex_cli/commands/sync.py`).
 - [x] Add cloud package to `pyproject.toml` and wire CLI subcommands (`hex cloud status/register/login/logout/devices/revoke`, `hex sync status/run`).
 
 ### Phase 2: Component Updater & Remote Configuration

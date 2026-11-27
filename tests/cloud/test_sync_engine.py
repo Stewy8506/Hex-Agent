@@ -19,6 +19,7 @@ from cryptography.x509.oid import NameOID
 from cloud.cognition_sync import CognitionSyncStore
 from cloud.p2p_transport import (
     InMemoryNetwork,
+    PeerAddress,
     PeerIdentity,
     QuicPeerServer,
     WebSocketPeerServer,
@@ -26,7 +27,9 @@ from cloud.p2p_transport import (
     connect_websocket_peer,
 )
 from cloud.relay_transport import RelayPeerServer, connect_relay_peer, generate_relay_ticket
+from cloud.signaling import P2PSignalingClient
 from cloud.sync_engine import SyncEngine, SyncEngineError, SyncResult
+from cloud.transport_broker import TransportBroker
 from cloud.webrtc_transport import create_webrtc_answer, create_webrtc_offer
 from harness_core.storage.db import LedgerStore
 
@@ -566,6 +569,121 @@ class SyncEngineTests(unittest.IsolatedAsyncioTestCase):
             b"Alice updated relay profile.\n",
         )
         self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
+
+    async def test_signaled_sync_engine_transfers_data_and_reconnects_incrementally(self) -> None:
+        alice_task = self.ledgers["dev_alice"].submit_task({"goal": "signaled task"})["task_id"]
+        self.ledgers["dev_alice"].record_event(
+            alice_task, "RUNNING", reason_code="STARTED"
+        )
+        self.ledgers["dev_alice"].record_dialogue_turn(
+            alice_task, 0, "user", "private signaled dialogue"
+        )
+        self._write_document("dev_alice", "global/user", "Alice signaled profile.\n")
+        bob_task = self.ledgers["dev_bob"].submit_task({"goal": "bob signaled task"})["task_id"]
+        self._write_document("dev_bob", "workspace/memory", "Bob signaled memory.\n")
+
+        identity_a = PeerIdentity.generate("dev_alice")
+        identity_b = PeerIdentity.generate("dev_bob")
+        signaling_a = P2PSignalingClient("dev_alice")
+        signaling_b = P2PSignalingClient("dev_bob")
+        signaling_a.handle_server_event({
+            "type": "welcome",
+            "online_peers": [{
+                "device_record_id": "dev_bob",
+                "user_id": "user_1",
+                "device_pubkey": identity_b.signing_public_key,
+            }],
+        })
+        signaling_b.handle_server_event({
+            "type": "welcome",
+            "online_peers": [{
+                "device_record_id": "dev_alice",
+                "user_id": "user_1",
+                "device_pubkey": identity_a.signing_public_key,
+            }],
+        })
+
+        def send_a(target: str, payload: dict) -> bool:
+            signaling_b.handle_server_event({
+                "type": "p2p_signal", "from_device_id": "dev_alice", "payload": payload,
+            })
+            return True
+
+        def send_b(target: str, payload: dict) -> bool:
+            signaling_a.handle_server_event({
+                "type": "p2p_signal", "from_device_id": "dev_bob", "payload": payload,
+            })
+            return True
+
+        responder_results: list[SyncResult] = []
+
+        async def respond(session: Any, peer: PeerAddress) -> None:
+            self.assertEqual(peer, identity_a.address)
+            responder_results.append(await self.engines["dev_bob"].sync_with(session))
+
+        relay = RelayPeerServer(join_timeout=5, pair_timeout=10, idle_timeout=30)
+        await relay.start()
+        broker_a = TransportBroker(
+            signaling_a, send_a, identity_a, relay_uri=relay.uri, negotiation_timeout=5
+        )
+        broker_b = TransportBroker(
+            signaling_b, send_b, identity_b, relay_uri=relay.uri,
+            session_handler=respond, negotiation_timeout=5,
+        )
+        broker_a.start()
+        broker_b.start()
+
+        async def run_sync() -> SyncResult:
+            result = await broker_a.run_with_peer_async(
+                identity_b.address,
+                lambda session: self.engines["dev_alice"].sync_with(session),
+                transport="auto",
+                timeout=5,
+            )
+            async with asyncio.timeout(5):
+                while len(responder_results) < len(seen_results) + 1:
+                    await asyncio.sleep(0.01)
+            seen_results.append(result)
+            return result
+
+        seen_results: list[SyncResult] = []
+        try:
+            first = await run_sync()
+            self.assertEqual(first.ledger_events_sent, 2)
+            self.assertEqual(responder_results[-1].ledger_events_received, 2)
+            self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
+            self.assertIsNotNone(self.ledgers["dev_alice"].get_task(bob_task))
+            self.assertEqual(
+                self.ledgers["dev_bob"].get_active_dialogue(alice_task)[0]["content"],
+                "private signaled dialogue",
+            )
+            self.assertEqual(
+                self.cognition["dev_bob"]._read_document("global/user"),
+                b"Alice signaled profile.\n",
+            )
+            self.assertEqual(
+                self.cognition["dev_alice"]._read_document("workspace/memory"),
+                b"Bob signaled memory.\n",
+            )
+
+            self.ledgers["dev_alice"].record_event(
+                alice_task, "VERIFYING", reason_code="CHECK"
+            )
+            self._write_document("dev_alice", "global/user", "Alice updated signaled profile.\n")
+            second = await run_sync()
+            self.assertEqual(second.ledger_events_sent, 2)
+            self.assertEqual(responder_results[-1].ledger_events_received, 1)
+            state = json.loads(self.engines["dev_alice"].state_path.read_text())
+            self.assertEqual(state["peers"]["dev_bob"]["ledger"][alice_task], 3)
+            self.assertEqual(
+                self.cognition["dev_bob"]._read_document("global/user"),
+                b"Alice updated signaled profile.\n",
+            )
+            self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
+        finally:
+            broker_a.stop()
+            broker_b.stop()
+            await relay.close()
 
     async def test_incremental_sync_uses_persistent_cursors_and_replays_safely(self) -> None:
         task_id = self.ledgers["dev_alice"].submit_task({"goal": "paged task"})["task_id"]

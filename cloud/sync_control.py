@@ -10,9 +10,10 @@ from typing import Any
 from harness_core.storage.db import LedgerStore
 
 from .cognition_sync import CognitionSyncStore
-from .p2p_transport import P2PTransportError, PeerAddress, connect_websocket_peer
+from .p2p_transport import PeerAddress, SecurePeerSession, connect_websocket_peer
 from .session import CloudAccountError, CloudAccountManager
 from .sync_engine import SyncEngine
+from .transport_broker import TransportBroker
 
 
 class SyncControl:
@@ -78,9 +79,13 @@ class SyncControl:
             "device_id": self.device_id,
             "signed_in": bool(self.account.status().get("logged_in")),
             "capabilities": ["ledger", "cognition"],
-            "transports": ["websocket", "quic"],
+            "transports": ["websocket", "quic", "signaled-webrtc", "signaled-relay"],
             "peers": state["peers"],
         }
+
+    async def sync_with(self, session: SecurePeerSession) -> dict[str, Any]:
+        result = await self._engine().sync_with(session)
+        return result.to_dict()
 
     async def run_websocket(
         self,
@@ -99,10 +104,30 @@ class SyncControl:
             timeout=self.timeout,
         )
         try:
-            result = await self._engine().sync_with(session)
+            result = await self.sync_with(session)
         finally:
             await session.close()
-        return {"transport": "websocket", **result.to_dict()}
+        return {"transport": "websocket", **result}
+
+    def run_signaled(
+        self,
+        broker: TransportBroker,
+        peer_id: str,
+        peer_signing_public_key: str,
+        *,
+        transport: str = "auto",
+    ) -> dict[str, Any]:
+        if self.account.access_token() is None:
+            raise CloudAccountError("Not signed in to HEX cloud.")
+        if broker.device_id != self.device_id:
+            raise ValueError("Transport broker identity does not match this sync device.")
+        peer = PeerAddress(peer_id, peer_signing_public_key)
+
+        async def operation(session: SecurePeerSession) -> dict[str, Any]:
+            return await self.sync_with(session)
+
+        result = broker.run_with_peer(peer, operation, transport=transport, timeout=self.timeout)
+        return {"transport": f"signaled-{transport}", **result}
 
 
 def run_websocket_sync(

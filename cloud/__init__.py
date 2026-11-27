@@ -25,6 +25,7 @@ from .sync_contract import (
 )
 from .sync_engine import SyncEngine, SyncEngineError, SyncResult
 from .team_mesh import TeamMeshCoordinator, TurnCommitBundle
+from .transport_broker import NegotiationError, PeerTunnelRegistry, TransportBroker
 from .updater import ComponentUpdaterClient
 from .webrtc_transport import WebRTCPeer, create_webrtc_answer, create_webrtc_offer
 
@@ -34,11 +35,13 @@ __all__ = [
     "DeviceIdentity",
     "HexAuthClient",
     "InMemoryNetwork",
+    "NegotiationError",
     "P2P_SUBPROTOCOL",
     "P2PSignalingClient",
     "P2PTransportError",
     "PeerAddress",
     "PeerIdentity",
+    "PeerTunnelRegistry",
     "QuicPeerServer",
     "RemoteConfigClient",
     "RelayPeerServer",
@@ -48,6 +51,7 @@ __all__ = [
     "SyncEngineError",
     "SyncResult",
     "SyncStream",
+    "TransportBroker",
     "WebRTCPeer",
     "WebSocketPeerServer",
     "connect_quic_peer",
