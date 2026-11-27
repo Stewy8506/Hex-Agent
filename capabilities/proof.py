@@ -10,21 +10,283 @@ Implements:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from harness_core.storage.cow import IGNORE_DIRS, WorkspaceSnapshotProvider
 from harness_core.storage.db import LedgerStore, canonical_json, sha256_hex, utcnow_iso
-from harness_core.gateway import ToolGateway
+from harness_core.gateway import ToolGateway, redact_secrets
 from harness_core.graphify import ActiveGraphifyAdapter
 from harness_core.cognition.skillspector import SkillSpectorScanner
 from harness_core.vendor_paths import get_harness2_dir
+
+PROOF_VERSION = 1
+PROOF_SIGNING_DOMAIN = b"hex/proof-artifact/v1\0"
+PROOF_LEAF_DOMAIN = b"hex/proof-merkle-leaf/v1\0"
+PROOF_NODE_DOMAIN = b"hex/proof-merkle-node/v1\0"
+_HASH_PATTERN = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
+_DEVICE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_PROOF_ID_PATTERN = re.compile(r"^prf_[0-9a-f]{12}$")
+_SIGNATURE_PATTERN = re.compile(r"^ed25519:[A-Za-z0-9_-]{86}$")
+_PROOF_FIELDS = {
+    "proof_id", "task_id", "attempt_id", "git_diff_sha", "git_diff_text",
+    "workspace_tree_sha", "runtime_digest", "ast_impact", "verification_results",
+    "ledger_signature", "created_at",
+}
+_SENSITIVE_PATH_PARTS = frozenset({".ssh", ".aws", ".gnupg", ".docker"})
+_SENSITIVE_FILE_NAMES = frozenset({
+    ".netrc", ".npmrc", ".pypirc", "credentials", "credentials.json",
+    "id_rsa", "id_ed25519", "secrets.json",
+})
+
+
+def _canonical_proof_bytes(value: Any) -> bytes:
+    import json
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _decode_signature(value: Any) -> bytes:
+    if not isinstance(value, str) or not _SIGNATURE_PATTERN.fullmatch(value):
+        raise ValueError("Malformed proof signature.")
+    try:
+        signature = base64.b64decode(value.removeprefix("ed25519:") + "==", altchars=b"-_", validate=True)
+    except ValueError as exc:
+        raise ValueError("Malformed proof signature.") from exc
+    if len(signature) != 64:
+        raise ValueError("Malformed proof signature.")
+    return signature
+
+
+def _public_key_bytes(value: Any) -> bytes:
+    if not isinstance(value, str):
+        raise ValueError("Invalid proof author public key.")
+    normalized = value.removeprefix("ed25519:")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", normalized):
+        raise ValueError("Invalid proof author public key.")
+    return bytes.fromhex(normalized)
+
+
+def compute_proof_merkle_root(proof: Mapping[str, Any]) -> str:
+    """Compute a deterministic SHA-256 Merkle root over canonical proof fields."""
+    if not isinstance(proof, Mapping):
+        raise ValueError("Malformed proof artifact fields.")
+    proof = _normalize_proof(proof)
+    level = [
+        hashlib.sha256(PROOF_LEAF_DOMAIN + _canonical_proof_bytes({name: proof[name]})).digest()
+        for name in sorted(_PROOF_FIELDS)
+    ]
+    if not level:
+        return "sha256:" + hashlib.sha256(PROOF_NODE_DOMAIN).hexdigest()
+    while len(level) > 1:
+        if len(level) % 2:
+            level.append(level[-1])
+        level = [
+            hashlib.sha256(PROOF_NODE_DOMAIN + level[index] + level[index + 1]).digest()
+            for index in range(0, len(level), 2)
+        ]
+    return "sha256:" + level[0].hex()
+
+
+def _normalize_proof(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise ValueError("Proof artifact must be an object.")
+    source = dict(payload)
+    for nested_name in ("signed_proof", "signed_proof_json"):
+        nested = source.pop(nested_name, None)
+        if nested is not None:
+            raise ValueError("Proof artifact cannot contain a nested signed proof.")
+    for name in ("ast_impact", "verification_results"):
+        encoded = source.pop(f"{name}_json", None)
+        if encoded is not None:
+            import json
+
+            if not isinstance(encoded, str):
+                raise ValueError(f"Invalid encoded proof field: {name}.")
+            try:
+                decoded = json.loads(encoded)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid encoded proof field: {name}.") from exc
+            if name in source and source[name] != decoded:
+                raise ValueError(f"Conflicting proof field: {name}.")
+            source[name] = decoded
+    if set(source) != _PROOF_FIELDS:
+        raise ValueError("Malformed proof artifact fields.")
+    for name in ("proof_id", "task_id", "attempt_id", "git_diff_text", "ledger_signature", "created_at"):
+        if not isinstance(source[name], str):
+            raise ValueError(f"Invalid proof field: {name}.")
+    if not _PROOF_ID_PATTERN.fullmatch(source["proof_id"]):
+        raise ValueError("Invalid proof id.")
+    for name in ("task_id", "attempt_id"):
+        if not source[name] or len(source[name]) > 256 or any(ord(char) < 32 for char in source[name]):
+            raise ValueError(f"Invalid proof field: {name}.")
+    for name in ("git_diff_sha", "workspace_tree_sha", "runtime_digest"):
+        if not isinstance(source[name], str) or not _HASH_PATTERN.fullmatch(source[name]):
+            raise ValueError(f"Invalid proof hash: {name}.")
+    if sha256_hex(source["git_diff_text"]) != source["git_diff_sha"].removeprefix("sha256:"):
+        raise ValueError("Proof diff hash does not match its redacted content.")
+    if not isinstance(source["ast_impact"], dict) or not isinstance(source["verification_results"], dict):
+        raise ValueError("Proof impact and verification results must be objects.")
+    if source["verification_results"].get("passed") is not True:
+        raise ValueError("Proof artifact does not represent successful verification.")
+    try:
+        created_at = datetime.fromisoformat(source["created_at"].replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("Invalid proof timestamp.") from exc
+    if created_at.tzinfo is None or created_at.utcoffset() != timezone.utc.utcoffset(created_at):
+        raise ValueError("Proof timestamp must be UTC.")
+    if not source["ledger_signature"].startswith("integrity-sha256:"):
+        raise ValueError("Proof artifact has an invalid ledger integrity signature.")
+    return source
+
+
+@dataclass(frozen=True, slots=True)
+class SignedProofArtifact:
+    proof: dict[str, Any]
+    author_device_record_id: str
+    project_session_id: str | None
+    host_epoch: int | None
+    turn_seq: int | None
+    proof_merkle_root: str
+    signature: str
+    version: int = PROOF_VERSION
+
+    @property
+    def signing_payload(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "author_device_record_id": self.author_device_record_id,
+            "project_session_id": self.project_session_id,
+            "host_epoch": self.host_epoch,
+            "turn_seq": self.turn_seq,
+            "proof": self.proof,
+            "proof_merkle_root": self.proof_merkle_root,
+        }
+
+    @property
+    def signing_bytes(self) -> bytes:
+        return PROOF_SIGNING_DOMAIN + _canonical_proof_bytes(self.signing_payload)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self.signing_payload, "signature": self.signature}
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "SignedProofArtifact":
+        if not isinstance(payload, Mapping) or set(payload) != {
+            "version", "author_device_record_id", "project_session_id", "host_epoch",
+            "turn_seq", "proof", "proof_merkle_root", "signature",
+        }:
+            raise ValueError("Malformed signed proof fields.")
+        if type(payload["version"]) is not int or payload["version"] != PROOF_VERSION:
+            raise ValueError("Unsupported signed proof version.")
+        author = payload["author_device_record_id"]
+        if not isinstance(author, str) or not _DEVICE_PATTERN.fullmatch(author):
+            raise ValueError("Invalid proof author device.")
+        session = payload["project_session_id"]
+        if session is not None and (not isinstance(session, str) or not _DEVICE_PATTERN.fullmatch(session)):
+            raise ValueError("Invalid proof project session.")
+        epoch = payload["host_epoch"]
+        sequence = payload["turn_seq"]
+        if (epoch is None) != (sequence is None):
+            raise ValueError("Proof epoch and sequence must be bound together.")
+        if epoch is not None and (type(epoch) is not int or epoch < 1 or type(sequence) is not int or sequence < 1):
+            raise ValueError("Proof epoch and sequence must be positive integers.")
+        root = payload["proof_merkle_root"]
+        if not isinstance(root, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", root):
+            raise ValueError("Invalid proof Merkle root.")
+        proof = _normalize_proof(payload["proof"])
+        if compute_proof_merkle_root(proof) != root:
+            raise ValueError("Proof Merkle root does not match the artifact.")
+        _decode_signature(payload["signature"])
+        return cls(proof, author, session, epoch, sequence, root, payload["signature"], payload["version"])
+
+    def verify(self, author_public_key: str) -> bool:
+        try:
+            Ed25519PublicKey.from_public_bytes(_public_key_bytes(author_public_key)).verify(
+                _decode_signature(self.signature), self.signing_bytes
+            )
+            return True
+        except (InvalidSignature, ValueError):
+            return False
+
+
+def sign_proof_artifact(
+    proof: Mapping[str, Any],
+    signer: Any,
+    *,
+    project_session_id: str | None = None,
+    host_epoch: int | None = None,
+    turn_seq: int | None = None,
+) -> SignedProofArtifact:
+    if not isinstance(signer.device_id, str) or not _DEVICE_PATTERN.fullmatch(signer.device_id):
+        raise ValueError("Invalid proof signer device.")
+    if (project_session_id is None) != (host_epoch is None) or (host_epoch is None) != (turn_seq is None):
+        raise ValueError("Proof scope requires a session, epoch, and sequence together.")
+    if project_session_id is not None:
+        if not isinstance(project_session_id, str) or not _DEVICE_PATTERN.fullmatch(project_session_id):
+            raise ValueError("Invalid proof project session.")
+        if type(host_epoch) is not int or host_epoch < 1 or type(turn_seq) is not int or turn_seq < 1:
+            raise ValueError("Proof epoch and sequence must be positive integers.")
+    normalized = _normalize_proof(proof)
+    unsigned = SignedProofArtifact(
+        proof=normalized,
+        author_device_record_id=signer.device_id,
+        project_session_id=project_session_id,
+        host_epoch=host_epoch,
+        turn_seq=turn_seq,
+        proof_merkle_root=compute_proof_merkle_root(normalized),
+        signature="",
+    )
+    signature = signer.sign(unsigned.signing_bytes)
+    return SignedProofArtifact(
+        proof=normalized,
+        author_device_record_id=signer.device_id,
+        project_session_id=project_session_id,
+        host_epoch=host_epoch,
+        turn_seq=turn_seq,
+        proof_merkle_root=unsigned.proof_merkle_root,
+        signature="ed25519:" + base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii"),
+    )
+
+
+def _is_sensitive_proof_path(value: str) -> bool:
+    normalized = value.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part not in {"", ".", "base", "head"}]
+    if any(part in _SENSITIVE_PATH_PARTS for part in parts):
+        return True
+    name = parts[-1].lower() if parts else ""
+    return (
+        name.startswith(".env")
+        or name in _SENSITIVE_FILE_NAMES
+        or name.endswith((".pem", ".key", ".p12", ".pfx"))
+    )
+
+
+def redact_proof_diff(diff_text: str) -> str:
+    """Keep proof diffs useful without replicating credential files or secret values."""
+    blocks = re.split(r"(?=^diff\s)", diff_text, flags=re.MULTILINE)
+    redacted: list[str] = []
+    for block in blocks:
+        headers = [line[4:].split("\t", 1)[0] for line in block.splitlines() if line.startswith(("--- ", "+++ "))]
+        if headers and any(_is_sensitive_proof_path(header) for header in headers):
+            redacted.append("[OMITTED_SENSITIVE_FILE]\n")
+        elif block:
+            redacted.append(block)
+    return str(redact_secrets("".join(redacted)))
 
 # Import cloned Google Research Harness2 from vendor/harness2
 VENDOR_HARNESS2 = get_harness2_dir()
@@ -135,6 +397,10 @@ class VerificationAndProofService:
         modified_files: list[str] | None = None,
         run_tests: bool = True,
         authority_check: Callable[[], None] | None = None,
+        proof_signer: Any | None = None,
+        project_session_id: str | None = None,
+        host_epoch: int | None = None,
+        turn_seq: int | None = None,
     ) -> dict[str, Any]:
         if authority_check:
             authority_check()
@@ -157,6 +423,8 @@ class VerificationAndProofService:
         else:
             tree_sha = self.cow.compute_tree_sha(ws)
             diff_sha, diff_text = self.compute_git_diff(base, ws)
+            diff_text = redact_proof_diff(diff_text)
+            diff_sha = sha256_hex(diff_text)
 
         # 1. Compute AST Impact Subgraph via Active Graphify
         if modified_files:
@@ -207,6 +475,13 @@ class VerificationAndProofService:
                 "test_output_excerpt": "Deterministic journal & workspace hash verification passed.",
             }
 
+        blast = redact_secrets(blast)
+        verification_results = redact_secrets(verification_results)
+        if verification_results.get("test_output_excerpt"):
+            verification_results["test_output_excerpt"] = str(
+                verification_results["test_output_excerpt"]
+            )[:2000]
+
         runtime_digest = sha256_hex(
             f"python:{platform.python_version()}|arch:{platform.machine()}|cow:{self.cow.backend_name}"
         )
@@ -223,6 +498,19 @@ class VerificationAndProofService:
             ast_impact=blast,
             verification_results=verification_results,
         )
+
+        signed_proof = None
+        if proof_signer is not None:
+            if not verification_passed:
+                raise ValueError("Cannot sign a proof for failed verification.")
+            signed_proof = sign_proof_artifact(
+                proof,
+                proof_signer,
+                project_session_id=project_session_id,
+                host_epoch=host_epoch,
+                turn_seq=turn_seq,
+            )
+            proof = self.ledger.attach_signed_proof(proof["proof_id"], signed_proof.to_dict())
 
         # Persist immutable Proof-Carrying Artifact manifest to CAS
         cas_file = self.cas_dir / f"{proof['proof_id']}.json"

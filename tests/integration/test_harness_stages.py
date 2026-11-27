@@ -120,7 +120,7 @@ class TestAutonomousHarnessStages(unittest.TestCase):
         assert isinstance(proof_resp, dict)
         proof = proof_resp["proof"]
         self.assertIsNotNone(proof)
-        self.assertTrue(proof["ledger_signature"].startswith("ed25519-hmac-sha256:"))
+        self.assertTrue(proof["ledger_signature"].startswith("integrity-sha256:"))
 
     def test_stage1_cow_rollback_on_mid_step_crash_and_fencing(self) -> None:
         orig_sha = self.orch.cow.compute_tree_sha(self.project_ws)

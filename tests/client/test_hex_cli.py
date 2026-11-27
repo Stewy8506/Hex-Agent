@@ -109,7 +109,7 @@ class TestHexCLI(unittest.TestCase):
         res = json.loads(buf.getvalue())
         self.assertEqual(res["task"]["status"], "SUCCEEDED")
         self.assertTrue(res["proof"]["verification_results"]["passed"])
-        self.assertTrue(res["proof"]["ledger_signature"].startswith("ed25519-hmac-sha256:"))
+        self.assertTrue(res["proof"]["ledger_signature"].startswith("integrity-sha256:"))
 
     def test_hex_bare_invocation_starts_tui(self) -> None:
         """Running 'hex' with no subcommands immediately launches the interactive TUI console like HEX."""

@@ -94,7 +94,7 @@ EXPECTED_COLUMNS = {
     "proof_bundles": {
         "proof_id", "task_id", "attempt_id", "git_diff_sha", "git_diff_text",
         "workspace_tree_sha", "runtime_digest", "ast_impact_json",
-        "verification_results_json", "ledger_signature", "created_at"
+        "verification_results_json", "ledger_signature", "signed_proof_json", "created_at"
     },
     "skills": {
         "skill_id", "revision_id", "name", "purpose", "description",

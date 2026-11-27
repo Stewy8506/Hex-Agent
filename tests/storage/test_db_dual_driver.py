@@ -379,7 +379,7 @@ class TestSQLiteSyncAndAsyncParity(unittest.TestCase):
                 ast_impact={"callers": ["test_billing.py"]},
                 verification_results={"tests": "PASS"},
             )
-            self.assertTrue(bundle["ledger_signature"].startswith("ed25519-hmac-sha256:"))
+            self.assertTrue(bundle["ledger_signature"].startswith("integrity-sha256:"))
 
             fetched_bundle = await self.store.get_proof_bundle_async(task_id)
             self.assertIsNotNone(fetched_bundle)

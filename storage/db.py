@@ -429,6 +429,10 @@ class LedgerStore(LedgerSyncMixin):
                         self.conn.execute("ALTER TABLE approval_leases ADD COLUMN bindings_json TEXT NOT NULL DEFAULT '{}';")
                     except sqlite3.OperationalError:
                         pass
+                    try:
+                        self.conn.execute("ALTER TABLE proof_bundles ADD COLUMN signed_proof_json TEXT;")
+                    except sqlite3.OperationalError:
+                        pass
                     self.conn.commit()
 
     def _row_to_dict(self, row: Any) -> dict[str, Any] | None:
@@ -3787,7 +3791,7 @@ class LedgerStore(LedgerSyncMixin):
                 f"{runtime_digest}|{canonical_json(ast_impact)}|"
                 f"{canonical_json(verification_results)}|{tip_event_sha}"
             )
-            ledger_signature = f"ed25519-hmac-sha256:{sha256_hex(signature_material)}"
+            ledger_signature = f"integrity-sha256:{sha256_hex(signature_material)}"
 
             self.conn.execute(
                 """
@@ -3855,7 +3859,7 @@ class LedgerStore(LedgerSyncMixin):
                 f"{runtime_digest}|{canonical_json(ast_impact)}|"
                 f"{canonical_json(verification_results)}|{tip_event_sha}"
             )
-            ledger_signature = f"ed25519-hmac-sha256:{sha256_hex(signature_material)}"
+            ledger_signature = f"integrity-sha256:{sha256_hex(signature_material)}"
 
             await conn.execute(
                 """
@@ -3879,6 +3883,70 @@ class LedgerStore(LedgerSyncMixin):
             )
             row = await conn.fetchrow("SELECT * FROM proof_bundles WHERE proof_id = $1", proof_id)
             return self._row_to_dict(row)  # type: ignore[return-value]
+
+    def attach_signed_proof(self, proof_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from harness_core.capabilities.proof import SignedProofArtifact
+
+        signed = SignedProofArtifact.from_dict(payload)
+        if self.backend_type == "postgres":
+            return self._run_sync(self.attach_signed_proof_async, proof_id, signed.to_dict())
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM proof_bundles WHERE proof_id = ?", (proof_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Proof bundle not found: {proof_id}")
+            current = self._row_to_dict(row)
+            assert current is not None
+            for name in ("ast_impact", "verification_results"):
+                current.pop(f"{name}_json", None)
+            current.pop("signed_proof_json", None)
+            current.pop("signed_proof", None)
+            if current != signed.proof:
+                raise ValueError("Signed proof does not match the stored proof artifact.")
+            self.conn.execute(
+                "UPDATE proof_bundles SET ledger_signature = ?, signed_proof_json = ? WHERE proof_id = ?",
+                (signed.signature, canonical_json(signed.to_dict()), proof_id),
+            )
+            self.conn.commit()
+            updated = self.conn.execute(
+                "SELECT * FROM proof_bundles WHERE proof_id = ?", (proof_id,)
+            ).fetchone()
+            return self._row_to_dict(updated)  # type: ignore[return-value]
+
+    async def attach_signed_proof_async(
+        self, proof_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        from harness_core.capabilities.proof import SignedProofArtifact
+
+        signed = SignedProofArtifact.from_dict(payload)
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.attach_signed_proof, proof_id, signed.to_dict())
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT * FROM proof_bundles WHERE proof_id = $1", proof_id
+                )
+                if row is None:
+                    raise KeyError(f"Proof bundle not found: {proof_id}")
+                current = self._row_to_dict(row)
+                assert current is not None
+                for name in ("ast_impact", "verification_results"):
+                    current.pop(f"{name}_json", None)
+                current.pop("signed_proof_json", None)
+                current.pop("signed_proof", None)
+                if current != signed.proof:
+                    raise ValueError("Signed proof does not match the stored proof artifact.")
+                await conn.execute(
+                    "UPDATE proof_bundles SET ledger_signature = $1, signed_proof_json = $2 "
+                    "WHERE proof_id = $3",
+                    signed.signature, canonical_json(signed.to_dict()), proof_id,
+                )
+                updated = await conn.fetchrow(
+                    "SELECT * FROM proof_bundles WHERE proof_id = $1", proof_id
+                )
+                return self._row_to_dict(updated)  # type: ignore[return-value]
 
     def get_proof_bundle(self, task_id: str) -> dict[str, Any] | None:
         if self.backend_type == "postgres":

@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS proof_bundles (
     ast_impact_json TEXT NOT NULL DEFAULT '{}',
     verification_results_json TEXT NOT NULL DEFAULT '{}',
     ledger_signature TEXT NOT NULL,
+    signed_proof_json TEXT,
     created_at TEXT NOT NULL
 );
 
