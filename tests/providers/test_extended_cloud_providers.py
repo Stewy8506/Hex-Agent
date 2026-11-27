@@ -7,6 +7,7 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
+from harness_core.providers.base import sanitize_messages_secrets
 from harness_core.providers.cloud_provider import (
     CloudModelProvider,
     CloudProviderType,
@@ -289,6 +290,27 @@ class TestExtendedCloudProviders(unittest.TestCase):
         )
         self.assertEqual(gem_resp.tool_calls[0]["name"], "read_file")
         self.assertEqual(gem_resp.tool_calls[0]["arguments"], {"path": "Cargo.toml"})
+
+    def test_only_assistant_messages_preserve_thinking_signatures(self) -> None:
+        secret_tok = "sk-ant-api03-nonassistantsignature123456"
+        signature = "sk-sig-assistant-opaque-1234567890"
+        messages = [
+            {"role": "user", "content": "hello", "signature": secret_tok},
+            {"role": "tool", "content": "result", "signature": secret_tok},
+            {
+                "role": "assistant",
+                "content": "answer",
+                "signature": signature,
+                "thinking_block": {"thinking": "reasoning", "signature": signature},
+            },
+        ]
+
+        sanitized = sanitize_messages_secrets(messages)
+
+        self.assertEqual(sanitized[0]["signature"], "[REDACTED_SECRET]")
+        self.assertEqual(sanitized[1]["signature"], "[REDACTED_SECRET]")
+        self.assertEqual(sanitized[2]["signature"], signature)
+        self.assertEqual(sanitized[2]["thinking_block"]["signature"], signature)
 
     def test_structured_messages_redact_secrets_across_all_cloud_transports(self) -> None:
         """Verify secrets in structured tool outputs, assistant calls, and user messages are redacted."""

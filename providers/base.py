@@ -51,13 +51,16 @@ def sanitize_messages_secrets(messages: list[dict[str, Any]] | None) -> list[dic
     for msg in messages:
         if not isinstance(msg, dict):
             continue
+        is_assistant = str(msg.get("role", "user")).lower() == "assistant"
         sanitized = _sanitize_value_strings(
-            dict(msg), redactor=redact_secrets, preserve_signature=True
+            dict(msg),
+            redactor=redact_secrets,
+            preserve_signature=is_assistant,
         )
         raw_content = msg.get("content")
         clean_content = sanitized.get("content")
         if (
-            str(msg.get("role", "user")).lower() == "assistant"
+            is_assistant
             and isinstance(raw_content, list)
             and isinstance(clean_content, list)
         ):
