@@ -75,13 +75,24 @@ class TeamTurnOutbox:
         signer: Any,
         scope_provider: Callable[[str], Mapping[str, Any]],
         publisher: Callable[[SignedTurnCommitBundle, Mapping[str, Any]], Any],
+        history_limit: int = 256,
+        history_bytes_limit: int = 1024 * 1024 * 1024,
     ) -> None:
         self.root = Path(data_dir).resolve() / "team_outbox"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.pending_dir = self.root / "pending"
         self.pending_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.history_dir = self.root / "history"
+        self.history_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
         os.chmod(self.pending_dir, 0o700)
+        os.chmod(self.history_dir, 0o700)
+        if type(history_limit) is not int or history_limit < 1:
+            raise ValueError("history_limit must be a positive integer.")
+        if type(history_bytes_limit) is not int or history_bytes_limit < 1:
+            raise ValueError("history_bytes_limit must be a positive integer.")
+        self.history_limit = history_limit
+        self.history_bytes_limit = history_bytes_limit
         self.ledger = ledger
         self.cow = cow
         self.cognition = cognition
@@ -94,6 +105,27 @@ class TeamTurnOutbox:
     def pending_count(self) -> int:
         with self._lock:
             return len(list(self.pending_dir.glob("*.json")))
+
+    def history_range(
+        self, project_session_id: str, first_seq: int, last_seq: int
+    ) -> list[dict[str, Any]]:
+        if type(first_seq) is not int or type(last_seq) is not int or not 1 <= first_seq <= last_seq:
+            raise ValueError("Invalid team history range.")
+        with self._lock:
+            records: list[dict[str, Any]] = []
+            for path in self.history_dir.glob("*.json"):
+                try:
+                    record = self._load(path)
+                    signed = SignedTurnCommitBundle.from_dict(record["signed"])
+                except Exception:
+                    continue
+                if (
+                    signed.bundle.project_session_id == project_session_id
+                    and first_seq <= signed.bundle.turn_seq <= last_seq
+                ):
+                    records.append(record)
+            records.sort(key=lambda item: item["signed"]["bundle"]["turn_seq"])
+            return records
 
     def __call__(self, turn: VerifiedTeamTurn) -> dict[str, Any]:
         with self._lock:
@@ -303,9 +335,45 @@ class TeamTurnOutbox:
             }
             self._write(path, record)
             return {"status": "queued", "turn_id": record["turn_id"]}
-        path.unlink(missing_ok=True)
-        self._fsync_dir(self.pending_dir)
+        self._archive_history(path, record)
         return {"status": "delivered", "turn_id": record["turn_id"]}
+
+    def _archive_history(self, pending_path: Path, record: Mapping[str, Any]) -> None:
+        history_path = self.history_dir / pending_path.name
+        if history_path.exists():
+            existing = self._load(history_path)
+            if (
+                existing.get("signed") != record.get("signed")
+                or existing.get("payload_digest") != record.get("payload_digest")
+            ):
+                raise ValueError("Conflicting team turn already exists in history.")
+            pending_path.unlink(missing_ok=True)
+        else:
+            os.replace(pending_path, history_path)
+        self._fsync_dir(self.history_dir)
+        self._fsync_dir(self.pending_dir)
+        self._prune_history()
+
+    def _prune_history(self) -> None:
+        entries: list[tuple[Path, int, int]] = []
+        for path in self.history_dir.glob("*.json"):
+            try:
+                record = self._load(path)
+                signed = SignedTurnCommitBundle.from_dict(record["signed"])
+                sequence = signed.bundle.turn_seq
+            except Exception:
+                continue
+            entries.append((path, path.stat().st_size, sequence))
+        entries.sort(key=lambda item: (item[0].stat().st_mtime_ns, item[2], item[0].name))
+        total_bytes = sum(item[1] for item in entries)
+        excess = max(0, len(entries) - self.history_limit)
+        for path, size, _sequence in entries:
+            if excess <= 0 and total_bytes <= self.history_bytes_limit:
+                break
+            path.unlink(missing_ok=True)
+            excess -= 1
+            total_bytes -= size
+        self._fsync_dir(self.history_dir)
 
     def _record_failure(self, path: Path, error_type: str) -> None:
         try:

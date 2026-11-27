@@ -182,6 +182,11 @@ class TeamTurnOutboxTests(unittest.TestCase):
         self.assertEqual(restarted.flush(), {"delivered": 1, "queued": 0})
         self.assertEqual(restarted.pending_count, 0)
         self.assertEqual(delivered, [(captured["signed"], captured["payload"])])
+        history = restarted.history_range("proj_1", 1, 1)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["signed"], captured["signed"])
+        self.assertEqual(history[0]["payload"], captured["payload"])
+        self.assertEqual(stat.S_IMODE(restarted.history_dir.joinpath(history[0]["turn_id"] + ".json").stat().st_mode), 0o600)
         self.assertEqual((self.replica / "app.py").read_text(), "value = 2\n")
         self.assertEqual((self.replica / ".env").read_text(), "REPLICA_KEY=local-secret\n")
         self.assertEqual(self.replica_cognition.global_home.joinpath("USER.md").read_text(), "Team cognition\n")
@@ -229,6 +234,29 @@ class TeamTurnOutboxTests(unittest.TestCase):
         self.assertEqual(restarted.flush(), {"delivered": 0, "queued": 1})
         publisher.assert_not_called()
         self.assertEqual(restarted.pending_count, 1)
+
+    def test_history_retention_keeps_the_newest_exact_turn(self) -> None:
+        outbox = TeamTurnOutbox(
+            self.root / "outbox-data",
+            ledger=self.ledger,
+            cow=self.cow,
+            cognition=self.cognition,
+            signer=self.signer,
+            scope_provider=lambda _task_id: {
+                "project_session_id": "proj_1", "host_epoch": 1, "turn_seq": 1
+            },
+            publisher=Mock(return_value=True),
+            history_limit=1,
+        )
+        self.assertEqual(outbox(self.turn)["status"], "delivered")
+        second = self._verified_turn()
+        outbox.scope_provider = lambda _task_id: {
+            "project_session_id": "proj_1", "host_epoch": 1, "turn_seq": 2
+        }
+        self.assertEqual(outbox(second)["status"], "delivered")
+        history = outbox.history_range("proj_1", 1, 2)
+        self.assertEqual([item["signed"]["bundle"]["turn_seq"] for item in history], [2])
+        self.assertEqual(outbox.history_range("proj_1", 1, 1), [])
 
     def test_flush_reports_offline_delivery_as_queued(self) -> None:
         outbox = self._outbox(Mock(side_effect=ConnectionError("offline")))
