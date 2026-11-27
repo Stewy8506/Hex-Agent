@@ -16,6 +16,7 @@ from .updater import verify_signed_envelope
 
 TURN_COMMIT_VERSION = 1
 TURN_COMMIT_DOMAIN = b"hex/turn-commit-bundle/v1\0"
+TURN_ACK_DOMAIN = b"hex/turn-ack/v1\0"
 BUNDLE_HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -172,6 +173,33 @@ def sign_turn_commit(bundle: TurnCommitBundle, signer: Any) -> SignedTurnCommitB
         author_device_record_id=signer.device_id,
         signature="ed25519:" + base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii"),
     )
+
+
+def sign_turn_ack(
+    signer: Any,
+    project_session_id: str,
+    host_epoch: int,
+    turn_seq: int,
+    bundle_digest: str,
+) -> dict[str, Any]:
+    if (
+        not DEVICE_ID_PATTERN.fullmatch(project_session_id)
+        or type(host_epoch) is not int or host_epoch < 1
+        or type(turn_seq) is not int or turn_seq < 1
+        or not re.fullmatch(r"[0-9a-f]{64}", bundle_digest)
+    ):
+        raise ValueError("Invalid turn acknowledgement.")
+    payload = {
+        "project_session_id": project_session_id,
+        "host_epoch": host_epoch,
+        "turn_seq": turn_seq,
+        "bundle_digest": bundle_digest,
+    }
+    signature = signer.sign(TURN_ACK_DOMAIN + canonical_json_bytes(payload))
+    return {
+        **payload,
+        "signature": "ed25519:" + base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii"),
+    }
 
 
 class TeamMeshCoordinator:

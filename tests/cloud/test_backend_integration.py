@@ -293,6 +293,7 @@ class BackendIntegrationTests(unittest.TestCase):
             signaling,
             token_provider=self.manager.access_token,
             device_id_provider=self.manager.device_record_id,
+            ack_signer=self.manager.peer_identity(),
             reconnect_initial=0.05,
         )
         link.start()
@@ -305,7 +306,7 @@ class BackendIntegrationTests(unittest.TestCase):
             self.assertEqual(status["attempts"], 0)
 
             # Outbound frames are accepted by the real server socket.
-            self.assertTrue(link.send_turn_ack("proj_e2e", 1))
+            self.assertTrue(link.send_turn_ack("proj_e2e", 1, 1, "a" * 64))
             self.assertTrue(link.send_p2p_signal("dev_nowhere", {"hello": True}))
         finally:
             link.stop()

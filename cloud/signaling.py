@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from .team_mesh import sign_turn_ack
 
 
 @dataclass
@@ -20,12 +23,16 @@ class PeerInfo:
 class P2PSignalingClient:
     """Tracks online sibling/team peers, revocations, kill switches, and host leases."""
 
-    def __init__(self, local_device_id: str) -> None:
+    def __init__(self, local_device_id: str, *, host_eligible: bool = True) -> None:
         self.local_device_id = local_device_id
+        self.local_host_eligible = host_eligible
         self.online_peers: dict[str, PeerInfo] = {}
         self.revoked: bool = False
         self.active_kill_switches: dict[str, dict[str, Any]] = {}
         self.latest_host_leases: dict[str, dict[str, Any]] = {}
+        self.local_verified_turn_seq: dict[str, int] = {}
+        self._coordinator_heartbeats: dict[str, float] = {}
+        self._clock = time.monotonic
         self._lock = threading.RLock()
         self._signal_handlers: list[Callable[[str, dict[str, Any]], None]] = []
         self._security_handlers: list[Callable[[dict[str, Any]], None]] = []
@@ -58,6 +65,35 @@ class P2PSignalingClient:
                 host_eligible=peer.host_eligible,
             )
 
+    def _record_host_lease(self, lease: Any) -> None:
+        if not isinstance(lease, dict):
+            return
+        project_session_id = lease.get("project_session_id")
+        if not isinstance(project_session_id, str) or not project_session_id:
+            return
+        previous = self.latest_host_leases.get(project_session_id)
+        if not previous or previous.get("host_epoch") != lease.get("host_epoch"):
+            self._coordinator_heartbeats[project_session_id] = self._clock()
+            self.local_verified_turn_seq.pop(project_session_id, None)
+        self.latest_host_leases[project_session_id] = lease
+
+    def coordinator_is_stale(
+        self, project_session_id: str, stale_after_seconds: float, now: float | None = None
+    ) -> bool:
+        with self._lock:
+            heartbeat = self._coordinator_heartbeats.get(project_session_id)
+            return heartbeat is None or (self._clock() if now is None else now) - heartbeat > stale_after_seconds
+
+    def note_turn_ack(self, project_session_id: str, host_epoch: int, turn_seq: int) -> bool:
+        with self._lock:
+            lease = self.latest_host_leases.get(project_session_id)
+            if not lease or lease.get("host_epoch") != host_epoch or type(turn_seq) is not int or turn_seq < 1:
+                return False
+            self.local_verified_turn_seq[project_session_id] = max(
+                turn_seq, self.local_verified_turn_seq.get(project_session_id, 0)
+            )
+            return True
+
     def security_blocked(self, kill_switch_names: set[str]) -> bool:
         with self._lock:
             return self.revoked or any(name in self.active_kill_switches for name in kill_switch_names)
@@ -79,6 +115,10 @@ class P2PSignalingClient:
                         host_eligible=bool(p.get("host_eligible", True)),
                     )
                     self.online_peers[info.device_record_id] = info
+                leases = event.get("host_leases", [])
+                if isinstance(leases, list):
+                    for lease in leases:
+                        self._record_host_lease(lease)
             elif etype == "peer_online":
                 info = PeerInfo(
                     device_record_id=event["device_record_id"],
@@ -103,11 +143,23 @@ class P2PSignalingClient:
                         self.active_kill_switches[name] = ks
                     else:
                         self.active_kill_switches.pop(name, None)
-            elif etype == "host_lease_updated":
-                lease = event.get("lease", {})
-                pid = lease.get("project_session_id")
-                if pid:
-                    self.latest_host_leases[pid] = lease
+            elif etype in {"host_lease_updated", "failover_complete"}:
+                self._record_host_lease(event.get("lease"))
+            elif etype == "coordinator_heartbeat":
+                pid = event.get("project_session_id")
+                lease = self.latest_host_leases.get(pid) if isinstance(pid, str) else None
+                if (
+                    lease
+                    and lease.get("host_epoch") == event.get("host_epoch")
+                    and lease.get("primary_device_record_id") == event.get("device_record_id")
+                ):
+                    self._coordinator_heartbeats[pid] = self._clock()
+            elif etype == "turn_ack_result" and event.get("accepted"):
+                self.note_turn_ack(
+                    event.get("project_session_id", ""),
+                    event.get("host_epoch", 0),
+                    event.get("turn_seq", 0),
+                )
             signal_handlers = tuple(self._signal_handlers)
             security_handlers = tuple(self._security_handlers)
 
@@ -129,12 +181,16 @@ class P2PSignalingClient:
                     continue
 
     @staticmethod
-    def build_turn_ack(project_session_id: str, turn_seq: int) -> dict[str, Any]:
-        return {
-            "type": "turn_ack",
-            "project_session_id": project_session_id,
-            "turn_seq": turn_seq,
-        }
+    def build_turn_ack(
+        signer: Any,
+        project_session_id: str,
+        host_epoch: int,
+        turn_seq: int,
+        bundle_digest: str,
+    ) -> dict[str, Any]:
+        return {"type": "turn_ack", **sign_turn_ack(
+            signer, project_session_id, host_epoch, turn_seq, bundle_digest
+        )}
 
     @staticmethod
     def build_failover_request(
@@ -181,14 +237,23 @@ class SignalLink:
         token_provider: Callable[[], str | None],
         device_id_provider: Callable[[], str | None] | None = None,
         connect_factory: Callable[[str], Any] | None = None,
+        ack_signer: Any = None,
+        heartbeat_interval_seconds: float = 3.0,
+        coordinator_stale_seconds: float = 10.0,
         reconnect_initial: float = 1.0,
         reconnect_max: float = 30.0,
     ) -> None:
+        if heartbeat_interval_seconds <= 0 or coordinator_stale_seconds <= heartbeat_interval_seconds:
+            raise ValueError("Heartbeat timing must be positive with stale timeout above the interval.")
         self.base_url = base_url.rstrip("/")
         self.signaling = signaling
         self._token_provider = token_provider
         self._device_id_provider = device_id_provider or (lambda: signaling.local_device_id)
         self._connect = connect_factory or _default_connect
+        self._ack_signer = ack_signer
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._coordinator_stale_seconds = coordinator_stale_seconds
+        self._failover_attempts: set[tuple[str, int, str]] = set()
         self._reconnect_initial = reconnect_initial
         self._reconnect_max = reconnect_max
         self._thread: threading.Thread | None = None
@@ -207,7 +272,11 @@ class SignalLink:
             return
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="hex-signal-link", daemon=True)
+        self._heartbeat_thread = threading.Thread(
+            target=self._supervise_coordinators, name="hex-team-heartbeat", daemon=True
+        )
         self._thread.start()
+        self._heartbeat_thread.start()
 
     def stop(self, timeout: float = 3.0) -> None:
         self._stop.set()
@@ -215,6 +284,9 @@ class SignalLink:
         thread = self._thread
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=timeout)
+        heartbeat_thread = self._heartbeat_thread
+        if heartbeat_thread and heartbeat_thread.is_alive() and heartbeat_thread is not threading.current_thread():
+            heartbeat_thread.join(timeout=timeout)
         with self._status_lock:
             self.connected = False
 
@@ -242,8 +314,20 @@ class SignalLink:
             self._close_current()
             return False
 
-    def send_turn_ack(self, project_session_id: str, turn_seq: int) -> bool:
-        return self.send(P2PSignalingClient.build_turn_ack(project_session_id, turn_seq))
+    def send_turn_ack(
+        self,
+        project_session_id: str,
+        host_epoch: int,
+        turn_seq: int,
+        bundle_digest: str,
+        signer: Any = None,
+    ) -> bool:
+        signer = signer or self._ack_signer
+        if signer is None:
+            return False
+        return self.send(P2PSignalingClient.build_turn_ack(
+            signer, project_session_id, host_epoch, turn_seq, bundle_digest
+        ))
 
     def send_p2p_signal(self, target_device_id: str, payload: dict[str, Any]) -> bool:
         return self.send(
@@ -274,6 +358,41 @@ class SignalLink:
                 sock.close()
             except Exception:
                 pass
+
+    def _supervise_coordinators(self) -> None:
+        while not self._stop.wait(self._heartbeat_interval_seconds):
+            self._supervise_coordinators_once()
+
+    def _supervise_coordinators_once(self) -> None:
+        with self.signaling._lock:
+            leases = list(self.signaling.latest_host_leases.items())
+            local_eligible = self.signaling.local_host_eligible
+            sequences = dict(self.signaling.local_verified_turn_seq)
+        for project_session_id, lease in leases:
+            if not isinstance(lease, dict):
+                continue
+            coordinator = lease.get("primary_device_record_id")
+            epoch = lease.get("host_epoch")
+            if type(epoch) is not int or epoch < 1:
+                continue
+            if coordinator == self.signaling.local_device_id:
+                self.send({
+                    "type": "coordinator_heartbeat",
+                    "project_session_id": project_session_id,
+                    "host_epoch": epoch,
+                    "turn_seq": sequences.get(project_session_id, 0),
+                })
+            elif local_eligible and self.signaling.coordinator_is_stale(
+                project_session_id, self._coordinator_stale_seconds
+            ):
+                team_id = lease.get("team_id")
+                if not isinstance(team_id, str) or not team_id or not isinstance(coordinator, str):
+                    continue
+                attempt = (project_session_id, epoch, coordinator)
+                if attempt in self._failover_attempts:
+                    continue
+                if self.request_failover(team_id, project_session_id, coordinator):
+                    self._failover_attempts.add(attempt)
 
     def _run(self) -> None:
         delay = self._reconnect_initial

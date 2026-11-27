@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
@@ -26,6 +27,7 @@ from cloud.team_mesh import (
     SignedTurnCommitBundle,
     TeamMeshCoordinator,
     TurnCommitBundle,
+    sign_turn_ack,
     sign_turn_commit,
 )
 from cloud.updater import ComponentUpdaterClient, canonical_json_bytes, verify_signed_envelope
@@ -172,6 +174,21 @@ class HarnessCloudClientTests(unittest.TestCase):
             rc.apply_signed_config(signed_cfg, local_denied_features={"cloud_task_workers"})
             self.assertTrue(rc.is_enabled("p2p_cross_device_sync"))
             self.assertFalse(rc.is_enabled("cloud_task_workers"))
+
+    def test_signed_turn_ack_matches_backend_domain_and_rejects_tampering(self) -> None:
+        signer = PeerIdentity.generate("dev_peer_a")
+        ack = sign_turn_ack(signer, "proj_1", 2, 7, "a" * 64)
+        payload = {key: value for key, value in ack.items() if key != "signature"}
+        raw = b"hex/turn-ack/v1\0" + canonical_json_bytes(payload)
+        signature = base64.urlsafe_b64decode(ack["signature"].split(":", 1)[1] + "==")
+        public_raw = bytes.fromhex(signer.signing_public_key.split(":", 1)[1])
+        Ed25519PublicKey.from_public_bytes(public_raw).verify(signature, raw)
+        with self.assertRaises(InvalidSignature):
+            Ed25519PublicKey.from_public_bytes(public_raw).verify(
+                signature, raw.replace(b'"turn_seq":7', b'"turn_seq":8')
+            )
+        with self.assertRaises(ValueError):
+            sign_turn_ack(signer, "proj_1", 2, 0, "a" * 64)
 
     def test_team_mesh_host_epoch_fencing_and_turn_commit_replication(self) -> None:
         mesh = TeamMeshCoordinator("dev_peer_b", self.server.public_key_hex, "proj_1")

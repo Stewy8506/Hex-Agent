@@ -13,6 +13,7 @@ from typing import Any
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
 
+from cloud.p2p_transport import PeerIdentity
 from cloud.signaling import P2PSignalingClient, SignalLink
 
 
@@ -136,7 +137,8 @@ class SignalLinkTests(unittest.TestCase):
 
     def test_send_returns_false_when_disconnected(self) -> None:
         link, _sock = self._make_link([])
-        self.assertFalse(link.send_turn_ack("proj_1", 3))
+        signer = PeerIdentity.generate("dev_local")
+        self.assertFalse(link.send_turn_ack("proj_1", 1, 3, "a" * 64, signer))
         self.assertFalse(link.request_failover("team_1", "proj_1", "dev_b"))
 
     def test_stop_terminates_runner(self) -> None:
@@ -149,16 +151,89 @@ class SignalLinkTests(unittest.TestCase):
 
     def test_turn_ack_frame_shape(self) -> None:
         link, sock = self._make_link([])
+        signer = PeerIdentity.generate("dev_local")
         link.start()
         self.addCleanup(link.stop)
         self.assertTrue(_poll(lambda: link.status()["connected"]))
-        self.assertTrue(link.send_turn_ack("proj_1", 7))
+        self.assertTrue(link.send_turn_ack("proj_1", 1, 7, "a" * 64, signer))
         frame = json.loads(sock.sent[0])
-        self.assertEqual(frame, {
-            "type": "turn_ack",
-            "project_session_id": "proj_1",
-            "turn_seq": 7,
+        self.assertEqual(frame["type"], "turn_ack")
+        self.assertEqual(frame["project_session_id"], "proj_1")
+        self.assertEqual(frame["host_epoch"], 1)
+        self.assertEqual(frame["turn_seq"], 7)
+        self.assertEqual(frame["bundle_digest"], "a" * 64)
+        self.assertTrue(frame["signature"].startswith("ed25519:"))
+
+    def test_observer_does_not_request_failover(self) -> None:
+        self.signaling.local_host_eligible = False
+        self.signaling.handle_server_event({
+            "type": "host_lease_updated",
+            "lease": {
+                "project_session_id": "proj_1", "team_id": "team_1", "host_epoch": 1,
+                "primary_device_record_id": "dev_remote", "last_committed_turn_seq": 0,
+            },
         })
+        link, sock = self._make_link([])
+        link.start()
+        self.addCleanup(link.stop)
+        self.assertTrue(_poll(lambda: link.status()["connected"]))
+        link._supervise_coordinators_once()
+        self.assertEqual(sock.sent, [])
+
+    def test_heartbeat_and_stale_coordinator_failover(self) -> None:
+        link, sock = self._make_link([])
+        now = [100.0]
+        self.signaling._clock = lambda: now[0]
+        self.signaling.handle_server_event({
+            "type": "welcome",
+            "online_peers": [],
+            "host_leases": [{
+                "project_session_id": "proj_1",
+                "team_id": "team_1",
+                "host_epoch": 1,
+                "primary_device_record_id": "dev_remote",
+                "last_committed_turn_seq": 4,
+            }],
+        })
+        link.start()
+        self.addCleanup(link.stop)
+        self.assertTrue(_poll(lambda: link.status()["connected"]))
+
+        now[0] = 110.1
+        link._supervise_coordinators_once()
+        link._supervise_coordinators_once()
+        failovers = [json.loads(raw) for raw in sock.sent if json.loads(raw)["type"] == "request_failover"]
+        self.assertEqual(len(failovers), 1)
+        self.assertEqual(failovers[0]["failed_device_id"], "dev_remote")
+
+        self.signaling.handle_server_event({
+            "type": "host_lease_updated",
+            "lease": {
+                "project_session_id": "proj_1",
+                "team_id": "team_1",
+                "host_epoch": 2,
+                "primary_device_record_id": "dev_local",
+                "last_committed_turn_seq": 4,
+            },
+        })
+        self.signaling.handle_server_event({
+            "type": "turn_ack_result", "accepted": True,
+            "project_session_id": "proj_1", "host_epoch": 2, "turn_seq": 4,
+        })
+        link._supervise_coordinators_once()
+        heartbeats = [json.loads(raw) for raw in sock.sent if json.loads(raw)["type"] == "coordinator_heartbeat"]
+        self.assertEqual(heartbeats[-1]["host_epoch"], 2)
+        self.assertEqual(heartbeats[-1]["turn_seq"], 4)
+
+        self.signaling.handle_server_event({
+            "type": "coordinator_heartbeat",
+            "project_session_id": "proj_1",
+            "host_epoch": 1,
+            "device_record_id": "dev_remote",
+        })
+        self.assertFalse(self.signaling.coordinator_is_stale("proj_1", 10.0, now=now[0]))
+        now[0] = 120.2
+        self.assertTrue(self.signaling.coordinator_is_stale("proj_1", 10.0, now=now[0]))
 
 
 if __name__ == "__main__":

@@ -832,6 +832,7 @@ class ACPServer:
                     P2PSignalingClient(device_id),
                     token_provider=account.access_token,
                     device_id_provider=account.device_record_id,
+                    ack_signer=account.peer_identity(),
                 )
             if self._transport_broker is None:
                 self._transport_broker = self._new_transport_broker(self._signal_link)
