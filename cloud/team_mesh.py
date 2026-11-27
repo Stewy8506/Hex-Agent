@@ -210,13 +210,16 @@ class TeamMeshCoordinator:
         local_device_id: str,
         server_public_key_hex: str,
         project_session_id: str | None = None,
+        replication_service: Any | None = None,
     ) -> None:
         self.local_device_id = local_device_id
         self._server_public_key_hex = server_public_key_hex
         self.project_session_id = project_session_id
+        self.replication_service = replication_service
         self.current_epoch: int = 0
         self.primary_device_id: str | None = None
         self.last_applied_turn_seq: int = 0
+        self.committed_turn_seq: int = 0
 
     @property
     def mode(self) -> str:
@@ -255,8 +258,15 @@ class TeamMeshCoordinator:
         self.project_session_id = session_id
         self.current_epoch = incoming_epoch
         self.primary_device_id = primary_device
-        self.last_applied_turn_seq = max(self.last_applied_turn_seq, sequence)
+        self.committed_turn_seq = max(self.committed_turn_seq, sequence)
         return self.mode
+
+    @property
+    def missing_turn_range(self) -> tuple[int, int] | None:
+        """Return the contiguous catch-up range advertised by the trusted lease."""
+        if self.committed_turn_seq <= self.last_applied_turn_seq:
+            return None
+        return self.last_applied_turn_seq + 1, self.committed_turn_seq
 
     def accept_turn_commit(
         self,
@@ -264,8 +274,9 @@ class TeamMeshCoordinator:
         device_public_keys: Mapping[str, str],
         *,
         sender_device_id: str,
+        replication_payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Accept a signed turn only when relayed by the active Coordinator."""
+        """Apply and acknowledge a signed turn relayed by the active Coordinator."""
         if self.primary_device_id is None or sender_device_id != self.primary_device_id:
             raise ValueError("TurnCommitBundle was not relayed by the active Coordinator.")
         if not isinstance(signed_bundle, SignedTurnCommitBundle):
@@ -273,22 +284,34 @@ class TeamMeshCoordinator:
         bundle = signed_bundle.bundle
         if self.project_session_id is None or bundle.project_session_id != self.project_session_id:
             raise ValueError("TurnCommitBundle belongs to a different project session.")
-        if bundle.host_epoch != self.current_epoch:
+        if bundle.host_epoch > self.current_epoch:
             raise ValueError(
-                f"TurnCommitBundle epoch mismatch: got {bundle.host_epoch}, expected {self.current_epoch}."
-            )
-        if bundle.turn_seq <= self.last_applied_turn_seq:
-            raise ValueError(
-                f"Stale turn_seq {bundle.turn_seq} <= already applied {self.last_applied_turn_seq}."
+                f"TurnCommitBundle epoch mismatch: got {bundle.host_epoch}, expected <= {self.current_epoch}."
             )
         public_key = device_public_keys.get(signed_bundle.author_device_record_id)
         if not public_key or not signed_bundle.verify(public_key):
             raise ValueError("TurnCommitBundle author signature verification failed.")
-        self.last_applied_turn_seq = bundle.turn_seq
+        if self.replication_service is None or replication_payload is None:
+            raise ValueError("Verified team turn content is required for replication.")
+        if (
+            bundle.turn_seq > self.last_applied_turn_seq
+            and bundle.turn_seq != self.last_applied_turn_seq + 1
+        ):
+            raise ValueError(
+                f"Team turn sequence gap: expected {self.last_applied_turn_seq + 1}, got {bundle.turn_seq}."
+            )
+        result = self.replication_service.apply_turn(
+            signed_bundle,
+            replication_payload,
+            device_public_keys,
+        )
+        self.last_applied_turn_seq = max(self.last_applied_turn_seq, bundle.turn_seq)
+        self.committed_turn_seq = max(self.committed_turn_seq, bundle.turn_seq)
         return {
             "ack": True,
             "project_session_id": bundle.project_session_id,
             "author_device_record_id": signed_bundle.author_device_record_id,
             "turn_seq": bundle.turn_seq,
             "bundle_digest": bundle.compute_digest(),
+            "replication_status": result["status"],
         }

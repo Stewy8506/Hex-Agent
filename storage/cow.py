@@ -39,6 +39,27 @@ IGNORE_DIRS = frozenset({
 })
 _MAX_ARCHIVE_MEMBERS = 100_000
 _MAX_ARCHIVE_FILE_BYTES = 8 * 1024 * 1024 * 1024
+_SENSITIVE_PATH_PARTS = frozenset({".ssh", ".aws", ".gnupg", ".docker"})
+_SENSITIVE_FILE_NAMES = frozenset({
+    ".netrc", ".npmrc", ".pypirc", "credentials", "credentials.json",
+    "id_rsa", "id_ed25519", "secrets.json",
+})
+
+
+def is_sensitive_workspace_path(value: str) -> bool:
+    """Identify credential files that must never enter workspace archives or proofs."""
+    normalized = value.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part not in {"", ".", "base", "head"}]
+    if any(part in _SENSITIVE_PATH_PARTS for part in parts):
+        return True
+    name = parts[-1].lower() if parts else ""
+    return (
+        name.startswith(".env")
+        or name.endswith(".env")
+        or name in _SENSITIVE_FILE_NAMES
+        or name.endswith((".pem", ".key", ".p12", ".pfx"))
+    )
+
 
 
 class PublicationConflictError(RuntimeError):
@@ -88,19 +109,26 @@ def compute_tree_sha(directory: Path | str) -> str:
     hasher = hashlib.sha256()
     entries: list[tuple[str, Path]] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in IGNORE_DIRS and not is_sensitive_workspace_path(d)
+        )
         rel_dir = Path(dirpath).relative_to(root)
         for fname in sorted(filenames):
             if fname.startswith(".DS_Store"):
                 continue
             fpath = Path(dirpath) / fname
             rel_path = str(rel_dir / fname) if str(rel_dir) != "." else fname
+            if is_sensitive_workspace_path(rel_path):
+                continue
             entries.append((rel_path.replace("\\", "/"), fpath))
 
     entries.sort(key=lambda item: item[0])
     for rel_path, fpath in entries:
         if fpath.is_symlink():
             target = os.readlink(fpath)
+            if is_sensitive_workspace_path(target):
+                continue
             hasher.update(f"L:{rel_path}->{target}\n".encode("utf-8"))
         elif fpath.is_file():
             content_sha = hashlib.sha256(fpath.read_bytes()).hexdigest()
@@ -119,6 +147,12 @@ def export_delta_archive(snapshot_path: Path | str, archive_dest: Path | str) ->
         if any(p in IGNORE_DIRS or p.startswith(".DS_Store") for p in parts):
             return None
         if tarinfo.name.endswith((".pyc", ".db-wal", ".db-shm")):
+            return None
+        if is_sensitive_workspace_path(tarinfo.name):
+            return None
+        if tarinfo.issym() and is_sensitive_workspace_path(
+            posixpath.normpath(posixpath.join(posixpath.dirname(tarinfo.name), tarinfo.linkname))
+        ):
             return None
         return tarinfo
 
@@ -149,6 +183,8 @@ def _archive_relative_path(name: str, workspace_prefix: bool) -> str | None:
         raise ValueError(f"Delta archive cannot replace local metadata: '{name}'")
     if parts[-1].startswith(".DS_Store") or parts[-1].endswith((".pyc", ".db-wal", ".db-shm")):
         raise ValueError(f"Delta archive contains an unsupported local artifact: '{name}'")
+    if is_sensitive_workspace_path("/".join(parts)):
+        raise ValueError(f"Delta archive cannot replicate credential files: '{name}'")
     return "/".join(parts)
 
 
@@ -224,6 +260,8 @@ def import_delta_archive(
                     )
                     if link.startswith("/") or resolved_link == ".." or resolved_link.startswith("../"):
                         raise ValueError(f"Symlink target escapes workspace root: '{link}'")
+                    if is_sensitive_workspace_path(resolved_link):
+                        raise ValueError(f"Symlink cannot reference credential files: '{rel_path}'")
                 entries[rel_path] = member
 
             for rel_path in sorted(entries, key=lambda value: (value.count("/"), value)):
@@ -294,13 +332,28 @@ def compute_workspace_diff(base_dir: Path | str, target_dir: Path | str) -> str:
     all_rel_paths: set[str] = set()
     for root_p in (base_path, target_path):
         for dirpath, dirnames, filenames in os.walk(root_p):
-            dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
+            dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in IGNORE_DIRS and not is_sensitive_workspace_path(d)
+        )
             rel_dir = Path(dirpath).relative_to(root_p)
             for fname in filenames:
                 if fname.startswith(".DS_Store"):
                     continue
                 rel_file = str(rel_dir / fname) if str(rel_dir) != "." else fname
+                if is_sensitive_workspace_path(rel_file):
+                    continue
+                candidate = Path(dirpath) / fname
+                if candidate.is_symlink() and is_sensitive_workspace_path(os.readlink(candidate)):
+                    continue
                 all_rel_paths.add(rel_file)
+
+    for rel in list(all_rel_paths):
+        for root in (base_path, target_path):
+            candidate = root / rel
+            if candidate.is_symlink() and is_sensitive_workspace_path(os.readlink(candidate)):
+                all_rel_paths.discard(rel)
+                break
 
     diff_chunks: list[str] = []
     for rel in sorted(all_rel_paths):
@@ -341,13 +394,20 @@ def _iter_tree_entries(root: Path) -> dict[str, Path]:
     if not root.is_dir():
         return entries
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in IGNORE_DIRS and not is_sensitive_workspace_path(d)
+        )
         rel_dir = Path(dirpath).relative_to(root)
         for fname in sorted(filenames):
             if fname.startswith(".DS_Store") or fname.endswith((".pyc", ".db-wal", ".db-shm")):
                 continue
             fpath = Path(dirpath) / fname
             rel = str(rel_dir / fname) if str(rel_dir) != "." else fname
+            if is_sensitive_workspace_path(rel):
+                continue
+            if fpath.is_symlink() and is_sensitive_workspace_path(os.readlink(fpath)):
+                continue
             entries[rel.replace("\\", "/")] = fpath
     return entries
 

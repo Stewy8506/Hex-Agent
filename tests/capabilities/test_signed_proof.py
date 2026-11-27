@@ -125,6 +125,37 @@ class TestSignedProofArtifact(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.ledger.attach_signed_proof(self.proof["proof_id"], {**signed.to_dict(), "turn_seq": 10})
 
+    def test_signed_proof_import_is_exact_and_idempotent(self) -> None:
+        signed = self.signed()
+        imported = LedgerStore(Path(self.tmp.name) / "imported.db")
+        try:
+            imported.merge_remote_chain(
+                self.proof["task_id"],
+                [],
+                task_snapshot=self.ledger.get_task(self.proof["task_id"]),
+                sender_device_record_id=self.signer.device_id,
+            )
+            first = imported.save_signed_proof(signed.to_dict())
+            second = imported.save_signed_proof(signed.to_dict())
+            self.assertEqual(first, second)
+            loaded = imported.get_proof_bundle(self.proof["task_id"])
+            self.assertEqual(loaded["signed_proof"], signed.to_dict())
+            conflicting = sign_proof_artifact(
+                {
+                    **self.proof,
+                    "git_diff_text": "different",
+                    "git_diff_sha": hashlib.sha256(b"different").hexdigest(),
+                },
+                self.signer,
+                project_session_id="proj_1",
+                host_epoch=3,
+                turn_seq=9,
+            ).to_dict()
+            with self.assertRaises(ValueError):
+                imported.save_signed_proof(conflicting)
+        finally:
+            imported.close()
+
     def test_credential_file_diffs_and_secret_values_are_redacted(self) -> None:
         diff = (
             "diff -ruN base/.env head/.env\n"

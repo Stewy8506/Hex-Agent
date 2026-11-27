@@ -49,6 +49,13 @@ class _TestServerKey:
         return {"payload": payload, "signature": f"ed25519:{sig}", "etag": "test"}
 
 
+class _RecordingReplication:
+    def apply_turn(self, signed, payload, keys):
+        if not payload:
+            raise ValueError("missing content")
+        return {"status": "applied"}
+
+
 class HarnessCloudClientTests(unittest.TestCase):
     def setUp(self) -> None:
         self.server = _TestServerKey()
@@ -191,7 +198,12 @@ class HarnessCloudClientTests(unittest.TestCase):
             sign_turn_ack(signer, "proj_1", 2, 0, "a" * 64)
 
     def test_team_mesh_host_epoch_fencing_and_turn_commit_replication(self) -> None:
-        mesh = TeamMeshCoordinator("dev_peer_b", self.server.public_key_hex, "proj_1")
+        mesh = TeamMeshCoordinator(
+            "dev_peer_b",
+            self.server.public_key_hex,
+            "proj_1",
+            replication_service=_RecordingReplication(),
+        )
         self.assertEqual(mesh.mode, "LOCAL")
 
         lease_e1 = self.server.sign_envelope(
@@ -216,7 +228,9 @@ class HarnessCloudClientTests(unittest.TestCase):
         )
         signed = sign_turn_commit(bundle, author)
         keys = {author.device_id: author.signing_public_key}
-        ack = mesh.accept_turn_commit(signed, keys, sender_device_id="dev_host_a")
+        ack = mesh.accept_turn_commit(
+            signed, keys, sender_device_id="dev_host_a", replication_payload={"content": True}
+        )
         self.assertTrue(ack["ack"])
         self.assertEqual(ack["author_device_record_id"], author.device_id)
         self.assertEqual(mesh.last_applied_turn_seq, 1)

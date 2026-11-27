@@ -3884,6 +3884,93 @@ class LedgerStore(LedgerSyncMixin):
             row = await conn.fetchrow("SELECT * FROM proof_bundles WHERE proof_id = $1", proof_id)
             return self._row_to_dict(row)  # type: ignore[return-value]
 
+    def save_signed_proof(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Import an exact peer-signed proof idempotently without regenerating its identity."""
+        from harness_core.capabilities.proof import SignedProofArtifact
+
+        signed = SignedProofArtifact.from_dict(payload)
+        if self.backend_type == "postgres":
+            return self._run_sync(self.save_signed_proof_async, signed.to_dict())
+        proof = signed.proof
+        values = (
+            proof["proof_id"], proof["task_id"], proof["attempt_id"],
+            proof["git_diff_sha"], proof["git_diff_text"], proof["workspace_tree_sha"],
+            proof["runtime_digest"], canonical_json(proof["ast_impact"]),
+            canonical_json(proof["verification_results"]), signed.signature,
+            proof["created_at"], canonical_json(signed.to_dict()),
+        )
+        with self._lock:
+            with self.conn:
+                self.conn.execute(
+                    """
+                    INSERT INTO proof_bundles (
+                        proof_id, task_id, attempt_id, git_diff_sha, git_diff_text,
+                        workspace_tree_sha, runtime_digest, ast_impact_json,
+                        verification_results_json, ledger_signature, created_at,
+                        signed_proof_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(proof_id) DO NOTHING
+                    """,
+                    values,
+                )
+                row = self.conn.execute(
+                    "SELECT * FROM proof_bundles WHERE proof_id = ?", (proof["proof_id"],)
+                ).fetchone()
+            current = self._row_to_dict(row)
+            assert current is not None
+            current.pop("signed_proof", None)
+            current.pop("ast_impact_json", None)
+            current.pop("verification_results_json", None)
+            expected = {
+                **proof,
+                "ledger_signature": signed.signature,
+                "signed_proof_json": canonical_json(signed.to_dict()),
+            }
+            if current != expected:
+                raise ValueError("Conflicting data uses an existing signed proof id.")
+            return current
+
+    async def save_signed_proof_async(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from harness_core.capabilities.proof import SignedProofArtifact
+
+        signed = SignedProofArtifact.from_dict(payload)
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.save_signed_proof, signed.to_dict())
+        proof = signed.proof
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO proof_bundles (
+                        proof_id, task_id, attempt_id, git_diff_sha, git_diff_text,
+                        workspace_tree_sha, runtime_digest, ast_impact_json,
+                        verification_results_json, ledger_signature, created_at,
+                        signed_proof_json
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    ON CONFLICT (proof_id) DO NOTHING
+                    """,
+                    proof["proof_id"], proof["task_id"], proof["attempt_id"],
+                    proof["git_diff_sha"], proof["git_diff_text"], proof["workspace_tree_sha"],
+                    proof["runtime_digest"], canonical_json(proof["ast_impact"]),
+                    canonical_json(proof["verification_results"]), signed.signature,
+                    proof["created_at"], canonical_json(signed.to_dict()),
+                )
+                row = await conn.fetchrow(
+                    "SELECT * FROM proof_bundles WHERE proof_id = $1", (proof["proof_id"],)
+                )
+        current = self._row_to_dict(row)
+        assert current is not None
+        current.pop("signed_proof", None)
+        expected = {
+            **proof,
+            "ledger_signature": signed.signature,
+            "signed_proof_json": canonical_json(signed.to_dict()),
+        }
+        if current != expected:
+            raise ValueError("Conflicting data uses an existing signed proof id.")
+        return current
+
     def attach_signed_proof(self, proof_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         from harness_core.capabilities.proof import SignedProofArtifact
 

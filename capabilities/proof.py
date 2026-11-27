@@ -27,7 +27,7 @@ from typing import Any, Callable, Mapping
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from harness_core.storage.cow import IGNORE_DIRS, WorkspaceSnapshotProvider
+from harness_core.storage.cow import IGNORE_DIRS, WorkspaceSnapshotProvider, is_sensitive_workspace_path
 from harness_core.storage.db import LedgerStore, canonical_json, sha256_hex, utcnow_iso
 from harness_core.gateway import ToolGateway, redact_secrets
 from harness_core.graphify import ActiveGraphifyAdapter
@@ -47,11 +47,6 @@ _PROOF_FIELDS = {
     "workspace_tree_sha", "runtime_digest", "ast_impact", "verification_results",
     "ledger_signature", "created_at",
 }
-_SENSITIVE_PATH_PARTS = frozenset({".ssh", ".aws", ".gnupg", ".docker"})
-_SENSITIVE_FILE_NAMES = frozenset({
-    ".netrc", ".npmrc", ".pypirc", "credentials", "credentials.json",
-    "id_rsa", "id_ed25519", "secrets.json",
-})
 
 
 def _canonical_proof_bytes(value: Any) -> bytes:
@@ -263,26 +258,13 @@ def sign_proof_artifact(
     )
 
 
-def _is_sensitive_proof_path(value: str) -> bool:
-    normalized = value.replace("\\", "/")
-    parts = [part for part in normalized.split("/") if part not in {"", ".", "base", "head"}]
-    if any(part in _SENSITIVE_PATH_PARTS for part in parts):
-        return True
-    name = parts[-1].lower() if parts else ""
-    return (
-        name.startswith(".env")
-        or name in _SENSITIVE_FILE_NAMES
-        or name.endswith((".pem", ".key", ".p12", ".pfx"))
-    )
-
-
 def redact_proof_diff(diff_text: str) -> str:
     """Keep proof diffs useful without replicating credential files or secret values."""
     blocks = re.split(r"(?=^diff\s)", diff_text, flags=re.MULTILINE)
     redacted: list[str] = []
     for block in blocks:
         headers = [line[4:].split("\t", 1)[0] for line in block.splitlines() if line.startswith(("--- ", "+++ "))]
-        if headers and any(_is_sensitive_proof_path(header) for header in headers):
+        if headers and any(is_sensitive_workspace_path(header) for header in headers):
             redacted.append("[OMITTED_SENSITIVE_FILE]\n")
         elif block:
             redacted.append(block)
