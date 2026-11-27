@@ -9,8 +9,10 @@ from cloud.sync_contract import (
     SyncEnvelope,
     SyncStream,
     canonical_json_bytes,
+    cognition_scope,
     ledger_scope,
     task_id_from_ledger_scope,
+    workspace_id_from_cognition_scope,
 )
 
 
@@ -36,6 +38,12 @@ class SyncContractTests(unittest.TestCase):
             canonical_json_bytes({"z": "é", "a": {"b": 2, "a": 1}}),
             '{"a":{"a":1,"b":2},"z":"é"}'.encode(),
         )
+
+    def test_cognition_scope_round_trip(self) -> None:
+        self.assertEqual(cognition_scope("project-a"), "cognition:project-a")
+        self.assertEqual(workspace_id_from_cognition_scope("cognition:project-a"), "project-a")
+        with self.assertRaises(ValueError):
+            workspace_id_from_cognition_scope("ledger:task-a")
 
     def test_malformed_envelopes_are_rejected(self) -> None:
         valid = {

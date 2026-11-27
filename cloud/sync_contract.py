@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -78,3 +79,21 @@ def task_id_from_ledger_scope(scope: str) -> str:
     if not task_id or len(task_id) > 256:
         raise ValueError("Ledger sync scope contains an invalid task id.")
     return task_id
+
+
+def cognition_scope(workspace_id: str) -> str:
+    if not isinstance(workspace_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", workspace_id
+    ):
+        raise ValueError("workspace_id must be a safe bounded identifier.")
+    return f"cognition:{workspace_id}"
+
+
+def workspace_id_from_cognition_scope(scope: str) -> str:
+    prefix = "cognition:"
+    if not isinstance(scope, str) or not scope.startswith(prefix):
+        raise ValueError("Cognition sync scope must start with 'cognition:'.")
+    workspace_id = scope[len(prefix):]
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", workspace_id):
+        raise ValueError("Cognition sync scope contains an invalid workspace id.")
+    return workspace_id

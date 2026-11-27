@@ -162,7 +162,7 @@ After every completed work turn on the Primary Host:
 - [x] Hook `cloud/auth_client.py` into `storage/vault_keychain.py` for OS Keychain persistence (via `cloud/session.py`).
 - [x] Add the Python `SyncEnvelope`/`SyncStream` wire contract matching `crates/hex-protocol/src/p2p.rs`.
 - [x] Add cursor-based ledger/dialogue export and import with base-hash verification, idempotent replay, atomic merges, and isolated hash-verified branches for divergent remote chains (`storage/ledger_sync.py`).
-- [ ] Add cognition/memory manifests and SkillSpector-gated skill synchronization.
+- [x] Add versioned cognition/memory manifests with three-way conflict preservation, deletion tombstones, safe skill packaging, and staged SkillSpector-gated activation/candidate/quarantine handling (`cloud/cognition_sync.py`).
 - [ ] Implement `cloud/p2p_transport.py` (QUIC/WebRTC E2EE tunnel + relay fallback) and `cloud/sync_engine.py`.
 - [ ] Add `hex sync` CLI/ACP wiring and end-to-end two-device transfer tests.
 - [x] Add cloud package to `pyproject.toml` and wire CLI subcommands (`hex cloud status/register/login/logout/devices/revoke`; `hex sync` pending with `cloud/sync_engine.py`).

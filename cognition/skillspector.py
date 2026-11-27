@@ -722,15 +722,31 @@ class SkillSpectorScanner:
             gate_decision=gate_decision,
         )
 
-    def scan_and_register_skill(self, bundle_dir: Path | str) -> dict[str, Any]:
+    def scan_and_register_skill(
+        self, bundle_dir: Path | str, *, disk_path: Path | str | None = None
+    ) -> dict[str, Any]:
+        root = Path(bundle_dir).resolve()
+        if root.is_file():
+            root = root.parent
+        report = self.scan_bundle(root)
+        return self.register_scan_report(root, report, disk_path=disk_path)
+
+    def register_scan_report(
+        self,
+        bundle_dir: Path | str,
+        report: SkillScanReport,
+        *,
+        disk_path: Path | str | None = None,
+    ) -> dict[str, Any]:
         root = Path(bundle_dir).resolve()
         if root.is_file():
             root = root.parent
         skill_md_path = root / "SKILL.md"
         if not skill_md_path.is_file():
             raise FileNotFoundError(f"Missing SKILL.md in skill bundle: {root}")
+        if report.bundle_sha256 != self.compute_bundle_sha256(root):
+            raise ValueError("Skill scan report does not match the bundle hash.")
 
-        report = self.scan_bundle(root)
         md_text = skill_md_path.read_text(encoding="utf-8", errors="replace")
         fm, _ = parse_skill_frontmatter(md_text)
 
@@ -750,13 +766,14 @@ class SkillSpectorScanner:
         else:
             skill_status = "active"
 
+        registered_path = Path(disk_path).resolve() if disk_path is not None else root
         self._persist_skill_and_scan(
             skill_id=skill_id,
             revision_id=revision_id,
             name=name,
             purpose=purpose,
             description=str(fm.get("description") or purpose),
-            disk_path=str(root),
+            disk_path=str(registered_path),
             bundle_sha256=report.bundle_sha256,
             risk_class=declared_risk,
             allowed_tools=allowed_tools,
@@ -768,6 +785,7 @@ class SkillSpectorScanner:
             "revision_id": revision_id,
             "name": name,
             "status": skill_status,
+            "disk_path": str(registered_path),
             "bundle_sha256": report.bundle_sha256,
             "scan": report.to_dict(),
         }
@@ -879,6 +897,7 @@ class SkillSpectorScanner:
                     status, latest_scan_id, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, 'HEAD', ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(revision_id) DO UPDATE SET
+                    disk_path=excluded.disk_path,
                     status=excluded.status,
                     latest_scan_id=excluded.latest_scan_id
                 """,
