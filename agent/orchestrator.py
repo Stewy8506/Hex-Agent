@@ -25,7 +25,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +261,7 @@ class HarnessOrchestrator:
         moa_config: Any | None = None,
         demo_mode: bool = False,
         config_dir: Path | str | None = None,
+        team_turn_hook: Any | None = None,
     ):
         if str(data_dir) == ":memory:":
             self._temp_mem_dir = tempfile.TemporaryDirectory(prefix="harness_mem_")
@@ -279,6 +280,7 @@ class HarnessOrchestrator:
             pass
         self.repair_patch_generator = repair_patch_generator
         self.webhook_notifier = webhook_notifier
+        self.team_turn_hook = team_turn_hook
         if self.webhook_notifier is None:
             from harness_core.capabilities.webhooks import notification_categories
             from harness_core.config_loader import parse_config_yaml
@@ -1780,7 +1782,7 @@ class HarnessOrchestrator:
             attempt_id=attempt_id,
             fencing_token=fencing_token,
         )
-        self.proof_service.run_verification_and_build_proof(
+        verification = self.proof_service.run_verification_and_build_proof(
             task_id=task_id,
             attempt_id=attempt_id,
             base_snapshot_path=source_ws,
@@ -1807,7 +1809,7 @@ class HarnessOrchestrator:
                 pass
 
         self._check_execution_fence(fence_check)
-        return self.ledger.transition_task(
+        completed = self.ledger.transition_task(
             task_id,
             TaskState.SUCCEEDED,
             reason_code="FAST_PATH_VERIFIED",
@@ -1816,6 +1818,14 @@ class HarnessOrchestrator:
             fencing_token=fencing_token,
             payload={"result": synthesized_text} if synthesized_text else {},
         )
+        self._commit_verified_team_turn(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            workspace_dir=source_ws,
+            base_snapshot_path=source_ws,
+            proof=verification["proof"],
+        )
+        return completed
 
     def generate_repair_patch(
         self,
@@ -2175,6 +2185,33 @@ class HarnessOrchestrator:
         )
 
         return new_plan
+
+    def _commit_verified_team_turn(
+        self,
+        *,
+        task_id: str,
+        attempt_id: str,
+        workspace_dir: Path | str,
+        base_snapshot_path: Path | str,
+        proof: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        if self.team_turn_hook is None:
+            return None
+        from cloud.team_outbox import VerifiedTeamTurn
+
+        try:
+            return self.team_turn_hook(
+                VerifiedTeamTurn(
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    workspace_dir=workspace_dir,
+                    base_snapshot_path=base_snapshot_path,
+                    proof=proof,
+                )
+            )
+        except Exception as exc:
+            logger.warning("Verified team turn was not delivered (%s)", type(exc).__name__)
+            return {"status": "queued", "error_type": type(exc).__name__}
 
     def export_workspace_delta(self, task_id: str, attempt_ws: Path | str) -> dict[str, Any]:
         """Exports workspace delta into a deterministic CAS tar.gz archive and records artifact in ledger."""
@@ -3353,7 +3390,7 @@ class HarnessOrchestrator:
             logger.warning("Post-task memory promotion check failed: %s", e)
 
         self._check_execution_fence(fence_check)
-        return self.ledger.transition_task(
+        completed = self.ledger.transition_task(
             task_id,
             TaskState.SUCCEEDED,
             reason_code="PROOF_VERIFIED",
@@ -3365,6 +3402,14 @@ class HarnessOrchestrator:
                 "repair_attempts": repair_attempt,
             },
         )
+        self._commit_verified_team_turn(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            workspace_dir=attempt_ws,
+            base_snapshot_path=base_snap_path,
+            proof=ver_outcome["proof"],
+        )
+        return completed
 
     # ------------------------------------------------------------------
     # Pause, Resume, Cancel, and Speculative Branching (`fork`)

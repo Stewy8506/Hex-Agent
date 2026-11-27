@@ -170,7 +170,20 @@ class TestStandardTaskPublication(unittest.TestCase):
         self.assertTrue((self.ws / ".venv" / "pyvenv.cfg").is_file(), ".venv destroyed")
         self.assertEqual((self.ws / "user_notes.md").read_text(), "concurrent notes\n")
 
+    def test_team_hook_runs_after_verified_publication_and_success(self) -> None:
+        def commit(turn):
+            self.assertEqual(self.orch.ledger.get_task(turn.task_id)["status"], TaskState.SUCCEEDED.value)
+            self.assertEqual((self.ws / "app.py").read_text(), "VALUE = 2\n")
+            self.assertEqual(compute_tree_sha(turn.workspace_dir), turn.proof["workspace_tree_sha"])
+            return {"status": "queued"}
+
+        self.orch.team_turn_hook = mock.Mock(side_effect=commit)
+        task = self._submit_edit()
+        self.assertEqual(task["status"], TaskState.SUCCEEDED.value)
+        self.orch.team_turn_hook.assert_called_once()
+
     def test_conflicting_concurrent_edit_stops_publication(self) -> None:
+        self.orch.team_turn_hook = mock.Mock()
         # Simulate the user editing app.py after the base snapshot was taken by
         # hooking create_snapshot: right after the base snapshot of source_ws,
         # mutate the live file.
@@ -196,6 +209,24 @@ class TestStandardTaskPublication(unittest.TestCase):
         )
         self.assertEqual((self.ws / "app.py").read_text(), "VALUE = 42  # user\n")
         self.assertTrue((self.ws / ".git" / "HEAD").is_file())
+        self.orch.team_turn_hook.assert_not_called()
+
+    def test_fast_path_hook_runs_only_after_verified_success(self) -> None:
+        response = mock.Mock(text="Hello from the verified fast path.")
+        self.orch.router = mock.Mock()
+        self.orch.router.execute_routed_request.return_value = (mock.Mock(), response)
+
+        def commit(turn):
+            self.assertEqual(self.orch.ledger.get_task(turn.task_id)["status"], TaskState.SUCCEEDED.value)
+            self.assertEqual(Path(turn.workspace_dir), Path(turn.base_snapshot_path))
+            return {"status": "skipped"}
+
+        self.orch.team_turn_hook = mock.Mock(side_effect=commit)
+        task = self.orch.submit_and_run(
+            TaskSubmitRequest(goal="hey", execution_mode="fast_path"), auto_execute=True
+        )
+        self.assertEqual(task["status"], TaskState.SUCCEEDED.value)
+        self.orch.team_turn_hook.assert_called_once()
 
 
 if __name__ == "__main__":
