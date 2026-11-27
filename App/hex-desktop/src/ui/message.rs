@@ -97,55 +97,103 @@ fn prose_style(theme: &HermesTheme, level: u8) -> Div {
     prose
 }
 
-fn render_inline_tokens(tokens: &[InlineToken], theme: &HermesTheme, id_prefix: &str) -> Div {
-    let mut row = div()
-        .w_full()
-        .min_w_0()
-        .flex()
-        .flex_row()
-        .flex_wrap()
-        .items_baseline();
-
-    for (index, token) in tokens.iter().enumerate() {
-        let mut token_view = div().max_w_full().whitespace_normal();
-        if token.code {
-            token_view = token_view
-                .px(px(3.0))
-                .py(px(1.0))
-                .rounded(px(4.0))
-                .bg(theme.mockup_inline_code_bg)
-                .font_family(theme.font_mono()[0].clone())
-                .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
-                .text_color(theme.mockup_text);
+fn split_inline_token_lines(tokens: &[InlineToken]) -> Vec<Vec<InlineToken>> {
+    let mut lines: Vec<Vec<InlineToken>> = vec![Vec::new()];
+    for token in tokens {
+        let mut parts = token.text.split('\n');
+        if let Some(first) = parts.next() {
+            if !first.is_empty() {
+                let mut part_tok = token.clone();
+                part_tok.text = first.to_string();
+                lines.last_mut().expect("non-empty lines").push(part_tok);
+            }
         }
-        if token.bold {
-            token_view = token_view
-                .font_weight(FontWeight::BOLD)
-                .text_color(theme.mockup_text);
-        }
-        if token.italic {
-            token_view = token_view.italic();
-        }
-
-        if let Some(url) = &token.link {
-            let selector = format!("markdown_link_{id_prefix}_{index}");
-            let url = url.clone();
-            let mut link = token_view
-                .id(SharedString::from(selector.clone()))
-                .debug_selector(move || selector)
-                .text_color(theme.accent_blue())
-                .underline()
-                .cursor_pointer()
-                .hover(|this| this.text_color(theme.mockup_text));
-            link.interactivity()
-                .on_click(move |_, _, cx| cx.open_url(&url));
-            row = row.child(link);
-        } else {
-            row = row.child(token_view.child(token.text.clone()));
+        for next_part in parts {
+            let mut new_line = Vec::new();
+            if !next_part.is_empty() {
+                let mut part_tok = token.clone();
+                part_tok.text = next_part.to_string();
+                new_line.push(part_tok);
+            }
+            lines.push(new_line);
         }
     }
+    if lines.len() > 1 && lines.last().is_some_and(Vec::is_empty) {
+        lines.pop();
+    }
+    lines
+}
 
-    row
+fn render_inline_token_node(
+    token: &InlineToken,
+    theme: &HermesTheme,
+    id_prefix: &str,
+    token_index: usize,
+) -> AnyElement {
+    let mut token_view = div().max_w_full().whitespace_normal();
+    if token.code {
+        token_view = token_view
+            .px(px(3.0))
+            .py(px(1.0))
+            .rounded(px(4.0))
+            .bg(theme.mockup_inline_code_bg)
+            .font_family(theme.font_mono()[0].clone())
+            .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
+            .text_color(theme.mockup_text);
+    }
+    if token.bold {
+        token_view = token_view
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme.mockup_text);
+    }
+    if token.italic {
+        token_view = token_view.italic();
+    }
+
+    if let Some(url) = &token.link {
+        let selector = format!("markdown_link_{id_prefix}_{token_index}");
+        let url = url.clone();
+        let mut link = token_view
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector)
+            .text_color(theme.accent_blue())
+            .underline()
+            .cursor_pointer()
+            .hover(|this| this.text_color(theme.mockup_text))
+            .child(token.text.clone());
+        link.interactivity()
+            .on_click(move |_, _, cx| cx.open_url(&url));
+        link.into_any_element()
+    } else {
+        token_view.child(token.text.clone()).into_any_element()
+    }
+}
+
+fn render_inline_tokens(tokens: &[InlineToken], theme: &HermesTheme, id_prefix: &str) -> Div {
+    let lines = split_inline_token_lines(tokens);
+    let mut container = div().w_full().min_w_0().flex().flex_col();
+    let mut token_index = 0usize;
+
+    for line_tokens in lines {
+        let mut row = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_baseline();
+        if line_tokens.is_empty() {
+            row = row.min_h(px(14.0));
+        } else {
+            for token in &line_tokens {
+                row = row.child(render_inline_token_node(token, theme, id_prefix, token_index));
+                token_index += 1;
+            }
+        }
+        container = container.child(row);
+    }
+
+    container
 }
 
 fn render_markdown_table(
@@ -1051,5 +1099,23 @@ mod tests {
         let mut expanded = expanded;
         expanded.changes_expanded = true;
         let _ = expanded.render(&theme);
+    }
+
+    #[test]
+    fn test_multiline_inline_tokens_split_across_separate_rows() {
+        let tokens = parse_inline("read\nfile: /tmp/a_b.py\n**bold _italic_**");
+        let lines = split_inline_token_lines(&tokens);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0][0].text, "read");
+        assert_eq!(lines[1][0].text, "file: /tmp/a_b.py");
+        assert!(lines[2].iter().any(|t| t.text == "bold " && t.bold && !t.italic));
+        assert!(lines[2].iter().any(|t| t.text == "italic" && t.bold && t.italic));
+
+        let theme = HermesTheme::default();
+        let view = AssistantMessageView::new(
+            "msg_multiline",
+            "read\nfile: /Users/example/ANIMATIONS_PLAN.md",
+        );
+        let _ = view.render(&theme);
     }
 }

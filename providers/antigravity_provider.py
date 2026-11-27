@@ -48,6 +48,11 @@ from .base import (
     PolicyBlockedError,
     ProviderCapabilities,
     ProviderUnavailableError,
+    build_gemini_contents_and_system,
+    extract_gemini_tool_calls,
+    format_gemini_tools_and_config,
+    normalize_tool_definitions,
+    sanitize_messages_secrets,
 )
 
 
@@ -1198,7 +1203,7 @@ class AntigravityModelProvider(ModelProvider):
 
     def generate(
         self,
-        prompt: str,
+        prompt: str = "",
         *,
         system_prompt: str | None = None,
         cacheable_prefix: str | None = None,
@@ -1208,6 +1213,9 @@ class AntigravityModelProvider(ModelProvider):
         stop_sequences: list[str] | None = None,
         data_classification: str = "internal",
         budget: Any = None,
+        messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
         reasoning_effort: str | None = None,
         **kwargs: Any,
     ) -> ModelResponse:
@@ -1231,6 +1239,7 @@ class AntigravityModelProvider(ModelProvider):
             )
 
         clean_prompt = str(redact_secrets(prompt))
+        clean_messages = sanitize_messages_secrets(messages)
         clean_system = str(redact_secrets(system_prompt)) if system_prompt else None
         clean_prefix = str(redact_secrets(cacheable_prefix)) if cacheable_prefix else None
         project_id = self.ensure_project_id(cred.access_token)
@@ -1244,6 +1253,9 @@ class AntigravityModelProvider(ModelProvider):
             max_tokens=max_tokens,
             temperature=temperature,
             stop_sequences=stop_sequences,
+            messages=clean_messages,
+            tools=tools,
+            tool_choice=tool_choice,
             reasoning_effort=eff_effort,
         )
 
@@ -1289,6 +1301,10 @@ class AntigravityModelProvider(ModelProvider):
                         max_tokens=max_tokens,
                         temperature=temperature,
                         stop_sequences=stop_sequences,
+                        messages=clean_messages,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        reasoning_effort=eff_effort,
                     )
                     status_code, resp_bytes = self._execute_http(new_url, new_headers, new_body, stream_callback=stream_cb)
             except Exception:
@@ -1330,9 +1346,11 @@ class AntigravityModelProvider(ModelProvider):
                 f"Google Antigravity returned HTTP {status_code}: {err_msg}"
             )
 
+        token_prompt_ref = clean_prompt or (json.dumps(clean_messages, ensure_ascii=False) if clean_messages else "")
         text, in_tokens, out_tokens, cached_tokens, finish_reason, raw_meta = self._parse_response(
-            resp_bytes, clean_prompt
+            resp_bytes, token_prompt_ref
         )
+        extracted_tool_calls = raw_meta.pop("_extracted_tool_calls", [])
 
         # Antigravity requests are covered by subscription quota
         cost_usd = 0.0
@@ -1362,6 +1380,7 @@ class AntigravityModelProvider(ModelProvider):
             latency_ms=latency_ms,
             finish_reason=finish_reason,
             raw=raw_meta,
+            tool_calls=extracted_tool_calls if isinstance(extracted_tool_calls, list) else [],
         )
 
     def compress_log(
@@ -1421,7 +1440,7 @@ class AntigravityModelProvider(ModelProvider):
 
     def _build_request(
         self,
-        clean_prompt: str,
+        clean_prompt: str = "",
         *,
         access_token: str,
         project_id: str,
@@ -1430,6 +1449,9 @@ class AntigravityModelProvider(ModelProvider):
         max_tokens: int,
         temperature: float,
         stop_sequences: list[str] | None,
+        messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
         reasoning_effort: str | None = None,
     ) -> tuple[str, dict[str, str], bytes]:
         target_base = self.base_url
@@ -1443,21 +1465,29 @@ class AntigravityModelProvider(ModelProvider):
         url = f"{target_base}/v1internal:streamGenerateContent?alt=sse"
         headers = self._build_antigravity_headers(access_token)
 
-        # Strictly order parts as cacheable_prefix -> volatile prompt
-        parts: list[dict[str, str]] = []
-        if cacheable_prefix:
-            parts.append({"text": cacheable_prefix})
-        parts.append({"text": clean_prompt})
+        safe_messages = sanitize_messages_secrets(messages)
+        contents, eff_system = build_gemini_contents_and_system(
+            safe_messages,
+            clean_prompt,
+            cacheable_prefix=cacheable_prefix,
+            system_prompt=system_prompt,
+        )
 
         inner_req: dict[str, Any] = {
-            "contents": [{"role": "user", "parts": parts}],
+            "contents": contents,
             "generationConfig": {
                 "maxOutputTokens": max_tokens,
                 "temperature": temperature,
             },
         }
-        if system_prompt:
-            inner_req["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+        if eff_system:
+            inner_req["systemInstruction"] = {"parts": [{"text": eff_system}]}
+        norm_tools = normalize_tool_definitions(tools)
+        gem_tools, gem_tool_cfg = format_gemini_tools_and_config(norm_tools, tool_choice)
+        if gem_tools:
+            inner_req["tools"] = gem_tools
+        if gem_tool_cfg:
+            inner_req["toolConfig"] = gem_tool_cfg
         if stop_sequences:
             inner_req["generationConfig"]["stopSequences"] = stop_sequences
 
@@ -1521,6 +1551,7 @@ class AntigravityModelProvider(ModelProvider):
     ) -> tuple[str, int, int, int, str, dict[str, Any]]:
         raw_str = resp_bytes.decode("utf-8", errors="replace").strip()
         text_chunks: list[str] = []
+        extracted_tool_calls: list[dict[str, Any]] = []
         in_tokens = 0
         out_tokens = 0
         cached_tokens = 0
@@ -1569,6 +1600,7 @@ class AntigravityModelProvider(ModelProvider):
                                 text_chunks.append(part["text"])
                     if cand.get("finishReason"):
                         finish_reason = str(cand["finishReason"]).lower()
+                extracted_tool_calls.extend(extract_gemini_tool_calls(candidates))
             if isinstance(inner.get("text"), str) and not text_chunks:
                 text_chunks.append(inner["text"])
 
@@ -1579,6 +1611,8 @@ class AntigravityModelProvider(ModelProvider):
                 cached_tokens = max(cached_tokens, int(usage_meta.get("cachedContentTokenCount", 0)))
 
         full_text = "".join(text_chunks)
+        if extracted_tool_calls:
+            last_obj["_extracted_tool_calls"] = extracted_tool_calls
         if in_tokens <= 0:
             in_tokens = max(1, len(prompt) // 4)
         if out_tokens <= 0:

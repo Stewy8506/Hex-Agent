@@ -554,6 +554,15 @@ class TwoTierModelRouter:
             "compressor_mode": "local",
         }
 
+    _LOG_COMPRESSION_TASK_CLASSES = frozenset({
+        "repair",
+        "bug_fix",
+        "complex_bug_fix",
+        "test_failure",
+        "log_compression",
+        "log_compress",
+    })
+
     def route_request(
         self,
         *,
@@ -562,11 +571,17 @@ class TwoTierModelRouter:
         data_classification: str = "internal",
         raw_context: str = "",
         cloud_available: bool = True,
+        compress_logs: bool | None = None,
     ) -> RouteDecision:
         """FR-045..FR-047: Selects local M4 vs. cloud tier based on privacy, risk, and availability."""
+        should_compress_logs = (
+            compress_logs
+            if compress_logs is not None
+            else str(task_class).strip().lower() in self._LOG_COMPRESSION_TASK_CLASSES
+        )
         comp = (
             self.compress_verbose_log(raw_context, data_classification=data_classification)
-            if len(raw_context) > 1200
+            if should_compress_logs and len(raw_context) > 1200
             else {
                 "compressed_text": str(redact_secrets(raw_context)),
                 "raw_tokens": max(1, len(raw_context) // 4),
@@ -635,6 +650,7 @@ class TwoTierModelRouter:
         data_classification: str = "internal",
         budget: TaskBudget | None = None,
         cloud_available: bool = True,
+        compress_logs: bool | None = None,
         **kwargs: Any,
     ) -> tuple[RouteDecision, ModelResponse]:
         """Routes prompt to appropriate tier, executes model call, and records telemetry."""
@@ -644,6 +660,7 @@ class TwoTierModelRouter:
             data_classification=data_classification,
             raw_context=prompt,
             cloud_available=cloud_available,
+            compress_logs=compress_logs,
         )
 
         effective_prompt = decision.compressed_context if decision.compressed_context else prompt

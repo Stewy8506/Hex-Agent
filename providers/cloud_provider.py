@@ -11,6 +11,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -34,6 +35,12 @@ from .base import (
     PolicyBlockedError,
     ProviderCapabilities,
     ProviderUnavailableError,
+    build_gemini_contents_and_system,
+    extract_gemini_tool_calls,
+    format_gemini_tools_and_config,
+    normalize_tool_definitions,
+    parse_tool_args_dict,
+    sanitize_messages_secrets,
 )
 from .registry import (
     PROVIDER_REGISTRY,
@@ -514,11 +521,14 @@ class CloudModelProvider(ModelProvider):
         data_classification: str = "internal",
         budget: Any = None,
         messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
         reasoning_effort: str | None = None,
         **kwargs: Any,
     ) -> ModelResponse:
         """Generate response from frontier cloud provider with privacy, prefix caching, and budget enforcement."""
         eff_effort = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
+        clean_messages = sanitize_messages_secrets(messages)
         if self._antigravity_delegate is not None:
             self._antigravity_delegate.model_id = AntigravityModelProvider._normalize_model_id(self.model_id)
             if hasattr(self._antigravity_delegate, "reasoning_effort") and eff_effort:
@@ -533,6 +543,9 @@ class CloudModelProvider(ModelProvider):
                 stop_sequences=stop_sequences,
                 data_classification=data_classification,
                 budget=budget,
+                messages=clean_messages,
+                tools=tools,
+                tool_choice=tool_choice,
                 reasoning_effort=eff_effort,
                 **kwargs,
             )
@@ -549,7 +562,7 @@ class CloudModelProvider(ModelProvider):
             self.budget_tracker.sync_with_task_budget(budget)
         self.budget_tracker.check_budget_before_call()
 
-        # Sanitize prompts with secret redaction before any payload dispatch
+        # Sanitize prompts and structured messages with secret redaction before any payload dispatch
         clean_prompt = str(redact_secrets(prompt))
         clean_system_prompt = str(redact_secrets(system_prompt)) if system_prompt else None
         clean_prefix = str(redact_secrets(cacheable_prefix)) if cacheable_prefix else None
@@ -568,7 +581,9 @@ class CloudModelProvider(ModelProvider):
             max_tokens=max_tokens,
             temperature=temperature,
             stop_sequences=stop_sequences,
-            messages=messages,
+            messages=clean_messages,
+            tools=tools,
+            tool_choice=tool_choice,
             reasoning_effort=eff_effort,
         )
 
@@ -590,6 +605,7 @@ class CloudModelProvider(ModelProvider):
             ) from e
 
         text, in_tokens, out_tokens, cached_tokens, finish_reason = self._parse_response(data, clean_prompt)
+        extracted_tool_calls = self._extract_tool_calls(data)
         cost_usd = calculate_cost_usd(
             self.model_id,
             in_tokens,
@@ -621,6 +637,7 @@ class CloudModelProvider(ModelProvider):
             latency_ms=latency_ms,
             finish_reason=finish_reason,
             raw=data,
+            tool_calls=extracted_tool_calls,
         )
 
     def compress_log(
@@ -707,6 +724,74 @@ class CloudModelProvider(ModelProvider):
                 f"HTTP request to '{self.provider_type.value}' failed: {e}"
             ) from e
 
+    @staticmethod
+    def _normalize_tool_definitions(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        return normalize_tool_definitions(tools)
+
+    @staticmethod
+    def _normalize_openai_messages(raw_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Normalize chat messages (including assistant tool_calls and tool results) for OpenAI chat."""
+        out: list[dict[str, Any]] = []
+        for msg in raw_messages:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role", "user")).lower()
+            if role == "tool":
+                cid = msg.get("tool_call_id") or msg.get("tool_use_id") or msg.get("call_id") or ""
+                content = msg.get("content")
+                if content is None:
+                    content = msg.get("observation") or ""
+                out.append({
+                    "role": "tool",
+                    "tool_call_id": str(cid),
+                    "content": str(content),
+                })
+                continue
+            if role == "assistant" and isinstance(msg.get("tool_calls"), list) and msg["tool_calls"]:
+                norm_calls: list[dict[str, Any]] = []
+                for idx, tc in enumerate(msg["tool_calls"]):
+                    if not isinstance(tc, dict):
+                        continue
+                    if tc.get("type") == "function" and isinstance(tc.get("function"), dict):
+                        fn = tc["function"]
+                        tc_name = str(fn.get("name") or "")
+                        tc_args = fn.get("arguments", "{}")
+                        if not isinstance(tc_args, str):
+                            tc_args = json.dumps(tc_args, ensure_ascii=False)
+                    else:
+                        tc_name = str(tc.get("name") or tc.get("tool") or "")
+                        raw_args = tc.get("arguments") or tc.get("args") or {}
+                        tc_args = raw_args if isinstance(raw_args, str) else json.dumps(raw_args, ensure_ascii=False)
+                    if tc_name:
+                        cid = str(tc.get("id") or tc.get("call_id") or f"call_{idx}")
+                        norm_calls.append({
+                            "id": cid,
+                            "type": "function",
+                            "function": {"name": tc_name, "arguments": tc_args},
+                        })
+                assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.get("content") or ""}
+                if norm_calls:
+                    assistant_msg["tool_calls"] = norm_calls
+                out.append(assistant_msg)
+                continue
+            out.append(dict(msg))
+        return out
+
+    @staticmethod
+    def _parse_tool_args_dict(raw_args: Any) -> dict[str, Any]:
+        return parse_tool_args_dict(raw_args)
+
+    @staticmethod
+    def _normalize_anthropic_tool_choice(tool_choice: Any) -> Any:
+        if isinstance(tool_choice, str):
+            norm = tool_choice.strip().lower()
+            if norm in ("required", "any"):
+                return {"type": "any"}
+            if norm in ("auto", "none"):
+                return {"type": norm}
+            return {"type": "tool", "name": tool_choice}
+        return tool_choice
+
     def _build_request(
         self,
         clean_prompt: str | list[dict[str, Any]] = "",
@@ -718,6 +803,8 @@ class CloudModelProvider(ModelProvider):
         temperature: float = 0.0,
         stop_sequences: list[str] | None = None,
         messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
         reasoning_effort: str | None = None,
     ) -> tuple[str, dict[str, str], bytes]:
         if (
@@ -730,9 +817,9 @@ class CloudModelProvider(ModelProvider):
             )
 
         messages_to_use: list[dict[str, Any]] | None = (
-            messages
+            sanitize_messages_secrets(messages)
             if messages is not None
-            else (clean_prompt if isinstance(clean_prompt, list) else None)
+            else (sanitize_messages_secrets(clean_prompt) if isinstance(clean_prompt, list) else None)
         )
         if messages_to_use is None and isinstance(clean_prompt, str):
             s = clean_prompt.strip()
@@ -740,7 +827,7 @@ class CloudModelProvider(ModelProvider):
                 try:
                     parsed = json.loads(s)
                     if isinstance(parsed, list) and all(isinstance(x, dict) and "role" in x for x in parsed):
-                        messages_to_use = parsed
+                        messages_to_use = sanitize_messages_secrets(parsed)
                 except Exception:
                     pass
 
@@ -750,37 +837,31 @@ class CloudModelProvider(ModelProvider):
             else ("anthropic_messages" if self.provider_type == CloudProviderType.ANTHROPIC else "openai_chat")
         )
 
+        norm_tools = self._normalize_tool_definitions(tools)
+
         if self.provider_type == CloudProviderType.GEMINI:
             api_key = self.api_key or "mock-key"
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_id}:generateContent?key={api_key}"
             headers = {"content-type": "application/json"}
-            parts: list[dict[str, str]] = []
-            if cacheable_prefix:
-                parts.append({"text": cacheable_prefix})
-            if messages_to_use is not None:
-                contents: list[dict[str, Any]] = []
-                for msg in messages_to_use:
-                    if not isinstance(msg, dict):
-                        continue
-                    m_role = "model" if msg.get("role") == "assistant" else "user"
-                    m_text = str(msg.get("content", ""))
-                    contents.append({"role": m_role, "parts": [{"text": m_text}]})
-                payload = {
-                    "contents": contents,
-                    "generationConfig": {
-                        "maxOutputTokens": max_tokens,
-                        "temperature": temperature,
-                    },
-                }
-            else:
-                parts.append({"text": str(clean_prompt)})
-                payload = {
-                    "contents": [{"role": "user", "parts": parts}],
-                    "generationConfig": {
-                        "maxOutputTokens": max_tokens,
-                        "temperature": temperature,
-                    },
-                }
+            contents, eff_system = build_gemini_contents_and_system(
+                messages_to_use,
+                str(clean_prompt),
+                cacheable_prefix=cacheable_prefix,
+                system_prompt=system_prompt,
+            )
+            system_prompt = eff_system
+            payload: dict[str, Any] = {
+                "contents": contents,
+                "generationConfig": {
+                    "maxOutputTokens": max_tokens,
+                    "temperature": temperature,
+                },
+            }
+            gem_tools, gem_tool_cfg = format_gemini_tools_and_config(norm_tools, tool_choice)
+            if gem_tools:
+                payload["tools"] = gem_tools
+            if gem_tool_cfg:
+                payload["toolConfig"] = gem_tool_cfg
             if system_prompt:
                 if "gemma" in str(self.model_id).lower():
                     # Gemma models do not support systemInstruction / Developer Instruction on Gemini API
@@ -832,18 +913,18 @@ class CloudModelProvider(ModelProvider):
                     elif m_role == "tool":
                         call_id = msg.get("tool_call_id") or msg.get("tool_use_id") or msg.get("id") or ""
                         tool_content = str(msg.get("content", ""))
-                        formatted_messages.append({
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": str(call_id),
-                                    "content": tool_content,
-                                }
-                            ],
-                        })
+                        tool_block = {
+                            "type": "tool_result",
+                            "tool_use_id": str(call_id),
+                            "content": tool_content,
+                        }
+                        if formatted_messages and formatted_messages[-1].get("role") == "user" and isinstance(formatted_messages[-1].get("content"), list):
+                            formatted_messages[-1]["content"].append(tool_block)
+                        else:
+                            formatted_messages.append({"role": "user", "content": [tool_block]})
                     elif m_role == "assistant":
                         raw_content = msg.get("content")
+                        raw_tcs = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else []
                         if isinstance(raw_content, list):
                             new_blocks: list[dict[str, Any]] = []
                             for block in raw_content:
@@ -862,7 +943,6 @@ class CloudModelProvider(ModelProvider):
                                     new_blocks.append({"type": "text", "text": str(block)})
                             formatted_messages.append({"role": "assistant", "content": new_blocks})
                         else:
-                            # Inspect separate thinking / signature fields if present
                             sig = msg.get("signature") or (
                                 msg.get("thinking_block", {}).get("signature")
                                 if isinstance(msg.get("thinking_block"), dict)
@@ -873,26 +953,33 @@ class CloudModelProvider(ModelProvider):
                                 if isinstance(msg.get("thinking_block"), dict)
                                 else None
                             )
-                            if thinking_val is not None:
-                                if sig and isinstance(sig, str) and sig.strip():
-                                    blocks = [
-                                        {
-                                            "type": "thinking",
-                                            "thinking": str(thinking_val),
-                                            "signature": sig.strip(),
-                                        },
-                                        {
-                                            "type": "text",
-                                            "text": str(raw_content or ""),
-                                        },
-                                    ]
-                                    formatted_messages.append({"role": "assistant", "content": blocks})
-                                else:
-                                    # Missing/empty signature -> strip thinking block, leave only text
-                                    formatted_messages.append({
-                                        "role": "assistant",
-                                        "content": [{"type": "text", "text": str(raw_content or "")}],
+                            if raw_tcs or thinking_val is not None:
+                                blocks: list[dict[str, Any]] = []
+                                if thinking_val is not None and sig and isinstance(sig, str) and sig.strip():
+                                    blocks.append({
+                                        "type": "thinking",
+                                        "thinking": str(thinking_val),
+                                        "signature": sig.strip(),
                                     })
+                                if raw_content or (thinking_val is not None and not raw_tcs):
+                                    blocks.append({
+                                        "type": "text",
+                                        "text": str(raw_content or ""),
+                                    })
+                                for idx, tc in enumerate(raw_tcs):
+                                    if not isinstance(tc, dict):
+                                        continue
+                                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                                    tc_name = str(fn.get("name") or tc.get("tool") or "")
+                                    tc_args = self._parse_tool_args_dict(fn.get("arguments") or tc.get("args") or {})
+                                    if tc_name:
+                                        blocks.append({
+                                            "type": "tool_use",
+                                            "id": str(tc.get("id") or tc.get("call_id") or f"call_{idx}"),
+                                            "name": tc_name,
+                                            "input": tc_args,
+                                        })
+                                formatted_messages.append({"role": "assistant", "content": blocks})
                             else:
                                 formatted_messages.append({
                                     "role": "assistant",
@@ -925,6 +1012,17 @@ class CloudModelProvider(ModelProvider):
                         payload["system"] = eff_system
                 if stop_sequences:
                     payload["stop_sequences"] = stop_sequences
+                if norm_tools:
+                    payload["tools"] = [
+                        {
+                            "name": t["name"],
+                            "description": t["description"],
+                            "input_schema": t["parameters"],
+                        }
+                        for t in norm_tools
+                    ]
+                    if tool_choice is not None:
+                        payload["tool_choice"] = self._normalize_anthropic_tool_choice(tool_choice)
                 eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
                 if eff:
                     from harness_core.core.reasoning_effort import effort_to_anthropic_thinking, model_supports_reasoning
@@ -968,6 +1066,17 @@ class CloudModelProvider(ModelProvider):
                     payload["system"] = system_prompt
             if stop_sequences:
                 payload["stop_sequences"] = stop_sequences
+            if norm_tools:
+                payload["tools"] = [
+                    {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "input_schema": t["parameters"],
+                    }
+                    for t in norm_tools
+                ]
+                if tool_choice is not None:
+                    payload["tool_choice"] = self._normalize_anthropic_tool_choice(tool_choice)
             eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
             if eff:
                 from harness_core.core.reasoning_effort import effort_to_anthropic_thinking, model_supports_reasoning
@@ -1017,6 +1126,22 @@ class CloudModelProvider(ModelProvider):
                 }
                 if stop_sequences:
                     payload["stop"] = stop_sequences
+                if "messages" in payload and isinstance(payload["messages"], list):
+                    payload["messages"] = self._normalize_openai_messages(payload["messages"])
+                if norm_tools:
+                    payload["tools"] = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": t["name"],
+                                "description": t["description"],
+                                "parameters": t["parameters"],
+                            },
+                        }
+                        for t in norm_tools
+                    ]
+                    if tool_choice is not None:
+                        payload["tool_choice"] = tool_choice
                 eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
                 if eff:
                     from harness_core.core.reasoning_effort import OPENAI_EFFORTS, clamp_effort, model_supports_reasoning
@@ -1039,12 +1164,77 @@ class CloudModelProvider(ModelProvider):
             }
             if stop_sequences:
                 payload["stop"] = stop_sequences
+            if norm_tools:
+                payload["tools"] = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": t["name"],
+                            "description": t["description"],
+                            "parameters": t["parameters"],
+                        },
+                    }
+                    for t in norm_tools
+                ]
+                if tool_choice is not None:
+                    payload["tool_choice"] = tool_choice
             eff = reasoning_effort or self.reasoning_effort or os.getenv("HEX_REASONING_EFFORT")
             if eff:
                 from harness_core.core.reasoning_effort import OPENAI_EFFORTS, clamp_effort, model_supports_reasoning
                 if model_supports_reasoning(self.provider_type.value, self.model_id):
                     payload["reasoning_effort"] = clamp_effort(eff, OPENAI_EFFORTS)
             return url, headers, json.dumps(payload).encode("utf-8")
+
+    def _extract_tool_calls(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract normalized native tool calls from Gemini, Anthropic, or OpenAI responses."""
+        calls: list[dict[str, Any]] = []
+        transport = (
+            self.spec.transport
+            if self.spec
+            else ("anthropic_messages" if self.provider_type == CloudProviderType.ANTHROPIC else "openai_chat")
+        )
+
+        if self.provider_type == CloudProviderType.GEMINI:
+            return extract_gemini_tool_calls(data.get("candidates", []))
+
+        if transport == "anthropic_messages" or self.provider_type == CloudProviderType.ANTHROPIC:
+            content = data.get("content", [])
+            if isinstance(content, list):
+                for idx, item in enumerate(content):
+                    if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name"):
+                        calls.append({
+                            "id": str(item.get("id") or f"call_{uuid.uuid4().hex[:8]}_{idx}"),
+                            "name": str(item["name"]),
+                            "arguments": self._parse_tool_args_dict(item.get("input") or {}),
+                        })
+            return calls
+
+        choices = data.get("choices", [])
+        if choices and isinstance(choices, list) and isinstance(choices[0], dict):
+            msg = choices[0].get("message", {})
+            if isinstance(msg, dict):
+                raw_tcs = msg.get("tool_calls")
+                if isinstance(raw_tcs, list):
+                    for idx, tc in enumerate(raw_tcs):
+                        if not isinstance(tc, dict):
+                            continue
+                        fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                        tc_name = fn.get("name") or tc.get("tool")
+                        if not tc_name:
+                            continue
+                        calls.append({
+                            "id": str(tc.get("id") or tc.get("call_id") or f"call_{uuid.uuid4().hex[:8]}_{idx}"),
+                            "name": str(tc_name),
+                            "arguments": self._parse_tool_args_dict(fn.get("arguments") or tc.get("args") or {}),
+                        })
+                elif isinstance(msg.get("function_call"), dict) and msg["function_call"].get("name"):
+                    fc = msg["function_call"]
+                    calls.append({
+                        "id": f"call_{uuid.uuid4().hex[:8]}_0",
+                        "name": str(fc["name"]),
+                        "arguments": self._parse_tool_args_dict(fc.get("arguments") or {}),
+                    })
+        return calls
 
     def _parse_response(
         self, data: dict[str, Any], prompt: str

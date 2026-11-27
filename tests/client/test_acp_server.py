@@ -262,6 +262,10 @@ class TestACPServer(unittest.TestCase):
 
     def test_acp_session_prompt_execution(self) -> None:
         """Verify session/prompt executes task through orchestrator and returns text."""
+        from unittest.mock import patch
+        from harness_core.core.router import RouteDecision
+        from harness_core.providers.base import ModelResponse, ModelUsage
+
         new_resp = self.server.handle_request({
             "jsonrpc": "2.0",
             "id": 10,
@@ -279,7 +283,26 @@ class TestACPServer(unittest.TestCase):
                 "prompt": "Inspect workspace index.py",
             },
         }
-        prompt_resp = self.server.handle_request(prompt_req)
+        decision = RouteDecision(
+            tier="tier2_cloud_reasoner",
+            provider="mock",
+            model_id="mock-model",
+            reason="unit test",
+            raw_tokens_estimated=10,
+            compressed_tokens_estimated=10,
+            token_savings_pct=0.0,
+            compressed_context="Inspect workspace index.py",
+        )
+        reply = ModelResponse(
+            text="Inspected index.py.",
+            model_id="mock-model",
+            provider_id="mock",
+            usage=ModelUsage(10, 5, 15, 0.0),
+        )
+        router = self.server.orchestrator.router
+        with patch.object(router.cloud_provider, "is_available", return_value=True), \
+             patch.object(router, "execute_routed_request", return_value=(decision, reply)):
+            prompt_resp = self.server.handle_request(prompt_req)
         self.assertIn("result", prompt_resp)
         self.assertEqual(prompt_resp["result"]["sessionId"], sid)
         self.assertIn(prompt_resp["result"]["status"], ("completed", "ready", "running"))

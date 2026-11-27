@@ -47,6 +47,7 @@ class ReActConfig:
     retry_jitter: float = 0.1
     on_event: Callable[[str, dict[str, Any]], None] | None = None
     moa_config: Any | None = None
+    tool_definitions: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -377,6 +378,28 @@ class ReActLoop:
                 if name:
                     return thought, [ToolCallRequest(call_id=str(cid), name=str(name), arguments=args or {})]
 
+        # Case 1b: Structured provider objects (e.g., ModelResponse.tool_calls)
+        native_calls = getattr(response, "tool_calls", None)
+        if isinstance(native_calls, list) and native_calls:
+            thought = cls._extract_response_text(response)
+            calls: list[ToolCallRequest] = []
+            for idx, tc in enumerate(native_calls):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                name = fn.get("name") or tc.get("tool")
+                args = fn.get("arguments") or tc.get("args") or {}
+                if isinstance(args, str):
+                    try:
+                        args = _safe_json_loads(args)
+                    except Exception:
+                        args = {"raw": args}
+                cid = tc.get("call_id") or tc.get("id") or f"call_{uuid.uuid4().hex[:8]}_{idx}"
+                if name:
+                    calls.append(ToolCallRequest(call_id=str(cid), name=str(name), arguments=args or {}))
+            if calls:
+                return thought, calls
+
         text = cls._extract_response_text(response)
         requests: list[ToolCallRequest] = []
 
@@ -662,19 +685,52 @@ class ReActLoop:
         )
         return any(m in err_str for m in transient_markers)
 
+    def _active_tool_definitions(self) -> list[dict[str, Any]]:
+        """Return structured tool definitions for native provider tool calling."""
+        cfg_defs = getattr(self.config, "tool_definitions", None)
+        if isinstance(cfg_defs, list) and cfg_defs:
+            return [d for d in cfg_defs if isinstance(d, dict) and (d.get("name") or d.get("id"))]
+        gw = getattr(self, "gateway", None)
+        live_fn = getattr(gw, "live_tool_definitions", None) if gw is not None else None
+        if callable(live_fn):
+            try:
+                raw_defs = live_fn()
+            except Exception:
+                return []
+            if isinstance(raw_defs, list):
+                return [
+                    d for d in raw_defs
+                    if isinstance(d, dict) and (d.get("name") or d.get("id"))
+                ]
+        return []
+
+    def _caller_accepts_tools(self) -> bool:
+        """Return True if model_caller accepts a 'tools' keyword argument."""
+        try:
+            sig = inspect.signature(self.model_caller)
+        except (TypeError, ValueError):
+            return False
+        for param in sig.parameters.values():
+            if param.name == "tools" or param.kind == inspect.Parameter.VAR_KEYWORD:
+                return True
+        return False
+
     def _invoke_caller(self, messages: list[dict[str, Any]]) -> Any:
         """Invoke configured model_caller trying multiple parameter signatures."""
         if self.model_caller is None:
             raise RuntimeError("No model_caller configured for ReActLoop")
 
+        tools = self._active_tool_definitions()
+        call_kwargs: dict[str, Any] = {"tools": tools} if (tools and self._caller_accepts_tools()) else {}
+
         res: Any = None
         # Try passing messages list directly
         try:
-            res = self.model_caller(messages)
+            res = self.model_caller(messages, **call_kwargs)
         except TypeError:
             # Try keyword argument messages=messages
             try:
-                res = self.model_caller(messages=messages)
+                res = self.model_caller(messages=messages, **call_kwargs)
             except TypeError:
                 # Fallback to string prompt formatted from messages
                 prompt_str = self._format_messages_to_prompt(messages)
@@ -1646,6 +1702,9 @@ class ReActLoop:
                 final_answer, _ = strip_thinking_tags(finish_match.group(1).strip())
                 success = True
                 termination_reason = "finish"
+                if extracted_reasoning:
+                    self._emit_event("reasoning", {"thought": extracted_reasoning, "turn_index": turn_index})
+                self._emit_event("answer", {"text": final_answer, "turn_index": turn_index})
                 self.turns.append(
                     ReActTurn(
                         turn_index=turn_index,
@@ -1662,6 +1721,9 @@ class ReActLoop:
                 final_answer, _ = strip_thinking_tags(cleaned)
                 success = True
                 termination_reason = "finish"
+                if extracted_reasoning:
+                    self._emit_event("reasoning", {"thought": extracted_reasoning, "turn_index": turn_index})
+                self._emit_event("answer", {"text": final_answer, "turn_index": turn_index})
                 self.turns.append(
                     ReActTurn(
                         turn_index=turn_index,
@@ -1679,6 +1741,9 @@ class ReActLoop:
                 final_answer, _ = strip_thinking_tags(final_answer)
                 success = True
                 termination_reason = "no_tool_calls"
+                if extracted_reasoning:
+                    self._emit_event("reasoning", {"thought": extracted_reasoning, "turn_index": turn_index})
+                self._emit_event("answer", {"text": final_answer, "turn_index": turn_index})
                 self.turns.append(
                     ReActTurn(
                         turn_index=turn_index,
@@ -1691,7 +1756,23 @@ class ReActLoop:
                 break
 
             # 4. Tool calls present: record turn and execute each tool call
-            self.messages.append({"role": "assistant", "content": cleaned_raw_text})
+            if thought or extracted_reasoning:
+                self._emit_event("reasoning", {"thought": extracted_reasoning or thought, "turn_index": turn_index})
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": cleaned_raw_text}
+            native_calls = getattr(response, "tool_calls", None)
+            if isinstance(native_calls, list) and native_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+            self.messages.append(assistant_msg)
             tool_results: list[ToolCallResult] = []
 
             for seq, call in enumerate(tool_calls):
@@ -1757,6 +1838,7 @@ class ReActLoop:
                 self._emit_event("tool_end", {
                     "call_id": tool_res.call_id,
                     "name": tool_res.name,
+                    "output": tool_res.output,
                     "is_error": tool_res.is_error,
                     "duration_ms": tool_res.duration_ms,
                 })

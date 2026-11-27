@@ -1770,10 +1770,36 @@ class ToolGateway(FileToolsMixin):
         symbol = str(args.get("symbol", ""))
         if symbol:
             return {"ok": True, "graph": self.graphify.query_symbol(symbol)}
+
+        lang_counts: dict[str, int] = {}
+        dir_counts: dict[str, int] = {}
+        for rel_path in self.graphify.symbols_by_file:
+            ext = Path(rel_path).suffix.lower() or "other"
+            lang_counts[ext] = lang_counts.get(ext, 0) + 1
+            top_dir = rel_path.split("/", 1)[0] if "/" in rel_path else "."
+            dir_counts[top_dir] = dir_counts.get(top_dir, 0) + 1
+
+        sorted_dirs = sorted(dir_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:15]
+        god_nodes: list[Any] = []
+        import_cycles_count = 0
+        try:
+            arch = self.graphify.analyze_architecture(workspace_dir, top_n=10)
+            god_nodes = list(arch.get("god_nodes", []))[:10]
+            import_cycles_count = len(arch.get("import_cycles", []))
+        except Exception:
+            pass
+
+        all_symbols = sorted(self.graphify.symbols_by_name.keys())
         return {
             "ok": True,
             "indexed_files": len(self.graphify.symbols_by_file),
-            "symbols": sorted(self.graphify.symbols_by_name.keys()),
+            "total_symbols": len(all_symbols),
+            "languages": dict(sorted(lang_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+            "top_directories": [{"dir": d, "files": c} for d, c in sorted_dirs],
+            "god_nodes": god_nodes,
+            "import_cycles_count": import_cycles_count,
+            "symbols": all_symbols[:50],
+            "symbols_truncated": len(all_symbols) > 50,
         }
 
     def _tool_web_search(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:

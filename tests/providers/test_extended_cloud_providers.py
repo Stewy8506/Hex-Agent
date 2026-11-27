@@ -146,6 +146,298 @@ class TestExtendedCloudProviders(unittest.TestCase):
             with self.assertRaises(ProviderUnavailableError):
                 provider.generate(prompt="Test prompt")
 
+    def test_openai_native_tools_and_tool_calls_roundtrip(self) -> None:
+        """Verify OpenAI transport serializes JSON-schema tools, tool_calls, and tool results."""
+        captured_payloads: list[dict] = []
+
+        def mock_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            captured_payloads.append(json.loads(body.decode("utf-8")))
+            resp = {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_abc_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path": "README.md"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 12},
+            }
+            return 200, json.dumps(resp).encode("utf-8")
+
+        provider = CloudModelProvider(
+            provider_type="openrouter",
+            model_id="openai/gpt-4o-mini",
+            api_key="sk-or-test",
+            http_transport=mock_transport,
+        )
+        tools = [
+            {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            }
+        ]
+        messages = [
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "Inspect README.md"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_prev", "name": "list_files", "arguments": {"path": "."}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_prev",
+                "name": "list_files",
+                "content": '{"files": ["README.md"]}',
+                "observation": "strip-me",
+            },
+        ]
+        resp = provider.generate(messages=messages, tools=tools)
+        self.assertEqual(resp.finish_reason, "tool_calls")
+        self.assertEqual(len(resp.tool_calls), 1)
+        self.assertEqual(resp.tool_calls[0]["id"], "call_abc_1")
+        self.assertEqual(resp.tool_calls[0]["name"], "read_file")
+        self.assertEqual(resp.tool_calls[0]["arguments"], {"path": "README.md"})
+
+        sent = captured_payloads[0]
+        self.assertEqual(sent["tools"][0]["type"], "function")
+        self.assertEqual(sent["tools"][0]["function"]["name"], "read_file")
+        assistant_msg = [m for m in sent["messages"] if m["role"] == "assistant"][0]
+        self.assertEqual(assistant_msg["tool_calls"][0]["function"]["name"], "list_files")
+        tool_msg = [m for m in sent["messages"] if m["role"] == "tool"][0]
+        self.assertEqual(tool_msg, {"role": "tool", "tool_call_id": "call_prev", "content": '{"files": ["README.md"]}'})
+
+    def test_anthropic_and_gemini_native_tool_calls(self) -> None:
+        """Verify Anthropic Messages and Gemini REST transports encode tools and parse tool calls."""
+        ant_captured: dict = {}
+
+        def ant_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            ant_captured["payload"] = json.loads(body.decode("utf-8"))
+            return 200, json.dumps({
+                "content": [
+                    {"type": "text", "text": "Checking file"},
+                    {"type": "tool_use", "id": "toolu_1", "name": "list_files", "input": {"path": "src"}},
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 8},
+                "stop_reason": "tool_use",
+            }).encode("utf-8")
+
+        ant = CloudModelProvider(
+            provider_type="anthropic",
+            model_id="claude-3-5-sonnet-20241022",
+            api_key="sk-ant-test",
+            http_transport=ant_transport,
+        )
+        ant_resp = ant.generate(
+            messages=[
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "t0", "name": "list_files", "arguments": {}}]},
+                {"role": "tool", "tool_call_id": "t0", "content": "[]"},
+            ],
+            tools=[{"name": "list_files", "description": "List", "parameters": {"type": "object", "properties": {}}}],
+        )
+        self.assertEqual(ant_captured["payload"]["tools"][0]["input_schema"]["type"], "object")
+        self.assertEqual(ant_resp.tool_calls, [{"id": "toolu_1", "name": "list_files", "arguments": {"path": "src"}}])
+
+        gem_captured: dict = {}
+
+        def gem_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            gem_captured["payload"] = json.loads(body.decode("utf-8"))
+            return 200, json.dumps({
+                "candidates": [{
+                    "content": {
+                        "parts": [{"functionCall": {"name": "read_file", "args": {"path": "Cargo.toml"}}}]
+                    },
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {"promptTokenCount": 9, "candidatesTokenCount": 6},
+            }).encode("utf-8")
+
+        gem = CloudModelProvider(
+            provider_type="gemini",
+            model_id="gemini-2.5-pro",
+            api_key="gem-test",
+            http_transport=gem_transport,
+        )
+        gem_resp = gem.generate(
+            messages=[{"role": "user", "content": "Inspect Cargo.toml"}],
+            tools=[{"name": "read_file", "description": "Read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}],
+            tool_choice={"type": "function", "function": {"name": "read_file"}},
+        )
+        self.assertEqual(gem_captured["payload"]["tools"][0]["functionDeclarations"][0]["name"], "read_file")
+        self.assertEqual(
+            gem_captured["payload"]["toolConfig"],
+            {"functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": ["read_file"]}},
+        )
+        self.assertEqual(gem_resp.tool_calls[0]["name"], "read_file")
+        self.assertEqual(gem_resp.tool_calls[0]["arguments"], {"path": "Cargo.toml"})
+
+    def test_structured_messages_redact_secrets_across_all_cloud_transports(self) -> None:
+        """Verify secrets in structured tool outputs, assistant calls, and user messages are redacted."""
+        secret_tok = "sk-ant-api03-secretvalue1234567890"
+        gh_tok = "ghp_1234567890abcdefghijklmnop"
+        tool_spec = [{"name": "read_file", "description": "Read", "parameters": {"type": "object", "properties": {"max_tokens": {"type": "integer"}}}}]
+        base_msgs = [
+            {"role": "user", "content": f"Check token {secret_tok}"},
+            {"role": "assistant", "content": f"Reading {gh_tok}", "thinking": f"thought {secret_tok}", "signature": "sig_opaque_123", "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": ".env", "max_tokens": 50}}]},
+            {"role": "tool", "tool_call_id": "c1", "name": "read_file", "content": f"API_KEY={secret_tok}"},
+        ]
+
+        for ptype, model, key in (
+            ("openrouter", "openai/gpt-4o-mini", "sk-or-test"),
+            ("anthropic", "claude-3-5-sonnet-20241022", "sk-ant-test"),
+            ("gemini", "gemini-2.5-pro", "gem-test"),
+        ):
+            captured: list[bytes] = []
+
+            def transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+                captured.append(body)
+                if ptype == "anthropic":
+                    payload = {"content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 5, "output_tokens": 2}}
+                elif ptype == "gemini":
+                    payload = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}], "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 2}}
+                else:
+                    payload = {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}}
+                return 200, json.dumps(payload).encode("utf-8")
+
+            prov = CloudModelProvider(provider_type=ptype, model_id=model, api_key=key, http_transport=transport)
+            prov.generate(messages=base_msgs, tools=tool_spec)
+            raw_sent = captured[0].decode("utf-8")
+            self.assertNotIn(secret_tok, raw_sent)
+            self.assertNotIn(gh_tok, raw_sent)
+            self.assertIn("[REDACTED_SECRET]", raw_sent)
+            parsed_sent = json.loads(raw_sent)
+            if ptype == "anthropic":
+                blocks = parsed_sent["messages"][1]["content"]
+                self.assertEqual(blocks[0]["signature"], "sig_opaque_123")
+                self.assertEqual(blocks[-1]["input"]["max_tokens"], 50)
+            elif ptype == "gemini":
+                fn_call = parsed_sent["contents"][1]["parts"][-1]["functionCall"]
+                self.assertEqual(fn_call["args"]["max_tokens"], 50)
+            else:
+                tc_args = json.loads(parsed_sent["messages"][1]["tool_calls"][0]["function"]["arguments"])
+                self.assertEqual(tc_args["max_tokens"], 50)
+
+    def test_antigravity_and_local_providers_preserve_messages_tools_and_redact(self) -> None:
+        """Verify Antigravity and LocalModelProvider (Ollama chat + MLX) preserve ReAct messages and tools."""
+        from harness_core.providers.antigravity_provider import AntigravityModelProvider
+        from harness_core.providers.local_provider import LocalModelProvider
+
+        secret_tok = "ghp_1234567890abcdefghijklmnop"
+        msgs = [
+            {"role": "user", "content": "Inspect Cargo.toml"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "Cargo.toml"}}]},
+            {"role": "tool", "tool_call_id": "c1", "name": "read_file", "content": f"token={secret_tok}; name='hex'"},
+        ]
+        tools = [{"name": "read_file", "description": "Read file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}]
+
+        # 1. Antigravity delegation via CloudModelProvider
+        ag_captured: dict = {}
+
+        def ag_transport(url: str, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+            ag_captured["body"] = body.decode("utf-8")
+            ag_captured["json"] = json.loads(ag_captured["body"])
+            return 200, json.dumps({
+                "response": {
+                    "candidates": [{"content": {"parts": [{"functionCall": {"name": "read_file", "args": {"path": "README.md"}}}]}}],
+                    "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 4},
+                }
+            }).encode("utf-8")
+
+        ag = AntigravityModelProvider(model_id="gemini-2.5-pro", access_token="ya29.test", project_id="proj-1", http_transport=ag_transport)
+        ag_cloud = CloudModelProvider(provider_type="antigravity", model_id="gemini-2.5-pro", api_key="ya29.test", http_transport=ag_transport)
+        ag_cloud._antigravity_delegate = ag
+        ag_resp = ag_cloud.generate(messages=msgs, tools=tools, tool_choice="required", system_prompt="System")
+        self.assertNotIn(secret_tok, ag_captured["body"])
+        self.assertIn("[REDACTED_SECRET]", ag_captured["body"])
+        inner_req = ag_captured["json"]["request"]
+        self.assertEqual(len(inner_req["contents"]), 3)
+        self.assertEqual(inner_req["tools"][0]["functionDeclarations"][0]["name"], "read_file")
+        self.assertEqual(inner_req["toolConfig"], {"functionCallingConfig": {"mode": "ANY"}})
+        self.assertEqual(ag_resp.tool_calls[0]["name"], "read_file")
+        self.assertEqual(ag_resp.tool_calls[0]["arguments"], {"path": "README.md"})
+
+        # 2. Local Ollama /api/chat path
+        local = LocalModelProvider(model_id="qwen2.5-coder:7b")
+        ollama_calls: list[tuple[str, dict]] = []
+
+        class _FakeResp:
+            def __init__(self, status: int, data: bytes) -> None:
+                self.status = status
+                self._data = data
+
+            def read(self) -> bytes:
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(req, timeout=30):
+            body_obj = json.loads(req.data.decode("utf-8"))
+            ollama_calls.append((req.full_url, body_obj))
+            return _FakeResp(200, json.dumps({
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"function": {"name": "list_files", "arguments": {"path": "."}}}],
+                },
+                "prompt_eval_count": 15,
+                "eval_count": 7,
+            }).encode("utf-8"))
+
+        with patch.object(local, "is_ollama_available", return_value=True), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            ol_resp = local.generate(messages=msgs, tools=tools, system_prompt="Be concise")
+        self.assertEqual(len(ollama_calls), 1)
+        self.assertTrue(ollama_calls[0][0].endswith("/api/chat"))
+        sent_ollama = json.dumps(ollama_calls[0][1])
+        self.assertNotIn(secret_tok, sent_ollama)
+        self.assertIn("[REDACTED_SECRET]", sent_ollama)
+        self.assertTrue(any(m.get("role") == "tool" for m in ollama_calls[0][1]["messages"]))
+        self.assertEqual(ollama_calls[0][1]["tools"][0]["function"]["name"], "read_file")
+        self.assertEqual(ol_resp.tool_calls[0]["name"], "list_files")
+        self.assertEqual(ol_resp.tool_calls[0]["arguments"], {"path": "."})
+
+        # 3. Local MLX multi-turn fallback formatting
+        mlx_prompts: list[str] = []
+
+        def fake_mlx_gen(model, tokenizer, prompt: str, **kwargs):
+            mlx_prompts.append(prompt)
+            return "MLX reply"
+
+        with patch.object(local, "is_ollama_available", return_value=False), \
+             patch.object(local, "is_mlx_available", return_value=True), \
+             patch.object(local, "load_model", return_value=(object(), object())), \
+             patch.dict("sys.modules", {"mlx_lm": MagicMock(generate=fake_mlx_gen)}):
+            mlx_resp = local.generate(messages=msgs, tools=tools, system_prompt="Be concise")
+        self.assertEqual(mlx_resp.text, "MLX reply")
+        self.assertEqual(len(mlx_prompts), 1)
+        self.assertNotIn(secret_tok, mlx_prompts[0])
+        self.assertIn("[REDACTED_SECRET]", mlx_prompts[0])
+        self.assertIn("name='hex'", mlx_prompts[0])
+        self.assertIn("read_file", mlx_prompts[0])
+
 
 if __name__ == "__main__":
     unittest.main()

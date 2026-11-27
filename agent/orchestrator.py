@@ -969,6 +969,11 @@ class HarnessOrchestrator:
         moa_config: Any | None = None,
         demo_mode: bool | None = None,
         resume_from_task_id: str | None = None,
+        stream_callback: Callable[[str], None] | None = None,
+        tool_callback: Callable[..., None] | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
+        conversation_id: str | None = None,
+        surface: str = "tui",
     ) -> dict[str, Any]:
         """Execute an autonomous continuous multi-turn ReAct tool loop (Hermes Parity Pillar 1).
 
@@ -994,6 +999,20 @@ class HarnessOrchestrator:
                     "Durable dialogue reconstruction failed for %s: %s", resume_from_task_id, exc
                 )
 
+        if not initial_messages and conversation_history:
+            for entry in conversation_history[-10:]:
+                if not isinstance(entry, dict):
+                    continue
+                if "role" in entry and entry.get("content"):
+                    initial_messages.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                else:
+                    u_txt = str(entry.get("prompt") or "").strip()
+                    a_txt = str(entry.get("response") or "").strip()
+                    if u_txt:
+                        initial_messages.append({"role": "user", "content": u_txt})
+                    if a_txt:
+                        initial_messages.append({"role": "assistant", "content": a_txt})
+
         # Submit task into ledger if available
         active_task_id = task_id or f"task_react_{uuid.uuid4().hex[:8]}"
 
@@ -1006,21 +1025,52 @@ class HarnessOrchestrator:
                 f"{extra_rules}\n\n{skill_context}" if extra_rules.strip() else skill_context
             )
 
+        snap_session_id = conversation_id or self._snapshot_session_id(None, active_task_id)
         system_directive = self.prompt_builder.build_system_prompt(
             workspace_root=effective_ws,
             mode=mode,
             extra_rules=combined_extra_rules,
             curated_memory=curated_memory,
-            session_id=self._snapshot_session_id(None, active_task_id),
+            session_id=snap_session_id,
+            surface=surface,
         )
         task_record: dict[str, Any] | None = None
+        existing_task = (
+            ledger_ref.get_task(task_id)
+            if (task_id and ledger_ref is not None and hasattr(ledger_ref, "get_task"))
+            else None
+        )
         resuming_same_task = bool(
             task_id
             and resume_from_task_id == task_id
-            and ledger_ref is not None
-            and ledger_ref.get_task(task_id) is not None
+            and existing_task is not None
         )
-        if hasattr(self, "ledger") and self.ledger is not None and not resuming_same_task:
+        if ledger_ref is not None and existing_task is not None and not resuming_same_task:
+            active_task_id = task_id  # Preserve caller-submitted task_id (e.g. execute_task)
+            try:
+                cur_status = str(existing_task.get("status") or "")
+                if cur_status == TaskState.SUBMITTED.value:
+                    ledger_ref.transition_task(
+                        active_task_id, TaskState.VALIDATING, reason_code="REACT_LOOP_VALIDATE"
+                    )
+                    ledger_ref.transition_task(
+                        active_task_id, TaskState.QUEUED, reason_code="REACT_LOOP_QUEUE"
+                    )
+                    cur_status = TaskState.QUEUED.value
+                if cur_status in (
+                    TaskState.QUEUED.value,
+                    TaskState.VALIDATING.value,
+                    TaskState.PAUSED.value,
+                    TaskState.RETRY_WAIT.value,
+                    TaskState.WAITING_APPROVAL.value,
+                    TaskState.NEEDS_ATTENTION.value,
+                ):
+                    ledger_ref.transition_task(
+                        active_task_id, TaskState.RUNNING, reason_code="REACT_LOOP_START"
+                    )
+            except Exception:
+                pass
+        elif hasattr(self, "ledger") and self.ledger is not None and not resuming_same_task:
             try:
                 task_record = self.ledger.submit_task(
                     TaskSubmitRequest(
@@ -1048,7 +1098,10 @@ class HarnessOrchestrator:
         # Build model caller with router and deterministic fallback
         demo = bool(self.demo_mode if demo_mode is None else demo_mode)
 
-        def _react_model_caller(messages: list[dict[str, Any]]) -> str:
+        def _react_model_caller(
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> Any:
             # 1. Try router if available and configured with active provider.
             # Without explicit demo mode, inference unavailable/outage/empty must
             # fail loudly rather than fabricate completion (B03).
@@ -1063,17 +1116,31 @@ class HarnessOrchestrator:
                         cloud_avail = False
                 if cloud_avail:
                     try:
-                        prompt_str = ReActLoop._format_messages_to_prompt(messages)
-                        decision, model_resp = router.execute_routed_request(
-                            prompt=prompt_str,
-                            task_class="agent_loop",
-                            risk_class="R2",
-                            system_prompt=system_directive,
-                            workspace_dir=effective_ws,
-                            max_tokens=4096,
-                            enable_prompt_caching=True,
-                        )
+                        last_user = ""
+                        for m in reversed(messages):
+                            if isinstance(m, dict) and str(m.get("role", "")).lower() == "user":
+                                last_user = str(m.get("content") or "")
+                                if last_user:
+                                    break
+                        prompt_str = last_user or goal or ReActLoop._format_messages_to_prompt(messages)
+                        call_kwargs: dict[str, Any] = {
+                            "prompt": prompt_str,
+                            "task_class": "agent_loop",
+                            "risk_class": "R2",
+                            "system_prompt": system_directive,
+                            "workspace_dir": effective_ws,
+                            "max_tokens": 4096,
+                            "enable_prompt_caching": True,
+                            "messages": messages,
+                            "compress_logs": False,
+                        }
+                        if tools:
+                            call_kwargs["tools"] = tools
+                        decision, model_resp = router.execute_routed_request(**call_kwargs)
                         resp_text = (getattr(model_resp, "text", "") or "").strip() if model_resp else ""
+                        resp_tcs = getattr(model_resp, "tool_calls", None) if model_resp else None
+                        if isinstance(resp_tcs, list) and resp_tcs:
+                            return model_resp
                         if resp_text:
                             return resp_text
                         if not demo:
@@ -1186,11 +1253,34 @@ class HarnessOrchestrator:
                         raise
             return _react_model_caller(messages)
 
+        def _on_react_event(event_type: str, data: dict[str, Any]) -> None:
+            if event_type == "reasoning" and stream_callback is not None:
+                thought_txt = str(data.get("thought") or "").strip()
+                if thought_txt:
+                    stream_callback(f"<think>{thought_txt}</think>")
+            elif event_type == "answer" and stream_callback is not None:
+                ans_txt = str(data.get("text") or "")
+                if ans_txt:
+                    from harness_core.cognition.memory import sanitize_context
+                    cleaned_ans = sanitize_context(ans_txt)
+                    if cleaned_ans:
+                        stream_callback(cleaned_ans)
+            elif event_type == "tool_start" and tool_callback is not None:
+                tool_callback("start", str(data.get("name") or ""), data.get("arguments") or {})
+            elif event_type == "tool_end" and tool_callback is not None:
+                tool_callback(
+                    "error" if data.get("is_error") else "complete",
+                    str(data.get("name") or ""),
+                    data.get("output"),
+                    int(data.get("duration_ms") or 0),
+                )
+
         effective_moa_cfg = moa_config if moa_config is not None else getattr(self, "moa_config", None)
         react_cfg = ReActConfig(
             max_turns=max_turns,
             system_prompt=system_directive,
             moa_config=effective_moa_cfg,
+            on_event=_on_react_event if (stream_callback or tool_callback) else None,
         )
 
         # Wire ContextCompactor from router if available
@@ -1264,6 +1354,16 @@ class HarnessOrchestrator:
                             reason_code="REACT_LOOP_FAILED",
                             terminal_reason=session_res.termination_reason,
                         )
+                if session_res.final_answer and hasattr(self.ledger, "conn") and self.ledger.conn is not None:
+                    try:
+                        with self.ledger._lock:
+                            self.ledger.conn.execute(
+                                "UPDATE tasks SET deliverable = ? WHERE task_id = ?",
+                                (session_res.final_answer, active_task_id),
+                            )
+                            self.ledger.conn.commit()
+                    except Exception:
+                        pass
                 if hasattr(self.ledger, "record_event"):
                     self.ledger.record_event(
                         task_id=active_task_id,
@@ -1424,6 +1524,31 @@ class HarnessOrchestrator:
 
         # Fast-Path Express Lane (FR-001a): bypasses DAG planning ceremony for R0/R1 tasks
         try:
+            if task["execution_mode"] == "react_loop":
+                res = self.run_agent_loop(
+                    goal=str(task.get("goal") or ""),
+                    workspace_root=source_ws,
+                    task_id=task_id,
+                    mode=str(task.get("mode") or "agent"),
+                    stream_callback=kwargs.get("stream_callback"),
+                    tool_callback=kwargs.get("tool_callback"),
+                    conversation_history=constraints.get("conversation_history") or [],
+                    conversation_id=constraints.get("conversation_id"),
+                    surface=str(constraints.get("surface") or "tui"),
+                )
+                db_task = self.ledger.get_task(task_id) if hasattr(self.ledger, "get_task") else None
+                if db_task:
+                    if not db_task.get("deliverable") and res.get("final_answer"):
+                        db_task["deliverable"] = res["final_answer"]
+                    return db_task
+                return {
+                    "task_id": task_id,
+                    "status": "SUCCEEDED" if res.get("success") else "FAILED",
+                    "deliverable": res.get("final_answer", ""),
+                    "final_answer": res.get("final_answer", ""),
+                    "terminal_reason": res.get("termination_reason", ""),
+                }
+
             if task["execution_mode"] == "fast_path":
                 return self._execute_fast_path(
                     task, source_ws, wrk, lease_info=lease_info, fence_check=fence_check, **kwargs,
@@ -1494,15 +1619,7 @@ class HarnessOrchestrator:
 
         goal = (task.get("goal") or "").strip()
         requested_steps = (task.get("constraints") or {}).get("requested_steps")
-        if requested_steps is not None:
-            steps = requested_steps
-        elif _needs_workspace_scan(goal):
-            steps = [
-                {"step_id": "fp_list", "tool_id": "list_files", "args": {}, "risk_class": "R0"},
-                {"step_id": "fp_graph", "tool_id": "query_graphify", "args": {}, "risk_class": "R1"},
-            ]
-        else:
-            steps = []
+        steps = requested_steps if requested_steps is not None else []
 
         conv_history = (task.get("constraints") or {}).get("conversation_history") or []
         history_block = format_conversation_history(conv_history)
@@ -1569,6 +1686,7 @@ class HarnessOrchestrator:
                     mode=str(task.get("mode") or "agent"),
                     session_id=self._snapshot_session_id(task, task_id),
                     surface=surface,
+                    include_tools=False,
                 )
             except Exception as pb_exc:
                 logger.debug("Fast-path system prompt build failed: %s", pb_exc)

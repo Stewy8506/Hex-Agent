@@ -1434,7 +1434,7 @@ class ACPServer:
         from harness_core.core.models import TaskSubmitRequest
         from harness_core.storage import compute_project_id
 
-        exec_mode = str(params.get("execution_mode") or "fast_path")
+        exec_mode = str(params.get("execution_mode") or "react_loop")
         task_req = TaskSubmitRequest(
             goal=prompt_text,
             project_id=compute_project_id(sess.workspace_root),

@@ -388,14 +388,14 @@ fn parse_inline_styled(input: &str, bold: bool, italic: bool) -> Vec<InlineToken
             }
         }
 
-        if let Some((marker, next_bold)) = bold_marker(rest) {
-            if let Some(close) = find_unescaped(&rest[marker.len()..], marker) {
-                flush_plain();
-                let inner = &rest[marker.len()..marker.len() + close];
-                tokens.extend(parse_inline_styled(inner, next_bold, italic));
-                index += marker.len() + close + marker.len();
-                continue;
-            }
+        if let Some((marker, close, next_bold, next_italic)) =
+            emphasis_match(input, index, bold, italic)
+        {
+            flush_plain();
+            let inner = &rest[marker.len()..marker.len() + close];
+            tokens.extend(parse_inline_styled(inner, next_bold, next_italic));
+            index += marker.len() + close + marker.len();
+            continue;
         }
 
         if rest.starts_with('[') || rest.starts_with("![") {
@@ -452,18 +452,102 @@ fn parse_inline_styled(input: &str, bold: bool, italic: bool) -> Vec<InlineToken
     tokens
 }
 
-fn bold_marker(rest: &str) -> Option<(&'static str, bool)> {
-    if rest.starts_with("**") {
-        Some(("**", true))
+fn is_ident_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+fn emphasis_candidate(rest: &str) -> Option<(&'static str, bool, bool, bool)> {
+    if rest.starts_with("***") {
+        Some(("***", true, true, false))
+    } else if rest.starts_with("___") {
+        Some(("___", true, true, true))
+    } else if rest.starts_with("**") {
+        Some(("**", true, false, false))
     } else if rest.starts_with("__") {
-        Some(("__", true))
+        Some(("__", true, false, true))
     } else if rest.starts_with('*') {
-        Some(("*", false))
+        Some(("*", false, true, false))
     } else if rest.starts_with('_') {
-        Some(("_", false))
+        Some(("_", false, true, true))
     } else {
         None
     }
+}
+
+fn emphasis_match(
+    input: &str,
+    index: usize,
+    bold: bool,
+    italic: bool,
+) -> Option<(&'static str, usize, bool, bool)> {
+    let rest = &input[index..];
+    let (marker, sets_bold, sets_italic, is_underscore) = emphasis_candidate(rest)?;
+    if is_underscore
+        && input[..index]
+            .chars()
+            .next_back()
+            .is_some_and(is_ident_char)
+    {
+        return None;
+    }
+    let after = &rest[marker.len()..];
+    let first_after = after.chars().next()?;
+    if marker.len() == 1 && first_after.is_whitespace() {
+        return None;
+    }
+    let close = find_emphasis_close(after, marker, is_underscore)?;
+    Some((marker, close, bold || sets_bold, italic || sets_italic))
+}
+
+fn find_emphasis_close(after: &str, marker: &str, is_underscore: bool) -> Option<usize> {
+    let delim = marker.chars().next()?;
+    let m_len = marker.len();
+    let mut pos = 0;
+    while pos < after.len() {
+        let slice = &after[pos..];
+        let ch = slice.chars().next()?;
+        if ch == '\\' {
+            pos += ch.len_utf8();
+            if let Some(escaped) = after[pos..].chars().next() {
+                pos += escaped.len_utf8();
+            }
+            continue;
+        }
+        if ch == '`' {
+            let ticks = slice.chars().take_while(|c| *c == '`').count();
+            let tick_str = &slice[..ticks];
+            if let Some(rel_end) = after[pos + ticks..].find(tick_str) {
+                pos += ticks + rel_end + ticks;
+                continue;
+            }
+        }
+        if slice.starts_with(marker) {
+            let run = slice.chars().take_while(|c| *c == delim).count();
+            // Allow `**...***` to match the final `**` of a 3-char run so nested `*...*` keeps its closer.
+            let candidate_pos = if run > m_len && run == m_len + 1 {
+                pos + (run - m_len)
+            } else if run != m_len {
+                pos += run * delim.len_utf8();
+                continue;
+            } else {
+                pos
+            };
+            if candidate_pos > 0 {
+                let before_close = after[..candidate_pos].chars().next_back();
+                let single_ws_ok = m_len > 1 || !before_close.is_some_and(char::is_whitespace);
+                let after_idx = candidate_pos + marker.len();
+                let after_close = after[after_idx..].chars().next();
+                let boundary_ok = !is_underscore || !after_close.is_some_and(is_ident_char);
+                if single_ws_ok && boundary_ok {
+                    return Some(candidate_pos);
+                }
+            }
+            pos += run * delim.len_utf8();
+            continue;
+        }
+        pos += ch.len_utf8();
+    }
+    None
 }
 
 fn link_at(input: &str) -> Option<(usize, &str, String, bool)> {
@@ -629,5 +713,49 @@ mod tests {
             matches!(blocks[0], MarkdownBlock::Heading { level: 1, ref text } if text.is_empty())
         );
         assert!(matches!(blocks[1], MarkdownBlock::Code { ref code, .. } if code == "\nfirst"));
+    }
+
+    #[test]
+    fn snake_case_and_filenames_preserve_underscores() {
+        for sample in ["read_file", "ANIMATIONS_PLAN.md", "foo_bar_baz", "a__b"] {
+            let tokens = parse_inline(sample);
+            let joined: String = tokens.iter().map(|t| t.text.as_str()).collect();
+            assert_eq!(joined, sample);
+            assert!(
+                tokens.iter().all(|t| !t.bold && !t.italic),
+                "unexpected formatting for {sample}: {tokens:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn emphasis_separates_bold_and_italic_and_inherits_nested_styles() {
+        let italic = parse_inline("*italic* _under_ (_paren_) _keep_underscore_");
+        assert!(italic
+            .iter()
+            .any(|t| t.text == "italic" && !t.bold && t.italic));
+        assert!(italic
+            .iter()
+            .any(|t| t.text == "under" && !t.bold && t.italic));
+        assert!(italic
+            .iter()
+            .any(|t| t.text == "paren" && !t.bold && t.italic));
+        assert!(italic
+            .iter()
+            .any(|t| t.text == "keep_underscore" && !t.bold && t.italic));
+
+        let nested = parse_inline("**bold _and_ italic** and ***both*** and __double__");
+        assert!(nested
+            .iter()
+            .any(|t| t.text == "bold " && t.bold && !t.italic));
+        assert!(nested
+            .iter()
+            .any(|t| t.text == "and" && t.bold && t.italic));
+        assert!(nested
+            .iter()
+            .any(|t| t.text == "both" && t.bold && t.italic));
+        assert!(nested
+            .iter()
+            .any(|t| t.text == "double" && t.bold && !t.italic));
     }
 }

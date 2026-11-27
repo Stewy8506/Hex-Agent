@@ -84,6 +84,25 @@ SUPPORTED_CODE_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
+GRAPHIFY_IGNORE_DIRS: frozenset[str] = IGNORE_DIRS | frozenset(
+    {
+        "target",
+        "build",
+        "dist",
+        "out",
+        "benchmarks",
+        "vendor",
+        "third_party",
+        ".mypy_cache",
+        ".next",
+        ".turbo",
+        ".cache",
+        "htmlcov",
+        "coverage",
+        "__pypackages__",
+    }
+)
+
 # Regex extractors for TypeScript / JavaScript / Go / Rust / Java / C++ full-stack symbol & import indexing
 _TS_FUNC_RE = re.compile(
     r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(",
@@ -495,13 +514,25 @@ class ActiveGraphifyAdapter:
             }
 
             self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+            for stale_tmp in self.cache_file.parent.glob(".tmp_*.json"):
+                try:
+                    stale_tmp.unlink()
+                except OSError:
+                    pass
             # Write .graphify_root marker alongside graph.json so upstream graphify.reflect resolves source_file paths
             root_marker = self.cache_file.parent / ".graphify_root"
             root_marker.write_text(root_str + "\n", encoding="utf-8")
 
             tmp_file = self.cache_file.parent / f".tmp_{os.getpid()}_{uuid.uuid4().hex}.json"
-            tmp_file.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
-            os.replace(tmp_file, self.cache_file)
+            try:
+                tmp_file.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
+                os.replace(tmp_file, self.cache_file)
+            finally:
+                if tmp_file.exists():
+                    try:
+                        tmp_file.unlink()
+                    except OSError:
+                        pass
         except Exception:
             pass
 
@@ -663,7 +694,13 @@ class ActiveGraphifyAdapter:
 
         code_files: list[tuple[str, Path]] = []
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS and not d.startswith("."))
+            dirnames[:] = sorted(
+                d
+                for d in dirnames
+                if d not in GRAPHIFY_IGNORE_DIRS
+                and not d.startswith(".")
+                and not d.endswith(".egg-info")
+            )
             for fname in sorted(filenames):
                 ext = Path(fname).suffix.lower()
                 if ext in SUPPORTED_CODE_EXTENSIONS:

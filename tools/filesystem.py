@@ -4,11 +4,42 @@ import difflib
 import fnmatch
 import os
 import re
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 # Display bound for tool-result diffs carried to UI clients.
 DIFF_MAX_LINES = 240
+
+_WORKSPACE_IGNORE_DIRS = frozenset({
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    "node_modules",
+    ".harness_data",
+    ".hex",
+    "target",
+    "build",
+    "dist",
+    "out",
+    "benchmarks",
+    "vendor",
+    ".next",
+    ".turbo",
+    ".cache",
+    "htmlcov",
+    "coverage",
+    "__pypackages__",
+})
+
+
+def _is_ignored_dir(name: str) -> bool:
+    """Return True for hidden, build, cache, vendor, or benchmark directories."""
+    return name.startswith(".") or name in _WORKSPACE_IGNORE_DIRS or name.endswith(".egg-info")
 
 
 def unified_diff_bounded(
@@ -75,22 +106,87 @@ class FileToolsMixin:
         return {"ok": True, "path": str(args["path"]), "content": content, "size": len(content)}
 
     def _tool_list_files(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
+        resolved_ws = Path(workspace_dir).resolve()
+        rel_subpath = str(args.get("path", "")).strip()
+        base_dir = self._resolve_confined_path(resolved_ws, rel_subpath) if rel_subpath else resolved_ws
+        if not base_dir.exists():
+            return {"ok": False, "error": f"Path not found: {rel_subpath}", "files": [], "count": 0}
+
+        if base_dir.is_file():
+            rel = str(base_dir.resolve().relative_to(resolved_ws)).replace("\\", "/")
+            return {"ok": True, "files": [rel], "count": 1, "truncated": False, "top_level_dirs": []}
+
+        recursive = bool(args.get("recursive", True))
+        try:
+            max_entries = max(1, min(int(args.get("max_entries", 500) or 500), 2000))
+        except (TypeError, ValueError):
+            max_entries = 500
+
         files: list[str] = []
-        for dirpath, dirnames, filenames in os.walk(workspace_dir):
-            dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d != "__pycache__")
-            for f in sorted(filenames):
-                if not f.startswith("."):
-                    rel = str((Path(dirpath) / f).relative_to(workspace_dir)).replace("\\", "/")
-                    files.append(rel)
-        return {"ok": True, "files": files[:500], "count": len(files)}
+        top_level_dirs: list[str] = []
+        truncated = False
+        queue: deque[Path] = deque([base_dir])
+        is_root = True
+
+        # Breadth-first scan keeps top-level manifests and source folders ahead of deep subtrees.
+        while queue:
+            current = queue.popleft()
+            try:
+                children = sorted(current.iterdir(), key=lambda p: p.name)
+            except OSError:
+                is_root = False
+                continue
+
+            subdirs: list[Path] = []
+            for child in children:
+                name = child.name
+                if name.startswith("."):
+                    continue
+                if child.is_symlink() and child.is_dir():
+                    # Never enter symlinked directories (prevents workspace escapes and cycles).
+                    continue
+                if child.is_dir():
+                    if not _is_ignored_dir(name):
+                        subdirs.append(child)
+                        if is_root:
+                            top_level_dirs.append(name)
+                elif child.is_file():
+                    try:
+                        resolved_target = child.resolve()
+                        resolved_target.relative_to(resolved_ws)
+                        logical_rel = str((current.resolve() / name).relative_to(resolved_ws)).replace("\\", "/")
+                    except (OSError, ValueError, RuntimeError):
+                        continue
+                    if len(files) >= max_entries:
+                        truncated = True
+                        break
+                    files.append(logical_rel)
+
+            if truncated:
+                break
+            if recursive:
+                queue.extend(subdirs)
+            is_root = False
+
+        if not truncated and queue:
+            truncated = True
+
+        return {
+            "ok": True,
+            "files": files,
+            "count": len(files),
+            "truncated": truncated,
+            "top_level_dirs": top_level_dirs,
+        }
 
     def _tool_search_files(self, workspace_dir: Path, args: dict[str, Any]) -> dict[str, Any]:
         query = str(args.get("query") or args.get("pattern", "")).strip()
         if not query:
             return {"ok": True, "matches": [], "total_matches": 0, "query": ""}
 
+        resolved_ws = Path(workspace_dir).resolve()
         rel_subpath = str(args.get("path", "")).strip()
-        search_dir = self._resolve_confined_path(workspace_dir, rel_subpath) if rel_subpath else workspace_dir
+        search_dir = self._resolve_confined_path(resolved_ws, rel_subpath) if rel_subpath else resolved_ws
         if not search_dir.exists():
             return {"ok": False, "error": f"Path not found: {rel_subpath}", "matches": []}
 
@@ -107,10 +203,9 @@ class FileToolsMixin:
             query_cmp = query if case_sensitive else query.lower()
 
         matches: list[dict[str, Any]] = []
-        ignored_dirs = {".git", ".venv", ".pytest_cache", ".hex", "__pycache__", "node_modules", ".mypy_cache"}
 
         for dirpath, dirnames, filenames in os.walk(search_dir):
-            dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in ignored_dirs)
+            dirnames[:] = sorted(d for d in dirnames if not _is_ignored_dir(d))
             for fname in sorted(filenames):
                 if fname.startswith("."):
                     continue
@@ -119,6 +214,9 @@ class FileToolsMixin:
 
                 fpath = Path(dirpath) / fname
                 try:
+                    resolved_file = fpath.resolve()
+                    resolved_file.relative_to(resolved_ws)
+                    rel_path = str((Path(dirpath).resolve() / fname).relative_to(resolved_ws)).replace("\\", "/")
                     if fpath.stat().st_size > 1_000_000:
                         continue
                     with open(fpath, "rb") as bf:
@@ -126,7 +224,6 @@ class FileToolsMixin:
                         if b"\x00" in sample:
                             continue
 
-                    rel_path = str(fpath.relative_to(workspace_dir)).replace("\\", "/")
                     with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                         for l_idx, line in enumerate(f, 1):
                             matched = False
@@ -144,7 +241,7 @@ class FileToolsMixin:
                                 })
                                 if len(matches) >= max_matches:
                                     break
-                except (OSError, UnicodeDecodeError):
+                except (OSError, UnicodeDecodeError, ValueError, RuntimeError):
                     continue
             if len(matches) >= max_matches:
                 break

@@ -2,9 +2,266 @@
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from typing import Any
+import uuid
+
+
+_PRESERVED_MESSAGE_KEYS = frozenset({
+    "signature",
+    "id",
+    "tool_call_id",
+    "tool_use_id",
+    "call_id",
+    "role",
+    "type",
+    "name",
+    "tool_name",
+})
+
+
+def _sanitize_value_strings(value: Any, *, redactor: Any) -> Any:
+    """Recursively redact secrets in string values without mutating key names or signatures."""
+    if isinstance(value, str):
+        return str(redactor(value))
+    if isinstance(value, list):
+        return [_sanitize_value_strings(item, redactor=redactor) for item in value]
+    if isinstance(value, dict):
+        return {
+            k: (v if k in _PRESERVED_MESSAGE_KEYS else _sanitize_value_strings(v, redactor=redactor))
+            for k, v in value.items()
+        }
+    return value
+
+
+def sanitize_messages_secrets(messages: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    """Return a copy of structured chat messages with secret patterns redacted from string payloads."""
+    if messages is None:
+        return None
+    from harness_core.gateway import redact_secrets
+
+    return [
+        _sanitize_value_strings(dict(msg), redactor=redact_secrets)
+        for msg in messages
+        if isinstance(msg, dict)
+    ]
+
+
+def normalize_tool_definitions(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Normalize gateway or OpenAI tool schemas into canonical {name, description, parameters} dicts."""
+    normalized: list[dict[str, Any]] = []
+    if not tools:
+        return normalized
+    for entry in tools:
+        if not isinstance(entry, dict):
+            continue
+        fn = entry.get("function") if entry.get("type") == "function" and isinstance(entry.get("function"), dict) else entry
+        name = str(fn.get("name") or fn.get("id") or "").strip()
+        if not name:
+            continue
+        description = str(fn.get("description") or "").strip()
+        params = fn.get("parameters") or fn.get("input_schema") or {"type": "object", "properties": {}}
+        normalized.append({
+            "name": name,
+            "description": description,
+            "parameters": params if isinstance(params, dict) else {"type": "object", "properties": {}},
+        })
+    return normalized
+
+
+def parse_tool_args_dict(raw_args: Any) -> dict[str, Any]:
+    """Coerce dict or JSON-encoded tool arguments into a dictionary."""
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        text = raw_args.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {"raw": raw_args}
+    return {}
+
+
+def build_gemini_contents_and_system(
+    messages: list[dict[str, Any]] | None,
+    clean_prompt: str,
+    cacheable_prefix: str | None = None,
+    system_prompt: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Translate structured chat messages (including tool calls/results) into Gemini contents + systemInstruction."""
+    if messages is not None:
+        contents: list[dict[str, Any]] = []
+        extracted_sys: list[str] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            raw_role = str(msg.get("role", "user")).lower()
+            if raw_role == "system":
+                sys_txt = str(msg.get("content", "")).strip()
+                if sys_txt:
+                    extracted_sys.append(sys_txt)
+                continue
+            if raw_role == "tool":
+                tool_name = str(msg.get("name") or msg.get("tool_name") or "tool")
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": {"result": str(msg.get("content", ""))},
+                        }
+                    }],
+                })
+                continue
+            m_role = "model" if raw_role == "assistant" else "user"
+            m_parts: list[dict[str, Any]] = []
+            m_text = str(msg.get("content") or "")
+            if m_text:
+                m_parts.append({"text": m_text})
+            if m_role == "model" and isinstance(msg.get("tool_calls"), list):
+                for tc in msg["tool_calls"]:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                    tc_name = str(fn.get("name") or tc.get("tool") or "")
+                    tc_args = parse_tool_args_dict(fn.get("arguments") or tc.get("args") or {})
+                    if tc_name:
+                        m_parts.append({"functionCall": {"name": tc_name, "args": tc_args}})
+            if not m_parts:
+                m_parts.append({"text": ""})
+            contents.append({"role": m_role, "parts": m_parts})
+        if cacheable_prefix:
+            contents.insert(0, {"role": "user", "parts": [{"text": cacheable_prefix}]})
+        eff_system = system_prompt or ("\n\n".join(extracted_sys) if extracted_sys else None)
+        return contents, eff_system
+
+    parts: list[dict[str, Any]] = []
+    if cacheable_prefix:
+        parts.append({"text": cacheable_prefix})
+    parts.append({"text": str(clean_prompt)})
+    return [{"role": "user", "parts": parts}], system_prompt
+
+
+def format_gemini_tools_and_config(
+    norm_tools: list[dict[str, Any]],
+    tool_choice: Any | None = None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """Build Gemini tools (functionDeclarations) and toolConfig (functionCallingConfig)."""
+    tools_payload: list[dict[str, Any]] | None = None
+    if norm_tools:
+        tools_payload = [{
+            "functionDeclarations": [
+                {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["parameters"],
+                }
+                for t in norm_tools
+            ]
+        }]
+
+    tool_cfg: dict[str, Any] | None = None
+    if tool_choice is not None:
+        if isinstance(tool_choice, str):
+            mode_norm = tool_choice.strip().lower()
+            if mode_norm in ("required", "any"):
+                tool_cfg = {"functionCallingConfig": {"mode": "ANY"}}
+            elif mode_norm == "none":
+                tool_cfg = {"functionCallingConfig": {"mode": "NONE"}}
+            elif mode_norm == "auto":
+                tool_cfg = {"functionCallingConfig": {"mode": "AUTO"}}
+        elif isinstance(tool_choice, dict):
+            tc_type = str(tool_choice.get("type") or "").strip().lower()
+            fn_obj = tool_choice.get("function") if isinstance(tool_choice.get("function"), dict) else {}
+            fn_name = fn_obj.get("name") or tool_choice.get("name")
+            if fn_name:
+                tool_cfg = {
+                    "functionCallingConfig": {
+                        "mode": "ANY",
+                        "allowedFunctionNames": [str(fn_name)],
+                    }
+                }
+            elif tc_type in ("any", "required"):
+                tool_cfg = {"functionCallingConfig": {"mode": "ANY"}}
+            elif tc_type == "none":
+                tool_cfg = {"functionCallingConfig": {"mode": "NONE"}}
+            elif tc_type == "auto":
+                tool_cfg = {"functionCallingConfig": {"mode": "AUTO"}}
+    return tools_payload, tool_cfg
+
+
+def extract_gemini_tool_calls(candidates: Any) -> list[dict[str, Any]]:
+    """Extract normalized native tool calls from Gemini/Vertex candidate parts."""
+    calls: list[dict[str, Any]] = []
+    if not (isinstance(candidates, list) and candidates):
+        return calls
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+        content = cand.get("content") or {}
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts") or []
+        if not isinstance(parts, list):
+            continue
+        for idx, part in enumerate(parts):
+            if not isinstance(part, dict):
+                continue
+            fc = part.get("functionCall")
+            if isinstance(fc, dict) and fc.get("name"):
+                calls.append({
+                    "id": f"call_{uuid.uuid4().hex[:8]}_{idx}",
+                    "name": str(fc["name"]),
+                    "arguments": parse_tool_args_dict(fc.get("args") or {}),
+                })
+    return calls
+
+
+def format_messages_for_text_prompt(
+    messages: list[dict[str, Any]],
+    *,
+    system_prompt: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+) -> str:
+    """Serialize structured messages and optional tool schemas into a readable text prompt."""
+    lines: list[str] = []
+    if system_prompt:
+        lines.append(f"[SYSTEM]\n{system_prompt}")
+    if tools:
+        tool_summaries = [
+            f"- {t['name']}: {t['description']} (params: {json.dumps(t['parameters'], ensure_ascii=False)})"
+            for t in normalize_tool_definitions(tools)
+        ]
+        if tool_summaries:
+            lines.append("[TOOLS]\n" + "\n".join(tool_summaries))
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "user")).upper()
+        content = str(msg.get("content") or "")
+        if role == "TOOL":
+            t_name = str(msg.get("name") or msg.get("tool_name") or "tool")
+            lines.append(f"[TOOL ({t_name})]\n{content}")
+        elif role == "ASSISTANT" and isinstance(msg.get("tool_calls"), list) and msg["tool_calls"]:
+            tc_strs: list[str] = []
+            for tc in msg["tool_calls"]:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                t_name = fn.get("name") or tc.get("tool") or ""
+                t_args = fn.get("arguments") or tc.get("args") or {}
+                tc_strs.append(f'<tool_call>{{"name": "{t_name}", "arguments": {json.dumps(parse_tool_args_dict(t_args), ensure_ascii=False)}}}</tool_call>')
+            combined = "\n".join(part for part in (content, "\n".join(tc_strs)) if part)
+            lines.append(f"[ASSISTANT]\n{combined}")
+        else:
+            lines.append(f"[{role}]\n{content}")
+    return "\n\n".join(lines)
 
 
 @dataclass
@@ -46,6 +303,7 @@ class ModelResponse:
     latency_ms: float = 0.0
     finish_reason: str = "stop"
     raw: dict[str, Any] = field(default_factory=dict)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {

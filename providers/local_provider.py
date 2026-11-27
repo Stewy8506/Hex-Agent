@@ -30,6 +30,10 @@ from .base import (
     ModelResponse,
     ModelUsage,
     ProviderCapabilities,
+    format_messages_for_text_prompt,
+    normalize_tool_definitions,
+    parse_tool_args_dict,
+    sanitize_messages_secrets,
 )
 
 # Regex patterns for test failure and trace frame extraction
@@ -491,61 +495,193 @@ class LocalModelProvider(ModelProvider):
             self._loaded_model = None
             return None
 
+    @staticmethod
+    def _build_ollama_chat_messages(
+        clean_messages: list[dict[str, Any]] | None,
+        clean_prompt: str,
+        clean_system: str | None,
+    ) -> list[dict[str, Any]]:
+        """Format messages for Ollama `/api/chat` while preserving tool calls and tool outputs."""
+        out: list[dict[str, Any]] = []
+        has_system = any(
+            isinstance(m, dict) and str(m.get("role", "")).lower() == "system"
+            for m in (clean_messages or [])
+        )
+        if clean_system and not has_system:
+            out.append({"role": "system", "content": clean_system})
+        if clean_messages is not None:
+            for msg in clean_messages:
+                if not isinstance(msg, dict):
+                    continue
+                role = str(msg.get("role", "user")).lower()
+                if role == "tool":
+                    item: dict[str, Any] = {"role": "tool", "content": str(msg.get("content") or "")}
+                    t_name = msg.get("name") or msg.get("tool_name")
+                    if t_name:
+                        item["tool_name"] = str(t_name)
+                    out.append(item)
+                elif role == "assistant" and isinstance(msg.get("tool_calls"), list) and msg["tool_calls"]:
+                    tcs: list[dict[str, Any]] = []
+                    for tc in msg["tool_calls"]:
+                        if not isinstance(tc, dict):
+                            continue
+                        fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                        t_name = str(fn.get("name") or tc.get("tool") or "")
+                        if t_name:
+                            tcs.append({
+                                "type": "function",
+                                "function": {
+                                    "name": t_name,
+                                    "arguments": parse_tool_args_dict(fn.get("arguments") or tc.get("args") or {}),
+                                },
+                            })
+                    assistant_item: dict[str, Any] = {"role": "assistant", "content": str(msg.get("content") or "")}
+                    if tcs:
+                        assistant_item["tool_calls"] = tcs
+                    out.append(assistant_item)
+                else:
+                    out.append({"role": role, "content": str(msg.get("content") or "")})
+        else:
+            out.append({"role": "user", "content": clean_prompt})
+        return out
+
+    @staticmethod
+    def _parse_ollama_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
+        parsed: list[dict[str, Any]] = []
+        if not isinstance(raw_calls, list):
+            return parsed
+        for idx, tc in enumerate(raw_calls):
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+            name = fn.get("name") or tc.get("tool")
+            if not name:
+                continue
+            parsed.append({
+                "id": str(tc.get("id") or f"call_ollama_{idx}"),
+                "name": str(name),
+                "arguments": parse_tool_args_dict(fn.get("arguments") or tc.get("args") or {}),
+            })
+        return parsed
+
     def generate(
         self,
-        prompt: str,
+        prompt: str = "",
         *,
         system_prompt: str | None = None,
         max_tokens: int = 512,
         temperature: float = 0.0,
         stop_sequences: list[str] | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
         **kwargs: Any,
     ) -> ModelResponse:
         """Execute text generation via Ollama, Apple MLX, or resilient fallback."""
         t0 = time.perf_counter()
         clean_prompt = str(redact_secrets(prompt))
         clean_system = str(redact_secrets(system_prompt)) if system_prompt else None
+        clean_messages = sanitize_messages_secrets(messages)
+        norm_tools = normalize_tool_definitions(tools)
+        token_source = clean_prompt or (
+            json.dumps(clean_messages, ensure_ascii=False) if clean_messages else ""
+        )
 
         # 1. Try Ollama HTTP API if accessible
         if self.is_ollama_available():
             try:
-                payload = {
-                    "model": self.model_id,
-                    "prompt": clean_prompt,
-                    "system": clean_system or "",
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": max_tokens,
-                    },
-                }
-                req = urllib.request.Request(
-                    f"{self.ollama_host}/api/generate",
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    if resp.status == 200:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        text_out = data.get("response", "")
-                        latency_ms = (time.perf_counter() - t0) * 1000.0
-                        in_tok = data.get("prompt_eval_count") or max(1, len(clean_prompt) // 4)
-                        out_tok = data.get("eval_count") or max(1, len(text_out) // 4)
-                        return ModelResponse(
-                            text=text_out,
-                            model_id=self.model_id,
-                            provider_id="ollama",
-                            usage=ModelUsage(
-                                input_tokens=in_tok,
-                                output_tokens=out_tok,
-                                total_tokens=in_tok + out_tok,
-                                cost_usd=0.0,
-                            ),
-                            latency_ms=latency_ms,
-                            finish_reason="stop",
-                            raw={"backend": "ollama", "hardware": self.detect_hardware()},
-                        )
+                if clean_messages is not None or norm_tools:
+                    chat_payload: dict[str, Any] = {
+                        "model": self.model_id,
+                        "messages": self._build_ollama_chat_messages(
+                            clean_messages, clean_prompt, clean_system
+                        ),
+                        "stream": False,
+                        "options": {
+                            "temperature": temperature,
+                            "num_predict": max_tokens,
+                        },
+                    }
+                    if norm_tools:
+                        chat_payload["tools"] = [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": t["name"],
+                                    "description": t["description"],
+                                    "parameters": t["parameters"],
+                                },
+                            }
+                            for t in norm_tools
+                        ]
+                    req = urllib.request.Request(
+                        f"{self.ollama_host}/api/chat",
+                        data=json.dumps(chat_payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        if resp.status == 200:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            msg_obj = data.get("message") if isinstance(data.get("message"), dict) else {}
+                            text_out = str(msg_obj.get("content") or data.get("response") or "")
+                            parsed_tcs = self._parse_ollama_tool_calls(msg_obj.get("tool_calls"))
+                            latency_ms = (time.perf_counter() - t0) * 1000.0
+                            in_tok = data.get("prompt_eval_count") or max(1, len(token_source) // 4)
+                            out_tok = data.get("eval_count") or max(1, len(text_out) // 4)
+                            return ModelResponse(
+                                text=text_out,
+                                model_id=self.model_id,
+                                provider_id="ollama",
+                                usage=ModelUsage(
+                                    input_tokens=in_tok,
+                                    output_tokens=out_tok,
+                                    total_tokens=in_tok + out_tok,
+                                    cost_usd=0.0,
+                                ),
+                                latency_ms=latency_ms,
+                                finish_reason="tool_calls" if parsed_tcs else "stop",
+                                raw={"backend": "ollama", "hardware": self.detect_hardware()},
+                                tool_calls=parsed_tcs,
+                            )
+                else:
+                    payload = {
+                        "model": self.model_id,
+                        "prompt": clean_prompt,
+                        "system": clean_system or "",
+                        "stream": False,
+                        "options": {
+                            "temperature": temperature,
+                            "num_predict": max_tokens,
+                        },
+                    }
+                    req = urllib.request.Request(
+                        f"{self.ollama_host}/api/generate",
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        if resp.status == 200:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            text_out = data.get("response", "")
+                            latency_ms = (time.perf_counter() - t0) * 1000.0
+                            in_tok = data.get("prompt_eval_count") or max(1, len(clean_prompt) // 4)
+                            out_tok = data.get("eval_count") or max(1, len(text_out) // 4)
+                            return ModelResponse(
+                                text=text_out,
+                                model_id=self.model_id,
+                                provider_id="ollama",
+                                usage=ModelUsage(
+                                    input_tokens=in_tok,
+                                    output_tokens=out_tok,
+                                    total_tokens=in_tok + out_tok,
+                                    cost_usd=0.0,
+                                ),
+                                latency_ms=latency_ms,
+                                finish_reason="stop",
+                                raw={"backend": "ollama", "hardware": self.detect_hardware()},
+                            )
             except Exception:
                 pass
 
@@ -557,9 +693,52 @@ class LocalModelProvider(ModelProvider):
                     model, tokenizer = loaded
                     from mlx_lm import generate as mlx_generate  # type: ignore[import-not-found]
 
-                    full_prompt = clean_prompt
-                    if clean_system:
-                        full_prompt = f"{clean_system}\n\n{clean_prompt}"
+                    if clean_messages is not None:
+                        chat_msgs = self._build_ollama_chat_messages(
+                            clean_messages, clean_prompt, clean_system
+                        )
+                        full_prompt = ""
+                        if hasattr(tokenizer, "apply_chat_template"):
+                            try:
+                                full_prompt = tokenizer.apply_chat_template(
+                                    chat_msgs,
+                                    tools=[
+                                        {
+                                            "type": "function",
+                                            "function": {
+                                                "name": t["name"],
+                                                "description": t["description"],
+                                                "parameters": t["parameters"],
+                                            },
+                                        }
+                                        for t in norm_tools
+                                    ] or None,
+                                    tokenize=False,
+                                    add_generation_prompt=True,
+                                )
+                            except TypeError:
+                                try:
+                                    full_prompt = tokenizer.apply_chat_template(
+                                        chat_msgs, tokenize=False, add_generation_prompt=True
+                                    )
+                                except Exception:
+                                    full_prompt = ""
+                        if not full_prompt:
+                            full_prompt = format_messages_for_text_prompt(
+                                clean_messages,
+                                system_prompt=clean_system,
+                                tools=norm_tools or None,
+                            )
+                    else:
+                        full_prompt = clean_prompt
+                        if clean_system:
+                            full_prompt = f"{clean_system}\n\n{clean_prompt}"
+                        if norm_tools:
+                            full_prompt = format_messages_for_text_prompt(
+                                [{"role": "user", "content": clean_prompt}],
+                                system_prompt=clean_system,
+                                tools=norm_tools,
+                            )
 
                     output = mlx_generate(
                         model,
@@ -592,7 +771,7 @@ class LocalModelProvider(ModelProvider):
 
         # 3. Resilient pure-Python deterministic fallback engine
         latency_ms = (time.perf_counter() - t0) * 1000.0
-        in_tokens = max(1, len(clean_prompt) // 4)
+        in_tokens = max(1, len(token_source) // 4)
         output_text = (
             f"[Notice] Local model '{self.model_id}' is not loaded or weights are not downloaded.\n"
             f"Hardware detected: {self.detect_hardware()}.\n"
