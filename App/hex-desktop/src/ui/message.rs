@@ -416,10 +416,14 @@ fn render_markdown_table(
         inner = inner.child(table_row);
     }
 
+    let scroll_id = format!("table_{id_prefix}_scroll");
+    let debug_id = scroll_id.clone();
     div()
         .w_full()
         .min_w_0()
-        .scroll_x(&format!("table_{id_prefix}_scroll"))
+        .max_h(px(PAYLOAD_MAX_HEIGHT))
+        .scroll_both(&scroll_id)
+        .debug_selector(move || debug_id)
         .rounded(px(8.0))
         .border_1()
         .border_color(theme.mockup_border)
@@ -1505,6 +1509,53 @@ mod tests {
         assert!(
             (plain_code.size.height - linked_code.size.height).abs() <= px(0.5),
             "inline code height changed near a link: {plain_code:?} vs {linked_code:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn test_tall_wide_tables_scroll_within_bounded_viewport(cx: &mut gpui::TestAppContext) {
+        let mut content = String::from("| A | B | C | D |\n| --- | --- | --- | --- |\n");
+        for row in 0..30 {
+            content.push_str(&format!("| row {row} | value | value | value |\n"));
+        }
+        let (_entity, vc) = cx.add_window_view(|_, _| MarkdownLayoutHarness {
+            content,
+            width: 260.0,
+        });
+        vc.simulate_resize(size(px(320.0), px(900.0)));
+        vc.update(|window, _| window.refresh());
+        vc.run_until_parked();
+
+        let root = vc
+            .debug_bounds(Box::leak(
+                "markdown_layout_harness".to_string().into_boxed_str(),
+            ))
+            .expect("layout harness bounds");
+        let pane_width = root.size.width - px(48.0);
+        let table = vc
+            .debug_bounds(Box::leak(
+                "table_msg_layout_0_scroll".to_string().into_boxed_str(),
+            ))
+            .expect("bounded table viewport");
+        let last_cell = vc
+            .debug_bounds(Box::leak(
+                "md_table_cell_msg_layout_0_row_29_3"
+                    .to_string()
+                    .into_boxed_str(),
+            ))
+            .expect("last table cell bounds");
+
+        assert!(
+            table.size.width <= pane_width + px(0.5),
+            "wide table escaped pane: {table:?} pane={pane_width:?}"
+        );
+        assert!(
+            table.size.height <= px(PAYLOAD_MAX_HEIGHT) + px(2.0),
+            "tall table exceeded vertical cap: {table:?}"
+        );
+        assert!(
+            last_cell.right() > table.right() && last_cell.bottom() > table.bottom(),
+            "table content did not overflow both scroll axes: table={table:?} cell={last_cell:?}"
         );
     }
 }
