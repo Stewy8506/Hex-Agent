@@ -41,6 +41,8 @@ EXPECTED_TABLES = {
     "evaluations",
     "dialogue_turns",
     "approval_leases",
+    "sync_ledger_branches",
+    "sync_ledger_branch_events",
 }
 
 EXPECTED_COLUMNS = {
@@ -137,6 +139,16 @@ EXPECTED_COLUMNS = {
         "lease_id", "task_id", "command_prefix", "allowed_paths_json", "scope",
         "ttl_seconds", "granted_at", "expires_at", "is_revoked", "created_at",
         "bindings_json"
+    },
+    "sync_ledger_branches": {
+        "branch_id", "task_id", "sender_device_record_id", "local_tip",
+        "remote_tip", "created_at"
+    },
+    "sync_ledger_branch_events": {
+        "branch_id", "event_id", "task_id", "attempt_id", "sequence_no",
+        "event_type", "prior_state", "next_state", "reason_code",
+        "workspace_tree_sha", "policy_version", "payload_json", "actor",
+        "occurred_at", "correlation_id", "event_sha256"
     },
 }
 

@@ -19,6 +19,7 @@ from typing import Any
 
 import harness_core
 from harness_core.core.models import TaskBudget, TaskState, TaskSubmitRequest, VALID_TRANSITIONS, utcnow_iso
+from harness_core.storage.ledger_sync import LedgerSyncMixin
 
 
 def canonical_json(obj: Any) -> str:
@@ -189,7 +190,7 @@ class ChainIntegrityReport(dict):
         return self.valid
 
 
-class LedgerStore:
+class LedgerStore(LedgerSyncMixin):
     """Thread-safe transactional Task Ledger & Call Journal."""
 
     CLAIM_TASK_POSTGRES_SQL = (

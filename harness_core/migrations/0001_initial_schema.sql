@@ -43,6 +43,39 @@ CREATE TABLE IF NOT EXISTS task_events (
     UNIQUE (task_id, sequence_no)
 );
 
+CREATE TABLE IF NOT EXISTS sync_ledger_branches (
+    branch_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    sender_device_record_id TEXT NOT NULL,
+    local_tip TEXT NOT NULL,
+    remote_tip TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_ledger_branches_task
+    ON sync_ledger_branches (task_id);
+
+CREATE TABLE IF NOT EXISTS sync_ledger_branch_events (
+    branch_id TEXT NOT NULL REFERENCES sync_ledger_branches(branch_id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    attempt_id TEXT,
+    sequence_no INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    prior_state TEXT,
+    next_state TEXT,
+    reason_code TEXT,
+    workspace_tree_sha TEXT,
+    policy_version TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    actor TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    event_sha256 TEXT NOT NULL,
+    PRIMARY KEY (branch_id, event_id),
+    UNIQUE (branch_id, sequence_no)
+);
+
 CREATE TABLE IF NOT EXISTS attempts (
     attempt_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(task_id),
