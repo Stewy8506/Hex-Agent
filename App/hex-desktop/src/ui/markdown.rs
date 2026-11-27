@@ -596,7 +596,7 @@ fn link_at(input: &str) -> Option<(usize, &str, String, bool)> {
             depth -= 1;
             if depth == 0 {
                 let url = destination[..offset].trim().to_string();
-                return Some((close + 1 + offset + 1, label, url, image));
+                return Some((close + 2 + offset + 1, label, url, image));
             }
         }
     }
@@ -678,6 +678,8 @@ mod tests {
         let tokens = parse_inline(
             "**bold `code`** [docs](https://example.com) ![alt](https://example.com/a.png)",
         );
+        let rendered_text: String = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(rendered_text, "bold code docs alt");
         assert!(tokens.iter().any(|token| token.bold && token.code));
         assert!(tokens
             .iter()

@@ -74,7 +74,7 @@ pub const ACTION_BAR_LABELS: [&str; 2] = ["Copy", "Retry"];
 // Structured Markdown
 // --------------------------------------------------------------------------
 
-fn prose_style(theme: &HermesTheme, level: u8) -> Div {
+fn prose_base(theme: &HermesTheme, level: u8) -> Div {
     let size = match level {
         1 => 24.0,
         2 => 20.0,
@@ -82,19 +82,21 @@ fn prose_style(theme: &HermesTheme, level: u8) -> Div {
         _ => MockupTypeScale::BASE_SIZE,
     };
     let mut prose = div()
-        .w_full()
         .text_size(px(size))
         .line_height(px(size * 1.45))
         .text_color(if level > 0 {
             theme.mockup_text
         } else {
             theme.mockup_text_base
-        })
-        .whitespace_normal();
+        });
     if level > 0 {
         prose = prose.font_weight(FontWeight::BOLD);
     }
     prose
+}
+
+fn prose_style(theme: &HermesTheme, level: u8) -> Div {
+    prose_base(theme, level).w_full().min_w_0()
 }
 
 fn split_inline_token_lines(tokens: &[InlineToken]) -> Vec<Vec<InlineToken>> {
@@ -124,15 +126,110 @@ fn split_inline_token_lines(tokens: &[InlineToken]) -> Vec<Vec<InlineToken>> {
     lines
 }
 
-fn render_inline_token_node(
+fn build_text_runs(
+    tokens: &[InlineToken],
+    theme: &HermesTheme,
+    default_bold: bool,
+    default_color: Rgba,
+) -> (String, Vec<TextRun>) {
+    let sans_family = theme
+        .font_sans()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| SharedString::from(".SystemFont"));
+    let mono_family = theme
+        .font_mono()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| SharedString::from("Menlo"));
+
+    let mut full_text = String::new();
+    let mut runs = Vec::new();
+    for token in tokens {
+        if token.text.is_empty() {
+            continue;
+        }
+        full_text.push_str(&token.text);
+        let is_bold = default_bold || token.bold;
+        let mut font = if token.code {
+            gpui::font(mono_family.clone())
+        } else {
+            gpui::font(sans_family.clone())
+        };
+        if is_bold {
+            font.weight = FontWeight::BOLD;
+        }
+        if token.italic {
+            font.style = FontStyle::Italic;
+        }
+        let color: Rgba = if token.link.is_some() {
+            theme.accent_blue()
+        } else if token.code || is_bold {
+            theme.mockup_text
+        } else {
+            default_color
+        };
+        let underline = token.link.as_ref().map(|_| UnderlineStyle {
+            thickness: px(1.0),
+            color: Some(theme.accent_blue().into()),
+            wavy: false,
+        });
+        runs.push(TextRun {
+            len: token.text.len(),
+            font,
+            color: color.into(),
+            background_color: if token.code {
+                Some(theme.mockup_inline_code_bg.into())
+            } else {
+                None
+            },
+            underline,
+            strikethrough: None,
+        });
+    }
+    (full_text, runs)
+}
+
+fn split_nowrap_segments(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut saw_non_ws = false;
+    for (idx, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            if saw_non_ws {
+                // Keep trailing spaces attached to the word or standalone cleanly without mid-word wraps.
+                continue;
+            }
+        } else if idx > start && text[start..idx].chars().all(char::is_whitespace) {
+            out.push(&text[start..idx]);
+            start = idx;
+            saw_non_ws = true;
+        } else if !saw_non_ws {
+            saw_non_ws = true;
+        } else if idx > start {
+            let prev = text[start..idx].chars().next_back();
+            if prev.is_some_and(char::is_whitespace) {
+                out.push(&text[start..idx]);
+                start = idx;
+            }
+        }
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+fn style_inline_node(
     token: &InlineToken,
     theme: &HermesTheme,
-    id_prefix: &str,
-    token_index: usize,
-) -> AnyElement {
-    let mut token_view = div().max_w_full().whitespace_normal();
+    default_bold: bool,
+    default_color: Rgba,
+) -> Div {
+    let is_bold = default_bold || token.bold;
+    let mut view = div().flex_none().whitespace_nowrap().text_color(default_color);
     if token.code {
-        token_view = token_view
+        view = view
             .px(px(3.0))
             .py(px(1.0))
             .rounded(px(4.0))
@@ -141,35 +238,39 @@ fn render_inline_token_node(
             .text_size(px(MockupTypeScale::INLINE_CODE_SIZE))
             .text_color(theme.mockup_text);
     }
-    if token.bold {
-        token_view = token_view
+    if is_bold {
+        view = view
             .font_weight(FontWeight::BOLD)
             .text_color(theme.mockup_text);
     }
     if token.italic {
-        token_view = token_view.italic();
+        view = view.italic();
     }
-
-    if let Some(url) = &token.link {
-        let selector = format!("markdown_link_{id_prefix}_{token_index}");
-        let url = url.clone();
-        let mut link = token_view
-            .id(SharedString::from(selector.clone()))
-            .debug_selector(move || selector)
-            .text_color(theme.accent_blue())
-            .underline()
-            .cursor_pointer()
-            .hover(|this| this.text_color(theme.mockup_text))
-            .child(token.text.clone());
-        link.interactivity()
-            .on_click(move |_, _, cx| cx.open_url(&url));
-        link.into_any_element()
-    } else {
-        token_view.child(token.text.clone()).into_any_element()
-    }
+    view
 }
 
-fn render_inline_tokens(tokens: &[InlineToken], theme: &HermesTheme, id_prefix: &str) -> Div {
+fn render_inline_tokens_styled(
+    tokens: &[InlineToken],
+    theme: &HermesTheme,
+    id_prefix: &str,
+    default_bold: bool,
+    default_color: Rgba,
+) -> Div {
+    let has_links = tokens.iter().any(|t| t.link.is_some());
+    if !has_links {
+        let (full_text, runs) = build_text_runs(tokens, theme, default_bold, default_color);
+        if full_text.is_empty() {
+            return div().w_full().min_w_0();
+        }
+        return div()
+            .w_full()
+            .min_w_0()
+            .child(StyledText::new(full_text).with_runs(runs));
+    }
+
+    // Link-bearing paragraphs render per-word/link chips with `.flex_none().whitespace_nowrap()`
+    // so Taffy never shrinks text boxes down to 1-character vertical stacks, while preserving
+    // clickable `markdown_link_{id_prefix}_{token_index}` debug selectors.
     let lines = split_inline_token_lines(tokens);
     let mut container = div().w_full().min_w_0().flex().flex_col();
     let mut token_index = 0usize;
@@ -186,7 +287,28 @@ fn render_inline_tokens(tokens: &[InlineToken], theme: &HermesTheme, id_prefix: 
             row = row.min_h(px(14.0));
         } else {
             for token in &line_tokens {
-                row = row.child(render_inline_token_node(token, theme, id_prefix, token_index));
+                if let Some(url) = &token.link {
+                    let selector = format!("markdown_link_{id_prefix}_{token_index}");
+                    let url = url.clone();
+                    let mut link = style_inline_node(token, theme, default_bold, default_color)
+                        .id(SharedString::from(selector.clone()))
+                        .debug_selector(move || selector)
+                        .text_color(theme.accent_blue())
+                        .underline()
+                        .cursor_pointer()
+                        .hover(|this| this.text_color(theme.mockup_text))
+                        .child(token.text.clone());
+                    link.interactivity()
+                        .on_click(move |_, _, cx| cx.open_url(&url));
+                    row = row.child(link);
+                } else {
+                    for seg in split_nowrap_segments(&token.text) {
+                        row = row.child(
+                            style_inline_node(token, theme, default_bold, default_color)
+                                .child(seg.to_string()),
+                        );
+                    }
+                }
                 token_index += 1;
             }
         }
@@ -194,6 +316,10 @@ fn render_inline_tokens(tokens: &[InlineToken], theme: &HermesTheme, id_prefix: 
     }
 
     container
+}
+
+fn render_inline_tokens(tokens: &[InlineToken], theme: &HermesTheme, id_prefix: &str) -> Div {
+    render_inline_tokens_styled(tokens, theme, id_prefix, false, theme.mockup_text_base)
 }
 
 fn render_markdown_table(
@@ -206,70 +332,82 @@ fn render_markdown_table(
         .len()
         .max(rows.iter().map(Vec::len).max().unwrap_or(0))
         .max(1);
-    let width = (columns as f32 * 150.0).max(280.0);
-    let mut table = div()
+    let width = (columns as f32 * 180.0).max(320.0);
+    let mut inner = div()
+        .w_full()
+        .min_w(px(width))
+        .flex()
+        .flex_col()
+        .text_size(px(MockupTypeScale::DIFF_SIZE))
+        .line_height(px(20.0));
+
+    let mut header = div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .bg(theme.mockup_sidebar);
+    for index in 0..columns {
+        let text = headers.get(index).map(String::as_str).unwrap_or("");
+        let cell_id = format!("md_table_cell_{id_prefix}_header_{index}");
+        let mut cell = div()
+            .debug_selector(move || cell_id)
+            .flex_1()
+            .min_w(px(140.0))
+            .px(px(10.0))
+            .py(px(7.0))
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme.mockup_text)
+            .child(render_inline_tokens_styled(
+                &parse_inline(text),
+                theme,
+                &format!("{id_prefix}_header_{index}"),
+                true,
+                theme.mockup_text,
+            ));
+        if index + 1 < columns {
+            cell = cell.border_r_1().border_color(theme.mockup_border);
+        }
+        header = header.child(cell);
+    }
+    inner = inner.child(header);
+
+    for (row_index, row) in rows.iter().enumerate() {
+        let mut table_row = div().w_full().flex().flex_row();
+        for column in 0..columns {
+            let text = row.get(column).map(String::as_str).unwrap_or("");
+            let cell_id = format!("md_table_cell_{id_prefix}_row_{row_index}_{column}");
+            let mut cell = div()
+                .debug_selector(move || cell_id)
+                .flex_1()
+                .min_w(px(140.0))
+                .px(px(10.0))
+                .py(px(6.0))
+                .border_t_1()
+                .border_color(theme.mockup_border)
+                .text_color(theme.mockup_text_base)
+                .child(render_inline_tokens_styled(
+                    &parse_inline(text),
+                    theme,
+                    &format!("{id_prefix}_row_{row_index}_{column}"),
+                    false,
+                    theme.mockup_text_base,
+                ));
+            if column + 1 < columns {
+                cell = cell.border_r_1().border_color(theme.mockup_border);
+            }
+            table_row = table_row.child(cell);
+        }
+        inner = inner.child(table_row);
+    }
+
+    div()
         .w_full()
         .min_w_0()
-        .max_h(px(PAYLOAD_MAX_HEIGHT))
-        .scroll_both(&format!("table_{id_prefix}_scroll"))
+        .scroll_x(&format!("table_{id_prefix}_scroll"))
         .rounded(px(8.0))
         .border_1()
         .border_color(theme.mockup_border)
-        .child(
-            div()
-                .min_w(px(width))
-                .flex()
-                .flex_col()
-                .text_size(px(MockupTypeScale::DIFF_SIZE))
-                .line_height(px(20.0)),
-        );
-
-    let mut header = div().flex().flex_row().bg(theme.mockup_sidebar);
-    for index in 0..columns {
-        let text = headers.get(index).map(String::as_str).unwrap_or("");
-        header = header.child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .px(px(10.0))
-                .py(px(7.0))
-                .border_r_1()
-                .border_color(theme.mockup_border)
-                .font_weight(FontWeight::BOLD)
-                .text_color(theme.mockup_text)
-                .child(render_inline_tokens(
-                    &parse_inline(text),
-                    theme,
-                    &format!("{id_prefix}_header_{index}"),
-                )),
-        );
-    }
-    table = table.child(header);
-
-    for (row_index, row) in rows.iter().enumerate() {
-        let mut table_row = div().flex().flex_row();
-        for column in 0..columns {
-            let text = row.get(column).map(String::as_str).unwrap_or("");
-            table_row = table_row.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .px(px(10.0))
-                    .py(px(6.0))
-                    .border_r_1()
-                    .border_t_1()
-                    .border_color(theme.mockup_border)
-                    .text_color(theme.mockup_text_base)
-                    .child(render_inline_tokens(
-                        &parse_inline(text),
-                        theme,
-                        &format!("{id_prefix}_row_{row_index}_{column}"),
-                    )),
-            );
-        }
-        table = table.child(table_row);
-    }
-    table
+        .child(inner)
 }
 
 fn render_markdown_block(
@@ -284,10 +422,16 @@ fn render_markdown_block(
         }
         MarkdownBlock::Heading { level, text } => {
             let level = (*level).min(4);
-            prose_style(theme, level).child(render_inline_tokens(
+            prose_style(theme, level).child(render_inline_tokens_styled(
                 &parse_inline(text),
                 theme,
                 id_prefix,
+                level > 0,
+                if level > 0 {
+                    theme.mockup_text
+                } else {
+                    theme.mockup_text_base
+                },
             ))
         }
         MarkdownBlock::List { items } => {
@@ -298,15 +442,18 @@ fn render_markdown_block(
                 } else {
                     "•".to_string()
                 };
+                let row_sel = format!("md_list_row_{id_prefix}_{index}");
+                let body_sel = format!("md_list_body_{id_prefix}_{index}");
                 list = list.child(
                     div()
+                        .debug_selector(move || row_sel)
                         .w_full()
                         .min_w_0()
                         .flex()
                         .flex_row()
                         .items_start()
                         .gap_2()
-                        .ml(px((item.indent.min(8) as f32) * 16.0))
+                        .pl(px((item.indent.min(8) as f32) * 16.0))
                         .child(
                             div()
                                 .w(px(24.0))
@@ -316,13 +463,17 @@ fn render_markdown_block(
                                 .text_color(theme.mockup_text_dim)
                                 .child(marker),
                         )
-                        .child(prose_style(theme, 0).flex_1().min_w_0().child(
-                            render_inline_tokens(
-                                &parse_inline(&item.text),
-                                theme,
-                                &format!("{id_prefix}_{index}"),
-                            ),
-                        )),
+                        .child(
+                            prose_base(theme, 0)
+                                .debug_selector(move || body_sel)
+                                .flex_1()
+                                .min_w_0()
+                                .child(render_inline_tokens(
+                                    &parse_inline(&item.text),
+                                    theme,
+                                    &format!("{id_prefix}_{index}"),
+                                )),
+                        ),
                 );
             }
             list
@@ -1117,5 +1268,129 @@ mod tests {
             "read\nfile: /Users/example/ANIMATIONS_PLAN.md",
         );
         let _ = view.render(&theme);
+    }
+
+    #[test]
+    fn test_styled_runs_match_byte_lengths_and_nowrap_segments() {
+        let theme = HermesTheme::default();
+        let tokens = parse_inline("**Bold** `read_file` _em_ [docs](https://example.com)");
+        let (text, runs) = build_text_runs(&tokens, &theme, false, theme.mockup_text_base);
+        let sum_len: usize = runs.iter().map(|r| r.len).sum();
+        assert_eq!(text, "Bold read_file em docs");
+        assert_eq!(sum_len, text.len());
+        assert_eq!(runs[0].font.weight, FontWeight::BOLD);
+        assert_eq!(runs[2].font.family, theme.font_mono()[0]);
+        assert!(runs[2].background_color.is_some());
+        assert_eq!(runs[4].font.style, FontStyle::Italic);
+        assert!(runs[6].underline.is_some());
+
+        let segs = split_nowrap_segments("See ARCHITECTURE.md for details");
+        assert_eq!(segs.concat(), "See ARCHITECTURE.md for details");
+        assert!(segs.len() >= 4);
+    }
+
+    struct MarkdownLayoutHarness {
+        content: String,
+    }
+
+    impl Render for MarkdownLayoutHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = HermesTheme::default();
+            div()
+                .w(px(760.0))
+                .p(px(24.0))
+                .bg(theme.mockup_body)
+                .child(AssistantMessageView::new("msg_layout", &self.content).render(&theme))
+        }
+    }
+
+    #[gpui::test]
+    fn test_table_and_ordered_list_never_collapse_or_overlap_in_gpui_layout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let md = concat!(
+            "### HEX Tech Stack\n\n",
+            "| Layer | Components & Choices |\n",
+            "| --- | --- |\n",
+            "| **LLM Providers** | Gemini, Groq, Cerebras, Ollama (`MLX`, etc.) |\n",
+            "| **Auth & Routing** | Multi-key pools, OS Keychain (`keyring`), 429 rotation with jittered backoff |\n",
+            "| **AST & Indexing** | Tree-sitter (`Graphify`) — polyglot AST, blast-radius analysis |\n",
+            "| **Context & Memory** | 5-slot frozen prompt, AST-scoped memory, A-MEM Zettelkasten, SkillSpector AST gate |\n\n",
+            "### Key Architectural Planes\n\n",
+            "1. **Presentation** — GPUI desktop (experimental), Ratatui TUI, ACP server\n",
+            "2. **Orchestration** — `ReActLoop`, MoA, timeline rewind, approval leases\n",
+            "3. **Execution & Capabilities** — `ToolGateway`, sandboxed shell, `file_tools`, MCP adapters\n",
+            "4. **Context & Memory** — `PromptBuilder` 5-slot freeze, Graphify surgical slicing, guardrails\n",
+            "5. **Storage/Isolation** — CoW sandboxes, dual-driver DB, SHA-256 event chaining, GC\n",
+        );
+
+        let (_entity, vc) = cx.add_window_view(|_, _| MarkdownLayoutHarness {
+            content: md.to_string(),
+        });
+        vc.simulate_resize(size(px(800.0), px(900.0)));
+        vc.update(|window, _| window.refresh());
+        vc.run_until_parked();
+
+        // Table block index is 1: header + 4 rows, 2 columns each
+        let mut prev_row_bottom = px(0.0);
+        for row_idx in 0..4 {
+            let c0 = vc
+                .debug_bounds(Box::leak(
+                    format!("md_table_cell_msg_layout_1_row_{row_idx}_0").into_boxed_str(),
+                ))
+                .expect("table col 0 bounds");
+            let c1 = vc
+                .debug_bounds(Box::leak(
+                    format!("md_table_cell_msg_layout_1_row_{row_idx}_1").into_boxed_str(),
+                ))
+                .expect("table col 1 bounds");
+            assert!(
+                c0.size.width >= px(140.0),
+                "row {row_idx} col 0 collapsed horizontally: {:?}",
+                c0
+            );
+            assert!(
+                c1.size.width >= px(140.0),
+                "row {row_idx} col 1 collapsed horizontally: {:?}",
+                c1
+            );
+            assert!(
+                c0.size.height <= px(90.0) && c1.size.height <= px(90.0),
+                "row {row_idx} stacked vertically into 1-char column: c0={c0:?} c1={c1:?}"
+            );
+            assert!(
+                c0.origin.y >= prev_row_bottom - px(0.5),
+                "row {row_idx} overlapped previous row bottom {prev_row_bottom:?}: {c0:?}"
+            );
+            prev_row_bottom = c0.bottom().max(c1.bottom());
+        }
+
+        // Ordered list block index is 3: items 0..5
+        let mut prev_item_bottom = px(0.0);
+        for item_idx in 0..5 {
+            let row_bounds = vc
+                .debug_bounds(Box::leak(
+                    format!("md_list_row_msg_layout_3_{item_idx}").into_boxed_str(),
+                ))
+                .expect("list row bounds");
+            let body_bounds = vc
+                .debug_bounds(Box::leak(
+                    format!("md_list_body_msg_layout_3_{item_idx}").into_boxed_str(),
+                ))
+                .expect("list body bounds");
+            assert!(
+                body_bounds.size.width >= px(450.0),
+                "list item {item_idx} collapsed horizontally: {body_bounds:?}"
+            );
+            assert!(
+                row_bounds.size.height <= px(80.0),
+                "list item {item_idx} stacked vertically: {row_bounds:?}"
+            );
+            assert!(
+                row_bounds.origin.y >= prev_item_bottom - px(0.5),
+                "list item {item_idx} overlapped previous item bottom {prev_item_bottom:?}: {row_bounds:?}"
+            );
+            prev_item_bottom = row_bounds.bottom();
+        }
     }
 }
