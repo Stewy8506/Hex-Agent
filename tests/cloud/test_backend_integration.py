@@ -30,10 +30,10 @@ from cloud.session import (
     MemorySecretStore,
 )
 
-_BACKEND_ROOT = _REPO_ROOT / "backend" / "hex-backend"
+_BACKEND_ROOT = _REPO_ROOT.parent / "hex-backend"
 sys.path.insert(0, str(_BACKEND_ROOT / "src"))
 
-_HAS_BACKEND = importlib.util.find_spec("hex_backend") is not None
+_HAS_BACKEND = (_BACKEND_ROOT / "src" / "hex_backend").is_dir()
 _HAS_UVICORN = importlib.util.find_spec("uvicorn") is not None
 
 
@@ -58,8 +58,6 @@ class LiveBackend:
             db_path=tmp / "e2e.db",
             manifests_dir=_BACKEND_ROOT / "manifests",
             telemetry_dir=tmp / "telemetry",
-            signing_key_path=tmp / "signing.pem",
-            master_key_path=tmp / "master.key",
             inference_gateway_enabled=False,
         )
         self.app = create_app(settings)
