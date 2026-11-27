@@ -247,6 +247,46 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
         p_sync_cmd.add_argument("--timeout", type=float, default=120.0, help="Sync timeout in seconds")
         p_sync_cmd.add_argument("--json", action="store_true", help="Emit raw JSON output")
 
+    p_team = sub.add_parser("team", help="Manage Teams, RBAC, project sessions, and Coordinator leases")
+    p_team.add_argument("--base-url", default=None, help="hex-backend base URL override")
+    p_team.add_argument("--json", action="store_true", help="Emit raw JSON output")
+    p_team_sub = p_team.add_subparsers(dest="team_cmd", required=False)
+    p_team.set_defaults(team_cmd="list")
+    p_team_list = p_team_sub.add_parser("list", help="List your teams")
+    p_team_create = p_team_sub.add_parser("create", help="Create a team")
+    p_team_create.add_argument("--name", required=True, help="Team name")
+    p_team_invite = p_team_sub.add_parser("invite", help="Create an email-bound team invite")
+    p_team_invite.add_argument("--team", required=True, help="Team id")
+    p_team_invite.add_argument("--email", required=True, help="Invited account email")
+    p_team_invite.add_argument("--role", choices=["admin", "developer", "observer"], default="developer")
+    p_team_accept = p_team_sub.add_parser("accept", help="Accept a team invite")
+    p_team_accept.add_argument("--token", required=True, help="Invite token")
+    p_team_members = p_team_sub.add_parser("members", help="List team members and roles")
+    p_team_members.add_argument("--team", required=True, help="Team id")
+    p_team_role = p_team_sub.add_parser("role", help="Change a non-owner member's role")
+    p_team_role.add_argument("--team", required=True, help="Team id")
+    p_team_role.add_argument("--user", required=True, help="Target user id")
+    p_team_role.add_argument("--role", choices=["admin", "developer", "observer"], required=True)
+    p_team_sessions = p_team_sub.add_parser("sessions", help="List a team's project sessions")
+    p_team_sessions.add_argument("--team", required=True, help="Team id")
+    p_team_session_create = p_team_sub.add_parser("session-create", help="Create a project session and signed lease")
+    p_team_session_create.add_argument("--team", required=True, help="Team id")
+    p_team_session_create.add_argument("--name", required=True, help="Session name")
+    p_team_session_create.add_argument("--device", required=True, help="Initial Coordinator device record id")
+    p_team_session_create.add_argument("--repo-fingerprint", default="", help="Repository fingerprint")
+    p_team_lease = p_team_sub.add_parser("lease", help="Fetch the current signed Coordinator lease")
+    p_team_lease.add_argument("--session", required=True, help="Project session id")
+    p_team_failover = p_team_sub.add_parser("failover", help="Fail over or hand off the Coordinator lease")
+    p_team_failover.add_argument("--session", required=True, help="Project session id")
+    p_team_failover.add_argument("--failed-device", default=None, help="Failed active Coordinator device id")
+    p_team_failover.add_argument("--target-device", default=None, help="Explicit eligible handoff target")
+    for p_team_cmd in (
+        p_team_list, p_team_create, p_team_invite, p_team_accept, p_team_members,
+        p_team_role, p_team_sessions, p_team_session_create, p_team_lease, p_team_failover,
+    ):
+        p_team_cmd.add_argument("--base-url", default=argparse.SUPPRESS, help="hex-backend base URL override")
+        p_team_cmd.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="Emit raw JSON output")
+
     p_quota = sub.add_parser("quota", help="Inspect live Google Antigravity model quota windows and reset times")
     p_quota.add_argument("--auth-file", default=None, help="Custom path to antigravity_auth.json")
     p_quota.add_argument("--json", action="store_true", help="Emit raw JSON quota snapshot")
@@ -769,6 +809,11 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
         from harness_core.client.commands.sync import run_sync_command
 
         return run_sync_command(args)
+
+    if args.cmd == "team":
+        from harness_core.client.commands.team import run_team_command
+
+        return run_team_command(args)
 
     if args.cmd == "quota":
         from harness_core.client.commands.antigravity import run_quota_command

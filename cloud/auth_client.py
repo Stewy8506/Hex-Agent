@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import platform
+import re
 import secrets
 import socket
 import urllib.parse
@@ -217,21 +218,150 @@ class HexAuthClient:
         signed_bundle: Mapping[str, Any],
     ) -> dict[str, Any]:
         """Submit only signed turn metadata; workspace content never reaches the backend."""
-        if not isinstance(project_session_id, str) or not project_session_id:
-            raise ValueError("Project session id is required.")
-        if not isinstance(coordinator_device_record_id, str) or not coordinator_device_record_id:
-            raise ValueError("Coordinator device id is required.")
+        session_path = self._path_segment(project_session_id, "Project session id")
+        coordinator = self._path_segment(
+            coordinator_device_record_id, "Coordinator device id"
+        )
         if not isinstance(signed_bundle, Mapping):
             raise ValueError("Signed turn bundle must be an object.")
-        session_path = urllib.parse.quote(project_session_id, safe="")
         return self._post_json(
             f"/v1/sessions/{session_path}/turn-commit",
             {
-                "coordinator_device_record_id": coordinator_device_record_id,
+                "coordinator_device_record_id": coordinator,
                 "signed_bundle": dict(signed_bundle),
             },
             access_token=access_token,
         )
+
+    def create_team(self, access_token: str, name: str) -> dict[str, Any]:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Team name is required.")
+        return self._post_json("/v1/teams", {"name": name.strip()}, access_token)
+
+    def list_teams(self, access_token: str) -> list[dict[str, Any]]:
+        return self._request_json("/v1/teams", None, access_token, method="GET")["teams"]
+
+    def create_team_invite(
+        self,
+        access_token: str,
+        team_id: str,
+        email: str,
+        role: str = "developer",
+    ) -> dict[str, Any]:
+        if not isinstance(email, str) or not email.strip():
+            raise ValueError("Invited email is required.")
+        if role not in {"admin", "developer", "observer"}:
+            raise ValueError("Invite role must be admin, developer, or observer.")
+        return self._post_json(
+            f"/v1/teams/{self._path_segment(team_id, 'Team id')}/invites",
+            {"email": email.strip().lower(), "role": role},
+            access_token,
+        )
+
+    def accept_team_invite(
+        self, access_token: str, invite_token: str
+    ) -> dict[str, Any]:
+        if not isinstance(invite_token, str) or not invite_token:
+            raise ValueError("Invite token is required.")
+        return self._post_json(
+            "/v1/teams/invites/accept", {"invite_token": invite_token}, access_token
+        )
+
+    def list_team_members(
+        self, access_token: str, team_id: str
+    ) -> list[dict[str, Any]]:
+        return self._request_json(
+            f"/v1/teams/{self._path_segment(team_id, 'Team id')}/members",
+            None,
+            access_token,
+            method="GET",
+        )["members"]
+
+    def update_team_member_role(
+        self,
+        access_token: str,
+        team_id: str,
+        target_user_id: str,
+        role: str,
+    ) -> dict[str, Any]:
+        if role not in {"admin", "developer", "observer"}:
+            raise ValueError("Role must be admin, developer, or observer.")
+        return self._request_json(
+            f"/v1/teams/{self._path_segment(team_id, 'Team id')}/members/"
+            f"{self._path_segment(target_user_id, 'User id')}",
+            {"role": role},
+            access_token,
+            method="PATCH",
+        )
+
+    def create_project_session(
+        self,
+        access_token: str,
+        team_id: str,
+        name: str,
+        primary_device_record_id: str,
+        repo_fingerprint: str = "",
+    ) -> dict[str, Any]:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Session name is required.")
+        return self._post_json(
+            f"/v1/teams/{self._path_segment(team_id, 'Team id')}/sessions",
+            {
+                "name": name.strip(),
+                "primary_device_record_id": self._path_segment(
+                    primary_device_record_id, "Primary device id"
+                ),
+                "repo_fingerprint": repo_fingerprint,
+            },
+            access_token,
+        )
+
+    def list_project_sessions(
+        self, access_token: str, team_id: str
+    ) -> list[dict[str, Any]]:
+        return self._request_json(
+            f"/v1/teams/{self._path_segment(team_id, 'Team id')}/sessions",
+            None,
+            access_token,
+            method="GET",
+        )["sessions"]
+
+    def get_session_lease(
+        self, access_token: str, project_session_id: str
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/v1/sessions/{self._path_segment(project_session_id, 'Project session id')}/lease",
+            None,
+            access_token,
+            method="GET",
+        )
+
+    def failover_project_session(
+        self,
+        access_token: str,
+        project_session_id: str,
+        *,
+        failed_device_id: str | None = None,
+        target_device_id: str | None = None,
+    ) -> dict[str, Any]:
+        if (failed_device_id is None) == (target_device_id is None):
+            raise ValueError("Specify either a failed device or a handoff target.")
+        body: dict[str, Any] = {}
+        if failed_device_id is not None:
+            body["failed_device_id"] = self._path_segment(failed_device_id, "Failed device id")
+        if target_device_id is not None:
+            body["target_device_id"] = self._path_segment(target_device_id, "Target device id")
+        return self._post_json(
+            f"/v1/sessions/{self._path_segment(project_session_id, 'Project session id')}/failover",
+            body,
+            access_token,
+        )
+
+    @staticmethod
+    def _path_segment(value: str, label: str) -> str:
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+            raise ValueError(f"Invalid {label.lower()}.")
+        return value
 
     # -- signed control-plane artifacts -------------------------------------
 

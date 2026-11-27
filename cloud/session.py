@@ -23,7 +23,7 @@ import secrets
 import threading
 import time
 import urllib.error
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .auth_client import (
     HexAuthClient,
@@ -356,6 +356,90 @@ class CloudAccountManager:
             return result
 
         return self._authed(_revoke)
+
+    # -- authenticated team operations -------------------------------------
+
+    def create_team(self, name: str) -> dict[str, Any]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(lambda token: client.create_team(token, name))
+
+    def list_teams(self) -> list[dict[str, Any]]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(lambda token: client.list_teams(token))
+
+    def create_team_invite(
+        self, team_id: str, email: str, role: str = "developer"
+    ) -> dict[str, Any]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(lambda token: client.create_team_invite(token, team_id, email, role))
+
+    def accept_team_invite(self, invite_token: str) -> dict[str, Any]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(lambda token: client.accept_team_invite(token, invite_token))
+
+    def list_team_members(self, team_id: str) -> list[dict[str, Any]]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(lambda token: client.list_team_members(token, team_id))
+
+    def update_team_member_role(
+        self, team_id: str, target_user_id: str, role: str
+    ) -> dict[str, Any]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(
+            lambda token: client.update_team_member_role(token, team_id, target_user_id, role)
+        )
+
+    def create_project_session(
+        self,
+        team_id: str,
+        name: str,
+        primary_device_record_id: str,
+        repo_fingerprint: str = "",
+    ) -> dict[str, Any]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(
+            lambda token: client.create_project_session(
+                token, team_id, name, primary_device_record_id, repo_fingerprint
+            )
+        )
+
+    def list_project_sessions(self, team_id: str) -> list[dict[str, Any]]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(lambda token: client.list_project_sessions(token, team_id))
+
+    def get_session_lease(self, project_session_id: str) -> dict[str, Any]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(lambda token: client.get_session_lease(token, project_session_id))
+
+    def failover_project_session(
+        self,
+        project_session_id: str,
+        *,
+        failed_device_id: str | None = None,
+        target_device_id: str | None = None,
+    ) -> dict[str, Any]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(
+            lambda token: client.failover_project_session(
+                token,
+                project_session_id,
+                failed_device_id=failed_device_id,
+                target_device_id=target_device_id,
+            )
+        )
+
+    def commit_session_turn(
+        self,
+        project_session_id: str,
+        coordinator_device_record_id: str,
+        signed_bundle: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(
+            lambda token: client.commit_session_turn(
+                token, project_session_id, coordinator_device_record_id, signed_bundle
+            )
+        )
 
     # -- signed control-plane artifacts --------------------------------------
 
