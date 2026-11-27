@@ -1,4 +1,4 @@
-"""Authenticated encrypted peer transport with an in-memory loopback."""
+"""Authenticated encrypted peer transport with in-memory and WebSocket networks."""
 
 from __future__ import annotations
 
@@ -7,11 +7,34 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import json
+import math
 import secrets
+import ssl
+from collections.abc import Collection
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
+from urllib.parse import urlsplit
+
+from websockets.exceptions import ConnectionClosed, WebSocketException
+
+try:
+    from websockets.asyncio.client import connect as _websocket_connect
+    from websockets.asyncio.server import serve as _websocket_serve
+
+    class _NoRedirectWebSocketConnect(_websocket_connect):
+        def process_redirect(self, exc: Exception) -> Exception:
+            return exc
+
+    _MODERN_WEBSOCKETS = True
+except ImportError:
+    from websockets.legacy.client import connect as _websocket_connect
+    from websockets.legacy.server import serve as _websocket_serve
+
+    _NoRedirectWebSocketConnect = _websocket_connect
+    _MODERN_WEBSOCKETS = False
 
 from cryptography.exceptions import InvalidSignature, InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
@@ -36,6 +59,7 @@ _FRAME_HEADER_SIZE = len(_FRAME_MAGIC) + 1 + 8
 _TAG_SIZE = 16
 _MAX_SEQUENCE = (1 << 64) - 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
+P2P_SUBPROTOCOL = "hex-p2p-v1"
 _MAX_HANDSHAKE_BYTES = 16 * 1024
 _DATA_FRAME = 1
 _CLOSE_FRAME = 2
@@ -554,6 +578,8 @@ class SecurePeerSession:
                     )
                     await self._channel.send(frame)
                     self._send_sequence += 1
+            except P2PConnectionClosed:
+                pass
             finally:
                 self._closed = True
                 self._channel.close()
@@ -675,8 +701,365 @@ class InMemoryEndpoint:
         return await self._sessions.get()
 
 
+def _validate_network_timeout(value: Any, label: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"{label} must be finite and positive.")
+    return float(value)
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_websocket_uri(uri: Any) -> Any:
+    if not isinstance(uri, str) or not uri or len(uri) > 2048:
+        raise ValueError("WebSocket URI must be a bounded string.")
+    try:
+        parsed = urlsplit(uri)
+        host = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("Invalid WebSocket URI.") from exc
+    if parsed.scheme not in {"ws", "wss"} or not host:
+        raise ValueError("WebSocket URI must use ws or wss with a host.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("WebSocket URI cannot contain user information.")
+    if parsed.query or parsed.fragment:
+        raise ValueError("WebSocket URI cannot contain query parameters or fragments.")
+    if parsed.scheme == "ws" and not _is_loopback_host(host):
+        raise ValueError("Plaintext WebSocket transport is restricted to loopback hosts.")
+    return parsed
+
+
+def _validate_client_ssl_context(context: ssl.SSLContext | None, scheme: str) -> None:
+    if context is None:
+        return
+    if not isinstance(context, ssl.SSLContext):
+        raise ValueError("ssl_context must be an SSLContext.")
+    if scheme == "ws":
+        raise ValueError("ssl_context requires a wss URI.")
+    if context.verify_mode != ssl.CERT_REQUIRED:
+        raise ValueError("ssl_context must require certificate verification.")
+
+
+class _WebSocketChannel:
+    def __init__(self, websocket: Any) -> None:
+        self._websocket = websocket
+        self._closed = False
+        self._close_task: asyncio.Task[Any] | None = None
+
+    async def send(self, frame: bytes) -> None:
+        if self._closed:
+            raise P2PConnectionClosed("WebSocket peer channel is closed.")
+        try:
+            await self._websocket.send(frame)
+        except (ConnectionClosed, OSError) as exc:
+            self._closed = True
+            raise P2PConnectionClosed("WebSocket peer channel closed during send.") from exc
+
+    async def receive(self) -> bytes | None:
+        if self._closed:
+            raise P2PConnectionClosed("WebSocket peer channel is closed.")
+        try:
+            raw = await self._websocket.recv()
+        except ConnectionClosed:
+            self._closed = True
+            return None
+        except OSError as exc:
+            self._closed = True
+            raise P2PConnectionClosed("WebSocket peer channel failed during receive.") from exc
+        if raw is None:
+            self._closed = True
+            return None
+        if not isinstance(raw, bytes):
+            raise P2PProtocolError("WebSocket peer messages must be binary frames.")
+        if len(raw) > MAX_FRAME_BYTES:
+            raise P2PProtocolError("WebSocket peer message exceeds the frame limit.")
+        return raw
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._close_task = asyncio.create_task(self._websocket.close())
+
+    async def wait_closed(self) -> None:
+        if self._close_task is not None:
+            with suppress(ConnectionClosed, OSError):
+                await self._close_task
+        with suppress(ConnectionClosed, OSError):
+            await self._websocket.wait_closed()
+
+
+class WebSocketPeerServer:
+    """Accept authenticated device peers over loopback WS or verified WSS."""
+
+    def __init__(
+        self,
+        identity: PeerIdentity,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        ssl_context: ssl.SSLContext | None = None,
+        allowed_peers: Collection[PeerAddress] | None = None,
+        max_connections: int = 32,
+        handshake_timeout: float = 10.0,
+    ) -> None:
+        if not isinstance(identity, PeerIdentity):
+            raise ValueError("WebSocketPeerServer requires a PeerIdentity.")
+        if not isinstance(host, str) or not host or len(host) > 255:
+            raise ValueError("host must be a bounded string.")
+        if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+            raise ValueError("port must be an integer between 0 and 65535.")
+        if ssl_context is not None and not isinstance(ssl_context, ssl.SSLContext):
+            raise ValueError("ssl_context must be an SSLContext.")
+        if ssl_context is None and not _is_loopback_host(host):
+            raise ValueError("A non-loopback WebSocket server requires TLS.")
+        if (
+            isinstance(max_connections, bool)
+            or not isinstance(max_connections, int)
+            or not 1 <= max_connections <= 256
+        ):
+            raise ValueError("max_connections must be between 1 and 256.")
+        self.identity = identity
+        self.host = host
+        self.port = port
+        self.ssl_context = ssl_context
+        self.allowed_peers = (
+            None if allowed_peers is None else frozenset(allowed_peers)
+        )
+        if self.allowed_peers is not None and any(
+            not isinstance(peer, PeerAddress) for peer in self.allowed_peers
+        ):
+            raise ValueError("allowed_peers must contain PeerAddress values.")
+        self.max_connections = max_connections
+        self.handshake_timeout = _validate_network_timeout(
+            handshake_timeout, "handshake_timeout"
+        )
+        self._server: Any = None
+        self._sessions: asyncio.Queue[SecurePeerSession] = asyncio.Queue(
+            maxsize=max_connections
+        )
+        self._channels: set[_WebSocketChannel] = set()
+        self._accepted = 0
+        self._closing = False
+        self._generation = 0
+        self._lifecycle_lock = asyncio.Lock()
+
+    @property
+    def uri(self) -> str:
+        if self._server is None or not self._server.sockets:
+            raise P2PTransportError("WebSocket peer server is not running.")
+        address = self._server.sockets[0].getsockname()
+        host = str(address[0])
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        scheme = "wss" if self.ssl_context is not None else "ws"
+        return f"{scheme}://{host}:{address[1]}/hex/p2p/v1"
+
+    @property
+    def running(self) -> bool:
+        return self._server is not None and not self._closing
+
+    def status(self) -> dict[str, Any]:
+        addresses: list[dict[str, Any]] = []
+        if self._server is not None:
+            for sock in self._server.sockets:
+                address = sock.getsockname()
+                addresses.append({"host": str(address[0]), "port": address[1]})
+        return {
+            "transport": "websocket",
+            "running": self.running,
+            "tls": self.ssl_context is not None,
+            "subprotocol": P2P_SUBPROTOCOL,
+            "addresses": addresses,
+            "active_connections": len(self._channels),
+            "accepted_sessions": self._accepted,
+        }
+
+    async def start(self) -> "WebSocketPeerServer":
+        async with self._lifecycle_lock:
+            if self.running:
+                return self
+            self._closing = False
+            self._generation += 1
+            try:
+                self._server = await _websocket_serve(
+                    self._handle_connection,
+                    self.host,
+                    self.port,
+                    ssl=self.ssl_context,
+                    subprotocols=[P2P_SUBPROTOCOL],
+                    origins=[None],
+                    compression=None,
+                    max_size=MAX_FRAME_BYTES,
+                    max_queue=16,
+                    open_timeout=self.handshake_timeout,
+                    close_timeout=min(5.0, self.handshake_timeout),
+                )
+            except (OSError, ValueError) as exc:
+                self._server = None
+                raise P2PTransportError("Unable to start WebSocket peer server.") from exc
+            return self
+
+    async def accept(
+        self,
+        *,
+        expected_peer: PeerAddress | None = None,
+        timeout: float = 30.0,
+    ) -> SecurePeerSession:
+        if not self.running:
+            raise P2PTransportError("WebSocket peer server is not running.")
+        if expected_peer is not None and not isinstance(expected_peer, PeerAddress):
+            raise ValueError("expected_peer must be a PeerAddress.")
+        wait = _validate_network_timeout(timeout, "timeout")
+        try:
+            session = await asyncio.wait_for(self._sessions.get(), timeout=wait)
+        except asyncio.TimeoutError as exc:
+            raise P2PTransportError("Timed out waiting for a WebSocket peer.") from exc
+        remote = PeerAddress(
+            session.remote_device_id, session.remote_signing_public_key
+        )
+        if expected_peer is not None and remote != expected_peer:
+            await session.close()
+            raise P2PHandshakeError("Accepted peer does not match the expected identity.")
+        return session
+
+    async def close(self) -> None:
+        async with self._lifecycle_lock:
+            self._closing = True
+            server, self._server = self._server, None
+            if server is not None:
+                closing = server.close()
+                if closing is not None:
+                    await closing
+                await server.wait_closed()
+            channels = list(self._channels)
+            for channel in channels:
+                channel.close()
+            await asyncio.gather(
+                *(channel.wait_closed() for channel in channels),
+                return_exceptions=True,
+            )
+            self._channels.clear()
+            self._sessions = asyncio.Queue(maxsize=self.max_connections)
+
+    async def _handle_connection(self, websocket: Any) -> None:
+        generation = self._generation
+        channel = _WebSocketChannel(websocket)
+        if self._closing or len(self._channels) >= self.max_connections:
+            channel.close()
+            await channel.wait_closed()
+            return
+        if websocket.subprotocol != P2P_SUBPROTOCOL:
+            channel.close()
+            await channel.wait_closed()
+            return
+        self._channels.add(channel)
+        try:
+            session = await asyncio.wait_for(
+                _respond_handshake(channel, self.identity, None),
+                timeout=self.handshake_timeout,
+            )
+            remote = PeerAddress(
+                session.remote_device_id, session.remote_signing_public_key
+            )
+            if self.allowed_peers is not None and remote not in self.allowed_peers:
+                raise P2PHandshakeError("Peer is not allowed by this server.")
+            if self._closing or generation != self._generation:
+                await session.close()
+                return
+            await self._sessions.put(session)
+            self._accepted += 1
+            await websocket.wait_closed()
+        except asyncio.CancelledError:
+            channel.close()
+            raise
+        except Exception:
+            channel.close()
+            with suppress(Exception):
+                await asyncio.wait_for(channel.wait_closed(), timeout=1.0)
+        finally:
+            self._channels.discard(channel)
+
+    async def __aenter__(self) -> "WebSocketPeerServer":
+        return await self.start()
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        await self.close()
+
+
+async def connect_websocket_peer(
+    uri: str,
+    local: PeerIdentity,
+    *,
+    expected_peer: PeerAddress,
+    ssl_context: ssl.SSLContext | None = None,
+    timeout: float = 10.0,
+) -> SecurePeerSession:
+    """Connect to a pinned device peer over loopback WS or certificate-verified WSS."""
+
+    if not isinstance(local, PeerIdentity):
+        raise ValueError("local must be a PeerIdentity.")
+    if not isinstance(expected_peer, PeerAddress):
+        raise ValueError("expected_peer must be a PeerAddress.")
+    parsed = _validate_websocket_uri(uri)
+    _validate_client_ssl_context(ssl_context, parsed.scheme)
+    wait = _validate_network_timeout(timeout, "timeout")
+    options: dict[str, Any] = {
+        "subprotocols": [P2P_SUBPROTOCOL],
+        "compression": None,
+        "max_size": MAX_FRAME_BYTES,
+        "max_queue": 16,
+        "open_timeout": wait,
+        "close_timeout": min(5.0, wait),
+        "ssl": ssl_context,
+    }
+    if _MODERN_WEBSOCKETS:
+        options["proxy"] = None
+    try:
+        websocket = await _NoRedirectWebSocketConnect(uri, **options)
+    except (OSError, ValueError, asyncio.TimeoutError, WebSocketException) as exc:
+        raise P2PTransportError("Unable to connect to WebSocket peer.") from exc
+    channel = _WebSocketChannel(websocket)
+    authenticated = False
+    try:
+        if websocket.subprotocol != P2P_SUBPROTOCOL:
+            raise P2PHandshakeError("Peer server does not support the HEX P2P subprotocol.")
+        session = await asyncio.wait_for(
+            _initiate_handshake(channel, local, expected_peer),
+            timeout=wait,
+        )
+        authenticated = True
+        return session
+    except P2PTransportError:
+        raise
+    except asyncio.TimeoutError as exc:
+        raise P2PTransportError("WebSocket peer handshake timed out.") from exc
+    except Exception as exc:
+        raise P2PTransportError("WebSocket peer handshake failed.") from exc
+    finally:
+        if not authenticated:
+            channel.close()
+            with suppress(Exception):
+                await asyncio.wait_for(
+                    channel.wait_closed(), timeout=min(5.0, wait)
+                )
+
+
 __all__ = [
     "MAX_FRAME_BYTES",
+    "P2P_SUBPROTOCOL",
     "InMemoryEndpoint",
     "InMemoryNetwork",
     "P2PChannel",
@@ -687,4 +1070,6 @@ __all__ = [
     "PeerAddress",
     "PeerIdentity",
     "SecurePeerSession",
+    "WebSocketPeerServer",
+    "connect_websocket_peer",
 ]
