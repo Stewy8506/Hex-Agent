@@ -2244,12 +2244,9 @@ class HarnessOrchestrator:
         if not archive_path.is_file():
             raise FileNotFoundError(f"CoW delta archive file missing on disk: {archive_path}")
 
-        reconstructed_sha = self.cow.import_delta_archive(archive_path, target_path)
-        expected_sha = task.get("active_workspace_tree_sha")
-        if expected_sha and reconstructed_sha != expected_sha:
-            raise ValueError(
-                f"Tree SHA mismatch during workspace reconstruction: expected {expected_sha}, got {reconstructed_sha}"
-            )
+        reconstructed_sha = self.cow.import_delta_archive(
+            archive_path, target_path, expected_tree_sha=task.get("active_workspace_tree_sha")
+        )
         return reconstructed_sha
 
     def _run_compiler_preflight(self, attempt_ws: Path, modified_files: list[str]) -> dict[str, Any]:
@@ -2542,12 +2539,10 @@ class HarnessOrchestrator:
         if delta_artifacts and Path(delta_artifacts[-1]["uri"]).is_file():
             latest_delta = delta_artifacts[-1]
             archive_path = Path(latest_delta["uri"]).resolve()
-            reconstructed_tree_sha = self.cow.import_delta_archive(archive_path, attempt_ws)
             expected_sha = task.get("active_workspace_tree_sha") or (latest_chk.get("workspace_tree_sha") if latest_chk else None)
-            if expected_sha and reconstructed_tree_sha != expected_sha:
-                raise ValueError(
-                    f"Tree SHA mismatch during workspace reconstruction: expected {expected_sha}, got {reconstructed_tree_sha}"
-                )
+            reconstructed_tree_sha = self.cow.import_delta_archive(
+                archive_path, attempt_ws, expected_tree_sha=expected_sha
+            )
             base_tree_sha = reconstructed_tree_sha
             base_snap = self.cow.create_snapshot(attempt_ws, label=f"reconstructed_{task_id}")
             base_snap_path = base_snap.snapshot_path

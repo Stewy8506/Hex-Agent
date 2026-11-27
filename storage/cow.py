@@ -14,10 +14,13 @@ import difflib
 import hashlib
 import os
 import platform
+import posixpath
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -34,6 +37,8 @@ IGNORE_DIRS = frozenset({
     ".harness_data",
     ".hex",
 })
+_MAX_ARCHIVE_MEMBERS = 100_000
+_MAX_ARCHIVE_FILE_BYTES = 8 * 1024 * 1024 * 1024
 
 
 class PublicationConflictError(RuntimeError):
@@ -69,7 +74,7 @@ class WorkspaceSnapshotProvider(Protocol):
     def rollback_workspace(self, workspace_dir: Path | str, snapshot_path: Path | str) -> str: ...
     def release_workspace(self, workspace_dir: Path | str) -> None: ...
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str: ...
-    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str: ...
+    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str, *, expected_tree_sha: str | None = None) -> str: ...
     def discard_snapshot(self, snapshot_path: Path | str) -> None: ...
     def compute_workspace_diff(self, base_dir: Path | str, target_dir: Path | str) -> str: ...
 
@@ -122,85 +127,160 @@ def export_delta_archive(snapshot_path: Path | str, archive_dest: Path | str) ->
     return hashlib.sha256(dest.read_bytes()).hexdigest()
 
 
-def import_delta_archive(archive_path: Path | str, target_dir: Path | str) -> str:
-    """Safely extracts a CoW delta archive (.tar.gz) into target_dir with tar-slip defense and returns tree SHA.
+def _archive_relative_path(name: str, workspace_prefix: bool) -> str | None:
+    if not isinstance(name, str) or not name or len(name) > 4096 or "\0" in name:
+        raise ValueError("Delta archive contains an invalid member name.")
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/") or (
+        len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":"
+    ):
+        raise ValueError(f"Tar-slip absolute path forbidden in delta archive: '{name}'")
+    parts = normalized.split("/")
+    if ".." in parts:
+        raise ValueError(f"Tar-slip directory traversal detected in archive member: '{name}'")
+    parts = [part for part in parts if part not in {"", "."}]
+    if workspace_prefix:
+        if not parts or parts[0] != "workspace":
+            raise ValueError("Delta archive has an inconsistent workspace root.")
+        parts = parts[1:]
+    if not parts:
+        return None
+    if any(part in IGNORE_DIRS for part in parts):
+        raise ValueError(f"Delta archive cannot replace local metadata: '{name}'")
+    if parts[-1].startswith(".DS_Store") or parts[-1].endswith((".pyc", ".db-wal", ".db-shm")):
+        raise ValueError(f"Delta archive contains an unsupported local artifact: '{name}'")
+    return "/".join(parts)
 
-    Validates that no archive member escapes target_dir (preventing path traversal).
-    If members are wrapped in a root 'workspace' directory, contents are unpacked directly into target_dir.
-    """
+
+def import_delta_archive(
+    archive_path: Path | str,
+    target_dir: Path | str,
+    *,
+    expected_tree_sha: str | None = None,
+) -> str:
+    """Validate a CoW archive in staging, then replace the workspace without touching local metadata."""
     archive = Path(archive_path).resolve()
     if not archive.is_file():
         raise FileNotFoundError(f"Delta archive not found: {archive}")
+    if expected_tree_sha is not None and (
+        not isinstance(expected_tree_sha, str)
+        or len(expected_tree_sha) != 64
+        or any(char not in "0123456789abcdefABCDEF" for char in expected_tree_sha)
+    ):
+        raise ValueError("Invalid expected workspace tree SHA.")
 
     target = Path(target_dir).resolve()
-    target.mkdir(parents=True, exist_ok=True)
-
-    # Clean existing non-ignored files in target directory to ensure deterministic state
-    for item in target.iterdir():
-        if item.name not in IGNORE_DIRS and not item.name.startswith(".DS_Store"):
-            if item.is_dir() and not item.is_symlink():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-
-    with tarfile.open(archive, "r:gz") as tar:
-        members = tar.getmembers()
-        non_empty = [m for m in members if m.name.strip("/")]
-        has_workspace_prefix = bool(
-            non_empty
-            and all(
-                m.name.lstrip("/").replace("\\", "/") == "workspace"
-                or m.name.lstrip("/").replace("\\", "/").startswith("workspace/")
-                for m in non_empty
+    if target.exists() and not target.is_dir():
+        raise ValueError("Workspace import target must be a directory.")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.import_", dir=target.parent))
+    backup = target.parent / f".{target.name}.backup_{uuid.uuid4().hex}"
+    moved_metadata: list[str] = []
+    target_replaced = False
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members: list[tarfile.TarInfo] = []
+            for member in tar:
+                if len(members) >= _MAX_ARCHIVE_MEMBERS:
+                    raise ValueError("Delta archive exceeds the member safety limit.")
+                members.append(member)
+            normalized_names = [
+                member.name.replace("\\", "/").strip("/") for member in members
+            ]
+            non_empty = [name for name in normalized_names if name not in {"", "."}]
+            workspace_prefix = bool(non_empty) and all(
+                name == "workspace" or name.startswith("workspace/")
+                for name in non_empty
             )
-        )
-
-        for member in members:
-            raw_name = member.name.lstrip("/").replace("\\", "/")
-            if has_workspace_prefix:
-                if raw_name == "workspace":
+            entries: dict[str, tarfile.TarInfo] = {}
+            total_bytes = 0
+            for member in members:
+                rel_path = _archive_relative_path(member.name, workspace_prefix)
+                if rel_path is None:
+                    if not member.isdir():
+                        raise ValueError("Delta archive root must be a directory.")
                     continue
-                rel_part = raw_name[len("workspace/") :].lstrip("/")
-            else:
-                rel_part = raw_name
+                if rel_path in entries:
+                    raise ValueError(f"Delta archive contains a duplicate member: '{rel_path}'")
+                if not (member.isdir() or member.isreg() or member.issym()):
+                    raise ValueError(f"Delta archive contains an unsupported member type: '{rel_path}'")
+                if member.size < 0:
+                    raise ValueError(f"Delta archive contains an invalid member size: '{rel_path}'")
+                total_bytes += member.size
+                if total_bytes > _MAX_ARCHIVE_FILE_BYTES:
+                    raise ValueError("Delta archive exceeds the expanded-size safety limit.")
+                parent = posixpath.dirname(rel_path)
+                while parent:
+                    existing = entries.get(parent)
+                    if existing is not None and not existing.isdir():
+                        raise ValueError(f"Delta archive member has a non-directory parent: '{rel_path}'")
+                    parent = posixpath.dirname(parent)
+                if member.issym():
+                    link = member.linkname
+                    if not link or len(link) > 4096 or "\0" in link or "\\" in link:
+                        raise ValueError(f"Invalid symlink target in delta archive: '{rel_path}'")
+                    resolved_link = posixpath.normpath(
+                        posixpath.join(posixpath.dirname(rel_path), link)
+                    )
+                    if link.startswith("/") or resolved_link == ".." or resolved_link.startswith("../"):
+                        raise ValueError(f"Symlink target escapes workspace root: '{link}'")
+                entries[rel_path] = member
 
-            if not rel_part:
-                continue
+            for rel_path in sorted(entries, key=lambda value: (value.count("/"), value)):
+                member = entries[rel_path]
+                destination = staging.joinpath(*rel_path.split("/"))
+                if member.isdir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if member.issym():
+                    os.symlink(member.linkname, destination)
+                    continue
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    raise ValueError(f"Delta archive member could not be read: '{rel_path}'")
+                written = 0
+                with extracted, destination.open("xb") as output:
+                    while chunk := extracted.read(1024 * 1024):
+                        output.write(chunk)
+                        written += len(chunk)
+                if written != member.size:
+                    raise ValueError(f"Delta archive member size mismatch: '{rel_path}'")
+                os.chmod(destination, (member.mode & 0o777) | 0o600)
 
-            # Tar-slip traversal validation: disallow '..' path segments
-            if ".." in Path(rel_part).parts:
-                raise ValueError(f"Tar-slip directory traversal detected in archive member: '{member.name}'")
+        tree_sha = compute_tree_sha(staging)
+        if expected_tree_sha is not None and tree_sha != expected_tree_sha.lower():
+            raise ValueError(
+                f"Tree SHA mismatch during workspace reconstruction: expected {expected_tree_sha}, got {tree_sha}"
+            )
 
-            dest_path = (target / rel_part).resolve()
-            try:
-                dest_path.relative_to(target)
-            except ValueError:
-                raise ValueError(
-                    f"Tar-slip vulnerability detected: member '{member.name}' resolves to '{dest_path}' outside target '{target}'"
-                )
-
-            if member.isdir():
-                dest_path.mkdir(parents=True, exist_ok=True)
-            elif member.isreg():
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                extracted_f = tar.extractfile(member)
-                if extracted_f is not None:
-                    dest_path.write_bytes(extracted_f.read())
-            elif member.issym():
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                link_target = member.linkname
-                if link_target.startswith("/"):
-                    raise ValueError(f"Absolute symlink target forbidden in delta archive: '{link_target}'")
-                resolved_link = (dest_path.parent / link_target).resolve()
-                try:
-                    resolved_link.relative_to(target)
-                except ValueError:
-                    raise ValueError(f"Symlink target escapes workspace root: '{link_target}'")
-                if dest_path.exists() or dest_path.is_symlink():
-                    dest_path.unlink()
-                os.symlink(link_target, dest_path)
-
-    return compute_tree_sha(target)
+        if target.exists():
+            os.replace(target, backup)
+        try:
+            os.replace(staging, target)
+            target_replaced = True
+        except BaseException:
+            if not target_replaced and backup.exists():
+                os.replace(backup, target)
+            raise
+        if backup.exists():
+            for item in backup.iterdir():
+                if item.name in IGNORE_DIRS or item.name.startswith(".DS_Store"):
+                    os.replace(item, target / item.name)
+                    moved_metadata.append(item.name)
+        shutil.rmtree(backup, ignore_errors=True)
+        return tree_sha
+    except BaseException:
+        if target_replaced:
+            for name in reversed(moved_metadata):
+                with suppress(OSError):
+                    os.replace(target / name, backup / name)
+            shutil.rmtree(target, ignore_errors=True)
+        if backup.exists():
+            os.replace(backup, target)
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def compute_workspace_diff(base_dir: Path | str, target_dir: Path | str) -> str:
@@ -568,8 +648,8 @@ class APFSAndPortableCoWProvider:
         """Exports CoW snapshot to a deterministic tar.gz CAS bundle for remote worker handoff."""
         return export_delta_archive(snapshot_path, archive_dest)
 
-    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str:
-        return import_delta_archive(archive_path, target_dir)
+    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str, *, expected_tree_sha: str | None = None) -> str:
+        return import_delta_archive(archive_path, target_dir, expected_tree_sha=expected_tree_sha)
 
     def discard_snapshot(self, snapshot_path: Path | str) -> None:
         snap = Path(snapshot_path).resolve()
@@ -846,8 +926,8 @@ class OverlayFSSnapshotProvider:
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str:
         return export_delta_archive(snapshot_path, archive_dest)
 
-    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str:
-        return import_delta_archive(archive_path, target_dir)
+    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str, *, expected_tree_sha: str | None = None) -> str:
+        return import_delta_archive(archive_path, target_dir, expected_tree_sha=expected_tree_sha)
 
     def discard_snapshot(self, snapshot_path: Path | str) -> None:
         snap = Path(snapshot_path).resolve()
@@ -996,8 +1076,8 @@ class BtrfsSnapshotProvider:
     def export_delta_archive(self, snapshot_path: Path | str, archive_dest: Path | str) -> str:
         return export_delta_archive(snapshot_path, archive_dest)
 
-    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str) -> str:
-        return import_delta_archive(archive_path, target_dir)
+    def import_delta_archive(self, archive_path: Path | str, target_dir: Path | str, *, expected_tree_sha: str | None = None) -> str:
+        return import_delta_archive(archive_path, target_dir, expected_tree_sha=expected_tree_sha)
 
     def discard_snapshot(self, snapshot_path: Path | str) -> None:
         snap = Path(snapshot_path).resolve()

@@ -299,7 +299,7 @@ class TestTarSlipAndTamperDefense(unittest.TestCase):
         with orch.ledger._lock:
             orch.ledger.conn.execute(
                 "UPDATE tasks SET active_workspace_tree_sha = ? WHERE task_id = ?",
-                ("expected_fake_sha_9999", task_id),
+                ("0" * 64, task_id),
             )
             orch.ledger.conn.commit()
 
@@ -309,7 +309,90 @@ class TestTarSlipAndTamperDefense(unittest.TestCase):
             orch.reconstruct_workspace_from_delta(task_id, recon_target)
 
         self.assertIn("Tree SHA mismatch during workspace reconstruction", str(ctx.exception))
-        self.assertIn("expected_fake_sha_9999", str(ctx.exception))
+        self.assertIn("expected " + "0" * 64, str(ctx.exception))
+
+    def test_invalid_archive_leaves_existing_workspace_untouched(self) -> None:
+        (self.target_dir / "keep.txt").write_text("user work", encoding="utf-8")
+        archive_path = self.temp_dir / "invalid.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.addfile(tarfile.TarInfo("valid.txt"), io.BytesIO(b"valid"))
+            tar.addfile(tarfile.TarInfo("../escape.txt"), io.BytesIO(b"escape"))
+
+        with self.assertRaises(ValueError):
+            import_delta_archive(archive_path, self.target_dir)
+
+        self.assertEqual((self.target_dir / "keep.txt").read_text(encoding="utf-8"), "user work")
+        self.assertFalse((self.target_dir / "valid.txt").exists())
+        self.assertFalse((self.temp_dir / "escape.txt").exists())
+
+    def test_expected_tree_hash_is_verified_before_publication(self) -> None:
+        (self.target_dir / "keep.txt").write_text("user work", encoding="utf-8")
+        source_dir = self.temp_dir / "source"
+        source_dir.mkdir()
+        (source_dir / "new.txt").write_text("remote", encoding="utf-8")
+        archive_path = self.temp_dir / "hash_check.tar.gz"
+        export_delta_archive(source_dir, archive_path)
+
+        with self.assertRaisesRegex(ValueError, "Tree SHA mismatch"):
+            import_delta_archive(
+                archive_path, self.target_dir, expected_tree_sha="0" * 64
+            )
+
+        self.assertEqual((self.target_dir / "keep.txt").read_text(encoding="utf-8"), "user work")
+        self.assertFalse((self.target_dir / "new.txt").exists())
+
+    def test_import_preserves_local_git_metadata(self) -> None:
+        source_dir = self.temp_dir / "source"
+        source_dir.mkdir()
+        (source_dir / "source.txt").write_text("source", encoding="utf-8")
+        (self.target_dir / ".git").mkdir()
+        (self.target_dir / ".git" / "config").write_text("local config", encoding="utf-8")
+        archive_path = self.temp_dir / "metadata.tar.gz"
+        export_delta_archive(source_dir, archive_path)
+
+        import_delta_archive(archive_path, self.target_dir)
+
+        self.assertEqual((self.target_dir / ".git" / "config").read_text(encoding="utf-8"), "local config")
+        self.assertEqual((self.target_dir / "source.txt").read_text(encoding="utf-8"), "source")
+
+    def test_absolute_paths_and_escaping_symlinks_are_rejected(self) -> None:
+        for index, (name, linkname) in enumerate((
+            ("/absolute.txt", ""),
+            ("link.txt", "../../outside.txt"),
+        )):
+            archive_path = self.temp_dir / f"unsafe_{index}.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as tar:
+                member = tarfile.TarInfo(name)
+                if linkname:
+                    member.type = tarfile.SYMTYPE
+                    member.linkname = linkname
+                    tar.addfile(member)
+                else:
+                    member.size = 3
+                    tar.addfile(member, io.BytesIO(b"bad"))
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                import_delta_archive(archive_path, self.target_dir)
+            self.assertEqual(list(self.target_dir.iterdir()), [])
+
+    def test_hardlinks_and_duplicate_members_are_rejected(self) -> None:
+        for index, member_type in enumerate((tarfile.LNKTYPE, tarfile.CHRTYPE)):
+            archive_path = self.temp_dir / f"type_{index}.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as tar:
+                member = tarfile.TarInfo("unsafe")
+                member.type = member_type
+                member.linkname = "target"
+                tar.addfile(member)
+            with self.subTest(member_type=member_type), self.assertRaises(ValueError):
+                import_delta_archive(archive_path, self.target_dir)
+
+        archive_path = self.temp_dir / "duplicate.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            for _ in range(2):
+                member = tarfile.TarInfo("same.txt")
+                member.size = 1
+                tar.addfile(member, io.BytesIO(b"x"))
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            import_delta_archive(archive_path, self.target_dir)
 
     def test_corrupted_archive_rejected(self) -> None:
         """Corrupted archive bytes raise an exception when attempting to unpack."""
