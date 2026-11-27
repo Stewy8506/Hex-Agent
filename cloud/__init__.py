@@ -8,8 +8,10 @@ from .p2p_transport import (
     P2PTransportError,
     PeerAddress,
     PeerIdentity,
+    QuicPeerServer,
     SecurePeerSession,
     WebSocketPeerServer,
+    connect_quic_peer,
     connect_websocket_peer,
 )
 from .remote_config import RemoteConfigClient
@@ -35,6 +37,7 @@ __all__ = [
     "P2PTransportError",
     "PeerAddress",
     "PeerIdentity",
+    "QuicPeerServer",
     "RemoteConfigClient",
     "SecurePeerSession",
     "SyncEnvelope",
@@ -43,6 +46,7 @@ __all__ = [
     "SyncResult",
     "SyncStream",
     "WebSocketPeerServer",
+    "connect_quic_peer",
     "connect_websocket_peer",
     "cognition_scope",
     "workspace_id_from_cognition_scope",

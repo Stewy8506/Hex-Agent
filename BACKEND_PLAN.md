@@ -30,8 +30,8 @@ Harness/
 │   ├── updater.py                    # [Implemented] Signed 8-component manifest verifier + rollback.json tracker
 │   ├── remote_config.py              # [Implemented] Signed feature flag & routing merger (local denials always win)
 │   ├── team_mesh.py                  # [Implemented] TeamMeshCoordinator, host_epoch fencing, TurnCommitBundle ACKs
-│   ├── p2p_transport.py              # [Implemented] Authenticated E2EE framing + loopback/WS/WSS; QUIC/WebRTC/relay pending
-│   ├── sync_engine.py                # [Implemented] Bidirectional ledger/cognition sync over loopback and WebSocket
+│   ├── p2p_transport.py              # [Implemented] Authenticated E2EE framing + loopback/WS/WSS/QUIC; WebRTC/relay pending
+│   ├── sync_engine.py                # [Implemented] Bidirectional ledger/cognition sync over loopback, WebSocket, and QUIC
 │   ├── registry_client.py            # [Planned] Sparse-index skill/plugin/tool installer + SkillSpector gate bridge
 │   ├── cloud_tasks.py                # [Planned] Ephemeral cloud worker dispatch & E2EE diff retrieval
 │   ├── telemetry.py                  # [Planned] Opt-in operational-only telemetry (strict prompt/code exclusion)
@@ -164,9 +164,10 @@ After every completed work turn on the Primary Host:
 - [x] Add cursor-based ledger/dialogue export and import with base-hash verification, idempotent replay, atomic merges, and isolated hash-verified branches for divergent remote chains (`storage/ledger_sync.py`).
 - [x] Add versioned cognition/memory manifests with three-way conflict preservation, deletion tombstones, safe skill packaging, and staged SkillSpector-gated activation/candidate/quarantine handling (`cloud/cognition_sync.py`).
 - [x] Add authenticated Ed25519/X25519 handshake, directional AES-GCM framing, replay protection, and an in-memory loopback (`cloud/p2p_transport.py`).
-- [x] Implement `cloud/sync_engine.py`: deterministic peer roles, workspace/capability negotiation, task catalogs, paged ledger acknowledgements, cognition acknowledgements, persistent per-peer cursors, conflict reporting, and encrypted two-instance loopback/WebSocket tests.
+- [x] Implement `cloud/sync_engine.py`: deterministic peer roles, workspace/capability negotiation, task catalogs, paged ledger acknowledgements, cognition acknowledgements, persistent per-peer cursors, conflict reporting, and encrypted two-instance loopback/WebSocket/QUIC tests.
 - [x] Add a real WebSocket transport with loopback-only plaintext WS, certificate-verified WSS, mandatory client peer pinning, optional server allowlists, bounded connections, and encrypted `sync_engine.py` network tests (`cloud/p2p_transport.py`).
-- [ ] Add QUIC/WebRTC transports and a stateless encrypted relay fallback in `cloud/p2p_transport.py`.
+- [x] Add a QUIC transport with mandatory certificate verification and device pinning, `hex-p2p-v1` ALPN, one length-delimited encrypted stream per connection, optional server allowlists, bounded lifecycle cleanup, and incremental `sync_engine.py` network tests (`cloud/p2p_transport.py`).
+- [ ] Add WebRTC and a stateless encrypted relay fallback in `cloud/p2p_transport.py`.
 - [ ] Add `hex sync` CLI/ACP wiring and expose the shared sync engine through the control plane.
 - [x] Add cloud package to `pyproject.toml` and wire CLI subcommands (`hex cloud status/register/login/logout/devices/revoke`); `hex sync` remains pending.
 

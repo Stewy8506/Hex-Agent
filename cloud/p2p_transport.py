@@ -1,4 +1,4 @@
-"""Authenticated encrypted peer transport with in-memory and WebSocket networks."""
+"""Authenticated encrypted peer transport with in-memory, WebSocket, and QUIC networks."""
 
 from __future__ import annotations
 
@@ -11,13 +11,21 @@ import ipaddress
 import json
 import math
 import secrets
+import socket
 import ssl
 from collections.abc import Collection
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Protocol
 from urllib.parse import urlsplit
 
+from aioquic.asyncio import QuicConnectionProtocol
+from aioquic.asyncio.server import QuicServer as _AioquicQuicServer
+from aioquic.quic.configuration import QuicConfiguration
+from aioquic.quic.connection import QuicConnection
+from aioquic.quic.events import ConnectionTerminated, HandshakeCompleted
+from aioquic.quic.packet import QuicErrorCode
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 try:
@@ -60,6 +68,8 @@ _TAG_SIZE = 16
 _MAX_SEQUENCE = (1 << 64) - 1
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 P2P_SUBPROTOCOL = "hex-p2p-v1"
+_QUIC_FRAME_LENGTH_SIZE = 4
+_QUIC_IDLE_TIMEOUT = 60.0
 _MAX_HANDSHAKE_BYTES = 16 * 1024
 _DATA_FRAME = 1
 _CLOSE_FRAME = 2
@@ -1057,6 +1067,536 @@ async def connect_websocket_peer(
                 )
 
 
+class _QuicListener(_AioquicQuicServer):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._closed = asyncio.get_running_loop().create_future()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        if not self._closed.done():
+            self._closed.set_result(None)
+        super().connection_lost(exc)
+
+    async def wait_closed(self) -> None:
+        await self._closed
+
+
+async def _quic_serve(
+    host: str,
+    port: int,
+    *,
+    configuration: QuicConfiguration,
+    create_protocol: Callable[..., QuicConnectionProtocol],
+) -> _QuicListener:
+    loop = asyncio.get_running_loop()
+    _, protocol = await loop.create_datagram_endpoint(
+        lambda: _QuicListener(
+            configuration=configuration,
+            create_protocol=create_protocol,
+        ),
+        local_addr=(host, port),
+    )
+    return protocol
+
+
+class _QuicChannel:
+    def __init__(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        protocol: QuicConnectionProtocol,
+    ) -> None:
+        self._reader = reader
+        self._writer = writer
+        self._protocol = protocol
+        self._closed = False
+        self._close_scheduled = False
+
+    async def send(self, frame: bytes) -> None:
+        if self._closed:
+            raise P2PConnectionClosed("QUIC peer channel is closed.")
+        if not isinstance(frame, bytes):
+            raise TypeError("Peer frame must be bytes.")
+        if len(frame) > MAX_FRAME_BYTES:
+            raise P2PProtocolError("QUIC peer frame exceeds the frame limit.")
+        try:
+            self._writer.write(len(frame).to_bytes(_QUIC_FRAME_LENGTH_SIZE, "big"))
+            self._writer.write(frame)
+            await self._writer.drain()
+        except (ConnectionError, OSError, RuntimeError) as exc:
+            self._closed = True
+            raise P2PConnectionClosed("QUIC peer channel closed during send.") from exc
+
+    async def receive(self) -> bytes | None:
+        if self._closed:
+            raise P2PConnectionClosed("QUIC peer channel is closed.")
+        try:
+            prefix = await self._reader.readexactly(_QUIC_FRAME_LENGTH_SIZE)
+            length = int.from_bytes(prefix, "big")
+            if length == 0 or length > MAX_FRAME_BYTES:
+                raise P2PProtocolError("QUIC peer frame has an invalid length.")
+            return await self._reader.readexactly(length)
+        except asyncio.IncompleteReadError:
+            self._closed = True
+            return None
+        except (ConnectionError, OSError, RuntimeError) as exc:
+            self._closed = True
+            raise P2PConnectionClosed("QUIC peer channel failed during receive.") from exc
+
+    def close(self) -> None:
+        if self._close_scheduled:
+            return
+        self._close_scheduled = True
+        self._closed = True
+        with suppress(ConnectionError, OSError, RuntimeError):
+            self._writer.close()
+        asyncio.get_running_loop().call_soon(self._close_protocol)
+
+    def _close_protocol(self) -> None:
+        with suppress(ConnectionError, OSError, RuntimeError):
+            self._protocol.close()
+
+    async def wait_closed(self) -> None:
+        with suppress(ConnectionError, OSError, RuntimeError):
+            await self._writer.wait_closed()
+        await self._protocol.wait_closed()
+
+
+class _QuicClientProtocol(QuicConnectionProtocol):
+    def __init__(self, quic: QuicConnection) -> None:
+        super().__init__(quic, stream_handler=self._reject_stream)
+        self.alpn_protocol: str | None = None
+
+    def _reject_stream(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        self.close(
+            error_code=QuicErrorCode.PROTOCOL_VIOLATION,
+            reason_phrase="server-initiated streams are not allowed",
+        )
+
+    def quic_event_received(self, event: Any) -> None:
+        if isinstance(event, HandshakeCompleted):
+            self.alpn_protocol = event.alpn_protocol
+        super().quic_event_received(event)
+
+
+class _QuicServerProtocol(QuicConnectionProtocol):
+    def __init__(self, quic: QuicConnection, *, server: "QuicPeerServer") -> None:
+        super().__init__(quic, stream_handler=self._handle_stream)
+        self._server = server
+        self._stream_writer: asyncio.StreamWriter | None = None
+        self._authenticated = False
+        self._registered = False
+        self._handshake_timer: asyncio.TimerHandle | None = None
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        super().connection_made(transport)
+        self._registered = self._server._register(self)
+        if not self._registered:
+            self.close(
+                error_code=QuicErrorCode.CONNECTION_REFUSED,
+                reason_phrase="connection limit reached",
+            )
+            return
+        self._handshake_timer = asyncio.get_running_loop().call_later(
+            self._server.handshake_timeout, self._handshake_expired
+        )
+
+    def mark_authenticated(self) -> None:
+        self._authenticated = True
+        self.cancel_handshake_timer()
+
+    def cancel_handshake_timer(self) -> None:
+        if self._handshake_timer is not None:
+            self._handshake_timer.cancel()
+            self._handshake_timer = None
+
+    def _handshake_expired(self) -> None:
+        self._handshake_timer = None
+        if not self._authenticated:
+            self.close(
+                error_code=QuicErrorCode.PROTOCOL_VIOLATION,
+                reason_phrase="peer handshake timed out",
+            )
+
+    def _handle_stream(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        stream_id = writer.get_extra_info("stream_id")
+        if (
+            self._stream_writer is not None
+            or not isinstance(stream_id, int)
+            or stream_id & 0b10
+            or self._quic.is_closing()
+        ):
+            self.close(
+                error_code=QuicErrorCode.PROTOCOL_VIOLATION,
+                reason_phrase="exactly one bidirectional stream is required",
+            )
+            return
+        self._stream_writer = writer
+        self._server._start_authentication(self, reader, writer)
+
+    def quic_event_received(self, event: Any) -> None:
+        if isinstance(event, ConnectionTerminated):
+            self.cancel_handshake_timer()
+            self._server._discard(self)
+        if isinstance(event, HandshakeCompleted):
+            if event.alpn_protocol != P2P_SUBPROTOCOL:
+                self.close(
+                    error_code=QuicErrorCode.PROTOCOL_VIOLATION,
+                    reason_phrase="unsupported application protocol",
+                )
+                return
+        super().quic_event_received(event)
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        self.cancel_handshake_timer()
+        self._server._discard(self)
+        super().connection_lost(exc)
+
+
+class QuicPeerServer:
+    """Accept authenticated device peers over certificate-verified QUIC."""
+
+    def __init__(
+        self,
+        identity: PeerIdentity,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        certificate: str | Path,
+        private_key: str | Path,
+        allowed_peers: Collection[PeerAddress] | None = None,
+        max_connections: int = 32,
+        handshake_timeout: float = 10.0,
+    ) -> None:
+        if not isinstance(identity, PeerIdentity):
+            raise ValueError("QuicPeerServer requires a PeerIdentity.")
+        if not isinstance(host, str) or not host or len(host) > 255:
+            raise ValueError("host must be a bounded string.")
+        if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+            raise ValueError("port must be an integer between 0 and 65535.")
+        if not isinstance(certificate, (str, Path)) or not str(certificate):
+            raise ValueError("certificate must be a certificate file path.")
+        if not isinstance(private_key, (str, Path)) or not str(private_key):
+            raise ValueError("private_key must be a private key file path.")
+        if (
+            isinstance(max_connections, bool)
+            or not isinstance(max_connections, int)
+            or not 1 <= max_connections <= 256
+        ):
+            raise ValueError("max_connections must be between 1 and 256.")
+        self.identity = identity
+        self.host = host
+        self.port = port
+        self.certificate = Path(certificate)
+        self.private_key = Path(private_key)
+        self.allowed_peers = (
+            None if allowed_peers is None else frozenset(allowed_peers)
+        )
+        if self.allowed_peers is not None and any(
+            not isinstance(peer, PeerAddress) for peer in self.allowed_peers
+        ):
+            raise ValueError("allowed_peers must contain PeerAddress values.")
+        self.max_connections = max_connections
+        self.handshake_timeout = _validate_network_timeout(
+            handshake_timeout, "handshake_timeout"
+        )
+        self._server: Any = None
+        self._protocols: set[_QuicServerProtocol] = set()
+        self._channels: set[_QuicChannel] = set()
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._sessions: asyncio.Queue[SecurePeerSession] = asyncio.Queue(
+            maxsize=max_connections
+        )
+        self._accepted = 0
+        self._closing = False
+        self._generation = 0
+        self._lifecycle_lock = asyncio.Lock()
+
+    @property
+    def running(self) -> bool:
+        return self._server is not None and not self._closing
+
+    def status(self) -> dict[str, Any]:
+        addresses: list[dict[str, Any]] = []
+        if self._server is not None:
+            transport = self._server._transport
+            if transport is not None:
+                address = transport.get_extra_info("sockname")
+                if address is not None:
+                    addresses.append({"host": str(address[0]), "port": address[1]})
+        return {
+            "transport": "quic",
+            "running": self.running,
+            "tls": True,
+            "alpn": P2P_SUBPROTOCOL,
+            "addresses": addresses,
+            "active_connections": len(self._protocols),
+            "accepted_sessions": self._accepted,
+        }
+
+    async def start(self) -> "QuicPeerServer":
+        async with self._lifecycle_lock:
+            if self.running:
+                return self
+            self._closing = False
+            self._generation += 1
+            configuration = QuicConfiguration(
+                is_client=False,
+                alpn_protocols=[P2P_SUBPROTOCOL],
+                max_data=MAX_FRAME_BYTES,
+                max_stream_data=MAX_FRAME_BYTES,
+                idle_timeout=_QUIC_IDLE_TIMEOUT,
+            )
+            try:
+                configuration.load_cert_chain(
+                    str(self.certificate), str(self.private_key)
+                )
+                self._server = await _quic_serve(
+                    self.host,
+                    self.port,
+                    configuration=configuration,
+                    create_protocol=lambda connection, **kwargs: _QuicServerProtocol(
+                        connection, server=self
+                    ),
+                )
+            except (OSError, ValueError) as exc:
+                self._server = None
+                raise P2PTransportError("Unable to start QUIC peer server.") from exc
+            transport = self._server._transport
+            address = transport.get_extra_info("sockname")
+            if address is not None:
+                self.port = int(address[1])
+            return self
+
+    async def accept(
+        self,
+        *,
+        expected_peer: PeerAddress | None = None,
+        timeout: float = 30.0,
+    ) -> SecurePeerSession:
+        if not self.running:
+            raise P2PTransportError("QUIC peer server is not running.")
+        if expected_peer is not None and not isinstance(expected_peer, PeerAddress):
+            raise ValueError("expected_peer must be a PeerAddress.")
+        wait = _validate_network_timeout(timeout, "timeout")
+        try:
+            session = await asyncio.wait_for(self._sessions.get(), timeout=wait)
+        except asyncio.TimeoutError as exc:
+            raise P2PTransportError("Timed out waiting for a QUIC peer.") from exc
+        remote = PeerAddress(
+            session.remote_device_id, session.remote_signing_public_key
+        )
+        if expected_peer is not None and remote != expected_peer:
+            await session.close()
+            raise P2PHandshakeError("Accepted peer does not match the expected identity.")
+        return session
+
+    async def close(self) -> None:
+        async with self._lifecycle_lock:
+            self._closing = True
+            self._generation += 1
+            server, self._server = self._server, None
+            tasks = list(self._tasks)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            channels = list(self._channels)
+            for channel in channels:
+                channel.close()
+            if channels:
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *(channel.wait_closed() for channel in channels),
+                            return_exceptions=True,
+                        ),
+                        timeout=min(5.0, self.handshake_timeout),
+                    )
+            if server is not None:
+                for protocol in list(self._protocols):
+                    protocol.cancel_handshake_timer()
+                server.close()
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        server.wait_closed(), timeout=min(1.0, self.handshake_timeout)
+                    )
+            self._channels.clear()
+            self._protocols.clear()
+            self._tasks.clear()
+            self._sessions = asyncio.Queue(maxsize=self.max_connections)
+
+    def _register(self, protocol: _QuicServerProtocol) -> bool:
+        if self._closing or len(self._protocols) >= self.max_connections:
+            return False
+        self._protocols.add(protocol)
+        return True
+
+    def _discard(self, protocol: _QuicServerProtocol) -> None:
+        self._protocols.discard(protocol)
+
+    def _start_authentication(
+        self,
+        protocol: _QuicServerProtocol,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        task = asyncio.create_task(
+            self._authenticate(protocol, reader, writer),
+            name="hex-quic-peer-authentication",
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _authenticate(
+        self,
+        protocol: _QuicServerProtocol,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        generation = self._generation
+        channel = _QuicChannel(reader, writer, protocol)
+        self._channels.add(channel)
+        try:
+            session = await asyncio.wait_for(
+                _respond_handshake(channel, self.identity, None),
+                timeout=self.handshake_timeout,
+            )
+            remote = PeerAddress(
+                session.remote_device_id, session.remote_signing_public_key
+            )
+            if self.allowed_peers is not None and remote not in self.allowed_peers:
+                raise P2PHandshakeError("Peer is not allowed by this QUIC server.")
+            if self._closing or generation != self._generation:
+                await session.close()
+                return
+            protocol.mark_authenticated()
+            await self._sessions.put(session)
+            self._accepted += 1
+            await protocol.wait_closed()
+        except asyncio.CancelledError:
+            channel.close()
+            raise
+        except Exception:
+            channel.close()
+        finally:
+            self._channels.discard(channel)
+
+    async def __aenter__(self) -> "QuicPeerServer":
+        return await self.start()
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        await self.close()
+
+
+async def connect_quic_peer(
+    host: str,
+    port: int,
+    local: PeerIdentity,
+    *,
+    expected_peer: PeerAddress,
+    cafile: str | Path | None = None,
+    capath: str | Path | None = None,
+    cadata: bytes | None = None,
+    timeout: float = 10.0,
+) -> SecurePeerSession:
+    """Connect to a pinned device peer over certificate-verified QUIC."""
+
+    if not isinstance(local, PeerIdentity):
+        raise ValueError("local must be a PeerIdentity.")
+    if not isinstance(expected_peer, PeerAddress):
+        raise ValueError("expected_peer must be a PeerAddress.")
+    if not isinstance(host, str) or not host or len(host) > 255:
+        raise ValueError("host must be a bounded string.")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("port must be an integer between 1 and 65535.")
+    if cafile is not None and not isinstance(cafile, (str, Path)):
+        raise ValueError("cafile must be a CA certificate file path.")
+    if capath is not None and not isinstance(capath, (str, Path)):
+        raise ValueError("capath must be a CA directory path.")
+    if cadata is not None and not isinstance(cadata, bytes):
+        raise ValueError("cadata must be bytes.")
+    wait = _validate_network_timeout(timeout, "timeout")
+    configuration = QuicConfiguration(
+        is_client=True,
+        alpn_protocols=[P2P_SUBPROTOCOL],
+        max_data=MAX_FRAME_BYTES,
+        max_stream_data=MAX_FRAME_BYTES,
+        server_name=host,
+        idle_timeout=_QUIC_IDLE_TIMEOUT,
+        verify_mode=ssl.CERT_REQUIRED,
+        cafile=str(cafile) if cafile is not None else None,
+        capath=str(capath) if capath is not None else None,
+        cadata=cadata,
+    )
+    loop = asyncio.get_running_loop()
+    sock: socket.socket | None = None
+    transport: asyncio.DatagramTransport | None = None
+    protocol: _QuicClientProtocol | None = None
+    channel: _QuicChannel | None = None
+    authenticated = False
+    try:
+        infos = await loop.getaddrinfo(host, port, type=socket.SOCK_DGRAM)
+        if not infos:
+            raise OSError("No address found for QUIC peer.")
+        family, _, _, _, address = infos[0]
+        sock = socket.socket(family, socket.SOCK_DGRAM)
+        sock.setblocking(False)
+        sock.bind(("::", 0) if family == socket.AF_INET6 else ("0.0.0.0", 0))
+        sock.connect(address)
+        protocol = _QuicClientProtocol(QuicConnection(configuration=configuration))
+        transport, _ = await loop.create_datagram_endpoint(
+            lambda: protocol,
+            sock=sock,
+        )
+        sock = None
+        protocol.connect(address)
+        await asyncio.wait_for(protocol.wait_connected(), timeout=wait)
+        if protocol.alpn_protocol != P2P_SUBPROTOCOL:
+            raise P2PHandshakeError("Peer server does not support the HEX P2P ALPN.")
+        reader, writer = await asyncio.wait_for(protocol.create_stream(), timeout=wait)
+        channel = _QuicChannel(reader, writer, protocol)
+        session = await asyncio.wait_for(
+            _initiate_handshake(channel, local, expected_peer),
+            timeout=wait,
+        )
+        authenticated = True
+        return session
+    except P2PTransportError:
+        raise
+    except asyncio.TimeoutError as exc:
+        raise P2PTransportError("QUIC peer handshake timed out.") from exc
+    except Exception as exc:
+        raise P2PTransportError("Unable to establish QUIC peer connection.") from exc
+    finally:
+        if sock is not None:
+            sock.close()
+        if not authenticated:
+            if channel is not None:
+                channel.close()
+            elif protocol is not None:
+                with suppress(ConnectionError, OSError, RuntimeError):
+                    protocol.close()
+            if transport is not None:
+                try:
+                    if protocol is not None:
+                        with suppress(
+                            ConnectionError,
+                            OSError,
+                            RuntimeError,
+                            asyncio.TimeoutError,
+                        ):
+                            await asyncio.wait_for(
+                                protocol.wait_closed(), timeout=min(1.0, wait)
+                            )
+                finally:
+                    transport.close()
+
+
 __all__ = [
     "MAX_FRAME_BYTES",
     "P2P_SUBPROTOCOL",
@@ -1069,7 +1609,9 @@ __all__ = [
     "P2PTransportError",
     "PeerAddress",
     "PeerIdentity",
+    "QuicPeerServer",
     "SecurePeerSession",
     "WebSocketPeerServer",
+    "connect_quic_peer",
     "connect_websocket_peer",
 ]

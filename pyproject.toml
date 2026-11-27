@@ -14,6 +14,7 @@ dependencies = [
     "httpx>=0.24.0",
     "typing_extensions>=4.6.0",
     "keyring>=24.0.0",
+    "aioquic>=1.9.2,<2.0",
     "cryptography>=42.0.0",
     "websockets>=12.0",
     "pyyaml>=6.0",

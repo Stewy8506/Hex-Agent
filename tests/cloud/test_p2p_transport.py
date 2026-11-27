@@ -29,7 +29,9 @@ from cloud.p2p_transport import (
     P2PTransportError,
     PeerAddress,
     PeerIdentity,
+    QuicPeerServer,
     WebSocketPeerServer,
+    connect_quic_peer,
     connect_websocket_peer,
 )
 from cloud.auth_client import generate_device_identity
@@ -620,6 +622,350 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         await server.close()
         await server.close()
         self.assertFalse(server.running)
+
+
+class QuicTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def _start_server(
+        self,
+        identity: PeerIdentity,
+        **options: object,
+    ) -> tuple[QuicPeerServer, Path]:
+        temporary = tempfile.TemporaryDirectory(prefix="hex_quic_test_")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        key_path, certificate_path = _write_test_certificate(root)
+        server = QuicPeerServer(
+            identity,
+            certificate=certificate_path,
+            private_key=key_path,
+            **options,
+        )
+        await server.start()
+        self.addAsyncCleanup(server.close)
+        return server, certificate_path
+
+    async def _pair(
+        self,
+        *,
+        allowed_peers: set[PeerAddress] | None = None,
+    ):
+        alice = PeerIdentity.generate("dev_alice")
+        bob = PeerIdentity.generate("dev_bob")
+        server, certificate_path = await self._start_server(
+            alice,
+            allowed_peers=allowed_peers,
+        )
+        client_task = asyncio.create_task(connect_quic_peer(
+            server.host,
+            server.port,
+            bob,
+            expected_peer=alice.address,
+            cafile=certificate_path,
+        ))
+        alice_session, bob_session = await asyncio.wait_for(
+            asyncio.gather(
+                server.accept(expected_peer=bob.address),
+                client_task,
+            ),
+            timeout=10,
+        )
+        self.addAsyncCleanup(alice_session.close)
+        self.addAsyncCleanup(bob_session.close)
+        return server, alice, bob, alice_session, bob_session
+
+    async def test_authenticated_bidirectional_transport_and_envelope(self) -> None:
+        server, alice, bob, alice_session, bob_session = await self._pair()
+
+        self.assertEqual(alice_session.remote_device_id, bob.device_id)
+        self.assertEqual(bob_session.remote_device_id, alice.device_id)
+        self.assertEqual(server.status()["alpn"], P2P_SUBPROTOCOL)
+        self.assertTrue(server.status()["tls"])
+        self.assertEqual(server.status()["accepted_sessions"], 1)
+        await alice_session.send(b"from-alice")
+        await bob_session.send(b"from-bob")
+        self.assertEqual(await bob_session.receive(), b"from-alice")
+        self.assertEqual(await alice_session.receive(), b"from-bob")
+
+        payload = b"quic-payload" * (128 * 1024)
+        await alice_session.send(payload)
+        self.assertEqual(await bob_session.receive(), payload)
+
+        envelope = SyncEnvelope(
+            SyncStream.LEDGER,
+            ledger_scope("task-quic"),
+            alice.device_id,
+            0,
+            {"version": 1, "events": []},
+        )
+        await alice_session.send_envelope(envelope)
+        self.assertEqual(await bob_session.receive_envelope(), envelope)
+
+    async def test_client_rejects_unexpected_device_identity(self) -> None:
+        alice = PeerIdentity.generate("dev_alice")
+        bob = PeerIdentity.generate("dev_bob")
+        impostor = PeerIdentity.generate("dev_impostor")
+        server, certificate_path = await self._start_server(alice)
+
+        with self.assertRaises(P2PHandshakeError):
+            await connect_quic_peer(
+                server.host,
+                server.port,
+                bob,
+                expected_peer=impostor.address,
+                cafile=certificate_path,
+                timeout=2,
+            )
+        with self.assertRaises(P2PTransportError):
+            await server.accept(timeout=0.1)
+        self.assertEqual(server.status()["accepted_sessions"], 0)
+
+    async def test_server_rejects_unlisted_device(self) -> None:
+        alice = PeerIdentity.generate("dev_alice")
+        bob = PeerIdentity.generate("dev_bob")
+        allowed = PeerIdentity.generate("dev_allowed")
+        server, certificate_path = await self._start_server(
+            alice,
+            allowed_peers={allowed.address},
+        )
+        client = await connect_quic_peer(
+            server.host,
+            server.port,
+            bob,
+            expected_peer=alice.address,
+            cafile=certificate_path,
+            timeout=2,
+        )
+        self.addAsyncCleanup(client.close)
+
+        with self.assertRaises(P2PTransportError):
+            await server.accept(timeout=0.1)
+        self.assertEqual(server.status()["accepted_sessions"], 0)
+
+    async def test_empty_allow_list_rejects_every_device(self) -> None:
+        alice = PeerIdentity.generate("dev_alice")
+        bob = PeerIdentity.generate("dev_bob")
+        server, certificate_path = await self._start_server(alice, allowed_peers=set())
+        client = await connect_quic_peer(
+            server.host,
+            server.port,
+            bob,
+            expected_peer=alice.address,
+            cafile=certificate_path,
+            timeout=2,
+        )
+        self.addAsyncCleanup(client.close)
+
+        with self.assertRaises(P2PTransportError):
+            await server.accept(timeout=0.1)
+        self.assertEqual(server.status()["accepted_sessions"], 0)
+
+    async def test_untrusted_certificate_is_rejected(self) -> None:
+        alice = PeerIdentity.generate("dev_alice")
+        bob = PeerIdentity.generate("dev_bob")
+        server, _certificate_path = await self._start_server(alice)
+
+        with self.assertRaises(P2PTransportError):
+            await connect_quic_peer(
+                server.host,
+                server.port,
+                bob,
+                expected_peer=alice.address,
+                timeout=2,
+            )
+        self.assertEqual(server.status()["accepted_sessions"], 0)
+
+    async def test_required_alpn_is_enforced(self) -> None:
+        from aioquic.asyncio.server import serve
+        from aioquic.quic.configuration import QuicConfiguration
+
+        alice = PeerIdentity.generate("dev_alice")
+        bob = PeerIdentity.generate("dev_bob")
+        temporary = tempfile.TemporaryDirectory(prefix="hex_quic_alpn_test_")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        key_path, certificate_path = _write_test_certificate(root)
+        for alpn_protocols in (None, ["not-hex-p2p"]):
+            with self.subTest(alpn_protocols=alpn_protocols):
+                configuration = QuicConfiguration(
+                    is_client=False,
+                    alpn_protocols=alpn_protocols,
+                )
+                configuration.load_cert_chain(str(certificate_path), str(key_path))
+                server = await serve(
+                    "127.0.0.1",
+                    0,
+                    configuration=configuration,
+                )
+                address = server._transport.get_extra_info("sockname")
+                try:
+                    with self.assertRaises(P2PTransportError):
+                        await connect_quic_peer(
+                            "127.0.0.1",
+                            address[1],
+                            bob,
+                            expected_peer=alice.address,
+                            cafile=certificate_path,
+                            timeout=2,
+                        )
+                finally:
+                    server.close()
+
+    async def test_invalid_frame_lengths_and_server_streams_are_rejected(self) -> None:
+        from aioquic.asyncio import QuicConnectionProtocol
+        from aioquic.asyncio.server import serve
+        from aioquic.quic.configuration import QuicConfiguration
+        from aioquic.quic.events import ConnectionTerminated, HandshakeCompleted
+
+        alice = PeerIdentity.generate("dev_alice")
+        bob = PeerIdentity.generate("dev_bob")
+        temporary = tempfile.TemporaryDirectory(prefix="hex_quic_protocol_test_")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        key_path, certificate_path = _write_test_certificate(root)
+
+        for mode in ("oversized-length", "server-stream"):
+            with self.subTest(mode=mode):
+                class RawServerProtocol(QuicConnectionProtocol):
+                    def __init__(self, quic: object) -> None:
+                        super().__init__(quic)
+                        self._started = False
+                        self._sender: asyncio.Task[None] | None = None
+
+                    def quic_event_received(self, event: object) -> None:
+                        super().quic_event_received(event)
+                        if isinstance(event, ConnectionTerminated):
+                            if self._sender is not None:
+                                self._sender.cancel()
+                        elif isinstance(event, HandshakeCompleted) and not self._started:
+                            self._started = True
+                            self._sender = asyncio.create_task(self._send_invalid_data())
+
+                    async def _send_invalid_data(self) -> None:
+                        _reader, writer = await self.create_stream()
+                        if mode == "oversized-length":
+                            writer.write((MAX_FRAME_BYTES + 1).to_bytes(4, "big"))
+                        else:
+                            writer.write(b"unsolicited")
+                            await writer.drain()
+                            writer.write_eof()
+                        await writer.drain()
+
+                configuration = QuicConfiguration(
+                    is_client=False,
+                    alpn_protocols=[P2P_SUBPROTOCOL],
+                )
+                configuration.load_cert_chain(str(certificate_path), str(key_path))
+                server = await serve(
+                    "127.0.0.1",
+                    0,
+                    configuration=configuration,
+                    create_protocol=RawServerProtocol,
+                )
+                address = server._transport.get_extra_info("sockname")
+                try:
+                    with self.assertRaises(P2PTransportError):
+                        await connect_quic_peer(
+                            "127.0.0.1",
+                            address[1],
+                            bob,
+                            expected_peer=alice.address,
+                            cafile=certificate_path,
+                            timeout=2,
+                        )
+                finally:
+                    server.close()
+
+    async def test_connection_limit_rejects_additional_client(self) -> None:
+        alice = PeerIdentity.generate("dev_alice")
+        bob = PeerIdentity.generate("dev_bob")
+        server, certificate_path = await self._start_server(
+            alice,
+            max_connections=1,
+            handshake_timeout=2,
+        )
+        started = asyncio.Event()
+
+        async def blocked_handshake(*_args: object) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        with patch("cloud.p2p_transport._initiate_handshake", new=blocked_handshake):
+            first = asyncio.create_task(connect_quic_peer(
+                server.host,
+                server.port,
+                bob,
+                expected_peer=alice.address,
+                cafile=certificate_path,
+                timeout=5,
+            ))
+            await asyncio.wait_for(started.wait(), timeout=2)
+            try:
+                with self.assertRaises(P2PTransportError):
+                    await connect_quic_peer(
+                        server.host,
+                        server.port,
+                        PeerIdentity.generate("dev_carol"),
+                        expected_peer=alice.address,
+                        cafile=certificate_path,
+                        timeout=0.5,
+                    )
+            finally:
+                first.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await first
+
+    async def test_cancelled_handshake_closes_connection(self) -> None:
+        alice = PeerIdentity.generate("dev_alice")
+        bob = PeerIdentity.generate("dev_bob")
+        server, certificate_path = await self._start_server(
+            alice,
+            handshake_timeout=0.2,
+        )
+        started = asyncio.Event()
+
+        async def blocked_handshake(*_args: object) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        with patch("cloud.p2p_transport._initiate_handshake", new=blocked_handshake):
+            task = asyncio.create_task(connect_quic_peer(
+                server.host,
+                server.port,
+                bob,
+                expected_peer=alice.address,
+                cafile=certificate_path,
+            ))
+            await asyncio.wait_for(started.wait(), timeout=2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        with self.assertRaises(P2PTransportError):
+            await server.accept(timeout=1.0)
+        self.assertEqual(server.status()["active_connections"], 0)
+
+    async def test_abrupt_disconnect_fails_closed(self) -> None:
+        server, _, _, alice_session, _bob_session = await self._pair()
+
+        await server.close()
+
+        with self.assertRaises(P2PConnectionClosed):
+            await alice_session.receive()
+
+    async def test_clean_close_restart_and_idempotent_lifecycle(self) -> None:
+        server, _, _, alice_session, bob_session = await self._pair()
+
+        self.assertIs(await server.start(), server)
+        await bob_session.close()
+        await bob_session.close()
+        self.assertIsNone(await alice_session.receive())
+        await server.close()
+        await server.close()
+        self.assertFalse(server.running)
+        self.assertIs(await server.start(), server)
+        with self.assertRaises(P2PTransportError):
+            await server.accept(timeout=0.1)
+        self.assertEqual(server.status()["active_connections"], 0)
 
 
 if __name__ == "__main__":

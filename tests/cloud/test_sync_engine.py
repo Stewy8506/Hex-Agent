@@ -1,23 +1,64 @@
-"""Two-instance sync engine regressions over loopback and WebSocket transports."""
+"""Two-instance sync engine regressions over loopback, WebSocket, and QUIC transports."""
 
 from __future__ import annotations
 
 import asyncio
+import datetime
+import ipaddress
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
+
 from cloud.cognition_sync import CognitionSyncStore
 from cloud.p2p_transport import (
     InMemoryNetwork,
     PeerIdentity,
+    QuicPeerServer,
     WebSocketPeerServer,
+    connect_quic_peer,
     connect_websocket_peer,
 )
 from cloud.sync_engine import SyncEngine, SyncEngineError, SyncResult
 from harness_core.storage.db import LedgerStore
+
+
+def _write_quic_certificate(root: Path) -> tuple[Path, Path]:
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=1))
+        .not_valid_after(now + datetime.timedelta(hours=1))
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.DNSName("localhost"),
+                x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+            ]),
+            critical=False,
+        )
+        .sign(private_key, hashes.SHA256())
+    )
+    key_path = root / "quic-key.pem"
+    certificate_path = root / "quic-cert.pem"
+    key_path.write_bytes(private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+    certificate_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    return key_path, certificate_path
 
 
 class SyncEngineTests(unittest.IsolatedAsyncioTestCase):
@@ -149,6 +190,58 @@ class SyncEngineTests(unittest.IsolatedAsyncioTestCase):
             await server.close()
         return {"dev_alice": alice_result, "dev_bob": bob_result}
 
+    async def _sync_quic(
+        self, *, connector: str
+    ) -> dict[str, SyncResult | BaseException]:
+        alice_identity = PeerIdentity.generate("dev_alice")
+        bob_identity = PeerIdentity.generate("dev_bob")
+        if connector == "dev_alice":
+            server_identity = bob_identity
+            client_identity = alice_identity
+        else:
+            server_identity = alice_identity
+            client_identity = bob_identity
+        with tempfile.TemporaryDirectory(prefix="hex_quic_sync_") as temporary:
+            key_path, certificate_path = _write_quic_certificate(Path(temporary))
+            server = QuicPeerServer(
+                server_identity,
+                certificate=certificate_path,
+                private_key=key_path,
+            )
+            await server.start()
+            try:
+                client_task = asyncio.create_task(connect_quic_peer(
+                    server.host,
+                    server.port,
+                    client_identity,
+                    expected_peer=server_identity.address,
+                    cafile=certificate_path,
+                ))
+                server_session, client_session = await asyncio.wait_for(
+                    asyncio.gather(
+                        server.accept(expected_peer=client_identity.address),
+                        client_task,
+                    ),
+                    timeout=10,
+                )
+                if connector == "dev_alice":
+                    alice_session, bob_session = client_session, server_session
+                else:
+                    alice_session, bob_session = server_session, client_session
+                try:
+                    alice_result, bob_result = await asyncio.gather(
+                        self.engines["dev_alice"].sync_with(alice_session),
+                        self.engines["dev_bob"].sync_with(bob_session),
+                        return_exceptions=True,
+                    )
+                finally:
+                    await asyncio.gather(
+                        alice_session.close(), bob_session.close(), return_exceptions=True
+                    )
+            finally:
+                await server.close()
+        return {"dev_alice": alice_result, "dev_bob": bob_result}
+
     def _assert_synced(self, outcomes: dict[str, SyncResult | BaseException]) -> dict[str, SyncResult]:
         for device_id, outcome in outcomes.items():
             if not isinstance(outcome, SyncResult):
@@ -243,6 +336,53 @@ class SyncEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.cognition["dev_bob"]._read_document("global/user"),
             b"Alice updated profile.\n",
+        )
+        self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
+
+    async def test_quic_sync_engine_transfers_data_and_reconnects_incrementally(self) -> None:
+        alice_task = self.ledgers["dev_alice"].submit_task({"goal": "QUIC task"})["task_id"]
+        self.ledgers["dev_alice"].record_event(
+            alice_task, "RUNNING", reason_code="STARTED"
+        )
+        self.ledgers["dev_alice"].record_dialogue_turn(
+            alice_task, 0, "user", "private QUIC dialogue"
+        )
+        self._write_document("dev_alice", "global/user", "Alice QUIC profile.\n")
+        bob_task = self.ledgers["dev_bob"].submit_task({"goal": "bob QUIC task"})["task_id"]
+        self._write_document("dev_bob", "workspace/memory", "Bob QUIC memory.\n")
+
+        first = self._assert_synced(await self._sync_quic(connector="dev_bob"))
+
+        self.assertEqual(first["dev_alice"].ledger_events_sent, 2)
+        self.assertEqual(first["dev_bob"].ledger_events_received, 2)
+        self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
+        self.assertIsNotNone(self.ledgers["dev_alice"].get_task(bob_task))
+        self.assertEqual(
+            self.ledgers["dev_bob"].get_active_dialogue(alice_task)[0]["content"],
+            "private QUIC dialogue",
+        )
+        self.assertEqual(
+            self.cognition["dev_bob"]._read_document("global/user"),
+            b"Alice QUIC profile.\n",
+        )
+        self.assertEqual(
+            self.cognition["dev_alice"]._read_document("workspace/memory"),
+            b"Bob QUIC memory.\n",
+        )
+
+        self.ledgers["dev_alice"].record_event(
+            alice_task, "VERIFYING", reason_code="CHECK"
+        )
+        self._write_document("dev_alice", "global/user", "Alice updated QUIC profile.\n")
+        second = self._assert_synced(await self._sync_quic(connector="dev_alice"))
+
+        self.assertEqual(second["dev_alice"].ledger_events_sent, 2)
+        self.assertEqual(second["dev_bob"].ledger_events_received, 1)
+        state = json.loads(self.engines["dev_alice"].state_path.read_text())
+        self.assertEqual(state["peers"]["dev_bob"]["ledger"][alice_task], 3)
+        self.assertEqual(
+            self.cognition["dev_bob"]._read_document("global/user"),
+            b"Alice updated QUIC profile.\n",
         )
         self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
 
