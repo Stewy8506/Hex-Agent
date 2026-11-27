@@ -232,6 +232,21 @@ def build_parser(default_dir: str | None = None) -> argparse.ArgumentParser:
     p_update.add_argument("--base-url", default=None, help="hex-backend base URL override (default: HEX_BACKEND_URL or http://127.0.0.1:8787)")
     p_update.add_argument("--json", action="store_true", help="Emit raw JSON output")
 
+    p_sync = sub.add_parser("sync", help="Inspect personal sync state or run an encrypted peer exchange")
+    p_sync_sub = p_sync.add_subparsers(dest="sync_cmd", required=False)
+    p_sync_status = p_sync_sub.add_parser("status", help="Show workspace sync capabilities and peer cursors")
+    p_sync_run = p_sync_sub.add_parser("run", help="Synchronize with a pinned WebSocket peer")
+    p_sync_run.add_argument("url", help="Peer ws:// (loopback only) or certificate-verified wss:// URL")
+    p_sync_run.add_argument("--peer-id", default=None, help="Expected remote device record id")
+    p_sync_run.add_argument("--peer-key", default=None, help="Expected remote ed25519: signing public key")
+    for p_sync_cmd in (p_sync_status, p_sync_run):
+        p_sync_cmd.add_argument("--workspace", default=None, help="Workspace to synchronize (default: current directory)")
+        p_sync_cmd.add_argument("--config-dir", default=None, help="Global HEX configuration directory")
+        p_sync_cmd.add_argument("--data-dir", default=argparse.SUPPRESS, help="Local ledger storage directory")
+        p_sync_cmd.add_argument("--base-url", default=None, help="hex-backend base URL override")
+        p_sync_cmd.add_argument("--timeout", type=float, default=120.0, help="Sync timeout in seconds")
+        p_sync_cmd.add_argument("--json", action="store_true", help="Emit raw JSON output")
+
     p_quota = sub.add_parser("quota", help="Inspect live Google Antigravity model quota windows and reset times")
     p_quota.add_argument("--auth-file", default=None, help="Custom path to antigravity_auth.json")
     p_quota.add_argument("--json", action="store_true", help="Emit raw JSON quota snapshot")
@@ -749,6 +764,11 @@ def _main_impl(argv: list[str] | None = None, *, process_handoff: bool = False) 
         from harness_core.client.commands.update import run_update_command
 
         return run_update_command(args)
+
+    if args.cmd == "sync":
+        from harness_core.client.commands.sync import run_sync_command
+
+        return run_sync_command(args)
 
     if args.cmd == "quota":
         from harness_core.client.commands.antigravity import run_quota_command

@@ -657,6 +657,7 @@ _SUPPORTED_METHODS = (
     "cloud/auth/logout", "cloud/devices/list", "cloud/devices/revoke",
     "cloud/update/check", "cloud/config/evaluate",
     "cloud/signal/start", "cloud/signal/stop", "cloud/signal/status",
+    "cloud/sync/status", "cloud/sync/run",
 )
 
 HEX_CONTRACT_VERSION = 1
@@ -836,6 +837,45 @@ class ACPServer:
             "last_error": None,
             "base_url": self.cloud_account.base_url,
         }
+
+    def _sync_control(self, params: dict[str, Any]) -> Any:
+        from cloud.sync_control import SyncControl
+
+        workspace = Path(str(params.get("workspace") or self.workspace_root)).resolve()
+        data_dir = Path(str(
+            params.get("data_dir") or workspace / ".hex" / "data"
+        )).resolve()
+        ledger = getattr(self._orchestrator, "ledger", None)
+        if workspace != self.workspace_root:
+            ledger = None
+        timeout = params.get("timeout", 120.0)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise ValueError("timeout must be a finite positive number.")
+        return SyncControl(
+            workspace,
+            data_dir=data_dir,
+            global_home=self.config_dir,
+            account=self.cloud_account,
+            ledger=ledger,
+            timeout=float(timeout),
+        )
+
+    def _sync_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        with self._sync_control(params) as control:
+            return control.status()
+
+    def _sync_run(self, params: dict[str, Any]) -> dict[str, Any]:
+        import asyncio
+
+        url = params.get("url")
+        peer_id = params.get("peer_id")
+        peer_key = params.get("peer_signing_public_key")
+        if not all(isinstance(value, str) and value for value in (url, peer_id, peer_key)):
+            raise ValueError("url, peer_id, and peer_signing_public_key are required.")
+        with self._sync_control(params) as control:
+            result = asyncio.run(control.run_websocket(url, peer_id, peer_key))
+        self._emit_cloud_event("sync_completed", **result)
+        return result
 
     def _emit(self, obj: dict[str, Any]) -> None:
         """Serialize one JSON-RPC message to stdout (thread-safe)."""
@@ -1103,6 +1143,10 @@ class ACPServer:
                 res = self._signal_stop()
             elif method == "cloud/signal/status":
                 res = self._signal_status()
+            elif method == "cloud/sync/status":
+                res = self._sync_status(params)
+            elif method == "cloud/sync/run":
+                res = self._sync_run(params)
             else:
                 return {
                     "jsonrpc": "2.0",

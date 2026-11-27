@@ -168,8 +168,8 @@ After every completed work turn on the Primary Host:
 - [x] Add a real WebSocket transport with loopback-only plaintext WS, certificate-verified WSS, mandatory client peer pinning, optional server allowlists, bounded connections, and encrypted `sync_engine.py` network tests (`cloud/p2p_transport.py`).
 - [x] Add a QUIC transport with mandatory certificate verification and device pinning, `hex-p2p-v1` ALPN, one length-delimited encrypted stream per connection, optional server allowlists, bounded lifecycle cleanup, and incremental `sync_engine.py` network tests (`cloud/p2p_transport.py`).
 - [ ] Add WebRTC and a stateless encrypted relay fallback in `cloud/p2p_transport.py`.
-- [ ] Add `hex sync` CLI/ACP wiring and expose the shared sync engine through the control plane.
-- [x] Add cloud package to `pyproject.toml` and wire CLI subcommands (`hex cloud status/register/login/logout/devices/revoke`); `hex sync` remains pending.
+- [x] Add `hex sync` CLI/ACP wiring and expose the shared sync engine through the control plane (`cloud/sync_control.py`, `hex_cli/commands/sync.py`).
+- [x] Add cloud package to `pyproject.toml` and wire CLI subcommands (`hex cloud status/register/login/logout/devices/revoke`, `hex sync status/run`).
 
 ### Phase 2: Component Updater & Remote Configuration
 - [x] Implement `cloud/updater.py` (signed manifest verifier, compatibility gate, rollback checkpoints).

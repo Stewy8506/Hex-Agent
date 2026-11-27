@@ -267,6 +267,22 @@ class CloudAccountManager:
             except CloudAccountError:
                 return None
 
+    def peer_identity(self) -> Any:
+        """Return the enrolled Ed25519 identity for authenticated peer transport."""
+        from .p2p_transport import PeerIdentity
+
+        with self._lock:
+            identity = self._load_or_create_identity()
+            device_id = identity.get("device_record_id")
+            if not device_id:
+                raise CloudAccountError("Device not enrolled; sign in to HEX cloud first.")
+            try:
+                return PeerIdentity.from_device_identity(
+                    identity_from_material(identity), str(device_id)
+                )
+            except ValueError as exc:
+                raise CloudAccountError("Stored device identity is invalid; sign in again.") from exc
+
     def device_record_id(self) -> str | None:
         with self._lock:
             session = self._load_session()
