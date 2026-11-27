@@ -125,6 +125,46 @@ class LedgerSyncTests(unittest.TestCase):
         self.assertEqual(replay["imported_events"], 0)
         self.assertEqual(len(self.target.list_sync_branches(task_id)), 1)
 
+    def test_paged_divergent_chain_continues_from_verified_branch_base(self) -> None:
+        task_id = self._task(self.source)
+        base = self._delta(self.source, task_id)
+        self._merge(self.target, base)
+        self.source.record_event(task_id, "SOURCE_ONE", reason_code="SOURCE")
+        self.source.record_event(task_id, "SOURCE_TWO", reason_code="SOURCE")
+        self.target.record_event(task_id, "TARGET_PROGRESS", reason_code="TARGET")
+
+        first = self._delta(self.source, task_id, base["next_seq"], limit=1)
+        first_result = self._merge(self.target, first)
+        self.assertEqual(first_result["status"], "conflict")
+        second = self._delta(self.source, task_id, first["next_seq"], limit=1)
+        second_result = self._merge(self.target, second)
+        self.assertEqual(second_result["status"], "conflict")
+        self.assertEqual(second_result["next_seq"], 3)
+        self.assertTrue(self.target.verify_sync_branch_integrity(task_id)["valid"])
+        self.assertEqual(self.target.list_events(task_id)[-1]["event_type"], "TARGET_PROGRESS")
+        self.assertEqual(self._merge(self.target, second)["imported_events"], 0)
+
+    def test_tampered_branch_cannot_anchor_a_later_delta(self) -> None:
+        task_id = self._task(self.source)
+        base = self._delta(self.source, task_id)
+        self._merge(self.target, base)
+        self.source.record_event(task_id, "SOURCE_ONE", reason_code="SOURCE")
+        self.source.record_event(task_id, "SOURCE_TWO", reason_code="SOURCE")
+        self.target.record_event(task_id, "TARGET_PROGRESS", reason_code="TARGET")
+        first = self._delta(self.source, task_id, base["next_seq"], limit=1)
+        self._merge(self.target, first)
+        branch_id = self.target.list_sync_branches(task_id)[0]["branch_id"]
+        self.target.conn.execute(
+            "UPDATE sync_ledger_branch_events SET payload_json = ? WHERE branch_id = ?",
+            ('{"tampered":true}', branch_id),
+        )
+        self.target.conn.commit()
+        second = self._delta(self.source, task_id, first["next_seq"], limit=1)
+
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            self._merge(self.target, second)
+        self.assertEqual(self.target.list_events(task_id)[-1]["event_type"], "TARGET_PROGRESS")
+
     def test_tampered_and_gapped_chains_are_rejected_atomically(self) -> None:
         task_id = self._task(self.source)
         delta = self._delta(self.source, task_id)
@@ -178,15 +218,28 @@ class LedgerSyncTests(unittest.TestCase):
     def test_async_api_matches_sync_api(self) -> None:
         task_id = self._task(self.source)
         self.source.record_event(task_id, "RUNNING", reason_code="STARTED")
+        self.source.record_dialogue_turn(task_id, 0, "user", "async hello")
         delta = asyncio.run(self.source.export_sync_delta_async(task_id))
         result = asyncio.run(self.target.merge_remote_chain_async(
             task_id, delta["events"], task_snapshot=delta["task"],
             dialogue_turns=delta["dialogue_turns"],
         ))
         self.assertEqual(result["imported_events"], 2)
+        self.assertEqual(result["imported_dialogue_turns"], 1)
+        self.assertEqual(
+            self.target.get_active_dialogue(task_id)[0]["content"], "async hello"
+        )
         self.assertEqual(asyncio.run(self.target.export_events_since_async(task_id)), delta["events"])
         self.assertEqual(asyncio.run(self.target.list_sync_branches_async(task_id)), [])
         self.assertTrue(asyncio.run(self.target.verify_sync_branch_integrity_async(task_id))["valid"])
+
+    def test_task_catalog_lists_all_tasks_for_sync(self) -> None:
+        task_ids = [self._task(self.source, f"task-{index}") for index in range(3)]
+
+        self.assertEqual(set(self.source.list_sync_task_ids()), set(task_ids))
+        self.assertEqual(
+            set(asyncio.run(self.source.list_sync_task_ids_async())), set(task_ids)
+        )
 
     def test_invalid_cursor_and_limit_are_rejected(self) -> None:
         task_id = self._task(self.source)

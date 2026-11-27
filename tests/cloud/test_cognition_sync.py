@@ -264,6 +264,15 @@ class CognitionSyncTests(unittest.TestCase):
         row = self.ledger.conn.execute("SELECT status FROM skills WHERE name = 'deleted-skill'").fetchone()
         self.assertEqual(row["status"], "disabled")
 
+    def test_empty_remote_import_still_produces_a_valid_local_manifest(self) -> None:
+        remote = self.source.export_manifest()
+        self.target.apply_manifest(remote, sender_device_record_id="dev_source")
+
+        local = self.target.export_manifest()
+
+        self.assertGreaterEqual(local["revision"], 1)
+        self.assertEqual(local["manifest_sha256"], self.source.export_manifest()["manifest_sha256"])
+
     def test_unchanged_exports_are_byte_for_byte_stable(self) -> None:
         self._write_document(self.source, "global/user", "stable\n")
         self._write_skill(self.source, "stable-skill")

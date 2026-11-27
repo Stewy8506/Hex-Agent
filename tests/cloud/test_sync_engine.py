@@ -1,0 +1,315 @@
+"""Two-instance sync engine regressions over the encrypted loopback transport."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from cloud.cognition_sync import CognitionSyncStore
+from cloud.p2p_transport import InMemoryNetwork, PeerIdentity
+from cloud.sync_engine import SyncEngine, SyncEngineError, SyncResult
+from harness_core.storage.db import LedgerStore
+
+
+class SyncEngineTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="hex_sync_engine_")
+        self.root = Path(self.temporary.name)
+        self.workspaces: dict[str, Path] = {}
+        self.homes: dict[str, Path] = {}
+        self.ledgers: dict[str, LedgerStore] = {}
+        self.cognition: dict[str, CognitionSyncStore] = {}
+        self.engines: dict[str, SyncEngine] = {}
+        for device_id in ("dev_alice", "dev_bob"):
+            workspace = self.root / device_id / "workspace"
+            home = self.root / device_id / "home"
+            workspace.mkdir(parents=True)
+            home.mkdir()
+            ledger = LedgerStore(home / "ledger.db")
+            cognition = CognitionSyncStore(
+                workspace,
+                global_home=home,
+                workspace_id="workspace-a",
+                ledger=ledger,
+            )
+            self.workspaces[device_id] = workspace
+            self.homes[device_id] = home
+            self.ledgers[device_id] = ledger
+            self.cognition[device_id] = cognition
+            self.engines[device_id] = SyncEngine(
+                ledger,
+                cognition,
+                device_id,
+                state_path=home / ".sync" / "engine" / "workspace-a.json",
+                page_size=1,
+                timeout=10,
+            )
+
+    def tearDown(self) -> None:
+        for ledger in self.ledgers.values():
+            ledger.close()
+        self.temporary.cleanup()
+
+    def _write_document(self, device_id: str, document_id: str, content: str) -> Path:
+        store = self.cognition[device_id]
+        path, _root = store._document_path(document_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def _write_skill(self, device_id: str, name: str, body: str) -> Path:
+        bundle = self.homes[device_id] / "skills" / name
+        bundle.mkdir(parents=True, exist_ok=True)
+        (bundle / "SKILL.md").write_text(
+            "---\n"
+            f"name: {name}\n"
+            "description: Perform the documented workflow.\n"
+            "purpose: Perform the documented workflow.\n"
+            "risk_class: R1\n"
+            "---\n"
+            f"# {name}\n\n{body}\n",
+            encoding="utf-8",
+        )
+        return bundle
+
+    async def _sync(
+        self, *, connector: str = "dev_alice"
+    ) -> dict[str, SyncResult | BaseException]:
+        network = InMemoryNetwork()
+        alice = network.endpoint(PeerIdentity.generate("dev_alice"))
+        bob = network.endpoint(PeerIdentity.generate("dev_bob"))
+        if connector == "dev_alice":
+            alice_session = await alice.connect(bob)
+            bob_session = await bob.accept()
+        else:
+            bob_session = await bob.connect(alice)
+            alice_session = await alice.accept()
+        try:
+            alice_result, bob_result = await asyncio.gather(
+                self.engines["dev_alice"].sync_with(alice_session),
+                self.engines["dev_bob"].sync_with(bob_session),
+                return_exceptions=True,
+            )
+        finally:
+            await asyncio.gather(
+                alice_session.close(), bob_session.close(), return_exceptions=True
+            )
+        return {"dev_alice": alice_result, "dev_bob": bob_result}
+
+    def _assert_synced(self, outcomes: dict[str, SyncResult | BaseException]) -> dict[str, SyncResult]:
+        for device_id, outcome in outcomes.items():
+            if not isinstance(outcome, SyncResult):
+                raise self.failureException(f"{device_id} sync failed: {outcome!r}")
+        return {device_id: outcome for device_id, outcome in outcomes.items() if isinstance(outcome, SyncResult)}
+
+    async def test_ledger_dialogue_documents_and_skills_sync_bidirectionally(self) -> None:
+        alice_task = self.ledgers["dev_alice"].submit_task({"goal": "alice task"})
+        self.ledgers["dev_alice"].record_event(
+            alice_task["task_id"], "RUNNING", reason_code="STARTED"
+        )
+        self.ledgers["dev_alice"].record_dialogue_turn(
+            alice_task["task_id"], 0, "user", "hello from alice"
+        )
+        self._write_document("dev_alice", "global/user", "Alice profile.\n")
+        self._write_skill("dev_alice", "shared-skill", "Use the shared workflow.")
+
+        bob_task = self.ledgers["dev_bob"].submit_task({"goal": "bob task"})
+        self.ledgers["dev_bob"].record_event(
+            bob_task["task_id"], "VERIFYING", reason_code="CHECK"
+        )
+        self._write_document("dev_bob", "workspace/memory", "Bob project memory.\n")
+
+        outcomes = await self._sync(connector="dev_bob")
+        results = self._assert_synced(outcomes)
+
+        self.assertIsNotNone(self.ledgers["dev_bob"].get_task(alice_task["task_id"]))
+        self.assertIsNotNone(self.ledgers["dev_alice"].get_task(bob_task["task_id"]))
+        self.assertEqual(
+            self.ledgers["dev_bob"].get_active_dialogue(alice_task["task_id"])[0]["content"],
+            "hello from alice",
+        )
+        self.assertEqual(
+            self.cognition["dev_bob"]._read_document("global/user"), b"Alice profile.\n"
+        )
+        self.assertEqual(
+            self.cognition["dev_alice"]._read_document("workspace/memory"),
+            b"Bob project memory.\n",
+        )
+        self.assertTrue(
+            (self.homes["dev_bob"] / "skills" / "shared-skill" / "SKILL.md").is_file()
+        )
+        self.assertTrue(self.ledgers["dev_alice"].verify_chain_integrity(bob_task["task_id"]))
+        self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task["task_id"]))
+        self.assertEqual(results["dev_alice"].ledger_pages_sent, 2)
+        self.assertEqual(results["dev_alice"].ledger_pages_received, 2)
+        self.assertTrue(results["dev_alice"].cognition_sent)
+        self.assertTrue(results["dev_alice"].cognition_received)
+        self.assertEqual(results["dev_bob"].conflicts, [])
+
+    async def test_incremental_sync_uses_persistent_cursors_and_replays_safely(self) -> None:
+        task_id = self.ledgers["dev_alice"].submit_task({"goal": "paged task"})["task_id"]
+        self.ledgers["dev_alice"].record_event(task_id, "RUNNING", reason_code="STARTED")
+        self.ledgers["dev_alice"].record_event(task_id, "VERIFYING", reason_code="CHECK")
+
+        first = self._assert_synced(await self._sync())
+        self.assertEqual(first["dev_alice"].ledger_events_sent, 3)
+        self.assertEqual(first["dev_bob"].ledger_events_received, 3)
+        state_path = self.engines["dev_alice"].state_path
+        state = json.loads(state_path.read_text())
+        self.assertEqual(state["peers"]["dev_bob"]["ledger"][task_id], 3)
+
+        replay = self._assert_synced(await self._sync())
+        self.assertEqual(replay["dev_alice"].ledger_events_sent, 0)
+        self.assertEqual(replay["dev_bob"].ledger_events_received, 0)
+        self.assertEqual(len(self.ledgers["dev_bob"].list_events(task_id)), 3)
+
+        self.ledgers["dev_alice"].record_event(task_id, "SUCCEEDED", reason_code="DONE")
+        incremental = self._assert_synced(await self._sync())
+        self.assertEqual(incremental["dev_alice"].ledger_events_sent, 1)
+        self.assertEqual(incremental["dev_bob"].ledger_events_received, 1)
+        self.assertEqual(len(self.ledgers["dev_bob"].list_events(task_id)), 4)
+        self.assertEqual(self.ledgers["dev_bob"].get_task(task_id)["status"], "SUCCEEDED")
+
+    async def test_interrupted_page_resumes_from_acknowledged_cursor(self) -> None:
+        task_id = self.ledgers["dev_alice"].submit_task({"goal": "resume task"})["task_id"]
+        self.ledgers["dev_alice"].record_event(task_id, "RUNNING", reason_code="STARTED")
+        self.ledgers["dev_alice"].record_event(task_id, "VERIFYING", reason_code="CHECK")
+        original = self.ledgers["dev_alice"].export_sync_delta_async
+        calls = 0
+
+        async def fail_second_page(task_id_arg: str, since_seq: int, *, limit: int) -> dict:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated interruption")
+            return await original(task_id_arg, since_seq, limit=limit)
+
+        with mock.patch.object(
+            self.ledgers["dev_alice"], "export_sync_delta_async", new=fail_second_page
+        ):
+            interrupted = await self._sync()
+        self.assertTrue(all(isinstance(item, BaseException) for item in interrupted.values()))
+        self.assertEqual(len(self.ledgers["dev_bob"].list_events(task_id)), 1)
+
+        resumed = self._assert_synced(await self._sync())
+        self.assertEqual(resumed["dev_alice"].ledger_events_sent, 2)
+        self.assertEqual(resumed["dev_bob"].ledger_events_received, 2)
+        self.assertEqual(len(self.ledgers["dev_bob"].list_events(task_id)), 3)
+        self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(task_id))
+
+    async def test_ledger_divergence_preserves_main_chains_and_reports_conflicts(self) -> None:
+        task_id = self.ledgers["dev_alice"].submit_task({"goal": "shared task"})["task_id"]
+        self._assert_synced(await self._sync())
+        self.ledgers["dev_alice"].record_event(task_id, "SOURCE_PROGRESS", reason_code="SOURCE")
+        self.ledgers["dev_alice"].record_event(task_id, "SOURCE_VERIFIED", reason_code="SOURCE")
+        self.ledgers["dev_bob"].record_event(task_id, "TARGET_PROGRESS", reason_code="TARGET")
+        alice_tip = self.ledgers["dev_alice"].list_events(task_id)[-1]["event_sha256"]
+        bob_tip = self.ledgers["dev_bob"].list_events(task_id)[-1]["event_sha256"]
+
+        results = self._assert_synced(await self._sync())
+
+        self.assertEqual(self.ledgers["dev_alice"].list_events(task_id)[-1]["event_sha256"], alice_tip)
+        self.assertEqual(self.ledgers["dev_bob"].list_events(task_id)[-1]["event_sha256"], bob_tip)
+        self.assertEqual(len(self.ledgers["dev_alice"].list_sync_branches(task_id)), 1)
+        self.assertGreaterEqual(len(self.ledgers["dev_bob"].list_sync_branches(task_id)), 1)
+        self.assertTrue(any(item["kind"] == "ledger" for item in results["dev_alice"].conflicts))
+        self.assertTrue(any(item["kind"] == "ledger" for item in results["dev_bob"].conflicts))
+        alice_branch_count = len(self.ledgers["dev_alice"].list_sync_branches(task_id))
+        bob_branch_count = len(self.ledgers["dev_bob"].list_sync_branches(task_id))
+
+        replay = self._assert_synced(await self._sync())
+        self.assertEqual(replay["dev_alice"].ledger_events_received, 0)
+        self.assertEqual(replay["dev_bob"].ledger_events_received, 0)
+        self.assertEqual(len(self.ledgers["dev_alice"].list_sync_branches(task_id)), alice_branch_count)
+        self.assertEqual(len(self.ledgers["dev_bob"].list_sync_branches(task_id)), bob_branch_count)
+
+    async def test_cognition_divergence_preserves_both_versions_and_reports_paths(self) -> None:
+        self._write_document("dev_alice", "global/user", "shared profile\n")
+        self._assert_synced(await self._sync())
+        self._write_document("dev_alice", "global/user", "alice version\n")
+        self._write_document("dev_bob", "global/user", "bob version\n")
+
+        results = self._assert_synced(await self._sync())
+
+        self.assertEqual(
+            self.cognition["dev_alice"]._read_document("global/user"), b"alice version\n"
+        )
+        self.assertEqual(
+            self.cognition["dev_bob"]._read_document("global/user"), b"bob version\n"
+        )
+        for device_id in ("dev_alice", "dev_bob"):
+            conflicts = [item for item in results[device_id].conflicts if item["kind"] == "cognition"]
+            self.assertEqual(len(conflicts), 1)
+            self.assertTrue(Path(conflicts[0]["path"]).is_dir())
+
+    async def test_workspace_mismatch_fails_before_any_import(self) -> None:
+        task_id = self.ledgers["dev_alice"].submit_task({"goal": "private task"})["task_id"]
+        self._write_document("dev_alice", "global/user", "private profile\n")
+        other_cognition = CognitionSyncStore(
+            self.workspaces["dev_bob"],
+            global_home=self.homes["dev_bob"],
+            workspace_id="workspace-b",
+            ledger=self.ledgers["dev_bob"],
+        )
+        self.engines["dev_bob"] = SyncEngine(
+            self.ledgers["dev_bob"],
+            other_cognition,
+            "dev_bob",
+            state_path=self.homes["dev_bob"] / ".sync" / "engine" / "workspace-b.json",
+            timeout=10,
+        )
+
+        outcomes = await self._sync()
+
+        self.assertTrue(all(isinstance(item, SyncEngineError) for item in outcomes.values()))
+        self.assertIsNone(self.ledgers["dev_bob"].get_task(task_id))
+        self.assertIsNone(other_cognition._read_document("global/user"))
+
+    async def test_corrupt_cursor_state_fails_closed(self) -> None:
+        state_path = self.engines["dev_alice"].state_path
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text('{"version":1,"workspace_id":"workspace-a","peers":', encoding="utf-8")
+        with self.assertRaisesRegex(SyncEngineError, "unreadable"):
+            SyncEngine(
+                self.ledgers["dev_alice"],
+                self.cognition["dev_alice"],
+                "dev_alice",
+                state_path=state_path,
+            )
+
+        state_path.write_text(
+            json.dumps({
+                "version": 1,
+                "workspace_id": "workspace-a",
+                "peers": {
+                    "dev_bob": {"ledger": {"task": -1}, "cognition": {}}
+                },
+            }),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(SyncEngineError, "[Ii]nvalid"):
+            SyncEngine(
+                self.ledgers["dev_alice"],
+                self.cognition["dev_alice"],
+                "dev_alice",
+                state_path=state_path,
+            )
+
+    async def test_device_roles_do_not_depend_on_connection_caller(self) -> None:
+        self.ledgers["dev_alice"].submit_task({"goal": "alice"})
+        self.ledgers["dev_bob"].submit_task({"goal": "bob"})
+
+        results = self._assert_synced(await self._sync(connector="dev_bob"))
+
+        self.assertEqual(results["dev_alice"].ledger_events_sent, 1)
+        self.assertEqual(results["dev_alice"].ledger_events_received, 1)
+        self.assertEqual(results["dev_bob"].ledger_events_sent, 1)
+        self.assertEqual(results["dev_bob"].ledger_events_received, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

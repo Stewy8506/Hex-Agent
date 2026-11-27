@@ -48,6 +48,7 @@ def _validate_chain(
     *,
     since_seq: int = 0,
     base_event_sha256: str | None = None,
+    max_events: int = 10_000,
 ) -> list[dict[str, Any]]:
     from harness_core.storage.db import compute_event_hash
 
@@ -63,8 +64,8 @@ def _validate_chain(
         raise ValueError("A full ledger chain must start from the zero hash.")
     if since_seq > 0 and base_event_sha256 is None:
         raise ValueError("A ledger delta requires its base event hash.")
-    if not isinstance(events, list) or len(events) > 10_000:
-        raise ValueError("Ledger events must be a list of at most 10000 entries.")
+    if not isinstance(events, list) or len(events) > max_events:
+        raise ValueError(f"Ledger events must be a list of at most {max_events} entries.")
     normalized: list[dict[str, Any]] = []
     expected_sequence = since_seq + 1
     event_ids: set[str] = set()
@@ -212,6 +213,23 @@ def _synced_task_values(snapshot: dict[str, Any], sender: str) -> tuple[Any, ...
 
 
 class LedgerSyncMixin:
+    def list_sync_task_ids(self: LedgerStore) -> list[str]:
+        if self.backend_type == "postgres":
+            return self._run_sync(self.list_sync_task_ids_async)
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT task_id FROM tasks ORDER BY created_at ASC, task_id ASC"
+            ).fetchall()
+            return [str(row["task_id"]) for row in rows]
+
+    async def list_sync_task_ids_async(self: LedgerStore) -> list[str]:
+        if self.backend_type == "sqlite":
+            return await asyncio.to_thread(self.list_sync_task_ids)
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT task_id FROM tasks ORDER BY created_at ASC, task_id ASC")
+            return [str(row["task_id"]) for row in rows]
+
     def export_events_since(
         self: LedgerStore,
         task_id: str,
@@ -398,7 +416,31 @@ class LedgerSyncMixin:
                         (task_id,),
                     ).fetchall()
                     local = [_stored_event(row) for row in local_rows]
-                    incoming = _anchored_remote(local, remote, since_seq, base_event_sha256)
+                    anchor = local
+                    if since_seq > 0 and (
+                        len(local) < since_seq
+                        or local[since_seq - 1]["event_sha256"] != base_event_sha256
+                    ):
+                        branch_row = self.conn.execute(
+                            "SELECT e.branch_id FROM sync_ledger_branch_events e "
+                            "JOIN sync_ledger_branches b ON b.branch_id = e.branch_id "
+                            "WHERE e.task_id = ? AND b.sender_device_record_id = ? "
+                            "AND e.sequence_no = ? AND e.event_sha256 = ? "
+                            "ORDER BY b.created_at, b.branch_id LIMIT 1",
+                            (task_id, sender, since_seq, base_event_sha256),
+                        ).fetchone()
+                        if branch_row is not None:
+                            branch_rows = self.conn.execute(
+                                "SELECT * FROM sync_ledger_branch_events WHERE branch_id = ? "
+                                "AND sequence_no <= ? ORDER BY sequence_no",
+                                (branch_row["branch_id"], since_seq),
+                            ).fetchall()
+                            anchor = _validate_chain(
+                                task_id,
+                                [_stored_event(row) for row in branch_rows],
+                                max_events=since_seq,
+                            )
+                    incoming = _anchored_remote(anchor, remote, since_seq, base_event_sha256)
                     action, offset, branch_id = _merge_plan(task_id, local, incoming)
                     imported = 0
                     if action == "append":
@@ -461,7 +503,7 @@ class LedgerSyncMixin:
         if self.backend_type == "sqlite":
             return await asyncio.to_thread(
                 self.merge_remote_chain, task_id, remote, task_snapshot=task_snapshot,
-                sender_device_record_id=sender, dialogue_turns=turns,
+                sender_device_record_id=sender, dialogue_turns=dialogue_turns or [],
                 since_seq=since_seq, base_event_sha256=base_event_sha256,
             )
         pool = await self.get_pool()
@@ -480,7 +522,31 @@ class LedgerSyncMixin:
                     "SELECT * FROM task_events WHERE task_id = $1 ORDER BY sequence_no", task_id
                 )
                 local = [_stored_event(row) for row in rows]
-                incoming = _anchored_remote(local, remote, since_seq, base_event_sha256)
+                anchor = local
+                if since_seq > 0 and (
+                    len(local) < since_seq
+                    or local[since_seq - 1]["event_sha256"] != base_event_sha256
+                ):
+                    branch_row = await conn.fetchrow(
+                        "SELECT e.branch_id FROM sync_ledger_branch_events e "
+                        "JOIN sync_ledger_branches b ON b.branch_id = e.branch_id "
+                        "WHERE e.task_id = $1 AND b.sender_device_record_id = $2 "
+                        "AND e.sequence_no = $3 AND e.event_sha256 = $4 "
+                        "ORDER BY b.created_at, b.branch_id LIMIT 1",
+                        task_id, sender, since_seq, base_event_sha256,
+                    )
+                    if branch_row is not None:
+                        branch_rows = await conn.fetch(
+                            "SELECT * FROM sync_ledger_branch_events WHERE branch_id = $1 "
+                            "AND sequence_no <= $2 ORDER BY sequence_no",
+                            branch_row["branch_id"], since_seq,
+                        )
+                        anchor = _validate_chain(
+                            task_id,
+                            [_stored_event(row) for row in branch_rows],
+                            max_events=since_seq,
+                        )
+                incoming = _anchored_remote(anchor, remote, since_seq, base_event_sha256)
                 action, offset, branch_id = _merge_plan(task_id, local, incoming)
                 imported = 0
                 if action == "append":

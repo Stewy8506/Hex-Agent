@@ -129,6 +129,7 @@ class CognitionSyncStore:
 
             changed = (
                 not state["initialized"]
+                or state["manifest"] is None
                 or current_files != previous_files
                 or current_skills != previous_skills
             )

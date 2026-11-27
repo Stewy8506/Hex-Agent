@@ -17,6 +17,7 @@ from .sync_contract import (
     cognition_scope,
     workspace_id_from_cognition_scope,
 )
+from .sync_engine import SyncEngine, SyncEngineError, SyncResult
 from .team_mesh import TeamMeshCoordinator, TurnCommitBundle
 from .updater import ComponentUpdaterClient
 
@@ -33,6 +34,9 @@ __all__ = [
     "RemoteConfigClient",
     "SecurePeerSession",
     "SyncEnvelope",
+    "SyncEngine",
+    "SyncEngineError",
+    "SyncResult",
     "SyncStream",
     "cognition_scope",
     "workspace_id_from_cognition_scope",
