@@ -1,4 +1,4 @@
-"""Two-instance sync engine regressions over loopback, WebSocket, and QUIC transports."""
+"""Two-instance sync engine regressions over all authenticated network transports."""
 
 from __future__ import annotations
 
@@ -25,7 +25,9 @@ from cloud.p2p_transport import (
     connect_quic_peer,
     connect_websocket_peer,
 )
+from cloud.relay_transport import RelayPeerServer, connect_relay_peer, generate_relay_ticket
 from cloud.sync_engine import SyncEngine, SyncEngineError, SyncResult
+from cloud.webrtc_transport import create_webrtc_answer, create_webrtc_offer
 from harness_core.storage.db import LedgerStore
 
 
@@ -242,6 +244,91 @@ class SyncEngineTests(unittest.IsolatedAsyncioTestCase):
                 await server.close()
         return {"dev_alice": alice_result, "dev_bob": bob_result}
 
+    async def _sync_webrtc(self) -> dict[str, SyncResult | BaseException]:
+        alice_identity = PeerIdentity.generate("dev_alice")
+        bob_identity = PeerIdentity.generate("dev_bob")
+        offer = await create_webrtc_offer(alice_identity, timeout=10)
+        try:
+            answer = await create_webrtc_answer(offer.description, bob_identity, timeout=10)
+            try:
+                accept_task = asyncio.create_task(answer.accept(
+                    expected_peer=alice_identity.address,
+                    timeout=10,
+                ))
+                try:
+                    alice_session = await offer.connect(
+                        answer.description,
+                        expected_peer=bob_identity.address,
+                        timeout=10,
+                    )
+                    bob_session = await accept_task
+                except BaseException:
+                    accept_task.cancel()
+                    await asyncio.gather(accept_task, return_exceptions=True)
+                    raise
+                try:
+                    alice_result, bob_result = await asyncio.gather(
+                        self.engines["dev_alice"].sync_with(alice_session),
+                        self.engines["dev_bob"].sync_with(bob_session),
+                        return_exceptions=True,
+                    )
+                finally:
+                    await asyncio.gather(
+                        alice_session.close(), bob_session.close(), return_exceptions=True
+                    )
+            finally:
+                await answer.close()
+        finally:
+            await offer.close()
+        return {"dev_alice": alice_result, "dev_bob": bob_result}
+
+    async def _sync_relay(self) -> dict[str, SyncResult | BaseException]:
+        alice_identity = PeerIdentity.generate("dev_alice")
+        bob_identity = PeerIdentity.generate("dev_bob")
+        server = RelayPeerServer()
+        await server.start()
+        try:
+            ticket = generate_relay_ticket()
+            alice_task = asyncio.create_task(connect_relay_peer(
+                server.uri,
+                ticket,
+                "initiator",
+                alice_identity,
+                expected_peer=bob_identity.address,
+                timeout=10,
+            ))
+            bob_task = asyncio.create_task(connect_relay_peer(
+                server.uri,
+                ticket,
+                "responder",
+                bob_identity,
+                expected_peer=alice_identity.address,
+                timeout=10,
+            ))
+            try:
+                alice_session, bob_session = await asyncio.wait_for(
+                    asyncio.gather(alice_task, bob_task),
+                    timeout=15,
+                )
+            except BaseException:
+                alice_task.cancel()
+                bob_task.cancel()
+                await asyncio.gather(alice_task, bob_task, return_exceptions=True)
+                raise
+            try:
+                alice_result, bob_result = await asyncio.gather(
+                    self.engines["dev_alice"].sync_with(alice_session),
+                    self.engines["dev_bob"].sync_with(bob_session),
+                    return_exceptions=True,
+                )
+            finally:
+                await asyncio.gather(
+                    alice_session.close(), bob_session.close(), return_exceptions=True
+                )
+        finally:
+            await server.close()
+        return {"dev_alice": alice_result, "dev_bob": bob_result}
+
     def _assert_synced(self, outcomes: dict[str, SyncResult | BaseException]) -> dict[str, SyncResult]:
         for device_id, outcome in outcomes.items():
             if not isinstance(outcome, SyncResult):
@@ -383,6 +470,100 @@ class SyncEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.cognition["dev_bob"]._read_document("global/user"),
             b"Alice updated QUIC profile.\n",
+        )
+        self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
+
+    async def test_webrtc_sync_engine_transfers_data_and_reconnects_incrementally(self) -> None:
+        alice_task = self.ledgers["dev_alice"].submit_task({"goal": "WebRTC task"})["task_id"]
+        self.ledgers["dev_alice"].record_event(
+            alice_task, "RUNNING", reason_code="STARTED"
+        )
+        self.ledgers["dev_alice"].record_dialogue_turn(
+            alice_task, 0, "user", "private WebRTC dialogue"
+        )
+        self._write_document("dev_alice", "global/user", "Alice WebRTC profile.\n")
+        bob_task = self.ledgers["dev_bob"].submit_task({"goal": "bob WebRTC task"})["task_id"]
+        self._write_document("dev_bob", "workspace/memory", "Bob WebRTC memory.\n")
+
+        first = self._assert_synced(await self._sync_webrtc())
+
+        self.assertEqual(first["dev_alice"].ledger_events_sent, 2)
+        self.assertEqual(first["dev_bob"].ledger_events_received, 2)
+        self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
+        self.assertIsNotNone(self.ledgers["dev_alice"].get_task(bob_task))
+        self.assertEqual(
+            self.ledgers["dev_bob"].get_active_dialogue(alice_task)[0]["content"],
+            "private WebRTC dialogue",
+        )
+        self.assertEqual(
+            self.cognition["dev_bob"]._read_document("global/user"),
+            b"Alice WebRTC profile.\n",
+        )
+        self.assertEqual(
+            self.cognition["dev_alice"]._read_document("workspace/memory"),
+            b"Bob WebRTC memory.\n",
+        )
+
+        self.ledgers["dev_alice"].record_event(
+            alice_task, "VERIFYING", reason_code="CHECK"
+        )
+        self._write_document("dev_alice", "global/user", "Alice updated WebRTC profile.\n")
+        second = self._assert_synced(await self._sync_webrtc())
+
+        self.assertEqual(second["dev_alice"].ledger_events_sent, 2)
+        self.assertEqual(second["dev_bob"].ledger_events_received, 1)
+        state = json.loads(self.engines["dev_alice"].state_path.read_text())
+        self.assertEqual(state["peers"]["dev_bob"]["ledger"][alice_task], 3)
+        self.assertEqual(
+            self.cognition["dev_bob"]._read_document("global/user"),
+            b"Alice updated WebRTC profile.\n",
+        )
+        self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
+
+    async def test_relay_sync_engine_transfers_data_and_reconnects_incrementally(self) -> None:
+        alice_task = self.ledgers["dev_alice"].submit_task({"goal": "relay task"})["task_id"]
+        self.ledgers["dev_alice"].record_event(
+            alice_task, "RUNNING", reason_code="STARTED"
+        )
+        self.ledgers["dev_alice"].record_dialogue_turn(
+            alice_task, 0, "user", "private relay dialogue"
+        )
+        self._write_document("dev_alice", "global/user", "Alice relay profile.\n")
+        bob_task = self.ledgers["dev_bob"].submit_task({"goal": "bob relay task"})["task_id"]
+        self._write_document("dev_bob", "workspace/memory", "Bob relay memory.\n")
+
+        first = self._assert_synced(await self._sync_relay())
+
+        self.assertEqual(first["dev_alice"].ledger_events_sent, 2)
+        self.assertEqual(first["dev_bob"].ledger_events_received, 2)
+        self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
+        self.assertIsNotNone(self.ledgers["dev_alice"].get_task(bob_task))
+        self.assertEqual(
+            self.ledgers["dev_bob"].get_active_dialogue(alice_task)[0]["content"],
+            "private relay dialogue",
+        )
+        self.assertEqual(
+            self.cognition["dev_bob"]._read_document("global/user"),
+            b"Alice relay profile.\n",
+        )
+        self.assertEqual(
+            self.cognition["dev_alice"]._read_document("workspace/memory"),
+            b"Bob relay memory.\n",
+        )
+
+        self.ledgers["dev_alice"].record_event(
+            alice_task, "VERIFYING", reason_code="CHECK"
+        )
+        self._write_document("dev_alice", "global/user", "Alice updated relay profile.\n")
+        second = self._assert_synced(await self._sync_relay())
+
+        self.assertEqual(second["dev_alice"].ledger_events_sent, 2)
+        self.assertEqual(second["dev_bob"].ledger_events_received, 1)
+        state = json.loads(self.engines["dev_alice"].state_path.read_text())
+        self.assertEqual(state["peers"]["dev_bob"]["ledger"][alice_task], 3)
+        self.assertEqual(
+            self.cognition["dev_bob"]._read_document("global/user"),
+            b"Alice updated relay profile.\n",
         )
         self.assertTrue(self.ledgers["dev_bob"].verify_chain_integrity(alice_task))
 

@@ -15,6 +15,7 @@ from .p2p_transport import (
     connect_websocket_peer,
 )
 from .remote_config import RemoteConfigClient
+from .relay_transport import RelayPeerServer, connect_relay_peer, generate_relay_ticket
 from .signaling import P2PSignalingClient
 from .sync_contract import (
     SyncEnvelope,
@@ -25,6 +26,7 @@ from .sync_contract import (
 from .sync_engine import SyncEngine, SyncEngineError, SyncResult
 from .team_mesh import TeamMeshCoordinator, TurnCommitBundle
 from .updater import ComponentUpdaterClient
+from .webrtc_transport import WebRTCPeer, create_webrtc_answer, create_webrtc_offer
 
 __all__ = [
     "ComponentUpdaterClient",
@@ -39,16 +41,22 @@ __all__ = [
     "PeerIdentity",
     "QuicPeerServer",
     "RemoteConfigClient",
+    "RelayPeerServer",
     "SecurePeerSession",
     "SyncEnvelope",
     "SyncEngine",
     "SyncEngineError",
     "SyncResult",
     "SyncStream",
+    "WebRTCPeer",
     "WebSocketPeerServer",
     "connect_quic_peer",
+    "connect_relay_peer",
     "connect_websocket_peer",
+    "create_webrtc_answer",
+    "create_webrtc_offer",
     "cognition_scope",
+    "generate_relay_ticket",
     "workspace_id_from_cognition_scope",
     "TeamMeshCoordinator",
     "TurnCommitBundle",
