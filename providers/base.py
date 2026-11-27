@@ -24,10 +24,10 @@ def _sanitize_value_strings(
             for item in value
         ]
     if isinstance(value, dict):
-        allow_sig = preserve_signature or value.get("type") == "thinking"
+        allow_sig = preserve_signature
         sanitized: dict[Any, Any] = {}
         for k, v in value.items():
-            if k == "signature" and allow_sig:
+            if k == "signature" and allow_sig and isinstance(v, str):
                 sanitized[k] = v
             elif k == "thinking_block" and preserve_signature and isinstance(v, dict):
                 sanitized[k] = _sanitize_value_strings(
@@ -47,11 +47,30 @@ def sanitize_messages_secrets(messages: list[dict[str, Any]] | None) -> list[dic
         return None
     from harness_core.gateway import redact_secrets
 
-    return [
-        _sanitize_value_strings(dict(msg), redactor=redact_secrets, preserve_signature=True)
-        for msg in messages
-        if isinstance(msg, dict)
-    ]
+    sanitized_messages: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        sanitized = _sanitize_value_strings(
+            dict(msg), redactor=redact_secrets, preserve_signature=True
+        )
+        raw_content = msg.get("content")
+        clean_content = sanitized.get("content")
+        if (
+            str(msg.get("role", "user")).lower() == "assistant"
+            and isinstance(raw_content, list)
+            and isinstance(clean_content, list)
+        ):
+            for raw_block, clean_block in zip(raw_content, clean_content):
+                if (
+                    isinstance(raw_block, dict)
+                    and raw_block.get("type") == "thinking"
+                    and isinstance(raw_block.get("signature"), str)
+                    and isinstance(clean_block, dict)
+                ):
+                    clean_block["signature"] = raw_block["signature"]
+        sanitized_messages.append(sanitized)
+    return sanitized_messages
 
 
 def normalize_tool_definitions(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:

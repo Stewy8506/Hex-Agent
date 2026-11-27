@@ -316,6 +316,7 @@ class TestExtendedCloudProviders(unittest.TestCase):
                             "role": secret_tok,
                             "tool_name": gh_tok,
                             "signature": secret_tok,
+                            "nested_thinking": {"type": "thinking", "signature": secret_tok},
                         },
                     }
                 ],
@@ -355,16 +356,19 @@ class TestExtendedCloudProviders(unittest.TestCase):
                 self.assertEqual(tool_input["max_tokens"], 50)
                 for k in ("name", "id", "type", "role", "tool_name", "signature"):
                     self.assertEqual(tool_input[k], "[REDACTED_SECRET]")
+                self.assertEqual(tool_input["nested_thinking"]["signature"], "[REDACTED_SECRET]")
             elif ptype == "gemini":
                 fn_args = parsed_sent["contents"][1]["parts"][-1]["functionCall"]["args"]
                 self.assertEqual(fn_args["max_tokens"], 50)
                 for k in ("name", "id", "type", "role", "tool_name", "signature"):
                     self.assertEqual(fn_args[k], "[REDACTED_SECRET]")
+                self.assertEqual(fn_args["nested_thinking"]["signature"], "[REDACTED_SECRET]")
             else:
                 tc_args = json.loads(parsed_sent["messages"][1]["tool_calls"][0]["function"]["arguments"])
                 self.assertEqual(tc_args["max_tokens"], 50)
                 for k in ("name", "id", "type", "role", "tool_name", "signature"):
                     self.assertEqual(tc_args[k], "[REDACTED_SECRET]")
+                self.assertEqual(tc_args["nested_thinking"]["signature"], "[REDACTED_SECRET]")
 
         # Verify Anthropic content-list thinking block preserves its signature while redacting tool_use inputs
         ant_block_captured: list[bytes] = []
