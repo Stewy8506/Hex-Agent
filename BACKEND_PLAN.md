@@ -30,7 +30,7 @@ Harness/
 │   ├── updater.py                    # [Implemented] Signed 8-component manifest verifier + rollback.json tracker
 │   ├── remote_config.py              # [Implemented] Signed feature flag & routing merger (local denials always win)
 │   ├── team_mesh.py                  # [Implemented] TeamMeshCoordinator, host_epoch fencing, TurnCommitBundle ACKs
-│   ├── p2p_transport.py              # [Planned] Direct E2EE P2P transport (QUIC/WebRTC + stateless relay fallback)
+│   ├── p2p_transport.py              # [In progress] Authenticated E2EE framing + loopback; network transports pending
 │   ├── sync_engine.py                # [Planned] Personal multi-device sync (ledger.db, ~/.hex/skills, memory)
 │   ├── registry_client.py            # [Planned] Sparse-index skill/plugin/tool installer + SkillSpector gate bridge
 │   ├── cloud_tasks.py                # [Planned] Ephemeral cloud worker dispatch & E2EE diff retrieval
@@ -163,7 +163,8 @@ After every completed work turn on the Primary Host:
 - [x] Add the Python `SyncEnvelope`/`SyncStream` wire contract matching `crates/hex-protocol/src/p2p.rs`.
 - [x] Add cursor-based ledger/dialogue export and import with base-hash verification, idempotent replay, atomic merges, and isolated hash-verified branches for divergent remote chains (`storage/ledger_sync.py`).
 - [x] Add versioned cognition/memory manifests with three-way conflict preservation, deletion tombstones, safe skill packaging, and staged SkillSpector-gated activation/candidate/quarantine handling (`cloud/cognition_sync.py`).
-- [ ] Implement `cloud/p2p_transport.py` (QUIC/WebRTC E2EE tunnel + relay fallback) and `cloud/sync_engine.py`.
+- [x] Add authenticated Ed25519/X25519 handshake, directional AES-GCM framing, replay protection, and an in-memory loopback (`cloud/p2p_transport.py`).
+- [ ] Implement network transports (QUIC/WebRTC + stateless relay fallback) in `cloud/p2p_transport.py` and coordinate streams in `cloud/sync_engine.py`.
 - [ ] Add `hex sync` CLI/ACP wiring and end-to-end two-device transfer tests.
 - [x] Add cloud package to `pyproject.toml` and wire CLI subcommands (`hex cloud status/register/login/logout/devices/revoke`; `hex sync` pending with `cloud/sync_engine.py`).
 

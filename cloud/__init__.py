@@ -2,6 +2,13 @@
 
 from .auth_client import DeviceIdentity, HexAuthClient
 from .cognition_sync import CognitionSyncStore
+from .p2p_transport import (
+    InMemoryNetwork,
+    P2PTransportError,
+    PeerAddress,
+    PeerIdentity,
+    SecurePeerSession,
+)
 from .remote_config import RemoteConfigClient
 from .signaling import P2PSignalingClient
 from .sync_contract import (
@@ -18,8 +25,13 @@ __all__ = [
     "CognitionSyncStore",
     "DeviceIdentity",
     "HexAuthClient",
+    "InMemoryNetwork",
     "P2PSignalingClient",
+    "P2PTransportError",
+    "PeerAddress",
+    "PeerIdentity",
     "RemoteConfigClient",
+    "SecurePeerSession",
     "SyncEnvelope",
     "SyncStream",
     "cognition_scope",
