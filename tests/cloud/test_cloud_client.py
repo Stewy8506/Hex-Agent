@@ -20,8 +20,14 @@ from cloud.auth_client import (
     sign_enrollment_challenge,
 )
 from cloud.remote_config import RemoteConfigClient
+from cloud.p2p_transport import PeerIdentity
 from cloud.signaling import P2PSignalingClient
-from cloud.team_mesh import TeamMeshCoordinator, TurnCommitBundle
+from cloud.team_mesh import (
+    SignedTurnCommitBundle,
+    TeamMeshCoordinator,
+    TurnCommitBundle,
+    sign_turn_commit,
+)
 from cloud.updater import ComponentUpdaterClient, canonical_json_bytes, verify_signed_envelope
 
 
@@ -168,7 +174,7 @@ class HarnessCloudClientTests(unittest.TestCase):
             self.assertFalse(rc.is_enabled("cloud_task_workers"))
 
     def test_team_mesh_host_epoch_fencing_and_turn_commit_replication(self) -> None:
-        mesh = TeamMeshCoordinator("dev_peer_b", self.server.public_key_hex)
+        mesh = TeamMeshCoordinator("dev_peer_b", self.server.public_key_hex, "proj_1")
         self.assertEqual(mesh.mode, "LOCAL")
 
         lease_e1 = self.server.sign_envelope(
@@ -181,19 +187,31 @@ class HarnessCloudClientTests(unittest.TestCase):
         )
         self.assertEqual(mesh.apply_signed_host_lease(lease_e1), "TEAM_REPLICA_PEER")
 
-        ack = mesh.accept_turn_commit(
-            TurnCommitBundle(
-                project_session_id="proj_1",
-                host_epoch=1,
-                turn_seq=1,
-                cow_delta_sha256="sha256:cow1",
-                ledger_chain_tip="sha256:tip1",
-                memory_delta_sha256="sha256:mem1",
-                proof_merkle_root="sha256:proof1",
-            )
+        author = PeerIdentity.generate("dev_peer_a")
+        bundle = TurnCommitBundle(
+            project_session_id="proj_1",
+            host_epoch=1,
+            turn_seq=1,
+            cow_delta_sha256="sha256:" + "a" * 64,
+            ledger_chain_tip="sha256:" + "b" * 64,
+            memory_delta_sha256="sha256:" + "c" * 64,
+            proof_merkle_root="sha256:" + "d" * 64,
         )
+        signed = sign_turn_commit(bundle, author)
+        keys = {author.device_id: author.signing_public_key}
+        ack = mesh.accept_turn_commit(signed, keys, sender_device_id="dev_host_a")
         self.assertTrue(ack["ack"])
+        self.assertEqual(ack["author_device_record_id"], author.device_id)
         self.assertEqual(mesh.last_applied_turn_seq, 1)
+
+        forged = signed.to_dict()
+        forged["bundle"]["turn_seq"] = 2
+        with self.assertRaises(ValueError):
+            mesh.accept_turn_commit(SignedTurnCommitBundle.from_dict(forged), keys, sender_device_id="dev_host_a")
+        with self.assertRaises(ValueError):
+            mesh.accept_turn_commit(signed, keys, sender_device_id=author.device_id)
+        with self.assertRaises(ValueError):
+            mesh.accept_turn_commit(signed, {}, sender_device_id="dev_host_a")
 
         # Failover promotes dev_peer_b at epoch 2.
         lease_e2 = self.server.sign_envelope(

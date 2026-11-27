@@ -35,6 +35,35 @@ impl TurnCommitBundle {
     }
 }
 
+pub const TURN_COMMIT_VERSION: u32 = 1;
+pub const TURN_COMMIT_DOMAIN: &[u8] = b"hex/turn-commit-bundle/v1\0";
+
+/// Domain-separated peer signature around the unchanged seven-field bundle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SignedTurnCommitBundle {
+    pub bundle: TurnCommitBundle,
+    pub author_device_record_id: String,
+    pub protocol_version: u32,
+    pub signature: String,
+}
+
+impl SignedTurnCommitBundle {
+    pub fn signing_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "bundle": self.bundle,
+            "author_device_record_id": self.author_device_record_id,
+            "protocol_version": self.protocol_version,
+        })
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut bytes = TURN_COMMIT_DOMAIN.to_vec();
+        bytes.extend_from_slice(canonical_json_string(&self.signing_payload()).as_bytes());
+        bytes
+    }
+}
+
 /// Serialize a JSON value with sorted keys and compact separators, matching
 /// Python's `json.dumps(payload, sort_keys=True, separators=(",", ":"))`.
 pub fn canonical_json_string(value: &Value) -> String {
@@ -150,6 +179,24 @@ mod tests {
         let env: SyncEnvelope = serde_json::from_str(raw).unwrap();
         assert_eq!(env.stream, SyncStream::Ledger);
         assert_eq!(env.since_seq, 42);
+    }
+
+    #[test]
+    fn signed_bundle_uses_domain_separated_python_contract() {
+        let signed = SignedTurnCommitBundle {
+            bundle: sample_bundle(),
+            author_device_record_id: "dev_a".to_string(),
+            protocol_version: TURN_COMMIT_VERSION,
+            signature: format!("ed25519:{}", "A".repeat(86)),
+        };
+        let expected = concat!(
+            "hex/turn-commit-bundle/v1\0",
+            r#"{"author_device_record_id":"dev_a","bundle":{"cow_delta_sha256":"sha256:cow1","host_epoch":1,"ledger_chain_tip":"sha256:tip1","memory_delta_sha256":"sha256:mem1","project_session_id":"proj_1","proof_merkle_root":"sha256:proof1","turn_seq":1},"protocol_version":1}"#
+        );
+        assert_eq!(signed.signing_bytes(), expected.as_bytes());
+        let mut hasher = Sha256::new();
+        hasher.update(signed.signing_bytes());
+        assert_eq!(hex(&hasher.finalize()), "5e05bd534f83fa785ce3a89076b36b97d17de89b6c932db36cc31234f944e7de");
     }
 
     #[test]
