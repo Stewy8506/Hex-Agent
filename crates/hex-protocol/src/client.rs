@@ -652,7 +652,14 @@ impl AcpClient {
         session_id: &str,
         prompt_text: &str,
     ) -> Result<SessionPromptResponse, AcpError> {
-        let params = SessionPromptParams::new_text(session_id, prompt_text);
+        self.session_prompt_params(SessionPromptParams::new_text(session_id, prompt_text))
+            .await
+    }
+
+    pub async fn session_prompt_params(
+        &self,
+        params: SessionPromptParams,
+    ) -> Result<SessionPromptResponse, AcpError> {
         self.send_request("session/prompt", params).await
     }
 
@@ -680,7 +687,7 @@ impl AcpClient {
             prompt_text,
             attachments.to_vec(),
         );
-        self.send_request("session/prompt", params).await
+        self.session_prompt_params(params).await
     }
 
     /// Cancel prompt execution on an active session.
@@ -1420,6 +1427,56 @@ mod tests {
         assert!(candidates.contains(&posix.to_string_lossy().to_string()));
         assert!(candidates.contains(&"python3".to_string()));
         assert!(candidates.contains(&"python".to_string()));
+    }
+
+    #[tokio::test]
+    async fn session_prompt_params_route_to_an_explicit_team_project_session() {
+        let (client_read, mut server_write) = tokio::io::duplex(8192);
+        let (server_read, client_write) = tokio::io::duplex(8192);
+        let client = AcpClient::from_streams(client_read, client_write);
+        let (requests_tx, mut requests_rx) = mpsc::channel(2);
+        let server = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            for _ in 0..2 {
+                let line = lines.next_line().await.unwrap().unwrap();
+                let request: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+                assert_eq!(request.method, "session/prompt");
+                requests_tx.send(request.params.unwrap()).await.unwrap();
+                let response = serde_json::json!({
+                    "jsonrpc": "2.0", "id": request.id,
+                    "result": {"sessionId": "ses_1", "status": "completed", "content": []}
+                });
+                server_write
+                    .write_all((serde_json::to_string(&response).unwrap() + "\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        timeout(Duration::from_secs(5), async {
+            client.session_prompt("ses_1", "ordinary").await.unwrap();
+
+            let mut params = SessionPromptParams::new_text_with_attachments(
+                "ses_1",
+                "team turn",
+                vec!["/tmp/context.md".into()],
+            );
+            params.project_session_id = Some("proj_team_1".into());
+            client.session_prompt_params(params).await.unwrap();
+
+            let ordinary = requests_rx.recv().await.unwrap();
+            assert_eq!(ordinary["prompt"], serde_json::json!("ordinary"));
+            assert!(ordinary.get("project_session_id").is_none());
+            assert!(ordinary.get("attachments").is_none());
+
+            let team = requests_rx.recv().await.unwrap();
+            assert_eq!(team["project_session_id"], serde_json::json!("proj_team_1"));
+            assert!(team.get("projectSessionId").is_none());
+            assert_eq!(team["attachments"], serde_json::json!(["/tmp/context.md"]));
+        })
+        .await
+        .unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]

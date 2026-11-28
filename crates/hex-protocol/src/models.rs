@@ -512,6 +512,12 @@ pub struct SessionPromptParams {
     /// size budget and appends it to the prompt. Empty means no attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "project_session_id"
+    )]
+    pub project_session_id: Option<String>,
 }
 
 impl SessionPromptParams {
@@ -520,6 +526,7 @@ impl SessionPromptParams {
             session_id: session_id.into(),
             prompt: serde_json::Value::String(prompt_text.into()),
             attachments: Vec::new(),
+            project_session_id: None,
         }
     }
 
@@ -532,6 +539,7 @@ impl SessionPromptParams {
             session_id: session_id.into(),
             prompt: serde_json::Value::String(prompt_text.into()),
             attachments,
+            project_session_id: None,
         }
     }
 }
@@ -1975,19 +1983,28 @@ mod tests {
         let plain = SessionPromptParams::new_text("ses_1", "hi");
         let plain_json = serde_json::to_value(&plain).unwrap();
         assert!(plain_json.get("attachments").is_none());
+        assert!(plain_json.get("project_session_id").is_none());
+        assert!(plain_json.get("projectSessionId").is_none());
 
-        let attached = SessionPromptParams::new_text_with_attachments(
+        let mut attached = SessionPromptParams::new_text_with_attachments(
             "ses_1",
             "review this",
             vec!["C:/tmp/a.py".to_string(), "C:/tmp/b.md".to_string()],
         );
+        attached.project_session_id = Some("proj_team_1".into());
         let attached_json = serde_json::to_value(&attached).unwrap();
         assert_eq!(
             attached_json.get("attachments").unwrap(),
             &serde_json::json!(["C:/tmp/a.py", "C:/tmp/b.md"])
         );
+        assert_eq!(
+            attached_json.get("project_session_id").unwrap(),
+            &serde_json::json!("proj_team_1")
+        );
+        assert!(attached_json.get("projectSessionId").is_none());
 
         let de: SessionPromptParams = serde_json::from_value(attached_json).unwrap();
         assert_eq!(de.attachments.len(), 2);
+        assert_eq!(de.project_session_id.as_deref(), Some("proj_team_1"));
     }
 }
