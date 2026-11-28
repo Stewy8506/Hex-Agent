@@ -226,6 +226,39 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
         self.fail("Timed out waiting for team transport state.")
 
+    async def test_control_frames_cannot_interleave_turn_chunks(self) -> None:
+        (self.head / "large.bin").write_bytes(os.urandom(700_000))
+        self.signed, self.payload = self._build_turn()
+        frames = []
+        coordinator, _, _ = await self._links(frames=frames)
+        sent = []
+        session_send = coordinator.session.send
+
+        async def record_send(frame: bytes) -> None:
+            sent.append(frame)
+            await session_send(frame)
+
+        coordinator.session.send = record_send
+        publish = asyncio.create_task(TeamTurnPublisher([coordinator])(self.signed, self.payload))
+        controls = [
+            asyncio.create_task(coordinator._send_control(
+                "team_catchup_result",
+                project_session_id="proj_1",
+                first_seq=1,
+                last_seq=1,
+                available_seq=[],
+            ))
+            for _ in range(20)
+        ]
+        await asyncio.gather(publish, *controls)
+
+        header_index = next(
+            index for index, frame in enumerate(sent)
+            if b'"type":"team_turn_begin"' in frame
+        )
+        self.assertTrue(sent[header_index + 1].startswith(b"HEX/TC1\0"))
+        self.assertTrue(sent[header_index + 2].startswith(b"HEX/TC1\0"))
+
     async def test_verified_turn_is_encrypted_chunked_applied_and_signed_acknowledged(self) -> None:
         (self.head / "large.bin").write_bytes(os.urandom(700_000))
         self.signed, self.payload = self._build_turn()

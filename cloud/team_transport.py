@@ -203,6 +203,7 @@ class TeamPeerLink:
         self._pending: dict[str, _PendingTurn] = {}
         self._pending_scopes: dict[str, _PendingScope] = {}
         self._outbound: asyncio.Queue[_PendingTurn] = asyncio.Queue()
+        self._write_lock = asyncio.Lock()
         self._incoming: _IncomingTurn | None = None
         self._current_digest: str | None = None
         self._receive_task: asyncio.Task[None] | None = None
@@ -228,6 +229,10 @@ class TeamPeerLink:
             "last_error": self._last_error,
         }
 
+    async def _send_control(self, message_type: str, **fields: Any) -> None:
+        async with self._write_lock:
+            await _send_control(self.session, message_type, **fields)
+
     async def start(self) -> None:
         if self._receive_task is not None or self._closed:
             return
@@ -252,8 +257,7 @@ class TeamPeerLink:
         future = asyncio.get_running_loop().create_future()
         self._pending_scopes[request_id] = _PendingScope(future)
         try:
-            await _send_control(
-                self.session,
+            await self._send_control(
                 "team_scope_request",
                 request_id=request_id,
                 project_session_id=self.mesh.project_session_id,
@@ -335,8 +339,7 @@ class TeamPeerLink:
         missing = self.mesh.missing_turn_range
         if missing is None or self.mesh.project_session_id is None:
             return False
-        await _send_control(
-            self.session,
+        await self._send_control(
             "team_catchup_request",
             project_session_id=self.mesh.project_session_id,
             first_seq=missing[0],
@@ -485,6 +488,17 @@ class TeamPeerLink:
         *,
         submission: bool,
     ) -> None:
+        async with self._write_lock:
+            await self._send_record_locked(signed, payload, receipt, submission=submission)
+
+    async def _send_record_locked(
+        self,
+        signed: SignedTurnCommitBundle,
+        payload: Mapping[str, Any],
+        receipt: Mapping[str, Any] | None,
+        *,
+        submission: bool,
+    ) -> None:
         raw = canonical_json_bytes(payload)
         digest = team_payload_digest(payload)
         if len(raw) > _MAX_PAYLOAD_BYTES:
@@ -540,7 +554,7 @@ class TeamPeerLink:
 
     async def _try_error(self, digest: str) -> bool:
         try:
-            await _send_control(
+            await self._send_control(
                 self.session, "team_turn_error", payload_digest=digest, error_code="INVALID_TURN"
             )
             return True
@@ -579,8 +593,7 @@ class TeamPeerLink:
     async def _send_hello(self) -> None:
         if self._hello_sent:
             return
-        await _send_control(
-            self.session,
+        await self._send_control(
             "team_hello",
             device_id=self.mesh.local_device_id,
             role="coordinator" if self.mesh.mode == "TEAM_PRIMARY_HOST" else "replica",
@@ -637,7 +650,7 @@ class TeamPeerLink:
             raise TeamTransportError("Invalid team scope task id.")
         role = self.device_role_provider(self.remote_device_id) if self.device_role_provider else None
         if self.scope_allocator is None or role not in {"owner", "admin", "developer"}:
-            await _send_control(
+            await self._send_control(
                 self.session, "team_scope_error", request_id=request_id,
                 error_code="SCOPE_UNAVAILABLE",
             )
@@ -648,19 +661,18 @@ class TeamPeerLink:
         try:
             reserved = await asyncio.to_thread(self.scope_allocator.reserve_with_lease, task_key)
         except TeamScopeUnavailable:
-            await _send_control(
+            await self._send_control(
                 self.session, "team_scope_error", request_id=request_id,
                 error_code="SCOPE_UNAVAILABLE",
             )
             return
         except ValueError:
-            await _send_control(
+            await self._send_control(
                 self.session, "team_scope_error", request_id=request_id,
                 error_code="INVALID_SCOPE",
             )
             return
-        await _send_control(
-            self.session,
+        await self._send_control(
             "team_scope_result",
             request_id=request_id,
             accepted=True,
@@ -865,8 +877,7 @@ class TeamPeerLink:
             bundle.turn_seq,
             bundle.compute_digest(),
         )
-        await _send_control(
-            self.session,
+        await self._send_control(
             "team_turn_ack",
             **ack,
             accepted=True,
@@ -963,8 +974,7 @@ class TeamPeerLink:
             self._verify_receipt(signed, receipt)
             await self._enqueue(signed, record["payload"], receipt=receipt, wait=False)
             available.append(sequence)
-        await _send_control(
-            self.session,
+        await self._send_control(
             "team_catchup_result",
             project_session_id=self.mesh.project_session_id,
             first_seq=first,
