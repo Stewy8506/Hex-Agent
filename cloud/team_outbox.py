@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import inspect
@@ -170,14 +171,11 @@ class TeamTurnOutbox:
     async def publish_async(self, turn: VerifiedTeamTurn) -> dict[str, Any]:
         with self._lock:
             record = self._load_or_create(turn)
-            if record["status"] == "preparing":
-                record = self._prepare(record)
-            if record["status"] == "skipped":
-                return {"status": "skipped", "reason": "NO_WORKSPACE_CHANGES"}
-            if record["status"] in {"prepared", "signing"}:
-                record = self._sign(record)
-            if record["status"] != "ready":
-                raise ValueError("Team turn is not ready for delivery.")
+        record = await asyncio.to_thread(self._advance, record)
+        if record["status"] == "skipped":
+            return {"status": "skipped", "reason": "NO_WORKSPACE_CHANGES"}
+        if record["status"] != "ready":
+            raise ValueError("Team turn is not ready for delivery.")
         return await self._deliver_async(record)
 
     async def flush_async(self) -> dict[str, Any]:
@@ -185,16 +183,9 @@ class TeamTurnOutbox:
         queued = 0
         for path in sorted(self.pending_dir.glob("*.json")):
             try:
-                with self._lock:
-                    record = self._load(path)
-                    if record["status"] == "preparing":
-                        record = self._prepare(record)
-                    if record["status"] == "skipped":
-                        continue
-                    if record["status"] in {"prepared", "signing"}:
-                        record = self._sign(record)
-                    if record["status"] != "ready":
-                        raise ValueError("Team turn is not ready for delivery.")
+                record = await asyncio.to_thread(self._load_and_advance, path)
+                if record is None:
+                    continue
                 outcome = await self._deliver_async(record)
                 if outcome["status"] == "delivered":
                     delivered += 1
@@ -204,6 +195,23 @@ class TeamTurnOutbox:
                 queued += 1
                 self._record_failure(path, type(exc).__name__)
         return {"delivered": delivered, "queued": queued}
+
+    def _advance(self, record: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            if record["status"] == "preparing":
+                record = self._prepare(record)
+            if record["status"] == "skipped":
+                return record
+            if record["status"] in {"prepared", "signing"}:
+                record = self._sign(record)
+            if record["status"] != "ready":
+                raise ValueError("Team turn is not ready for delivery.")
+            return record
+
+    def _load_and_advance(self, path: Path) -> dict[str, Any] | None:
+        with self._lock:
+            record = self._advance(self._load(path))
+            return None if record["status"] == "skipped" else record
 
     def _load_or_create(self, turn: VerifiedTeamTurn) -> dict[str, Any]:
         path = self._path(turn.task_id, turn.attempt_id)

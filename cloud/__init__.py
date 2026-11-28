@@ -28,6 +28,8 @@ _EXPORTS = {
     "SyncResult": ".sync_engine",
     "SyncStream": ".sync_contract",
     "TeamMeshCoordinator": ".team_mesh",
+    "TeamScopeAllocator": ".team_scope",
+    "TeamScopeUnavailable": ".team_scope",
     "TransportBroker": ".transport_broker",
     "TurnCommitBundle": ".team_mesh",
     "WebRTCPeer": ".webrtc_transport",

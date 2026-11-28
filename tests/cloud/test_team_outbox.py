@@ -246,6 +246,30 @@ class TeamTurnOutboxTests(unittest.TestCase):
         publisher.assert_awaited_once()
         self.assertEqual(outbox.pending_count, 0)
 
+    def test_async_packaging_does_not_block_the_peer_event_loop(self) -> None:
+        import asyncio
+        import threading
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def scope_provider(_task_id):
+            entered.set()
+            if not release.wait(timeout=3):
+                raise ConnectionError("scope allocation timed out")
+            return {"project_session_id": "proj_1", "host_epoch": 1, "turn_seq": 1}
+
+        outbox = self._outbox(AsyncMock(return_value={"accepted": True}), scope_provider)
+
+        async def exercise():
+            pending = asyncio.create_task(outbox.publish_async(self.turn))
+            self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+            release.set()
+            return await asyncio.wait_for(pending, timeout=3)
+
+        self.assertEqual(asyncio.run(exercise())["status"], "delivered")
+        self.assertEqual(outbox.pending_count, 0)
+
     def test_history_retention_keeps_the_newest_exact_turn(self) -> None:
         outbox = TeamTurnOutbox(
             self.root / "outbox-data",
