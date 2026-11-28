@@ -210,6 +210,7 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
         workspace: Path | None = None,
         data_dir: Path | None = None,
         ledger: LedgerStore | None = None,
+        query_provider: Any = None,
     ) -> TeamRuntime:
         workspace = workspace or self._workspace(f"{name}-workspace")
         ledger = ledger or self._ledger(name)
@@ -222,6 +223,7 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
             data_dir=data_dir or self.root / f"{name}-data",
             ledger=ledger,
             global_home=self.root / f"{name}-home",
+            peer_query_provider=query_provider,
             maintenance_interval=60,
             lease_max_age=120,
         )
@@ -345,6 +347,10 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(host._signed_lease)
         with self.assertRaises(TeamRuntimeError):
             await host.publish(self._verified_turn(host, "revoked-turn"))
+        with self.assertRaises(TeamRuntimeError):
+            await host.peer_state("RUNNING")
+        with self.assertRaises(TeamRuntimeError):
+            await host.ask_peer(self.replica.device_id, "Status?", "task_1")
 
     async def test_removed_local_device_fails_closed(self) -> None:
         host = await self._runtime(self.host, "host")
@@ -433,6 +439,108 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(recovered["running"])
         self.assertEqual(recovered["roster_devices"], 4)
 
+    async def test_fastlane_state_and_notes_fan_out_through_the_coordinator(self) -> None:
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        await self._link(host, replica)
+
+        state = await host.peer_state("RUNNING")
+        self.assertTrue(state["accepted"])
+        await self._wait_for(
+            lambda: any(
+                event["data"]["state"] == "RUNNING"
+                for event in replica.activity.peer_activity(host_epoch=1)
+            )
+        )
+
+        note = await replica.blackboard_note(
+            "Keep parser behavior deterministic. token=abcdefghijklmnop",
+            task_id="task_1",
+            pinned=True,
+        )
+        self.assertTrue(note["accepted"])
+        await self._wait_for(lambda: bool(host.activity.blackboard()))
+        self.assertEqual(host.activity.blackboard()[0]["data"]["task_id"], "task_1")
+        self.assertIn("[REDACTED_SECRET]", host.activity.blackboard()[0]["data"]["body"])
+        self.assertNotIn("abcdefghijklmnop", host.activity.path.read_text())
+        self.assertIn("events", host.status()["activity"]["store"])
+
+    async def test_scope_claims_conflict_and_release_across_peers(self) -> None:
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        await self._link(host, replica)
+
+        claim = await replica.claim_scope(
+            "task_1",
+            paths=["src/parser.py"],
+            symbols=["parse"],
+            ttl_seconds=30,
+            claim_id="claim_replica",
+        )
+        await self._wait_for(lambda: bool(host.activity.scope_locks(host_epoch=1)))
+        await host.claim_scope(
+            "task_1",
+            paths=["src/parser.py"],
+            symbols=["parse"],
+            ttl_seconds=30,
+            claim_id="claim_host",
+        )
+        await self._wait_for(
+            lambda: len(replica.activity.scope_locks(host_epoch=1)) == 2
+        )
+        self.assertTrue(all(
+            lock["conflicts"]
+            for lock in replica.activity.scope_locks(host_epoch=1)
+        ))
+
+        released = await replica.release_scope("task_1", "claim_replica")
+        self.assertEqual(released["event"]["kind"], "SCOPE_RELEASE")
+        await self._wait_for(
+            lambda: [
+                lock["author_device_record_id"]
+                for lock in host.activity.scope_locks(host_epoch=1)
+            ] == [self.host.device_id]
+        )
+        self.assertEqual(claim["event"]["data"]["claim_id"], "claim_replica")
+
+    async def test_direct_peer_query_is_cached_and_shared_without_secrets(self) -> None:
+        calls = []
+
+        def answer(peer_id, task_id, question):
+            calls.append((peer_id, task_id, question))
+            return "Use the canonical parser. token=abcdefghijklmnop"
+
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        other = await self._runtime(self.catchup, "catchup", query_provider=answer)
+        await self._link(host, replica)
+        await self._link(host, other)
+        await self._link(replica, other)
+
+        result = await replica.ask_peer(
+            self.catchup.device_id,
+            "Which parser is canonical? token=abcdefghijklmnop",
+            "task_1",
+        )
+
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["cached"])
+        self.assertTrue(result["shared"])
+        self.assertEqual(result["device_record_id"], self.catchup.device_id)
+        self.assertIn("[REDACTED_SECRET]", result["answer"])
+        self.assertEqual(calls, [(
+            self.replica.device_id,
+            "task_1",
+            "Which parser is canonical? [REDACTED_SECRET]",
+        )])
+        await self._wait_for(lambda: bool(host.activity.blackboard()))
+        self.assertTrue(any(
+            event["kind"] == "PEER_QUERY_ANSWER"
+            for event in host.activity.blackboard()
+        ))
+        for runtime in (host, replica, other):
+            self.assertNotIn("abcdefghijklmnop", runtime.activity.path.read_text())
+
     async def test_coordinator_turn_is_committed_applied_archived_and_replicated(self) -> None:
         host = await self._runtime(self.host, "host")
         replica = await self._runtime(self.replica, "replica")
@@ -512,7 +620,7 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         failing_link.send_turn = fail_send
         turn = self._verified_turn(author, "partial-fanout")
-        failed = await author.publish(turn)
+        failed = await asyncio.wait_for(author.publish(turn), timeout=2)
         self.assertEqual(failed["status"], "queued")
         self.assertEqual(author.outbox.pending_count, 1)
         self.assertEqual(len(self.control.commits), 1)

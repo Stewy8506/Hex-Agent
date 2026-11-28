@@ -6,11 +6,13 @@ import asyncio
 import concurrent.futures
 import inspect
 import json
+import math
 import os
 import re
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -18,6 +20,12 @@ from harness_core.storage import cow
 
 from .cognition_sync import CognitionSyncStore
 from .p2p_transport import PeerAddress, SecurePeerSession
+from .team_fastlane import (
+    TeamActivityError,
+    TeamActivityStore,
+    make_activity_event,
+    verify_activity_event,
+)
 from .team_history import TeamHistory
 from .team_mesh import DEVICE_ID_PATTERN, SignedTurnCommitBundle, TeamMeshCoordinator
 from .team_outbox import TeamTurnOutbox, VerifiedTeamTurn
@@ -53,6 +61,10 @@ class TeamRuntime:
         cognition: CognitionSyncStore | None = None,
         global_home: Path | str | None = None,
         on_event: Callable[[dict[str, Any]], Any] | None = None,
+        peer_query_provider: Callable[
+            [str, str, str], Awaitable[Any] | Any
+        ] | None = None,
+        peer_query_timeout: float = 15.0,
         maintenance_interval: float = 3.0,
         lease_max_age: float = 10.0,
     ) -> None:
@@ -64,6 +76,13 @@ class TeamRuntime:
             raise ValueError("Invalid project session id.")
         if maintenance_interval <= 0 or lease_max_age <= 0:
             raise ValueError("Team runtime timing must be positive.")
+        if (
+            not isinstance(peer_query_timeout, (int, float))
+            or isinstance(peer_query_timeout, bool)
+            or not math.isfinite(peer_query_timeout)
+            or peer_query_timeout <= 0
+        ):
+            raise ValueError("Team peer query timeout must be finite and positive.")
         self.workspace_root = Path(workspace_root).resolve()
         if not self.workspace_root.is_dir():
             raise ValueError("Team workspace must be an existing directory.")
@@ -79,6 +98,8 @@ class TeamRuntime:
         self.ledger = ledger
         self.broker = broker
         self.on_event = on_event
+        self.peer_query_provider = peer_query_provider
+        self.peer_query_timeout = float(peer_query_timeout)
         self.maintenance_interval = float(maintenance_interval)
         self.lease_max_age = float(lease_max_age)
         self._server_keyring_path = self.root / "server_keyring.json"
@@ -112,6 +133,9 @@ class TeamRuntime:
             replication_service=self.replication,
         )
         self.history = TeamHistory(self.root)
+        self.activity = TeamActivityStore(
+            self.workspace_root, project_session_id
+        )
         self.allocator = TeamScopeAllocator(
             self.root,
             local_device_id=self.local_device_id,
@@ -220,6 +244,166 @@ class TeamRuntime:
             self._emit("team/outbox_flushed", delivered=result["delivered"])
         return result
 
+    async def peer_state(self, state: str) -> dict[str, Any]:
+        return await self._publish_activity(
+            "PEER_STATE", f"Peer state: {state}", data={"state": state}
+        )
+
+    async def claim_scope(
+        self,
+        task_id: str,
+        *,
+        paths: list[str] | None = None,
+        symbols: list[str] | None = None,
+        ttl_seconds: int = 120,
+        claim_id: str | None = None,
+        summary: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._publish_activity(
+            "INTENT_CLAIM",
+            summary or f"Scope claim for {task_id}",
+            paths=paths,
+            symbols=symbols,
+            data={
+                "task_id": task_id,
+                "claim_id": claim_id or uuid.uuid4().hex,
+                "ttl_seconds": ttl_seconds,
+            },
+        )
+
+    async def release_scope(
+        self,
+        task_id: str,
+        claim_id: str,
+        *,
+        paths: list[str] | None = None,
+        symbols: list[str] | None = None,
+    ) -> dict[str, Any]:
+        lock = next(
+            (
+                item
+                for item in self.activity.scope_locks(host_epoch=self.mesh.current_epoch)
+                if item["author_device_record_id"] == self.local_device_id
+                and item["data"]["task_id"] == task_id
+                and item["data"]["claim_id"] == claim_id
+            ),
+            None,
+        )
+        if lock is None:
+            raise TeamRuntimeError("No active local scope claim matches this release.")
+        return await self._publish_activity(
+            "SCOPE_RELEASE",
+            f"Scope release for {task_id}",
+            paths=paths if paths is not None else lock["paths"],
+            symbols=symbols if symbols is not None else lock["symbols"],
+            data={"task_id": task_id, "claim_id": claim_id},
+        )
+
+    async def contract_change(
+        self,
+        task_id: str,
+        *,
+        path: str,
+        symbol: str,
+        before: str,
+        after: str,
+    ) -> dict[str, Any]:
+        return await self._publish_activity(
+            "CONTRACT_CHANGE",
+            f"Contract change: {path} {symbol}",
+            paths=[path],
+            symbols=[symbol],
+            data={
+                "task_id": task_id,
+                "path": path,
+                "symbol": symbol,
+                "before": before,
+                "after": after,
+            },
+        )
+
+    async def blackboard_note(
+        self,
+        body: str,
+        *,
+        task_id: str | None = None,
+        pinned: bool = False,
+    ) -> dict[str, Any]:
+        return await self._publish_activity(
+            "BLACKBOARD_NOTE",
+            "Shared blackboard note",
+            data={"task_id": task_id, "body": body, "pinned": pinned},
+        )
+
+    def activity_status(self, *, limit: int = 50) -> dict[str, Any]:
+        return {
+            "store": self.activity.status(),
+            "scope_locks": self.activity.scope_locks(
+                host_epoch=self.mesh.current_epoch
+            ),
+            "peer_state": self.activity.peer_activity(
+                host_epoch=self.mesh.current_epoch
+            ),
+            "blackboard": self.activity.blackboard(limit=limit),
+            "recent": self.activity.recent_activity(
+                limit=limit, host_epoch=self.mesh.current_epoch
+            ),
+        }
+
+    async def ask_peer(
+        self, peer_device_id: str, question: str, task_id: str
+    ) -> dict[str, Any]:
+        self._require_running()
+        if peer_device_id == self.local_device_id:
+            raise TeamRuntimeError("A peer query must target another device.")
+        self._allowed_peer(peer_device_id)
+        with self._state_lock:
+            link = self._links.get(peer_device_id)
+        if link is None or link.closed:
+            if self.broker is None:
+                raise TeamRuntimeError("No authenticated peer link is available.")
+            self.connect(peer_device_id)
+            async with asyncio.timeout(self.peer_query_timeout):
+                while True:
+                    with self._state_lock:
+                        link = self._links.get(peer_device_id)
+                    if link is not None and not link.closed:
+                        break
+                    await asyncio.sleep(0.05)
+        result = await link.ask_peer(question, task_id)
+        local = self._local_device()
+        try:
+            envelope = make_activity_event(
+                signer=self.signer,
+                project_session_id=self.project_session_id,
+                host_epoch=self.mesh.current_epoch,
+                kind="PEER_QUERY_ANSWER",
+                summary="Cached peer answer",
+                data={
+                    "request_id": result["request_id"],
+                    "question": question,
+                    "answer": result["answer"],
+                    "peer_device_record_id": self.local_device_id,
+                },
+            )
+            await asyncio.to_thread(
+                self.activity.accept, envelope, local["device_pubkey"]
+            )
+        except TeamActivityError as exc:
+            raise TeamRuntimeError("Peer answer could not be cached.") from exc
+        try:
+            shared = await self._share_activity(envelope)
+        except (TeamRuntimeError, TeamTransportError):
+            shared = {"accepted": False, "queued": False}
+        self._emit(
+            "team/peer_query_answered",
+            project_session_id=self.project_session_id,
+            host_epoch=self.mesh.current_epoch,
+            device_record_id=peer_device_id,
+            author_device_record_id=self.local_device_id,
+        )
+        return {**result, "cached": True, "shared": shared.get("accepted") is True}
+
     async def refresh(self) -> dict[str, Any]:
         if not self._started:
             raise TeamRuntimeError("Team runtime is not running.")
@@ -312,6 +496,9 @@ class TeamRuntime:
                 submission_validator=self._validate_submission,
                 history_sink=self.history.archive,
                 submission_publisher=self._fanout_submission,
+                activity_sink=self._accept_activity,
+                query_provider=self._query_provider,
+                query_timeout=self.peer_query_timeout,
             )
             with self._state_lock:
                 self._links[remote_id] = link
@@ -397,6 +584,189 @@ class TeamRuntime:
             for result in results
         )
         return {"accepted": accepted, "ack": accepted, "peer_count": len(links)}
+
+    async def _publish_activity(
+        self,
+        kind: str,
+        summary: str,
+        *,
+        paths: list[str] | None = None,
+        symbols: list[str] | None = None,
+        data: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self._require_running()
+        local = self._local_device()
+        try:
+            envelope = make_activity_event(
+                signer=self.signer,
+                project_session_id=self.project_session_id,
+                host_epoch=self.mesh.current_epoch,
+                kind=kind,
+                summary=summary,
+                paths=paths,
+                symbols=symbols,
+                data=data,
+            )
+            accepted = await asyncio.to_thread(
+                self.activity.accept, envelope, local["device_pubkey"]
+            )
+        except TeamActivityError as exc:
+            raise TeamRuntimeError(str(exc)) from exc
+        result = await self._share_activity(envelope)
+        self._emit(
+            "team/activity",
+            project_session_id=self.project_session_id,
+            host_epoch=self.mesh.current_epoch,
+            author_device_record_id=self.local_device_id,
+            activity_kind=kind,
+            event_id=envelope["event"]["event_id"],
+            duplicate=accepted.get("duplicate") is True,
+        )
+        return {**result, "event": envelope["event"]}
+
+    async def _share_activity(self, envelope: Mapping[str, Any]) -> dict[str, Any]:
+        if self.mesh.mode == "TEAM_PRIMARY_HOST":
+            return await self._fanout_activity(envelope)
+        if self.mesh.mode == "TEAM_REPLICA_PEER":
+            return await self._coordinator_link().send_activity(envelope, wait=True)
+        raise TeamRuntimeError("Team activity requires an active Coordinator lease.")
+
+    async def _fanout_activity(
+        self, envelope: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        with self._state_lock:
+            links = [link for link in self._links.values() if not link.closed]
+        if not links:
+            return {"accepted": True, "queued": True, "peer_count": 0}
+        results = await asyncio.gather(
+            *(link.send_activity(envelope) for link in links),
+            return_exceptions=True,
+        )
+        accepted = all(
+            isinstance(result, Mapping) and result.get("accepted") is True
+            for result in results
+        )
+        if not accepted:
+            self._last_error = "TeamActivityFanout"
+        return {"accepted": accepted, "queued": accepted, "peer_count": len(links)}
+
+    async def _accept_activity(
+        self, envelope: Mapping[str, Any], sender_id: str, relayed: bool
+    ) -> dict[str, Any]:
+        if not self._started:
+            return {"accepted": False}
+        event = envelope.get("event") if isinstance(envelope, Mapping) else None
+        author = event.get("author_device_record_id") if isinstance(event, Mapping) else None
+        with self._state_lock:
+            record = self._devices.get(author) if isinstance(author, str) else None
+        if (
+            record is None
+            or record["role"] not in _ELIGIBLE_ROLES
+            or not record["host_eligible"]
+            or event.get("project_session_id") != self.project_session_id
+            or event.get("host_epoch") != self.mesh.current_epoch
+        ):
+            return {"accepted": False}
+        if relayed:
+            if sender_id != self.mesh.primary_device_id:
+                return {"accepted": False}
+        elif self.mesh.mode != "TEAM_PRIMARY_HOST" or sender_id != author:
+            return {"accepted": False}
+        try:
+            verify_activity_event(
+                envelope,
+                project_session_id=self.project_session_id,
+                public_key=record["device_pubkey"],
+            )
+            accepted = await asyncio.to_thread(
+                self.activity.accept, envelope, record["device_pubkey"]
+            )
+        except TeamActivityError:
+            return {"accepted": False}
+        if self.mesh.mode == "TEAM_PRIMARY_HOST":
+            await self._fanout_activity(envelope)
+        self._emit(
+            "team/activity",
+            project_session_id=self.project_session_id,
+            host_epoch=self.mesh.current_epoch,
+            author_device_record_id=author,
+            activity_kind=event["kind"],
+            event_id=event["event_id"],
+            relayed=relayed,
+            duplicate=accepted.get("duplicate") is True,
+        )
+        return accepted
+
+    def _query_provider(self, peer_id: str, task_id: str, question: str) -> Any:
+        if self.peer_query_provider is not None:
+            return self.peer_query_provider(peer_id, task_id, question)
+        return self._local_peer_answer(task_id, question)
+
+    def _local_peer_answer(self, task_id: str, question: str) -> str:
+        if not self._started:
+            return "The local team runtime is not running."
+        words = {
+            word
+            for word in re.findall(r"[a-z0-9_]{3,}", question.lower())
+            if word not in {"the", "and", "for", "what", "which", "with", "from"}
+        }
+        candidates = []
+        for note in self.activity.blackboard(limit=100):
+            if note["kind"] == "BLACKBOARD_NOTE":
+                text = note["data"]["body"]
+                matches_task = note["data"].get("task_id") == task_id
+            else:
+                text = note["data"]["answer"]
+                matches_task = False
+            searchable = text.lower() + " " + note["summary"].lower()
+            if note["kind"] == "PEER_QUERY_ANSWER":
+                searchable += " " + note["data"]["question"].lower()
+            score = sum(word in searchable for word in words)
+            if matches_task or score:
+                candidates.append((score, note["created_at"], text))
+        if candidates:
+            return max(candidates)[2][:4096]
+        lowered = question.lower()
+        if any(word in lowered for word in {"scope", "working", "file", "claim"}):
+            locks = [
+                lock
+                for lock in self.activity.scope_locks(
+                    host_epoch=self.mesh.current_epoch
+                )
+                if lock["data"]["task_id"] == task_id
+            ]
+            if not locks:
+                return "No active shared scope claim matches this task."
+            return "; ".join(
+                f"{lock['author_device_record_id']}: {', '.join(lock['paths'])}"
+                for lock in locks
+            )[:4096]
+        states = self.activity.peer_activity(host_epoch=self.mesh.current_epoch)
+        local_state = next(
+            (
+                item["data"]["state"]
+                for item in states
+                if item["author_device_record_id"] == self.local_device_id
+            ),
+            "UNKNOWN",
+        )
+        return f"No shared answer matches this task yet. Local peer state: {local_state}."
+
+    def _require_running(self) -> None:
+        if not self._started:
+            raise TeamRuntimeError("Team runtime is not running.")
+        self._local_device()
+
+    def _local_device(self) -> dict[str, Any]:
+        with self._state_lock:
+            record = self._devices.get(self.local_device_id)
+        if (
+            record is None
+            or record["role"] not in _ELIGIBLE_ROLES
+            or not record["host_eligible"]
+        ):
+            raise TeamRuntimeError("This device is not authorized for team activity.")
+        return record
 
     def _validate_submission(
         self, signed: SignedTurnCommitBundle, payload: Mapping[str, Any]
@@ -707,11 +1077,9 @@ class TeamRuntime:
                 device_id for device_id, record in self._devices.items()
                 if record["role"] in _ELIGIBLE_ROLES and record["host_eligible"]
             }
-        if self.mesh.mode == "TEAM_PRIMARY_HOST":
-            return eligible - {self.local_device_id}
-        if self.mesh.mode == "TEAM_REPLICA_PEER":
-            return ({self.mesh.primary_device_id} - {None, self.local_device_id}) & eligible
-        return set()
+        if self.mesh.mode not in {"TEAM_PRIMARY_HOST", "TEAM_REPLICA_PEER"}:
+            return set()
+        return eligible - {self.local_device_id}
 
     def _device_key(self, device_id: str) -> str | None:
         with self._state_lock:
@@ -776,6 +1144,7 @@ class TeamRuntime:
             "applied_turn_seq": self.mesh.last_applied_turn_seq,
             "pending_turns": self.outbox.pending_count,
             "history": self.history.status(),
+            "activity": self.activity_status(),
             "roster_devices": len(self._devices),
             "peers": links,
             "connecting": connecting,
