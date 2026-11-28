@@ -172,7 +172,15 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         }
         return sign_turn_commit(bundle, signer or self.author), payload
 
-    async def _links(self, *, commit=None, history=None, replica_mesh=None, frames=None):
+    async def _links(
+        self,
+        *,
+        commit=None,
+        history=None,
+        replica_mesh=None,
+        frames=None,
+        replica_server_public_key_hex=None,
+    ):
         def record(frame: bytes) -> bytes:
             if frames is not None:
                 frames.append(frame)
@@ -200,6 +208,9 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
             mesh,
             self.replica,
             self.keys.get,
+            server_public_key_hex=(
+                replica_server_public_key_hex or self.server.public_key_hex
+            ),
             ack_sink=lambda ack: acks.append(ack),
             timeout=5,
         )
@@ -253,7 +264,9 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         tampered["base_workspace_tree_sha"] = "sha256:" + "0" * 64
 
         try:
-            await coordinator.send_turn(self.signed, tampered, commit=False)
+            await coordinator.send_turn(
+                self.signed, tampered, receipt=self.server.receipt(self.signed), commit=False
+            )
         except TeamTransportError:
             pass
         except Exception as exc:
@@ -274,7 +287,9 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         coordinator, replica, acks = await self._links(replica_mesh=mesh)
 
         try:
-            await coordinator.send_turn(self.signed, self.payload, commit=False)
+            await coordinator.send_turn(
+                self.signed, self.payload, receipt=self.server.receipt(self.signed), commit=False
+            )
         except TeamTransportError:
             pass
         except Exception as exc:
@@ -292,6 +307,25 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.coordinator_mesh.committed_turn_seq, 0)
         self.assertEqual(self.replica_mesh.last_applied_turn_seq, 0)
+
+    async def test_replica_rejects_live_relay_with_untrusted_receipt_key(self) -> None:
+        untrusted_server = _ServerKey()
+        coordinator, replica, acks = await self._links(
+            replica_server_public_key_hex=untrusted_server.public_key_hex
+        )
+
+        with self.assertRaises(TeamTransportError):
+            await coordinator.send_turn(
+                self.signed,
+                self.payload,
+                receipt=self.server.receipt(self.signed),
+                commit=False,
+            )
+
+        self.assertEqual(self.replica_mesh.last_applied_turn_seq, 0)
+        self.assertEqual((self.replica_workspace / "app.py").read_text(), "value = 1\n")
+        self.assertEqual(acks, [])
+        self.assertIsNone(replica._incoming)
 
     async def test_failover_catchup_replays_contiguous_history_without_recommit(self) -> None:
         first_signed, first_payload = self.signed, self.payload
@@ -460,7 +494,9 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
             timeout=5,
         )
         coordinator.submission_publisher = (
-            lambda signed, payload: TeamTurnPublisher([coordinator])(signed, payload)
+            lambda signed, payload, receipt: coordinator.send_turn(
+                signed, payload, receipt=receipt, commit=False
+            )
         )
         author = TeamPeerLink(
             author_session,

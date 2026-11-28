@@ -18,6 +18,7 @@ from cloud.p2p_transport import InMemoryNetwork, PeerAddress, PeerIdentity
 from cloud.team_mesh import SignedTurnCommitBundle
 from cloud.team_outbox import VerifiedTeamTurn
 from cloud.team_runtime import TeamRuntime, TeamRuntimeError
+from cloud.team_transport import TeamTransportError
 from cloud.updater import canonical_json_bytes
 from harness_core.core.models import TaskSubmitRequest
 from harness_core.storage.cow import compute_tree_sha
@@ -354,6 +355,67 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((host.workspace_root / "app.py").read_text(), "value = 2\n")
         self.assertEqual((replica.workspace_root / "app.py").read_text(), "value = 2\n")
         self.assertEqual(replica.outbox.pending_count, 0)
+        self.assertEqual(host.history.status()["records"], 1)
+
+    async def test_coordinator_turn_remains_queued_until_every_replica_acknowledges(self) -> None:
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        await self._link(host, replica)
+        failing_link = next(iter(host._links.values()))
+        send_turn = failing_link.send_turn
+
+        async def fail_send(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise TeamTransportError("Injected peer delivery failure.")
+
+        failing_link.send_turn = fail_send
+        turn = self._verified_turn(host, "coordinator-partial-fanout")
+        failed = await host.publish(turn)
+        self.assertEqual(failed["status"], "queued")
+        self.assertEqual(host.outbox.pending_count, 1)
+        self.assertEqual(len(self.control.commits), 1)
+        self.assertEqual((host.workspace_root / "app.py").read_text(), "value = 2\n")
+        self.assertEqual((replica.workspace_root / "app.py").read_text(), "value = 1\n")
+
+        failing_link.send_turn = send_turn
+        delivered = await host.publish(turn)
+
+        self.assertEqual(delivered["status"], "delivered")
+        self.assertEqual(host.outbox.pending_count, 0)
+        self.assertEqual(len(self.control.commits), 1)
+        self.assertEqual((replica.workspace_root / "app.py").read_text(), "value = 2\n")
+
+    async def test_peer_submission_retries_exactly_after_partial_fanout_failure(self) -> None:
+        host = await self._runtime(self.host, "host")
+        author = await self._runtime(self.replica, "replica")
+        other = await self._runtime(self.catchup, "catchup")
+        await self._link(host, author)
+        await self._link(host, other)
+        failing_link = next(
+            link
+            for link in host._links.values()
+            if link.remote_device_id == other.local_device_id
+        )
+        send_turn = failing_link.send_turn
+
+        async def fail_send(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise TeamTransportError("Injected peer delivery failure.")
+
+        failing_link.send_turn = fail_send
+        turn = self._verified_turn(author, "partial-fanout")
+        failed = await author.publish(turn)
+        self.assertEqual(failed["status"], "queued")
+        self.assertEqual(author.outbox.pending_count, 1)
+        self.assertEqual(len(self.control.commits), 1)
+        self.assertEqual((author.workspace_root / "app.py").read_text(), "value = 2\n")
+        self.assertEqual((other.workspace_root / "app.py").read_text(), "value = 1\n")
+
+        failing_link.send_turn = send_turn
+        delivered = await author.publish(turn)
+
+        self.assertEqual(delivered["status"], "delivered")
+        self.assertEqual(author.outbox.pending_count, 0)
+        self.assertEqual(len(self.control.commits), 1)
+        self.assertEqual((other.workspace_root / "app.py").read_text(), "value = 2\n")
         self.assertEqual(host.history.status()["records"], 1)
 
     async def test_synchronous_hook_stages_durably_for_async_flush(self) -> None:

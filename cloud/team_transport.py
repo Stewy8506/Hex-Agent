@@ -43,6 +43,7 @@ class _PendingTurn:
     signed: SignedTurnCommitBundle
     payload: Mapping[str, Any]
     digest: str
+    receipt: Mapping[str, Any] | None
     future: asyncio.Future[dict[str, Any]]
     submission: bool = False
 
@@ -174,7 +175,7 @@ class TeamPeerLink:
             [SignedTurnCommitBundle, Mapping[str, Any], Mapping[str, Any]], Awaitable[Any] | Any
         ] | None = None,
         submission_publisher: Callable[
-            [SignedTurnCommitBundle, Mapping[str, Any]], Awaitable[Any]
+            [SignedTurnCommitBundle, Mapping[str, Any], Mapping[str, Any]], Awaitable[Any]
         ] | None = None,
         timeout: float = 120.0,
     ) -> None:
@@ -200,7 +201,6 @@ class TeamPeerLink:
         self.timeout = float(timeout)
         self.remote_device_id = session.remote_device_id
         self._pending: dict[str, _PendingTurn] = {}
-        self._submission_digests: set[str] = set()
         self._pending_scopes: dict[str, _PendingScope] = {}
         self._outbound: asyncio.Queue[_PendingTurn] = asyncio.Queue()
         self._incoming: _IncomingTurn | None = None
@@ -285,6 +285,7 @@ class TeamPeerLink:
         signed: SignedTurnCommitBundle,
         payload: Mapping[str, Any],
         *,
+        receipt: Mapping[str, Any] | None = None,
         commit: bool = True,
     ) -> dict[str, Any]:
         if self.closed or self._receive_task is None:
@@ -292,8 +293,11 @@ class TeamPeerLink:
         if self.mesh.mode != "TEAM_PRIMARY_HOST":
             raise TeamTransportError("Only the active Coordinator can relay team turns.")
         if commit:
-            await self.commit_signed(signed)
-        return await self._enqueue(signed, payload, wait=True)
+            receipt = await self.commit_signed(signed)
+        if not isinstance(receipt, Mapping):
+            raise TeamTransportError("A verified Coordinator receipt is required for relay.")
+        self._verify_receipt(signed, receipt)
+        return await self._enqueue(signed, payload, receipt=receipt, wait=True)
 
     async def commit_signed(self, signed: SignedTurnCommitBundle) -> Mapping[str, Any]:
         if self.commit_turn is None:
@@ -353,7 +357,6 @@ class TeamPeerLink:
             if not pending.future.done():
                 pending.future.set_exception(TeamTransportError("Team peer link closed."))
         self._pending.clear()
-        self._submission_digests.clear()
         for pending in tuple(self._pending_scopes.values()):
             if not pending.future.done():
                 pending.future.set_exception(TeamTransportError("Team peer link closed."))
@@ -370,7 +373,6 @@ class TeamPeerLink:
             if not pending.future.done():
                 pending.future.set_exception(TeamTransportError(message))
         self._pending.clear()
-        self._submission_digests.clear()
         for pending in tuple(self._pending_scopes.values()):
             if not pending.future.done():
                 pending.future.set_exception(TeamTransportError(message))
@@ -389,8 +391,13 @@ class TeamPeerLink:
         wait: bool,
         submission: bool = False,
         reuse_submission: bool = False,
+        receipt: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         parsed = SignedTurnCommitBundle.from_dict(signed.to_dict())
+        if not submission:
+            if not isinstance(receipt, Mapping):
+                raise TeamTransportError("A verified Coordinator receipt is required for relay.")
+            self._verify_receipt(parsed, receipt)
         digest = team_payload_digest(payload)
         public_key = self.device_key_provider(parsed.author_device_record_id)
         if not public_key or not parsed.verify(public_key):
@@ -407,6 +414,7 @@ class TeamPeerLink:
             if not (
                 (reuse_submission or pending.submission)
                 and pending.digest == digest
+                and pending.receipt == receipt
                 and pending.signed == parsed
             ):
                 raise TeamTransportError("Team turn is already awaiting acknowledgement.")
@@ -414,7 +422,7 @@ class TeamPeerLink:
             await self._outbound.put(pending)
         else:
             future = asyncio.get_running_loop().create_future()
-            pending = _PendingTurn(parsed, payload, digest, future, submission)
+            pending = _PendingTurn(parsed, payload, digest, receipt, future, submission)
             self._pending[bundle_digest] = pending
             await self._outbound.put(pending)
         if wait:
@@ -456,7 +464,10 @@ class TeamPeerLink:
             pending = await self._outbound.get()
             try:
                 await self._send_record(
-                    pending.signed, pending.payload, submission=pending.submission
+                    pending.signed,
+                    pending.payload,
+                    pending.receipt,
+                    submission=pending.submission,
                 )
             except Exception as exc:
                 self._last_error = type(exc).__name__
@@ -470,6 +481,7 @@ class TeamPeerLink:
         self,
         signed: SignedTurnCommitBundle,
         payload: Mapping[str, Any],
+        receipt: Mapping[str, Any] | None,
         *,
         submission: bool,
     ) -> None:
@@ -480,13 +492,18 @@ class TeamPeerLink:
         chunk_count = (len(raw) + _CHUNK_BYTES - 1) // _CHUNK_BYTES
         if chunk_count > _MAX_CHUNKS:
             raise TeamTransportError("Team replication payload has too many chunks.")
+        fields = {
+            "signed": signed.to_dict(),
+            "payload_digest": digest,
+            "payload_bytes": len(raw),
+            "chunk_count": chunk_count,
+        }
+        if not submission:
+            fields["receipt"] = dict(receipt or {})
         await _send_control(
             self.session,
             "team_turn_submit" if submission else "team_turn_begin",
-            signed=signed.to_dict(),
-            payload_digest=digest,
-            payload_bytes=len(raw),
-            chunk_count=chunk_count,
+            **fields,
         )
         for index in range(chunk_count):
             chunk = raw[index * _CHUNK_BYTES : (index + 1) * _CHUNK_BYTES]
@@ -692,10 +709,18 @@ class TeamPeerLink:
             pending.future.set_exception(TeamTransportError("Coordinator rejected the team scope request."))
 
     async def _handle_begin(self, fields: Mapping[str, Any], *, submission: bool = False) -> None:
-        _require_fields(fields, {"signed", "payload_digest", "payload_bytes", "chunk_count"})
+        expected = {"signed", "payload_digest", "payload_bytes", "chunk_count"}
+        if not submission:
+            expected.add("receipt")
+        _require_fields(fields, expected)
         if self._incoming is not None:
             raise TeamTransportError("A team turn is already being received.")
         signed = SignedTurnCommitBundle.from_dict(fields["signed"])
+        if not submission:
+            receipt = fields["receipt"]
+            if not isinstance(receipt, Mapping):
+                raise TeamTransportError("Relayed team turn is missing its backend receipt.")
+            self._verify_receipt(signed, receipt)
         digest = fields["payload_digest"]
         if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
             raise TeamTransportError("Invalid team payload digest.")
@@ -801,32 +826,33 @@ class TeamPeerLink:
             )
         if inspect.isawaitable(archived):
             await archived
-        self._submission_digests.add(incoming.signed.bundle.compute_digest())
-        asyncio.create_task(self._relay_submission(incoming.signed, payload))
+        asyncio.create_task(
+            self._relay_submission(incoming.signed, payload, receipt, incoming.digest)
+        )
 
     async def _relay_submission(
-        self, signed: SignedTurnCommitBundle, payload: Mapping[str, Any]
+        self,
+        signed: SignedTurnCommitBundle,
+        payload: Mapping[str, Any],
+        receipt: Mapping[str, Any],
+        payload_digest: str,
     ) -> None:
-        digest = signed.bundle.compute_digest()
         try:
             if self.submission_publisher is None:
-                await self._enqueue(
-                    signed, payload, wait=False, reuse_submission=True
+                result = await self._enqueue(
+                    signed, payload, receipt=receipt, wait=True, reuse_submission=True
                 )
-                return
-            result = await self.submission_publisher(signed, payload)
+            else:
+                result = await self.submission_publisher(signed, payload, receipt)
             accepted = result is True or (
                 isinstance(result, Mapping)
                 and (result.get("accepted") is True or result.get("ack") is True)
             )
             if not accepted:
                 raise TeamTransportError("Peer turn fan-out was not acknowledged.")
+            await self._ack_applied(signed, payload_digest)
         except Exception:
-            self._submission_digests.discard(digest)
-            pending = self._pending.get(digest)
-            if pending is not None and not pending.future.done():
-                pending.future.set_exception(TeamTransportError("Peer turn fan-out failed."))
-            await self._try_error(digest)
+            await self._try_error(payload_digest)
 
     async def _ack_applied(
         self, signed: SignedTurnCommitBundle, payload_digest: str
@@ -886,9 +912,6 @@ class TeamPeerLink:
         ):
             raise TeamTransportError("Team acknowledgement does not match the pending turn.")
         bundle_digest = fields["bundle_digest"]
-        if self.mesh.mode == "TEAM_PRIMARY_HOST" and bundle_digest in self._submission_digests:
-            await self._ack_applied(pending.signed, pending.digest)
-            self._submission_digests.discard(bundle_digest)
         if not pending.future.done():
             pending.future.set_result({"accepted": True, "ack": ack})
         self._pending.pop(bundle_digest, None)
@@ -938,7 +961,7 @@ class TeamPeerLink:
             if not isinstance(receipt, Mapping):
                 raise TeamTransportError("Catch-up history is missing its backend receipt.")
             self._verify_receipt(signed, receipt)
-            await self._enqueue(signed, record["payload"], wait=False)
+            await self._enqueue(signed, record["payload"], receipt=receipt, wait=False)
             available.append(sequence)
         await _send_control(
             self.session,
@@ -1001,9 +1024,12 @@ class TeamTurnPublisher:
     ) -> dict[str, Any]:
         if not self.links:
             return {"accepted": False}
-        await self.links[0].commit_signed(signed)
+        receipt = await self.links[0].commit_signed(signed)
         results = await asyncio.gather(
-            *(link.send_turn(signed, payload, commit=False) for link in self.links),
+            *(
+                link.send_turn(signed, payload, receipt=receipt, commit=False)
+                for link in self.links
+            ),
             return_exceptions=True,
         )
         accepted = all(

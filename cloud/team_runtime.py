@@ -334,29 +334,38 @@ class TeamRuntime:
             replication_payload=payload,
         )
         self.history.archive(signed, payload, receipt)
-        await self._fanout(signed, payload)
+        result = await self._fanout(signed, payload, receipt)
         self._emit(
             "team/turn_committed",
             turn_seq=signed.bundle.turn_seq,
             host_epoch=signed.bundle.host_epoch,
             author_device_record_id=signed.author_device_record_id,
         )
-        return {"accepted": True, "ack": True}
+        return result
 
     async def _fanout_submission(
-        self, signed: SignedTurnCommitBundle, payload: Mapping[str, Any]
+        self,
+        signed: SignedTurnCommitBundle,
+        payload: Mapping[str, Any],
+        receipt: Mapping[str, Any],
     ) -> dict[str, Any]:
-        return await self._fanout(signed, payload)
+        return await self._fanout(signed, payload, receipt)
 
     async def _fanout(
-        self, signed: SignedTurnCommitBundle, payload: Mapping[str, Any]
+        self,
+        signed: SignedTurnCommitBundle,
+        payload: Mapping[str, Any],
+        receipt: Mapping[str, Any],
     ) -> dict[str, Any]:
         with self._state_lock:
             links = [link for link in self._links.values() if not link.closed]
         if not links:
             return {"accepted": True, "ack": True}
         results = await asyncio.gather(
-            *(link.send_turn(signed, payload, commit=False) for link in links),
+            *(
+                link.send_turn(signed, payload, receipt=receipt, commit=False)
+                for link in links
+            ),
             return_exceptions=True,
         )
         accepted = all(
