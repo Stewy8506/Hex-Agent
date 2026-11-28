@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -659,7 +659,9 @@ _SUPPORTED_METHODS = (
     "cloud/signal/start", "cloud/signal/stop", "cloud/signal/status",
     "cloud/sync/status", "cloud/sync/run",
     "team/status", "team/start", "team/stop", "team/connect",
-    "team/disconnect", "team/flush",
+    "team/disconnect", "team/flush", "team/activity/status",
+    "team/scope/claim", "team/scope/release", "team/scope/renew",
+    "team/blackboard/note", "team/contract/change", "team/peer/query",
 )
 
 HEX_CONTRACT_VERSION = 1
@@ -744,6 +746,33 @@ CONFIG_SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
         "alerts": {"kind": "bool"},
     },
 }
+
+
+def _team_text(
+    params: Mapping[str, Any], key: str, *, allow_empty: bool = False
+) -> str:
+    value = params.get(key)
+    if (
+        not isinstance(value, str)
+        or (not allow_empty and not value.strip())
+        or "\x00" in value
+    ):
+        raise ValueError(f"{key} must be a valid non-empty string.")
+    return value
+
+
+def _team_optional_text(params: Mapping[str, Any], key: str) -> str | None:
+    value = params.get(key)
+    return None if value is None else _team_text(params, key)
+
+
+def _team_text_list(params: Mapping[str, Any], key: str) -> list[str] | None:
+    value = params.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a list of strings.")
+    return [_team_text({"value": item}, "value") for item in value]
 
 
 class ACPServer:
@@ -983,6 +1012,91 @@ class ACPServer:
         runtime = self._team_runtime(str(params.get("project_session_id") or ""))
         broker = self._ensure_transport_broker()
         return broker.submit(runtime.flush).result(timeout=120)
+
+    def _team_activity_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(_team_text(params, "project_session_id"))
+        limit = params.get("limit", 50)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("Team activity limit must be an integer between 1 and 100.")
+        return runtime.activity_status(limit=limit)
+
+    def _team_scope_claim(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(_team_text(params, "project_session_id"))
+        task_id = _team_text(params, "task_id")
+        ttl = params.get("ttl_seconds", 120)
+        if type(ttl) is not int or not 1 <= ttl <= 300:
+            raise ValueError("Team scope TTL must be an integer between 1 and 300.")
+        paths = _team_text_list(params, "paths")
+        symbols = _team_text_list(params, "symbols")
+        claim_id = _team_optional_text(params, "claim_id")
+        summary = _team_optional_text(params, "summary")
+        return self._run_team_operation(lambda: runtime.claim_scope(
+            task_id,
+            paths=paths,
+            symbols=symbols,
+            ttl_seconds=ttl,
+            claim_id=claim_id,
+            summary=summary,
+        ))
+
+    def _team_scope_release(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(_team_text(params, "project_session_id"))
+        task_id = _team_text(params, "task_id")
+        claim_id = _team_text(params, "claim_id")
+        paths = _team_text_list(params, "paths")
+        symbols = _team_text_list(params, "symbols")
+        return self._run_team_operation(lambda: runtime.release_scope(
+            task_id, claim_id, paths=paths, symbols=symbols,
+        ))
+
+    def _team_scope_renew(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(_team_text(params, "project_session_id"))
+        ttl = params.get("ttl_seconds", 120)
+        if type(ttl) is not int or not 1 <= ttl <= 300:
+            raise ValueError("Team scope TTL must be an integer between 1 and 300.")
+        task_id = _team_text(params, "task_id")
+        claim_id = _team_text(params, "claim_id")
+        summary = _team_optional_text(params, "summary")
+        return self._run_team_operation(lambda: runtime.renew_scope(
+            task_id, claim_id, ttl_seconds=ttl, summary=summary,
+        ))
+
+    def _team_blackboard_note(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(_team_text(params, "project_session_id"))
+        pinned = params.get("pinned", False)
+        if type(pinned) is not bool:
+            raise ValueError("Team blackboard pinned must be a boolean.")
+        body = _team_text(params, "body")
+        task_id = _team_optional_text(params, "task_id")
+        return self._run_team_operation(lambda: runtime.blackboard_note(
+            body, task_id=task_id, pinned=pinned,
+        ))
+
+    def _team_contract_change(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(_team_text(params, "project_session_id"))
+        task_id = _team_text(params, "task_id")
+        path = _team_text(params, "path")
+        symbol = _team_text(params, "symbol")
+        before = _team_text(params, "before", allow_empty=True)
+        after = _team_text(params, "after", allow_empty=True)
+        return self._run_team_operation(lambda: runtime.contract_change(
+            task_id, path=path, symbol=symbol, before=before, after=after,
+        ))
+
+    def _team_peer_query(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(_team_text(params, "project_session_id"))
+        device_id = _team_text(params, "device_record_id")
+        question = _team_text(params, "question")
+        task_id = _team_text(params, "task_id")
+        timeout = max(30.0, float(getattr(runtime, "peer_query_timeout", 15.0)) + 5.0)
+        return self._run_team_operation(
+            lambda: runtime.ask_peer(device_id, question, task_id), timeout=timeout
+        )
+
+    def _run_team_operation(
+        self, factory: Callable[[], Awaitable[Any]], *, timeout: float = 30.0
+    ) -> Any:
+        return self._ensure_transport_broker().submit(factory).result(timeout=timeout)
 
     def _team_runtime(self, session_id: str) -> Any:
         with self._team_lock:
@@ -1415,6 +1529,20 @@ class ACPServer:
                 res = self._team_disconnect(params)
             elif method == "team/flush":
                 res = self._team_flush(params)
+            elif method == "team/activity/status":
+                res = self._team_activity_status(params)
+            elif method == "team/scope/claim":
+                res = self._team_scope_claim(params)
+            elif method == "team/scope/release":
+                res = self._team_scope_release(params)
+            elif method == "team/scope/renew":
+                res = self._team_scope_renew(params)
+            elif method == "team/blackboard/note":
+                res = self._team_blackboard_note(params)
+            elif method == "team/contract/change":
+                res = self._team_contract_change(params)
+            elif method == "team/peer/query":
+                res = self._team_peer_query(params)
             else:
                 return {
                     "jsonrpc": "2.0",
@@ -1460,7 +1588,11 @@ class ACPServer:
                         "providers/endpoint/set", "tools/policy/set",
                         "maintenance/gcPreview",
                         "session/toolResult", "session/load", "session/history",
-                        "session/historyContent", "session/approvalDecision"
+                        "session/historyContent", "session/approvalDecision",
+                        "team/activity/status", "team/scope/claim",
+                        "team/scope/release", "team/scope/renew",
+                        "team/blackboard/note", "team/contract/change",
+                        "team/peer/query",
                     } and isinstance(exc, (ValueError, TypeError)) else -32000,
                     "message": str(exc),
                 },

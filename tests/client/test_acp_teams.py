@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, Mock, patch
 
 from hex_cli.acp import ACPServer, _SUPPORTED_METHODS
 
@@ -170,6 +171,96 @@ class ACPTeamTests(unittest.TestCase):
                 {"project_session_id": self.runtime.project_session_id},
                 workspace / "other",
             )
+
+    def test_fastlane_controls_use_explicit_session_and_typed_parameters(self) -> None:
+        self.server._team_runtimes = {self.runtime.project_session_id: self.runtime}
+        self.server._ensure_transport_broker = lambda: self.broker
+        event = {"event_id": "event_1", "kind": "INTENT_CLAIM"}
+        self.runtime.activity_status = Mock(return_value={"recent": [event]})
+        self.runtime.claim_scope = AsyncMock(return_value={"accepted": True, "event": event})
+        self.runtime.release_scope = AsyncMock(return_value={"accepted": True})
+        self.runtime.renew_scope = AsyncMock(return_value={"accepted": True, "event": event})
+        self.runtime.blackboard_note = AsyncMock(return_value={"accepted": True})
+        self.runtime.contract_change = AsyncMock(return_value={"accepted": True})
+        self.runtime.ask_peer = AsyncMock(return_value={
+            "accepted": True, "request_id": "a" * 32,
+            "device_record_id": "dev_peer", "answer": "Canonical parser",
+            "cached": True, "shared": True,
+        })
+
+        def request(method: str, **params: Any):
+            return self.server.handle_request({
+                "jsonrpc": "2.0", "id": 1, "method": method,
+                "params": {"project_session_id": "proj_team", **params},
+            })
+
+        self.assertEqual(request("team/activity/status", limit=10)["result"], {"recent": [event]})
+        self.runtime.activity_status.assert_called_once_with(limit=10)
+        self.assertTrue(request(
+            "team/scope/claim", task_id="task_1", paths=["src/api.py"],
+            symbols=["parse"], ttl_seconds=30, claim_id="claim_1",
+        )["result"]["accepted"])
+        self.runtime.claim_scope.assert_awaited_once_with(
+            "task_1", paths=["src/api.py"], symbols=["parse"],
+            ttl_seconds=30, claim_id="claim_1", summary=None,
+        )
+        self.assertTrue(request(
+            "team/scope/renew", task_id="task_1", claim_id="claim_1", ttl_seconds=60,
+        )["result"]["accepted"])
+        self.runtime.renew_scope.assert_awaited_once_with(
+            "task_1", "claim_1", ttl_seconds=60, summary=None,
+        )
+        self.assertTrue(request(
+            "team/scope/release", task_id="task_1", claim_id="claim_1",
+        )["result"]["accepted"])
+        self.runtime.release_scope.assert_awaited_once_with(
+            "task_1", "claim_1", paths=None, symbols=None,
+        )
+        self.assertTrue(request(
+            "team/blackboard/note", body="Keep APIs stable", task_id="task_1", pinned=True,
+        )["result"]["accepted"])
+        self.runtime.blackboard_note.assert_awaited_once_with(
+            "Keep APIs stable", task_id="task_1", pinned=True,
+        )
+        self.assertTrue(request(
+            "team/contract/change", task_id="task_1", path="src/api.py",
+            symbol="parse", before="parse(text)", after="parse(text, strict=False)",
+        )["result"]["accepted"])
+        self.runtime.contract_change.assert_awaited_once_with(
+            "task_1", path="src/api.py", symbol="parse",
+            before="parse(text)", after="parse(text, strict=False)",
+        )
+        self.assertTrue(request(
+            "team/peer/query", device_record_id="dev_peer",
+            question="Which parser?", task_id="task_1",
+        )["result"]["cached"])
+        self.runtime.ask_peer.assert_awaited_once_with(
+            "dev_peer", "Which parser?", "task_1",
+        )
+
+    def test_fastlane_controls_reject_malformed_boundary_input(self) -> None:
+        self.server._team_runtimes = {self.runtime.project_session_id: self.runtime}
+        self.server._ensure_transport_broker = lambda: self.broker
+        self.runtime.claim_scope = AsyncMock()
+        self.runtime.blackboard_note = AsyncMock()
+
+        malformed = (
+            ("team/scope/claim", {"task_id": "task_1", "paths": "src/api.py"}),
+            ("team/scope/claim", {"task_id": "task_1", "ttl_seconds": True}),
+            ("team/scope/renew", {"task_id": "task_1", "claim_id": "claim_1", "ttl_seconds": 301}),
+            ("team/blackboard/note", {"body": "note", "pinned": "true"}),
+            ("team/activity/status", {"limit": 0}),
+            ("team/peer/query", {"device_record_id": "dev_peer", "question": "q\x00", "task_id": "task_1"}),
+        )
+        for method, params in malformed:
+            with self.subTest(method=method, params=params):
+                result = self.server.handle_request({
+                    "jsonrpc": "2.0", "id": 1, "method": method,
+                    "params": {"project_session_id": "proj_team", **params},
+                })
+                self.assertEqual(result["error"]["code"], -32602)
+        self.runtime.claim_scope.assert_not_awaited()
+        self.runtime.blackboard_note.assert_not_awaited()
 
     def test_runtime_events_are_public_cloud_events(self) -> None:
         captured = []
