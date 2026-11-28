@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from cloud.team_scope import TeamScopeAllocator, TeamScopeUnavailable
-from cloud.updater import canonical_json_bytes
+from cloud.updater import canonical_json_bytes, verify_signed_envelope
 
 
 class TeamScopeAllocatorTests(unittest.TestCase):
@@ -73,6 +73,19 @@ class TeamScopeAllocatorTests(unittest.TestCase):
             "project_session_id": "proj_1", "host_epoch": 1, "turn_seq": 2,
         })
         self.assertEqual(restarted.reserve("task_1")["turn_seq"], 1)
+
+    def test_peer_reservation_returns_lease_and_verifies_exact_ownership(self) -> None:
+        allocator = self._allocator()
+        reserved = allocator.reserve_with_lease("peer_task")
+        scope = reserved["scope"]
+        self.assertTrue(verify_signed_envelope(reserved["signed_lease"], self.public_key_hex))
+        self.assertTrue(allocator.verify_reservation("peer_task", scope))
+        self.assertFalse(allocator.verify_reservation("other_task", scope))
+        self.assertFalse(allocator.verify_reservation("peer_task", {**scope, "turn_seq": 2}))
+        self.lease["host_epoch"] = 2
+        self.assertFalse(allocator.verify_reservation("peer_task", scope))
+        self.lease["last_committed_turn_seq"] = 1
+        self.assertTrue(allocator.verify_reservation("peer_task", scope))
 
     def test_concurrent_threads_cannot_share_the_next_sequence(self) -> None:
         allocator = self._allocator()

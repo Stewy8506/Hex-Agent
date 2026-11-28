@@ -57,11 +57,15 @@ class TeamScopeAllocator:
         self._thread_lock = threading.RLock()
 
     def reserve(self, task_id: str) -> dict[str, Any]:
+        return self.reserve_with_lease(task_id)["scope"]
+
+    def reserve_with_lease(self, task_id: str) -> dict[str, Any]:
         if not isinstance(task_id, str) or not task_id or len(task_id) > 512:
             raise ValueError("A valid task id is required for team scope reservation.")
         with self._thread_lock, self._process_lock():
             state = self._load()
             lease = self._verified_lease()
+            signed_lease = lease["signed_lease"]
             session_id = lease["project_session_id"]
             epoch = lease["host_epoch"]
             committed = lease["last_committed_turn_seq"]
@@ -71,7 +75,7 @@ class TeamScopeAllocator:
                 and reservation["project_session_id"] == session_id
                 and reservation["turn_seq"] <= committed
             ):
-                return dict(reservation)
+                return {"scope": dict(reservation), "signed_lease": signed_lease}
             active = state["active"]
             if (
                 active is not None
@@ -83,7 +87,7 @@ class TeamScopeAllocator:
                     reservation = state["reservations"].get(task_id)
                     if reservation != {key: active[key] for key in _SCOPE_FIELDS}:
                         raise ValueError("Active team scope reservation is inconsistent.")
-                    return dict(reservation)
+                    return {"scope": dict(reservation), "signed_lease": signed_lease}
                 raise TeamScopeUnavailable(
                     "Another team turn already owns the next Coordinator sequence."
                 )
@@ -93,7 +97,7 @@ class TeamScopeAllocator:
                 and reservation["project_session_id"] == session_id
                 and reservation["host_epoch"] == epoch
             ):
-                return dict(reservation)
+                return {"scope": dict(reservation), "signed_lease": signed_lease}
 
             scope = {
                 "project_session_id": session_id,
@@ -103,7 +107,29 @@ class TeamScopeAllocator:
             state["reservations"][task_id] = scope
             state["active"] = {"task_id": task_id, **scope}
             self._write(state)
-            return dict(scope)
+            return {"scope": scope, "signed_lease": signed_lease}
+
+    def verify_reservation(self, task_id: str, scope: Mapping[str, Any]) -> bool:
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 512:
+            raise ValueError("A valid task id is required for team scope verification.")
+        self._validate_scope(scope)
+        with self._thread_lock, self._process_lock():
+            state = self._load()
+            lease = self._verified_lease()
+            reservation = state["reservations"].get(task_id)
+            if reservation != dict(scope) or reservation["project_session_id"] != lease["project_session_id"]:
+                return False
+            if reservation["turn_seq"] <= lease["last_committed_turn_seq"]:
+                return True
+            active = state["active"]
+            return bool(
+                active is not None
+                and active["task_id"] == task_id
+                and active["project_session_id"] == lease["project_session_id"]
+                and active["host_epoch"] == lease["host_epoch"]
+                and active["turn_seq"] == reservation["turn_seq"]
+                and {key: active[key] for key in _SCOPE_FIELDS} == reservation
+            )
 
     def status(self) -> dict[str, Any]:
         with self._thread_lock, self._process_lock():
@@ -147,6 +173,7 @@ class TeamScopeAllocator:
             "project_session_id": session_id,
             "host_epoch": epoch,
             "last_committed_turn_seq": committed,
+            "signed_lease": envelope,
         }
 
     def _load(self) -> dict[str, Any]:
