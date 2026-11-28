@@ -11,6 +11,8 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from fcntl import LOCK_EX, LOCK_SH, LOCK_UN, flock
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -290,6 +292,7 @@ class TeamActivityStore:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
         self.path = self.root / "team_blackboard.jsonl"
+        self._lock_path = self.root / "team_blackboard.lock"
         self.event_limit = event_limit
         self.bytes_limit = bytes_limit
         self._lock = threading.RLock()
@@ -312,7 +315,8 @@ class TeamActivityStore:
             now=now,
         )
         event_id = event["event_id"]
-        with self._lock:
+        with self._lock, self._journal_lock(exclusive=True):
+            self._read_locked()
             existing = self._event_ids.get(event_id)
             if existing is not None:
                 if existing != event:
@@ -330,11 +334,20 @@ class TeamActivityStore:
             self._write_locked()
             return {"accepted": True, "duplicate": False, "event": event}
 
+    def _session_events(self) -> list[dict[str, Any]]:
+        with self._lock, self._journal_lock(exclusive=False):
+            self._read_locked()
+            return [
+                entry["envelope"]["event"]
+                for entry in self._entries
+                if entry["envelope"]["event"]["project_session_id"]
+                == self.project_session_id
+            ]
+
     def scope_locks(self, *, now: float | None = None, host_epoch: int | None = None) -> list[dict[str, Any]]:
         current = time.time() if now is None else now
         latest: dict[tuple[str, str], dict[str, Any]] = {}
-        with self._lock:
-            events = [entry["envelope"]["event"] for entry in self._entries]
+        events = self._session_events()
         for event in events:
             if event["kind"] not in {"INTENT_CLAIM", "SCOPE_RELEASE"}:
                 continue
@@ -374,8 +387,7 @@ class TeamActivityStore:
 
     def peer_activity(self, *, host_epoch: int | None = None) -> list[dict[str, Any]]:
         latest: dict[str, dict[str, Any]] = {}
-        with self._lock:
-            events = [entry["envelope"]["event"] for entry in self._entries]
+        events = self._session_events()
         for event in events:
             if event["kind"] != "PEER_STATE":
                 continue
@@ -389,10 +401,8 @@ class TeamActivityStore:
     def blackboard(self, *, limit: int = 50) -> list[dict[str, Any]]:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("Blackboard limit must be between 1 and 100.")
-        with self._lock:
-            events = [entry["envelope"]["event"] for entry in self._entries]
         notes = [
-            event for event in events
+            event for event in self._session_events()
             if event["kind"] in {"BLACKBOARD_NOTE", "PEER_QUERY_ANSWER"}
         ]
         notes.sort(key=lambda item: (item["data"].get("pinned") is True, item["created_at"], item["event_id"]), reverse=True)
@@ -401,26 +411,52 @@ class TeamActivityStore:
     def recent_activity(self, *, limit: int = 50, host_epoch: int | None = None) -> list[dict[str, Any]]:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("Activity limit must be between 1 and 100.")
-        with self._lock:
-            events = [entry["envelope"]["event"] for entry in self._entries]
+        events = self._session_events()
         if host_epoch is not None:
             events = [event for event in events if event["host_epoch"] == host_epoch]
         events.sort(key=lambda item: (item["created_at"], item["event_id"]), reverse=True)
         return events[:limit]
 
     def status(self) -> dict[str, Any]:
-        with self._lock:
+        with self._lock, self._journal_lock(exclusive=False):
+            self._read_locked()
+            events = [
+                entry["envelope"]["event"]
+                for entry in self._entries
+                if entry["envelope"]["event"]["project_session_id"]
+                == self.project_session_id
+            ]
             size = self.path.stat().st_size if self.path.exists() else 0
-            return {
-                "events": len(self._entries),
-                "bytes": size,
-                "event_limit": self.event_limit,
-                "bytes_limit": self.bytes_limit,
-                "corrupt": False,
-                "path": str(self.path),
-            }
+            journal_events = len(self._entries)
+        return {
+            "events": len(events),
+            "journal_events": journal_events,
+            "bytes": size,
+            "event_limit": self.event_limit,
+            "bytes_limit": self.bytes_limit,
+            "corrupt": False,
+            "path": str(self.path),
+        }
+
+    @contextmanager
+    def _journal_lock(self, *, exclusive: bool):
+        descriptor = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            flock(descriptor, LOCK_EX if exclusive else LOCK_SH)
+            yield
+        finally:
+            flock(descriptor, LOCK_UN)
+            os.close(descriptor)
 
     def _load(self) -> None:
+        with self._lock, self._journal_lock(exclusive=False):
+            self._read_locked()
+
+    def _read_locked(self) -> None:
+        self._entries = []
+        self._event_ids = {}
+        self._tip = "0" * 64
         if not self.path.exists():
             return
         try:
@@ -446,9 +482,14 @@ class TeamActivityStore:
                 envelope = entry["envelope"]
                 if not isinstance(envelope, Mapping) or set(envelope) != {"event", "signature"}:
                     raise TeamActivityError("Malformed stored team activity.")
-                event = validate_activity_event(envelope["event"], self.project_session_id)
+                raw_event = envelope["event"]
+                session_id = raw_event.get("project_session_id") if isinstance(raw_event, Mapping) else None
+                if not isinstance(session_id, str) or not DEVICE_ID_PATTERN.fullmatch(session_id):
+                    raise TeamActivityError("Invalid stored team activity session.")
+                event = validate_activity_event(raw_event, session_id)
                 self._entries.append(entry)
-                self._event_ids[event["event_id"]] = event
+                if session_id == self.project_session_id:
+                    self._event_ids[event["event_id"]] = event
                 previous = digest
             self._tip = previous
         except (OSError, UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError) as exc:

@@ -6,6 +6,7 @@ import json
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from cloud.p2p_transport import PeerIdentity
@@ -204,6 +205,48 @@ class TeamFastLaneTests(unittest.TestCase):
         restored.path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
         with self.assertRaisesRegex(TeamActivityError, "malformed"):
             TeamActivityStore(self.root, "proj_team")
+
+    def test_shared_workspace_journal_isolates_sessions_and_serializes_writes(self) -> None:
+        other = TeamActivityStore(self.root, "proj_other")
+
+        def write(store: TeamActivityStore, session_id: str, prefix: str) -> None:
+            for index in range(10):
+                envelope = make_activity_event(
+                    signer=self.alice,
+                    project_session_id=session_id,
+                    host_epoch=1,
+                    kind="BLACKBOARD_NOTE",
+                    summary=f"{prefix} note {index}",
+                    data={
+                        "task_id": None,
+                        "body": f"{prefix} body {index}",
+                        "pinned": False,
+                    },
+                    created_at=self.now,
+                )
+                store.accept(
+                    envelope, self.alice.signing_public_key, now=self.now
+                )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(write, self.store, "proj_team", "first")
+            second = executor.submit(write, other, "proj_other", "other")
+            first.result()
+            second.result()
+
+        self.assertEqual(self.store.status()["events"], 10)
+        self.assertEqual(other.status()["events"], 10)
+        self.assertEqual(self.store.status()["journal_events"], 20)
+        self.assertTrue(all(
+            note["data"]["body"].startswith("first ")
+            for note in self.store.blackboard(limit=100)
+        ))
+        restored = TeamActivityStore(self.root, "proj_other")
+        self.assertEqual(restored.status()["journal_events"], 20)
+        self.assertTrue(all(
+            note["data"]["body"].startswith("other ")
+            for note in restored.blackboard(limit=100)
+        ))
 
     def test_event_and_byte_limits_are_enforced(self) -> None:
         store = TeamActivityStore(self.root, "proj_team", event_limit=2, bytes_limit=5000)
