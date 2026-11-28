@@ -843,9 +843,10 @@ class ACPServer:
             return runtime.status() if runtime is not None else {
                 "running": False, "project_session_id": session_id
             }
-        return {"running": bool(runtimes), "sessions": [
-            runtime.status() for runtime in runtimes.values()
-        ]}
+        return {
+            "running": any(runtime.status().get("running") for runtime in runtimes.values()),
+            "sessions": [runtime.status() for runtime in runtimes.values()],
+        }
 
     def _team_start(self, params: dict[str, Any]) -> dict[str, Any]:
         from cloud.team_runtime import TeamRuntime
@@ -863,6 +864,13 @@ class ACPServer:
         with self._team_lock:
             existing = self._team_runtimes.get(session_id)
         if existing is not None:
+            if (
+                getattr(existing, "team_id", team_id) != team_id
+                or existing.workspace_root != workspace
+            ):
+                raise ValueError("The team session is already bound to a different team or workspace.")
+            if not existing.status().get("running"):
+                broker.submit(existing.start).result(timeout=60)
             return existing.status()
 
         def on_event(event: dict[str, Any]) -> None:
@@ -897,7 +905,8 @@ class ACPServer:
         if self._orchestrator is None or not hasattr(self._orchestrator, "team_turn_hook"):
             return
         with self._team_lock:
-            running = bool(self._team_runtimes)
+            runtimes = dict(self._team_runtimes)
+        running = any(runtime.status().get("running") for runtime in runtimes.values())
         self._orchestrator.team_turn_hook = self._dispatch_team_turn if running else None
 
     def _dispatch_team_turn(self, turn: Any) -> dict[str, Any]:
@@ -935,6 +944,8 @@ class ACPServer:
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("project_session_id must be a non-empty string.")
         runtime = self._team_runtime(session_id)
+        if not runtime.status().get("running"):
+            raise ValueError("The team session is not running.")
         if runtime.workspace_root != workspace.resolve():
             raise ValueError("The team session belongs to a different workspace.")
         return session_id

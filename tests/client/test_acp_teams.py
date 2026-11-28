@@ -15,18 +15,24 @@ from hex_cli.acp import ACPServer, _SUPPORTED_METHODS
 
 class _Runtime:
     project_session_id = "proj_team"
+    team_id = "team_1"
 
     def __init__(self, workspace_root: Path) -> None:
         self.workspace_root = workspace_root.resolve()
         self.stopped = False
+        self.running = True
+        self.start_count = 0
         self.flushed = False
         self.turns = []
 
     async def start(self):
+        self.start_count += 1
+        self.running = True
         return self.status()
 
     async def stop(self):
         self.stopped = True
+        self.running = False
 
     async def flush(self):
         self.flushed = True
@@ -40,7 +46,7 @@ class _Runtime:
         return {"status": "queued"}
 
     def status(self):
-        return {"running": not self.stopped, "project_session_id": self.project_session_id}
+        return {"running": self.running, "project_session_id": self.project_session_id}
 
 
 class _Broker:
@@ -86,6 +92,28 @@ class ACPTeamTests(unittest.TestCase):
         self.assertEqual(self.server._team_stop({"project_session_id": "proj_team"}), {"stopped": 1})
         self.assertTrue(self.runtime.stopped)
         self.assertIsNone(self.orchestrator.team_turn_hook)
+
+    def test_start_recovers_an_existing_failed_closed_runtime(self) -> None:
+        self.runtime.running = False
+        self.server._team_runtimes = {self.runtime.project_session_id: self.runtime}
+        self.server._signal_start = lambda: {"running": True}
+        self.server._ensure_transport_broker = lambda: self.broker
+
+        self.assertFalse(self.server._team_status({})["running"])
+        with self.assertRaisesRegex(ValueError, "not running"):
+            self.server._team_prompt_session(
+                {"project_session_id": self.runtime.project_session_id}, Path(self.tmp.name)
+            )
+        result = self.server._team_start({
+            "team_id": "team_1", "project_session_id": "proj_team"
+        })
+
+        self.assertTrue(result["running"])
+        self.assertEqual(self.runtime.start_count, 1)
+        with self.assertRaisesRegex(ValueError, "different team"):
+            self.server._team_start({
+                "team_id": "team_other", "project_session_id": "proj_team"
+            })
 
     def test_turn_hook_routes_by_task_session_and_rejects_ambiguity(self) -> None:
         other = _Runtime(Path(self.tmp.name))
