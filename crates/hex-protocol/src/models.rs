@@ -911,6 +911,66 @@ pub struct CloudRevokeResult {
     pub device_record_id: String,
 }
 
+/// Authenticated team peer link reported by `team/status`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamPeerStatus {
+    pub device_record_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(default)]
+    pub closed: bool,
+    #[serde(default)]
+    pub pending_turns: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+/// Session-scoped team runtime status returned by `team/status` and `team/start`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamRuntimeStatus {
+    #[serde(default)]
+    pub running: bool,
+    pub team_id: String,
+    pub project_session_id: String,
+    pub local_device_id: String,
+    pub mode: String,
+    pub host_epoch: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_device_record_id: Option<String>,
+    pub committed_turn_seq: u64,
+    pub applied_turn_seq: u64,
+    #[serde(default)]
+    pub pending_turns: u64,
+    #[serde(default)]
+    pub peers: Vec<TeamPeerStatus>,
+    #[serde(default)]
+    pub connecting: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+/// Teams notification forwarded through the existing `cloud/event` channel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamEvent {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_device_record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+}
+
 /// Push notification emitted by the ACP server as `cloud/event`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CloudEvent {
@@ -1349,6 +1409,27 @@ pub struct SessionSubagentsResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn team_runtime_status_and_events_deserialize_from_acp() {
+        let status: TeamRuntimeStatus = serde_json::from_value(serde_json::json!({
+            "running": true, "team_id": "team_1", "project_session_id": "proj_1",
+            "local_device_id": "dev_a", "mode": "TEAM_PRIMARY_HOST", "host_epoch": 2,
+            "primary_device_record_id": "dev_a", "committed_turn_seq": 4,
+            "applied_turn_seq": 3, "pending_turns": 1,
+            "peers": [{"device_record_id": "dev_b", "role": "developer",
+                       "transport": "relay", "closed": false, "pending_turns": 0}],
+            "connecting": ["dev_c"]
+        })).unwrap();
+        assert_eq!(status.host_epoch, 2);
+        assert_eq!(status.peers[0].transport.as_deref(), Some("relay"));
+        let event: TeamEvent = serde_json::from_value(serde_json::json!({
+            "kind": "team/turn_committed", "project_session_id": "proj_1",
+            "host_epoch": 2, "turn_seq": 4, "author_device_record_id": "dev_b"
+        })).unwrap();
+        assert_eq!(event.turn_seq, Some(4));
+        assert_eq!(event.author_device_record_id.as_deref(), Some("dev_b"));
+    }
 
     #[test]
     fn test_request_id_serialization() {

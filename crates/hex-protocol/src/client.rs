@@ -28,7 +28,7 @@ use crate::models::{
     SessionSubagentsParams, SessionSubagentsResponse, SubagentInfo, ToolCallParams,
     GcPreviewResponse, ToolCallResponse, ToolDefinition, ToolPolicyMutationResponse,
     ToolsListResponse,
-    ToolsPolicyResponse, HEX_CONTRACT_VERSION,
+    ToolsPolicyResponse, TeamRuntimeStatus, HEX_CONTRACT_VERSION,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -864,6 +864,67 @@ impl AcpClient {
     pub async fn gc_preview(&self) -> Result<GcPreviewResponse, AcpError> {
         self.send_request("maintenance/gcPreview", serde_json::json!({}))
             .await
+    }
+
+    // -- Teams ---------------------------------------------------------------
+
+    /// Start an explicitly selected project session in the Teams runtime.
+    pub async fn team_start(
+        &self,
+        team_id: &str,
+        project_session_id: &str,
+    ) -> Result<TeamRuntimeStatus, AcpError> {
+        self.send_request("team/start", serde_json::json!({
+            "team_id": team_id, "project_session_id": project_session_id,
+        })).await
+    }
+
+    /// Read status for one team session, or all sessions when no id is supplied.
+    pub async fn team_status(
+        &self,
+        project_session_id: Option<&str>,
+    ) -> Result<serde_json::Value, AcpError> {
+        self.send_request("team/status", serde_json::json!({
+            "project_session_id": project_session_id,
+        })).await
+    }
+
+    /// Stop one team session, or every local team session when no id is supplied.
+    pub async fn team_stop(&self, project_session_id: Option<&str>) -> Result<serde_json::Value, AcpError> {
+        self.send_request("team/stop", serde_json::json!({
+            "project_session_id": project_session_id,
+        })).await
+    }
+
+    /// Connect an eligible enrolled peer through authenticated E2EE transport.
+    pub async fn team_connect(
+        &self,
+        project_session_id: &str,
+        device_record_id: &str,
+        transport: &str,
+    ) -> Result<serde_json::Value, AcpError> {
+        self.send_request("team/connect", serde_json::json!({
+            "project_session_id": project_session_id, "device_record_id": device_record_id,
+            "transport": transport,
+        })).await
+    }
+
+    /// Disconnect a peer without stopping the durable team session.
+    pub async fn team_disconnect(
+        &self,
+        project_session_id: &str,
+        device_record_id: &str,
+    ) -> Result<serde_json::Value, AcpError> {
+        self.send_request("team/disconnect", serde_json::json!({
+            "project_session_id": project_session_id, "device_record_id": device_record_id,
+        })).await
+    }
+
+    /// Flush durably queued turns through the runtime's authenticated publisher.
+    pub async fn team_flush(&self, project_session_id: &str) -> Result<serde_json::Value, AcpError> {
+        self.send_request("team/flush", serde_json::json!({
+            "project_session_id": project_session_id,
+        })).await
     }
 
     // -- Cloud account ------------------------------------------------------
