@@ -440,11 +440,14 @@ class TeamRuntime:
             asyncio.to_thread(self.account.get_session_lease, self.project_session_id),
         )
         if not isinstance(roster, list) or not isinstance(lease, Mapping):
+            await self._fail_closed()
             raise TeamRuntimeError("Team roster or lease is malformed.")
         if not verify_signed_envelope(lease, self.server_public_key_hex):
+            await self._fail_closed()
             raise TeamRuntimeError("Team lease signature verification failed.")
         payload = lease.get("payload")
         if not isinstance(payload, Mapping) or payload.get("team_id") != self.team_id:
+            await self._fail_closed()
             raise TeamRuntimeError("Team lease belongs to a different team.")
         devices: dict[str, dict[str, Any]] = {}
         try:
@@ -471,10 +474,7 @@ class TeamRuntime:
                     **dict(item), "host_eligible": bool(host_eligible)
                 }
         except Exception:
-            with self._state_lock:
-                self._devices = {}
-                self._signed_lease = None
-            await self._reconcile_links()
+            await self._fail_closed()
             raise
         with self._state_lock:
             self._devices = devices
@@ -484,9 +484,7 @@ class TeamRuntime:
             or local["role"] not in _ELIGIBLE_ROLES
             or not local["host_eligible"]
         ):
-            with self._state_lock:
-                self._signed_lease = None
-            await self._reconcile_links()
+            await self._fail_closed()
             raise TeamRuntimeError("This device is not an eligible member of the team.")
         previous_epoch = self.mesh.current_epoch
         self.mesh.apply_signed_host_lease(dict(lease))
@@ -503,6 +501,18 @@ class TeamRuntime:
                 mode=self.mesh.mode,
             )
         await self._auto_connect()
+
+    async def _fail_closed(self) -> None:
+        with self._state_lock:
+            self._started = False
+            self._devices = {}
+            self._signed_lease = None
+            self._lease_fetched_at = 0.0
+            connections = list(self._connections.values())
+            self._connections.clear()
+        for future in connections:
+            future.cancel()
+        await self._reconcile_links()
 
     async def _reconcile_links(self, *, reset: bool = False) -> None:
         allowed = self._allowed_peer_ids()
@@ -548,6 +558,8 @@ class TeamRuntime:
             except Exception as exc:
                 self._last_error = type(exc).__name__
                 self._emit("team/runtime_error", error_type=type(exc).__name__)
+                if not self._started:
+                    break
 
     def _schedule_flush(self) -> None:
         with self._state_lock:

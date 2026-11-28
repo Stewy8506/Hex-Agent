@@ -288,6 +288,40 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await host_session.close()
             await outsider_session.close()
 
+    async def test_invalid_lease_signature_revokes_runtime_authorization(self) -> None:
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        await self._link(host, replica)
+        invalid = self.control.lease()
+        invalid["signature"] = "ed25519:" + "00" * 64
+        self.control.lease = lambda: copy.deepcopy(invalid)
+
+        with self.assertRaises(TeamRuntimeError):
+            await host.refresh()
+
+        self.assertFalse(host.status()["running"])
+        self.assertEqual(host.status()["roster_devices"], 0)
+        self.assertEqual(host.status()["peers"], [])
+        self.assertIsNone(host._signed_lease)
+        with self.assertRaises(TeamRuntimeError):
+            await host.publish(self._verified_turn(host, "revoked-turn"))
+
+    async def test_removed_local_device_fails_closed(self) -> None:
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        await self._link(host, replica)
+        roster = [record for record in self.control.roster() if record["device_record_id"] != self.host.device_id]
+        self.control.roster = lambda: copy.deepcopy(roster)
+
+        with self.assertRaises(TeamRuntimeError):
+            await host.refresh()
+
+        self.assertFalse(host.status()["running"])
+        self.assertEqual(host.status()["roster_devices"], 0)
+        self.assertEqual(host.status()["peers"], [])
+        with self.assertRaises(TeamRuntimeError):
+            host.connect(self.replica.device_id)
+
     async def test_coordinator_turn_is_committed_applied_archived_and_replicated(self) -> None:
         host = await self._runtime(self.host, "host")
         replica = await self._runtime(self.replica, "replica")
