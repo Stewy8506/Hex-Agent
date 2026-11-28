@@ -321,7 +321,11 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         mesh.apply_signed_host_lease(self.server.lease(sequence=2))
         self.coordinator_mesh.apply_signed_host_lease(self.server.lease(sequence=2))
         records = [
-            {"signed": signed.to_dict(), "payload": payload}
+            {
+                "signed": signed.to_dict(),
+                "payload": payload,
+                "receipt": self.server.receipt(signed),
+            }
             for signed, payload in ((first_signed, first_payload), (second_signed, second_payload))
         ]
         commits = []
@@ -344,6 +348,23 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(verify_turn_ack(ack, self.replica.signing_public_key) for ack in acks))
         self.assertIsNone(mesh.missing_turn_range)
         self.assertEqual(coordinator.mesh.committed_turn_seq, 2)
+
+    async def test_catchup_rejects_unverified_backend_receipts(self) -> None:
+        receipt = self.server.receipt(self.signed)
+        receipt["signature"] = "ed25519:invalid"
+        self.coordinator_mesh.apply_signed_host_lease(self.server.lease(sequence=1))
+        self.replica_mesh.apply_signed_host_lease(self.server.lease(sequence=1))
+        coordinator, _, _ = await self._links(
+            history=lambda _session, _first, _last: [{
+                "signed": self.signed.to_dict(),
+                "payload": self.payload,
+                "receipt": receipt,
+            }],
+        )
+
+        await self._wait_for(lambda: coordinator.status()["last_error"] is not None)
+        self.assertEqual(self.replica_mesh.last_applied_turn_seq, 0)
+        self.assertEqual((self.replica_workspace / "app.py").read_text(), "value = 1\n")
 
     async def test_exact_signed_retry_reuses_receipt_and_replica_ack_is_idempotent(self) -> None:
         commits = []

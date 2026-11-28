@@ -921,6 +921,10 @@ class TeamPeerLink:
             signed = SignedTurnCommitBundle.from_dict(record["signed"])
             if signed.bundle.project_session_id != self.mesh.project_session_id:
                 raise TeamTransportError("Catch-up history belongs to a different session.")
+            receipt = record.get("receipt")
+            if not isinstance(receipt, Mapping):
+                raise TeamTransportError("Catch-up history is missing its backend receipt.")
+            self._verify_receipt(signed, receipt)
             await self._enqueue(signed, record["payload"], wait=False)
             available.append(sequence)
         await _send_control(
