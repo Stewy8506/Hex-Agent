@@ -16,9 +16,11 @@ from hex_cli.acp import ACPServer, _SUPPORTED_METHODS
 class _Runtime:
     project_session_id = "proj_team"
 
-    def __init__(self) -> None:
+    def __init__(self, workspace_root: Path) -> None:
+        self.workspace_root = workspace_root.resolve()
         self.stopped = False
         self.flushed = False
+        self.turns = []
 
     async def start(self):
         return self.status()
@@ -32,6 +34,10 @@ class _Runtime:
 
     async def disconnect(self, device_id):
         return {"disconnected": True, "device_record_id": device_id}
+
+    def __call__(self, turn):
+        self.turns.append(turn)
+        return {"status": "queued"}
 
     def status(self):
         return {"running": not self.stopped, "project_session_id": self.project_session_id}
@@ -52,7 +58,7 @@ class ACPTeamTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.orchestrator = SimpleNamespace(ledger=object(), team_turn_hook=None)
         self.server = ACPServer(orchestrator=self.orchestrator, workspace_root=self.tmp.name)
-        self.runtime = _Runtime()
+        self.runtime = _Runtime(Path(self.tmp.name))
         self.broker = _Broker()
 
     def tearDown(self) -> None:
@@ -68,7 +74,7 @@ class ACPTeamTests(unittest.TestCase):
                 "params": {"team_id": "team_1", "project_session_id": "proj_team"},
             })
         self.assertEqual(result["result"]["running"], True)
-        self.assertIs(self.orchestrator.team_turn_hook, self.runtime)
+        self.assertEqual(self.orchestrator.team_turn_hook, self.server._dispatch_team_turn)
         self.assertIn("team/start", _SUPPORTED_METHODS)
         self.assertEqual(self.server._team_flush({"project_session_id": "proj_team"}),
                          {"delivered": 0, "queued": 0})
@@ -80,6 +86,62 @@ class ACPTeamTests(unittest.TestCase):
         self.assertEqual(self.server._team_stop({"project_session_id": "proj_team"}), {"stopped": 1})
         self.assertTrue(self.runtime.stopped)
         self.assertIsNone(self.orchestrator.team_turn_hook)
+
+    def test_turn_hook_routes_by_task_session_and_rejects_ambiguity(self) -> None:
+        other = _Runtime(Path(self.tmp.name))
+        other.project_session_id = "proj_other"
+        self.server._team_runtimes = {
+            self.runtime.project_session_id: self.runtime,
+            other.project_session_id: other,
+        }
+        self.server._select_team_hook()
+        self.orchestrator.ledger = SimpleNamespace(
+            get_task=lambda _task_id: {
+                "constraints": {
+                    "team_project_session_id": other.project_session_id,
+                    "workspace_root": self.tmp.name,
+                }
+            }
+        )
+        turn = SimpleNamespace(task_id="task_1")
+
+        result = self.orchestrator.team_turn_hook(turn)
+
+        self.assertEqual(result, {"status": "queued"})
+        self.assertEqual(other.turns, [turn])
+        self.assertEqual(self.runtime.turns, [])
+        self.orchestrator.ledger.get_task = lambda _task_id: {
+            "constraints": {"workspace_root": self.tmp.name}
+        }
+        with self.assertRaisesRegex(ValueError, "required"):
+            self.orchestrator.team_turn_hook(turn)
+        self.orchestrator.ledger.get_task = lambda _task_id: {
+            "constraints": {
+                "team_project_session_id": other.project_session_id,
+                "workspace_root": str(Path(self.tmp.name) / "other"),
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            self.orchestrator.team_turn_hook(turn)
+
+    def test_prompt_session_must_match_a_running_team_workspace(self) -> None:
+        self.server._team_runtimes = {self.runtime.project_session_id: self.runtime}
+        workspace = Path(self.tmp.name)
+
+        self.assertIsNone(self.server._team_prompt_session({}, workspace))
+        self.assertEqual(
+            self.server._team_prompt_session(
+                {"project_session_id": self.runtime.project_session_id}, workspace
+            ),
+            self.runtime.project_session_id,
+        )
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            self.server._team_prompt_session({"project_session_id": ""}, workspace)
+        with self.assertRaisesRegex(ValueError, "different workspace"):
+            self.server._team_prompt_session(
+                {"project_session_id": self.runtime.project_session_id},
+                workspace / "other",
+            )
 
     def test_runtime_events_are_public_cloud_events(self) -> None:
         captured = []

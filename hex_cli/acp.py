@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -897,8 +897,47 @@ class ACPServer:
         if self._orchestrator is None or not hasattr(self._orchestrator, "team_turn_hook"):
             return
         with self._team_lock:
-            runtimes = list(self._team_runtimes.values())
-        self._orchestrator.team_turn_hook = runtimes[-1] if runtimes else None
+            running = bool(self._team_runtimes)
+        self._orchestrator.team_turn_hook = self._dispatch_team_turn if running else None
+
+    def _dispatch_team_turn(self, turn: Any) -> dict[str, Any]:
+        ledger = getattr(self._orchestrator, "ledger", None)
+        task = ledger.get_task(turn.task_id) if ledger is not None else None
+        constraints = task.get("constraints") if isinstance(task, Mapping) else None
+        constraints = constraints if isinstance(constraints, Mapping) else {}
+        session_id = constraints.get("team_project_session_id")
+        workspace = constraints.get("workspace_root")
+        with self._team_lock:
+            runtimes = dict(self._team_runtimes)
+        if session_id is not None:
+            if not isinstance(session_id, str):
+                raise ValueError("The team project session id is invalid.")
+            runtime = runtimes.get(session_id)
+            if runtime is None:
+                raise ValueError("The task's team session is not running.")
+        elif len(runtimes) == 1:
+            runtime = next(iter(runtimes.values()))
+        else:
+            raise ValueError("A team project session id is required for this task.")
+        if (
+            workspace is not None
+            and Path(str(workspace)).resolve() != runtime.workspace_root
+        ):
+            raise ValueError("The task workspace does not match its team session.")
+        return runtime(turn)
+
+    def _team_prompt_session(
+        self, params: Mapping[str, Any], workspace: Path
+    ) -> str | None:
+        session_id = params.get("project_session_id")
+        if session_id is None:
+            return None
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("project_session_id must be a non-empty string.")
+        runtime = self._team_runtime(session_id)
+        if runtime.workspace_root != workspace.resolve():
+            raise ValueError("The team session belongs to a different workspace.")
+        return session_id
 
     def _team_stop(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("project_session_id") or "")
@@ -1697,16 +1736,20 @@ class ACPServer:
         from harness_core.storage import compute_project_id
 
         exec_mode = str(params.get("execution_mode") or "react_loop")
+        team_session_id = self._team_prompt_session(params, sess.workspace_root)
+        constraints = {
+            "surface": "acp",
+            "conversation_id": sess.session_id,
+            "conversation_history": conversation_history,
+        }
+        if team_session_id is not None:
+            constraints["team_project_session_id"] = team_session_id
         task_req = TaskSubmitRequest(
             goal=prompt_text,
             project_id=compute_project_id(sess.workspace_root),
             execution_mode=exec_mode,
             workspace_root=str(sess.workspace_root),
-            constraints={
-                "surface": "acp",
-                "conversation_id": sess.session_id,
-                "conversation_history": conversation_history,
-            },
+            constraints=constraints,
         )
         sub_res = self.orchestrator.submit_task(task_req)
         task_id = sub_res["task_id"]
