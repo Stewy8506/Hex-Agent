@@ -277,6 +277,16 @@ class HexAuthClient:
             method="GET",
         )["members"]
 
+    def list_team_devices(
+        self, access_token: str, team_id: str
+    ) -> list[dict[str, Any]]:
+        return self._request_json(
+            f"/v1/teams/{self._path_segment(team_id, 'Team id')}/devices",
+            None,
+            access_token,
+            method="GET",
+        )["devices"]
+
     def update_team_member_role(
         self,
         access_token: str,

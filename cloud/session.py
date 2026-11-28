@@ -381,6 +381,10 @@ class CloudAccountManager:
         client = HexAuthClient(self.base_url)
         return self._authed(lambda token: client.list_team_members(token, team_id))
 
+    def list_team_devices(self, team_id: str) -> list[dict[str, Any]]:
+        client = HexAuthClient(self.base_url)
+        return self._authed(lambda token: client.list_team_devices(token, team_id))
+
     def update_team_member_role(
         self, team_id: str, target_user_id: str, role: str
     ) -> dict[str, Any]:

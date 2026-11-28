@@ -207,6 +207,26 @@ class HarnessCloudClientTests(unittest.TestCase):
             "signed_bundle": signed,
         })
 
+    def test_team_device_roster_uses_authenticated_team_endpoint(self) -> None:
+        response = {"devices": [{
+            "device_record_id": "dev_peer_a",
+            "user_id": "user_a",
+            "role": "developer",
+            "device_pubkey": "ed25519:public",
+            "host_eligible": True,
+            "trust_state": "trusted",
+        }]}
+        with patch("cloud.auth_client.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode()
+            result = HexAuthClient("https://backend.example").list_team_devices(
+                "access-token", "team_1"
+            )
+        self.assertEqual(result, response["devices"])
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://backend.example/v1/teams/team_1/devices")
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("Authorization"), "Bearer access-token")
+
     def test_signed_turn_ack_matches_backend_domain_and_rejects_tampering(self) -> None:
         signer = PeerIdentity.generate("dev_peer_a")
         ack = sign_turn_ack(signer, "proj_1", 2, 7, "a" * 64)
