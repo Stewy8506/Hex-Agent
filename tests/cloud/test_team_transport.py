@@ -21,8 +21,9 @@ from cloud.team_mesh import (
     verify_turn_ack,
 )
 from cloud.team_replication import TeamReplicationService
+from cloud.team_scope import TeamScopeAllocator
 from cloud.team_transport import TeamPeerLink, TeamTransportError, TeamTurnPublisher
-from cloud.updater import canonical_json_bytes
+from cloud.updater import canonical_json_bytes, verify_signed_envelope
 from harness_core.capabilities.proof import sign_proof_artifact
 from harness_core.core.models import TaskSubmitRequest
 from harness_core.storage.cow import compute_tree_sha, export_delta_archive
@@ -126,7 +127,7 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         self.replica_ledger.close()
         self.tmp.cleanup()
 
-    def _build_turn(self, sequence: int = 1):
+    def _build_turn(self, sequence: int = 1, *, signer=None):
         task = self.author_ledger.submit_task(TaskSubmitRequest(goal="transport verified team turn"))
         head_tree = compute_tree_sha(self.head)
         event = self.author_ledger.record_event(
@@ -148,7 +149,7 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
             verification_results={"passed": True, "exit_code": 0},
         )
         signed_proof = sign_proof_artifact(
-            proof, self.author, project_session_id="proj_1", host_epoch=1, turn_seq=sequence
+            proof, signer or self.author, project_session_id="proj_1", host_epoch=1, turn_seq=sequence
         )
         archive = self.root / f"turn-{sequence}.tar.gz"
         archive_sha = export_delta_archive(self.head, archive)
@@ -169,7 +170,7 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
             "ledger_delta": self.author_ledger.export_sync_delta(task["task_id"], limit=5000),
             "cognition_manifest": self.author_cognition.export_manifest(),
         }
-        return sign_turn_commit(bundle, self.author), payload
+        return sign_turn_commit(bundle, signer or self.author), payload
 
     async def _links(self, *, commit=None, history=None, replica_mesh=None, frames=None):
         def record(frame: bytes) -> bytes:
@@ -358,6 +359,157 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(commits), 2)
         self.assertEqual(self.replica_mesh.last_applied_turn_seq, 1)
         self.assertEqual([ack["turn_seq"] for ack in acks], [1, 1])
+
+    async def _peer_submission_links(self):
+        coordinator_workspace = self.root / "coordinator-workspace"
+        coordinator_workspace.mkdir()
+        (coordinator_workspace / "app.py").write_text("value = 1\n", encoding="utf-8")
+        (coordinator_workspace / ".env").write_text("COORDINATOR_ONLY=secret\n", encoding="utf-8")
+        coordinator_ledger = LedgerStore(self.root / "coordinator.db")
+        self.addCleanup(coordinator_ledger.close)
+        coordinator_cognition = CognitionSyncStore(
+            coordinator_workspace,
+            global_home=self.root / "coordinator-home",
+            workspace_id="proj_1",
+            ledger=coordinator_ledger,
+        )
+        coordinator_service = TeamReplicationService(
+            self.root / "coordinator-data",
+            coordinator_workspace,
+            coordinator_ledger,
+            coordinator_cognition,
+        )
+        coordinator_mesh = TeamMeshCoordinator(
+            self.host.device_id,
+            self.server.public_key_hex,
+            "proj_1",
+            replication_service=coordinator_service,
+        )
+        coordinator_mesh.apply_signed_host_lease(self.server.lease())
+        commits = []
+        allocator = TeamScopeAllocator(
+            self.root / "scope-data",
+            local_device_id=self.host.device_id,
+            server_public_key_hex=self.server.public_key_hex,
+            lease_provider=lambda: self.server.lease(sequence=len(commits)),
+        )
+        history = []
+
+        def commit(signed):
+            commits.append(signed)
+            return self.server.receipt(signed)
+
+        def validate(signed, payload):
+            task_id = payload["signed_proof"]["proof"]["task_id"]
+            task_key = hashlib.sha256(
+                (self.replica.device_id + "\0" + task_id).encode("utf-8")
+            ).hexdigest()
+            bundle = signed.bundle.to_dict()
+            scope = {
+                key: bundle[key]
+                for key in ("project_session_id", "host_epoch", "turn_seq")
+            }
+            if not allocator.verify_reservation(task_key, scope):
+                raise ValueError("Peer does not own the submitted turn scope.")
+            coordinator_service.validate_turn(signed, payload, self.keys)
+
+        def archive(signed, payload, receipt):
+            history.append({
+                "signed": signed.to_dict(),
+                "payload": payload,
+                "receipt": receipt,
+            })
+
+        network = InMemoryNetwork()
+        host_endpoint = network.endpoint(self.host)
+        author_endpoint = network.endpoint(self.replica)
+        host_session = await host_endpoint.connect(author_endpoint)
+        author_session = await author_endpoint.accept()
+        coordinator = TeamPeerLink(
+            host_session,
+            coordinator_mesh,
+            self.host,
+            self.keys.get,
+            server_public_key_hex=self.server.public_key_hex,
+            commit_turn=commit,
+            scope_allocator=allocator,
+            device_role_provider=lambda _device_id: "developer",
+            submission_validator=validate,
+            history_sink=archive,
+            timeout=5,
+        )
+        coordinator.submission_publisher = (
+            lambda signed, payload: TeamTurnPublisher([coordinator])(signed, payload)
+        )
+        author = TeamPeerLink(
+            author_session,
+            self.replica_mesh,
+            self.replica,
+            self.keys.get,
+            server_public_key_hex=self.server.public_key_hex,
+            timeout=5,
+        )
+        await asyncio.gather(coordinator.start(), author.start())
+        self.addAsyncCleanup(author.close)
+        self.addAsyncCleanup(coordinator.close)
+        signed, payload = self._build_turn(signer=self.replica)
+        task_id = payload["signed_proof"]["proof"]["task_id"]
+        return coordinator, author, allocator, commits, history, coordinator_mesh, signed, payload, task_id
+
+    async def test_peer_authors_turn_after_remote_scope_reservation_and_receipt_backed_relay(self) -> None:
+        coordinator, author, allocator, commits, history, coordinator_mesh, signed, payload, task_id = (
+            await self._peer_submission_links()
+        )
+
+        scope = await author.reserve_scope(task_id)
+        self.assertEqual(scope, {
+            "project_session_id": "proj_1", "host_epoch": 1, "turn_seq": 1
+        })
+        result = await author.submit_turn(signed, payload)
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["ack"]["turn_seq"], 1)
+        self.assertTrue(verify_turn_ack(result["ack"], self.host.signing_public_key))
+        self.assertEqual(coordinator_mesh.last_applied_turn_seq, 1)
+        self.assertEqual(self.replica_mesh.last_applied_turn_seq, 1)
+        self.assertEqual((coordinator.mesh.replication_service.workspace_dir / "app.py").read_text(), "value = 2\n")
+        self.assertEqual((self.replica_workspace / "app.py").read_text(), "value = 2\n")
+        self.assertEqual((coordinator.mesh.replication_service.workspace_dir / ".env").read_text(), "COORDINATOR_ONLY=secret\n")
+        self.assertEqual((self.replica_workspace / ".env").read_text(), "LOCAL_ONLY=secret\n")
+        self.assertGreaterEqual(len(commits), 1)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["signed"], signed.to_dict())
+        self.assertTrue(verify_signed_envelope(history[0]["receipt"], self.server.public_key_hex))
+        self.assertEqual(allocator.status()["reserved_tasks"], 1)
+
+    async def test_peer_submission_validates_payload_and_scope_before_backend_commit(self) -> None:
+        coordinator, author, _allocator, commits, history, coordinator_mesh, signed, payload, task_id = (
+            await self._peer_submission_links()
+        )
+        await author.reserve_scope(task_id)
+        tampered = copy.deepcopy(payload)
+        tampered["base_workspace_tree_sha"] = "sha256:" + "0" * 64
+
+        with self.assertRaises(TeamTransportError):
+            await author.submit_turn(signed, tampered)
+
+        self.assertEqual(commits, [])
+        self.assertEqual(history, [])
+        self.assertEqual(coordinator_mesh.last_applied_turn_seq, 0)
+        self.assertEqual(self.replica_mesh.last_applied_turn_seq, 0)
+        self.assertEqual((coordinator.mesh.replication_service.workspace_dir / "app.py").read_text(), "value = 1\n")
+
+    async def test_observer_peer_cannot_reserve_a_turn_scope(self) -> None:
+        coordinator, author, allocator, commits, _history, _mesh, _signed, payload, task_id = (
+            await self._peer_submission_links()
+        )
+        coordinator.device_role_provider = lambda _device_id: "observer"
+
+        with self.assertRaises(TeamTransportError):
+            await author.reserve_scope(task_id)
+
+        self.assertEqual(allocator.status()["reserved_tasks"], 0)
+        self.assertEqual(commits, [])
 
     async def test_non_contiguous_sequence_is_rejected_before_backend_submission(self) -> None:
         self.coordinator_mesh.apply_signed_host_lease(self.server.lease(sequence=1))

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import math
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping
 
 from .p2p_transport import P2PProtocolError, SecurePeerSession
 from .team_mesh import (
+    DEVICE_ID_PATTERN,
     SignedTurnCommitBundle,
     TeamMeshCoordinator,
     canonical_json_bytes,
@@ -19,6 +22,7 @@ from .team_mesh import (
     verify_turn_ack,
 )
 from .team_replication import team_payload_digest
+from .team_scope import TeamScopeAllocator, TeamScopeUnavailable
 from .updater import verify_signed_envelope
 
 TEAM_PROTOCOL_VERSION = 1
@@ -40,6 +44,12 @@ class _PendingTurn:
     payload: Mapping[str, Any]
     digest: str
     future: asyncio.Future[dict[str, Any]]
+    submission: bool = False
+
+
+@dataclass(slots=True)
+class _PendingScope:
+    future: asyncio.Future[dict[str, Any]]
 
 
 @dataclass(slots=True)
@@ -49,6 +59,7 @@ class _IncomingTurn:
     payload_bytes: int
     chunk_count: int
     chunks: list[bytes]
+    submission: bool = False
 
 
 def _load_json(raw: bytes) -> dict[str, Any]:
@@ -87,6 +98,22 @@ def _positive_int(value: Any, label: str) -> int:
     return value
 
 
+def _scope_fields(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "project_session_id", "host_epoch", "turn_seq"
+    }:
+        raise TeamTransportError("Malformed team scope response.")
+    if not isinstance(value["project_session_id"], str) or not DEVICE_ID_PATTERN.fullmatch(
+        value["project_session_id"]
+    ):
+        raise TeamTransportError("Invalid team scope session id.")
+    if type(value["host_epoch"]) is not int or value["host_epoch"] < 1:
+        raise TeamTransportError("Invalid team scope epoch.")
+    if type(value["turn_seq"]) is not int or value["turn_seq"] < 1:
+        raise TeamTransportError("Invalid team scope sequence.")
+    return dict(value)
+
+
 async def _send_control(session: SecurePeerSession, message_type: str, **fields: Any) -> None:
     raw = canonical_json_bytes(
         {"protocol_version": TEAM_PROTOCOL_VERSION, "type": message_type, **fields}
@@ -110,12 +137,25 @@ class TeamPeerLink:
         commit_turn: Callable[[SignedTurnCommitBundle], Awaitable[Mapping[str, Any]]] | None = None,
         history_provider: Callable[[str, int, int], list[dict[str, Any]]] | None = None,
         ack_sink: Callable[[dict[str, Any]], Awaitable[Any]] | None = None,
+        scope_allocator: TeamScopeAllocator | None = None,
+        device_role_provider: Callable[[str], str | None] | None = None,
+        submission_validator: Callable[
+            [SignedTurnCommitBundle, Mapping[str, Any]], Awaitable[Any] | None
+        ] | None = None,
+        history_sink: Callable[
+            [SignedTurnCommitBundle, Mapping[str, Any], Mapping[str, Any]], Awaitable[Any] | Any
+        ] | None = None,
+        submission_publisher: Callable[
+            [SignedTurnCommitBundle, Mapping[str, Any]], Awaitable[Any]
+        ] | None = None,
         timeout: float = 120.0,
     ) -> None:
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("Team transport timeout must be finite and positive.")
         if commit_turn is not None and not server_public_key_hex:
             raise ValueError("A server key is required to verify Coordinator commit receipts.")
+        if scope_allocator is not None and not server_public_key_hex:
+            raise ValueError("A server key is required to sign peer scope responses.")
         self.session = session
         self.mesh = mesh
         self.signer = signer
@@ -124,9 +164,16 @@ class TeamPeerLink:
         self.commit_turn = commit_turn
         self.history_provider = history_provider or (lambda _session, _first, _last: [])
         self.ack_sink = ack_sink
+        self.scope_allocator = scope_allocator
+        self.device_role_provider = device_role_provider
+        self.submission_validator = submission_validator
+        self.history_sink = history_sink
+        self.submission_publisher = submission_publisher
         self.timeout = float(timeout)
         self.remote_device_id = session.remote_device_id
         self._pending: dict[str, _PendingTurn] = {}
+        self._submission_digests: set[str] = set()
+        self._pending_scopes: dict[str, _PendingScope] = {}
         self._outbound: asyncio.Queue[_PendingTurn] = asyncio.Queue()
         self._incoming: _IncomingTurn | None = None
         self._current_digest: str | None = None
@@ -134,6 +181,7 @@ class TeamPeerLink:
         self._send_task: asyncio.Task[None] | None = None
         self._hello_sent = False
         self._remote_hello: dict[str, Any] | None = None
+        self._hello_event = asyncio.Event()
         self._closed = False
         self._last_error: str | None = None
 
@@ -146,6 +194,7 @@ class TeamPeerLink:
             **self.session.status(),
             "closed": self.closed,
             "pending_turns": len(self._pending),
+            "pending_scopes": len(self._pending_scopes),
             "receiving_turn": self._incoming is not None,
             "remote_role": (self._remote_hello or {}).get("role"),
             "last_error": self._last_error,
@@ -157,6 +206,51 @@ class TeamPeerLink:
         await self._send_hello()
         self._send_task = asyncio.create_task(self._outbound_worker(), name="hex-team-send")
         self._receive_task = asyncio.create_task(self._receive_loop(), name="hex-team-receive")
+
+    async def reserve_scope(self, task_id: str) -> dict[str, Any]:
+        if self.closed or self._receive_task is None:
+            raise TeamTransportError("Team peer link is not running.")
+        if self.mesh.mode != "TEAM_REPLICA_PEER":
+            raise TeamTransportError("Only a peer can request a Coordinator turn scope.")
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 512:
+            raise TeamTransportError("A valid task id is required for scope reservation.")
+        try:
+            await asyncio.wait_for(self._hello_event.wait(), timeout=self.timeout)
+        except asyncio.TimeoutError as exc:
+            raise TeamTransportError("Team Coordinator hello timed out.") from exc
+        if (self._remote_hello or {}).get("role") != "coordinator":
+            raise TeamTransportError("The authenticated peer is not the Coordinator.")
+        request_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self._pending_scopes[request_id] = _PendingScope(future)
+        try:
+            await _send_control(
+                self.session,
+                "team_scope_request",
+                request_id=request_id,
+                project_session_id=self.mesh.project_session_id,
+                task_id=task_id,
+            )
+            return await asyncio.wait_for(future, timeout=self.timeout)
+        except Exception as exc:
+            if isinstance(exc, TeamTransportError):
+                raise
+            raise TeamTransportError("Team scope reservation timed out.") from exc
+        finally:
+            self._pending_scopes.pop(request_id, None)
+
+    async def submit_turn(
+        self, signed: SignedTurnCommitBundle, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        if self.closed or self._receive_task is None:
+            raise TeamTransportError("Team peer link is not running.")
+        if self.mesh.mode != "TEAM_REPLICA_PEER":
+            raise TeamTransportError("Only a peer can submit a locally authored team turn.")
+        if signed.author_device_record_id != self.mesh.local_device_id:
+            raise TeamTransportError("A peer can only submit its own signed turn.")
+        if (self._remote_hello or {}).get("role") != "coordinator":
+            raise TeamTransportError("The authenticated peer is not the Coordinator.")
+        return await self._enqueue(signed, payload, wait=True, submission=True)
 
     async def send_turn(
         self,
@@ -173,7 +267,7 @@ class TeamPeerLink:
             await self.commit_signed(signed)
         return await self._enqueue(signed, payload, wait=True)
 
-    async def commit_signed(self, signed: SignedTurnCommitBundle) -> None:
+    async def commit_signed(self, signed: SignedTurnCommitBundle) -> Mapping[str, Any]:
         if self.commit_turn is None:
             raise TeamTransportError("No Coordinator backend commit verifier is configured.")
         signed = SignedTurnCommitBundle.from_dict(signed.to_dict())
@@ -203,6 +297,7 @@ class TeamPeerLink:
             signed.bundle.host_epoch,
             signed.bundle.turn_seq,
         )
+        return receipt
 
     async def request_catchup(self) -> bool:
         missing = self.mesh.missing_turn_range
@@ -230,6 +325,11 @@ class TeamPeerLink:
             if not pending.future.done():
                 pending.future.set_exception(TeamTransportError("Team peer link closed."))
         self._pending.clear()
+        self._submission_digests.clear()
+        for pending in tuple(self._pending_scopes.values()):
+            if not pending.future.done():
+                pending.future.set_exception(TeamTransportError("Team peer link closed."))
+        self._pending_scopes.clear()
         await self.session.close()
 
     def _fail_pending(self, message: str) -> None:
@@ -237,6 +337,11 @@ class TeamPeerLink:
             if not pending.future.done():
                 pending.future.set_exception(TeamTransportError(message))
         self._pending.clear()
+        self._submission_digests.clear()
+        for pending in tuple(self._pending_scopes.values()):
+            if not pending.future.done():
+                pending.future.set_exception(TeamTransportError(message))
+        self._pending_scopes.clear()
 
     def _verify_receipt(
         self, signed: SignedTurnCommitBundle, receipt: Mapping[str, Any]
@@ -264,7 +369,13 @@ class TeamPeerLink:
             raise TeamTransportError("Coordinator commit receipt does not match the signed turn.")
 
     async def _enqueue(
-        self, signed: SignedTurnCommitBundle, payload: Mapping[str, Any], *, wait: bool
+        self,
+        signed: SignedTurnCommitBundle,
+        payload: Mapping[str, Any],
+        *,
+        wait: bool,
+        submission: bool = False,
+        reuse_submission: bool = False,
     ) -> dict[str, Any]:
         parsed = SignedTurnCommitBundle.from_dict(signed.to_dict())
         digest = team_payload_digest(payload)
@@ -275,25 +386,41 @@ class TeamPeerLink:
             raise TeamTransportError("Team turn belongs to a different session.")
         if parsed.bundle.host_epoch > self.mesh.current_epoch:
             raise TeamTransportError("Team turn is from a future epoch.")
+        if submission and parsed.author_device_record_id != self.mesh.local_device_id:
+            raise TeamTransportError("A peer can only submit its own signed turn.")
         bundle_digest = parsed.bundle.compute_digest()
-        if bundle_digest in self._pending:
-            raise TeamTransportError("Team turn is already awaiting acknowledgement.")
-        future = asyncio.get_running_loop().create_future()
-        pending = _PendingTurn(parsed, payload, digest, future)
-        self._pending[bundle_digest] = pending
-        await self._outbound.put(pending)
+        pending = self._pending.get(bundle_digest)
+        if pending is not None:
+            if not (
+                (reuse_submission or pending.submission)
+                and pending.digest == digest
+                and pending.signed == parsed
+            ):
+                raise TeamTransportError("Team turn is already awaiting acknowledgement.")
+            pending.submission = False
+            await self._outbound.put(pending)
+        else:
+            future = asyncio.get_running_loop().create_future()
+            pending = _PendingTurn(parsed, payload, digest, future, submission)
+            self._pending[bundle_digest] = pending
+            await self._outbound.put(pending)
         if wait:
-            try:
-                return await asyncio.wait_for(future, timeout=self.timeout)
-            except Exception as exc:
-                if self._pending.get(bundle_digest) is pending:
-                    self._pending.pop(bundle_digest, None)
-                if isinstance(exc, TeamTransportError):
-                    raise
-                raise TeamTransportError("Team turn acknowledgement timed out.") from exc
-        future.add_done_callback(self._consume_future)
-        asyncio.create_task(self._expire_future(bundle_digest, future))
+            return await self._wait_pending(pending)
+        if not pending.future.done():
+            pending.future.add_done_callback(self._consume_future)
+            asyncio.create_task(self._expire_future(bundle_digest, pending.future))
         return {"accepted": False, "queued": True}
+
+    async def _wait_pending(self, pending: _PendingTurn) -> dict[str, Any]:
+        bundle_digest = pending.signed.bundle.compute_digest()
+        try:
+            return await asyncio.wait_for(pending.future, timeout=self.timeout)
+        except Exception as exc:
+            if self._pending.get(bundle_digest) is pending:
+                self._pending.pop(bundle_digest, None)
+            if isinstance(exc, TeamTransportError):
+                raise
+            raise TeamTransportError("Team turn acknowledgement timed out.") from exc
 
     @staticmethod
     def _consume_future(future: asyncio.Future[dict[str, Any]]) -> None:
@@ -315,7 +442,9 @@ class TeamPeerLink:
         while True:
             pending = await self._outbound.get()
             try:
-                await self._send_record(pending.signed, pending.payload)
+                await self._send_record(
+                    pending.signed, pending.payload, submission=pending.submission
+                )
             except Exception as exc:
                 self._last_error = type(exc).__name__
                 if not pending.future.done():
@@ -325,7 +454,11 @@ class TeamPeerLink:
                 self._outbound.task_done()
 
     async def _send_record(
-        self, signed: SignedTurnCommitBundle, payload: Mapping[str, Any]
+        self,
+        signed: SignedTurnCommitBundle,
+        payload: Mapping[str, Any],
+        *,
+        submission: bool,
     ) -> None:
         raw = canonical_json_bytes(payload)
         digest = team_payload_digest(payload)
@@ -336,7 +469,7 @@ class TeamPeerLink:
             raise TeamTransportError("Team replication payload has too many chunks.")
         await _send_control(
             self.session,
-            "team_turn_begin",
+            "team_turn_submit" if submission else "team_turn_begin",
             signed=signed.to_dict(),
             payload_digest=digest,
             payload_bytes=len(raw),
@@ -362,7 +495,7 @@ class TeamPeerLink:
                 except P2PProtocolError:
                     raise
                 except Exception as exc:
-                    self._last_error = type(exc).__name__
+                    self._last_error = f"{type(exc).__name__}: {exc}"
                     digest = self._current_digest or ""
                     self._incoming = None
                     self._current_digest = None
@@ -394,10 +527,16 @@ class TeamPeerLink:
         fields = {key: value for key, value in message.items() if key not in {"protocol_version", "type"}}
         if message_type == "team_hello":
             await self._handle_hello(fields)
-        elif message_type == "team_turn_begin":
-            await self._handle_begin(fields)
+        elif message_type == "team_scope_request":
+            await self._handle_scope_request(fields)
+        elif message_type == "team_scope_result":
+            self._handle_scope_result(fields)
+        elif message_type == "team_scope_error":
+            self._handle_scope_error(fields)
+        elif message_type in {"team_turn_begin", "team_turn_submit"}:
+            await self._handle_begin(fields, submission=message_type == "team_turn_submit")
         elif message_type == "team_turn_ack":
-            self._handle_ack(fields)
+            await self._handle_ack(fields)
         elif message_type == "team_turn_error":
             self._handle_error(fields)
         elif message_type == "team_catchup_request":
@@ -429,6 +568,11 @@ class TeamPeerLink:
         })
         if fields["device_id"] != self.remote_device_id:
             raise TeamTransportError("Team hello does not match the authenticated peer.")
+        enrolled_key = self.device_key_provider(self.remote_device_id)
+        if not enrolled_key or enrolled_key.removeprefix("ed25519:").lower() != (
+            self.session.remote_signing_public_key.removeprefix("ed25519:").lower()
+        ):
+            raise TeamTransportError("Authenticated peer does not match its enrolled device key.")
         if fields["role"] not in {"coordinator", "replica"}:
             raise TeamTransportError("Invalid team hello role.")
         session_id = fields["project_session_id"]
@@ -444,11 +588,97 @@ class TeamPeerLink:
         if fields["role"] == "coordinator" and epoch > self.mesh.current_epoch:
             raise TeamTransportError("Peer advertises a future Coordinator epoch.")
         self._remote_hello = dict(fields)
+        self._hello_event.set()
         await self._send_hello()
         if fields["role"] == "coordinator" and self.mesh.missing_turn_range is not None:
             await self.request_catchup()
 
-    async def _handle_begin(self, fields: Mapping[str, Any]) -> None:
+    async def _handle_scope_request(self, fields: Mapping[str, Any]) -> None:
+        _require_fields(fields, {"request_id", "project_session_id", "task_id"})
+        if self.mesh.mode != "TEAM_PRIMARY_HOST" or (self._remote_hello or {}).get("role") != "replica":
+            raise TeamTransportError("Only the Coordinator can allocate peer turn scopes.")
+        request_id = fields["request_id"]
+        if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id):
+            raise TeamTransportError("Invalid team scope request id.")
+        if fields["project_session_id"] != self.mesh.project_session_id:
+            raise TeamTransportError("Scope request belongs to a different session.")
+        task_id = fields["task_id"]
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 512:
+            raise TeamTransportError("Invalid team scope task id.")
+        role = self.device_role_provider(self.remote_device_id) if self.device_role_provider else None
+        if self.scope_allocator is None or role not in {"owner", "admin", "developer"}:
+            await _send_control(
+                self.session, "team_scope_error", request_id=request_id,
+                error_code="SCOPE_UNAVAILABLE",
+            )
+            return
+        task_key = hashlib.sha256(
+            (self.remote_device_id + "\0" + task_id).encode("utf-8")
+        ).hexdigest()
+        try:
+            reserved = await asyncio.to_thread(self.scope_allocator.reserve_with_lease, task_key)
+        except TeamScopeUnavailable:
+            await _send_control(
+                self.session, "team_scope_error", request_id=request_id,
+                error_code="SCOPE_UNAVAILABLE",
+            )
+            return
+        except ValueError:
+            await _send_control(
+                self.session, "team_scope_error", request_id=request_id,
+                error_code="INVALID_SCOPE",
+            )
+            return
+        await _send_control(
+            self.session,
+            "team_scope_result",
+            request_id=request_id,
+            accepted=True,
+            scope=reserved["scope"],
+            signed_lease=reserved["signed_lease"],
+        )
+
+    def _handle_scope_result(self, fields: Mapping[str, Any]) -> None:
+        _require_fields(fields, {"request_id", "accepted", "scope", "signed_lease"})
+        request_id = fields["request_id"]
+        if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id):
+            raise TeamTransportError("Invalid team scope result id.")
+        if fields["accepted"] is not True:
+            raise TeamTransportError("Team scope was not accepted.")
+        if (self._remote_hello or {}).get("role") != "coordinator":
+            raise TeamTransportError("Only the Coordinator can allocate a team scope.")
+        signed_lease = fields["signed_lease"]
+        if not self.server_public_key_hex or not isinstance(signed_lease, Mapping) or not (
+            verify_signed_envelope(signed_lease, self.server_public_key_hex)
+        ):
+            raise TeamTransportError("Team scope lease signature verification failed.")
+        self.mesh.apply_signed_host_lease(dict(signed_lease))
+        lease = signed_lease.get("payload")
+        if not isinstance(lease, Mapping) or lease.get("primary_device_record_id") != self.remote_device_id:
+            raise TeamTransportError("Team scope was allocated by a different Coordinator.")
+        scope = _scope_fields(fields["scope"])
+        if (
+            scope["project_session_id"] != self.mesh.project_session_id
+            or scope["host_epoch"] != lease.get("host_epoch")
+            or scope["turn_seq"] > int(lease.get("last_committed_turn_seq", -1)) + 1
+        ):
+            raise TeamTransportError("Team scope does not match the signed Coordinator lease.")
+        pending = self._pending_scopes.get(request_id)
+        if pending is not None and not pending.future.done():
+            pending.future.set_result(scope)
+
+    def _handle_scope_error(self, fields: Mapping[str, Any]) -> None:
+        _require_fields(fields, {"request_id", "error_code"})
+        request_id = fields["request_id"]
+        if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id):
+            raise TeamTransportError("Invalid team scope error id.")
+        if fields["error_code"] not in {"SCOPE_UNAVAILABLE", "NOT_ELIGIBLE", "INVALID_SCOPE"}:
+            raise TeamTransportError("Invalid team scope error code.")
+        pending = self._pending_scopes.get(request_id)
+        if pending is not None and not pending.future.done():
+            pending.future.set_exception(TeamTransportError("Coordinator rejected the team scope request."))
+
+    async def _handle_begin(self, fields: Mapping[str, Any], *, submission: bool = False) -> None:
         _require_fields(fields, {"signed", "payload_digest", "payload_bytes", "chunk_count"})
         if self._incoming is not None:
             raise TeamTransportError("A team turn is already being received.")
@@ -468,11 +698,21 @@ class TeamPeerLink:
         public_key = self.device_key_provider(signed.author_device_record_id)
         if not public_key or not signed.verify(public_key):
             raise TeamTransportError("Team turn author signature verification failed.")
+        remote_role = (self._remote_hello or {}).get("role")
+        if submission:
+            if self.mesh.mode != "TEAM_PRIMARY_HOST" or remote_role != "replica":
+                raise TeamTransportError("Peer turn submissions require an authenticated replica.")
+            if signed.author_device_record_id != self.remote_device_id:
+                raise TeamTransportError("Submitted turn author does not match the authenticated peer.")
+        elif self.mesh.mode != "TEAM_REPLICA_PEER" or remote_role != "coordinator":
+            raise TeamTransportError("Relayed team turns require the authenticated Coordinator.")
         if signed.bundle.project_session_id != self.mesh.project_session_id:
             raise TeamTransportError("Team turn belongs to a different session.")
         if signed.bundle.host_epoch > self.mesh.current_epoch:
             raise TeamTransportError("Team turn is from a future epoch.")
-        self._incoming = _IncomingTurn(signed, digest, payload_bytes, chunk_count, [])
+        self._incoming = _IncomingTurn(
+            signed, digest, payload_bytes, chunk_count, [], submission=submission
+        )
 
     async def _handle_chunk(self, raw: bytes) -> None:
         incoming = self._incoming
@@ -502,13 +742,83 @@ class TeamPeerLink:
         public_key = self.device_key_provider(incoming.signed.author_device_record_id)
         if not public_key:
             raise TeamTransportError("Enrolled team author key is unavailable.")
+        if incoming.submission:
+            await self._accept_submission(incoming, payload, public_key)
+            self._current_digest = None
+            return
         result = self.mesh.accept_turn_commit(
             incoming.signed,
             {incoming.signed.author_device_record_id: public_key},
             sender_device_id=self.remote_device_id,
             replication_payload=payload,
         )
-        bundle = incoming.signed.bundle
+        await self._ack_applied(incoming.signed, incoming.digest)
+        del result
+
+    async def _accept_submission(
+        self,
+        incoming: _IncomingTurn,
+        payload: Mapping[str, Any],
+        public_key: str,
+    ) -> None:
+        if self.submission_validator is None or self.history_sink is None:
+            raise TeamTransportError("Peer submission validation and history are not configured.")
+        if inspect.iscoroutinefunction(self.submission_validator):
+            validation = await self.submission_validator(incoming.signed, payload)
+        else:
+            validation = await asyncio.to_thread(
+                self.submission_validator, incoming.signed, payload
+            )
+        if inspect.isawaitable(validation):
+            validation = await validation
+        if validation is False:
+            raise TeamTransportError("Peer turn submission validation failed.")
+        receipt = await self.commit_signed(incoming.signed)
+        self.mesh.accept_turn_commit(
+            incoming.signed,
+            {incoming.signed.author_device_record_id: public_key},
+            sender_device_id=self.mesh.local_device_id,
+            replication_payload=payload,
+        )
+        if inspect.iscoroutinefunction(self.history_sink):
+            archived = self.history_sink(incoming.signed, payload, receipt)
+        else:
+            archived = await asyncio.to_thread(
+                self.history_sink, incoming.signed, payload, receipt
+            )
+        if inspect.isawaitable(archived):
+            await archived
+        self._submission_digests.add(incoming.signed.bundle.compute_digest())
+        asyncio.create_task(self._relay_submission(incoming.signed, payload))
+
+    async def _relay_submission(
+        self, signed: SignedTurnCommitBundle, payload: Mapping[str, Any]
+    ) -> None:
+        digest = signed.bundle.compute_digest()
+        try:
+            if self.submission_publisher is None:
+                await self._enqueue(
+                    signed, payload, wait=False, reuse_submission=True
+                )
+                return
+            result = await self.submission_publisher(signed, payload)
+            accepted = result is True or (
+                isinstance(result, Mapping)
+                and (result.get("accepted") is True or result.get("ack") is True)
+            )
+            if not accepted:
+                raise TeamTransportError("Peer turn fan-out was not acknowledged.")
+        except Exception:
+            self._submission_digests.discard(digest)
+            pending = self._pending.get(digest)
+            if pending is not None and not pending.future.done():
+                pending.future.set_exception(TeamTransportError("Peer turn fan-out failed."))
+            await self._try_error(digest)
+
+    async def _ack_applied(
+        self, signed: SignedTurnCommitBundle, payload_digest: str
+    ) -> None:
+        bundle = signed.bundle
         ack = sign_turn_ack(
             self.signer,
             bundle.project_session_id,
@@ -521,9 +831,8 @@ class TeamPeerLink:
             "team_turn_ack",
             **ack,
             accepted=True,
-            payload_digest=incoming.digest,
+            payload_digest=payload_digest,
         )
-        self._current_digest = None
         if self.ack_sink is not None:
             try:
                 sink_result = self.ack_sink(ack)
@@ -531,15 +840,15 @@ class TeamPeerLink:
                     await sink_result
             except Exception as exc:
                 self._last_error = type(exc).__name__
-        del result
 
-    def _handle_ack(self, fields: Mapping[str, Any]) -> None:
+    async def _handle_ack(self, fields: Mapping[str, Any]) -> None:
         _require_fields(fields, {
             "project_session_id", "host_epoch", "turn_seq", "bundle_digest",
             "signature", "accepted", "payload_digest",
         })
-        if (self._remote_hello or {}).get("role") != "replica":
-            raise TeamTransportError("Only a replica peer can acknowledge a team turn.")
+        remote_role = (self._remote_hello or {}).get("role")
+        if remote_role not in {"coordinator", "replica"}:
+            raise TeamTransportError("Only an authenticated team peer can acknowledge a turn.")
         if fields["accepted"] is not True:
             raise TeamTransportError("Team turn was not acknowledged.")
         public_key = self.device_key_provider(self.remote_device_id)
@@ -552,6 +861,9 @@ class TeamPeerLink:
         pending = self._pending.get(fields["bundle_digest"])
         if pending is None:
             return
+        expected_role = "replica" if self.mesh.mode == "TEAM_PRIMARY_HOST" else "coordinator"
+        if remote_role != expected_role:
+            raise TeamTransportError("Team acknowledgement came from an unauthorized peer role.")
         bundle = pending.signed.bundle
         if (
             fields["project_session_id"] != bundle.project_session_id
@@ -560,9 +872,13 @@ class TeamPeerLink:
             or fields["payload_digest"] != pending.digest
         ):
             raise TeamTransportError("Team acknowledgement does not match the pending turn.")
+        bundle_digest = fields["bundle_digest"]
+        if self.mesh.mode == "TEAM_PRIMARY_HOST" and bundle_digest in self._submission_digests:
+            await self._ack_applied(pending.signed, pending.digest)
+            self._submission_digests.discard(bundle_digest)
         if not pending.future.done():
             pending.future.set_result({"accepted": True, "ack": ack})
-        self._pending.pop(fields["bundle_digest"], None)
+        self._pending.pop(bundle_digest, None)
 
     def _handle_error(self, fields: Mapping[str, Any]) -> None:
         _require_fields(fields, {"payload_digest", "error_code"})

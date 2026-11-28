@@ -416,13 +416,20 @@ class TeamReplicationService:
         finally:
             archive_path.unlink(missing_ok=True)
 
-    def _apply_workspace(self, base: Path, head: Path) -> None:
+    def _validate_workspace_delta(self, base: Path, head: Path) -> None:
         if _delta_matches(base, head, self.workspace_dir):
             return
-        for rel in self._changed_paths(base, head):
-            if _entry_state(self.workspace_dir / rel) != _entry_state(base / rel):
-                raise PublicationConflictError([rel])
-        publish_delta(base, head, self.workspace_dir)
+        conflicts = [
+            rel for rel in self._changed_paths(base, head)
+            if _entry_state(self.workspace_dir / rel) != _entry_state(base / rel)
+        ]
+        if conflicts:
+            raise PublicationConflictError(conflicts)
+
+    def _apply_workspace(self, base: Path, head: Path) -> None:
+        self._validate_workspace_delta(base, head)
+        if not _delta_matches(base, head, self.workspace_dir):
+            publish_delta(base, head, self.workspace_dir)
 
     def _changed_paths(self, base: Path, head: Path) -> list[str]:
         paths: set[str] = set()
@@ -497,6 +504,95 @@ class TeamReplicationService:
         if old_snapshot and old_snapshot != session["base_snapshot"]:
             shutil.rmtree(self._managed_path(old_snapshot), ignore_errors=True)
         shutil.rmtree(head, ignore_errors=True)
+
+    def validate_turn(
+        self,
+        signed: SignedTurnCommitBundle,
+        payload: Mapping[str, Any],
+        device_public_keys: Mapping[str, str],
+    ) -> dict[str, Any]:
+        if not isinstance(signed, SignedTurnCommitBundle):
+            signed = SignedTurnCommitBundle.from_dict(signed)
+        if not signed.verify(device_public_keys.get(signed.author_device_record_id, "")):
+            raise ValueError("TurnCommitBundle author signature verification failed.")
+        digest, proof, delta, _manifest, archive_bytes = self._decode_and_validate(
+            signed, payload, device_public_keys
+        )
+        bundle = signed.bundle
+        bundle_digest = bundle.compute_digest()
+        base_tree = _tree_hash(payload["base_workspace_tree_sha"], prefixed=True)
+        head_tree = _tree_hash(proof.proof["workspace_tree_sha"])
+        temporary_base: tempfile.TemporaryDirectory[str] | None = None
+        head: Path | None = None
+        with self._lock:
+            session = self._state["sessions"].get(bundle.project_session_id) or {
+                "last_applied_seq": 0,
+                "base_snapshot": None,
+                "turns": {},
+                "pending": None,
+            }
+            existing = self.applied_turn(
+                bundle.project_session_id,
+                bundle.host_epoch,
+                bundle.turn_seq,
+                bundle_digest,
+                digest,
+            )
+            if existing is not None:
+                return {
+                    "status": "unchanged",
+                    "payload_digest": digest,
+                    "proof": proof.to_dict(),
+                    "task_id": proof.proof["task_id"],
+                }
+            try:
+                pending = session.get("pending")
+                if pending is not None:
+                    if (
+                        pending["host_epoch"] != bundle.host_epoch
+                        or pending["turn_seq"] != bundle.turn_seq
+                        or pending["payload_digest"] != digest
+                        or pending["bundle_digest"] != bundle_digest
+                    ):
+                        raise ValueError("A different team turn is already pending.")
+                    head = self._managed_path(pending["head_path"])
+                    if not head.is_dir() or compute_tree_sha(head) != head_tree.removeprefix("sha256:"):
+                        raise ValueError("Pending team workspace snapshot is missing or corrupt.")
+                    base_relative = session.get("base_snapshot")
+                    if not base_relative:
+                        raise ValueError("Pending team base snapshot is missing.")
+                    base = self._managed_path(base_relative)
+                else:
+                    if bundle.turn_seq != int(session["last_applied_seq"]) + 1:
+                        raise ValueError(
+                            f"Team turn sequence gap: expected {int(session['last_applied_seq']) + 1}, "
+                            f"got {bundle.turn_seq}."
+                        )
+                    base_relative = session.get("base_snapshot")
+                    if base_relative:
+                        base = self._managed_path(base_relative)
+                    else:
+                        temporary_base = tempfile.TemporaryDirectory(
+                            prefix="preflight_base_", dir=self.staging_root
+                        )
+                        base = Path(temporary_base.name)
+                        _copy_replicated_tree(self.workspace_dir, base)
+                    head = self._extract_archive(archive_bytes, head_tree)
+                if not base.is_dir() or compute_tree_sha(base) != base_tree.removeprefix("sha256:"):
+                    raise ValueError("Team delta base does not match the local workspace.")
+                self._validate_ledger_anchor(delta)
+                self._validate_workspace_delta(base, head)
+            finally:
+                if temporary_base is not None:
+                    temporary_base.cleanup()
+                if head is not None and pending is None:
+                    shutil.rmtree(head, ignore_errors=True)
+        return {
+            "status": "validated",
+            "payload_digest": digest,
+            "proof": proof.to_dict(),
+            "task_id": proof.proof["task_id"],
+        }
 
     def apply_turn(
         self,
