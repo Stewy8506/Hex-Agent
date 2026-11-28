@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import inspect
+import json
 import os
 import re
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -22,7 +24,7 @@ from .team_outbox import TeamTurnOutbox, VerifiedTeamTurn
 from .team_replication import TeamReplicationService
 from .team_scope import TeamScopeAllocator
 from .team_transport import TeamPeerLink, TeamTransportError, verify_turn_receipt
-from .updater import verify_signed_envelope
+from .updater import ServerKeyring, verify_signed_envelope
 
 _ELIGIBLE_ROLES = frozenset({"owner", "admin", "developer"})
 _DEVICE_KEY_RE = re.compile(r"^ed25519:[0-9a-fA-F]{64}$")
@@ -41,6 +43,7 @@ class TeamRuntime:
         account: Any,
         signer: Any,
         server_public_key_hex: str,
+        server_key_document: Mapping[str, Any] | None = None,
         team_id: str,
         project_session_id: str,
         workspace_root: Path | str,
@@ -78,6 +81,19 @@ class TeamRuntime:
         self.on_event = on_event
         self.maintenance_interval = float(maintenance_interval)
         self.lease_max_age = float(lease_max_age)
+        self._server_keyring_path = self.root / "server_keyring.json"
+        initial_keyring = ServerKeyring(server_public_key_hex)
+        persisted_keyring = self._load_server_keyring()
+        if server_key_document is not None:
+            initial_keyring = ServerKeyring.from_document(server_key_document)
+        elif (
+            persisted_keyring is not None
+            and persisted_keyring.current_key_hex == initial_keyring.current_key_hex
+        ):
+            initial_keyring = persisted_keyring
+        self._server_keys = initial_keyring
+        self.server_public_key_hex = initial_keyring.current_key_hex
+        self._write_server_keyring()
         self.cognition = cognition or CognitionSyncStore(
             self.workspace_root,
             global_home=global_home,
@@ -91,7 +107,7 @@ class TeamRuntime:
         )
         self.mesh = TeamMeshCoordinator(
             self.local_device_id,
-            server_public_key_hex,
+            self._server_keys,
             project_session_id,
             replication_service=self.replication,
         )
@@ -99,7 +115,7 @@ class TeamRuntime:
         self.allocator = TeamScopeAllocator(
             self.root,
             local_device_id=self.local_device_id,
-            server_public_key_hex=server_public_key_hex,
+            server_public_key_hex=self._server_keys,
             lease_provider=self._lease_provider,
         )
         self.outbox = TeamTurnOutbox(
@@ -135,7 +151,14 @@ class TeamRuntime:
         if signer is None:
             signer = await asyncio.to_thread(account.peer_identity)
         if server_key is None:
-            server_key = await asyncio.to_thread(account.server_public_key)
+            fetch_document = getattr(account, "server_public_key_document", None)
+            if callable(fetch_document):
+                document = await asyncio.to_thread(fetch_document)
+                validated = ServerKeyring.from_document(document)
+                server_key = validated.current_key_hex
+                kwargs["server_key_document"] = document
+            else:
+                server_key = await asyncio.to_thread(account.server_public_key)
         kwargs["signer"] = signer
         kwargs["server_public_key_hex"] = server_key
         return cls(**kwargs)
@@ -280,7 +303,7 @@ class TeamRuntime:
                 self.mesh,
                 self.signer,
                 self._device_key,
-                server_public_key_hex=self.server_public_key_hex,
+                server_public_key_hex=self._server_keys,
                 commit_turn=self._commit_signed,
                 history_provider=self.history.history_range,
                 ack_sink=self._on_ack,
@@ -412,7 +435,7 @@ class TeamRuntime:
                 self.local_device_id,
                 signed.to_dict(),
             )
-            verify_turn_receipt(signed, receipt, self.server_public_key_hex)
+            verify_turn_receipt(signed, receipt, self._server_keys)
             self.mesh.note_committed_turn(
                 self.project_session_id, bundle.host_epoch, bundle.turn_seq
             )
@@ -443,7 +466,70 @@ class TeamRuntime:
             raise TeamRuntimeError("The cached team lease is stale; refresh before allocating scope.")
         return lease
 
+    async def _refresh_server_keyring(self) -> None:
+        try:
+            fetch_document = getattr(self.account, "server_public_key_document", None)
+            if callable(fetch_document):
+                document = await asyncio.to_thread(fetch_document)
+            else:
+                key_hex = await asyncio.to_thread(self.account.server_public_key)
+                fallback = ServerKeyring(key_hex)
+                document = {
+                    "algorithm": "ed25519",
+                    "public_key": fallback.current_key_hex,
+                    "key_id": fallback.current_key_id,
+                }
+            updated = ServerKeyring.from_document(document)
+            if updated.to_dict() != self._server_keys.to_dict():
+                self._write_server_keyring(updated)
+        except Exception as exc:
+            await self._fail_closed()
+            raise TeamRuntimeError("Team server identity refresh failed.") from exc
+        changed = updated.current_key_hex != self._server_keys.current_key_hex
+        self._server_keys = updated
+        self.server_public_key_hex = updated.current_key_hex
+        self.mesh._server_public_key_hex = updated
+        self.allocator.server_public_key_hex = updated
+        with self._state_lock:
+            links = list(self._links.values())
+        for link in links:
+            link.server_public_key_hex = updated
+        if changed:
+            await self._reconcile_links(reset=True)
+            self._emit("team/server_key_rotated", key_id=updated.current_key_id)
+
+    def _load_server_keyring(self) -> ServerKeyring | None:
+        if not self._server_keyring_path.exists():
+            return None
+        try:
+            state = json.loads(self._server_keyring_path.read_text(encoding="utf-8"))
+            return ServerKeyring.from_state(state)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise TeamRuntimeError("Stored team server keyring is malformed.") from exc
+
+    def _write_server_keyring(self, keyring: ServerKeyring | None = None) -> None:
+        value = keyring or self._server_keys
+        encoded = json.dumps(value.to_dict(), sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        descriptor, temporary = tempfile.mkstemp(prefix=".server-keyring-", dir=self.root)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self._server_keyring_path)
+            directory = os.open(self.root, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
     async def _refresh_control_plane(self) -> None:
+        await self._refresh_server_keyring()
         roster, lease = await asyncio.gather(
             asyncio.to_thread(self.account.list_team_devices, self.team_id),
             asyncio.to_thread(self.account.get_session_lease, self.project_session_id),
@@ -451,7 +537,7 @@ class TeamRuntime:
         if not isinstance(roster, list) or not isinstance(lease, Mapping):
             await self._fail_closed()
             raise TeamRuntimeError("Team roster or lease is malformed.")
-        if not verify_signed_envelope(lease, self.server_public_key_hex):
+        if not verify_signed_envelope(lease, self._server_keys):
             await self._fail_closed()
             raise TeamRuntimeError("Team lease signature verification failed.")
         payload = lease.get("payload")
@@ -682,6 +768,7 @@ class TeamRuntime:
             "team_id": self.team_id,
             "project_session_id": self.project_session_id,
             "local_device_id": self.local_device_id,
+            "server_key_id": self._server_keys.current_key_id,
             "mode": self.mesh.mode,
             "host_epoch": self.mesh.current_epoch,
             "primary_device_record_id": self.mesh.primary_device_id,

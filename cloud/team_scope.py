@@ -21,7 +21,7 @@ except ImportError:
     msvcrt = None  # type: ignore[assignment]
 
 from .team_mesh import DEVICE_ID_PATTERN
-from .updater import verify_signed_envelope
+from .updater import ServerKeyring, verify_signed_envelope
 
 _SCOPE_VERSION = 1
 _SCOPE_FIELDS = {"project_session_id", "host_epoch", "turn_seq"}
@@ -39,7 +39,7 @@ class TeamScopeAllocator:
         data_dir: Path | str,
         *,
         local_device_id: str,
-        server_public_key_hex: str,
+        server_public_key_hex: str | ServerKeyring,
         lease_provider: Callable[[], Mapping[str, Any]],
     ) -> None:
         if not isinstance(local_device_id, str) or not DEVICE_ID_PATTERN.fullmatch(local_device_id):

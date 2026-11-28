@@ -447,8 +447,8 @@ class CloudAccountManager:
 
     # -- signed control-plane artifacts --------------------------------------
 
-    def server_public_key(self) -> str:
-        """Fetch the hex-backend Ed25519 identity key used to verify signed envelopes."""
+    def server_public_key_document(self) -> dict[str, Any]:
+        """Fetch the backend identity document used to build a rollover keyring."""
         client = HexAuthClient(self.base_url)
         try:
             payload = client.fetch_server_pubkey()
@@ -456,6 +456,11 @@ class CloudAccountManager:
             raise _wrap_transport_error(self.base_url, exc) from exc
         if payload.get("algorithm") != "ed25519" or not payload.get("public_key"):
             raise CloudAccountError("Server published an unsupported identity key type.")
+        return dict(payload)
+
+    def server_public_key(self) -> str:
+        """Fetch the hex-backend Ed25519 identity key used to verify signed envelopes."""
+        payload = self.server_public_key_document()
         return str(payload["public_key"])
 
     def check_updates(

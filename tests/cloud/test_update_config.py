@@ -7,6 +7,7 @@ hex-backend's canonical-JSON signing without importing the backend package.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sys
 import time
@@ -22,6 +23,7 @@ from cloud import flags as cloud_flags
 from cloud.remote_config import RemoteConfigClient
 from cloud.updater import (
     ComponentUpdaterClient,
+    ServerKeyring,
     canonical_json_bytes,
     verify_signed_envelope,
 )
@@ -95,6 +97,82 @@ class EnvelopeVerificationTests(unittest.TestCase):
     def test_malformed_envelope_fails(self) -> None:
         self.assertFalse(verify_signed_envelope({}, TEST_KEY_HEX))
         self.assertFalse(verify_signed_envelope({"payload": {}, "signature": "garbage"}, TEST_KEY_HEX))
+
+
+class ServerKeyringTests(unittest.TestCase):
+    def _document(
+        self,
+        private_key: Ed25519PrivateKey,
+        *,
+        previous: list[tuple[Ed25519PrivateKey, float]] | None = None,
+    ) -> dict:
+        public_key = private_key.public_key().public_bytes_raw().hex()
+        previous_keys = []
+        for previous_key, valid_until in previous or []:
+            previous_public = previous_key.public_key().public_bytes_raw().hex()
+            previous_keys.append({
+                "algorithm": "ed25519",
+                "public_key": previous_public,
+                "key_id": hashlib.sha256(bytes.fromhex(previous_public)).hexdigest()[:16],
+                "valid_until": valid_until,
+            })
+        return {
+            "algorithm": "ed25519",
+            "public_key": public_key,
+            "key_id": hashlib.sha256(bytes.fromhex(public_key)).hexdigest()[:16],
+            "previous_keys": previous_keys,
+        }
+
+    def _envelope(self, private_key: Ed25519PrivateKey, payload: dict) -> dict:
+        signature = base64.urlsafe_b64encode(
+            private_key.sign(canonical_json_bytes(payload))
+        ).rstrip(b"=").decode("ascii")
+        return {
+            "payload": payload,
+            "signature": f"ed25519:{signature}",
+            "key_id": self._document(private_key)["key_id"],
+        }
+
+    def test_rotation_accepts_only_server_published_previous_keys_until_expiry(self) -> None:
+        old_key = Ed25519PrivateKey.generate()
+        new_key = Ed25519PrivateKey.generate()
+        rotated = ServerKeyring.from_document(
+            self._document(new_key, previous=[(old_key, 1_160)]), now=1_100
+        )
+        old_envelope = self._envelope(old_key, {"turn": 1})
+        new_envelope = self._envelope(new_key, {"turn": 2})
+        self.assertTrue(verify_signed_envelope(old_envelope, rotated))
+        self.assertTrue(verify_signed_envelope(new_envelope, rotated))
+        expired = ServerKeyring.from_document(
+            self._document(new_key, previous=[(old_key, 1_160)]), now=1_161
+        )
+        self.assertFalse(verify_signed_envelope(old_envelope, expired))
+        self.assertTrue(verify_signed_envelope(new_envelope, expired))
+        unpublished = ServerKeyring.from_document(self._document(new_key), now=1_100)
+        self.assertFalse(verify_signed_envelope(old_envelope, unpublished))
+
+    def test_key_id_mismatch_and_tampered_document_fail_closed(self) -> None:
+        document = self._document(Ed25519PrivateKey.generate())
+        with self.assertRaises(ValueError):
+            ServerKeyring.from_document({**document, "key_id": "0" * 16})
+        with self.assertRaises(ValueError):
+            ServerKeyring.from_document({**document, "public_key": "0" * 64})
+        with self.assertRaises(ValueError):
+            ServerKeyring.from_document({**document, "algorithm": "rsa"})
+
+    def test_keyring_state_roundtrip_preserves_unexpired_previous_key(self) -> None:
+        old_key = Ed25519PrivateKey.generate()
+        new_key = Ed25519PrivateKey.generate()
+        rotated = ServerKeyring.from_document(
+            self._document(new_key, previous=[(old_key, 1_160)]), now=1_100
+        )
+        restored = ServerKeyring.from_state(rotated.to_dict(), now=1_120)
+        self.assertTrue(verify_signed_envelope(self._envelope(old_key, {"a": 1}), restored))
+        self.assertEqual(restored.current_key_id, rotated.current_key_id)
+        corrupted = rotated.to_dict()
+        corrupted["previous_keys"][next(iter(rotated.previous_keys))] = "0" * 64
+        with self.assertRaises(ValueError):
+            ServerKeyring.from_state(corrupted, now=1_120)
 
 
 class UpdaterClientTests(unittest.TestCase):

@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .updater import verify_signed_envelope
+from .updater import ServerKeyring, verify_signed_envelope
 
 TURN_COMMIT_VERSION = 1
 TURN_COMMIT_DOMAIN = b"hex/turn-commit-bundle/v1\0"
@@ -236,7 +236,7 @@ class TeamMeshCoordinator:
     def __init__(
         self,
         local_device_id: str,
-        server_public_key_hex: str,
+        server_public_key_hex: str | ServerKeyring,
         project_session_id: str | None = None,
         replication_service: Any | None = None,
     ) -> None:

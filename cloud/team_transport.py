@@ -23,7 +23,7 @@ from .team_mesh import (
 )
 from .team_replication import team_payload_digest
 from .team_scope import TeamScopeAllocator, TeamScopeUnavailable
-from .updater import verify_signed_envelope
+from .updater import ServerKeyring, verify_signed_envelope
 
 TEAM_PROTOCOL_VERSION = 1
 _CHUNK_MAGIC = b"HEX/TC1\0"
@@ -102,7 +102,7 @@ def _positive_int(value: Any, label: str) -> int:
 def verify_turn_receipt(
     signed: SignedTurnCommitBundle,
     receipt: Mapping[str, Any],
-    server_public_key_hex: str,
+    server_public_key_hex: str | ServerKeyring,
 ) -> Mapping[str, Any]:
     """Verify a backend receipt against its signed turn and the server identity."""
     if not server_public_key_hex or not verify_signed_envelope(receipt, server_public_key_hex):
@@ -162,7 +162,7 @@ class TeamPeerLink:
         signer: Any,
         device_key_provider: Callable[[str], str | None],
         *,
-        server_public_key_hex: str | None = None,
+        server_public_key_hex: str | ServerKeyring | None = None,
         commit_turn: Callable[[SignedTurnCommitBundle], Awaitable[Mapping[str, Any]]] | None = None,
         history_provider: Callable[[str, int, int], list[dict[str, Any]]] | None = None,
         ack_sink: Callable[[dict[str, Any]], Awaitable[Any]] | None = None,

@@ -7,6 +7,7 @@ import base64
 import copy
 import hashlib
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from cloud.team_mesh import SignedTurnCommitBundle
 from cloud.team_outbox import VerifiedTeamTurn
 from cloud.team_runtime import TeamRuntime, TeamRuntimeError
 from cloud.team_transport import TeamTransportError
-from cloud.updater import canonical_json_bytes
+from cloud.updater import canonical_json_bytes, verify_signed_envelope
 from harness_core.core.models import TaskSubmitRequest
 from harness_core.storage.cow import compute_tree_sha
 from harness_core.storage.db import LedgerStore
@@ -31,6 +32,8 @@ class _ControlPlane:
         self.public_key_hex = self._private.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw
         ).hex()
+        self.key_id = hashlib.sha256(bytes.fromhex(self.public_key_hex)).hexdigest()[:16]
+        self.previous_keys: list[tuple[str, str, float]] = []
         self.identities = {identity.device_id: identity for identity in identities}
         self.primary = identities[0].device_id
         self.epoch = 1
@@ -42,7 +45,40 @@ class _ControlPlane:
         signature = base64.urlsafe_b64encode(
             self._private.sign(canonical_json_bytes(payload))
         ).rstrip(b"=").decode("ascii")
-        return {"payload": payload, "signature": f"ed25519:{signature}", "etag": "test"}
+        return {
+            "payload": payload,
+            "signature": f"ed25519:{signature}",
+            "key_id": self.key_id,
+            "etag": "test",
+        }
+
+    def public_key_document(self) -> dict[str, Any]:
+        return {
+            "algorithm": "ed25519",
+            "public_key": self.public_key_hex,
+            "key_id": self.key_id,
+            "previous_keys": [
+                {
+                    "algorithm": "ed25519",
+                    "public_key": public_key,
+                    "key_id": key_id,
+                    "valid_until": valid_until,
+                }
+                for public_key, key_id, valid_until in self.previous_keys
+            ],
+        }
+
+    def rotate(self) -> None:
+        self.previous_keys = [(
+            self.public_key_hex,
+            self.key_id,
+            time.time() + 3600,
+        )]
+        self._private = Ed25519PrivateKey.generate()
+        self.public_key_hex = self._private.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        ).hex()
+        self.key_id = hashlib.sha256(bytes.fromhex(self.public_key_hex)).hexdigest()[:16]
 
     def lease(self) -> dict[str, Any]:
         return self._envelope({
@@ -82,6 +118,9 @@ class _Account:
 
     def server_public_key(self) -> str:
         return self.control.public_key_hex
+
+    def server_public_key_document(self) -> dict[str, Any]:
+        return copy.deepcopy(self.control.public_key_document())
 
     def list_team_devices(self, _team_id: str) -> list[dict[str, Any]]:
         return copy.deepcopy(self.control.roster())
@@ -352,6 +391,47 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.status()["roster_devices"], 0)
         self.assertEqual(host.status()["peers"], [])
         self.assertIsNone(host._signed_lease)
+
+    async def test_server_key_rotation_reconnects_and_preserves_verified_catchup(self) -> None:
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        await self._link(host, replica)
+        await host.publish(self._verified_turn(host, "before-rotation"))
+        old_receipt = self.control.receipts[1]
+        old_key_id = self.control.key_id
+        self.control.rotate()
+
+        await asyncio.gather(host.refresh(), replica.refresh())
+
+        self.assertEqual(host.status()["server_key_id"], self.control.key_id)
+        self.assertNotEqual(host.status()["server_key_id"], old_key_id)
+        self.assertEqual(host.status()["peers"], [])
+        self.assertTrue(verify_signed_envelope(old_receipt, host._server_keys))
+        fresh_replica = await self._runtime(self.catchup, "post-rotation")
+        await self._link(host, fresh_replica)
+        await self._wait_for(lambda: fresh_replica.mesh.last_applied_turn_seq == 1)
+        self.assertEqual((fresh_replica.workspace_root / "app.py").read_text(), "value = 2\n")
+        self.assertEqual(len(self.control.commits), 1)
+
+    async def test_malformed_server_key_document_fails_closed_and_can_recover(self) -> None:
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        await self._link(host, replica)
+        original = self.account.server_public_key_document
+        malformed = self.control.public_key_document()
+        malformed["key_id"] = "0" * 16
+        self.account.server_public_key_document = lambda: copy.deepcopy(malformed)
+
+        with self.assertRaises(TeamRuntimeError):
+            await host.refresh()
+
+        self.assertFalse(host.status()["running"])
+        self.assertEqual(host.status()["roster_devices"], 0)
+        self.assertEqual(host.status()["peers"], [])
+        self.account.server_public_key_document = original
+        recovered = await host.start()
+        self.assertTrue(recovered["running"])
+        self.assertEqual(recovered["roster_devices"], 4)
 
     async def test_coordinator_turn_is_committed_applied_archived_and_replicated(self) -> None:
         host = await self._runtime(self.host, "host")
