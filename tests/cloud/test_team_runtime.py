@@ -323,6 +323,36 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TeamRuntimeError):
             host.connect(self.replica.device_id)
 
+    async def test_malformed_roster_record_fails_closed(self) -> None:
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        await self._link(host, replica)
+        roster = self.control.roster()
+        roster[0]["host_eligible"] = "1"
+        self.control.roster = lambda: copy.deepcopy(roster)
+
+        with self.assertRaises(TeamRuntimeError):
+            await host.refresh()
+
+        self.assertFalse(host.status()["running"])
+        self.assertEqual(host.status()["roster_devices"], 0)
+        self.assertEqual(host.status()["peers"], [])
+
+    async def test_malformed_signed_lease_fails_closed(self) -> None:
+        host = await self._runtime(self.host, "host")
+        replica = await self._runtime(self.replica, "replica")
+        await self._link(host, replica)
+        malformed = self.control._envelope({"team_id": "team_runtime"})
+        self.control.lease = lambda: copy.deepcopy(malformed)
+
+        with self.assertRaises(TeamRuntimeError):
+            await host.refresh()
+
+        self.assertFalse(host.status()["running"])
+        self.assertEqual(host.status()["roster_devices"], 0)
+        self.assertEqual(host.status()["peers"], [])
+        self.assertIsNone(host._signed_lease)
+
     async def test_coordinator_turn_is_committed_applied_archived_and_replicated(self) -> None:
         host = await self._runtime(self.host, "host")
         replica = await self._runtime(self.replica, "replica")

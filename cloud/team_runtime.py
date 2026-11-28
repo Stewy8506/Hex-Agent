@@ -496,7 +496,11 @@ class TeamRuntime:
             await self._fail_closed()
             raise TeamRuntimeError("This device is not an eligible member of the team.")
         previous_epoch = self.mesh.current_epoch
-        self.mesh.apply_signed_host_lease(dict(lease))
+        try:
+            self.mesh.apply_signed_host_lease(dict(lease))
+        except Exception as exc:
+            await self._fail_closed()
+            raise TeamRuntimeError("Team lease validation failed.") from exc
         with self._state_lock:
             self._devices = devices
             self._signed_lease = dict(lease)
