@@ -137,7 +137,7 @@ class TeamTurnOutboxTests(unittest.TestCase):
             cow=self.cow,
             cognition=self.cognition,
             signer=self.signer,
-            scope_provider=scope_provider or (
+            scope_provider=scope_provider if scope_provider is not None else (
                 lambda _task_id: {
                     "project_session_id": "proj_1", "host_epoch": 1, "turn_seq": 1
                 }
@@ -291,6 +291,22 @@ class TeamTurnOutboxTests(unittest.TestCase):
         self.assertEqual(outbox(self.turn)["status"], "queued")
         publisher.assert_not_awaited()
         self.assertEqual(asyncio.run(outbox.flush_async()), {"delivered": 1, "queued": 0})
+        publisher.assert_awaited_once()
+        self.assertEqual(outbox.pending_count, 0)
+
+    def test_async_scope_provider_queues_sync_calls_and_delivers_from_async_path(self) -> None:
+        import asyncio
+
+        scope_provider = AsyncMock(return_value={
+            "project_session_id": "proj_1", "host_epoch": 1, "turn_seq": 1
+        })
+        publisher = AsyncMock(return_value={"accepted": True})
+        outbox = self._outbox(publisher, scope_provider)
+
+        self.assertEqual(outbox(self.turn)["status"], "queued")
+        scope_provider.assert_not_called()
+        self.assertEqual(asyncio.run(outbox.publish_async(self.turn))["status"], "delivered")
+        scope_provider.assert_awaited_once_with(self.turn.task_id)
         publisher.assert_awaited_once()
         self.assertEqual(outbox.pending_count, 0)
 

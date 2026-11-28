@@ -12,7 +12,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from harness_core.capabilities.proof import sign_proof_artifact
 from harness_core.storage.db import utcnow_iso
@@ -29,6 +29,10 @@ _OUTBOX_VERSION = 1
 _MAX_ARCHIVE_BYTES = 48 * 1024 * 1024
 _MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
 _MAX_LEDGER_EVENTS = 10_000
+
+
+class _AsyncScopeRequired(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -80,7 +84,7 @@ class TeamTurnOutbox:
         cow: Any,
         cognition: Any,
         signer: Any,
-        scope_provider: Callable[[str], Mapping[str, Any]],
+        scope_provider: Callable[[str], Mapping[str, Any] | Awaitable[Mapping[str, Any]]],
         publisher: Callable[[SignedTurnCommitBundle, Mapping[str, Any]], Any],
         history_limit: int = 256,
         history_bytes_limit: int = 1024 * 1024 * 1024,
@@ -138,7 +142,10 @@ class TeamTurnOutbox:
     def __call__(self, turn: VerifiedTeamTurn) -> dict[str, Any]:
         with self._lock:
             record = self._load_or_create(turn)
-            record = self._advance(record)
+            try:
+                record = self._advance(record)
+            except _AsyncScopeRequired:
+                return {"status": "queued", "turn_id": record["turn_id"]}
             if record["status"] == "skipped":
                 return {"status": "skipped", "reason": "NO_WORKSPACE_CHANGES"}
             return self._deliver(record)
@@ -165,7 +172,7 @@ class TeamTurnOutbox:
     async def publish_async(self, turn: VerifiedTeamTurn) -> dict[str, Any]:
         with self._lock:
             record = self._load_or_create(turn)
-        record = await asyncio.to_thread(self._advance, record)
+        record = await self._advance_async(record)
         if record["status"] == "skipped":
             return {"status": "skipped", "reason": "NO_WORKSPACE_CHANGES"}
         return await self._deliver_async(record)
@@ -175,7 +182,7 @@ class TeamTurnOutbox:
         queued = 0
         for path in sorted(self.pending_dir.glob("*.json")):
             try:
-                record = await asyncio.to_thread(self._load_and_advance, path)
+                record = await self._load_and_advance_async(path)
                 if record is None:
                     continue
                 outcome = await self._deliver_async(record)
@@ -188,6 +195,52 @@ class TeamTurnOutbox:
                 self._record_failure(path, type(exc).__name__)
         return {"delivered": delivered, "queued": queued}
 
+    async def _advance_async(self, record: dict[str, Any]) -> dict[str, Any]:
+        if record["status"] == "preparing":
+            record = await asyncio.to_thread(self._prepare, record)
+        if record["status"] == "skipped":
+            return record
+        if record["status"] in {"prepared", "signing"}:
+            turn = VerifiedTeamTurn.from_dict(record["turn"])
+            scope = await self._scope_async(turn.task_id)
+            record = await asyncio.to_thread(self._sign, record, scope=scope)
+        elif record["status"] == "ready":
+            turn = VerifiedTeamTurn.from_dict(record["turn"])
+            scope = await self._scope_async(turn.task_id)
+            if scope != record["scope"]:
+                record = await asyncio.to_thread(self._sign, record, scope=scope)
+        if record["status"] != "ready":
+            raise ValueError("Team turn is not ready for delivery.")
+        return record
+
+    async def _load_and_advance_async(self, path: Path) -> dict[str, Any] | None:
+        record = await asyncio.to_thread(self._load, path)
+        record = await self._advance_async(record)
+        return None if record["status"] == "skipped" else record
+
+    async def _scope_async(self, task_id: str) -> Mapping[str, Any]:
+        if inspect.iscoroutinefunction(self.scope_provider):
+            scope = await self.scope_provider(task_id)
+        else:
+            scope = await asyncio.to_thread(self.scope_provider, task_id)
+            if inspect.isawaitable(scope):
+                scope = await scope
+        return self._validated_scope(scope)
+
+    def _sync_scope(self, task_id: str) -> Mapping[str, Any]:
+        if inspect.iscoroutinefunction(self.scope_provider):
+            raise _AsyncScopeRequired(
+                "An async team scope provider requires publish_async() or flush_async()."
+            )
+        scope = self.scope_provider(task_id)
+        if inspect.isawaitable(scope):
+            if inspect.iscoroutine(scope):
+                scope.close()
+            raise _AsyncScopeRequired(
+                "An async team scope provider requires publish_async() or flush_async()."
+            )
+        return self._validated_scope(scope)
+
     def _advance(self, record: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             if record["status"] == "preparing":
@@ -196,9 +249,9 @@ class TeamTurnOutbox:
                 return record
             if record["status"] in {"prepared", "signing"}:
                 record = self._sign(record)
-            if record["status"] == "ready":
+            elif record["status"] == "ready":
                 turn = VerifiedTeamTurn.from_dict(record["turn"])
-                scope = self._validated_scope(self.scope_provider(turn.task_id))
+                scope = self._validated_scope(self._sync_scope(turn.task_id))
                 if scope != record["scope"]:
                     record = self._sign(record, scope=scope)
             if record["status"] != "ready":
@@ -305,7 +358,7 @@ class TeamTurnOutbox:
         turn = VerifiedTeamTurn.from_dict(record["turn"])
         prepared = record["prepared"]
         selected_scope = self._validated_scope(
-            self.scope_provider(turn.task_id) if scope is None else scope
+            self._sync_scope(turn.task_id) if scope is None else scope
         )
         if record.get("scope") != selected_scope:
             record = {**record, "status": "signing", "scope": selected_scope}
