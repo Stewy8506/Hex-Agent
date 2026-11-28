@@ -493,6 +493,18 @@ class TeamRuntimeTests(unittest.IsolatedAsyncioTestCase):
             for lock in replica.activity.scope_locks(host_epoch=1)
         ))
 
+        renewed = await replica.renew_scope(
+            "task_1", "claim_replica", ttl_seconds=60
+        )
+        self.assertEqual(renewed["event"]["data"]["ttl_seconds"], 60)
+        await self._wait_for(lambda: any(
+            lock["data"]["claim_id"] == "claim_replica"
+            and lock["expires_at"] == renewed["event"]["created_at"] + 60
+            for lock in host.activity.scope_locks(host_epoch=1)
+        ))
+        with self.assertRaises(TeamRuntimeError):
+            await replica.renew_scope("task_1", "claim_missing")
+
         released = await replica.release_scope("task_1", "claim_replica")
         self.assertEqual(released["event"]["kind"], "SCOPE_RELEASE")
         await self._wait_for(

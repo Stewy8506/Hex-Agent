@@ -271,6 +271,35 @@ class TeamRuntime:
             },
         )
 
+    async def renew_scope(
+        self,
+        task_id: str,
+        claim_id: str,
+        *,
+        ttl_seconds: int = 120,
+        summary: str | None = None,
+    ) -> dict[str, Any]:
+        lock = next(
+            (
+                item
+                for item in self.activity.scope_locks(host_epoch=self.mesh.current_epoch)
+                if item["author_device_record_id"] == self.local_device_id
+                and item["data"]["task_id"] == task_id
+                and item["data"]["claim_id"] == claim_id
+            ),
+            None,
+        )
+        if lock is None:
+            raise TeamRuntimeError("No active local scope claim matches this renewal.")
+        return await self.claim_scope(
+            task_id,
+            paths=lock["paths"],
+            symbols=lock["symbols"],
+            ttl_seconds=ttl_seconds,
+            claim_id=claim_id,
+            summary=summary,
+        )
+
     async def release_scope(
         self,
         task_id: str,
