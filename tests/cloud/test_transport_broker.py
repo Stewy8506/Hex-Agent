@@ -134,6 +134,14 @@ class TransportBrokerTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.01)
         return True
 
+    async def test_submit_runs_coroutines_on_the_broker_loop(self) -> None:
+        async def operation() -> int:
+            return threading.get_ident()
+
+        thread_id = await asyncio.wrap_future(self.broker_a.submit(operation))
+
+        self.assertNotEqual(thread_id, threading.get_ident())
+
     async def test_webrtc_offer_answer_negotiation_is_authenticated(self) -> None:
         self.assertEqual(await self._exchange("webrtc"), b"reply:hello")
         self.assertEqual(self.responder_calls, [self.peer_a])

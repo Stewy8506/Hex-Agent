@@ -266,7 +266,8 @@ class TransportBroker:
                 loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
             loop.close()
 
-    def _submit(self, factory: Callable[[], Awaitable[T]]) -> concurrent.futures.Future[T]:
+    def submit(self, factory: Callable[[], Awaitable[T]]) -> concurrent.futures.Future[T]:
+        """Schedule a coroutine factory on the broker loop from any thread."""
         self.start()
         result: concurrent.futures.Future[T] = concurrent.futures.Future()
 
@@ -313,7 +314,7 @@ class TransportBroker:
             raise ValueError("Transport must be auto, webrtc, or relay.")
         if not callable(operation):
             raise TypeError("Peer operation must be callable.")
-        return self._submit(lambda: self._run_with_peer(peer, operation, transport, timeout))
+        return self.submit(lambda: self._run_with_peer(peer, operation, transport, timeout))
 
     async def _status(self) -> dict[str, Any]:
         return {

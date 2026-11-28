@@ -98,6 +98,34 @@ def _positive_int(value: Any, label: str) -> int:
     return value
 
 
+def verify_turn_receipt(
+    signed: SignedTurnCommitBundle,
+    receipt: Mapping[str, Any],
+    server_public_key_hex: str,
+) -> Mapping[str, Any]:
+    """Verify a backend receipt against its signed turn and the server identity."""
+    if not server_public_key_hex or not verify_signed_envelope(receipt, server_public_key_hex):
+        raise TeamTransportError("Coordinator commit receipt signature verification failed.")
+    value = receipt.get("payload")
+    required = {
+        "project_session_id", "host_epoch", "primary_device_record_id",
+        "author_device_record_id", "turn_seq", "bundle_digest", "proof_merkle_root",
+    }
+    if not isinstance(value, Mapping) or not required.issubset(value):
+        raise TeamTransportError("Coordinator commit receipt is malformed.")
+    bundle = signed.bundle
+    if (
+        value["project_session_id"] != bundle.project_session_id
+        or value["host_epoch"] != bundle.host_epoch
+        or value["turn_seq"] != bundle.turn_seq
+        or value["author_device_record_id"] != signed.author_device_record_id
+        or value["bundle_digest"] != bundle.compute_digest()
+        or value["proof_merkle_root"] != bundle.proof_merkle_root
+    ):
+        raise TeamTransportError("Coordinator commit receipt does not match the signed turn.")
+    return value
+
+
 def _scope_fields(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != {
         "project_session_id", "host_epoch", "turn_seq"
@@ -332,6 +360,11 @@ class TeamPeerLink:
         self._pending_scopes.clear()
         await self.session.close()
 
+    async def wait_closed(self) -> None:
+        task = self._receive_task
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
     def _fail_pending(self, message: str) -> None:
         for pending in tuple(self._pending.values()):
             if not pending.future.done():
@@ -346,27 +379,7 @@ class TeamPeerLink:
     def _verify_receipt(
         self, signed: SignedTurnCommitBundle, receipt: Mapping[str, Any]
     ) -> None:
-        if not self.server_public_key_hex or not verify_signed_envelope(
-            receipt, self.server_public_key_hex
-        ):
-            raise TeamTransportError("Coordinator commit receipt signature verification failed.")
-        value = receipt.get("payload")
-        required = {
-            "project_session_id", "host_epoch", "primary_device_record_id",
-            "author_device_record_id", "turn_seq", "bundle_digest", "proof_merkle_root",
-        }
-        if not isinstance(value, Mapping) or not required.issubset(value):
-            raise TeamTransportError("Coordinator commit receipt is malformed.")
-        bundle = signed.bundle
-        if (
-            value["project_session_id"] != bundle.project_session_id
-            or value["host_epoch"] != bundle.host_epoch
-            or value["turn_seq"] != bundle.turn_seq
-            or value["author_device_record_id"] != signed.author_device_record_id
-            or value["bundle_digest"] != bundle.compute_digest()
-            or value["proof_merkle_root"] != bundle.proof_merkle_root
-        ):
-            raise TeamTransportError("Coordinator commit receipt does not match the signed turn.")
+        verify_turn_receipt(signed, receipt, self.server_public_key_hex or "")
 
     async def _enqueue(
         self,
