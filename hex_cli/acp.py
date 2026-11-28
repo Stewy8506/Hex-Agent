@@ -658,6 +658,8 @@ _SUPPORTED_METHODS = (
     "cloud/update/check", "cloud/config/evaluate",
     "cloud/signal/start", "cloud/signal/stop", "cloud/signal/status",
     "cloud/sync/status", "cloud/sync/run",
+    "team/status", "team/start", "team/stop", "team/connect",
+    "team/disconnect", "team/flush",
 )
 
 HEX_CONTRACT_VERSION = 1
@@ -777,6 +779,8 @@ class ACPServer:
         self._signal_link: Any | None = None
         self._transport_broker: Any | None = None
         self._signal_lock = threading.RLock()
+        self._team_runtimes: dict[str, Any] = {}
+        self._team_lock = threading.RLock()
 
     @property
     def cloud_account(self) -> Any:
@@ -806,6 +810,18 @@ class ACPServer:
         with self._sync_control({}) as control:
             return await control.sync_with(session)
 
+    async def _serve_team(self, project_session_id: str, session: Any, peer: Any) -> dict[str, Any]:
+        with self._team_lock:
+            runtime = self._team_runtimes.get(project_session_id)
+        if runtime is None:
+            raise ValueError("The requested team session is not running.")
+        return await runtime.serve_session(session, peer)
+
+    async def _serve_peer(self, session: Any, peer: Any) -> dict[str, Any]:
+        from cloud.peer_dispatch import dispatch_peer_session
+
+        return await dispatch_peer_session(session, peer, self._serve_peer_sync, self._serve_team)
+
     def _new_transport_broker(self, link: Any) -> Any:
         from cloud.transport_broker import TransportBroker
 
@@ -814,9 +830,129 @@ class ACPServer:
             link.send_p2p_signal,
             self.cloud_account.peer_identity(),
             relay_uri=self._default_relay_uri(),
-            session_handler=self._serve_peer_sync,
+            session_handler=self._serve_peer,
             negotiation_timeout=30.0,
         )
+
+    def _team_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = params.get("project_session_id")
+        with self._team_lock:
+            runtimes = dict(self._team_runtimes)
+        if session_id is not None:
+            runtime = runtimes.get(str(session_id))
+            return runtime.status() if runtime is not None else {
+                "running": False, "project_session_id": session_id
+            }
+        return {"running": bool(runtimes), "sessions": [
+            runtime.status() for runtime in runtimes.values()
+        ]}
+
+    def _team_start(self, params: dict[str, Any]) -> dict[str, Any]:
+        from cloud.team_runtime import TeamRuntime
+
+        team_id = params.get("team_id")
+        session_id = params.get("project_session_id")
+        if not all(isinstance(value, str) and value for value in (team_id, session_id)):
+            raise ValueError("team_id and project_session_id are required.")
+        self._signal_start()
+        broker = self._ensure_transport_broker()
+        workspace = Path(str(params.get("workspace") or self.workspace_root)).resolve()
+        ledger = getattr(self._orchestrator, "ledger", None) if workspace == self.workspace_root else None
+        if ledger is None:
+            raise ValueError("A running team session requires the workspace ledger.")
+        with self._team_lock:
+            existing = self._team_runtimes.get(session_id)
+        if existing is not None:
+            return existing.status()
+
+        def on_event(event: dict[str, Any]) -> None:
+            self._emit_cloud_event(str(event.get("kind") or "team_event"),
+                                   project_session_id=session_id, **{
+                                       key: value for key, value in event.items()
+                                       if key not in {"kind", "project_session_id"}
+                                   })
+
+        runtime = broker.submit(lambda: TeamRuntime.create(
+            account=self.cloud_account,
+            team_id=team_id,
+            project_session_id=session_id,
+            workspace_root=workspace,
+            data_dir=workspace / ".hex" / "data",
+            ledger=ledger,
+            global_home=self.config_dir,
+            broker=broker,
+            on_event=on_event,
+        )).result(timeout=60)
+        try:
+            broker.submit(runtime.start).result(timeout=60)
+        except BaseException:
+            broker.submit(runtime.stop).result(timeout=30)
+            raise
+        with self._team_lock:
+            self._team_runtimes[session_id] = runtime
+        self._select_team_hook()
+        return runtime.status()
+
+    def _select_team_hook(self) -> None:
+        if self._orchestrator is None or not hasattr(self._orchestrator, "team_turn_hook"):
+            return
+        with self._team_lock:
+            runtimes = list(self._team_runtimes.values())
+        self._orchestrator.team_turn_hook = runtimes[-1] if runtimes else None
+
+    def _team_stop(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(params.get("project_session_id") or "")
+        with self._team_lock:
+            runtimes = [self._team_runtimes[session_id]] if session_id else list(self._team_runtimes.values())
+            for runtime in runtimes:
+                self._team_runtimes.pop(runtime.project_session_id, None)
+        broker = self._transport_broker
+        if broker is None:
+            return {"stopped": len(runtimes)}
+        for runtime in runtimes:
+            broker.submit(runtime.stop).result(timeout=30)
+        self._select_team_hook()
+        return {"stopped": len(runtimes)}
+
+    def _team_connect(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(str(params.get("project_session_id") or ""))
+        return runtime.connect(str(params.get("device_record_id") or ""),
+                               transport=str(params.get("transport") or "auto"))
+
+    def _team_disconnect(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(str(params.get("project_session_id") or ""))
+        device_id = str(params.get("device_record_id") or "")
+        broker = self._ensure_transport_broker()
+
+        async def disconnect() -> dict[str, Any]:
+            return await runtime.disconnect(device_id)
+
+        return broker.submit(disconnect).result(timeout=30)
+
+    def _team_flush(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._team_runtime(str(params.get("project_session_id") or ""))
+        broker = self._ensure_transport_broker()
+        return broker.submit(runtime.flush).result(timeout=120)
+
+    def _team_runtime(self, session_id: str) -> Any:
+        with self._team_lock:
+            runtime = self._team_runtimes.get(session_id)
+        if runtime is None:
+            raise ValueError("The requested team session is not running.")
+        return runtime
+
+    def _stop_team_runtimes(self) -> None:
+        with self._team_lock:
+            runtimes = list(self._team_runtimes.values())
+            self._team_runtimes.clear()
+        broker = self._transport_broker
+        if broker is not None:
+            for runtime in runtimes:
+                try:
+                    broker.submit(runtime.stop).result(timeout=30)
+                except Exception as exc:
+                    logger.debug("ACP team runtime shutdown failed: %s", exc)
+        self._select_team_hook()
 
     def _signal_start(self) -> dict[str, Any]:
         from cloud.signaling import P2PSignalingClient, SignalLink
@@ -853,6 +989,7 @@ class ACPServer:
             "last_error": None,
             "base_url": self.cloud_account.base_url,
         }
+        self._stop_team_runtimes()
         if broker is not None:
             broker.stop()
         if link is not None:
@@ -1216,6 +1353,18 @@ class ACPServer:
                 res = self._sync_status(params)
             elif method == "cloud/sync/run":
                 res = self._sync_run(params)
+            elif method == "team/status":
+                res = self._team_status(params)
+            elif method == "team/start":
+                res = self._team_start(params)
+            elif method == "team/stop":
+                res = self._team_stop(params)
+            elif method == "team/connect":
+                res = self._team_connect(params)
+            elif method == "team/disconnect":
+                res = self._team_disconnect(params)
+            elif method == "team/flush":
+                res = self._team_flush(params)
             else:
                 return {
                     "jsonrpc": "2.0",

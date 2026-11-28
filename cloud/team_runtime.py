@@ -238,6 +238,16 @@ class TeamRuntime:
         future.add_done_callback(complete)
         return {"status": "connecting", "device_record_id": peer_device_id}
 
+    async def disconnect(self, peer_device_id: str) -> dict[str, Any]:
+        with self._state_lock:
+            link = self._links.get(peer_device_id)
+        if link is not None:
+            await link.close()
+            with self._state_lock:
+                if self._links.get(peer_device_id) is link:
+                    self._links.pop(peer_device_id, None)
+        return {"disconnected": link is not None, "device_record_id": peer_device_id}
+
     async def serve_session(self, session: SecurePeerSession, peer: Any) -> dict[str, Any]:
         await self._serve_link(session, peer)
         return {"accepted": True}
