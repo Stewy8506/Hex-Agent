@@ -122,8 +122,35 @@ class TestSignedProofArtifact(unittest.TestCase):
             return await self.ledger.get_proof_bundle_async(self.proof["task_id"])
 
         self.assertEqual(asyncio.run(reload_async())["signed_proof"], signed.to_dict())
+
+    def test_proof_can_be_resigned_for_a_new_epoch_without_changing_immutable_fields(self) -> None:
+        first = self.signed()
+        renewed = sign_proof_artifact(
+            self.proof, self.signer, project_session_id="proj_1", host_epoch=4, turn_seq=1
+        )
+        self.ledger.attach_signed_proof(self.proof["proof_id"], first.to_dict())
+
+        async def attach_async():
+            return await self.ledger.attach_signed_proof_async(
+                self.proof["proof_id"], renewed.to_dict()
+            )
+
+        attached = asyncio.run(attach_async())
+        self.assertEqual(attached["ledger_signature"], renewed.signature)
+        self.assertEqual(
+            self.ledger.get_proof_bundle(self.proof["task_id"])["signed_proof"], renewed.to_dict()
+        )
+
+        conflicting = sign_proof_artifact(
+            {**self.proof, "workspace_tree_sha": "c" * 64},
+            self.signer,
+            project_session_id="proj_1",
+            host_epoch=4,
+            turn_seq=2,
+        )
         with self.assertRaises(ValueError):
-            self.ledger.attach_signed_proof(self.proof["proof_id"], {**signed.to_dict(), "turn_seq": 10})
+            self.ledger.attach_signed_proof(self.proof["proof_id"], conflicting.to_dict())
+        self.assertEqual(self.ledger.get_proof_bundle(self.proof["task_id"])["signed_proof"], renewed.to_dict())
 
     def test_signed_proof_import_is_exact_and_idempotent(self) -> None:
         signed = self.signed()

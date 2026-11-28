@@ -3989,7 +3989,11 @@ class LedgerStore(LedgerSyncMixin):
                 current.pop(f"{name}_json", None)
             current.pop("signed_proof_json", None)
             current.pop("signed_proof", None)
-            if current != signed.proof:
+            immutable_proof = {
+                key: value for key, value in signed.proof.items() if key != "ledger_signature"
+            }
+            current.pop("ledger_signature", None)
+            if current != immutable_proof:
                 raise ValueError("Signed proof does not match the stored proof artifact.")
             self.conn.execute(
                 "UPDATE proof_bundles SET ledger_signature = ?, signed_proof_json = ? WHERE proof_id = ?",
@@ -4023,7 +4027,11 @@ class LedgerStore(LedgerSyncMixin):
                     current.pop(f"{name}_json", None)
                 current.pop("signed_proof_json", None)
                 current.pop("signed_proof", None)
-                if current != signed.proof:
+                immutable_proof = {
+                    key: value for key, value in signed.proof.items() if key != "ledger_signature"
+                }
+                current.pop("ledger_signature", None)
+                if current != immutable_proof:
                     raise ValueError("Signed proof does not match the stored proof artifact.")
                 await conn.execute(
                     "UPDATE proof_bundles SET ledger_signature = $1, signed_proof_json = $2 "
