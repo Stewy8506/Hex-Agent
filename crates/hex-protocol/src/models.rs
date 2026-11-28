@@ -923,8 +923,156 @@ pub struct TeamPeerStatus {
     pub closed: bool,
     #[serde(default)]
     pub pending_turns: u64,
+    #[serde(default)]
+    pub pending_scopes: u64,
+    #[serde(default)]
+    pub pending_activities: u64,
+    #[serde(default)]
+    pub activity_queue: u64,
+    #[serde(default)]
+    pub pending_queries: u64,
+    #[serde(default)]
+    pub receiving_turn: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+}
+
+/// One signed, epoch-fenced Teams fast-lane event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamActivityEvent {
+    pub version: u32,
+    pub event_id: String,
+    pub kind: String,
+    pub project_session_id: String,
+    pub host_epoch: u64,
+    pub author_device_record_id: String,
+    pub created_at: u64,
+    pub summary: String,
+    pub paths: Vec<String>,
+    pub symbols: Vec<String>,
+    pub data: serde_json::Value,
+}
+
+/// An active soft scope claim with its deterministic expiry and conflict state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamScopeLock {
+    #[serde(flatten)]
+    pub event: TeamActivityEvent,
+    pub expires_at: u64,
+    pub conflicts: bool,
+}
+
+/// Local durable blackboard journal accounting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamActivityStoreStatus {
+    pub events: u64,
+    pub journal_events: u64,
+    pub bytes: u64,
+    pub event_limit: u64,
+    pub bytes_limit: u64,
+    pub corrupt: bool,
+    pub path: String,
+}
+
+/// Session-scoped fast-lane snapshot returned by `team/activity/status`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamActivityStatus {
+    pub store: TeamActivityStoreStatus,
+    pub scope_locks: Vec<TeamScopeLock>,
+    pub peer_state: Vec<TeamActivityEvent>,
+    pub blackboard: Vec<TeamActivityEvent>,
+    pub recent: Vec<TeamActivityEvent>,
+}
+
+/// Result of publishing a signed scope, blackboard, or contract event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamActivityMutation {
+    pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<TeamActivityEvent>,
+}
+
+/// Parameters for claiming or renewing a soft scope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamScopeClaimParams {
+    pub task_id: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub symbols: Vec<String>,
+    pub ttl_seconds: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Parameters for releasing an owned soft scope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamScopeReleaseParams {
+    pub task_id: String,
+    pub claim_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbols: Option<Vec<String>>,
+}
+
+/// Parameters for extending an active claim without changing its identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamScopeRenewParams {
+    pub task_id: String,
+    pub claim_id: String,
+    pub ttl_seconds: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Parameters for publishing a shared architectural note.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamBlackboardNoteParams {
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// Parameters for publishing a public interface contract change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamContractChangeParams {
+    pub task_id: String,
+    pub path: String,
+    pub symbol: String,
+    pub before: String,
+    pub after: String,
+}
+
+/// Parameters for a bounded one-hop peer question.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamPeerQueryParams {
+    pub device_record_id: String,
+    pub question: String,
+    pub task_id: String,
+}
+
+/// Cached answer returned by `team/peer/query`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamPeerQueryResult {
+    pub accepted: bool,
+    pub request_id: String,
+    pub device_record_id: String,
+    pub answer: String,
+    pub cached: bool,
+    pub shared: bool,
 }
 
 /// Session-scoped team runtime status returned by `team/status` and `team/start`.
@@ -949,6 +1097,8 @@ pub struct TeamRuntimeStatus {
     pub connecting: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<TeamActivityStatus>,
 }
 
 /// Teams notification forwarded through the existing `cloud/event` channel.
@@ -969,6 +1119,14 @@ pub struct TeamEvent {
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relayed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<bool>,
 }
 
 /// Push notification emitted by the ACP server as `cloud/event`.
@@ -1418,17 +1576,65 @@ mod tests {
             "primary_device_record_id": "dev_a", "committed_turn_seq": 4,
             "applied_turn_seq": 3, "pending_turns": 1,
             "peers": [{"device_record_id": "dev_b", "role": "developer",
-                       "transport": "relay", "closed": false, "pending_turns": 0}],
+                       "transport": "relay", "closed": false, "pending_turns": 1,
+                       "pending_scopes": 2, "pending_activities": 3,
+                       "activity_queue": 4, "pending_queries": 5,
+                       "receiving_turn": true, "remote_role": "coordinator"}],
             "connecting": ["dev_c"]
         })).unwrap();
         assert_eq!(status.host_epoch, 2);
         assert_eq!(status.peers[0].transport.as_deref(), Some("relay"));
+        assert_eq!(status.peers[0].pending_scopes, 2);
+        assert_eq!(status.peers[0].pending_activities, 3);
+        assert_eq!(status.peers[0].activity_queue, 4);
+        assert_eq!(status.peers[0].pending_queries, 5);
+        assert!(status.peers[0].receiving_turn);
+        assert_eq!(status.peers[0].remote_role.as_deref(), Some("coordinator"));
         let event: TeamEvent = serde_json::from_value(serde_json::json!({
             "kind": "team/turn_committed", "project_session_id": "proj_1",
             "host_epoch": 2, "turn_seq": 4, "author_device_record_id": "dev_b"
         })).unwrap();
         assert_eq!(event.turn_seq, Some(4));
         assert_eq!(event.author_device_record_id.as_deref(), Some("dev_b"));
+    }
+
+    #[test]
+    fn team_fastlane_models_round_trip() {
+        let event = TeamActivityEvent {
+            version: 1,
+            event_id: "event_1".into(),
+            kind: "INTENT_CLAIM".into(),
+            project_session_id: "proj_1".into(),
+            host_epoch: 2,
+            author_device_record_id: "dev_a".into(),
+            created_at: 1_800_000_000,
+            summary: "Edit parser".into(),
+            paths: vec!["src/parser.py".into()],
+            symbols: vec!["parse".into()],
+            data: serde_json::json!({"task_id": "task_1", "claim_id": "claim_1", "ttl_seconds": 60}),
+        };
+        let lock = TeamScopeLock {
+            event: event.clone(),
+            expires_at: 1_800_000_060,
+            conflicts: true,
+        };
+        let value = serde_json::to_value(&lock).unwrap();
+        assert_eq!(value["event_id"], "event_1");
+        assert_eq!(value["data"]["claim_id"], "claim_1");
+        let restored: TeamScopeLock = serde_json::from_value(value).unwrap();
+        assert_eq!(restored, lock);
+
+        let query = TeamPeerQueryResult {
+            accepted: true,
+            request_id: "a".repeat(32),
+            device_record_id: "dev_b".into(),
+            answer: "Use the canonical parser.".into(),
+            cached: true,
+            shared: false,
+        };
+        let restored: TeamPeerQueryResult =
+            serde_json::from_value(serde_json::to_value(&query).unwrap()).unwrap();
+        assert_eq!(restored, query);
     }
 
     #[test]

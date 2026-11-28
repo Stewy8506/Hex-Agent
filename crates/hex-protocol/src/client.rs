@@ -18,17 +18,18 @@ use crate::error::AcpError;
 use crate::models::{
     ApprovalDecisionParams, ApprovalDecisionResponse, ClientInfo, CloudAuthStatus, CloudDevice,
     CloudDevicesList, CloudFlags, CloudRevokeResult, CloudUpdatePlan, ConfigGetResponse,
-    ConfigSetResponse, InitializeParams, InitializeResponse, JsonRpcNotification, JsonRpcRequest,
-    ModelCatalog, ProviderCredentialMutationResponse,
-    ProviderEndpointMutationResponse, ProvidersListResponse, RequestId,
-    SessionCancelParams, SessionCancelResponse, SessionCommandParams,
-    SessionCommandResponse, SessionDeleteResponse, SessionFlagResponse, SessionListItem,
-    SessionListResponse, SessionLoadParams, SessionLoadResponse, SessionNewParams,
-    SessionNewResponse, SessionPromptParams, SessionPromptResponse, SessionRenameResponse,
-    SessionSubagentsParams, SessionSubagentsResponse, SubagentInfo, ToolCallParams,
-    GcPreviewResponse, ToolCallResponse, ToolDefinition, ToolPolicyMutationResponse,
-    ToolsListResponse,
-    ToolsPolicyResponse, TeamRuntimeStatus, HEX_CONTRACT_VERSION,
+    ConfigSetResponse, GcPreviewResponse, InitializeParams, InitializeResponse,
+    JsonRpcNotification, JsonRpcRequest, ModelCatalog, ProviderCredentialMutationResponse,
+    ProviderEndpointMutationResponse, ProvidersListResponse, RequestId, SessionCancelParams,
+    SessionCancelResponse, SessionCommandParams, SessionCommandResponse, SessionDeleteResponse,
+    SessionFlagResponse, SessionListItem, SessionListResponse, SessionLoadParams,
+    SessionLoadResponse, SessionNewParams, SessionNewResponse, SessionPromptParams,
+    SessionPromptResponse, SessionRenameResponse, SessionSubagentsParams, SessionSubagentsResponse,
+    SubagentInfo, TeamActivityMutation, TeamActivityStatus, TeamBlackboardNoteParams,
+    TeamContractChangeParams, TeamPeerQueryParams, TeamPeerQueryResult, TeamRuntimeStatus,
+    TeamScopeClaimParams, TeamScopeReleaseParams, TeamScopeRenewParams, ToolCallParams,
+    ToolCallResponse, ToolDefinition, ToolPolicyMutationResponse, ToolsListResponse,
+    ToolsPolicyResponse, HEX_CONTRACT_VERSION,
 };
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, AcpError>>>>>;
@@ -927,6 +928,87 @@ impl AcpClient {
         })).await
     }
 
+    /// Read signed fast-lane state for one explicitly selected session.
+    pub async fn team_activity_status(
+        &self,
+        project_session_id: &str,
+        limit: u32,
+    ) -> Result<TeamActivityStatus, AcpError> {
+        self.send_request(
+            "team/activity/status",
+            serde_json::json!({
+                "project_session_id": project_session_id, "limit": limit,
+            }),
+        )
+        .await
+    }
+
+    /// Claim a soft file/symbol scope for a local task.
+    pub async fn team_scope_claim(
+        &self,
+        project_session_id: &str,
+        params: TeamScopeClaimParams,
+    ) -> Result<TeamActivityMutation, AcpError> {
+        let mut value = serde_json::to_value(params)?;
+        value["project_session_id"] = serde_json::json!(project_session_id);
+        self.send_request("team/scope/claim", value).await
+    }
+
+    /// Release an owned soft scope.
+    pub async fn team_scope_release(
+        &self,
+        project_session_id: &str,
+        params: TeamScopeReleaseParams,
+    ) -> Result<TeamActivityMutation, AcpError> {
+        let mut value = serde_json::to_value(params)?;
+        value["project_session_id"] = serde_json::json!(project_session_id);
+        self.send_request("team/scope/release", value).await
+    }
+
+    /// Extend an active soft scope without changing its identity.
+    pub async fn team_scope_renew(
+        &self,
+        project_session_id: &str,
+        params: TeamScopeRenewParams,
+    ) -> Result<TeamActivityMutation, AcpError> {
+        let mut value = serde_json::to_value(params)?;
+        value["project_session_id"] = serde_json::json!(project_session_id);
+        self.send_request("team/scope/renew", value).await
+    }
+
+    /// Publish a redacted architectural note to the shared blackboard.
+    pub async fn team_blackboard_note(
+        &self,
+        project_session_id: &str,
+        params: TeamBlackboardNoteParams,
+    ) -> Result<TeamActivityMutation, AcpError> {
+        let mut value = serde_json::to_value(params)?;
+        value["project_session_id"] = serde_json::json!(project_session_id);
+        self.send_request("team/blackboard/note", value).await
+    }
+
+    /// Publish a public interface contract change.
+    pub async fn team_contract_change(
+        &self,
+        project_session_id: &str,
+        params: TeamContractChangeParams,
+    ) -> Result<TeamActivityMutation, AcpError> {
+        let mut value = serde_json::to_value(params)?;
+        value["project_session_id"] = serde_json::json!(project_session_id);
+        self.send_request("team/contract/change", value).await
+    }
+
+    /// Ask an enrolled peer a bounded one-hop question and cache its answer.
+    pub async fn team_peer_query(
+        &self,
+        project_session_id: &str,
+        params: TeamPeerQueryParams,
+    ) -> Result<TeamPeerQueryResult, AcpError> {
+        let mut value = serde_json::to_value(params)?;
+        value["project_session_id"] = serde_json::json!(project_session_id);
+        self.send_request("team/peer/query", value).await
+    }
+
     // -- Cloud account ------------------------------------------------------
 
     /// Local cloud account/device status (`cloud/auth/status`).
@@ -1338,6 +1420,160 @@ mod tests {
         assert!(candidates.contains(&posix.to_string_lossy().to_string()));
         assert!(candidates.contains(&"python3".to_string()));
         assert!(candidates.contains(&"python".to_string()));
+    }
+
+    #[tokio::test]
+    async fn team_fastlane_methods_send_typed_session_scoped_requests() {
+        let (client_read, mut server_write) = tokio::io::duplex(8192);
+        let (server_read, client_write) = tokio::io::duplex(8192);
+        let client = AcpClient::from_streams(client_read, client_write);
+        let (requests_tx, mut requests_rx) = mpsc::channel(7);
+        let server = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_read).lines();
+            for _ in 0..7 {
+                let line = lines.next_line().await.unwrap().unwrap();
+                let request: JsonRpcRequest = serde_json::from_str(&line).unwrap();
+                requests_tx
+                    .send((request.method.clone(), request.params.unwrap()))
+                    .await
+                    .unwrap();
+                let result = match request.method.as_str() {
+                    "team/activity/status" => serde_json::json!({
+                        "store": {"events": 1, "journal_events": 1, "bytes": 128,
+                                  "event_limit": 1024, "bytes_limit": 8388608,
+                                  "corrupt": false, "path": "/ws/.hex/team_blackboard.jsonl"},
+                        "scope_locks": [], "peer_state": [], "blackboard": [], "recent": []
+                    }),
+                    "team/peer/query" => serde_json::json!({
+                        "accepted": true, "request_id": "request_1",
+                        "device_record_id": "dev_b", "answer": "Parser is canonical.",
+                        "cached": true, "shared": false
+                    }),
+                    _ => serde_json::json!({"accepted": true}),
+                };
+                let response = serde_json::json!({
+                    "jsonrpc": "2.0", "id": request.id, "result": result
+                });
+                server_write
+                    .write_all((serde_json::to_string(&response).unwrap() + "\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        timeout(Duration::from_secs(5), async {
+            let status = client.team_activity_status("proj_1", 25).await.unwrap();
+            assert_eq!(status.store.events, 1);
+            assert_eq!(status.store.event_limit, 1024);
+
+            let claim = client
+                .team_scope_claim(
+                    "proj_1",
+                    TeamScopeClaimParams {
+                        task_id: "task_1".into(),
+                        paths: vec!["src/parser.rs".into()],
+                        symbols: vec!["parse".into()],
+                        ttl_seconds: 60,
+                        claim_id: Some("claim_1".into()),
+                        summary: Some("Edit parser".into()),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(claim.accepted);
+
+            client
+                .team_scope_release(
+                    "proj_1",
+                    TeamScopeReleaseParams {
+                        task_id: "task_1".into(),
+                        claim_id: "claim_1".into(),
+                        paths: None,
+                        symbols: None,
+                    },
+                )
+                .await
+                .unwrap();
+            client
+                .team_scope_renew(
+                    "proj_1",
+                    TeamScopeRenewParams {
+                        task_id: "task_1".into(),
+                        claim_id: "claim_1".into(),
+                        ttl_seconds: 120,
+                        summary: None,
+                    },
+                )
+                .await
+                .unwrap();
+            client
+                .team_blackboard_note(
+                    "proj_1",
+                    TeamBlackboardNoteParams {
+                        body: "Keep the parser canonical.".into(),
+                        task_id: Some("task_1".into()),
+                        pinned: true,
+                    },
+                )
+                .await
+                .unwrap();
+            client
+                .team_contract_change(
+                    "proj_1",
+                    TeamContractChangeParams {
+                        task_id: "task_1".into(),
+                        path: "src/parser.rs".into(),
+                        symbol: "parse".into(),
+                        before: "fn parse(input: &str)".into(),
+                        after: "fn parse(input: &str) -> Result<Value>".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            let query = client
+                .team_peer_query(
+                    "proj_1",
+                    TeamPeerQueryParams {
+                        device_record_id: "dev_b".into(),
+                        question: "Which parser is canonical?".into(),
+                        task_id: "task_1".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(query.answer, "Parser is canonical.");
+            assert!(query.cached);
+
+            let mut requests = Vec::new();
+            for _ in 0..7 {
+                requests.push(requests_rx.recv().await.unwrap());
+            }
+            assert_eq!(
+                requests
+                    .iter()
+                    .map(|item| item.0.as_str())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "team/activity/status",
+                    "team/scope/claim",
+                    "team/scope/release",
+                    "team/scope/renew",
+                    "team/blackboard/note",
+                    "team/contract/change",
+                    "team/peer/query",
+                ]
+            );
+            for (_, params) in &requests {
+                assert_eq!(params["project_session_id"], "proj_1");
+            }
+            assert_eq!(requests[0].1["limit"], 25);
+            assert_eq!(requests[1].1["claim_id"], "claim_1");
+            assert_eq!(requests[4].1["pinned"], true);
+            assert_eq!(requests[6].1["device_record_id"], "dev_b");
+        })
+        .await
+        .unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]
