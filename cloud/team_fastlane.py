@@ -47,7 +47,7 @@ class TeamActivityError(ValueError):
     pass
 
 
-def _redact(value: str) -> str:
+def redact_activity_text(value: str) -> str:
     return _SECRET_RE.sub("[REDACTED_SECRET]", value)
 
 
@@ -56,7 +56,7 @@ def _text(value: Any, label: str, limit: int, *, empty: bool = False) -> str:
         raise TeamActivityError(f"Invalid team activity {label}.")
     if len(value) > limit or "\x00" in value:
         raise TeamActivityError(f"Team activity {label} is too large.")
-    return _redact(value)
+    return redact_activity_text(value)
 
 
 def _path(value: Any) -> str:

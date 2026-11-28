@@ -6,6 +6,7 @@ import asyncio
 import base64
 import copy
 import hashlib
+import json
 import os
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from cloud.cognition_sync import CognitionSyncStore
 from cloud.p2p_transport import InMemoryNetwork, PeerIdentity
+from cloud.team_fastlane import TeamActivityStore, make_activity_event
 from cloud.team_mesh import (
     TeamMeshCoordinator,
     TurnCommitBundle,
@@ -180,6 +182,9 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         replica_mesh=None,
         frames=None,
         replica_server_public_key_hex=None,
+        activity_sink=None,
+        query_provider=None,
+        roles=None,
     ):
         def record(frame: bytes) -> bytes:
             if frames is not None:
@@ -200,6 +205,9 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
             server_public_key_hex=self.server.public_key_hex,
             commit_turn=commit or (lambda _signed: self.server.receipt(_signed)),
             history_provider=history,
+            activity_sink=activity_sink,
+            query_provider=query_provider,
+            device_role_provider=(roles or {}).get,
             timeout=5,
         )
         acks = []
@@ -212,6 +220,9 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
                 replica_server_public_key_hex or self.server.public_key_hex
             ),
             ack_sink=lambda ack: acks.append(ack),
+            activity_sink=activity_sink,
+            query_provider=query_provider,
+            device_role_provider=(roles or {}).get,
             timeout=5,
         )
         await asyncio.gather(coordinator_link.start(), replica_link.start())
@@ -258,6 +269,231 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(sent[header_index + 1].startswith(b"HEX/TC1\0"))
         self.assertTrue(sent[header_index + 2].startswith(b"HEX/TC1\0"))
+
+    async def test_signed_activity_is_acknowledged_and_relayed_idempotently(self) -> None:
+        coordinator_store = TeamActivityStore(self.root / "coordinator", "proj_1")
+        replica_store = TeamActivityStore(self.root / "replica", "proj_1")
+        coordinator_events = []
+        replica_events = []
+
+        def activity_sink(envelope, sender_id, relayed):
+            store = replica_store if relayed else coordinator_store
+            (replica_events if relayed else coordinator_events).append((sender_id, relayed))
+            return store.accept(
+                envelope, self.keys[envelope["event"]["author_device_record_id"]]
+            )
+
+        roles = {identity.device_id: "developer" for identity in (self.host, self.replica)}
+        coordinator, replica, _ = await self._links(
+            roles=roles,
+            activity_sink=activity_sink,
+        )
+        envelope = make_activity_event(
+            signer=self.replica,
+            project_session_id="proj_1",
+            host_epoch=1,
+            kind="BLACKBOARD_NOTE",
+            summary="Shared invariant",
+            data={"task_id": None, "body": "Keep parser behavior deterministic.", "pinned": True},
+        )
+
+        first = await replica.send_activity(envelope, wait=True)
+        duplicate = await replica.send_activity(envelope, wait=True)
+        self.assertTrue(first["accepted"])
+        self.assertTrue(duplicate["accepted"])
+        self.assertEqual(coordinator_events, [(self.replica.device_id, False)] * 2)
+        self.assertEqual(len(coordinator_store.blackboard()), 1)
+
+        await coordinator.send_activity(envelope)
+        await self._wait_for(lambda: len(replica_store.blackboard()) == 1)
+        self.assertEqual(replica_events, [(self.host.device_id, True)])
+        self.assertEqual(replica_store.blackboard()[0]["data"]["body"], "Keep parser behavior deterministic.")
+
+    async def test_peer_query_is_one_hop_bounded_and_redacted(self) -> None:
+        calls = []
+
+        async def answer(peer_id, task_id, question):
+            calls.append((peer_id, task_id, question))
+            return "Use the canonical parser. token=abcdefghijklmnop"
+
+        roles = {identity.device_id: "developer" for identity in (self.host, self.replica)}
+        coordinator, replica, _ = await self._links(
+            roles=roles, query_provider=answer
+        )
+        result = await replica.ask_peer("Which parser is canonical?", "task_1")
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["device_record_id"], self.host.device_id)
+        self.assertIn("[REDACTED_SECRET]", result["answer"])
+        self.assertEqual(calls, [(self.replica.device_id, "task_1", "Which parser is canonical?")])
+
+    async def test_concurrent_activity_submissions_share_one_acknowledgement(self) -> None:
+        calls = []
+
+        async def accept(envelope, sender_id, relayed):
+            calls.append(envelope["event"]["event_id"])
+            await asyncio.sleep(0.02)
+            return {"accepted": True}
+
+        roles = {identity.device_id: "developer" for identity in (self.host, self.replica)}
+        _, replica, _ = await self._links(roles=roles, activity_sink=accept)
+        envelope = make_activity_event(
+            signer=self.replica,
+            project_session_id="proj_1",
+            host_epoch=1,
+            kind="PEER_STATE",
+            summary="Working",
+            data={"state": "RUNNING"},
+        )
+
+        results = await asyncio.gather(
+            replica.send_activity(envelope, wait=True),
+            replica.send_activity(envelope, wait=True),
+        )
+
+        self.assertTrue(all(result["accepted"] for result in results))
+        self.assertEqual(calls, [envelope["event"]["event_id"]])
+
+    async def test_activity_rejects_observers_and_stale_epochs(self) -> None:
+        accepted = []
+
+        def sink(envelope, sender_id, relayed):
+            accepted.append(envelope["event"]["event_id"])
+            return {"accepted": True}
+
+        roles = {self.host.device_id: "developer", self.replica.device_id: "observer"}
+        _, replica, _ = await self._links(roles=roles, activity_sink=sink)
+        envelope = make_activity_event(
+            signer=self.replica,
+            project_session_id="proj_1",
+            host_epoch=1,
+            kind="PEER_STATE",
+            summary="Working",
+            data={"state": "RUNNING"},
+        )
+
+        with self.assertRaises(TeamTransportError):
+            await replica.send_activity(envelope, wait=True)
+        self.assertEqual(accepted, [])
+        self.assertFalse(replica.closed)
+
+        roles[self.replica.device_id] = "developer"
+        stale = make_activity_event(
+            signer=self.replica,
+            project_session_id="proj_1",
+            host_epoch=2,
+            kind="PEER_STATE",
+            summary="Working",
+            data={"state": "RUNNING"},
+        )
+        with self.assertRaises(TeamTransportError):
+            await replica.send_activity(stale, wait=True)
+        self.assertEqual(accepted, [])
+
+    async def test_forged_activity_closes_the_authenticated_peer_link(self) -> None:
+        roles = {identity.device_id: "developer" for identity in (self.host, self.replica)}
+        coordinator, replica, _ = await self._links(
+            roles=roles, activity_sink=lambda *_args: {"accepted": True}
+        )
+        envelope = make_activity_event(
+            signer=self.replica,
+            project_session_id="proj_1",
+            host_epoch=1,
+            kind="PEER_STATE",
+            summary="Working",
+            data={"state": "RUNNING"},
+        )
+        envelope["event"]["summary"] = "Forged state"
+        await replica.session.send(canonical_json_bytes({
+            "protocol_version": 1,
+            "type": "team_activity_submit",
+            "envelope": envelope,
+        }))
+
+        await self._wait_for(lambda: coordinator.closed)
+        self.assertTrue(coordinator.closed)
+
+    async def test_peer_query_rejects_unavailable_and_ineligible_peers(self) -> None:
+        roles = {identity.device_id: "developer" for identity in (self.host, self.replica)}
+        _, replica, _ = await self._links(roles=roles)
+        with self.assertRaises(TeamTransportError):
+            await replica.ask_peer("Which parser is canonical?", "task_1")
+        self.assertFalse(replica.closed)
+
+        roles[self.host.device_id] = "observer"
+        with self.assertRaises(TeamTransportError):
+            await replica.ask_peer("Which parser is canonical?", "task_1")
+        self.assertFalse(replica.closed)
+
+    async def test_peer_query_replay_is_bounded_and_redacted(self) -> None:
+        calls = []
+        sent = []
+        roles = {identity.device_id: "developer" for identity in (self.host, self.replica)}
+        coordinator, _, _ = await self._links(
+            roles=roles,
+            query_provider=lambda peer, task, question: calls.append(
+                (peer, task, question)
+            ) or "Canonical parser",
+        )
+        session_send = coordinator.session.send
+
+        async def record_send(frame: bytes) -> None:
+            sent.append(json.loads(frame))
+            await session_send(frame)
+
+        coordinator.session.send = record_send
+        fields = {
+            "request_id": "a" * 32,
+            "project_session_id": "proj_1",
+            "task_id": "task_1",
+            "question": "token=abcdefghijklmnop",
+        }
+        await coordinator._handle_query_request(fields)
+        await coordinator._handle_query_request(fields)
+
+        self.assertEqual(sent[-2]["type"], "team_query_result")
+        self.assertEqual(sent[-1]["type"], "team_query_error")
+        self.assertEqual(sent[-1]["error_code"], "REPLAYED")
+        self.assertEqual(calls, [(
+            self.replica.device_id, "task_1", "[REDACTED_SECRET]"
+        )])
+
+    async def test_slow_peer_query_responder_is_timed_out(self) -> None:
+        async def answer(peer_id, task_id, question):
+            await asyncio.sleep(1)
+            return "Too late"
+
+        roles = {identity.device_id: "developer" for identity in (self.host, self.replica)}
+        coordinator, replica, _ = await self._links(
+            roles=roles, query_provider=answer
+        )
+        coordinator.query_timeout = 0.05
+        replica.query_timeout = 0.05
+        started = asyncio.get_running_loop().time()
+
+        with self.assertRaises(TeamTransportError):
+            await replica.ask_peer("Which parser is canonical?", "task_1")
+
+        self.assertLess(asyncio.get_running_loop().time() - started, 0.5)
+
+    async def test_activity_queue_rejects_overflow(self) -> None:
+        roles = {identity.device_id: "developer" for identity in (self.host, self.replica)}
+        coordinator, replica, _ = await self._links(roles=roles)
+        worker = replica._activity_send_task
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        for _ in range(256):
+            replica._activity_outbound.put_nowait(None)
+        envelope = make_activity_event(
+            signer=self.replica,
+            project_session_id="proj_1",
+            host_epoch=1,
+            kind="PEER_STATE",
+            summary="Working",
+            data={"state": "RUNNING"},
+        )
+
+        with self.assertRaises(TeamTransportError):
+            await replica.send_activity(envelope)
 
     async def test_verified_turn_is_encrypted_chunked_applied_and_signed_acknowledged(self) -> None:
         (self.head / "large.bin").write_bytes(os.urandom(700_000))

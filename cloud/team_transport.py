@@ -8,11 +8,17 @@ import inspect
 import json
 import math
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping
 
 from .p2p_transport import P2PProtocolError, SecurePeerSession
+from .team_fastlane import (
+    TeamActivityError,
+    redact_activity_text,
+    verify_activity_event,
+)
 from .team_mesh import (
     DEVICE_ID_PATTERN,
     SignedTurnCommitBundle,
@@ -50,6 +56,17 @@ class _PendingTurn:
 
 @dataclass(slots=True)
 class _PendingScope:
+    future: asyncio.Future[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class _PendingActivity:
+    envelope: Mapping[str, Any]
+    future: asyncio.Future[dict[str, Any]] | None
+
+
+@dataclass(slots=True)
+class _PendingQuery:
     future: asyncio.Future[dict[str, Any]]
 
 
@@ -177,10 +194,24 @@ class TeamPeerLink:
         submission_publisher: Callable[
             [SignedTurnCommitBundle, Mapping[str, Any], Mapping[str, Any]], Awaitable[Any]
         ] | None = None,
+        activity_sink: Callable[
+            [Mapping[str, Any], str, bool], Awaitable[Any] | Any
+        ] | None = None,
+        query_provider: Callable[
+            [str, str, str], Awaitable[Any] | Any
+        ] | None = None,
+        query_timeout: float = 15.0,
         timeout: float = 120.0,
     ) -> None:
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("Team transport timeout must be finite and positive.")
+        if (
+            not isinstance(query_timeout, (int, float))
+            or isinstance(query_timeout, bool)
+            or not math.isfinite(query_timeout)
+            or query_timeout <= 0
+        ):
+            raise ValueError("Team query timeout must be finite and positive.")
         if commit_turn is not None and not server_public_key_hex:
             raise ValueError("A server key is required to verify Coordinator commit receipts.")
         if scope_allocator is not None and not server_public_key_hex:
@@ -198,16 +229,24 @@ class TeamPeerLink:
         self.submission_validator = submission_validator
         self.history_sink = history_sink
         self.submission_publisher = submission_publisher
+        self.activity_sink = activity_sink
+        self.query_provider = query_provider
         self.timeout = float(timeout)
+        self.query_timeout = float(query_timeout)
         self.remote_device_id = session.remote_device_id
         self._pending: dict[str, _PendingTurn] = {}
         self._pending_scopes: dict[str, _PendingScope] = {}
+        self._pending_activities: dict[str, _PendingActivity] = {}
+        self._pending_queries: dict[str, _PendingQuery] = {}
+        self._seen_queries: dict[str, float] = {}
         self._outbound: asyncio.Queue[_PendingTurn] = asyncio.Queue()
+        self._activity_outbound: asyncio.Queue[_PendingActivity] = asyncio.Queue(maxsize=256)
         self._write_lock = asyncio.Lock()
         self._incoming: _IncomingTurn | None = None
         self._current_digest: str | None = None
         self._receive_task: asyncio.Task[None] | None = None
         self._send_task: asyncio.Task[None] | None = None
+        self._activity_send_task: asyncio.Task[None] | None = None
         self._hello_sent = False
         self._remote_hello: dict[str, Any] | None = None
         self._hello_event = asyncio.Event()
@@ -224,6 +263,9 @@ class TeamPeerLink:
             "closed": self.closed,
             "pending_turns": len(self._pending),
             "pending_scopes": len(self._pending_scopes),
+            "pending_activities": len(self._pending_activities),
+            "activity_queue": self._activity_outbound.qsize(),
+            "pending_queries": len(self._pending_queries),
             "receiving_turn": self._incoming is not None,
             "remote_role": (self._remote_hello or {}).get("role"),
             "last_error": self._last_error,
@@ -238,6 +280,9 @@ class TeamPeerLink:
             return
         await self._send_hello()
         self._send_task = asyncio.create_task(self._outbound_worker(), name="hex-team-send")
+        self._activity_send_task = asyncio.create_task(
+            self._activity_outbound_worker(), name="hex-team-activity-send"
+        )
         self._receive_task = asyncio.create_task(self._receive_loop(), name="hex-team-receive")
 
     async def reserve_scope(self, task_id: str) -> dict[str, Any]:
@@ -270,6 +315,131 @@ class TeamPeerLink:
             raise TeamTransportError("Team scope reservation timed out.") from exc
         finally:
             self._pending_scopes.pop(request_id, None)
+
+    async def send_activity(
+        self, envelope: Mapping[str, Any], *, wait: bool = False
+    ) -> dict[str, Any]:
+        if self.closed or self._receive_task is None:
+            raise TeamTransportError("Team peer link is not running.")
+        if not isinstance(envelope, Mapping) or not isinstance(envelope.get("event"), Mapping):
+            raise TeamTransportError("Malformed team activity envelope.")
+        author = (
+            self.mesh.local_device_id
+            if self.mesh.mode == "TEAM_REPLICA_PEER"
+            else envelope["event"].get("author_device_record_id")
+        )
+        public_key = self.device_key_provider(author) if isinstance(author, str) else None
+        if not public_key:
+            raise TeamTransportError("Enrolled team activity author key is unavailable.")
+        try:
+            event = verify_activity_event(
+                envelope,
+                project_session_id=self.mesh.project_session_id,
+                public_key=public_key,
+            )
+        except TeamActivityError as exc:
+            raise TeamTransportError(str(exc)) from exc
+        if self.mesh.mode == "TEAM_REPLICA_PEER" and event["author_device_record_id"] != self.mesh.local_device_id:
+            raise TeamTransportError("Only the local author can submit team activity.")
+        if event["host_epoch"] != self.mesh.current_epoch:
+            raise TeamTransportError("Team activity belongs to a different Coordinator epoch.")
+        if self.mesh.mode == "TEAM_PRIMARY_HOST":
+            role = self.device_role_provider(event["author_device_record_id"]) if self.device_role_provider else None
+            if role not in {"owner", "admin", "developer"}:
+                raise TeamTransportError("Team activity author is not an eligible member.")
+        try:
+            await asyncio.wait_for(self._hello_event.wait(), timeout=self.query_timeout)
+        except asyncio.TimeoutError as exc:
+            raise TeamTransportError("Team peer hello timed out.") from exc
+        expected_role = "coordinator" if self.mesh.mode == "TEAM_REPLICA_PEER" else "replica"
+        if (self._remote_hello or {}).get("role") != expected_role:
+            raise TeamTransportError("Team activity peer has an unexpected role.")
+        event_id = event["event_id"]
+        existing = self._pending_activities.get(event_id)
+        if existing is not None:
+            if existing.envelope != envelope:
+                raise TeamTransportError("Conflicting team activity id is already pending.")
+            if existing.future is None:
+                return {"accepted": True, "queued": True}
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(existing.future), timeout=self.query_timeout
+                )
+            except Exception as exc:
+                if isinstance(exc, TeamTransportError):
+                    raise
+                raise TeamTransportError("Team activity acknowledgement timed out.") from exc
+        pending = _PendingActivity(envelope, None)
+        if wait:
+            if self.mesh.mode != "TEAM_REPLICA_PEER":
+                raise TeamTransportError("Only replica activity submissions await a Coordinator acknowledgement.")
+            if len(self._pending_activities) >= 32:
+                raise TeamTransportError("Too many team activity submissions are pending.")
+            pending = _PendingActivity(
+                envelope, asyncio.get_running_loop().create_future()
+            )
+            self._pending_activities[event_id] = pending
+        try:
+            self._activity_outbound.put_nowait(pending)
+        except asyncio.QueueFull:
+            if pending.future is not None:
+                self._pending_activities.pop(event_id, None)
+                pending.future.cancel()
+            raise TeamTransportError("Team fast-lane queue is full.")
+        if pending.future is None:
+            return {"accepted": True, "queued": True}
+        try:
+            return await asyncio.wait_for(pending.future, timeout=self.query_timeout)
+        except Exception as exc:
+            if self._pending_activities.get(event_id) is pending:
+                self._pending_activities.pop(event_id, None)
+            if isinstance(exc, TeamTransportError):
+                raise
+            raise TeamTransportError("Team activity acknowledgement timed out.") from exc
+
+    async def ask_peer(self, question: str, task_id: str) -> dict[str, Any]:
+        if self.closed or self._receive_task is None:
+            raise TeamTransportError("Team peer link is not running.")
+        if (
+            not isinstance(question, str)
+            or not question.strip()
+            or len(question) > 4096
+            or "\x00" in question
+        ):
+            raise TeamTransportError("A bounded peer question is required.")
+        if (
+            not isinstance(task_id, str)
+            or not task_id.strip()
+            or len(task_id) > 512
+            or "\x00" in task_id
+        ):
+            raise TeamTransportError("A valid task id is required for a peer query.")
+        try:
+            await asyncio.wait_for(self._hello_event.wait(), timeout=self.query_timeout)
+        except asyncio.TimeoutError as exc:
+            raise TeamTransportError("Team peer hello timed out.") from exc
+        if (self._remote_hello or {}).get("role") not in {"coordinator", "replica"}:
+            raise TeamTransportError("Only an authenticated team peer can answer a query.")
+        if len(self._pending_queries) >= 8:
+            raise TeamTransportError("Too many peer queries are pending.")
+        request_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self._pending_queries[request_id] = _PendingQuery(future)
+        try:
+            await self._send_control(
+                "team_query_request",
+                request_id=request_id,
+                project_session_id=self.mesh.project_session_id,
+                task_id=task_id,
+                question=redact_activity_text(question),
+            )
+            return await asyncio.wait_for(future, timeout=self.query_timeout)
+        except Exception as exc:
+            if isinstance(exc, TeamTransportError):
+                raise
+            raise TeamTransportError("Peer query timed out.") from exc
+        finally:
+            self._pending_queries.pop(request_id, None)
 
     async def submit_turn(
         self, signed: SignedTurnCommitBundle, payload: Mapping[str, Any]
@@ -351,7 +521,9 @@ class TeamPeerLink:
         if self._closed:
             return
         self._closed = True
-        tasks = [task for task in (self._receive_task, self._send_task) if task is not None]
+        tasks = [task for task in (
+            self._receive_task, self._send_task, self._activity_send_task
+        ) if task is not None]
         for task in tasks:
             task.cancel()
         if tasks:
@@ -364,6 +536,14 @@ class TeamPeerLink:
             if not pending.future.done():
                 pending.future.set_exception(TeamTransportError("Team peer link closed."))
         self._pending_scopes.clear()
+        for pending in tuple(self._pending_activities.values()):
+            if pending.future is not None and not pending.future.done():
+                pending.future.set_exception(TeamTransportError("Team peer link closed."))
+        self._pending_activities.clear()
+        for pending in tuple(self._pending_queries.values()):
+            if not pending.future.done():
+                pending.future.set_exception(TeamTransportError("Team peer link closed."))
+        self._pending_queries.clear()
         await self.session.close()
 
     async def wait_closed(self) -> None:
@@ -380,6 +560,14 @@ class TeamPeerLink:
             if not pending.future.done():
                 pending.future.set_exception(TeamTransportError(message))
         self._pending_scopes.clear()
+        for pending in tuple(self._pending_activities.values()):
+            if pending.future is not None and not pending.future.done():
+                pending.future.set_exception(TeamTransportError(message))
+        self._pending_activities.clear()
+        for pending in tuple(self._pending_queries.values()):
+            if not pending.future.done():
+                pending.future.set_exception(TeamTransportError(message))
+        self._pending_queries.clear()
 
     def _verify_receipt(
         self, signed: SignedTurnCommitBundle, receipt: Mapping[str, Any]
@@ -479,6 +667,26 @@ class TeamPeerLink:
                 self._pending.pop(pending.signed.bundle.compute_digest(), None)
             finally:
                 self._outbound.task_done()
+
+    async def _activity_outbound_worker(self) -> None:
+        while True:
+            pending = await self._activity_outbound.get()
+            try:
+                message_type = (
+                    "team_activity_submit"
+                    if self.mesh.mode == "TEAM_REPLICA_PEER"
+                    else "team_activity"
+                )
+                await self._send_control(message_type, envelope=pending.envelope)
+            except Exception as exc:
+                self._last_error = type(exc).__name__
+                if pending.future is not None and not pending.future.done():
+                    pending.future.set_exception(TeamTransportError("Team activity delivery failed."))
+                event_id = pending.envelope["event"]["event_id"]
+                if self._pending_activities.get(event_id) is pending:
+                    self._pending_activities.pop(event_id, None)
+            finally:
+                self._activity_outbound.task_done()
 
     async def _send_record(
         self,
@@ -587,6 +795,18 @@ class TeamPeerLink:
             await self._handle_catchup_request(fields)
         elif message_type == "team_catchup_result":
             self._handle_catchup_result(fields)
+        elif message_type in {"team_activity", "team_activity_submit"}:
+            await self._handle_activity(fields, submission=message_type == "team_activity_submit")
+        elif message_type == "team_activity_ack":
+            self._handle_activity_ack(fields)
+        elif message_type == "team_activity_error":
+            self._handle_activity_error(fields)
+        elif message_type == "team_query_request":
+            await self._handle_query_request(fields)
+        elif message_type == "team_query_result":
+            self._handle_query_result(fields)
+        elif message_type == "team_query_error":
+            self._handle_query_error(fields)
         else:
             raise TeamTransportError("Unknown team control message.")
 
@@ -938,6 +1158,232 @@ class TeamPeerLink:
                 pending.future.set_exception(TeamTransportError("Peer rejected the team turn."))
             self._pending.pop(bundle_digest, None)
             return
+
+    async def _handle_activity(
+        self, fields: Mapping[str, Any], *, submission: bool
+    ) -> None:
+        _require_fields(fields, {"envelope"})
+        envelope = fields["envelope"]
+        if not isinstance(envelope, Mapping) or not isinstance(envelope.get("event"), Mapping):
+            raise TeamTransportError("Malformed team activity envelope.")
+        event = envelope["event"]
+        author = event.get("author_device_record_id")
+        public_key = self.device_key_provider(author) if isinstance(author, str) else None
+        if not public_key:
+            raise TeamTransportError("Enrolled team activity author key is unavailable.")
+        try:
+            validated = verify_activity_event(
+                envelope,
+                project_session_id=self.mesh.project_session_id,
+                public_key=public_key,
+            )
+        except TeamActivityError:
+            self._closed = True
+            await self.session.close()
+            raise
+        if validated["host_epoch"] != self.mesh.current_epoch:
+            if submission:
+                await self._send_control(
+                    "team_activity_error", event_id=validated["event_id"],
+                    error_code="INVALID_EPOCH",
+                )
+                return
+            raise TeamTransportError("Team activity belongs to a different Coordinator epoch.")
+        role = self.device_role_provider(author) if self.device_role_provider else None
+        if role not in {"owner", "admin", "developer"}:
+            if submission:
+                await self._send_control(
+                    "team_activity_error", event_id=validated["event_id"],
+                    error_code="NOT_ELIGIBLE",
+                )
+                return
+            raise TeamTransportError("Team activity author is not an eligible member.")
+        remote_role = (self._remote_hello or {}).get("role")
+        if submission:
+            if (
+                self.mesh.mode != "TEAM_PRIMARY_HOST"
+                or remote_role != "replica"
+                or author != self.remote_device_id
+            ):
+                raise TeamTransportError("Team activity submissions require their authenticated replica author.")
+        elif (
+            self.mesh.mode != "TEAM_REPLICA_PEER"
+            or remote_role != "coordinator"
+            or self.remote_device_id != self.mesh.primary_device_id
+        ):
+            raise TeamTransportError("Relayed team activity must come from the active Coordinator.")
+        if self.activity_sink is None:
+            raise TeamTransportError("Team activity handling is not configured.")
+        try:
+            if inspect.iscoroutinefunction(self.activity_sink):
+                accepted = await self.activity_sink(envelope, self.remote_device_id, not submission)
+            else:
+                accepted = await asyncio.to_thread(
+                    self.activity_sink, envelope, self.remote_device_id, not submission
+                )
+            if inspect.isawaitable(accepted):
+                accepted = await accepted
+        except Exception:
+            accepted = False
+        event_id = validated["event_id"]
+        if accepted is False:
+            if submission:
+                await self._send_control(
+                    "team_activity_error", event_id=event_id, error_code="REJECTED"
+                )
+                return
+            raise TeamTransportError("Team activity was not accepted.")
+        if submission:
+            await self._send_control(
+                "team_activity_ack", event_id=event_id, accepted=True
+            )
+
+    def _handle_activity_ack(self, fields: Mapping[str, Any]) -> None:
+        _require_fields(fields, {"event_id", "accepted"})
+        if (
+            self.mesh.mode != "TEAM_REPLICA_PEER"
+            or (self._remote_hello or {}).get("role") != "coordinator"
+            or fields["accepted"] is not True
+        ):
+            raise TeamTransportError("Invalid team activity acknowledgement.")
+        event_id = fields["event_id"]
+        if not isinstance(event_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", event_id):
+            raise TeamTransportError("Invalid team activity acknowledgement id.")
+        pending = self._pending_activities.get(event_id)
+        if pending is not None and pending.future is not None and not pending.future.done():
+            pending.future.set_result({"accepted": True, "event_id": event_id})
+            self._pending_activities.pop(event_id, None)
+
+    def _handle_activity_error(self, fields: Mapping[str, Any]) -> None:
+        _require_fields(fields, {"event_id", "error_code"})
+        if (
+            self.mesh.mode != "TEAM_REPLICA_PEER"
+            or (self._remote_hello or {}).get("role") != "coordinator"
+            or fields["error_code"] not in {"REJECTED", "NOT_ELIGIBLE", "INVALID_EPOCH"}
+        ):
+            raise TeamTransportError("Invalid team activity rejection.")
+        event_id = fields["event_id"]
+        if not isinstance(event_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", event_id):
+            raise TeamTransportError("Invalid team activity rejection id.")
+        pending = self._pending_activities.get(event_id)
+        if pending is not None and pending.future is not None and not pending.future.done():
+            pending.future.set_exception(TeamTransportError("Coordinator rejected team activity."))
+            self._pending_activities.pop(event_id, None)
+
+    async def _handle_query_request(self, fields: Mapping[str, Any]) -> None:
+        _require_fields(fields, {
+            "request_id", "project_session_id", "task_id", "question"
+        })
+        request_id = fields["request_id"]
+        if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id):
+            raise TeamTransportError("Invalid team query id.")
+        if fields["project_session_id"] != self.mesh.project_session_id:
+            raise TeamTransportError("Team query belongs to a different session.")
+        task_id = fields["task_id"]
+        question = fields["question"]
+        if (
+            not isinstance(task_id, str)
+            or not task_id.strip()
+            or len(task_id) > 512
+            or "\x00" in task_id
+        ):
+            raise TeamTransportError("Invalid team query task id.")
+        if (
+            not isinstance(question, str)
+            or not question.strip()
+            or len(question) > 4096
+            or "\x00" in question
+        ):
+            raise TeamTransportError("Invalid team query question.")
+        question = redact_activity_text(question)
+        role = self.device_role_provider(self.remote_device_id) if self.device_role_provider else None
+        if role not in {"owner", "admin", "developer"}:
+            await self._send_control(
+                "team_query_error", request_id=request_id, error_code="INVALID_QUERY"
+            )
+            return
+        now = time.monotonic()
+        self._seen_queries = {
+            key: expiry for key, expiry in self._seen_queries.items() if expiry > now
+        }
+        if request_id in self._seen_queries:
+            await self._send_control(
+                "team_query_error", request_id=request_id, error_code="REPLAYED"
+            )
+            return
+        if len(self._seen_queries) >= 256:
+            oldest = min(self._seen_queries, key=self._seen_queries.get)
+            self._seen_queries.pop(oldest, None)
+        self._seen_queries[request_id] = now + 60.0
+        if self.query_provider is None:
+            await self._send_control(
+                "team_query_error", request_id=request_id, error_code="PEER_UNAVAILABLE"
+            )
+            return
+        try:
+            if inspect.iscoroutinefunction(self.query_provider):
+                answer = await asyncio.wait_for(
+                    self.query_provider(self.remote_device_id, task_id, question),
+                    timeout=self.query_timeout,
+                )
+            else:
+                answer = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.query_provider, self.remote_device_id, task_id, question
+                    ),
+                    timeout=self.query_timeout,
+                )
+                if inspect.isawaitable(answer):
+                    answer = await asyncio.wait_for(answer, timeout=self.query_timeout)
+            if isinstance(answer, Mapping):
+                answer = answer.get("answer")
+            if not isinstance(answer, str) or not answer.strip():
+                raise TeamTransportError("Peer query returned no answer.")
+            answer = redact_activity_text(answer)
+            if len(answer) > 16384:
+                raise TeamTransportError("Peer query answer is too large.")
+        except Exception:
+            await self._send_control(
+                "team_query_error", request_id=request_id, error_code="PEER_UNAVAILABLE"
+            )
+            return
+        await self._send_control(
+            "team_query_result", request_id=request_id, accepted=True, answer=answer
+        )
+
+    def _handle_query_result(self, fields: Mapping[str, Any]) -> None:
+        _require_fields(fields, {"request_id", "accepted", "answer"})
+        request_id = fields["request_id"]
+        if (
+            not isinstance(request_id, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", request_id)
+            or fields["accepted"] is not True
+            or not isinstance(fields["answer"], str)
+            or not fields["answer"].strip()
+            or len(fields["answer"]) > 16384
+        ):
+            raise TeamTransportError("Invalid team query result.")
+        pending = self._pending_queries.get(request_id)
+        if pending is not None and not pending.future.done():
+            pending.future.set_result({
+                "accepted": True,
+                "request_id": request_id,
+                "answer": redact_activity_text(fields["answer"]),
+                "device_record_id": self.remote_device_id,
+            })
+
+    def _handle_query_error(self, fields: Mapping[str, Any]) -> None:
+        _require_fields(fields, {"request_id", "error_code"})
+        request_id = fields["request_id"]
+        if (
+            not isinstance(request_id, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", request_id)
+            or fields["error_code"] not in {"PEER_UNAVAILABLE", "INVALID_QUERY", "REPLAYED"}
+        ):
+            raise TeamTransportError("Invalid team query error.")
+        pending = self._pending_queries.get(request_id)
+        if pending is not None and not pending.future.done():
+            pending.future.set_exception(TeamTransportError("Peer rejected the team query."))
 
     async def _handle_catchup_request(self, fields: Mapping[str, Any]) -> None:
         _require_fields(fields, {"project_session_id", "first_seq", "last_seq"})
