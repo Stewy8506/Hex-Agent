@@ -190,13 +190,7 @@ class TeamPeerLink:
         if signed.bundle.host_epoch < self.mesh.current_epoch:
             if signed.bundle.turn_seq > self.mesh.committed_turn_seq:
                 raise TeamTransportError("Historical team turn exceeds the trusted lease sequence.")
-            self.mesh.note_committed_turn(
-                signed.bundle.project_session_id,
-                signed.bundle.host_epoch,
-                signed.bundle.turn_seq,
-            )
-            return
-        if signed.bundle.turn_seq > self.mesh.committed_turn_seq + 1:
+        elif signed.bundle.turn_seq > self.mesh.committed_turn_seq + 1:
             raise TeamTransportError("Team turn sequence is not contiguous with the Coordinator lease.")
         receipt = self.commit_turn(signed)
         if inspect.isawaitable(receipt):
@@ -263,7 +257,6 @@ class TeamPeerLink:
             value["project_session_id"] != bundle.project_session_id
             or value["host_epoch"] != bundle.host_epoch
             or value["turn_seq"] != bundle.turn_seq
-            or value["primary_device_record_id"] != self.mesh.local_device_id
             or value["author_device_record_id"] != signed.author_device_record_id
             or value["bundle_digest"] != bundle.compute_digest()
             or value["proof_merkle_root"] != bundle.proof_merkle_root

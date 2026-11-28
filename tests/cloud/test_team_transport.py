@@ -379,18 +379,46 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
             await coordinator.commit_signed(skipped)
         self.assertEqual(commits, [])
 
-    async def test_pending_historical_turn_replays_after_failover_without_recommit(self) -> None:
+    async def test_pending_historical_turn_verifies_receipt_after_failover(self) -> None:
         self.coordinator_mesh.apply_signed_host_lease(self.server.lease(sequence=1, epoch=2))
         self.replica_mesh.apply_signed_host_lease(self.server.lease(sequence=1, epoch=2))
         commits = []
-        coordinator, _, acks = await self._links(commit=lambda signed: commits.append(signed))
+        coordinator, _, acks = await self._links(
+            commit=lambda signed: commits.append(signed) or self.server.receipt(signed)
+        )
 
         result = await TeamTurnPublisher([coordinator])(self.signed, self.payload)
 
         self.assertTrue(result["accepted"])
-        self.assertEqual(commits, [])
+        self.assertEqual(commits, [self.signed])
         self.assertEqual(self.replica_mesh.last_applied_turn_seq, 1)
         self.assertEqual([ack["host_epoch"] for ack in acks], [1])
+
+    async def test_conflicting_historical_sequence_is_not_relayed(self) -> None:
+        self.coordinator_mesh.apply_signed_host_lease(self.server.lease(sequence=1, epoch=2))
+        self.replica_mesh.apply_signed_host_lease(self.server.lease(sequence=1, epoch=2))
+        commits = []
+        coordinator, _, acks = await self._links(
+            commit=lambda signed: commits.append(signed) or self.server.receipt(self.signed)
+        )
+        conflicting = sign_turn_commit(
+            TurnCommitBundle(
+                project_session_id="proj_1",
+                host_epoch=1,
+                turn_seq=1,
+                cow_delta_sha256="sha256:" + "a" * 64,
+                ledger_chain_tip=self.signed.bundle.ledger_chain_tip,
+                memory_delta_sha256=self.signed.bundle.memory_delta_sha256,
+                proof_merkle_root=self.signed.bundle.proof_merkle_root,
+            ),
+            self.author,
+        )
+
+        with self.assertRaises(TeamTransportError):
+            await coordinator.commit_signed(conflicting)
+        self.assertEqual(commits, [conflicting])
+        self.assertEqual(acks, [])
+        self.assertEqual(self.replica_mesh.last_applied_turn_seq, 0)
 
     async def test_signed_ack_rejects_changed_binding(self) -> None:
         ack = sign_turn_ack(self.replica, "proj_1", 1, 1, "a" * 64)
