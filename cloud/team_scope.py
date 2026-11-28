@@ -65,6 +65,13 @@ class TeamScopeAllocator:
             session_id = lease["project_session_id"]
             epoch = lease["host_epoch"]
             committed = lease["last_committed_turn_seq"]
+            reservation = state["reservations"].get(task_id)
+            if (
+                reservation is not None
+                and reservation["project_session_id"] == session_id
+                and reservation["turn_seq"] <= committed
+            ):
+                return dict(reservation)
             active = state["active"]
             if (
                 active is not None
@@ -77,19 +84,10 @@ class TeamScopeAllocator:
                     if reservation != {key: active[key] for key in _SCOPE_FIELDS}:
                         raise ValueError("Active team scope reservation is inconsistent.")
                     return dict(reservation)
-                reservation = state["reservations"].get(task_id)
-                if (
-                    reservation is not None
-                    and reservation["project_session_id"] == session_id
-                    and reservation["host_epoch"] == epoch
-                    and reservation["turn_seq"] <= committed
-                ):
-                    return dict(reservation)
                 raise TeamScopeUnavailable(
                     "Another team turn already owns the next Coordinator sequence."
                 )
 
-            reservation = state["reservations"].get(task_id)
             if (
                 reservation is not None
                 and reservation["project_session_id"] == session_id

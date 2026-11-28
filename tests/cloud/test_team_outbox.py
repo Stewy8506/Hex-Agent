@@ -191,6 +191,54 @@ class TeamTurnOutboxTests(unittest.TestCase):
         self.assertEqual((self.replica / ".env").read_text(), "REPLICA_KEY=local-secret\n")
         self.assertEqual(self.replica_cognition.global_home.joinpath("USER.md").read_text(), "Team cognition\n")
 
+    def test_ready_turn_is_resigned_when_a_new_epoch_supersedes_its_scope(self) -> None:
+        current_scope = {"project_session_id": "proj_1", "host_epoch": 1, "turn_seq": 1}
+        captured = []
+
+        def fail(signed, payload):
+            captured.append((signed.to_dict(), copy.deepcopy(payload)))
+            raise ConnectionError("offline")
+
+        outbox = self._outbox(fail, lambda _task_id: dict(current_scope))
+        self.assertEqual(outbox(self.turn)["status"], "queued")
+        original_signed, original_payload = captured[0]
+        current_scope["host_epoch"] = 2
+        delivered = []
+
+        def publish(signed, payload):
+            delivered.append((signed.to_dict(), copy.deepcopy(payload)))
+            return {"accepted": True}
+
+        restarted = self._outbox(publish, lambda _task_id: dict(current_scope))
+        self.assertEqual(restarted.flush(), {"delivered": 1, "queued": 0})
+        renewed_signed, renewed_payload = delivered[0]
+        self.assertEqual(original_signed["bundle"]["host_epoch"], 1)
+        self.assertEqual(renewed_signed["bundle"]["host_epoch"], 2)
+        self.assertEqual(renewed_signed["bundle"]["turn_seq"], 1)
+        self.assertNotEqual(original_signed["signature"], renewed_signed["signature"])
+        self.assertEqual(
+            original_payload["workspace_archive_base64"], renewed_payload["workspace_archive_base64"]
+        )
+        self.assertEqual(renewed_payload["signed_proof"]["host_epoch"], 2)
+        attached = self.ledger.get_proof_bundle(self.turn.task_id)
+        self.assertEqual(attached["signed_proof"]["host_epoch"], 2)
+
+    def test_ready_turn_keeps_its_exact_signature_while_scope_is_unchanged(self) -> None:
+        captured = []
+
+        def fail(signed, payload):
+            captured.append(signed.to_dict())
+            raise ConnectionError("offline")
+
+        outbox = self._outbox(fail)
+        self.assertEqual(outbox(self.turn)["status"], "queued")
+        restarted = self._outbox(Mock(return_value=True))
+        self.assertEqual(restarted.flush(), {"delivered": 1, "queued": 0})
+        record = json.loads(
+            restarted.history_dir.joinpath(self._pending_path(self.turn).name).read_text()
+        )
+        self.assertEqual(record["signed"], captured[0])
+
     def test_prepared_turn_survives_scope_failure_before_signing(self) -> None:
         def unavailable(_task_id):
             raise ConnectionError("coordinator offline")

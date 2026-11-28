@@ -17,7 +17,12 @@ from typing import Any, Callable, Mapping
 from harness_core.capabilities.proof import sign_proof_artifact
 from harness_core.storage.db import utcnow_iso
 
-from .team_mesh import TurnCommitBundle, SignedTurnCommitBundle, sign_turn_commit
+from .team_mesh import (
+    DEVICE_ID_PATTERN,
+    TurnCommitBundle,
+    SignedTurnCommitBundle,
+    sign_turn_commit,
+)
 from .team_replication import team_payload_digest
 
 _OUTBOX_VERSION = 1
@@ -133,14 +138,9 @@ class TeamTurnOutbox:
     def __call__(self, turn: VerifiedTeamTurn) -> dict[str, Any]:
         with self._lock:
             record = self._load_or_create(turn)
-            if record["status"] == "preparing":
-                record = self._prepare(record)
+            record = self._advance(record)
             if record["status"] == "skipped":
                 return {"status": "skipped", "reason": "NO_WORKSPACE_CHANGES"}
-            if record["status"] in {"prepared", "signing"}:
-                record = self._sign(record)
-            if record["status"] != "ready":
-                raise ValueError("Team turn is not ready for delivery.")
             return self._deliver(record)
 
     def flush(self) -> dict[str, Any]:
@@ -149,15 +149,9 @@ class TeamTurnOutbox:
         with self._lock:
             for path in sorted(self.pending_dir.glob("*.json")):
                 try:
-                    record = self._load(path)
-                    if record["status"] == "preparing":
-                        record = self._prepare(record)
+                    record = self._advance(self._load(path))
                     if record["status"] == "skipped":
                         continue
-                    if record["status"] in {"prepared", "signing"}:
-                        record = self._sign(record)
-                    if record["status"] != "ready":
-                        raise ValueError("Team turn is not ready for delivery.")
                     outcome = self._deliver(record)
                     if outcome["status"] == "delivered":
                         delivered += 1
@@ -174,8 +168,6 @@ class TeamTurnOutbox:
         record = await asyncio.to_thread(self._advance, record)
         if record["status"] == "skipped":
             return {"status": "skipped", "reason": "NO_WORKSPACE_CHANGES"}
-        if record["status"] != "ready":
-            raise ValueError("Team turn is not ready for delivery.")
         return await self._deliver_async(record)
 
     async def flush_async(self) -> dict[str, Any]:
@@ -204,6 +196,11 @@ class TeamTurnOutbox:
                 return record
             if record["status"] in {"prepared", "signing"}:
                 record = self._sign(record)
+            if record["status"] == "ready":
+                turn = VerifiedTeamTurn.from_dict(record["turn"])
+                scope = self._validated_scope(self.scope_provider(turn.task_id))
+                if scope != record["scope"]:
+                    record = self._sign(record, scope=scope)
             if record["status"] != "ready":
                 raise ValueError("Team turn is not ready for delivery.")
             return record
@@ -302,16 +299,18 @@ class TeamTurnOutbox:
             "has_more": False,
         }
 
-    def _sign(self, record: dict[str, Any]) -> dict[str, Any]:
+    def _sign(
+        self, record: dict[str, Any], *, scope: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
         turn = VerifiedTeamTurn.from_dict(record["turn"])
         prepared = record["prepared"]
-        scope = record.get("scope")
-        if scope is None:
-            scope = dict(self.scope_provider(turn.task_id))
-            if set(scope) != {"project_session_id", "host_epoch", "turn_seq"}:
-                raise ValueError("Team turn scope is malformed.")
-            record = {**record, "status": "signing", "scope": scope}
+        selected_scope = self._validated_scope(
+            self.scope_provider(turn.task_id) if scope is None else scope
+        )
+        if record.get("scope") != selected_scope:
+            record = {**record, "status": "signing", "scope": selected_scope}
             self._write(self._path(turn.task_id, turn.attempt_id), record)
+        scope = selected_scope
         session_id = scope["project_session_id"]
         if self.cognition.workspace_id != session_id:
             raise ValueError("Cognition workspace does not match the team session.")
@@ -356,6 +355,22 @@ class TeamTurnOutbox:
         }
         self._write(self._path(turn.task_id, turn.attempt_id), record)
         return record
+
+    @staticmethod
+    def _validated_scope(scope: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(scope, Mapping) or set(scope) != {
+            "project_session_id", "host_epoch", "turn_seq"
+        }:
+            raise ValueError("Team turn scope is malformed.")
+        if not isinstance(scope["project_session_id"], str) or not DEVICE_ID_PATTERN.fullmatch(
+            scope["project_session_id"]
+        ):
+            raise ValueError("Team turn scope has an invalid session id.")
+        if type(scope["host_epoch"]) is not int or scope["host_epoch"] < 1:
+            raise ValueError("Team turn scope has an invalid epoch.")
+        if type(scope["turn_seq"]) is not int or scope["turn_seq"] < 1:
+            raise ValueError("Team turn scope has an invalid sequence.")
+        return dict(scope)
 
     def _ready_turn(self, record: dict[str, Any]) -> tuple[Path, SignedTurnCommitBundle, Mapping[str, Any]]:
         path = self.pending_dir / f"{record['turn_id']}.json"

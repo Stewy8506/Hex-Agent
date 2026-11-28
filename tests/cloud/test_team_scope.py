@@ -136,6 +136,14 @@ except TeamScopeUnavailable as exc:
         self.assertEqual(allocator.reserve("task_2")["turn_seq"], 2)
         self.assertEqual(allocator.reserve("task_1")["host_epoch"], 2)
 
+    def test_committed_historical_scope_survives_new_epoch_and_active_successor(self) -> None:
+        allocator = self._allocator()
+        historical = allocator.reserve("task_1")
+        self.lease["host_epoch"] = 2
+        self.lease["last_committed_turn_seq"] = 1
+        self.assertEqual(allocator.reserve("task_2")["turn_seq"], 2)
+        self.assertEqual(allocator.reserve("task_1"), historical)
+
     def test_invalid_or_non_coordinator_leases_fail_closed(self) -> None:
         allocator = self._allocator()
         signed = self._signed_lease()
