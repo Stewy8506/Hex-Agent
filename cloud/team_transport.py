@@ -763,7 +763,7 @@ class TeamPeerLink:
     async def _try_error(self, digest: str) -> bool:
         try:
             await self._send_control(
-                self.session, "team_turn_error", payload_digest=digest, error_code="INVALID_TURN"
+                "team_turn_error", payload_digest=digest, error_code="INVALID_TURN"
             )
             return True
         except Exception:
@@ -871,7 +871,7 @@ class TeamPeerLink:
         role = self.device_role_provider(self.remote_device_id) if self.device_role_provider else None
         if self.scope_allocator is None or role not in {"owner", "admin", "developer"}:
             await self._send_control(
-                self.session, "team_scope_error", request_id=request_id,
+                "team_scope_error", request_id=request_id,
                 error_code="SCOPE_UNAVAILABLE",
             )
             return
@@ -882,13 +882,13 @@ class TeamPeerLink:
             reserved = await asyncio.to_thread(self.scope_allocator.reserve_with_lease, task_key)
         except TeamScopeUnavailable:
             await self._send_control(
-                self.session, "team_scope_error", request_id=request_id,
+                "team_scope_error", request_id=request_id,
                 error_code="SCOPE_UNAVAILABLE",
             )
             return
         except ValueError:
             await self._send_control(
-                self.session, "team_scope_error", request_id=request_id,
+                "team_scope_error", request_id=request_id,
                 error_code="INVALID_SCOPE",
             )
             return

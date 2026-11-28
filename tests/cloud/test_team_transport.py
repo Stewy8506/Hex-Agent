@@ -817,7 +817,7 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         tampered["base_workspace_tree_sha"] = "sha256:" + "0" * 64
 
         with self.assertRaises(TeamTransportError):
-            await author.submit_turn(signed, tampered)
+            await asyncio.wait_for(author.submit_turn(signed, tampered), timeout=1)
 
         self.assertEqual(commits, [])
         self.assertEqual(history, [])
@@ -832,7 +832,7 @@ class TeamTransportTests(unittest.IsolatedAsyncioTestCase):
         coordinator.device_role_provider = lambda _device_id: "observer"
 
         with self.assertRaises(TeamTransportError):
-            await author.reserve_scope(task_id)
+            await asyncio.wait_for(author.reserve_scope(task_id), timeout=1)
 
         self.assertEqual(allocator.status()["reserved_tasks"], 0)
         self.assertEqual(commits, [])
